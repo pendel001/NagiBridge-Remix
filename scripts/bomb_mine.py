@@ -634,17 +634,21 @@ class BombMineBot(BombMiner):
         if target_floor >= 121:
             self.touch_skull_statue()
 
-        # 头骨矿洞（>=121）无电梯。恒 2026-08-23：在矿里原地续（resume 返回当前层），
-        # 不在矿里一律从 121（第一层）开；显式 --start>121 则 warp 到该层跳过浅层。
+        # 头骨矿洞（>=121）无电梯。恒 2026-08-23：在矿里原地续，以下最优先——"只要已在头骨矿里就绝不 warp、
+        # 直接原地续下一个行为"（防弹窗完重开脚本误 warp 重生成层面/回入口）。不在矿里才 121 开。
         if target_floor >= 121:
-            if start_level > 121:
-                # 在矿里且正好在该层 → 原地续（不重复 warp）；否则 warp 到该层
-                if extract_mine_level(self.my_location()) != start_level:
-                    if not self.safe_warp(f"UndergroundMine{start_level}", x=5, y=5):
-                        log(f"  ❌ warp 到 {start_level} 层失败")
-                        return False
+            cur_lv = extract_mine_level(self.my_location())
+            if cur_lv is not None and cur_lv >= 121:
+                # ⭐ 已在头骨矿里 → 绝不 warp，原地续（恒 2026-08-23：弹窗完继续脚本也走这，不重生成）
+                level = cur_lv
+                log(f"  从第 {level} 层原地续（已在头骨矿里，不 warp 不重生成）")
+            elif start_level > 121:
+                # 不在头骨矿里但显式 --start>121 → warp 到该层跳过浅层
+                if not self.safe_warp(f"UndergroundMine{start_level}", x=5, y=5):
+                    log(f"  ❌ warp 到 {start_level} 层失败")
+                    return False
                 level = extract_mine_level(self.my_location()) or start_level
-                log(f"  从第 {level} 层开始（原地续，不清场不重启）")
+                log(f"  从第 {level} 层开始（跳过浅层）")
             else:
                 if not self.safe_warp("UndergroundMine121", x=5, y=5):
                     log("  ❌ 进不了头骨矿洞第一层")
@@ -744,7 +748,7 @@ class BombMineBot(BombMiner):
             # 整理判定：满包 + 到间隔 + 未禁用（逐层模式摘要里提示 AI 整理）
             organize_suggested = (not os_state.get("disabled")) and \
                                  (floors_since >= self.organize_interval()) and \
-                                 (self.inventory_free_slots() <= 3)
+                                 (self.inventory_free_slots() <= 0)   # ⭐ 2026-08-23 恒：满包才算，≤3格空不触发
             if level > load_progress():
                 log(f"  🏆 新纪录：炸到第 {level} 层")
             if max_floors and floors_done >= max_floors:
