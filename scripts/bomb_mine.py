@@ -562,9 +562,9 @@ class BombMineBot(BombMiner):
                 for ln in plan:
                     log(ln)
                 if freed == 0 and self.inventory_free_slots() <= 2:
-                    if self.autodrop <= 0:
-                        return None, "背包满了（规划已输出，等决策）"
-                    log("  ⚠️ 背包还是很满，停止拾取")
+                    # ⭐ 2026-08-23 恒：背包满不停脚本（只停本层拾取），清包交给三层一停整理/异步 bomb_organize；
+                    #    只有弹战利品/待领物 ItemGrabMenu(开箱) 才 ManualChestFull 停脚本。
+                    log("  ⚠️ 背包满了（自动丢物已退役）→ 本层停止拾取，清包交给整理机制")
                     break
 
             # 卡死检测：先扫整层按铱矿密集点走路，移动了继续炸；没移动就作弊给楼梯下楼
@@ -855,7 +855,7 @@ def main():
             _loc = ""
         lv = extract_mine_level(_loc) or 0
         in_skull = lv >= 121 or _loc.startswith("SkullCave")   # 头骨矿层(≥121) 或 头骨入口
-        target = 500 if in_skull else 80
+        target = 500 if in_skull else 120   # ⭐ 城镇矿井到120（默认曾80=电梯到120时start>=target空转，恒 2026-08-23）
         log(f"  🎯 目标层自适应: {target}" + ("（在头骨/沙漠）" if in_skull else ""))
     target = min(target, 500)  # 头骨矿洞也算 UndergroundMine121+，上限放宽到500（测深层用）
 

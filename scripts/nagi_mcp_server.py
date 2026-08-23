@@ -5674,7 +5674,7 @@ def bomb_mine(target: int = 0, bomb: str = "Bomb", min_covered: int = 3,
     两者互不干扰：逐层要 AI 层间确认整理所以保持同步，冲层不需中途确认所以走后台。
 
     Args:
-        target: 目标层（0=按当前层自适应：在头骨≥121→500、城镇→80；头骨矿洞也算 UndergroundMine121+）
+        target: 目标层（0=按当前层自适应：在头骨≥121→500、城镇→120；头骨矿洞也算 UndergroundMine121+）
         bomb: 炸弹类型 Bomb/Mega Bomb/Cherry Bomb（默认 Bomb）
         min_covered: 至少覆盖N块岩体才炸（默认3）
         follow_host: user 在矿里就一起冲层/增援（默认 True）
