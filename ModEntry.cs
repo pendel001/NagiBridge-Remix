@@ -2112,6 +2112,7 @@ public class ModEntry : Mod
                 "/fishbot" => HandleFishbot(ctx),
                 "/menu" => HandleMenu(),
                 "/menu/click" => HandleMenuClick(ctx),
+                "/menu/claim_swap" => HandleClaimSwap(ctx),
                 "/menu_close" => HandleMenuClose(),
                 "/forge_set" => HandleForgeSet(ctx),
                 "/dump_tile" => HandleDumpTile(ctx),
@@ -7763,8 +7764,11 @@ public class ModEntry : Mod
                 // Find Fishbot mod via SMAPI mod registry
                 object? fishbotMod = null;
                 System.Reflection.FieldInfo? autoField = null;
+                System.Reflection.PropertyInfo? autoProp = null;
 
+                // 🔧 2026-08-23 恒：反射耦合脆弱，Fishbot 升级改成员名就断。先抓版本用于报错/自检。
                 var modInfo = this.Helper.ModRegistry.Get("AdroSlice.Fishbot");
+                string modVersion = modInfo?.Manifest.Version?.ToString() ?? "?";
                 if (modInfo != null)
                 {
                     var modInfoType = modInfo.GetType();
@@ -7783,19 +7787,14 @@ public class ModEntry : Mod
 
                 if (fishbotMod == null)
                 {
-                    tcs.SetResult(new { ok = false, error = "Fishbot mod not found" });
+                    tcs.SetResult(new { ok = false, found = false,
+                        error = "Fishbot mod not found（没装 / UniqueID 不是 AdroSlice.Fishbot）" });
                     return;
                 }
 
-                // Find AutomationEnabled field/property
+                // Find the toggle member (AutomationEnabled) — 多候选兜底，Fishbot 改过名也能找到。
                 var fbType = fishbotMod.GetType();
-                autoField = fbType.GetField("AutomationEnabled",
-                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic |
-                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Static);
-
-                var autoProp = fbType.GetProperty("AutomationEnabled",
-                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic |
-                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Static);
+                FindFishbotToggle(fbType, out autoField, out autoProp);
 
                 var bindingAll = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic |
                     System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Static;
@@ -7814,7 +7813,9 @@ public class ModEntry : Mod
 
                         if (target)
                         {
-                            var startMethod = fbType.GetMethod("StartCasting", bindingAll);
+                            var startMethod = fbType.GetMethod("StartCasting", bindingAll)
+                                ?? fbType.GetMethod("StartFishing", bindingAll)
+                                ?? fbType.GetMethod("BeginCasting", bindingAll);
                             startMethod?.Invoke(fishbotMod, null);
                         }
                         else
@@ -7833,7 +7834,9 @@ public class ModEntry : Mod
                         System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic |
                         System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Static);
                     var names = string.Join(", ", fields.Select(f => f.Name));
-                    tcs.SetResult(new { ok = false, error = $"AutomationEnabled not found. Fields: {names}" });
+                    tcs.SetResult(new { ok = false, found = true, version = modVersion,
+                        error = $"Fishbot {modVersion} 找不到可控开关(AutomationEnabled/app)/启动方法——版本可能已变更，" +
+                                $"请更新 NagiBridge 或换回此版本 Fishbot。可用字段: {names}" });
                 }
             }
             catch (Exception ex)
@@ -7842,6 +7845,37 @@ public class ModEntry : Mod
             }
         });
         return tcs.Task.GetAwaiter().GetResult();
+    }
+
+    // 🔧 2026-08-23 恒：Fishbot 的 AutomationEnabled 是私有成员，反射耦合脆弱——改过名/升级后 /fishbot 会断。
+    // 这里用「候选名 + 布尔成员名扫描」兜底，尽量兼容 Fishbot 后续版本；真找不到也给出可操作报错（带版本）。
+    private static void FindFishbotToggle(System.Type fbType, out System.Reflection.FieldInfo? field, out System.Reflection.PropertyInfo? prop)
+    {
+        var flags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic |
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Static;
+        string[] preferred = { "AutomationEnabled", "AutoFishEnabled", "FishAutomationEnabled",
+                               "EnableAutomation", "Enabled" };
+        foreach (var name in preferred)
+        {
+            var f = fbType.GetField(name, flags);
+            if (f != null && f.FieldType == typeof(bool)) { field = f; prop = null; return; }
+            var pp = fbType.GetProperty(name, flags);
+            if (pp != null && pp.PropertyType == typeof(bool) && pp.CanRead && pp.CanWrite)
+            { field = null; prop = pp; return; }
+        }
+        // 兜底：扫描所有布尔成员，名字含 auto/fish 的优先（Fishbot 的相关开关命名含这些词）
+        foreach (var f in fbType.GetFields(flags))
+            if (f.FieldType == typeof(bool) && _NameMentionsFish(f.Name)) { field = f; prop = null; return; }
+        foreach (var pp in fbType.GetProperties(flags))
+            if (pp.PropertyType == typeof(bool) && pp.CanRead && pp.CanWrite && _NameMentionsFish(pp.Name))
+            { field = null; prop = pp; return; }
+        field = null; prop = null;
+    }
+
+    private static bool _NameMentionsFish(string name)
+    {
+        return name.IndexOf("auto", System.StringComparison.OrdinalIgnoreCase) >= 0 ||
+               name.IndexOf("fish", System.StringComparison.OrdinalIgnoreCase) >= 0;
     }
 
     // (PrairieKing bot 已移除 2026-08-12：联机下波次切换卡死，按恒意见删除)
@@ -8482,6 +8516,27 @@ public class ModEntry : Mod
                 }
                 }
 
+                // 🎁 满包接鱼/箱子领取：读领取侧 actualInventory 真物品进 grabItems（恒 2026-08-23 治本读端，AI 才能看待领取做取舍）
+                if (menu is ItemGrabMenu igmRead)
+                {
+                    var gi = igmRead.ItemsToGrabMenu?.actualInventory;
+                    if (gi != null)
+                    {
+                        var gl = new List<object>();
+                        for (int i = 0; i < gi.Count; i++)
+                            if (gi[i] != null)
+                                gl.Add(new
+                                {
+                                    index = i,
+                                    name = gi[i].DisplayName ?? gi[i].Name,
+                                    count = gi[i].Stack,
+                                    quality = (gi[i] as StardewValley.Object)?.Quality ?? 0,
+                                    id = gi[i].QualifiedItemId
+                                });
+                        if (gl.Count > 0) grabItems = gl;
+                    }
+                }
+
                 tcs.SetResult(new
                 {
                     ok = true,
@@ -8664,6 +8719,55 @@ public class ModEntry : Mod
         return tcs.Task.GetAwaiter().GetResult();
     }
 
+    /// 🎯 满包接鱼/领取 手动替换（恒 2026-08-23 治本）：原子、引用式、不走坐标。
+    /// 拿领取侧第一个物品 → 换进背包指定格(或自动首个非工具/武器格) → 旧物即弃。
+    /// POST /menu/claim_swap  { "replace": "<要替换的物品名，空=自动找>" }
+    private object HandleClaimSwap(HttpListenerContext ctx)
+    {
+        var p = ReadJson(ctx);
+        var replace = GetParamOr(p, "replace", "");
+        var tcs = new TaskCompletionSource<object>();
+        EnqueueMainThread(() =>
+        {
+            try
+            {
+                if (Game1.activeClickableMenu is not ItemGrabMenu igm)
+                { tcs.SetResult(new { ok = false, error = "当前不是 ItemGrabMenu" }); return; }
+
+                // 1) 领取侧第一个非空物品
+                var grabInv = igm.ItemsToGrabMenu.actualInventory;
+                Item? grab = null; int grabIdx = -1;
+                for (int i = 0; i < grabInv.Count; i++)
+                    if (grabInv[i] != null) { grab = grabInv[i]; grabIdx = i; break; }
+                if (grab == null) { tcs.SetResult(new { ok = false, error = "领取侧没有物品" }); return; }
+                string grabName = grab.DisplayName ?? grab.Name;
+
+                // 2) 找背包替换格（replace 指定名；空=自动找首个非工具/武器(-99/-98)）
+                int junkSlot = -1; string junkName = "";
+                for (int i = 0; i < Game1.player.Items.Count; i++)
+                {
+                    var it = Game1.player.Items[i];
+                    if (it == null) continue;
+                    bool match = replace != ""
+                        ? (it.Name.Equals(replace, StringComparison.OrdinalIgnoreCase)
+                           || it.DisplayName.Equals(replace, StringComparison.OrdinalIgnoreCase)
+                           || it.QualifiedItemId == replace)
+                        : (it.Category > -98);   // 避开工具(-99)/武器(-98)
+                    if (match) { junkSlot = i; junkName = it.DisplayName ?? it.Name; break; }
+                }
+                if (junkSlot < 0) { tcs.SetResult(new { ok = false, error = $"背包无可替换物[{(replace == "" ? "自动" : replace)}]" }); return; }
+
+                // 3) 替换：领取物进背包格，旧物被覆盖即弃（不再引用）
+                grabInv[grabIdx] = null;
+                Game1.player.Items[junkSlot] = grab;
+
+                tcs.SetResult(new { ok = true, claimed = grabName, replaced = junkName, slot = junkSlot });
+            }
+            catch (Exception ex) { tcs.SetResult(new { ok = false, error = ex.Message }); }
+        });
+        return tcs.Task.GetAwaiter().GetResult();
+    }
+
     private object HandleMenuClick(HttpListenerContext ctx)
     {
         var p = ReadJson(ctx);
@@ -8761,6 +8865,12 @@ public class ModEntry : Mod
                     foreach (var f in menu.GetType().GetFields(bFlags))
                     {
                         if (f.GetValue(menu) is InventoryMenu cand && cand.inventory != null) { im = cand; break; }
+                    }
+                    // 🎯 满包接鱼/领取：ItemGrabMenu 有两个 InventoryMenu（玩家背包 inventory + 领取侧 ItemsToGrabMenu）。
+                    // 点 slot 要操作玩家背包（放/拿/把物品），上面扫描可能先抓到 ItemsToGrabMenu → 强指定玩家背包（恒 2026-08-23 治本）。
+                    if (menu is ItemGrabMenu igmSlot && !(igmSlot.reverseGrab || igmSlot.behaviorFunction != null) && im != igmSlot.inventory)
+                    {
+                        im = igmSlot.inventory;
                     }
                     // ⚠️ GameMenu 的背包在 InventoryPage（私有嵌套类）里，从当前页找
                     if (im == null && menu is GameMenu gm2 && gm2.currentTab >= 0 && gm2.currentTab < gm2.pages.Count)
@@ -9073,15 +9183,19 @@ public class ModEntry : Mod
                                 return;
                             }
                         }
-                        // 领取：找到菜单里该物品的格子点击（公会奖励/箱子）
-                        var slots = igm.ItemsToGrabMenu.inventory;
-                        for (int i = 0; i < slots.Count; i++)
+                        // 🎁 领取：找菜单里该物品的格子点击（公会奖励/箱子）——读 actualInventory 真物品，
+                        // 用 inventory[i] 槽位坐标（恒 2026-08-23 治本：ItemsToGrabMenu.inventory 组件 stale，
+                        // 真物品在 actualInventory，读错才"领取菜单里没有"；满包接鱼/弃箱手动替换全靠它）。
+                        var grabInv = igm.ItemsToGrabMenu.actualInventory;
+                        var grabSlots = igm.ItemsToGrabMenu.inventory;
+                        for (int i = 0; i < grabInv.Count && i < grabSlots.Count; i++)
                         {
-                            var cc = slots[i];
-                            if (cc == null) continue;
-                            if (cc.item is Item cit && (cit.Name.Equals(item, StringComparison.OrdinalIgnoreCase)
+                            var cit = grabInv[i];
+                            var cc = grabSlots[i];
+                            if (cit == null || cc == null) continue;
+                            if (cit.Name.Equals(item, StringComparison.OrdinalIgnoreCase)
                                 || cit.DisplayName.Equals(item, StringComparison.OrdinalIgnoreCase)
-                                || cit.QualifiedItemId == item))
+                                || cit.QualifiedItemId == item)
                             {
                                 igm.receiveLeftClick(cc.bounds.Center.X, cc.bounds.Center.Y);
                                 tcs.SetResult(new { ok = true, clicked = "claim", item, slot = i });

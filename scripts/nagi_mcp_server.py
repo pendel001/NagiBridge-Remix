@@ -5371,13 +5371,14 @@ def go_fishing(
     max_casts: int = 0,
     no_sleep: bool = True,
 ) -> str:
-    """🎣 去钓鱼（AI 角色）
-    自动 warp 到钓点 → 开 Fishbot 自动钓鱼 → 抛够竿数/体力不足收杆。
-    收杆会自动把鱼线收回（不残留收线音效）。
+    """🎣 钓鱼（AI 角色）
+    默认【就地钓】：就在 AI 当前站位原地钓（不传送）——开 Fishbot 自己找水抛；
+    开局一次性用 isFishing(等待咬钩) 判定能否抛：5s 内建立就开钓（水域固定，能抛一杆就能抛很多竿）；没建立(没水/死点)就收手。
+    指定 location → 自动 warp 到该校准钓点再钓。开 Fishbot 自动钓鱼 → 抛够竿数/体力不足收杆。
 
     Args:
-        location: 钓点（Beach / Mountain / Forest 等，默认 Beach）
-        max_casts: 抛 N 竿就收手（0=不限，钓到体力<20/背包满/太晚收杆）
+        location: None=就地钓（当前站位，须 AI 自己站到水边）；指定（Beach / Mountain / Forest / Town）=自动去钓点
+        max_casts: 抛 N 竿就收手（0=不限，钓到体力<20/背包满/太晚/抛不出去收杆）
         no_sleep: True=钓完不睡觉（留在原地）；False=钓完回家睡。
                   ⚠️ 2026-08-15 改默认 True：睡觉由 AI 用 go_sleep 统一控制（白天钓鱼别早睡）。
     """
@@ -9896,6 +9897,23 @@ def drop_item(name: str, count: int = 1) -> str:
 
 
 @mcp.tool()
+def menu_claim_swap(replace: str = "") -> str:
+    """🎁 满包接鱼/箱子领取：原子一步领取并替换（背包满时，把领取物换进背包格、旧物即弃）。
+    专治"背包满又钓上鱼/领箱子 → ItemGrabMenu 待领槽"。不走坐标、不靠 heldItem 读，稳定。
+
+    Args:
+        replace: 要丢弃的背包物品名（如 "Copper Bar"）。空=自动找首个非工具/武器格替换。
+    """
+    try:
+        r = api._post("/menu/claim_swap", {"replace": replace})
+        if r.get("ok"):
+            return _with_state(f"🎁 已领取 {r.get('claimed')} → 背包 slot{r.get('slot')}（丢弃 {r.get('replaced')} 腾位）")
+        return _with_state(f"⚠️ 领取失败: {r.get('error', '未知')}")
+    except Exception as e:
+        return _with_state(f"❌ 领取出错: {e}")
+
+
+@mcp.tool()
 def gift_npc(npc_name: str, item_name: str) -> str:
     """🎁 送礼物给 NPC 村民（真实好感度系统）
     自然走到该 NPC 面前再送（不"飞过去"），好感度按喜好度变化（最爱/喜欢/一般/不喜欢/讨厌）。
@@ -10480,6 +10498,13 @@ def read_menu() -> str:
         # 🎁 送礼菜单（冬星节神秘礼物）：点物品=送出，不是拿起！走 menu_click(item=名)
         if m.get("gift"):
             lines.append("  🎁 送礼菜单：点物品直接送出（menu_click(item=物品名)），别点 okButton/收起——点了物品就被送走")
+        # 🐟 满包接鱼/箱子领取（恒 2026-08-23 治本）：ItemGrabMenu 点领取物=拿起；背包满可手动替换或直接退出
+        if t == "ItemGrabMenu":
+            lines.append("  🎁 ItemGrabMenu：点领取侧物品=拿起（一般领取用 menu_click(item=物品名, action=claim)）")
+            lines.append("  🐟 背包满接鱼/箱子满（三选一，非必须替换）：")
+            lines.append("    ① 替换领取: menu_claim_swap(替换物名∈背包) 一步领取并丢弃旧物")
+            lines.append("    ② 拿起换进: menu_click(action=claim) 拿起 → 点背包某格换进 → menu_click(button=trashCan) 丢旧物")
+            lines.append("    ③ 直接退出(不替换→放弃这条鱼): menu_click(button=ok) 关菜单")
         if m.get("letterTitle"):
             lines.append(f"  📧 {m['letterTitle']}: {m.get('letterBody')}")
         return _with_state("\n".join(lines))
