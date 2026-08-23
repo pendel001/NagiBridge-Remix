@@ -5310,6 +5310,9 @@ def go_mining(
     - 确保有足够空格子装矿石（至少留 10 格）
     - 如有食物（沙拉/奶酪/鱼等）可传 food_sta/food_hp，状态低会自动吃
     - 如果背包满了，先用 chest_store 存到箱子再出发
+    💡 占位物技巧（出发前，恒2026-08-23）：可提前往背包放 1 个可堆叠占位物——铱矿/铱锭/五彩碎片——
+    背包满时其实已含该类，后续同种战利品会自动**堆叠吸附**进去、少触发满包停。
+    ⚠️ 别拿**银河之魂**这类带出去死了丢了划不来的稀有物当占位；用铱矿这类死了不心疼的。
 
     Args:
         mode: 模式（rush=冲层, farm=刷矿，默认 rush）
@@ -5672,6 +5675,9 @@ def bomb_mine(target: int = 0, bomb: str = "Bomb", min_covered: int = 3,
     AI 看摘要再调用继续下一层。⚠️ 逐层整理已禁（恒 2026-08-23：竖井一跳3~15层，逐层等AI响应太慢易暴毙）
     ——organize_suggested 恒 False，摘要只为可见性不定决策；清包交给异步后台（冲层模式）。
     ⚠️ 逐层模式=同步（等摘要），冲层模式=自动异步（后台跑）；推荐用冲层模式（异步后台整理）。
+    💡 占位物技巧（出发前，恒2026-08-23）：可提前往背包放 1 个可堆叠占位物——铱矿/铱锭/五彩碎片——
+    背包满时其实已含该类，后续同种战利品（开箱/拾取）会自动**堆叠吸附**进去、少触发满包停。
+    ⚠️ 别拿**银河之魂**这类带出去死了丢了划不来的稀有物当占位；用铱矿这类死了不心疼的。
 
     Args:
         target: 目标层（0=按当前层自适应：在头骨≥121→500、城镇→120；头骨矿洞也算 UndergroundMine121+）
@@ -5751,6 +5757,9 @@ def bomb_volcano(bomb: str = "Bomb", min_covered: int = 3, hp_threshold: int = 3
     """🌋 火山骑行炸矿（跟 user 换层）——**火山适配，需 user 陪同**
     ⚠️ 火山特殊瓦片无法程序化换层 → 要求 user(host) 已在矿井/火山里才放行（否则拦下请先 ask user 陪同）。
     跟在 user 身边（warp 换层跟上），同层清矿簇（贪心炸弹）、帮打怪。
+    💡 占位物技巧（出发前，恒2026-08-23）：可提前往背包放 1 个可堆叠占位物——铱矿/铱锭/五彩碎片——
+    背包满时其实已含该类，后续同种战利品会自动**堆叠吸附**进去、少触发满包停。
+    ⚠️ 别拿**银河之魂**这类带出去死了丢了划不来的稀有物当占位；用铱矿这类死了不心疼的。
     Args:
         bomb: Bomb/Mega Bomb/Cherry Bomb（默认 Bomb）
         min_covered: 至少覆盖N块岩体才炸（火山簇小，默认3）
@@ -9283,7 +9292,7 @@ _SETTINGS_DISPATCH = {
 _DOMAIN_GUIDES = {
 "check": "查询域，what=...：status(完整状态) backpack(逐格价值/星级) worn(穿戴) machines(机器清单) mine(下矿进度) silo(干草) mastery(精通) buildings(木匠建筑) quest(任务) chests(当前图箱) storage(箱子网络) look(环视周围)。⚠️查概览用 status，查逐格用 backpack，别都调浪费 token。",
 "farm": "农活域(🌱必走，禁手动 use_tool/tool_area 组合)：till(蓄力锄) plant(种,跳过已种) water(浇,自动跳雨+水壶没水先装满) harvest(收) scythe(镰刀收蒜/花/茶) fertilize(化肥) clear(清杂草石树桩) plot(连通域规划) chop(砍树) clearground(清单格) collect(收机器) load(放原料) building(一屋收放) pond/pond_add/pond_feed/pond_collect/pond_fish(鱼塘)。⚠️漏格DLL自动补；高级工具蓄力用 tool_area(别用/tool)。只在 Farm/温室/姜岛。",
-"mine": "下矿域(⚒️ 矿井/头骨/火山)：go(冲层/刷矿) progress(进度) bomb_status/plan/place/collect/ladder/retreat(单步炸) bomb_mine(自动) bomb_volcano(火山) organize(整理背包)。⚠️无镐/血低硬拦；梯子 /ladder+confirm。⚠️bomb_mine 没炸弹+host在同矿井→自动转【内部】协同(跟随host+帮忙敲矿/打怪)不撤退出矿(bomb_escort 不对外暴露、AI 不主动启用)；bomb_retreat 结束协同+停脚本+脱离矿井回门口。⚠️接「深处的危险」重置电梯→起始层动态从1起(内置脚本自动读，不暴露工具)；刷矿目标层不可直达会上报，需先冲层带回或改浅层。",
+"mine": "下矿域(⚒️ 矿井/头骨/火山)：go(冲层/刷矿) progress(进度) bomb_status/plan/place/collect/ladder/retreat(单步炸) bomb_mine(自动) bomb_volcano(火山) organize(整理背包)。⚠️无镐/血低硬拦；梯子 /ladder+confirm。⚠️bomb_mine 没炸弹+host在同矿井→自动转【内部】协同(跟随host+帮忙敲矿/打怪)不撤退出矿(bomb_escort 不对外暴露、AI 不主动启用)；bomb_retreat 结束协同+停脚本+脱离矿井回门口。⚠️接「深处的危险」重置电梯→起始层动态从1起(内置脚本自动读，不暴露工具)；刷矿目标层不可直达会上报，需先冲层带回或改浅层。💡出发前占位物(恒2026-08-23)：提前放1个可堆叠物(铱矿/铱锭/五彩碎片)在包，满包时同种战利品自动堆叠吸附、少触发满包停；别拿银河之魂这类带死亡会丢的稀有物当占位。",
 "care": "动物域(🐄 Farm)：animals(摸+收,不动门) building(这间屋) pet(猫狗) water(宠物碗) milk(挤奶剪毛) buy(买动物) doors(关门) petwalk(拟人摸) hay(干草) statue(祈福)。",
 "cabin": "小屋引导域(🏠 FarmHouse/Cabin/岛屋；不传=扫屋)：enum(扫屋查待收) collect(收机器) statue(雕像) furniture(扫家具) interact(点家具) pickup(拿起家具) sleep(睡觉)。",
 "social": "社交域：chat(跟NPC搭话) gift(送礼提好感) give(送玩家物品) send(发消息) emote(表情) friendship(查好感) movie(影院知识) snack(零食)。",
