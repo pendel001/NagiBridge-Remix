@@ -276,9 +276,10 @@ class VolcanoBot(BombMineBot):
                     for ln in plan:
                         log(ln)
                     if freed == 0 and self.inventory_free_slots() <= 2 and self.autodrop <= 0:
-                        log("  ⚠️ 背包满了，撤退")
-                        self.retreat_volcano("背包满")
-                        break
+                        # ⭐ 恒 2026-08-23：自动丢物退役后，满包不撤退（火山骑行跟房主，撤了会丢下房主），
+                        #    只停拾取继续跟——战利品收不了就不收，不丢人不丢物。拾取函数自己会在 free<=0 时跳过。
+                        #    （不 break，落到下方 time.sleep(0.3)+continue 继续骑车；拾取函数内部 free<=0 自动跳过）
+                        log("  ⚠️ 背包满了（自动丢物已退役）→ 本层停止拾取，继续跟房主骑乘")
                 time.sleep(0.3)
                 continue
 
@@ -336,7 +337,7 @@ def main():
     parser.add_argument("--hp-threshold", type=int, default=30, help="血量低于此%撤退（默认30）")
     parser.add_argument("--poll", type=float, default=2.5, help="user位置轮询间隔秒（默认2.5）")
     parser.add_argument("--max-minutes", type=int, default=None, help="最多运行分钟数")
-    parser.add_argument("--autodrop", type=int, default=15, help="背包满时自动丢价值≤此值的物品（0=只报不丢）")
+    parser.add_argument("--autodrop", type=int, default=0, help="背包满时自动丢价值≤此值的物品（已退役，恒2026-08-23全退役：0=只报不丢，满包撤退交给AI）")
     parser.add_argument("--weapon", type=str, default=None, help="武器绑定（如 'Galaxy Hammer'）")
     parser.add_argument("--no-wait", action="store_true", help="user不在火山时不等待直接结束")
     args = parser.parse_args()
