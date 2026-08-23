@@ -1,0 +1,40 @@
+# ── 构建产物 ──
+bin/
+obj/
+build_output/
+
+# ── Python ──
+__pycache__/
+*.pyc
+*.pdb
+
+# ── 节点 ──
+node_modules/
+chat_outbox.txt
+
+# ── 运行时状态（不进版本库）──
+scripts/session_*.jsonl
+scripts/session_*.md
+scripts/whiteboard.json
+scripts/settings.json
+scripts/plan.json
+scripts/mine_progress.json
+scripts/bomb_progress.json
+scripts/bomb_organize.json
+*.log
+scripts/*.png
+scripts/*.jpg
+
+# ── 备份文件 ──
+.bak-*
+*.bak
+*.bak-*
+
+# ── 杂项 ──
+C:UsersAdministratortest_output.txt
+.claude/
+quests_test.json
+
+# 临时广播去重标记
+scripts/.fresh_pack_broadcast
+.newbie_hint_*

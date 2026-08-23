@@ -1,0 +1,854 @@
+"""
+💣 bomb_mine.py — 炸矿模式（自主下矿，贪心炸弹覆盖）
+
+每层：扫全层岩体 → 贪心找"能覆盖最多岩体的空格"放炸弹 → 躲远 → 等爆炸 → 拾取 →
+循环到目标层。生存优先：血量阈值吃食物/撤退、炸弹库存不足撤退、卡死检测。
+玩家(user)检测：user在矿井里就一起冲层（目标层 = user层数 ± lead），user不在就自己冲。
+
+背包规划：快满时输出背包清单，自动丢低价值物品（Stone/Quartz 等）腾格；
+--autodrop 0 时改成"报清单并撤退"，把取舍决策留给 AI。
+
+用法:
+  python bomb_mine.py --target 80                 # 冲到80层（自动从炸矿进度恢复）
+  python bomb_mine.py --no-resume --start 1 --target 40
+  python bomb_mine.py --bomb "Mega Bomb" --min-covered 5
+  python bomb_mine.py --follow-host 0              # 不一起冲层，自己冲
+  python bomb_mine.py --autodrop 0                 # 背包满时只报规划不自动丢
+  python bomb_mine.py --check-progress / --reset-progress
+"""
+
+import sys
+import os
+import json
+import time
+import argparse
+import requests
+
+os.environ.setdefault("NAGI_URL", "http://localhost:7843")
+os.environ.setdefault("NAGI_HOST_URL", "http://localhost:7842")
+
+from bomb_common import (BombMiner, log, is_mine_location, extract_mine_level,
+                         BOMB_RADIUS, backpack_plan, is_rock, drop_value, is_volcano)
+
+# ═══════════ 已移除：主动打怪（2026-08-09，按user要求移到协同模式） ═══════════
+# 移除原因：position 瞬移后足够安全，bomb_mine 只炸矿不主动打怪；战斗归协同模式。
+# 注意：受击反击（retaliate_if_hit / inline 回击）保留当防御。
+# 若要恢复，把下面两段放回原处即可：
+#
+# 【原主循环】clear_floor 每轮开头（在受击反击之后）：
+#             # 主动打怪（AI 周围 2 格，追击到死；有怪就优先处理）
+#             if self.combat_aggressive(engage_dist=2):
+#                 continue
+#
+# 【原感染层】clear_floor 感染层检测里的"没石头清怪出梯子"：
+#                 # 没石头：清怪（怪死可能出梯子）
+#                 if rcount <= 0:
+#                     log("  没石头，清怪出梯子")
+#                     self.combat_aggressive(engage_dist=4)
+#                     time.sleep(1.0)
+#                     ladder = self.find_ladder()
+#                     if ladder and can_descend() and self.descend():
+#                         return "DONE", self.my_mine_level()
+# ═══════════════════════════════════════════════════════════════════════════
+
+PROGRESS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bomb_progress.json")
+ORGANIZE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bomb_organize.json")
+
+
+def load_organize_state():
+    """整理背包状态：{disabled: AI判定后续不需要再整理, floors_since_organize: 距上次整理层数}"""
+    try:
+        with open(ORGANIZE_FILE) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def save_organize_state(state):
+    try:
+        with open(ORGANIZE_FILE, 'w') as f:
+            json.dump(state, f)
+    except Exception:
+        pass
+
+# 每层最多炸几次（防止卡一层死循环）
+MAX_FLOOR_ATTEMPTS = 25
+# 卡死判定：连续这么多轮"位置没变 + 没炸成"就撤退
+STUCK_ROUNDS = 8
+# 炸弹爆炸后捡掉落的时间预算（秒）
+COLLECT_BUDGET = 30
+
+# ═══════════ 协同（增援user）═══════════
+CO_LOCATED_DIST = 10     # user同层且曼哈顿距离≤此值=贴身（增援站user旁边用）
+COOP_CHECK_EVERY = 1     # clear_floor 每次迭代都查user（增援要灵敏，错过窗口就打不到了）
+COOP_BURST_SEC = 12      # 增援限时（打完user的对手就回来炸矿）
+LEAD_MAX = 3             # AI 领先user超过这层数就传送回user身边（不然一个人在前面挨打）
+
+
+def load_progress():
+    try:
+        with open(PROGRESS_FILE) as f:
+            return json.load(f).get("deepest_level", 0)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return 0
+
+
+def save_progress(deepest):
+    with open(PROGRESS_FILE, 'w') as f:
+        json.dump({"deepest_level": deepest}, f)
+
+
+def resume_start_level():
+    deepest = load_progress()
+    if deepest >= 121:
+        return 121  # 头骨矿洞无电梯，必须从第一层(121)一层层下，不能跳层
+    if deepest < 5:
+        return 1
+    return (deepest // 5) * 5
+
+
+def _is_town_mine(loc: str) -> bool:
+    """是否为鹈鹕镇矿井（Mine 建筑 或 UndergroundMine≤120）。头骨(≥121)/火山不算。"""
+    if loc == "Mine":
+        return True
+    lv = extract_mine_level(loc or "")
+    return lv is not None and lv <= 120
+
+
+def _town_elevator_start(port: int) -> int:
+    """动态读鹈鹕镇矿井电梯可达最高层（替代静态进度，2026-08-22）。
+    在鹈鹕镇矿井就读电梯，否则按起始=1。读失败兜底 1（宁可重下，不跳错层）。"""
+    base = f"http://localhost:{port}"
+    try:
+        s = requests.get(f"{base}/state", timeout=10).json()
+    except Exception:
+        return 1
+    loc = (s.get("location") or {}).get("name", "")
+    if not _is_town_mine(loc):
+        return 1
+    try:
+        r = requests.get(f"{base}/mine/elevator", timeout=10).json()
+        if r.get("ok"):
+            return max(1, int(r.get("maxFloor", 1) or 1))
+    except Exception:
+        pass
+    return 1
+
+
+class BombMineBot(BombMiner):
+    """自主炸矿矿工"""
+
+    def __init__(self, port, host_port, bomb_type="Bomb", min_covered=4,
+                 hp_threshold=50, follow_host=True, lead=2, autodrop=15, weapon=None):
+        super().__init__(port=port, host_port=host_port, bomb_type=bomb_type)
+        self.min_covered = min_covered
+        self.hp_threshold = hp_threshold
+        self.follow_host = follow_host
+        self.lead = lead
+        self.autodrop = autodrop
+        self.weapon_override = weapon   # 武器绑定（bomb_mine --weapon "Galaxy Hammer"）
+        self._last_pos = None
+        self._stuck_rounds = 0
+        self.coop_handoff = False   # 2026-08-22 没炸弹+玩家在同矿井 → 转协同交棒，不自主撤退出矿
+
+    def preflight(self):
+        """启动预检（2026-08-16 恒）：返回硬性拦截原因（str=阻止启动）；黄色警告只 log 不拦。
+        硬：没炸弹 / 血量过低；黄：没武器。"""
+        try:
+            s = self.state()
+            p = s.get("player", {})
+            mhp = p.get("maxHealth") or 1
+            hp = p.get("health") or 0
+            if mhp > 0 and hp * 100 / mhp < self.hp_threshold:
+                return f"❌ 当前血量 {hp}/{mhp}（{hp*100/mhp:.0f}%）低于阈值 {self.hp_threshold}%——先回血/睡觉再来"
+            if self.count_bombs() <= 0:
+                return f"❌ 背包没有 {self.bomb_type}！先去买/拿炸弹再来（可 /give 作弊）"
+            if not self.detect_weapon():
+                log("  ⚠️ 没找到武器（炸矿也能切镐子，但危险，建议带剑）")
+        except Exception as e:
+            log(f"  ⚠️ 预检异常（继续启动）: {e}")
+        return None
+
+    # ── 卡死检测 ──
+
+    def _update_stuck(self, bombed):
+        s = self.state()
+        px, py = s.get("player", {}).get("x", 0), s.get("player", {}).get("y", 0)
+        pos = (px, py)
+        if bombed or self._last_pos != pos:
+            self._stuck_rounds = 0
+        else:
+            self._stuck_rounds += 1
+        self._last_pos = pos
+        return self._stuck_rounds >= STUCK_ROUNDS
+
+    def walk_to_rich_ore(self, level):
+        """卡死兜底：扫整层按铱/金矿密集点走路（优先高价值），走到继续炸。返回是否移动。"""
+        try:
+            data = self.surroundings(30)
+            rocks = [(t["x"], t["y"], t.get("object")) for t in data.get("tiles", [])
+                     if is_rock(t.get("object"))]
+        except Exception:
+            return False
+        if not rocks:
+            return False
+        s = self.state()
+        px, py = s["player"]["x"], s["player"]["y"]
+        rocks.sort(key=lambda r: (0 if "Iridium" in r[2] else 1 if "Gold" in r[2] else 2,
+                                  abs(r[0] - px) + abs(r[1] - py)))
+        tx, ty = rocks[0][0], rocks[0][1]
+        adj = self.find_stand_tile(tx, ty, set())
+        if adj[0] is not None:
+            tx, ty = adj[0], adj[1]
+        self.natural_walk(tx, ty, self.my_location(), walk_only=True)  # 纯走路（防 position 传送出界）
+        time.sleep(0.5)
+        s2 = self.state()
+        return (s2["player"]["x"], s2["player"]["y"]) != (px, py)
+
+    def cheat_staircase(self):
+        """作弊给楼梯（保底）：给 99 石头 → craft 造。warp 不可行/卡死时用。返回是否造出。"""
+        try:
+            self._post("/give", {"id": "390", "count": 99})
+            time.sleep(0.5)
+            if self.craft_staircase():
+                log("  🧨 作弊造出楼梯")
+                return True
+        except Exception:
+            pass
+        return False
+
+    # ── 协同（检测user在身边）──
+
+    def host_proximity(self):
+        """读user一次，返回 ('absent'|'far'|'near', host_level, dist)。
+        near = user同层 且 曼哈顿距离≤CO_LOCATED_DIST（贴身，触发协同）。"""
+        try:
+            hs = self.host_state()
+        except Exception:
+            return "absent", 0, 9999
+        hl = hs.get("location", {}).get("name", "")
+        if not is_mine_location(hl):
+            return "absent", 0, 9999
+        hlv = extract_mine_level(hl) or 0
+        h = hs.get("player", {})
+        hx, hy = h.get("x", 0), h.get("y", 0)
+        s = self.state()
+        px, py = s["player"]["x"], s["player"]["y"]
+        dist = abs(hx - px) + abs(hy - py)
+        near = hlv == self.my_mine_level() and dist <= CO_LOCATED_DIST
+        return ("near" if near else "far"), hlv, dist
+
+    def reinforce_host(self):
+        """user同层在打架 → position 到user旁边 → 只打user的对手（health<maxHealth 的血量不满怪），
+        满血怪（user没在打的）不纠缠。限时爆发做完回来炸矿。
+        user不在矿/不同层/没打架 → 返回 False（AI 完全自主炸矿）。"""
+        if not self.follow_host:
+            return False
+        try:
+            hs = self.host_state()
+            hl = hs.get("location", {}).get("name", "")
+            if not is_mine_location(hl) or extract_mine_level(hl) != self.my_mine_level():
+                return False  # 不同层：楼层同步由 goal 机制管，不在这增援
+            h = hs.get("player", {})
+            hx, hy = h.get("x", 0), h.get("y", 0)
+        except Exception:
+            return False
+        # user同层但没在打架（周围没有血量不满的怪）→ 不增援
+        try:
+            data = self.surroundings(8, host=True)
+            damaged = [m for m in data.get("monsters", [])
+                       if m.get("health", 0) < m.get("maxHealth", 1)]
+        except Exception:
+            return False
+        if not damaged:
+            return False
+        log(f"  🤝 user在打架（{len(damaged)}只血量不满），增援！")
+        # position 到user旁边一格（别叠身上）
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            if self.position_safe(hx + dx, hy + dy):
+                break
+        # 只打user的对手（限时）
+        deadline = time.time() + COOP_BURST_SEC
+        while time.time() < deadline:
+            if not self.combat_aggressive(around=(hx, hy), host_targets_only=True):
+                break
+            time.sleep(0.3)
+        return True
+
+    # ── 整理背包（逐层模式）──
+
+    def organize_interval(self):
+        """整理触发间隔（层数）：鹈鹕镇矿洞困难模式（神庙 mineShrineActivated）满包后每1层，其他每3层。
+        只认 UndergroundMine 1-120 且 mineHardMode；头骨矿洞(121+)/火山不因神庙激活按困难算。
+        ⚠️ mineHardMode 在 /state 的 player 子对象里（不是顶层）。"""
+        try:
+            s = self.state()
+            p = s.get("player", {})
+            loc = s.get("location", {}).get("name", "")
+            lv = extract_mine_level(loc) or 0
+            if (p.get("mineHardMode") and is_mine_location(loc)
+                    and not is_volcano(loc) and lv < 121):
+                return 1
+        except Exception:
+            pass
+        return 3
+
+    def build_summary(self, level, target_floor, organize_suggested, os_state,
+                      retreat_reason=None):
+        """逐层模式结构化摘要（JSON），给 AI 在层间整理背包/捡遗漏掉落用。"""
+        s = self.state()
+        p = s.get("player", {})
+        inv = [{"name": i.get("name"), "stack": i.get("stack"),
+                "value": i.get("value") or 0, "q": i.get("quality") or 0}
+               for i in s.get("inventory", []) if i.get("name")]
+        drops = []
+        try:
+            d = self.debris()
+            for it in d.get("debris", []):
+                nm = it.get("itemName", "?")
+                drops.append({"name": nm, "x": it.get("x"), "y": it.get("y"),
+                              "value": drop_value(nm)})
+            drops.sort(key=lambda x: -x["value"])
+        except Exception:
+            pass
+        free = self.inventory_free_slots()
+        rec = [f"{x['name']}(@{x['x']},{x['y']})≈{x['value']}g" for x in drops[:4]]
+        return json.dumps({
+            "mode": "one_floor",
+            "floor": level,
+            "target": target_floor,
+            "progress": load_progress(),
+            "organize_suggested": organize_suggested,
+            "organize_interval": self.organize_interval(),
+            "mine_hard_mode": s.get("player", {}).get("mineHardMode", False),
+            "floors_since_organize": os_state.get("floors_since_organize", 0),
+            "organize_disabled": os_state.get("disabled", False),
+            "backpack_free": free,
+            "backpack": inv[:12],
+            "nearby_drops": drops[:8],
+            "recommended_pickups": rec,
+            "hp": f"{p.get('health')}/{p.get('maxHealth')}",
+            "stamina": f"{p.get('stamina', 0):.0f}/{p.get('maxStamina')}",
+            "bombs_left": self.count_all_bombs(),
+            "retreat_reason": retreat_reason,
+        }, ensure_ascii=False)
+
+    # ── 每层一次完整炸矿 ──
+
+    def _run_cooperate(self):
+        """2026-08-22 恒：没炸弹+玩家(恒)在同矿井 → 转【内部】协同保镖：跟随恒+帮忙敲矿/打怪+开路。
+        自动接棒、不经 AI 主动启用（bomb_escort 不对外暴露）。持续到：
+        恒离开矿井 / AI 被 bomb_retreat 传出矿(不再在矿井) / 血低没吃的。结束按情况撤退出矿口。"""
+        log("\n🔄 背包炸弹不足 → 内部协同保镖：跟随 host + 帮忙敲矿/打怪。AI 可随时 bomb_retreat 结束协同并脱离矿井回门口。")
+        quiet = 0
+        while True:
+            try:
+                ml = (self.state().get("location") or {}).get("name", "")
+                hl = self.host_location()
+                # 退出：AI已被bomb_retreat传出矿 / 恒离开矿井
+                if not is_mine_location(ml) or not is_mine_location(hl):
+                    break
+                # 生存优先：血低先吃，没吃的撤
+                if not self.is_safe(self.hp_threshold):
+                    if not self.eat_if_needed(self.hp_threshold):
+                        self.retreat_to_entrance("协同血低无食")
+                        break
+                acted = False
+                # 恒在打架 → 增援（只打血量不满的对手）
+                if self.reinforce_host():
+                    acted = True
+                # 贴跟随恒（自然走，不闪现）
+                if not acted:
+                    self.follow_host_once(walk_only=True)
+                # 敲恒身边/附近石头开路 + 敲高价值矿
+                if self.smash_nearby_rocks(max_n=3, radius=8, ores_only=False):
+                    self.retaliate_if_hit()
+                    acted = True
+                quiet = 0 if acted else quiet + 1
+                time.sleep(0.6)
+            except Exception as e:
+                log(f"  ⚠️ 协同循环异常: {e}")
+                time.sleep(1.0)
+        # 结束：恒离开但 AI 还在矿 → 撤退出矿；AI 已被 bomb_retreat 传出矿 → 不再撤
+        if is_mine_location(self.my_location()):
+            self.retreat_to_entrance("协同结束")
+        log("🔄 === 协同结束 ===")
+
+    def clear_floor(self, level, goal):
+        """炸穿当前层直到找到梯子/无法继续。
+        goal: 允许到达的最高层（一起冲层时 = user层数+lead；超过则等user）。
+        返回 ("DONE", next_level) | ("WAIT", None) | (None, reason)
+        """
+        loc_name = f"UndergroundMine{level}"
+        bombs_this_floor = 0
+        stuck_msg = None
+        explore_count = 0
+
+        def can_descend():
+            """能否下到 level+1（受一起冲层的 goal 限制）"""
+            return level + 1 <= goal
+
+        # ── 感染层检测：怪多矿少→直接作弊楼梯跳关（约好的：不杀怪，作弊给梯下去） ──
+        try:
+            data = self.surroundings(14)
+            rcount = sum(1 for t in data.get("tiles", []) if is_rock(t.get("object")))
+            mcount = len(data.get("monsters", []))
+            if mcount >= 3 and rcount <= 2:
+                log(f"  👾 感染层！怪{mcount}只 矿{rcount}块 → 作弊楼梯跳关")
+                if self.cheat_staircase() and self.use_staircase():
+                    return "DONE", self.my_mine_level()
+                # 楼梯失败 + HP 警告 → warp 下一层保底
+                if not self.is_safe(self.hp_threshold):
+                    log("  💢 HP 警告，warp 下一层保底")
+                    if self.safe_warp(f"UndergroundMine{level+1}", x=5, y=5):
+                        self.mine_level = level + 1
+                        return "DONE", self.my_mine_level()
+        except Exception:
+            pass
+
+        for attempt in range(MAX_FLOOR_ATTEMPTS):
+            # buff 维护（菜品/饮品快过期补吃）
+            self.maintain_buffs(threshold=30)
+
+            # 自保：HP<60% 真实吃食物回血（IsActive 补丁后 eatObject 回血可靠；吃完仍低才 /heal 救急）
+            self.eat_recovery(hard=self.hp_threshold, target=60)
+            if not self.is_safe(self.hp_threshold):
+                if not self.eat_if_needed(self.hp_threshold):
+                    return None, f"状态不足(HP<{self.hp_threshold}%)"
+                if not self.is_safe(self.hp_threshold):
+                    return None, "吃完还是危险"
+
+            # 受击反击：HP 比上次低 → 立刻回击两下（保底，不依赖怪检测——魔法箭筒击退/延迟也能防）
+            self.retaliate_if_hit()
+
+            # ── 协同：user同层在打架 → position 增援，只打user的对手（限时爆发，做完回来炸矿） ──
+            if attempt % COOP_CHECK_EVERY == 0 and self.reinforce_host():
+                continue
+
+            # 有梯子：能下就下；但下楼前先看附近有没有值得炸的矿簇（别浪费矿就下楼）
+            ladder = self.find_ladder()
+            if ladder:
+                if can_descend():
+                    # 下楼前贪心补一发：密集/高价值矿簇先炸了再下（2026-08-09 按user要求）
+                    try:
+                        anchor = self.best_bomb_anchor(min_covered=self.min_covered, max_dist=12)
+                        if anchor:
+                            ax, ay, covered, _ = anchor
+                            log(f"  💣 下楼前补炸矿簇 ({ax},{ay}) 覆盖 {covered} 块")
+                            self.bomb_and_collect(ax, ay, collect=True)
+                            ladder = self.find_ladder()  # 炸完可能刷出新梯子
+                    except Exception:
+                        pass
+                    log(f"  🪜 有梯子 ({ladder[0]},{ladder[1]})")
+                    if self.descend():
+                        return "DONE", self.my_mine_level()
+                    log("  梯子下不去，继续炸")
+                else:
+                    # 一起冲层：已经到user的层差，等user往前
+                    pass
+
+            # 炸弹库存
+            if self.count_bombs() <= 0:
+                # 2026-08-22 恒：没炸弹+玩家在同矿井 → 不再自主撤退出矿，转【内部】协同保镖（不经AI启用）
+                if self.follow_host and is_mine_location(self.host_location()):
+                    self.coop_handoff = True
+                    self._run_cooperate()   # 内部协同(跟随恒+敲矿+打怪)；结束/撤退由内部处理
+                    return None, "__COOP__"
+                # 2026-08-09 按user要求：炸弹用完弹明确警告+结束撤退（别再默默转跟随让user以为卡死）
+                log("  ⚠️💣 炸弹用完了！脚本结束（先 /give 补炸弹再跑）")
+                return None, "炸弹用完了"
+
+            # 找贪心锚点
+            # 走路为主后放宽锚点距离（原6格是防position穿墙，走路不穿墙可放宽到12）
+            anchor = self.best_bomb_anchor(min_covered=self.min_covered, max_dist=12)
+            if anchor is None:
+                # 没有值得炸的簇
+                ladder = self.find_ladder()
+                if ladder and can_descend() and self.descend():
+                    return "DONE", self.my_mine_level()
+                if not can_descend():
+                    return "WAIT", None   # 在等user，本层炸完了
+                # 没炸点没梯子：敲周围石头刷梯子（矿优先单遍排序，不拆两遍瞬移贪心——user 2026-08-10）
+                if self.smash_nearby_rocks(max_n=4):
+                    self.retaliate_if_hit()  # 敲完及时回击（防被木乃伊撞死）
+                    explore_count += 1
+                    # 敲石头可能敲出梯子——先查一下，有就正常下楼（别浪费楼梯/误撤退）
+                    ladder = self.find_ladder()
+                    if ladder and can_descend() and self.descend():
+                        return "DONE", self.my_mine_level()
+                    if explore_count >= 6:
+                        log("  🔍 敲石头多次没进展，造楼梯跳关")
+                        if self.craft_staircase() and self.use_staircase():
+                            return "DONE", self.my_mine_level()
+                        # 作弊保底给石头造（说好的作弊保底）
+                        if self.cheat_staircase() and self.use_staircase():
+                            return "DONE", self.my_mine_level()
+                        return None, "没梯子也没楼梯材料"
+                    continue
+                # 没石头可敲：顺手捡采集物/贵重掉落（熔岩菇/地晶/泪晶/火水晶等）
+                if self.pick_forage_nearby(max_items=3):
+                    continue
+                try:
+                    if self.pick_valuable_drops(max_items=2):
+                        continue
+                except Exception:
+                    pass
+                # ★ 移动探索：扫大范围走向最近可达石头；探索多次没进展就造楼梯跳关（防死循环）
+                explore_count += 1
+                if explore_count >= 6:
+                    log("  🔍 探索多次还没梯子，造楼梯跳关")
+                    if self.craft_staircase() and self.use_staircase():
+                        return "DONE", self.my_mine_level()
+                    # 造楼梯失败 → 作弊保底给石头造（说好的作弊保底）
+                    log("  🧨 造楼梯失败，作弊给石头")
+                    if self.cheat_staircase() and self.use_staircase():
+                        return "DONE", self.my_mine_level()
+                    return None, "没梯子也没楼梯材料"
+                try:
+                    data = self.surroundings(24)
+                    far_rocks = [(t["x"], t["y"]) for t in data.get("tiles", [])
+                                 if is_rock(t.get("object"))]
+                except Exception:
+                    far_rocks = []
+                s = self.state()
+                px, py = s["player"]["x"], s["player"]["y"]
+                if far_rocks:
+                    far_rocks.sort(key=lambda r: abs(r[0] - px) + abs(r[1] - py))
+                    target_x, target_y = far_rocks[0]
+                else:
+                    target_x, target_y = 20, 20  # 没石头走向层中心（可通行由导航处理）
+                log(f"  🚶 入口无炸点，探索到 ({target_x},{target_y})")
+                self.natural_walk(target_x, target_y, self.my_location(), walk_only=True)  # 纯走路（walk_only=False 会 position 传送出界）
+                time.sleep(0.3)
+                continue  # 到目标区后重新找锚点
+
+            ax, ay, covered, _ = anchor
+            log(f"  🎯 炸点 ({ax},{ay}) 覆盖 {covered} 块")
+
+            # 炸 + 躲 + 等 + 捡
+            ok, msg, broken = self.bomb_and_collect(ax, ay, collect=True)
+            if not ok:
+                log(f"  ⚠️ {msg}")
+                time.sleep(0.5)
+                if self._update_stuck(bombed=False):
+                    stuck_msg = "连续放置失败，疑似卡死"
+                    break
+                continue
+            bombs_this_floor += 1
+            self.retaliate_if_hit()  # 放完炸弹及时回击（防被围殴/木乃伊撞死）
+
+            # 背包规划：快满时
+            free = self.inventory_free_slots()
+            if free <= 3:
+                freed, plan = backpack_plan(self, drop_below=self.autodrop, need_slots=4)
+                for ln in plan:
+                    log(ln)
+                if freed == 0 and self.inventory_free_slots() <= 2:
+                    if self.autodrop <= 0:
+                        return None, "背包满了（规划已输出，等决策）"
+                    log("  ⚠️ 背包还是很满，停止拾取")
+                    break
+
+            # 卡死检测：先扫整层按铱矿密集点走路，移动了继续炸；没移动就作弊给楼梯下楼
+            if self._update_stuck(bombed=True):
+                log("  ⚠️ 位置没变，扫整层找铱矿密集点")
+                if self.walk_to_rich_ore(level):
+                    continue
+                log("  🧨 卡死，作弊给楼梯下楼")
+                if self.cheat_staircase() and self.use_staircase():
+                    return "DONE", self.my_mine_level()
+                stuck_msg = "位置一直没变，疑似卡死"
+                break
+
+            # 每炸 2 次检查一次梯子（石头碎了可能刷出梯子）
+            if bombs_this_floor % 2 == 0:
+                ladder = self.find_ladder()
+                if ladder and can_descend():
+                    log(f"  🪜 炸出梯子 ({ladder[0]},{ladder[1]})")
+                    if self.descend():
+                        return "DONE", self.my_mine_level()
+
+            time.sleep(0.3)
+
+        if stuck_msg:
+            return None, stuck_msg
+        # 炸满次数没下去
+        ladder = self.find_ladder()
+        if ladder and can_descend() and self.descend():
+            return "DONE", self.my_mine_level()
+        if not can_descend():
+            return "WAIT", None
+        # 头骨矿洞无电梯：不 warp 跳层，造楼梯跳关
+        log("  🚀 本层炸满次数没下去，造楼梯跳关")
+        if self.craft_staircase() and self.use_staircase():
+            return "DONE", self.my_mine_level()
+        # 作弊保底给石头造（说好的作弊保底）
+        if self.cheat_staircase() and self.use_staircase():
+            return "DONE", self.my_mine_level()
+        return None, "没梯子也没楼梯材料"
+
+    # ── 主流程 ──
+
+    def run_rush(self, start_level, target_floor, follow_host=True, max_floors=None):
+        tag = "逐层" if max_floors else "整段"
+        log(f"\n💣 === 炸矿模式({tag}): {start_level} → {target_floor}层 | 炸弹: {self.bomb_type} ===")
+        self.no_pause_on_unfocus()   # 后台也能走位，不抢user的焦点
+        try:
+            return self._run_rush_inner(start_level, target_floor, follow_host, max_floors=max_floors)
+        finally:
+            self.restore_pause_on_unfocus()
+
+    def _run_rush_inner(self, start_level, target_floor, follow_host, max_floors=None):
+        if not self.detect_weapon():
+            log("  ⚠️ 没找到武器")
+        # 出发前查炸弹——没炸弹直接报错，别飞矿里空手
+        if self.count_bombs() <= 0:
+            log(f"  ❌ 背包没有 {self.bomb_type}！先去买/拿炸弹再来（可 /give 作弊）")
+            return False
+        self.select(self.bomb_type)
+        time.sleep(0.2)
+
+        # 头骨矿洞：先摸入口雕像加竖井概率（雕像位置每存档不同，动态扫，没找到就不摸）
+        if target_floor >= 121:
+            self.touch_skull_statue()
+
+        # 头骨矿洞（>=121）无电梯：默认从第一层(121)层层下。
+        # 用户显式 --start>121 时 warp 到该层（如 --start 220 = 沙漠100层），不强制 121
+        if target_floor >= 121:
+            if start_level > 121:
+                if not self.safe_warp(f"UndergroundMine{start_level}", x=5, y=5):
+                    log(f"  ❌ warp 到 {start_level} 层失败")
+                    return False
+                level = extract_mine_level(self.my_location()) or start_level
+                log(f"  从第 {level} 层开始（跳过浅层）")
+            else:
+                if not self.safe_warp("UndergroundMine121", x=5, y=5):
+                    log("  ❌ 进不了头骨矿洞第一层")
+                    return False
+                level = 121
+        else:
+            level = start_level
+            # 显式 start（--no-resume）：无论当前在哪都 warp 到目标层——
+            # 之前只在"不在矿里"才 warp，AI 已在矿里会漏掉跨层（实测 --start 40 停在了 3 层）
+            if extract_mine_level(self.my_location()) != level:
+                if not self.safe_warp(f"UndergroundMine{level}", x=5, y=5):
+                    log("  ❌ 进不了矿")
+                    return False
+            level = extract_mine_level(self.my_location()) or level
+        self.mine_level = level
+
+        retreat_reason = None
+        os_state = load_organize_state()
+        floors_done = 0
+        floors_since = os_state.get("floors_since_organize", 0)
+        organize_suggested = False
+
+        while level < target_floor:
+            log(f"\n--- 💣 第 {level} 层 ---")
+            self.maintain_buffs(threshold=30)  # 每层开打前看一遍 buff（补被沙拉顶掉的菜品 buff）
+
+            # 宝箱层（沙漠整百层 = 游戏120+100n）才开箱，避免每层检测卡死
+            if (level - 120) % 100 == 0:
+                self.open_treasure_chests()
+
+            # 安全
+            if not self.is_safe(self.hp_threshold):
+                if not self.eat_if_needed(self.hp_threshold):
+                    retreat_reason = "状态不足"
+                    break
+
+            # 一起冲层：AI 领先自由冲（goal=目标层，不再被user层数卡住等——user反馈"下楼有延迟"）
+            # AI 落后user太多（user层数 - 我层数 > LEAD_MAX）→ 尽快传送到user身边（别掉队）
+            # 头骨矿洞无电梯：AI 一层层走路下，不 warp 跳层追user（user自己玩，AI 自主推进）
+            goal = target_floor
+            if follow_host and is_mine_location(self.host_location()):
+                hlv = self.host_mine_level()
+                if hlv and hlv - level > LEAD_MAX:
+                    log(f"  📡 AI 落后（user{hlv}层 我{level}层），传送到user身边")
+                    if self.safe_warp(f"UndergroundMine{hlv}", x=5, y=5):
+                        level = hlv
+                        self.mine_level = level
+                        try:  # 站到user旁边
+                            hh = self.host_player()
+                            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                                if self.position_safe(hh.get("x", 0) + dx, hh.get("y", 0) + dy):
+                                    break
+                        except Exception:
+                            pass
+                        continue
+
+            # 本层清矿
+            status, payload = self.clear_floor(level, goal)
+
+            if status is None:
+                if payload == "__COOP__":
+                    retreat_reason = None   # 转协同：不撤退，主循环退出交棒（结尾只打标记）
+                    break
+                retreat_reason = payload
+                break
+            if status == "WAIT":
+                if max_floors:
+                    break  # 逐层模式：本层清完了（在等user），直接返回摘要，不硬等
+                # 在等user：等user往前走到 goal 增大（或离开矿井），再继续
+                log(f"  🧍 已在第 {level} 层等user（goal={goal}）…")
+                waited = 0
+                while waited < 120:  # 最多等 2 分钟
+                    time.sleep(3)
+                    waited += 3
+                    if is_mine_location(self.host_location()):
+                        hlv = self.host_mine_level()
+                        if hlv and hlv + self.lead > level:
+                            break  # user往前了，继续冲
+                    else:
+                        break  # user离开矿井，自己冲
+                # 若user离开了矿井 → goal 恢复全局目标，重新进循环
+                if not is_mine_location(self.host_location()):
+                    log("  user离开了矿井，自己冲")
+                continue
+
+            nxt = payload
+            if nxt <= level:
+                retreat_reason = f"卡在{level}层"
+                break
+            level = nxt
+            self.mine_level = level
+            save_progress(level)
+            floors_done += 1
+            floors_since += 1
+            os_state["floors_since_organize"] = floors_since
+            save_organize_state(os_state)
+            # 整理判定：满包 + 到间隔 + 未禁用（逐层模式摘要里提示 AI 整理）
+            organize_suggested = (not os_state.get("disabled")) and \
+                                 (floors_since >= self.organize_interval()) and \
+                                 (self.inventory_free_slots() <= 3)
+            if level > load_progress():
+                log(f"  🏆 新纪录：炸到第 {level} 层")
+            if max_floors and floors_done >= max_floors:
+                log(f"  ⏹️ 逐层模式：本层完成，返回摘要")
+                break
+
+            # 全局炸弹检查（每层结束）
+            if self.count_bombs() <= 0:
+                if follow_host and is_mine_location(self.host_location()):
+                    self.coop_handoff = True
+                    self._run_cooperate()   # 内部协同
+                    break
+                retreat_reason = "炸弹用完了"
+                break
+
+        # ── 结束 ──
+        s = self.state()
+        p = s.get("player", {})
+        if max_floors:
+            # 逐层模式：不撤退，输出结构化摘要（AI 在层间整理背包/捡遗漏掉落，再调下一层）
+            log("📋 ===BOMB_SUMMARY===")
+            log(self.build_summary(level, target_floor, organize_suggested, os_state, retreat_reason))
+            log("===END===")
+            return True
+        log(f"\n🏁 === 炸矿结束 ===")
+        log(f"  终点: 第 {level} 层（目标 {target_floor}）")
+        if retreat_reason:
+            log(f"  撤退原因: {retreat_reason}")
+        log(f"  剩余 ❤️ {p.get('health')}/{p.get('maxHealth')}  ⚡ {p.get('stamina', 0):.0f}/{p.get('maxStamina')}")
+        log(f"  炸弹剩余: {self.count_all_bombs()}")
+        if self.coop_handoff:
+            # 2026-08-22 恒：没炸弹+玩家同矿→已转【内部】协同（_run_cooperate 处理跟随+撤退），这里不重复出矿
+            log("🔄 === 协同模式结束 ===")
+            return False
+        self.retreat_to_entrance(retreat_reason or "到目标层")
+        return retreat_reason is None
+
+
+def main():
+    if hasattr(sys.stdout, 'reconfigure'):
+        try:
+            sys.stdout.reconfigure(encoding='utf-8')
+        except Exception:
+            pass
+
+    parser = argparse.ArgumentParser(description="[bomb] 炸矿模式 — 自主贪心炸弹下矿")
+    parser.add_argument("--port", type=int, default=None, help="AI 角色端口（默认7843）")
+    parser.add_argument("--host-port", type=int, default=None, help="房主(user)端口（默认7842）")
+    parser.add_argument("--start", type=int, default=1, help="起始层（配合 --no-resume）")
+    parser.add_argument("--target", type=int, default=80, help="目标层（默认80）")
+    parser.add_argument("--bomb", type=str, default="Bomb", help="炸弹类型：Bomb/Mega Bomb/Cherry Bomb")
+    parser.add_argument("--min-covered", type=int, default=4, help="至少覆盖N块岩体才炸（默认4，爆炸区不重叠后效率够）")
+    parser.add_argument("--hp-threshold", type=int, default=30, help="血量低于此%撤退（默认30，user建议）")
+    parser.add_argument("--follow-host", type=int, default=1, help="user在矿里就一起冲层（1开0关）")
+    parser.add_argument("--weapon", type=str, default=None, help="武器绑定：指定用某把武器（如 'Galaxy Hammer'），不指定自动选真实武器")
+    parser.add_argument("--lead", type=int, default=2, help="和user保持的层差（默认2）")
+    parser.add_argument("--autodrop", type=int, default=15, help="背包满时自动丢价值≤此值的物品（0=只报不丢）")
+    parser.add_argument("--resume", action="store_true", default=True, help="从炸矿进度恢复（默认开）")
+    parser.add_argument("--no-resume", action="store_false", dest="resume")
+    parser.add_argument("--check-progress", action="store_true", help="查看炸矿进度")
+    parser.add_argument("--reset-progress", action="store_true", help="重置炸矿进度")
+    parser.add_argument("--one-floor", action="store_true", help="逐层模式：跑一层返回结构化摘要，不撤退（AI 层间整理背包再调下一层）")
+    parser.add_argument("--organize-disable", action="store_true", help="AI 判定后续不需要整理背包：写 bomb_organize.json disabled")
+    parser.add_argument("--organize-reset", action="store_true", help="整理完背包后重置间隔计数（bomb_organize.json floors_since_organize=0）")
+    args = parser.parse_args()
+
+    if args.check_progress:
+        deepest = load_progress()
+        if deepest > 0:
+            log(f"💣 炸矿进度：已到达最深 {deepest} 层（下次从第 {resume_start_level()} 层恢复）")
+        else:
+            log("💣 还没有炸矿进度记录")
+        return
+    if args.reset_progress:
+        save_progress(0)
+        log("💣 炸矿进度已重置")
+        return
+    if args.organize_disable:
+        st = load_organize_state()
+        st["disabled"] = True
+        save_organize_state(st)
+        log("💼 整理背包已禁用（后续不再提示整理）")
+        return
+    if args.organize_reset:
+        st = load_organize_state()
+        st["floors_since_organize"] = 0
+        save_organize_state(st)
+        log("💼 整理间隔计数已重置（整理过了）")
+        return
+
+    # 端口解析
+    import re as _re
+    from bomb_common import NAGI_URL, HOST_URL
+    port = args.port or int(_re.search(r'(\d+)', NAGI_URL).group(1))
+    hport = args.host_port or int(_re.search(r'(\d+)', HOST_URL).group(1))
+
+    target = min(args.target, 500)  # 头骨矿洞也算 UndergroundMine121+，上限放宽到500（测深层用）
+
+    # 起始层：进度恢复
+    # 鹈鹕镇矿井(target<121) → 动态读电梯（接"深处的危险"重置后=1）；头骨(≥121)无电梯走原逻辑
+    start = args.start
+    if args.resume and start <= 1:
+        if target < 121:
+            auto = _town_elevator_start(port)
+            tag = "🪜 电梯当前到"
+        else:
+            auto = resume_start_level()
+            tag = "📋 炸矿进度恢复"
+        if auto > 1:
+            log(f"  {tag} {auto} 层开始")
+        start = auto
+
+    bot = BombMineBot(port, hport, bomb_type=args.bomb,
+                      min_covered=args.min_covered,
+                      hp_threshold=args.hp_threshold,
+                      follow_host=bool(args.follow_host),
+                      lead=args.lead, autodrop=args.autodrop,
+                      weapon=args.weapon)
+
+    # ⚠️ 2026-08-16 预检：炸弹/血量/武器告知原因（没炸弹/血低硬拦，没武器黄）
+    block = bot.preflight()
+    if block:
+        log(block)
+        return
+
+    max_floors = 1 if args.one_floor else None
+    bot.run_rush(start, target, follow_host=bool(args.follow_host), max_floors=max_floors)
+
+
+if __name__ == "__main__":
+    main()

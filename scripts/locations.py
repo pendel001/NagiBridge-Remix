@@ -1,0 +1,897 @@
+"""
+星露谷地图连接 + POI 知识库
+AI 用这个规划路线："先去钓鱼，再挖矿，最后种地"
+"""
+
+# ── 地图连接表 ──
+# (起点, 出口方向, 终点, 终点入口坐标)
+ROUTES = [
+    # 农场 ↔ 外部
+    ("Farm",         "right", "BusStop",     (10, 23)),   # 口= (79,17)
+    ("Farm",         "down",  "Forest",      (68, 1)),    # ✅ 出口Farm(40,64)→Forest(68,1)
+    ("Farm",         "up",    "Backwoods",    (14, 39)),  # ✅ 出口Farm(41,0)→Backwoods(14,39) 口=(40,0)
+    # 农场内部
+    ("Farm",         "门",     "FarmHouse",    (10, 6)),   # 主屋
+    ("Farm",         "door",  "Cabin",        (3, 12)),   # ✅ 联机小屋 Farm(75,14)→Cabin(3,12)
+    ("Farm",         "door",  "FarmCave",     (8, 11)),   # 🕳️ 农场洞穴 (34,7)→FarmCave(8,11)
+    # 巴士站 ↔ 外部
+    ("BusStop",      "left",  "Farm",         (79, 17)),  # ✅ Warp(9,22-25)→Farm(79,17)
+    ("BusStop",      "right", "Town",         (0, 54)),   # ✅ Warp(44,22-25)→Town(0,54)
+    ("BusStop",      "up",    "Backwoods",    (49, 30)),  # ✅ Warp(11,6-9)→Backwoods(49,30)
+    ("BusStop",      "door",  "Desert",       (18, 27)),  # ✅ 巴士warp(22,8)→Desert(18,27) 需车票
+    # 深山 ↔ 外部
+    ("Backwoods",    "right", "BusStop",      (14, 8)),   # ✅ Warp(50,28-32)→BusStop(14,8)
+    ("Backwoods",    "right", "Mountain",     (0, 13)),   # ✅ Warp(50,10-17)→Mountain(0,13)
+    ("Backwoods",    "down",  "Farm",         (40, 0)),   # ✅ Warp(13~15,40)→Farm(40,0)
+    ("Backwoods",    "door",  "Tunnel",       (34, 9)),   # 🚇 隧道入口(22,31)→Tunnel 需特殊条件
+    # 鹈鹕镇 ↔ 外部
+    ("Town",         "left",  "BusStop",      (10, 23)),   # 口= (44,22) 从巴士站来
+    ("Town",         "left",  "Forest",       (118, 25)),  # ✅ Warp(-1,89~93)→Forest(118,25) 森林侧
+    ("Town",         "down",  "Beach",        (38, 0)),    # ✅ 隧道warp(53~55,110)→Beach(38,0)
+    ("Town",         "up",    "Mountain",     (15, 40)),   # ✅ 已验证: Town→Mountain 入口 (15,40)
+    ("Town",         "door",  "CommunityCenter", (32, 23)),  # 口= (53,20)
+    ("Town",         "door",  "SeedShop",      (6, 29)),    # 口= (43,57)
+    ("Town",         "door",  "Hospital",      (6, 17)),    # 口= (36,56)
+    ("Town",         "door",  "Saloon",        (14, 24)),  # ✅ 门口Town(45,72) → 餐吧内(14,24)
+    ("Town",         "door",  "Blacksmith",    (5, 19)),   # ✅ 门口Town(94,82)→铁匠铺内(5,19)
+    ("Town",         "door",  "JoshHouse",     (9, 24)),    # 🏠 Alex+爷爷奶奶家 (57,64)→JoshHouse(9,24)
+    ("Town",         "door",  "ManorHouse",    (5, 11)),    # 🏛️ 镇长家 (59,86)→ManorHouse(5,11)
+    ("Town",         "door",  "ArchaeologyHouse", (3, 14)), # 🏫 博物馆/图书馆 (101,90)→ArchaeologyHouse(3,14)
+    ("Mountain",     "door",  "ScienceHouse",  (6, 24)),   # ✅ 入口(6,24) | 前门warp (6,25)→(12,26) | 后门 (3,9)→(8,21)
+    ("ScienceHouse", "door",  "SebastianRoom", (1, 1)),    # Sebastian地下室入口 (12,23)→SebastianRoom
+    # 森林 ↔ 外部
+    ("Forest",       "up",    "Town",         (28, 54)),
+    ("Forest",       "left",  "Farm",         (64, 16)),
+    ("Forest",       "door",  "Woods",        (58, 15)),  # 🌳 秘密森林入口Forest(0,7)→Woods(58,15) 需钢斧
+    ("Forest",       "door",  "WizardHouse",   (8, 24)),  # ✅ 法师塔门口Forest(5,27) → WizardHouse(8,24)
+    ("Forest",       "door",  "AnimalShop",   (13, 19)),  # ✅ 玛妮牧场门口Forest(90,16)→AnimalShop(13,19)
+    # 下水道
+    ("Town",         "door",  "Sewer",        (16, 11)),   # 🚇 下水道入口(35,97)→Sewer(16,11) 需钥匙
+    ("Sewer",        "door",  "BugLand",      (15, 53)),   # 🐟 变异鲤鱼巢穴 (3,18)→BugLand(15,53)
+    # 海滩
+    ("Beach",        "left",  "Town",         (28, 54)),   # 隧道回镇
+    ("Beach",        "door",  "FishShop",     (5, 9)),     # ✅ 鱼店门口Beach(30,34)→FishShop(5,9)
+    ("FishShop",     "door",  "BoatTunnel",   (4, 10)),    # 🚢 鱼店后门→BoatTunnel→姜岛船
+    # 铁路区域
+    # 沙漠区域
+    ("Desert",       "door",  "SkullCave",    (7, 8)),     # 💀 头骨矿洞入口Desert(8,5)→SkullCave(7,8)
+    ("Desert",       "door",  "SandyHouse",   (4, 9)),     # ✅ 桑迪商店 Desert(6,52)→SandyHouse(4,9)
+    ("SandyHouse",   "door",  "Club",         (8, 13)),    # 🎰 赌场入口 SandyHouse(17,1)→Club(8,13)
+    ("Railroad",     "down",  "Mountain",     (9, 0)),    # ✅ Railroad→Mountain 下山
+    ("Railroad",     "up",    "Summit",       (10, 29)),  # 山顶（需完美达成）
+    ("Railroad",     "door",  "WitchWarpCave",(4, 9)),    # 魔女沼泽洞穴入口 (54,33)→WitchWarpCave
+    ("Railroad",     "door",  "BathHouse_Entry",(5, 9)),   # ♨️ 浴场入口 (10,57)→BathHouse_Entry(5,9)
+    # 矿洞
+    ("Mountain",     "left",  "Backwoods",    (49, 14)),  # ✅ Warp(-1,12) → Backwoods(49,14)
+    ("Mountain",     "down",  "Town",         (81, 0)),   # ✅ Warp(14-16,41) → Town(81,0) 温泉下山
+    ("Mountain",     "up",    "Railroad",     (29, 59)),  # ✅ Warp(9,-1) → Railroad(29,59)
+    ("Mountain",     "door",  "Mine",         (18, 13)),  # ✅ 入口warp (54,4)→Mine(18,13) 门口在(54,5)
+    ("Mountain",     "door",  "AdventureGuild", (6, 12)),  # ✅ 门口在Mountain(76,9) 需验证内部坐标
+    ("Mountain",     "door",  "Tent",          (2, 5)),    # ⛺ 莱纳斯帐篷 (29,6)→Tent(2,5)
+
+    # ── 姜岛（2026-08-15 按实时 /warps 校正：IslandSouth 为枢纽）──
+    ("IslandSouth",  "west",  "IslandWest",    (104, 41)),  # 🏝️ 西桥→姜岛农场(105,41)
+    ("IslandSouth",  "east",  "IslandEast",    (0, 41)),    # 🏝️ 东桥→丛林(0,46)
+    ("IslandSouth",  "up",    "IslandNorth",   (40, 24)),   # 🏝️ 北边→火山入口区(36,89)
+    ("IslandSouth",  "door",  "FishShop",      (4, 4)),     # 🚢 码头坐船返航→鱼店(4,4)
+    ("FishShop",     "door",  "BoatTunnel",    (4, 10)),    # 🚢 鱼店后门→船坞
+    ("BoatTunnel",   "door",  "IslandSouth",   (21, 43)),   # 🚢 上船→姜岛码头(21,43)
+    ("IslandWest",   "door",  "IslandFarmHouse", (14, 15)), # 🏠 姜岛小屋
+    ("IslandWest",   "door",  "QiNutRoom",     (7, 7)),     # 🥥 齐钻核桃房
+    ("IslandWest",   "door",  "IslandFarmCave", (4, 10)),   # 🕳️ 农场洞穴
+    ("IslandNorth",  "door",  "VolcanoEntrance", (1, 1)),   # 🌋 火山入口
+    ("IslandNorth",  "door",  "IslandFieldOffice", (4, 10)),# 🏛️ 办事处
+    ("IslandNorth",  "door",  "IslandNorthCave1", (6, 11)), # 🍄 蘑菇洞
+    ("VolcanoEntrance","door","VolcanoDungeon0", (37, 4)),  # 🌋 火山矿井
+    ("IslandEast",   "door",  "IslandHut",     (7, 13)),    # 🏠 雷欧小屋
+    ("IslandEast",   "door",  "IslandShrine",  (13, 28)),   # 🗿 神殿
+    ("MasteryCave",  "door",  "Forest",        (101, 73)),  # 🧙 精通山洞→森林
+    ("Summit",       "down",  "Railroad",      (29, 59)),   # ⛰️ 山顶下山→铁路
+    ("WitchWarpCave","door",  "Railroad",      (54, 33)),   # 🧙 魔女沼泽洞穴→铁路
+]
+
+# ── POI（兴趣点） ──
+# AI 根据"想干什么"查这个表，找到目的地的坐标
+POI = {
+    # ── 农场 ──
+    "自己的小屋(床)":    {"map": "FarmHouse", "pos": (4, 9),  "note": "睡觉/设置重生点"},
+    "自己的小屋(门口外)": {"map": "Farm",     "pos": (64, 15),"note": "小屋门外（Farm侧），从门出去到这"},
+    "自己的小屋(门口内)": {"map": "FarmHouse","pos": (10, 6), "note": "小屋门内，进门站这"},
+    "自己的小屋(门内出)": {"map": "FarmHouse","pos": (3, 12), "note": "出门warp点，→Farm(64,15)"},
+    "爷爷的神龛":        {"map": "Farm",      "pos": (8, 8),  "note": "爷爷神龛，放钻石评估/拿铱猫"},
+    "农场上口(→深山)":  {"map": "Farm",      "pos": (41, 0), "note": "Farm上口，warp到Backwoods"},
+    "农场下口(→森林)":  {"map": "Farm",      "pos": (40, 64),"note": "Farm下口，warp到Forest(68,1)"},
+    "AI小屋(床)":          {"map": "Cabin",    "pos": (9, 9),  "note": "联机角色(AI farmhand)的床；小屋内部布局标准化，床user在(9,9)"},
+    "AI小屋(门)":          {"map": "Cabin",    "pos": (3, 12), "note": "联机小屋出口；map 可能是 Cabin/Cabin2/…按实际角色校准"},
+    "农场洞穴(外)":      {"map": "Farm",      "pos": (34, 7), "note": "农场洞穴门口"},
+    "农场洞穴(内)":      {"map": "FarmCave",  "pos": (8, 11), "note": "蘑菇/果蝠洞内部"},
+    "宠物水碗":          {"map": "Farm",      "pos": (52, 7), "note": "宠物水碗（人站左边，朝右浇水）"},
+    "温室(门口)":        {"map": "Farm",      "pos": (28, 16),"note": "温室入口，需献祭解锁"},
+    "出货箱":            {"map": "Farm",      "pos": (71, 14),"note": "出售物品"},
+    "箱子(生产线)":      {"map": "Farm",      "pos": (70, 14),"note": "农场生产线旁的箱子"},
+    "酿酒桶区":          {"map": "Farm",      "pos": (75, 14),"note": "多个 keg 放置区"},
+
+    # ── 巴士站 ──
+    "巴士站(售票处)":    {"map": "BusStop",    "pos": (17, 12),"note": "巴士售票处(机子在17,11站位17,12)：交互选'是'花500g去沙漠；等动画~7s（2026-08-15实测）"},
+    "巴士站(矿车)":      {"map": "BusStop",    "pos": (14, 4), "note": "🚂 矿车（献祭解锁，2026-08-15实测）：站(14,4)朝上交互(14,3)→菜单[0]矿井[1]城镇[2]采石场[3]取消"},
+    "巴士站(巴士)":      {"map": "BusStop",    "pos": (22, 13),"note": "巴士上车点，warp到Desert(18,27)"},
+    "巴士站(农场口)":    {"map": "BusStop",    "pos": (9, 23), "note": "从农场出来到BusStop"},
+    "巴士站(镇方向)":    {"map": "BusStop",    "pos": (44, 22),"note": "去鹈鹕镇"},
+
+    # ── 鹈鹕镇广场 ──
+    "皮埃尔商店(门口)":   {"map": "Town",       "pos": (43, 57),"note": "商店门口"},
+    "皮埃尔商店(入口)":   {"map": "SeedShop",   "pos": (6, 29), "note": "门口刚进来"},
+    "皮埃尔商店(柜台)":   {"map": "SeedShop",   "pos": (4, 19), "note": "买种子、肥料"},
+    "皮埃尔商店(背包升级)": {"map": "SeedShop",  "pos": (7, 19), "note": "🎒 背包升级（站(7,19)朝上交互(7,18) BuyBackpack）：12→24格 2000g、24→36格 10000g；⚠️不是柜台，在旁边一点"},
+    "皮埃尔商店(优选交付箱)": {"map": "SeedShop", "pos": (19, 29), "require_order": {"requester": "Pierre"}, "note": "🧺 皮埃尔优选交货箱=**「皮埃尔优选」交付点**(收获并把25个金星品质蔬菜放进箱)：人站(19,29)朝0交互(19,28)把金星菜放箱；require_order=已接Pierre订单(进行中)才显示；⚠️箱子没接单不交互,(19,28)为AI面前solid推测,**坐标待恒确认**；内容可加 keywords:[\"金星\",\"蔬菜\"]（2026-08-22 恒带路）"},
+    "社区中心(门口)":     {"map": "Town",       "pos": (53, 20),"note": "祝尼魔献祭入口"},
+    "社区中心(门口)":     {"map": "Town",       "pos": (53, 20),"note": "入口"},
+    "社区中心(献祭大厅)": {"map": "CommunityCenter", "pos": (32, 23),"note": "献祭面板"},
+    "社区布告栏(特别任务板)": {"map": "Town", "pos": (62, 94), "unlock": {"year": 1, "season": "fall", "day": 2}, "note": "📋 鹈鹕镇社区布告栏/**特别任务板**(1.5)：⚠️不是社区中心献祭板！**年1秋2后出现**；人站(62,94)朝上交互(62,93)开 SpecialOrdersBoard；`menu read` 看任务卡(名称/目标/奖励/期限)→`menu click(button=acceptLeftQuestButton/acceptRightQuestButton)`接；订单如「起风的日子」「给谁送餐」等（2026-08-22 AI现场检测+read_menu修复，accept_quest已退役）"},
+    "博物馆(门口)":       {"map": "Town",       "pos": (101, 90),"note": "博物馆/图书馆门口"},
+    "博物馆(门内)":       {"map": "ArchaeologyHouse","pos": (3, 14),"note": "博物馆入口处"},
+    "博物馆(柜台)":       {"map": "ArchaeologyHouse","pos": (3, 10),"note": "博物馆柜台，捐矿物/古物"},
+    "博物馆(历史碎片投递箱)": {"map": "ArchaeologyHouse", "pos": (6, 10), "require_order": {"requester": "Gunther"}, "note": "🦴 **「历史的碎片」交付点**(收集骨类文物放进箱；⚠️物品必须是任务期间收集的)：骨类=两栖动物化石/骨笛/骨头碎片/腿骨化石/肋骨化石/颅骨化石/脊柱化石/尾巴化石/蝙蝠木乃伊/青蛙木乃伊/鹦鹉螺化石/棕榈化石/史前肋骨/史前肩胛骨/史前头骨/史前胫骨/史前脊骨/手部骨骼/尾部骨骼/蛇头骨/蛇脊椎骨/三叶虫；人站(6,10)朝0交互(6,9)放箱；require_order=已接Gunther订单(进行中)才显示；⚠️(6,9)为AI面前solid推测,**坐标待恒确认**；内容可加 keywords:[\"骨头\",\"化石\"]（2026-08-22 恒带路）"},
+    "镇长家(门外)":       {"map": "Town",       "pos": (59, 86),"note": "刘易斯镇长家门口"},
+    "镇长家(门内)":       {"map": "ManorHouse", "pos": (5, 11), "note": "镇长家内，warp回Town(58-59,86)"},
+    "哈维医院(门口)":     {"map": "Town",       "pos": (36, 56),"note": "医院入口"},
+    "哈维医院(柜台)":     {"map": "Hospital",   "pos": (6, 17), "note": "买药、看病"},
+    "哈维医院(出口)":     {"map": "Hospital",   "pos": (10, 19),"note": "回Town"},
+    "星之果实餐吧(门口)": {"map": "Town",       "pos": (45, 72),"note": "格斯餐吧门口"},
+    "铁匠铺(门口)":       {"map": "Town",       "pos": (94, 82),"note": "升级工具/买矿石煤/开晶球"},
+    "电影院(门口)":       {"map": "Town",       "pos": (95, 51),"note": "🔒解锁前隐藏(需献祭完成+雷暴开门)前Joja超市大门(95,50)→电影院，看电影约会；献祭完成+雷暴开门后进(2026-08-16恒校准)"},
+    "电影院售票处":       {"map": "Town",       "pos": (98, 52),"note": "🔒解锁前隐藏(需献祭完成+雷暴开门)🎬 电影票1000g(社区中心献祭后解锁)；朝上交互(98,51)开ShopMenu买票，票可送人看电影(2026-08-16恒实测)"},
+    "电影院小卖部":       {"map": "MovieTheater","pos": (7, 7), "note": "🔒解锁前隐藏(需献祭完成+雷暴开门)🍿 电影院前台/零食柜台：**带NPC客人一起来才能买零食请他们吃**，独自来只提示(2026-08-16恒实测)；交互(7,6)"},
+    "电影院放映厅":       {"map": "MovieTheater","pos": (14, 4),"note": "🔒解锁前隐藏(需献祭完成+雷暴开门)🎬 放映厅入口(14,3)——进去看当前播放的电影；和邀请的NPC一起看涨好感(2026-08-16恒实测)"},
+    "书摊(马尔赛罗)":    {"map": "Town",       "pos": (110, 27),"note": "📚 马尔赛罗书摊(**⏳每季随机开张2天**,joja超市后小山坡,皮埃尔店右边悬崖有路线提示)：对话→[0]购买书籍/[1]回收书籍；卖技能书(星露谷年历8000/战斗季刊5000/怪物图鉴20000/风之道1·2/马术秘籍25000/草中窜/酱料女皇烹饪秘籍50000)。**可能开张日**见 calendar_data.BOOK_STALL_DATES；当天日历有热气球标志+左下角提示'书摊老板今天在镇上'(2026-08-16恒)"},
+    # 🎇 以下夜市点位=节日限定(冬15-17)：BeachNightMarket 只在夜市加载，非夜市去不了/不在
+    "夜市咖啡商人":      {"map": "BeachNightMarket","pos": (14, 38),"note": "☕ 夜市咖啡商人(🎇节日限定冬15-17)：对话→[是]=免费咖啡150g（每晚一次，2026-08-16恒实测）；夜市地图叫 BeachNightMarket 不是 Beach"},
+    "夜市装饰商船":      {"map": "BeachNightMarket","pos": (19, 34),"note": "🎇节日限定(冬15-17)🎪 夜市装饰商船：卖**拐杖糖**(大绿杖/绿杖/混色杖/红杖/大红杖 200g,仅此出售)、火炬800、云彩帘子1000、季节性装饰/植物500(2026-08-16恒实测)"},
+    "夜市猪车(旅行货车)": {"map": "BeachNightMarket","pos": (39, 31),"note": "🐷 夜市旅行货车：随机商品(麻哈脂鲤/防风草汤/矿工特供/山羊奶酪/粉红蛋糕…)；联机卖结婚戒指配方(2026-08-16恒实测)"},
+    "夜市美人鱼船":      {"map": "BeachNightMarket","pos": (58, 32),"note": "🎇节日限定(冬15-17)🧜 美人鱼船门(58,31)→MermaidHouse：看美人鱼秀,**等表演结束(约2-3分钟真实时间,可截图等待)再点贝壳 1-5-4-2-3 拿珍珠**(每存档1颗,2.5k金,换白桦双人床/新娘头纱)。**贝壳排 (2,6)-(6,6) 位置1-5,正确点序=(2,6),(6,6),(5,6),(3,6),(4,6)**；⚠️表演没结束按=白按；午夜12:30关(2026-08-16恒实测)"},
+    "夜市魔法商船":      {"map": "BeachNightMarket","pos": (48, 35),"note": "🎇节日限定(冬15-17)🪄 魔法商船(黑乎乎那个)：卖装饰(墓石200比万灵节便宜/石蛙500)+**锥帽5000(第二晚最便宜)**+**季节种子**(15/16/17号卖春夏秋各季,第一年不卖大蒜/红叶卷心菜/洋蓟)(2026-08-16恒实测)"},
+    "夜市画家Lupini":    {"map": "BeachNightMarket","pos": (43, 35),"note": "🎇节日限定(冬15-17)🎨 著名画家卢皮尼：对话→[是]=买画1200g（9幅3年轮,唯一出处;2026-08-16恒实测）"},
+    "夜市裹布人":        {"map": "BeachNightMarket","pos": (32, 35),"note": "🎇节日限定(冬15-17)👤 裹布人：对话→**传送回农场250g**（不受夜市营业时间限制;2026-08-16恒实测）"},
+    "夜市钓鱼潜艇":      {"map": "BeachNightMarket","pos": (5, 35),"note": "🎇节日限定(冬15-17)🛸 钓鱼潜艇门(5,35)：营业**17-23时**(23时后上锁)。⚠️**进门后还要和艇长交互**(Submarine(2,10)对话[是]1000g)才下潜钓深海鱼(午夜鱿鱼/幽灵鱼/水滴鱼,唯一出处)+极稀有珍珠(珍稀诱钩提升)；多人同时只能1人(2026-08-16恒实测)"},
+    "潜艇艇长":          {"map": "Submarine",  "pos": (2, 10), "note": "🎇节日限定(冬15-17)🛸 潜艇艇长：对话→[是]=**1000g下潜**。⚠️**下潜到开门约30分钟游戏时间**——等开门后站附近朝艇长方向抛竿钓(午夜鱿鱼/幽灵鱼/水滴鱼/珍珠,范围大不会钓空)。**安全内部入口=(14,15)**(门卡住时用position到(14,15))；⚠️24时关门会弹到门外(2026-08-16恒实测)"},
+    "城镇矿车":           {"map": "Town",       "pos": (105, 80),"note": "矿车交通：可到BusStop/Mountain/采石场"},
+    "下水道入口":         {"map": "Town",       "pos": (35, 97),"note": "需要钥匙才能进→科罗布斯商店/变异鲤鱼钓点"},
+    "下水道(出口)":       {"map": "Forest",     "pos": (94, 100),"note": "从下水道出来在森林侧"},
+    "科罗布斯商店":       {"map": "Sewer",      "pos": (31, 18),"note": "科罗布斯摊位：买铱环/电池/星之果/虚空蛋"},
+    "变异鲤鱼钓点":       {"map": "Sewer",      "pos": (16, 28),"note": "下水道钓变异鲤鱼（传说鱼之一）✅"},
+    "变异虫穴(入口)":     {"map": "BugLand",    "pos": (15, 53),"note": "变异虫穴入口，有放射性矿石/蛆/蚊子"},
+    "变异虫穴(钓鱼点)":   {"map": "BugLand",    "pos": (20, 40),"note": "变异鲤鱼也可以在这钓（待校准）"},
+    "公交站(镇内方向)":   {"map": "Town",       "pos": (34, 44),"note": "公交站广场区域"},
+    "墓地":               {"map": "Town",       "pos": (18, 32),"note": "捡棒子"},
+    "镇小桥钓点":         {"map": "Town",       "pos": (74, 68),"note": "镇中心桥下河边钓点（河鱼）"},
+    "镇传送(左下)":       {"map": "Town",       "pos": (1, 55), "note": "Town左下入口附近，warp落点+走几步"},
+    "镇传送(右下)":       {"map": "Town",       "pos": (55, 85),"note": "Town右下铁匠铺/博物馆附近"},
+    "镇传送(广场)":       {"map": "Town",       "pos": (45, 60),"note": "Town中心广场，皮埃尔/社区中心附近"},
+    "镇鲶鱼钓点":         {"map": "Town",       "pos": (3, 93), "note": "雨天鲶鱼钓点（Town左河边）✅"},
+    "森林河边钓点":      {"map": "Forest",     "pos": (20, 76),"note": "森林河边钓鱼（河鱼/鲶鱼）✅"},
+    "镇下水道钓点":       {"map": "Town",       "pos": (33, 97),"note": "镇最下方河边钓点（河鱼/鲶鱼）"},
+    "森林小池塘钓点":     {"map": "Forest",     "pos": (34, 25),"note": "森林猪车旁小池塘钓点（河鱼）✅"},
+    "书摊":               {"map": "Town",       "pos": (110,27),"note": "书商摊位(非每日开)"},
+    "冰淇淋摊位":        {"map": "Town",       "pos": (88, 93), "season": "summer", "note": "🍦 冰淇淋摊(夏季限定)：博物馆桥东；**只在夏季营业**，周三/雨天休，13:00-17:00；亚历克斯站柜台(88,91)→人站(88,93)朝上交互(88,92)买冰淇淋；海莉常在这附近(夏季找她好地方)（2026-08-22 AI现场检测）"},
+    "艾芙琳家(门内)":     {"map": "JoshHouse",  "pos": (9, 24),"note": "Alex+爷爷奶奶家，warp回Town(57,64)"},
+    "艾芙琳家(门外)":     {"map": "Town",       "pos": (57, 64),"note": "JoshHouse门口在Town"},
+
+    # ── 鹈鹕镇 ──
+    "皮埃尔商店":        {"map": "SeedShop",   "pos": (4, 19), "note": "买种子、肥料"},
+    "星之果实餐吧(入口)":{"map": "Saloon",     "pos": (14, 24),"note": "餐吧入口处，warp回Town(45,71)"},
+    "星之果实餐吧(柜台)":{"map": "Saloon",     "pos": (10, 20),"note": "格斯柜台，买沙拉/啤酒 ✅"},
+    "星之果实餐吧(可乐机)":{"map": "Saloon",   "pos": (38, 18),"note": "🥤 Joja可乐机(2026-08-22 恒 7842 检测)：买 Joja 可乐 75g；人站(38,18)朝上交互(38,17)→对话「是/否 花费75金买」选「是」买(菜单_click option=0,非 ShopMenu)；可乐=谢恩最爱/雷欧喜欢"},
+    "酒吧冰箱(格斯煎蛋卷)": {"map": "Saloon", "pos": (18, 17), "require_order": {"requester": "Gus"}, "note": "🧾 酒吧冰箱=**「格斯的著名煎蛋卷」交付点**(疑似24个蛋放冰箱)：人站(18,17)朝0交互(18,16)；require_order=已接Gus订单(进行中)才显示；⚠️冰箱没接单不交互,(18,16)为AI面前solid推测,**坐标待恒确认**；内容匹配可再加 keywords:[\"煎蛋卷\"]（2026-08-22 恒带路）"},
+    "哈维的医院":        {"map": "Hospital",   "pos": (4, 16), "note": "看病、买补给"},
+    "木匠商店(柜台)":    {"map": "ScienceHouse","pos": (7, 20),"note": "罗宾柜台，买建筑/家具"},
+    "木匠商店(门口内)":  {"map": "ScienceHouse","pos": (6, 24),"note": "店里入口处"},
+    "木匠商店(门外)":    {"map": "Mountain",    "pos": (12, 26),"note": "罗宾木匠店门口（Mountain侧）"},
+    "木匠商店(后门)":    {"map": "Mountain",    "pos": (8, 21),"note": "ScienceHouse后门出来在Mountain"},
+    "铁匠铺(入口内)":    {"map": "Blacksmith",  "pos": (5, 19),"note": "铁匠铺入口处"},
+    "铁匠铺(柜台)":      {"map": "Blacksmith",  "pos": (3, 15),"note": "克林特柜台：升级工具/买矿石煤铜铁金铱锭/开晶球 ✅"},
+    "电影院(门内)":      {"map": "MovieTheater","pos": (12, 12),"note": "电影院内部（待校准）"},
+
+    # ── 传送中转点 ──
+    "中转(Town左下)":     {"map": "Town",       "pos": (1, 55), "note": "Town左下入口，到BusStop/森林/瀑布"},
+    "中转(Town右下)":     {"map": "Town",       "pos": (55, 87),"note": "Town右下铁匠铺/博物馆/海滩隧道"},
+    "中转(Town广场)":     {"map": "Town",       "pos": (43, 57),"note": "Town中心皮埃尔/社区中心/餐吧"},
+    "中转(Forest入口)":   {"map": "Forest",     "pos": (118, 25),"note": "Forest左上入口到Town/玛妮/秘密森林"},
+    "中转(Forest下)":     {"map": "Forest",     "pos": (5, 27), "note": "Forest下方巫师塔/下水道出口"},
+    "中转(Mountain上)":   {"map": "Mountain",   "pos": (15, 40),"note": "Mountain底部入口到Town"},
+    "中转(Mountain中)":   {"map": "Mountain",   "pos": (54, 10),"note": "Mountain中部矿洞/罗宾/湖"},
+
+    # ── 海滩 ──
+    "海滩(入口)":        {"map": "Beach",      "pos": (38, 1), "note": "从Town进海滩的入口"},
+    "海滩钓鱼点(码头)":  {"map": "Beach",      "pos": (52, 25),"note": "码头钓鱼，有海鱼/章鱼/红鲷鱼 ✅"},
+    "海滩断桥":          {"map": "Beach",      "pos": (58, 13),"note": "300木头修复→右侧沙滩/潮池，可拾珊瑚/海胆/贝壳"},
+    "海滩潮池钓点":      {"map": "Beach",      "pos": (85, 10),"note": "右侧潮池钓点（海鱼/蟹）"},
+    "海滩鱼店码头钓点":  {"map": "Beach",      "pos": (35, 38),"note": "鱼店旁码头钓点（海鱼）"},
+    "海滩左侧钓点":      {"map": "Beach",      "pos": (11, 26),"note": "海滩左侧礁石区钓点（海鱼）"},
+    "海滩中部钓点":      {"map": "Beach",      "pos": (44, 35),"note": "海滩中部码头旁钓点（海鱼）"},
+    "海滩钓鱼点(右边)":  {"map": "Beach",      "pos": (82, 28),"note": "右侧沙滩（待校准）"},
+    "艾利欧特家(门口)":  {"map": "Beach",      "pos": (49, 11),"note": "艾利欧特小屋门口"},
+    "鱼店(门口)":        {"map": "Beach",      "pos": (30, 34),"note": "威利鱼店门口"},
+    "鱼店(门内)":        {"map": "FishShop",   "pos": (5, 9),  "note": "鱼店入口处"},
+    "鱼店(柜台)":        {"map": "FishShop",   "pos": (4, 6),  "note": "威利柜台：买鱼竿/鱼饵/蟹笼/鱼 ✅"},
+    "鱼店(多汁的虫子桶)": {"map": "Beach", "pos": (37, 34), "require_order": {"any_keywords": ["虫肉"]}, "note": "🪱 **「需要多汁的虫子」交付点**(收集100虫肉倒进鱼店旁桶)：人站(37,34)朝0交互(37,33)倒虫肉进桶；require_order=已接虫肉订单(进行中)才显示；⚠️(37,33)为AI面前solid推测,**坐标待恒确认**(鱼店门口30,34;旁边(40-41,33-34)也有一小块，桶可能是那);可加 requester(\"Willy\")更准（2026-08-22 恒带路,点位不太确定）"},
+    "鱼店(姜岛船门)":    {"map": "FishShop",   "pos": (4, 4),  "note": "鱼店后门→BoatTunnel→姜岛"},
+    "姜岛船坞(入口)":    {"map": "BoatTunnel", "pos": (4, 10), "note": "船坞隧道，买票上船去姜岛"},
+    "姜岛船坞(售票)":    {"map": "BoatTunnel", "pos": (4, 9), "note": "售票机(触发4,9站位4,10)：交互选'是'花1000g去姜岛码头；等动画~10s（2026-08-15实测）。⚠️码头返程=传送岛(17,44)→鱼店(4,4)"},
+
+    # ── 矿洞 ──
+    "矿洞入口(外)":      {"map": "Mountain",    "pos": (54, 5), "note": "Mountain侧矿洞门口"},
+    "矿洞入口(内)":      {"map": "Mine",        "pos": (18, 13),"note": "矿洞内部入口"},
+    "矮人商店":          {"map": "Mine",        "pos": (43, 7), "wallet": "HasDwarvishTranslationGuide", "rock": True, "note": "🧱 矮人商店：炸开堵路石头+学会矮人语教程才开放。人站(43,7)朝上(0)正对矮人(43,6)，interact 买炸弹/矿石批发；wallet=钱包里 HasDwarvishTranslationGuide（学会矮人语教程，同 HasRustyKey 等钥匙检测源）；rock=先炸开 Mine(27,8) 的 (BC)78 堵路石才能走到（未炸→隐藏/拦，炸掉不再生）（2026-08-23 恒带路+AI现场检测）"},
+    "探险家公会(外)":    {"map": "Mountain",     "pos": (76, 9), "note": "Mountain侧公会门口"},
+    "探险家公会(内)":    {"map": "AdventureGuild","pos": (6, 12),"note": "买武器、接怪物任务"},
+
+    # ── 深山 ──
+    "温泉(门口)":        {"map": "Railroad",    "pos": (10, 57),"note": "浴场入口在Railroad，进门到BathHouse_Entry"},
+    "温泉(更衣室)":      {"map": "BathHouse_Entry","pos": (5, 9), "note": "浴场更衣室入口处，warp回Railroad(10,57)"},
+    "木匠商店(门外)":    {"map": "Mountain",    "pos": (12, 26),"note": "罗宾木匠店门口"},
+    "莱纳斯帐篷(外)":    {"map": "Mountain",    "pos": (29, 7), "note": "莱纳斯帐篷外，篝火旁，warp(29,6)→Tent"},
+    "莱纳斯帐篷(内)":    {"map": "Tent",        "pos": (2, 5),  "note": "帐篷内部"},
+    "山湖钓鱼点(左)":    {"map": "Mountain",    "pos": (68, 24),"note": "山湖左岸，春季鱼王点位 ✅"},
+    "山湖钓鱼点(右)":    {"map": "Mountain",    "pos": (79, 30),"note": "山湖右岸钓点 ✅"},
+    "Mountain上口(去铁路)": {"map": "Mountain", "pos": (9, 0),  "note": "Mountain顶部，warp到Railroad"},
+    "深山小路(→Mountain)": {"map": "Backwoods", "pos": (49, 14),"note": "Backwoods右出口warp到Mountain(0,13)"},
+    "深山隧道(入口)":    {"map": "Backwoods", "pos": (22, 31),"note": "Backwoods隧道口→Tunnel"},
+    "深山隧道(内部)":    {"map": "Tunnel",    "pos": (34, 9), "note": "隧道入口处"},
+    "齐先生电池箱":      {"map": "Tunnel",    "pos": (17, 7), "note": "齐先生任务：放入电池组"},
+    "采石场矿车":        {"map": "Mountain",    "pos": (124,12),"note": "采石场桥头，需修桥才能从公会过来"},
+    "采石场矿井(外)":    {"map": "Mountain",    "pos": (103, 18),"note": "采石场骷髅矿井入口，Mountain侧"},
+    "采石场矿井(入口)":  {"map": "UndergroundMine","pos": (28, 96),"note": "一层骷髅矿井梯子下来处（地图名动态生成）"},
+    "铁路(入口)":        {"map": "Railroad",    "pos": (29, 59),"note": "从Mountain上来到Railroad的入口"},
+    "铁路(站台)":        {"map": "Railroad",    "pos": (35, 40),"note": "等火车的地方，可以捡掉落"},
+    "魔女沼泽洞口":    {"map": "Railroad",    "pos": (54, 33),"note": "魔女沼泽洞穴入口，warp到WitchWarpCave"},
+
+    # ── 沙漠 ──
+    "沙漠(巴士站)":      {"map": "Desert",      "pos": (18, 27),"note": "巴士下车/上车点，warp回BusStop(22,10)"},
+    "头骨矿洞(外)":      {"map": "Desert",      "pos": (8, 6),  "note": "头骨矿洞门口"},
+    "头骨矿洞(内)":      {"map": "SkullCave",   "pos": (3, 4),  "note": "头骨矿洞内，梯子下100层"},
+    "桑迪商店(门口)":    {"map": "Desert",      "pos": (6, 52), "note": "桑迪绿洲商店门口"},
+    "桑迪商店(门内)":    {"map": "SandyHouse",  "pos": (4, 9),  "note": "桑迪店内入口处"},
+    "桑迪商店(柜台)":    {"map": "SandyHouse",  "pos": (2, 7),  "note": "桑迪柜台：买杨桃种子/向日葵/饰品 ✅"},
+    "桑迪商店(赌场)":    {"map": "SandyHouse",  "pos": (17, 1), "note": "赌场入口（需俱乐部会员卡）→Club(8,13)"},
+    "赌场(门口)":        {"map": "Club",       "pos": (8, 12), "note": "🎰 赌场入口（2026-08-23 AI实测）：桑迪店门进→Club落地(8,13)，站(8,12)朝上(0)。需会员卡（读AI自己的clubCard，非MasterPlayer）"},
+    "赌场里程熊(记录机)": {"map": "Club",       "pos": (3, 5),  "note": "🐻 赌场里程/杀怪记录机（熊，2026-08-23 恒确认+AI交互实测）：站(3,5)朝上(0)交互(3,4)→DialogueBox 显示里程/杀怪等统计（labels 因 mod GBK 输出乱码，已见数值簇）"},
+    "赌场卖币机":         {"map": "Club",       "pos": (12, 5), "note": "🪙 赌场卖币机（2026-08-23 AI实测）：站(12,5)朝上(0)交互(12,4)。纯对话框金币→游戏币，无需服务员"},
+    "赌场无尽雕像贩子":   {"map": "Club",       "pos": (25, 4), "note": "🛒 赌场无尽财富雕像贩子（2026-08-23 AI实测）：站(25,4)朝上(0)交互(25,3)→对话框『1,000,000』（无尽财富雕像价）。赌场商店/齐先生贩子"},
+    "赌场老虎机":         {"map": "Club",       "pos": (11, 11), "note": "🎰 出神老虎机（2026-08-23 AI实测+截图识别）：站(11,11)朝上(0)交互→游戏原生画面(非activeMenu,/menu读不到,靠截图/鼠标操作)。画面=🪙余额+3格转盘+按钮[赌注10/赌注100/完成]+右侧赔率表(图案组合×倍数)。操作=点按钮(赌注10/100下注,完成退出)。⚠️ 原生UI不响应esc/menu_click,鼠标点按钮才关；AI站位/交互格待真机复核"},
+    "赌场21点":           {"map": "Club",       "pos": (3, 11), "note": "🃏 普通21点桌（2026-08-23 AI实测为100硬币赌注）：站(3,11)**朝上(0)**交互→**DialogueBox**(/menu可读:0开始/1离开/2规则)→选开始进牌局**原生画面**(加牌/停止按钮,鼠标点)。牌局面=庄家:?/赌注:100🟣/玩家手牌/轮次。⚠️ 取消/esc/menu_click(离开)都关不掉对话，只有 **menu_close 强关**成功；**小游戏进了只能打完一局不能中途退**。详情记忆"},
+    "赌场大赌注21点":     {"map": "Club",       "pos": (24, 9), "note": "🃏 大赌注21点桌（2026-08-23 AI实测为**1000硬币起步**）：站(24,9)**朝下(2)**交互（⚠️ 跟普通21点朝上相反！）→**DialogueBox**(/menu可读:0开始/1离开，无规则选项)→选开始进牌局原生画面(加牌/停止)。注意方向：赌桌在 AI 下方，必须朝下(2)才交互得到。关闭同上(menu_close/打完一局)"},
+    "沙漠商人":          {"map": "Desert",      "pos": (42, 24),"note": "沙漠贸易商：万象晶球/换物品"},
+    "沙漠钓鱼点":        {"map": "Desert",      "pos": (9, 10), "note": "沙鱼/蝎子鲤钓点；站(9,10)朝下钓(9,11)水面（沙漠节 DesertFestival 同坐标）"},
+
+    # ── 火山顶（Caldera） ──
+    # ⚠️ Caldera 几乎全是岩浆，只有边缘一圈可走 + 锻造台平台 + 出口。
+    # 落点必须用已验证的走格：user实测站 (22,22)（锻造台正南）、AI 交互从 (22,23)。
+    "火山锻造台":        {"map": "Caldera",     "pos": (22, 21),"note": "🔥 锻造台（2026-08-11 实测）：武器附魔/合成戒指/龙牙附魔。人站(22,22)朝北交互，AI从(22,23)对角scene at(22,21)"},
+    "火山顶出口":        {"map": "Caldera",     "pos": (5, 5),  "note": "Caldera 出口/传送（待校准）"},
+
+    # ── 森林 ──
+    "玛妮牧场(门外)":    {"map": "Forest",      "pos": (90, 16),"note": "玛妮牧场门口（森林侧）"},
+    "玛妮牧场(门内)":    {"map": "AnimalShop",  "pos": (13, 19),"note": "玛妮牧场入口处"},
+    "玛妮牧场(柜台)":    {"map": "AnimalShop",  "pos": (12, 16),"note": "玛妮柜台：买鸡/鸭/牛/羊/饲料/加热器/挤奶器 ✅"},
+    "巫师塔(门外)":      {"map": "Forest",      "pos": (5, 27), "note": "法师塔门口（森林侧）"},
+    "巫师塔(门内)":      {"map": "WizardHouse", "pos": (8, 24), "note": "法师塔入口处"},
+    "巫师塔(法师)":      {"map": "WizardHouse", "pos": (3, 18), "note": "法师位置：祝尼魔任务/开建筑/改宠物"},
+    "秘密森林(入口外)":  {"map": "Forest",      "pos": (0, 7),  "note": "秘密森林入口在森林右侧，需钢斧"},
+    "秘密森林(入口内)":  {"map": "Woods",       "pos": (58, 15),"note": "秘密森林入口处"},
+    "秘密森林(钓点)":    {"map": "Woods",       "pos": (12, 18),"note": "木跃鱼钓点"},
+    "秘密森林(香炸奶酪卷)":{"map": "Woods",     "pos": (9, 8),  "note": "Old Master Cannoli：放甜宝石莓→星之果实"},
+    "秘密森林(硬木1)":   {"map": "Woods",       "pos": (24, 6), "note": "硬木桩×2（2×2），左上"},
+    "秘密森林(硬木2)":   {"map": "Woods",       "pos": (29, 7), "note": "硬木桩×2（2×2），上中"},
+    "秘密森林(硬木3)":   {"map": "Woods",       "pos": (46, 6), "note": "硬木桩×2（2×2），右上"},
+    "秘密森林(硬木4)":   {"map": "Woods",       "pos": (26, 10),"note": "硬木桩×2（2×2），中"},
+    "秘密森林(硬木5)":   {"map": "Woods",       "pos": (34, 26),"note": "硬木桩×2（2×2），左下"},
+    "秘密森林(硬木6)":   {"map": "Woods",       "pos": (41, 26),"note": "硬木桩×2（2×2），右下"},
+    "浣熊窝":            {"map": "Forest",      "pos": (57, 9),  "note": "1.6浣熊一家，修树桩后触发，可换物品"},
+    "猪车(旅行货车)":    {"map": "Forest",      "pos": (27, 12), "note": "周五/周日来森林，卖随机稀有物品"},
+    "森林河边钓点":      {"map": "Forest",      "pos": (70, 95),"note": "森林河边钓鱼（河鱼/鲶鱼）❌待校准"},
+    "精通山洞(门口)":    {"map": "Forest",      "pos": (101, 73),"note": "1.6精通山洞入口"},
+    "精通山洞(石碑)":    {"map": "MasteryCave", "pos": (7, 9),  "note": "精通石碑，交互领精通奖励（/interact可用）"},
+
+    # ── 🏝️ 姜岛 ──
+    "姜岛(码头)":         {"map": "IslandSouth", "pos": (21, 43),"note": "姜岛码头，从Willy鱼店坐船到姜岛的落点"},
+    "姜岛(西桥头)":       {"map": "IslandSouth", "pos": (0, 11), "note": "IslandSouth西侧桥头，向西→IslandWest姜岛农场(104,41)"},
+    "姜岛(东桥头)":       {"map": "IslandSouth", "pos": (34, 12), "note": "IslandSouth东侧桥头，向东→IslandEast丛林/度假村(0,41)"},
+    "丛林(西入口)":       {"map": "IslandEast",  "pos": (0, 41), "note": "IslandEast丛林/度假村区西入口，从IslandSouth(34,12)桥过来"},
+    "姜岛农场(东入口)":   {"map": "IslandWest",  "pos": (104, 41),"note": "姜岛农场(IslandWest)东侧入口，从IslandSouth(0,11)过来"},
+    "姜岛小屋(门口)":     {"map": "IslandWest",  "pos": (77, 40), "note": "姜岛农场小屋门口，进门到IslandFarmHouse"},
+    "姜岛图腾柱(→农场)": {"map": "IslandWest",  "pos": (72, 36), "note": "🔥 姜岛→农场图腾柱（2026-08-15恒实测）：站(72,37)朝上→key confirm→传回 Farm(48,7)。⚠️右键/interact不触发，必须 confirm；传送后等~2秒"},
+    "农场图腾柱落点(姜岛回)": {"map": "Farm", "pos": (48, 7), "note": "🔥 姜岛图腾柱传回农场的落点（2026-08-15实测）"},
+    "农场岛图腾柱(→姜岛)": {"map": "Farm", "pos": (57, 9), "note": "🗼 Island Obelisk：confirm→IslandSouth(11,11)。⚠️传送坐标≠买票码头(21,43)；等~2秒（2026-08-15实测）。⚠️农场建筑可挪→动态检测用/farm_buildings，此坐标为当前档参考"},
+    "农场沙漠图腾柱(→沙漠)": {"map": "Farm", "pos": (54, 9), "note": "🗼 Desert Obelisk：confirm→沙漠（落点待测）。⚠️动态建筑，/farm_buildings定位"},
+    "农场水图腾柱(→海滩)": {"map": "Farm", "pos": (73, 35), "note": "🗼 Water Obelisk：confirm→海滩（落点待测）。⚠️动态建筑，/farm_buildings定位"},
+    "农场土图腾柱(→山)": {"map": "Farm", "pos": (73, 41), "note": "🗼 Earth Obelisk：confirm→山（落点待测）。⚠️动态建筑，/farm_buildings定位"},
+    "姜岛小屋(门内六人房)": {"map": "IslandFarmHouse","pos": (14, 15),"note": "姜岛小屋内部，六张床的大通铺，map 30x18"},
+    "姜岛农场(南沙滩蚌矿)": {"map": "IslandWest",  "pos": (70, 73), "note": "农场南侧沙滩，有蚌矿石(Clam rocks)可挖，捡拾翻找得蚌"},
+    "姜岛农场(南桥拾贝)":  {"map": "IslandWest",  "pos": (42, 77), "note": "农场西南过桥的拾贝区，可捡珊瑚/海胆/贝壳等海滩采集品"},
+    "齐钻核桃房(门口)":   {"map": "IslandWest",  "pos": (20, 23), "note": "齐钻核桃房(Walnut Room/QiNutRoom)门口，在IslandWest西北"},
+    "齐钻核桃房(内)":     {"map": "QiNutRoom",   "pos": (7, 7),  "note": "齐先生核桃房内部(15x10)，从门口走进来的落点，接齐钻任务/兑换物品"},
+    "齐先生任务板":      {"map": "QiNutRoom",   "pos": (3, 4),  "note": "📜 齐先生任务板(QiNutRoom)：接齐钻任务/挑战；人站(3,4)朝上交互(3,3)开 SpecialOrdersBoard；menu read 看任务卡→menu click(button=acceptLeftQuestButton/acceptRightQuestButton)接；⚠️与社区布告栏同型(2026-08-22 AI现场检测+实测接单，accept_quest已退役)"},
+    "姜岛农场(鹦鹉特快)": {"map": "IslandWest",  "pos": (74, 9),  "note": "农场上方鹦鹉特快站，给金核桃解锁后快速传送"},
+    "火山区域(鹦鹉特快)": {"map": "IslandNorth", "pos": (60, 17), "note": "IslandNorth火山入口区鹦鹉特快站"},
+    "火山(入口)":         {"map": "IslandNorth", "pos": (40, 24), "note": "火山矿洞入口(IslandNorth)，进门到VolcanoDungeon0"},
+    "火山矿井(入口)":      {"map": "VolcanoDungeon0", "pos": (37, 4), "note": "火山矿井入口走廊，2026-08-02用户实测；往下踩(37,5)→VolcanoDungeon1(32,55)（瓦片传送非梯子）"},
+    "办事处(门口)":       {"map": "IslandNorth", "pos": (46, 47), "note": "姜岛办事处/Field Office门口（IslandNorth右下方），可捐赠化石"},
+    "办事处(室内)":       {"map": "IslandFieldOffice", "pos": (4, 9), "note": "姜岛办事处内部入口，捐赠化石/领奖励"},
+    "蜗牛教授":           {"map": "IslandFieldOffice", "pos": (8, 8), "note": "蜗牛教授柜台(IslandFieldOffice)，站(8,8)面向互动；2026-08-02实测，用户校准；帐篷靠走进去不是右键"},
+    "挖掘场(蘑菇洞门口)": {"map": "IslandNorth", "pos": (22, 48), "note": "IslandNorth挖掘场/蘑菇洞门口，可挖化石，进洞采蘑菇"},
+    "蘑菇洞(内)":         {"map": "IslandNorthCave1", "pos": (6, 10), "note": "姜岛蘑菇洞内部(12x12)，可采集蘑菇"},
+    "挖掘场(鹦鹉特快)":   {"map": "IslandNorth", "pos": (5, 48), "note": "IslandNorth挖掘场区鹦鹉特快站"},
+    "姜岛商人":           {"map": "IslandNorth", "pos": (35, 75), "note": "姜岛商人(IslandParrot)去火山路上拐角，面向右互动弹ShopMenu，2026-08-02实测"},
+    "丛林(鹦鹉特快)":     {"map": "IslandEast",  "pos": (28, 29), "note": "IslandEast丛林/度假村区鹦鹉特快站"},
+    "雷欧小屋(门口)":     {"map": "IslandEast",  "pos": (22, 11), "note": "雷欧(Leo)的小屋门口，在姜岛东部丛林"},
+    "雷欧小屋(内)":       {"map": "IslandHut",   "pos": (7, 12), "note": "雷欧小屋内部(16x16)"},
+
+    # ── 🐄 畜棚/鸡舍 ──
+    "高级鸡舍(门内)":     {"map": "Deluxe Coop", "pos": (2, 9),  "note": "高级鸡舍内部入口(23x10)，进门位置"},
+    "高级畜棚(门内)":     {"map": "Deluxe Barn", "pos": (11, 14),"note": "高级畜棚内部入口(25x15)，进门位置"},
+}
+
+# ═══════════════════════════════════════════════════════════════
+#  🎯 POI 结构化站位+朝向（2026-08-16 恒：map walk 到 POI 后自动朝向，交互交给 AI）
+#  face: 0上 1右 2下 3左；stand: 玩家站位（默认=pos；柜台类 pos 即站位）。
+#  ⚠️ **只收固定可交互兴趣点**——农场设施（建筑/可移动物如畜棚/温室/图腾柱/出货箱）不在此表，
+#     走 go_to/_resolve_place 动态检测（/farm_buildings），硬编码坐标会随建筑搬家失效。
+#  ⚠️ 柜台 face=0 按"pos=站位、柜台在面前一格"惯例推断（皮埃尔实测 pos(4,19)=站、柜台(4,18)）；钓点/导航地标是纯位置不需要朝向。
+#  ⚠️ 2026-08-16 恒：宠物水碗不在此表——它是 pet 工具专属（浇水交互，pet_pets 处理），map walk 不扛浇水。
+# ═══════════════════════════════════════════════════════════════
+POI_FACE = {
+    # 矿车（站格朝上，交互目标在面前）
+    "巴士站(矿车)":      {"face": 0},                      # 站(14,4)朝上交互(14,3)
+    "城镇矿车":          {"face": 0},                      # 站(105,80)朝上
+    # 售票机（站位=机子下方一格）
+    "巴士站(售票处)":    {"face": 0, "stand": (17, 12)},  # 机子(17,11)，站位(17,12)朝上
+    "姜岛船坞(售票)":    {"face": 0, "stand": (4, 10)},   # 机子(4,9)，站位(4,10)朝上
+    "电影院售票处":      {"face": 0, "stand": (98, 52)},  # 机子(98,51)，站位(98,52)朝上买电影票(2026-08-16恒实测)
+    "电影院(门口)":      {"face": 0, "stand": (95, 51)},  # 门(95,50)在面前，站位(95,51)朝上
+    "书摊(马尔赛罗)":    {"face": 0, "stand": (110, 27)}, # 书摊在面前(对话买/回收书)
+    "社区布告栏(特别任务板)": {"face": 0, "stand": (62, 94)}, # 📋 站(62,94)朝上交互(62,93)开特别任务板(年1秋2后)（2026-08-22 AI现场检测）
+    "齐先生任务板":      {"face": 0, "stand": (3, 4)},   # 📜 站(3,4)朝上交互(3,3)开齐钻任务板（2026-08-22 AI现场检测）
+    # 🎇 夜市点位（2026-08-16 恒：柜台/商人在上方,全朝上交互）
+    "夜市咖啡商人":      {"face": 0, "stand": (14, 38)},
+    "夜市装饰商船":      {"face": 0, "stand": (19, 34)},
+    "夜市猪车(旅行货车)": {"face": 0, "stand": (39, 31)},
+    "猪车(旅行货车)":   {"face": 0, "stand": (27, 12)},  # 🐷 周五/周日森林猪车，站(27,12)朝上(2026-08-20恒实测)
+    "夜市美人鱼船":      {"face": 0, "stand": (58, 32)},
+    "夜市魔法商船":      {"face": 0, "stand": (48, 35)},
+    "夜市画家Lupini":    {"face": 0, "stand": (43, 35)},
+    "夜市裹布人":        {"face": 0, "stand": (32, 35)},
+    "夜市钓鱼潜艇":      {"face": 0, "stand": (5, 35)},
+    "潜艇艇长":          {"face": 0, "stand": (2, 10)},
+    # 锻造台/石碑/教授（朝北交互）
+    "火山锻造台":        {"face": 0, "stand": (22, 22)},  # 人站(22,22)朝北交互
+    "精通山洞(石碑)":    {"face": 0},                      # 石碑交互
+    "蜗牛教授":          {"face": 0},                      # 站(8,8)面向互动
+    # 商店柜台（pos=站位，柜台在面前一格，朝上）
+    "皮埃尔商店(柜台)":  {"face": 0, "stand": (4, 19)},    # 站(4,19)朝上，柜台(4,18)
+    "皮埃尔商店(背包升级)": {"face": 0, "stand": (7, 19)}, # 🎒 站(7,19)朝上交互(7,18) BuyBackpack（2026-08-18 /scan 实测）
+    "皮埃尔商店(优选交付箱)": {"face": 0, "stand": (19, 29)}, # 🧺 站(19,29)朝上交互(19,28)放金星菜进箱(接Pierre订单才显示)（2026-08-22 恒带路,坐标待确认）
+    "沙漠钓鱼点":      {"face": 2, "stand": (9, 10)},   # 🎣 站(9,10)朝下钓(9,11)水面（沙漠节 DesertFestival 同坐标，2026-08-18 实测）
+    "赌场(门口)":      {"face": 0, "stand": (8, 12)},   # 🎰 站(8,12)朝上(0)（2026-08-23 AI实测入口站位；进门落地(8,13)再上一格）
+    "赌场里程熊(记录机)": {"face": 0, "stand": (3, 5)},   # 🐻 站(3,5)朝上(0)交互(3,4)（2026-08-23 恒确认=里程/杀怪记录机+AI交互实测）
+    "赌场卖币机":     {"face": 0, "stand": (12, 5)},   # 🪙 站(12,5)朝上(0)交互(12,4)（2026-08-23 AI实测卖币机）
+    "赌场无尽雕像贩子": {"face": 0, "stand": (25, 4)},  # 🛒 站(25,4)朝上(0)交互(25,3)（2026-08-23 AI实测无尽财富雕像贩子/药店）
+    "赌场老虎机":     {"face": 0, "stand": (11, 11)},  # 🎰 站(11,11)朝上(0)交互(11,10)（2026-08-23 AI实测出神老虎机）
+    "赌场21点":       {"face": 0, "stand": (3, 11)},  # 🃏 普通21点 站(3,11)朝上(0)交互(3,10)（2026-08-23 AI实测）
+    "赌场大赌注21点": {"face": 2, "stand": (24, 9)},  # 🃏 大赌注21点 站(24,9)**朝下(2)**交互(24,10)（2026-08-23 AI实测；赌桌在下方）
+    "皮埃尔商店":        {"face": 0},
+    "星之果实餐吧(柜台)": {"face": 0, "stand": (10, 20)},
+    "星之果实餐吧(可乐机)": {"face": 0, "stand": (38, 18)}, # 🥤 站(38,18)朝上交互(38,17)买Joja可乐75g（2026-08-22 恒 7842 检测）
+    "酒吧冰箱(格斯煎蛋卷)": {"face": 0, "stand": (18, 17)}, # 🧾 站(18,17)朝上交互(18,16)放蛋进冰箱(接Gus订单才显示)（2026-08-22 恒带路,坐标待确认）
+    "冰淇淋摊位":        {"face": 0, "stand": (88, 93)},   # 🍦 站(88,93)朝上，柜体(88,92)，Alex(88,91)（2026-08-22 AI现场检测）
+    "铁匠铺(柜台)":      {"face": 0, "stand": (3, 15)},   # ✅ 2026-08-17 恒验证：站(3,15)朝上交互克林特(3,13)
+    "矮人商店":          {"face": 0, "stand": (43, 7)},  # 🧱 站(43,7)朝上(0)正对矮人(43,6)（2026-08-23 恒带路+AI现场检测）
+    "木匠商店(柜台)":    {"face": 0, "stand": (7, 20)},
+    "哈维医院(柜台)":    {"face": 0, "stand": (6, 17)},
+    "玛妮牧场(柜台)":    {"face": 0, "stand": (12, 16)},
+    "鱼店(柜台)":        {"face": 0, "stand": (4, 6)},    # 🎣 威利柜台（FishShop(4,6)），待恒真机验证站位
+    "鱼店(多汁的虫子桶)": {"face": 0, "stand": (37, 34)},   # 🪱 站(37,34)朝上交互(37,33)倒虫肉进桶(接虫肉订单才显示)（2026-08-22 恒带路,坐标待确认）
+    "博物馆(柜台)":      {"face": 0},
+    "博物馆(历史碎片投递箱)": {"face": 0, "stand": (6, 10)},   # 🦴 站(6,10)朝上交互(6,9)放骨类文物进箱(接Gunther订单才显示)（2026-08-22 恒带路,坐标待确认）
+    "鱼店(柜台)":        {"face": 0},
+    "桑迪商店(柜台)":    {"face": 0},
+}
+
+# ═══════════════════════════════════════════════════════════════
+#  🎪 社区中心献祭板（2026-08-16 实测 + 反编译 CommunityCenter.getNotePosition）
+#  板瓦片 = CommunityCenter 地图 Buildings/Front 层的 JunimoNote 位置。
+#  本档实测：工艺室/茶水间/鱼缸/锅炉房 开（scene at 能出 JunimoNoteMenu），布告栏/金库 未开。
+#  交互：走到板附近 → scene at(板瓦片) → read_menu 读 {whichArea, areaName, bundles[{complete, ingredients}]}
+#  （areaNextButton/areaBackButton 切房间，purchaseButton 购买）。done 的 bundle 里 complete=true。
+# ═══════════════════════════════════════════════════════════════
+COMMUNITY_CENTER_BOARDS = {
+    "工艺室": {"area": 0, "tile": (14, 5), "open": True},
+    "茶水间": {"area": 1, "tile": (14, 23), "open": True},
+    "鱼缸": {"area": 2, "tile": (40, 10), "open": True},
+    "锅炉房": {"area": 3, "tile": (63, 14), "open": True},
+    "布告栏": {"area": 4, "tile": (55, 6), "open": False},
+    "金库": {"area": 5, "tile": (46, 11), "open": False},
+}
+
+# ═══════════════════════════════════════════════════════════════
+#  🗺️ 地图链接详细标注（2026-08-13 任务#4：门 vs 出口瓦片 + 交互功能）
+# ═══════════════════════════════════════════════════════════════
+# kind:
+#   "warp" = 出口瓦片：AI 走/传到该瓦片，站上去游戏自动 warp 到下张图（不用交互）
+#   "door" = 建筑门：走门瓦片 + key confirm 进建筑（SDV 门是 Warp 属性，走上去自动传；
+#             但 scene at(场景交互) 对门无效，进门用"走门 tile + confirm"——跟门交互行为）
+# tile 是源地图上的瓦片坐标（None=建筑门坐标按农场类型/建筑位置动态，用门检测或 /warp_building 兜底）
+MAP_LINKS = {
+    # ── 农场 ──
+    "Farm": [
+        {"tile": (80, 17), "target": "BusStop", "kind": "warp", "note": "农场右侧口(80,15-18)→巴士站（/warps 实测 2026-08-13）"},
+        {"tile": (41, 65), "target": "Forest", "kind": "warp", "note": "农场下口(40-42,65)→森林(68,0)"},
+        {"tile": (41, -1), "target": "Backwoods", "kind": "warp", "note": "农场上口(40-41,-1)→深山(14,39)"},
+        {"tile": (34, 5), "target": "FarmCave", "kind": "warp", "note": "农场洞穴口(34,5)→FarmCave(8,11)（/warps 实测）"},
+        {"tile": None, "target": "FarmHouse", "kind": "door", "note": "主屋门（走门+confirm，建筑 warp 不在 /warps）"},
+        {"tile": None, "target": "Cabin", "kind": "door", "note": "联机小屋门（多栋同名按建筑坐标）"},
+        {"tile": None, "target": "Greenhouse", "kind": "door", "note": "温室门（需献祭解锁；温室四季可种）"},
+    ],
+    # ── 巴士站 ──
+    "BusStop": [
+        {"tile": (9, 22), "target": "Farm", "kind": "warp", "note": "巴士站左侧→农场(79,17)"},
+        {"tile": (44, 22), "target": "Town", "kind": "warp", "note": "巴士站右侧→鹈鹕镇(0,54)"},
+        {"tile": (11, 6), "target": "Backwoods", "kind": "warp", "note": "巴士站上口→深山(49,30)"},
+        {"tile": (22, 8), "target": "Desert", "kind": "door", "note": "巴士上车→沙漠(18,27)，需车票（潘姆开车）"},
+    ],
+    # ── 深山 ──
+    "Backwoods": [
+        {"tile": (50, 28), "target": "BusStop", "kind": "warp", "note": "深山右侧→巴士站(14,8)"},
+        {"tile": (50, 10), "target": "Mountain", "kind": "warp", "note": "深山右侧→山(0,13)"},
+        {"tile": (13, 40), "target": "Farm", "kind": "warp", "note": "深山下方→农场(40,0)"},
+        {"tile": (22, 31), "target": "Tunnel", "kind": "door", "note": "隧道口→Tunnel(34,9)，齐先生电池箱在里头"},
+    ],
+    # ── 鹈鹕镇 ──
+    "Town": [
+        {"tile": (44, 22), "target": "BusStop", "kind": "warp", "note": "镇左侧→巴士站"},
+        {"tile": (1, 55), "target": "Forest", "kind": "warp", "note": "镇左上→森林(118,25)"},
+        {"tile": (53, 96), "target": "Beach", "kind": "warp", "note": "镇下方隧道→海滩(38,0)"},
+        {"tile": (15, 40), "target": "Mountain", "kind": "warp", "note": "镇上口→山(81,0)"},
+        {"tile": (53, 20), "target": "CommunityCenter", "kind": "door", "note": "社区中心门→(32,23)，祝尼魔献祭"},
+        {"tile": (43, 57), "target": "SeedShop", "kind": "door", "note": "皮埃尔店门→SeedShop(6,29)，买种子/肥料"},
+        {"tile": (36, 56), "target": "Hospital", "kind": "door", "note": "哈维医院门→(6,17)，看病/买药"},
+        {"tile": (45, 72), "target": "Saloon", "kind": "door", "note": "星之果实餐吧门→(14,24)，格斯柜台"},
+        {"tile": (94, 82), "target": "Blacksmith", "kind": "door", "note": "铁匠铺门→(5,19)，升级工具/买矿/开晶球"},
+        {"tile": (57, 64), "target": "JoshHouse", "kind": "door", "note": "艾芙琳家(亚历克斯)门→(9,24)"},
+        {"tile": (59, 86), "target": "ManorHouse", "kind": "door", "note": "镇长家门→(5,11)"},
+        {"tile": (101, 90), "target": "ArchaeologyHouse", "kind": "door", "note": "博物馆/图书馆门→(3,14)，捐矿物/古物"},
+        {"tile": (35, 97), "target": "Sewer", "kind": "door", "note": "下水道口（需钥匙）→(16,11)，科罗布斯商店"},
+        {"tile": (96, 51), "target": "MovieTheater", "kind": "door", "note": "电影院（前Joja超市）→(12,12)"},
+    ],
+    # ── 山 ──
+    "Mountain": [
+        {"tile": (1, 12), "target": "Backwoods", "kind": "warp", "note": "山左侧→深山(49,14)"},
+        {"tile": (15, 41), "target": "Town", "kind": "warp", "note": "山下口→镇(81,0)，温泉旁"},
+        {"tile": (9, 1), "target": "Railroad", "kind": "warp", "note": "山上口→铁路(29,59)"},
+        {"tile": (54, 4), "target": "Mine", "kind": "door", "note": "矿井口→Mine(18,13)，下矿"},
+        {"tile": (76, 9), "target": "AdventureGuild", "kind": "door", "note": "探险家公会门→(6,12)，买武器/怪物任务"},
+        {"tile": (29, 6), "target": "Tent", "kind": "door", "note": "莱纳斯帐篷→(2,5)"},
+        {"tile": (12, 26), "target": "ScienceHouse", "kind": "door", "note": "罗宾木匠店门→(6,24)，买建筑/家具"},
+    ],
+    # ── 森林 ──
+    "Forest": [
+        {"tile": (120, 25), "target": "Town", "kind": "warp", "note": "森林东口→镇(0,90)（/warps实测）"},
+        {"tile": (67, -1), "target": "Farm", "kind": "warp", "note": "森林→农场(41,64)（/warps实测）"},
+        {"tile": (-1, 6), "target": "Woods", "kind": "door", "note": "秘密森林口（需钢斧）→Woods(59,15)，硬木/钓木跃鱼（/warps实测）"},
+        {"tile": (5, 27), "target": "WizardHouse", "kind": "door", "note": "法师塔门→(8,24)，祝尼魔任务/改宠物"},
+        {"tile": (90, 16), "target": "AnimalShop", "kind": "door", "note": "玛妮牧场门→(13,19)，买动物/饲料"},
+        {"tile": (27, 12), "target": "Forest", "kind": "door", "note": "猪车（周五/周日旅行货车）"},
+        {"tile": (101, 73), "target": "MasteryCave", "kind": "door", "note": "精通山洞→(7,9)，全技能10级领精通（2026-08-15补）"},
+    ],
+    # ── 海滩 ──
+    "Beach": [
+        {"tile": (38, 1), "target": "Town", "kind": "warp", "note": "海滩→镇（隧道）"},
+        {"tile": (30, 34), "target": "FishShop", "kind": "door", "note": "威利鱼店门→(5,9)，买鱼竿/鱼饵/蟹笼"},
+    ],
+    # ── 铁路 ──
+    "Railroad": [
+        {"tile": (29, 62), "target": "Mountain", "kind": "warp", "note": "铁路下口→山(9,0)（/warps实测）"},
+        {"tile": (33, -1), "target": "Summit", "kind": "warp", "note": "铁路→山顶(10,29)（需完美达成，/warps实测）"},
+        {"tile": (10, 57), "target": "BathHouse_Entry", "kind": "door", "note": "浴场门→(5,9)，泡澡回体力"},
+        {"tile": (54, 33), "target": "WitchWarpCave", "kind": "door", "note": "魔女沼泽洞穴口→(4,9)"},
+    ],
+    # ── 沙漠 ──
+    "Desert": [
+        {"tile": (18, 26), "target": "BusStop", "kind": "warp", "note": "巴士站→回鹈鹕镇巴士站(22,10)（返程，/warps实测）"},
+        {"tile": (8, 5), "target": "SkullCave", "kind": "door", "note": "头骨矿洞口→(7,8)，下100层"},
+        {"tile": (6, 52), "target": "SandyHouse", "kind": "door", "note": "桑迪绿洲店门→(4,9)，买杨桃种子/饰品"},
+        {"tile": (42, 24), "target": "Desert", "kind": "door", "note": "沙漠商人（换万象晶球等）"},
+    ],
+    # ── 姜岛 ──
+    # ⚠️ 2026-08-15 用实时 /warps 校准：岛的结构是 IslandSouth 为枢纽——西桥→IslandWest、东桥→IslandEast、北边→IslandNorth(火山区)。
+    #    ❌ 不存在 IslandWest↔IslandNorth / IslandEast↔IslandNorth 直连（之前误加已删）；岛内快捷=金核桃解锁的鹦鹉特快（见 LOCKED_MAPS.parrotExpress）
+    "IslandSouth": [
+        {"tile": (0, 11), "target": "IslandWest", "kind": "warp", "note": "西桥头→姜岛农场(105,41)"},
+        {"tile": (36, 12), "target": "IslandEast", "kind": "warp", "note": "东桥头→丛林/度假村(0,46)"},
+        {"tile": (18, -1), "target": "IslandNorth", "kind": "warp", "note": "北边小路→火山入口区(36,89)"},
+        {"tile": (17, 44), "target": "FishShop", "kind": "warp", "note": "码头→坐船返航直达鱼店(4,4)（/warps实测）"},
+    ],
+    "IslandWest": [
+        {"tile": (106, 41), "target": "IslandSouth", "kind": "warp", "note": "东桥→IslandSouth(0,11)（/warps实测）"},
+        {"tile": (77, 40), "target": "IslandFarmHouse", "kind": "door", "note": "姜岛小屋门"},
+        {"tile": (20, 23), "target": "QiNutRoom", "kind": "door", "note": "齐钻核桃房门→(7,7)"},
+        {"tile": None, "target": "IslandFarmCave", "kind": "door", "note": "农场洞穴(96,32)→IslandFarmCave(4,10)（2026-08-15补）"},
+    ],
+    "IslandNorth": [
+        {"tile": (36, 90), "target": "IslandSouth", "kind": "warp", "note": "南边→岛南(18,0)（/warps实测）"},
+        {"tile": (40, 20), "target": "VolcanoEntrance", "kind": "door", "note": "火山口→火山入口(1,1)（/warps实测）"},
+        {"tile": (46, 45), "target": "IslandFieldOffice", "kind": "door", "note": "办事处→(4,10)，捐化石（/warps实测）"},
+        {"tile": (21, 45), "target": "IslandNorthCave1", "kind": "door", "note": "蘑菇洞→(6,11)（/warps实测）"},
+    ],
+    "IslandEast": [
+        {"tile": (-1, 46), "target": "IslandSouth", "kind": "warp", "note": "西桥→岛南(35,12)（/warps实测）"},
+        {"tile": (22, 9), "target": "IslandHut", "kind": "door", "note": "雷欧小屋→(7,13)（/warps实测）"},
+        {"tile": (34, 30), "target": "IslandShrine", "kind": "door", "note": "神殿→(13,28)（/warps实测）"},
+    ],
+    "VolcanoEntrance": [
+        {"tile": None, "target": "IslandNorth", "kind": "warp", "note": "火山入口出来→火山入口区(39,20)"},
+        {"tile": None, "target": "VolcanoDungeon0", "kind": "door", "note": "火山地牢入口→火山矿井(37,4)（下矿/炸矿用）"},
+    ],
+    "IslandFarmCave": [{"tile": None, "target": "IslandWest", "kind": "warp", "note": "农场洞穴口→姜岛农场(96,33)"}],
+    "IslandShrine": [{"tile": None, "target": "IslandEast", "kind": "warp", "note": "神殿门口→丛林(33,30)"}],
+    # ── 室内 → 室外（恒 2026-08-13：室内对室外没有"门"，统一"站瓦片上 warp"→ kind=warp）──
+    "FarmHouse": [{"tile": None, "target": "Farm", "kind": "warp", "note": "主屋门口站上→农场"}],
+    "Cabin": [{"tile": None, "target": "Farm", "kind": "warp", "note": "小屋门口站上→农场"}],
+    "FarmCave": [{"tile": None, "target": "Farm", "kind": "warp", "note": "洞穴口站上→农场"}],
+    "Greenhouse": [{"tile": None, "target": "Farm", "kind": "warp", "note": "温室门口站上→农场"}],
+    "SeedShop": [{"tile": None, "target": "Town", "kind": "warp", "note": "皮埃尔店门口→镇"}],
+    "Hospital": [{"tile": None, "target": "Town", "kind": "warp", "note": "医院门口→镇"}],
+    "Saloon": [{"tile": None, "target": "Town", "kind": "warp", "note": "餐吧门口→镇"}],
+    "Blacksmith": [{"tile": None, "target": "Town", "kind": "warp", "note": "铁匠铺门口→镇"}],
+    "CommunityCenter": [{"tile": None, "target": "Town", "kind": "warp", "note": "社区中心门口→镇"}],
+    "JoshHouse": [{"tile": None, "target": "Town", "kind": "warp", "note": "艾芙琳家门口→镇"}],
+    "ManorHouse": [{"tile": None, "target": "Town", "kind": "warp", "note": "镇长家门口→镇"}],
+    "ArchaeologyHouse": [{"tile": None, "target": "Town", "kind": "warp", "note": "博物馆门口→镇"}],
+    "MovieTheater": [{"tile": None, "target": "Town", "kind": "warp", "note": "电影院门口→镇"}],
+    "ScienceHouse": [{"tile": None, "target": "Mountain", "kind": "warp", "note": "木匠店门口→山"},
+                     {"tile": None, "target": "SebastianRoom", "kind": "door", "note": "地下室楼梯→SebastianRoom(1,1)（2026-08-15补）"}],
+    "SebastianRoom": [{"tile": None, "target": "ScienceHouse", "kind": "warp", "note": "地下室楼梯→木匠店"}],
+    "FishShop": [{"tile": None, "target": "Beach", "kind": "warp", "note": "鱼店门口→海滩"},
+                 {"tile": None, "target": "BoatTunnel", "kind": "door", "note": "鱼店后门→船坞(4,10)，买票去姜岛"}],
+    "BoatTunnel": [{"tile": None, "target": "FishShop", "kind": "warp", "note": "船坞→鱼店"},
+                   {"tile": None, "target": "IslandSouth", "kind": "door", "note": "上船→姜岛码头(21,43)，1000g（2026-08-15补）"}],
+    "AnimalShop": [{"tile": None, "target": "Forest", "kind": "warp", "note": "玛妮牧场门口→森林"}],
+    "WizardHouse": [{"tile": None, "target": "Forest", "kind": "warp", "note": "法师塔门口→森林"}],
+    "Woods": [{"tile": None, "target": "Forest", "kind": "warp", "note": "秘密森林→森林"}],
+    "SandyHouse": [{"tile": None, "target": "Desert", "kind": "warp", "note": "桑迪店门口→沙漠"},
+                   {"tile": (17, 1), "target": "Club", "kind": "warp", "note": "🎰 赌场入口（2026-08-23 恒拍板：**是出口瓦片 not 门**，走 map_go 的 warp 链）桑迪店(17,1)→warp→Club(8,13)；需会员卡（读AI自己的clubCard）。⚠️ 建筑室内普通/warp进不去，_walk_trigger_warp 已加 /warp_into 兜底"}],
+    "Club": [{"tile": None, "target": "SandyHouse", "kind": "warp", "note": "赌场→桑迪店"}],
+    "AdventureGuild": [{"tile": None, "target": "Mountain", "kind": "warp", "note": "公会门口→山"}],
+    "Mine": [{"tile": None, "target": "Mountain", "kind": "warp", "note": "矿井口→山(54,5)"}],
+    "SkullCave": [{"tile": None, "target": "Desert", "kind": "warp", "note": "头骨矿洞口→沙漠"}],
+    "Sewer": [{"tile": (3, 49), "target": "Forest", "kind": "warp", "note": "下水道出口→森林(94,100)（/warps实测）"},
+              {"tile": None, "target": "Town", "kind": "door", "note": "下水道镇内井盖(35,97)（恒2026-08-15：镇内口也在；交互/兜底warp回镇）"},
+              {"tile": (3, 18), "target": "BugLand", "kind": "door", "note": "下水道→变异虫穴(15,53)，变异鲤鱼钓点（/warps实测）"}],
+    "BugLand": [{"tile": None, "target": "Sewer", "kind": "warp", "note": "变异虫穴→下水道"}],
+    "BathHouse_Entry": [{"tile": None, "target": "Railroad", "kind": "warp", "note": "浴场→铁路"}],
+    "Tunnel": [{"tile": None, "target": "Backwoods", "kind": "warp", "note": "隧道→深山"}],
+    "Tent": [{"tile": None, "target": "Mountain", "kind": "warp", "note": "帐篷→山"}],
+    "IslandFarmHouse": [{"tile": None, "target": "IslandWest", "kind": "warp", "note": "姜岛小屋门口→姜岛农场"}],
+    "QiNutRoom": [{"tile": None, "target": "IslandWest", "kind": "warp", "note": "核桃房门口→姜岛农场"}],
+    "IslandFieldOffice": [{"tile": None, "target": "IslandNorth", "kind": "warp", "note": "办事处门口→火山入口区（2026-08-15补）"}],
+    "IslandHut": [{"tile": None, "target": "IslandEast", "kind": "warp", "note": "雷欧小屋门口→丛林（2026-08-15补）"}],
+    "IslandNorthCave1": [{"tile": None, "target": "IslandNorth", "kind": "warp", "note": "蘑菇洞口→火山入口区（2026-08-15补）"}],
+    "VolcanoDungeon0": [{"tile": None, "target": "IslandNorth", "kind": "warp", "note": "火山矿井口→火山入口区（2026-08-15补）"}],
+    "MasteryCave": [{"tile": None, "target": "Forest", "kind": "warp", "note": "精通山洞门口→森林（2026-08-15补）"}],
+    "Summit": [{"tile": None, "target": "Railroad", "kind": "warp", "note": "山顶下山→铁路（2026-08-15补）"}],
+    "WitchWarpCave": [{"tile": None, "target": "Railroad", "kind": "warp", "note": "魔女沼泽洞穴口→铁路（2026-08-15补）"}],
+    # 🎇 夜市内部（2026-08-16 恒：节日限定冬15-17，双向出入；只在夜市加载）
+    "BeachNightMarket": [
+        {"tile": (58, 32), "target": "MermaidHouse", "kind": "door", "note": "美人鱼船门→MermaidHouse（看秀点贝壳1-5-4-2-3拿珍珠）"},
+        {"tile": (5, 35), "target": "Submarine", "kind": "door", "note": "钓鱼潜艇门→Submarine（艇长1000g深海钓）"},
+        {"tile": (38, -1), "target": "Town", "kind": "warp", "note": "夜市上口→镇(54,108)"},
+    ],
+    "MermaidHouse": [
+        {"tile": (4, 11), "target": "BeachNightMarket", "kind": "warp", "note": "美人鱼船出口→夜市(58,32)"},
+    ],
+    "Submarine": [
+        {"tile": (14, 16), "target": "BeachNightMarket", "kind": "warp", "note": "潜艇出口→夜市(5,35)"},
+    ],
+}
+
+
+# ── 🌰 姜岛金核桃升级表（2026-08-15 恒提供，鹦鹉特快/图腾/桥等全解锁条件）──
+# 喂金核桃给岛上鹦鹉解锁；建个传送塔=姜岛→农场图腾柱（需先修睡觉小屋+邮箱）。
+# map_query("金核桃"/"图腾"/"鹦鹉") 能搜到。⚠️ 具体 parrotUpgradesDone 索引待实测。
+ISLAND_UPGRADES = [
+    {"name": "姜岛北部",      "desc": "解锁通往姜岛北部的通道（火山区）",      "where": "雷欧的房子",      "cost": 1},
+    {"name": "叫醒乌龟",      "desc": "解锁通往姜岛西部（农场）的通道",        "where": "姜岛南部",        "cost": 10},
+    {"name": "修好睡觉小屋",  "desc": "解锁姜岛农场房屋，可在岛上睡觉（第二个家）", "where": "姜岛农场小屋", "cost": 20},
+    {"name": "传递信件",      "desc": "可以在姜岛查看信件",                    "where": "姜岛农场",        "cost": 5},
+    {"name": "建个传送塔",    "desc": "建农场图腾柱传送回农场（⚠️需先修好睡觉小屋+邮箱）", "where": "姜岛农场", "cost": 20},
+    {"name": "修好桥",        "desc": "修复去挖掘场的桥，间接解锁岛屿办事处",   "where": "姜岛北部",        "cost": 10},
+    {"name": "建造贸易小屋",  "desc": "解锁姜岛商人的商店",                    "where": "姜岛北部",        "cost": 10},
+    {"name": "建座桥",        "desc": "解锁通往火山内部的永久桥（不用浇水）",  "where": "火山地牢入口",    "cost": 5},
+    {"name": "开条捷径",      "desc": "火山地牢第5层挖出口到姜岛北部（单向）", "where": "火山地牢第5层",   "cost": 5},
+    {"name": "建个度假村",    "desc": "港口附近建度假村，村民可能过来",         "where": "姜岛南部",        "cost": 20},
+    {"name": "鹦鹉特快",      "desc": "开启岛上传送系统（类似矿车）",          "where": "姜岛",            "cost": "10 + 2齐钻"},
+    {"name": "齐钻兑换",      "desc": "建设后剩余金核桃换齐钻（仅其他全买后）", "where": "齐先生的核桃房",  "cost": 1},
+]
+
+
+# ── 🐟 钓鱼知识（2026-08-15 恒：钓鱼域加"这里能钓什么鱼"，纯远程 AI 也要知道）──
+# 地点 → {水: 水域类型, fish: [{name, season(季节), weather(特殊天气)}]}
+# season 取值: 春/夏/秋/冬/全季；weather 为空=任意天气，否则注明（雨天/夜晚等）
+FISH_KNOWLEDGE = {
+    "Beach": {"水": "🌊海洋", "fish": [
+        {"name": "沙丁鱼/凤尾鱼/鲱鱼", "season": "春/夏/秋", "weather": ""},
+        {"name": "金枪鱼/红鲷鱼", "season": "夏", "weather": ""},
+        {"name": "章鱼", "season": "夏", "weather": "夜晚(6pm后)"},
+        {"name": "比目鱼/海参", "season": "春/夏", "weather": ""},
+        {"name": "大比目鱼", "season": "春/夏/冬", "weather": ""},
+    ]},
+    "Mountain": {"水": "🏞️湖泊", "fish": [
+        {"name": "大口黑鲈/鲤鱼/大头鱼", "season": "全季", "weather": ""},
+        {"name": "鲟鱼", "season": "夏/冬", "weather": ""},
+        {"name": "虹鳟鱼", "season": "夏", "weather": "山间湖泊"},
+        {"name": "传奇鱼(传说鱼)", "season": "春", "weather": "雨天"},
+    ]},
+    "Forest": {"水": "🏞️河流", "fish": [
+        {"name": "鲦鱼/鲤鱼/鲈鱼", "season": "全季", "weather": ""},
+        {"name": "鲶鱼", "season": "全季", "weather": "雨天"},
+        {"name": "大嘴鲈鱼", "season": "全季", "weather": ""},
+        {"name": "鲑鱼", "season": "秋", "weather": ""},
+    ]},
+    "Town": {"水": "🏞️河流", "fish": [
+        {"name": "鲦鱼/鲤鱼/鲈鱼", "season": "全季", "weather": ""},
+        {"name": "鲶鱼", "season": "全季", "weather": "雨天"},
+        {"name": "太阳鱼", "season": "春/夏", "weather": "晴朗白天"},
+    ]},
+    "Sewer": {"水": "🏚️下水道", "fish": [
+        {"name": "变异鲤鱼(传说鱼)", "season": "全季", "weather": ""},
+    ]},
+    "Woods": {"水": "🌳秘密森林", "fish": [
+        {"name": "木跃鱼", "season": "全季", "weather": ""},
+    ]},
+    "Desert": {"水": "🏜️沙漠", "fish": [
+        {"name": "沙鱼", "season": "全季", "weather": ""},
+        {"name": "蝎子鲤", "season": "全季", "weather": ""},
+    ]},
+    "BugLand": {"水": "🦠变异虫穴", "fish": [
+        {"name": "变异鲤鱼(传说鱼)", "season": "全季", "weather": ""},
+    ]},
+}
+
+
+# ── 🕐 商店营业时间（2026-08-15 恒：map 提示各店上班时间；新档买种子/升级要知道几点开门）──
+SHOP_HOURS = {
+    "SeedShop": "9:00-21:00（周三休）",
+    "Hospital": "9:00-15:00",
+    "Saloon": "12:00-24:00",
+    "Blacksmith": "9:00-16:00",
+    "ArchaeologyHouse": "9:00-18:00（周一休）",
+    "FishShop": "9:00-17:00",
+    "AnimalShop": "9:00-16:00",
+    "SandyHouse": "9:00-23:00",
+    "ScienceHouse": "9:00-17:00",
+    "AdventureGuild": "14:00-24:00（需先杀怪解锁）",
+}
+
+
+# ── 每地点交互功能（map_lookup 用：AI 想知道"这能干嘛"） ──
+MAP_FEATURES = {
+    "Farm": ["出货箱(卖东西隔夜到账)", "农场电脑(作物/机器总览)", "爷爷神龛(放钻石评估)", "宠物水碗", "温室(四季可种)", "农场洞穴(蘑菇/果蝠)", "信箱(收邮件)"],
+    "FarmHouse": ["床(睡觉/重生点)", "电视(天气/运势/食谱)", "厨房(做饭)", "壁炉(取暖)"],
+    "Cabin": ["床(睡觉)", "小屋木箱", "壁炉"],
+    "BusStop": ["巴士售票处(买票去沙漠)", "矿车(交通)"],
+    "Backwoods": ["深山(连接巴士站/山/农场)", "隧道口(齐先生电池箱任务)"],
+    "Town": ["皮埃尔商店(种子/肥料)", "哈维医院(看病/买药)", "星之果实餐吧(买沙拉/啤酒/接任务)", "铁匠铺(升级工具/买矿/开晶球)", "博物馆(捐矿物/古物/借书)", "社区中心(献祭)", "镇长家", "电影院", "墓地", "下水道(需钥匙)", "河流钓点"],
+    "SeedShop": ["柜台买种子/肥料/墙纸/树苗/花束", "收银台卖东西"],
+    "Hospital": ["哈维柜台(看病/买药/体检)", "诊所"],
+    "Saloon": ["格斯柜台(买食物/啤酒)", "点唱机", "台球", "接「给谁送餐」任务"],
+    "Blacksmith": ["克林特柜台(升级工具/买矿石煤锭/开晶球)", "炉子"],
+    "ArchaeologyHouse": ["柜台捐矿物/古物", "书摊(买书)"],
+    "CommunityCenter": ["祝尼魔献祭面板"],
+    "ManorHouse": ["镇长刘易斯"],
+    "JoshHouse": ["艾芙琳/乔治/亚历克斯"],
+    "MovieTheater": ["看电影(约会/涨好感)", "影院小吃(爆米花)"],
+    "Sewer": ["科罗布斯商店(买铱环/电池/虚空蛋)", "变异鲤鱼钓点"],
+    "Mountain": ["矿井(下矿)", "探险家公会(买武器/怪物任务)", "罗宾木匠店(买建筑/家具/升级房子)", "山湖钓点", "温泉", "莱纳斯帐篷", "采石场(修桥后)"],
+    "Mine": ["矿洞(逐层下/挖矿)", "电梯层", "采集矿石"],
+    "AdventureGuild": ["马龙(买武器/接怪物任务)", "吉尔(讨伐奖励)"],
+    "ScienceHouse": ["罗宾柜台(买建筑/家具/升级)", "地下室塞巴斯蒂安"],
+    "Forest": ["玛妮牧场(买动物/饲料)", "巫师塔(祝尼魔/改宠物)", "秘密森林(硬木/木跃鱼)", "猪车(周五周日)", "精通山洞", "河边钓点"],
+    "AnimalShop": ["玛妮柜台(买鸡鸭牛羊/饲料/加热器/挤奶器)"],
+    "WizardHouse": ["法师(祝尼魔任务/改宠物/买魔力项链)", "魔法书"],
+    "Woods": ["硬木桩×6", "木跃鱼钓点", "老大师香炸奶酪卷(放甜宝石莓换星之果实)"],
+    "Beach": ["威利鱼店(买鱼竿/鱼饵/蟹笼)", "码头/潮池钓点", "断桥(300木修复→右侧沙滩)", "艾利欧特小屋", "姜岛船(鱼店后门)"],
+    "FishShop": ["威利柜台(买鱼竿/鱼饵/蟹笼/鱼)", "姜岛船票(1000g→姜岛)"],
+    "Railroad": ["浴场(泡澡)", "魔女沼泽口", "山顶(完美达成后)", "铁轨(等火车捡掉落)"],
+    "BathHouse_Entry": ["更衣室→温泉池(泡澡回体力)"],
+    "Desert": ["头骨矿洞(下100层)", "桑迪绿洲(买杨桃种子/饰品)", "沙漠商人(换物)", "沙鱼钓点"],
+    "SkullCave": ["头骨矿洞(逐层下/挖铱)", "宝箱层"],
+    "SandyHouse": ["桑迪柜台(买杨桃种子/向日葵/饰品)", "赌场入口(需会员卡)"],
+    "IslandWest": ["姜岛农场(四季可种)", "齐钻核桃房(接齐钻任务/兑换)", "鹦鹉特快(金核桃解锁)", "姜岛商人", "火山口"],
+    "IslandSouth": ["码头(回姜岛船)", "海滩钓点", "西→姜岛农场", "东→丛林/度假村"],
+    "IslandEast": ["雷欧小屋", "丛林钓点", "度假村", "鹦鹉特快"],
+    "MermaidHouse": ["🧜 美人鱼秀：**等表演结束(约2-3分钟真实时间)再点贝壳** 1-5-4-2-3 = (2,6)(6,6)(5,6)(3,6)(4,6) 拿**珍珠**(每存档1颗,2.5k金)；表演中可截图等待,⚠️没演完按=白按"],
+    "Submarine": ["🛸 深海钓**无时限**(随便钓午夜鱿鱼/幽灵鱼/水滴鱼/珍珠)；**返回水面要和艇长再对话**(等~30分钟游戏时间上浮)；⚠️**留好回家时间**(建议用裹布人传回农场,别钓到昏倒)；⚠️**别在潜艇下潜/上浮中途进出**(恒实测会卡脚!),等门开/停稳再进出"],
+    "Temp": ["🎪 节日进行中：⏸️**时间静止**(游戏时钟不动、不自动送回家)；碰地图边缘不触发结束。⚠️ **导航认准 festival go**——map_go 会误报\"到X失败\"(节日事件拉进Temp独立图)，实际人已在场地，看 📍 Temp+🎪 即可；**退出/卡住/要结束→联系 user 帮忙**(MCP 端 warp 已禁用，AI 自己出不去)"],
+    "IslandNorth": ["火山(挖矿/锻造台)", "办事处(捐化石)", "挖掘场", "姜岛商人"],
+    "Caldera": ["锻造台(附魔/合成戒指/龙牙附魔)"],
+    "QiNutRoom": ["齐先生任务板/兑换店"],
+}
+
+
+# ── 🚂 矿车关系网（2026-08-15 恒实测：社区中心献祭解锁）──
+# 每站：map=矿车所在图, drop=下车点, interact=(站位,朝向), menu={选项:目的地}(不能选自己站)
+# 城镇/采石场 到达=交互点(朝上)；矿井 下车点与交互点差1格(交互站13,10朝左)；巴士站 站(14,4)朝上
+MINE_CART_STATIONS = {
+    "巴士站": {"map": "BusStop", "drop": (14, 4), "interact": ((14, 4), 0), "menu": {0: "矿井", 1: "城镇", 2: "采石场"}},
+    "矿井":   {"map": "Mine",    "drop": (13, 9), "interact": ((13, 10), 3), "menu": {0: "城镇", 1: "巴士站", 2: "采石场"}},
+    "城镇":   {"map": "Town",    "drop": (105, 80), "interact": ((105, 80), 0), "menu": {0: "矿井", 1: "巴士站", 2: "采石场"}},
+    "采石场": {"map": "Mountain","drop": (124, 12), "interact": ((124, 12), 0), "menu": {0: "矿井", 1: "城镇", 2: "巴士站"}},
+}
+
+
+# ── 建筑门口坐标（map_go 进门用：建筑地点 → (室外地图, 门口瓦片)）──
+# 农场建筑（FarmHouse/Cabin/畜棚/鸡舍/温室等）动态用 /farm_buildings，不在这张表
+BUILDING_DOORS = {
+    "SeedShop":        ("Town",     (43, 57)),
+    "Hospital":        ("Town",     (36, 56)),
+    "Saloon":          ("Town",     (45, 71)),  # 用户实测 2026-08-13：门在 45,71（面向0交互45,70）
+    "Blacksmith":      ("Town",     (94, 82)),
+    "CommunityCenter": ("Town",     (53, 20)),
+    "JoshHouse":       ("Town",     (57, 64)),
+    "ManorHouse":      ("Town",     (59, 86)),
+    "ArchaeologyHouse":("Town",     (101, 90)),
+    "MovieTheater":    ("Town",     (96, 51)),
+    "Mine":            ("Mountain", (54, 5)),
+    "AdventureGuild":  ("Mountain", (76, 9)),
+    "ScienceHouse":    ("Mountain", (12, 26)),
+    "Tent":            ("Mountain", (29, 6)),
+    "FishShop":        ("Beach",    (30, 34)),
+    "AnimalShop":      ("Forest",   (90, 16)),
+    "WizardHouse":     ("Forest",   (5, 27)),
+    "Woods":           ("Forest",   (0, 7)),
+    "SandyHouse":      ("Desert",   (6, 52)),
+    "Club":            ("SandyHouse", (17, 1)),   # 🎰 进赌场的门口在桑迪店内(17,1)（2026-08-23 恒：AI 实测 /map warp 出口=17,1→Club(8,13)；BUILDING_DOORS 新补，此前缺致 _enter_building_door 拿不到门口坐标进不去）
+    "SkullCave":       ("Desert",   (8, 6)),
+    "FarmCave":        ("Farm",     (34, 7)),
+    "Sewer":           ("Town",     (35, 97)),
+    "BathHouse_Entry": ("Railroad", (10, 57)),
+    "Tunnel":          ("Backwoods",(22, 31)),
+    "MermaidHouse":    ("BeachNightMarket", (58, 32)),   # 🎇 美人鱼船门（节日限定冬15-17）
+    "Submarine":       ("BeachNightMarket", (5, 35)),    # 🎇 钓鱼潜艇门（节日限定冬15-17）
+}
+
+
+# ── 每地点到达入口（map_go 传送到这继续走，2026-08-13 恒：只传标注过的点）──
+# 校准安全落点（POI/ROUTES 提取）。⚠️ Farm 是河流农场，入口待实测（普通农场坐标会传进河）。
+ARRIVE = {
+    "Farm": (40, 32),           # ⚠️ 河流农场待实测校准
+    "FarmHouse": (10, 6),
+    "Cabin": (3, 12),
+    "FarmCave": (8, 11),
+    "Greenhouse": (1, 1),
+    "BusStop": (9, 23),         # 从农场来
+    "Town": (0, 54),            # 从巴士站来（主入口）
+    "Mountain": (54, 5),        # 矿洞门口（安全）
+    "Forest": (68, 1),          # 从农场下口来
+    "Beach": (38, 1),
+    "Backwoods": (14, 39),      # 从农场上口来
+    "Railroad": (29, 59),
+    "Desert": (18, 27),
+    "SeedShop": (6, 29),        # 皮埃尔商店(入口)
+    "Hospital": (6, 17),
+    "Saloon": (14, 24),
+    "Blacksmith": (5, 19),
+    "CommunityCenter": (32, 23),
+    "JoshHouse": (9, 24),
+    "ManorHouse": (5, 11),
+    "ArchaeologyHouse": (3, 14),
+    "MovieTheater": (12, 12),
+    "ScienceHouse": (6, 24),
+    "SebastianRoom": (1, 1),
+    "FishShop": (5, 9),
+    "BoatTunnel": (4, 10),
+    "AnimalShop": (13, 19),
+    "WizardHouse": (8, 24),
+    "Woods": (58, 15),
+    "SandyHouse": (4, 9),
+    "Club": (8, 13),
+    "AdventureGuild": (6, 12),
+    "Mine": (18, 13),
+    "SkullCave": (7, 8),
+    "Sewer": (16, 11),
+    "BugLand": (15, 53),
+    "BathHouse_Entry": (5, 9),
+    "Tunnel": (34, 9),
+    "Tent": (2, 5),
+    "IslandSouth": (21, 43),
+    "IslandWest": (104, 41),
+    "IslandEast": (0, 41),
+    "IslandNorth": (40, 24),        # 火山入口区（2026-08-15补，待实测）
+    "IslandFieldOffice": (4, 10),
+    "IslandHut": (7, 13),
+    "IslandNorthCave1": (6, 11),
+    "IslandFarmCave": (4, 10),
+    "IslandShrine": (13, 28),
+    "VolcanoEntrance": (1, 1),
+    "VolcanoDungeon0": (37, 4),
+    "IslandFarmHouse": (14, 15),
+    "QiNutRoom": (7, 7),
+    "MasteryCave": (7, 9),
+    "Caldera": (22, 22),
+    "Summit": (10, 29),
+    "WitchWarpCave": (4, 9),
+}
+
+
+# ── 任务建议 ──
+# AI 可以根据时间/季节/天气推荐做什么
+TASK_SUGGESTIONS = {
+    "spring": {
+        "sunny": [
+            "去皮埃尔买防风草种子 → 种地",
+            "去海滩钓鱼（春季鱼多）",
+            "去矿洞挖铜矿和铁矿",
+        ],
+        "rainy": [
+            "去矿洞挖矿（省了浇水时间）",
+            "去鱼店买鱼饵 → 下雨钓鱼有特殊鱼",
+        ],
+    },
+    "summer": {
+        "sunny": [
+            "收蓝莓 → 酿酒桶酿酒",
+            "去海滩/森林钓鱼",
+        ],
+    },
+}
+
+# ── 查路线工具 ──
+def plan_route(from_map, to_poi):
+    """返回: [ (地图名, 目的坐标, 说明), ... ]"""
+    if to_poi in POI:
+        target = POI[to_poi]
+        to_map = target["map"]
+        to_pos = target["pos"]
+    else:
+        to_map = to_poi
+        to_pos = None
+
+    if from_map == to_map:
+        return [(to_map, to_pos, "已在地图上")]
+
+    # BFS 搜地图连接
+    graph = {}
+    for src, _, dst, _ in ROUTES:
+        graph.setdefault(src, set()).add(dst)
+        graph.setdefault(dst, set()).add(src)
+
+    visited = {from_map}
+    queue = [(from_map, [from_map])]
+    while queue:
+        cur, path = queue.pop(0)
+        for nxt in graph.get(cur, set()):
+            if nxt == to_map:
+                route = []
+                for m in path[1:] + [to_map]:
+                    entry = POI.get(m, {}).get("pos", None)
+                    route.append((m, entry, f"到 {m}"))
+                route.append((to_map, to_pos, f"到达 {to_poi}"))
+                return route
+            if nxt not in visited:
+                visited.add(nxt)
+                queue.append((nxt, path + [nxt]))
+    return None
+
+if __name__ == "__main__":
+    print("=== 地图路线表 ===")
+    for src, direction, dst, entry in sorted(ROUTES):
+        print(f"  {src} [{direction}] → {dst} @ {entry}")
+
+    print("\n=== 兴趣点列表 ===")
+    for name, info in sorted(POI.items()):
+        print(f"  {name}: {info['map']} {info['pos']} — {info['note']}")
+
+    print("\n=== 路线测试 ===")
+    r = plan_route("Farm", "海滩钓鱼点(码头)")
+    if r:
+        for m, pos, note in r:
+            print(f"  {m} {pos} {note}")

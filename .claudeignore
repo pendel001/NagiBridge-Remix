@@ -1,0 +1,62 @@
+# NagiBridge .claudeignore — 让 Claude 只看到 MCP 实现相关文件
+# 语法同 .gitignore。被忽略的文件对 Claude 的文件搜索/读取不可见，
+# 但用 Bash 仍可访问（如 `! cat xxx`）。别误删——这些是原作者遗留或运行噪音。
+
+# ── 原作者遗留：bun/TS overlay 系统（.mcp.json 已改用 Python MCP 服务器 8000，此系统弃用）──
+server.ts
+index.ts
+tsconfig.json
+package.json
+bun.lock
+ChatHud.cs
+LlmClient.cs
+chat_outbox.txt
+
+# ── 原作者遗留：旧 channel/overlay 脚本 ──
+scripts/channel_server.py
+scripts/chat_overlay.py
+scripts/chat_watcher.py
+scripts/start_channel.sh
+scripts/clear.sh
+scripts/farm.sh
+scripts/send_key.ps1
+
+# ── 原作者遗留：旧管理器/代理脚本（run_script 可调但 MCP 工具集不用）──
+scripts/keg_manager.py
+scripts/furnace_manager.py
+scripts/shop_buy.py
+scripts/tool_agent.py
+scripts/pet_animals.py
+
+# ── 原作者遗留：旧文档（已被 CLAUDE.md / CHANGELOG.md 取代）──
+AGENTS.md
+PROJECT.md
+README.md
+codex_task.md
+scripts/SKILLS.md
+
+# ── 构建产物 ──
+bin/
+obj/
+build_output/
+.bak-*/
+
+# ── 运行时噪音（session/截图/日志/进度状态）──
+scripts/session_*.jsonl
+scripts/session_*.md
+scripts/*.png
+scripts/*.jpg
+scripts/*.log
+scripts/whiteboard.json
+scripts/settings.json
+scripts/plan.json
+scripts/mine_progress.json
+scripts/bomb_progress.json
+scripts/bomb_organize.json
+scripts/__pycache__/
+*.pyc
+.newbie_hint_*
+
+# ── 杂项测试残留 ──
+quests_test.json
+C:UsersAdministratortest_output.txt

@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <EnableHarmony>true</EnableHarmony>
+    <GamePath>C:\Program Files (x86)\Steam\steamapps\common\Stardew Valley</GamePath>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <!-- 2026-08-21：原作者遗留的节日/小游戏 bot 全部移除——自己已用 MCP festival 域 + FESTIVAL_GUIDE/POI/PREP 实现全部节日玩法引导。
+       原 Compile Remove 规则（mods/NagiCalicoBot、mods/NagiFestivalBots、PrairieKingBot）对应的源码目录已删，无需再排除。
+       注意：/fishbot 是 Fishbot mod 钓鱼集成（AdroSlice.Fishbot），非 festival bot，保留。 -->
+
+  <!--
+    Pathoschild.Stardew.ModBuildConfig auto-detects the local Stardew Valley
+    install (Steam / GOG / Xbox, on Windows / macOS / Linux) and references
+    Stardew Valley.dll, SMAPI, MonoGame, xTile and Harmony for you, so there
+    are no machine-specific paths to edit. Override the path if auto-detect
+    fails: set the GamePath property or a GAME_PATH environment variable.
+    Docs: https://github.com/Pathoschild/SMAPI/blob/develop/docs/technical/mod-package.md
+  -->
+  <ItemGroup>
+    <PackageReference Include="Pathoschild.Stardew.ModBuildConfig" Version="4.*" />
+  </ItemGroup>
+
+  <!-- Lidgren.Network：游戏 DLL 的传递引用，编译期要用它的类型（10048 端口修复 patch 用）→ 显式引用 -->
+  <ItemGroup>
+    <Reference Include="Lidgren.Network">
+      <HintPath>$(GamePath)\Lidgren.Network.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+</Project>

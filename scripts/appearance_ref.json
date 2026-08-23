@@ -1,0 +1,1601 @@
+{
+  "shirts": [
+    {
+      "id": 1000,
+      "name": "经典背带裤",
+      "description": "农场经典。"
+    },
+    {
+      "id": 1001,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1002,
+      "name": "薄荷女式衬衫",
+      "description": "漂亮的淡绿色女式衬衫。"
+    },
+    {
+      "id": 1003,
+      "name": "深色上衣",
+      "description": "颜色很深的上衣。"
+    },
+    {
+      "id": 1004,
+      "name": "骷髅 T 恤",
+      "description": "印有可怕的骷髅头骨的 T 恤衫。"
+    },
+    {
+      "id": 1005,
+      "name": "浅蓝色上衣",
+      "description": "浅蓝色的上衣。"
+    },
+    {
+      "id": 1006,
+      "name": "棕黄色条纹衫",
+      "description": "中间有白色条纹的棕黄色上衣。"
+    },
+    {
+      "id": 1007,
+      "name": "绿色背带裤",
+      "description": "稍稍不那么受人欢迎的农场经典。"
+    },
+    {
+      "id": 1008,
+      "name": "“Good Grief”衫",
+      "description": "过去的好 T 恤衫……"
+    },
+    {
+      "id": 1009,
+      "name": "海蓝色上衣",
+      "description": "海蓝色的上衣。"
+    },
+    {
+      "id": 1010,
+      "name": "西装上衣",
+      "description": "活动和庆典时穿的正式上衣。"
+    },
+    {
+      "id": 1011,
+      "name": "绿色腰带衫",
+      "description": "绿色的、有腰带的上衣。"
+    },
+    {
+      "id": 1012,
+      "name": "黄绿色条纹衫",
+      "description": "有白色条纹的黄绿色上衣。"
+    },
+    {
+      "id": 1013,
+      "name": "红色条纹衫",
+      "description": "有白色条纹的红色上衣。"
+    },
+    {
+      "id": 1014,
+      "name": "骨架 T 恤",
+      "description": "印有骷髅肋骨架的 T 恤衫。"
+    },
+    {
+      "id": 1015,
+      "name": "橘黄色上衣",
+      "description": "橘黄色的上衣。"
+    },
+    {
+      "id": 1016,
+      "name": "夜空 T 恤",
+      "description": "能让你想起夜空的 T 恤衫。"
+    },
+    {
+      "id": 1017,
+      "name": "镇长吊带衫",
+      "description": "看起来贼熟悉的吊带衫……"
+    },
+    {
+      "id": 1018,
+      "name": "棕色夹克衫",
+      "description": "用棕色面料制成的漂亮耐用的夹克\r\n衫。"
+    },
+    {
+      "id": 1019,
+      "name": "水手服",
+      "description": "让你想起广袤的大海。"
+    },
+    {
+      "id": 1020,
+      "name": "绿色背心",
+      "description": "衬衣外面再穿一件绿色背心。"
+    },
+    {
+      "id": 1021,
+      "name": "黄绿上衣",
+      "description": "有绿色条纹的黄色上衣。"
+    },
+    {
+      "id": 1022,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1023,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1024,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1025,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1026,
+      "name": "浅蓝色条纹衫",
+      "description": "有白色条纹的浅蓝色上衣。"
+    },
+    {
+      "id": 1027,
+      "name": "粉色条纹衫",
+      "description": "有条纹的粉色上衣。"
+    },
+    {
+      "id": 1028,
+      "name": "爱心 T 恤",
+      "description": "把你的爱心穿在这超软的衣袖上。"
+    },
+    {
+      "id": 1029,
+      "name": "工作服",
+      "description": "为持久的田间劳作而生。"
+    },
+    {
+      "id": 1030,
+      "name": "店主的夹克衫",
+      "description": "看起来像是小镇的商人会穿的夹克\r\n衫。"
+    },
+    {
+      "id": 1031,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1032,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1033,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1034,
+      "name": "绿色束腰上衣",
+      "description": "适合冒险者穿的上衣。"
+    },
+    {
+      "id": 1035,
+      "name": "靓红女式衬衫",
+      "description": "饰有黄色纽扣的亮红色女式衬衫。"
+    },
+    {
+      "id": 1036,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1037,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1038,
+      "name": "白 T 恤（男）",
+      "description": "简单的 T 恤衫。"
+    },
+    {
+      "id": 1039,
+      "name": "复古彩虹衫",
+      "description": "有暗淡彩虹图案的 T 恤衫。"
+    },
+    {
+      "id": 1040,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1041,
+      "name": "白 T 恤（女）",
+      "description": "简单的 T 恤衫。"
+    },
+    {
+      "id": 1042,
+      "name": "黄绿色束腰上衣",
+      "description": "有腰带的黄绿色宽松上衣。"
+    },
+    {
+      "id": 1043,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1044,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1045,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1046,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1047,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1048,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1049,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1050,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1051,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1052,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1053,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1054,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1055,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1056,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1057,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1058,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1059,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1060,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1061,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1062,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1063,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1064,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1065,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1066,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1067,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1068,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1069,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1070,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1071,
+      "name": "白色背带裤上衣",
+      "description": "经典的背带裤，上衣是白色的，配\r\n有皮带。"
+    },
+    {
+      "id": 1072,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1073,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1074,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1075,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1076,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1077,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1078,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1079,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1080,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1081,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1082,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1083,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1084,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1085,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1086,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1087,
+      "name": "平整领结衫",
+      "description": "别有显眼的领结的平整纽扣衫。"
+    },
+    {
+      "id": 1088,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1089,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1090,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1091,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1092,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1093,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1094,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1095,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1096,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1097,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1098,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1099,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1100,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1101,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1102,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1103,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1104,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1105,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1106,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1107,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1108,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1109,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1110,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1111,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1112,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1113,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1114,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1115,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1116,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1117,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1118,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1119,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1120,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1121,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1122,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1123,
+      "name": "领带衬衫",
+      "description": "有领带的白衬衫。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1124,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1125,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1126,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1127,
+      "name": "艾米丽的魔法衣",
+      "description": "艾米丽爱心打造。染料都是纯天\r\n然！"
+    },
+    {
+      "id": 1128,
+      "name": "条纹衫",
+      "description": "有暗淡条纹的上衣。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1129,
+      "name": "背心（男）",
+      "description": "无袖上衣。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1130,
+      "name": "背心（女）",
+      "description": "无袖上衣。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1131,
+      "name": "牛仔披风",
+      "description": "旧时西部的传奇装备。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1132,
+      "name": "短背心（男）",
+      "description": "无袖上衣，裁短了下摆。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1133,
+      "name": "短背心（女）",
+      "description": "无袖上衣，裁短了下摆。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1134,
+      "name": "比基尼上装",
+      "description": "夏季必备。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1135,
+      "name": "温布斯 T 恤",
+      "description": "主题是一个奇怪的绿家伙的 T 恤\r\n衫。"
+    },
+    {
+      "id": 1136,
+      "name": "80's衬衣（女）",
+      "description": "顶好的露肩衬衣。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1137,
+      "name": "运动员夹克",
+      "description": "充满团队精神的夹克衫。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1138,
+      "name": "黑皮夹克",
+      "description": "很酷的深黑色皮夹克。"
+    },
+    {
+      "id": 1139,
+      "name": "吊带上衣",
+      "description": "有细吊带的上衣。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1140,
+      "name": "纽扣衬衫",
+      "description": "简单的纯色衬衫。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1141,
+      "name": "短上衣",
+      "description": "下摆裁短的上衣。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1142,
+      "name": "抹胸背心",
+      "description": "无吊带的围绕式上衣。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1143,
+      "name": "扎染上衣",
+      "description": "扎起来后浸入彩色染料的上衣。"
+    },
+    {
+      "id": 1144,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1145,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1146,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1147,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1148,
+      "name": "钢胸甲",
+      "description": "钢制的装饰铠甲。"
+    },
+    {
+      "id": 1149,
+      "name": "铜胸甲",
+      "description": "铜质的装饰铠甲。"
+    },
+    {
+      "id": 1150,
+      "name": "金胸甲",
+      "description": "纯金的装饰铠甲。"
+    },
+    {
+      "id": 1151,
+      "name": "铱胸甲",
+      "description": "纯铱制的装饰胸甲。"
+    },
+    {
+      "id": 1152,
+      "name": "80's衬衣（男）",
+      "description": "顶好的露肩衬衣。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1153,
+      "name": "冒充肌肉 T 恤",
+      "description": "要是你没时间去健身房，那就穿这\r\n件吧。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1154,
+      "name": "法兰绒上衣",
+      "description": "有网格图案的带纽扣外衣，很漂\r\n亮，也很厚实。非常适合寒冬时\r\n穿。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1155,
+      "name": "轰炸机夹克",
+      "description": "很久以前战斗机驾驶员穿的厚实耐\r\n用的夹克衫。"
+    },
+    {
+      "id": 1156,
+      "name": "原始人上衣",
+      "description": "石器时代的经典！"
+    },
+    {
+      "id": 1157,
+      "name": "钓鱼背心",
+      "description": "有很多口袋，可以装下你的渔具。"
+    },
+    {
+      "id": 1158,
+      "name": "鱼 T 恤",
+      "description": "有一条鱼的图案的 T 恤衫。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1159,
+      "name": "衬衫皮带",
+      "description": "配有棕色皮带的纯色衬衫。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1160,
+      "name": "灰色卫衣",
+      "description": "灰色的带兜帽套头衫，颇有运动\r\n风。"
+    },
+    {
+      "id": 1161,
+      "name": "蓝色卫衣",
+      "description": "蓝色的带兜帽套头衫，颇有运动\r\n风。"
+    },
+    {
+      "id": 1162,
+      "name": "红色卫衣",
+      "description": "红色的带兜帽套头衫，颇有运动\r\n风。"
+    },
+    {
+      "id": 1163,
+      "name": "牛仔夹克",
+      "description": "牛仔布面料的耐用夹克衫。"
+    },
+    {
+      "id": 1164,
+      "name": "运动风衣",
+      "description": "轻质的弹性面料夹克衫。"
+    },
+    {
+      "id": 1165,
+      "name": "白色武术服",
+      "description": "武术家常穿的宽松外衣。"
+    },
+    {
+      "id": 1166,
+      "name": "橘色武术服",
+      "description": "武术家常穿的宽松外衣。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1167,
+      "name": "灰色背心",
+      "description": "白色衬衣外面再穿一件灰色背心。"
+    },
+    {
+      "id": 1168,
+      "name": "海藻上衣",
+      "description": "让你看起来像在海滩被水洗了一\r\n样。气味也很像。"
+    },
+    {
+      "id": 1169,
+      "name": "带刺背心",
+      "description": "装有金属刺的黑色背心。"
+    },
+    {
+      "id": 1170,
+      "name": "花哨上衣",
+      "description": "这蓝色看着很舒服……"
+    },
+    {
+      "id": 1171,
+      "name": "绿洲礼服",
+      "description": "沙漠中的宝石。"
+    },
+    {
+      "id": 1172,
+      "name": "铁匠围裙",
+      "description": "一代代工匠的传承。"
+    },
+    {
+      "id": 1173,
+      "name": "平整领结衫",
+      "description": "别有显眼的领结的平整纽扣衫。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1174,
+      "name": "高腰上衣",
+      "description": "外表像穿了高腰裤，下摆可以染\r\n色。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1175,
+      "name": "高腰上衣",
+      "description": "外表像穿了高腰牛仔裤，下摆可以\r\n染色。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1176,
+      "name": "普通套头衫（男）",
+      "description": "纯色的套头衫。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1177,
+      "name": "普通套头衫（女）",
+      "description": "纯色的套头衫。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1178,
+      "name": "龟脖毛衣",
+      "description": "让脖子热热的。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1179,
+      "name": "铱能量上衣",
+      "description": "炫耀你的铱能量。"
+    },
+    {
+      "id": 1180,
+      "name": "隧道队球衣",
+      "description": "祖祖城隧道队的球衣。"
+    },
+    {
+      "id": 1181,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1182,
+      "name": "上衣",
+      "description": "可以穿的上衣。"
+    },
+    {
+      "id": 1183,
+      "name": "灰色西装",
+      "description": "专门定做的灰色西装。"
+    },
+    {
+      "id": 1184,
+      "name": "红色无尾礼服",
+      "description": "正式场合穿的考究上衣。"
+    },
+    {
+      "id": 1185,
+      "name": "藏青色无尾礼服",
+      "description": "正式场合穿的考究上衣。"
+    },
+    {
+      "id": 1186,
+      "name": "节日上衣",
+      "description": "庆祝冬日星盛宴。"
+    },
+    {
+      "id": 1187,
+      "name": "叶子上衣",
+      "description": "用真的叶子装饰的衣服。"
+    },
+    {
+      "id": 1188,
+      "name": "晚安睡衣",
+      "description": "宽大的睡衣，上面有精致的月亮图\r\n案。"
+    },
+    {
+      "id": 1189,
+      "name": "绿色皮带衬衫",
+      "description": "配有皮带的绿色衬衫。"
+    },
+    {
+      "id": 1190,
+      "name": "笑脸 T 恤",
+      "description": "这可是最开心的 T 恤衫。"
+    },
+    {
+      "id": 1191,
+      "name": "衬衫领结",
+      "description": "这件衬衫颈部配有一个小领结。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1192,
+      "name": "丑角上衣",
+      "description": "把你心中的小丑展示出来。"
+    },
+    {
+      "id": 1193,
+      "name": "海洋上衣",
+      "description": "看起来像水下涟漪的上衣。"
+    },
+    {
+      "id": 1194,
+      "name": "深色条纹衫",
+      "description": "有彩色条纹的深色上衣。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1195,
+      "name": "丝巾上衣",
+      "description": "这件上衣围有丝巾，可以让你的脖\r\n子保持洁净。"
+    },
+    {
+      "id": 1196,
+      "name": "背包 T 恤",
+      "description": "带一个帆布背包的纯色 T 恤衫。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1197,
+      "name": "紫色女式衬衫",
+      "description": "令人惊叹的紫色女式衬衫。"
+    },
+    {
+      "id": 1198,
+      "name": "老式 Polo 衫",
+      "description": "由于年代久远已经褪色，散发着旧\r\n衣柜的味道。"
+    },
+    {
+      "id": 1199,
+      "name": "托加长袍",
+      "description": "这种设计很古老，但是透气性真的\r\n很棒！"
+    },
+    {
+      "id": 1200,
+      "name": "星星 T 恤",
+      "description": "这颗星星本应该在黑暗中闪闪发\r\n光，然而并没有。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1201,
+      "name": "时髦上衣（男）",
+      "description": "面料是触感最柔软的天鹅绒。"
+    },
+    {
+      "id": 1202,
+      "name": "时髦上衣（女）",
+      "description": "面料是触感最柔软的天鹅绒。"
+    },
+    {
+      "id": 1203,
+      "name": "丝巾上衣",
+      "description": "这件上衣围有丝巾，可以替你的脖\r\n子挡住伤害。"
+    },
+    {
+      "id": 1204,
+      "name": "假日 T 恤",
+      "description": "芬群岛的旅游 T 恤衫。"
+    },
+    {
+      "id": 1205,
+      "name": "园丁上衣",
+      "description": "上面本来就沾有盆栽土。"
+    },
+    {
+      "id": 1206,
+      "name": "丝巾上衣",
+      "description": "这件上衣围有丝巾，可以让你的脖\r\n子保持柔软。"
+    },
+    {
+      "id": 1207,
+      "name": "史莱姆 T 恤",
+      "description": "看起来像一个超大史莱姆的 T 恤\r\n衫。"
+    },
+    {
+      "id": 1208,
+      "name": "挖掘机上衣",
+      "description": "穿着它去发掘古化石肯定会很靓。"
+    },
+    {
+      "id": 1209,
+      "name": "运动衫",
+      "description": "经典样式可以让你表现出彩。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1210,
+      "name": "爱心 T 恤",
+      "description": "把你的爱心穿在这超软的衣袖上。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1211,
+      "name": "深色夹克",
+      "description": "摇粒绒内衬的深色牛仔夹克衫。"
+    },
+    {
+      "id": 1212,
+      "name": "日落 T 恤",
+      "description": "这件 T 恤衫的灵感来自于一天中最\r\n引人共鸣的时刻。"
+    },
+    {
+      "id": 1213,
+      "name": "厨师工作服",
+      "description": "传统的主厨工作服。"
+    },
+    {
+      "id": 1214,
+      "name": "大海 T 恤",
+      "description": "闻起来有海水的咸味。"
+    },
+    {
+      "id": 1215,
+      "name": "神秘衣",
+      "description": "你能从这件衣服中感受到一股力\r\n量。"
+    },
+    {
+      "id": 1216,
+      "name": "纯色背带裤",
+      "description": "经典的背带裤，上衣可以染色。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1217,
+      "name": "无袖背带裤",
+      "description": "经典的背带裤，上衣无袖可以染\r\n色。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1218,
+      "name": "开衫",
+      "description": "柔软的带纽扣开襟毛衣。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1219,
+      "name": "由巴上衣",
+      "description": "这件上衣的特色是显眼的“舰形符\r\n号”。"
+    },
+    {
+      "id": 1220,
+      "name": "项链 T 恤",
+      "description": "带有一条金项链的 T 恤衫。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1221,
+      "name": "皮带外套",
+      "description": "光滑柔软的黑色外套，配有一根显\r\n眼的皮带。"
+    },
+    {
+      "id": 1222,
+      "name": "金边 T 恤",
+      "description": "有金边的 T 恤衫。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1223,
+      "name": "五彩 T 恤",
+      "description": "有五彩能量而微微发光的 T 恤衫。"
+    },
+    {
+      "id": 1224,
+      "name": "吊坠 T 恤",
+      "description": "配有一个巨大吊坠的 T 恤衫。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1225,
+      "name": "高热 T 恤",
+      "description": "这 T 恤衫看起来像是烧着了！"
+    },
+    {
+      "id": 1226,
+      "name": "火焰 T 恤",
+      "description": "有灼热的火焰，看起来酷冷酷冷\r\n的。"
+    },
+    {
+      "id": 1227,
+      "name": "古老 T 恤",
+      "description": "有古老图案的 T 恤衫。"
+    },
+    {
+      "id": 1228,
+      "name": "淡雅箭头 T 恤",
+      "description": "颜色淡雅的 T 恤衫，上面有一个朝\r\n上的箭头图案。"
+    },
+    {
+      "id": 1229,
+      "name": "玩偶 T 恤",
+      "description": "有一个古怪的古代玩偶面相的 T 恤\r\n衫。"
+    },
+    {
+      "id": 1230,
+      "name": "珠宝 T 恤",
+      "description": "配有朴素金链的 T 恤衫。"
+    },
+    {
+      "id": 1231,
+      "name": "帆布夹克",
+      "description": "摇粒绒内衬的棕色夹克衫。"
+    },
+    {
+      "id": 1232,
+      "name": "垃圾桶 T 恤",
+      "description": "你穿着一个垃圾桶。"
+    },
+    {
+      "id": 1233,
+      "name": "铁锈 T 恤",
+      "description": "这个设计是要 T 恤衫看起来满是锈\r\n迹。"
+    },
+    {
+      "id": 1234,
+      "name": "电路板 T 恤",
+      "description": "这件 T 恤衫像是电路板。"
+    },
+    {
+      "id": 1235,
+      "name": "绒毛 T 恤",
+      "description": "毛茸茸的。"
+    },
+    {
+      "id": 1236,
+      "name": "酱汁 T 恤",
+      "description": "上面的意面酱汁是本来就有的，所\r\n以你不用感到内疚！"
+    },
+    {
+      "id": 1237,
+      "name": "棕色西装",
+      "description": "标准的棕色商务西装。"
+    },
+    {
+      "id": 1238,
+      "name": "金 T 恤",
+      "description": "闪亮亮的金色 T 恤衫。"
+    },
+    {
+      "id": 1239,
+      "name": "船长服",
+      "description": "经典的船长制服。"
+    },
+    {
+      "id": 1240,
+      "name": "警服",
+      "description": "经典的警官制服。"
+    },
+    {
+      "id": 1241,
+      "name": "护林员制服",
+      "description": "经典的公园护林员制服。"
+    },
+    {
+      "id": 1242,
+      "name": "蓝色长背心",
+      "description": "灰色衬衣外面再穿一件蓝色长背\r\n心。"
+    },
+    {
+      "id": 1243,
+      "name": "皇室披风",
+      "description": "紫色的皇室披风。"
+    },
+    {
+      "id": 1244,
+      "name": "遗物 T 恤",
+      "description": "我找到了黄金遗物，我还有 T 恤来\r\n证明！"
+    },
+    {
+      "id": 1245,
+      "name": "波波 T 恤",
+      "description": "粉色 T 恤，主题是一个相貌古怪的\r\n家伙。"
+    },
+    {
+      "id": 1246,
+      "name": "煎蛋 T 恤",
+      "description": "起床了，该吃蛋了。"
+    },
+    {
+      "id": 1247,
+      "name": "汉堡 T 恤",
+      "description": "吃什么就穿什么！"
+    },
+    {
+      "id": 1248,
+      "name": "有领衬衫",
+      "description": "有着严肃的白衣领的衬衫。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1249,
+      "name": "烤面包 T 恤",
+      "description": "看起来略微烤焦了。"
+    },
+    {
+      "id": 1250,
+      "name": "鲤鱼 T 恤",
+      "description": "正面饰有一个大鲤鱼头。"
+    },
+    {
+      "id": 1251,
+      "name": "红色法兰绒上衣",
+      "description": "红蓝相间的法兰绒上衣。"
+    },
+    {
+      "id": 1252,
+      "name": "薄饼 T 恤",
+      "description": "看起来像是墨西哥薄馅饼表皮的 T \r\n恤衫。"
+    },
+    {
+      "id": 1253,
+      "name": "暖色法兰绒上衣",
+      "description": "棕色和玫瑰色相间的暖色法兰绒上\r\n衣。"
+    },
+    {
+      "id": 1254,
+      "name": "砂糖 T 恤",
+      "description": "充满了“甜蜜能量”。"
+    },
+    {
+      "id": 1255,
+      "name": "绿色法兰绒上衣",
+      "description": "棕绿相间的法兰绒上衣。"
+    },
+    {
+      "id": 1256,
+      "name": "油渍 T 恤",
+      "description": "本来就沾满了油，所以看起来油腻\r\n腻的。"
+    },
+    {
+      "id": 1257,
+      "name": "羊肚菌 T 恤",
+      "description": "这件 T 恤衫的设计是这种春天标志\r\n性的蘑菇。"
+    },
+    {
+      "id": 1258,
+      "name": "春季 T 恤",
+      "description": "既轻柔，又清新，也有春季色彩的\r\n设计。"
+    },
+    {
+      "id": 1259,
+      "name": "水手服",
+      "description": "让你想起广袤的大海。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1260,
+      "name": "雨衣",
+      "description": "经典的黄色雨衣。"
+    },
+    {
+      "id": 1261,
+      "name": "水手服",
+      "description": "与一般的水手服不同，这件的衣领\r\n是白色的，而且衣身可以染色。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1262,
+      "name": "深色丝巾上衣",
+      "description": "围有多彩丝巾的深色上衣。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1263,
+      "name": "深色荧光衬衫",
+      "description": "有亮色荧光点的衬衫。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1264,
+      "name": "泛光 T 恤",
+      "description": "有斑驳的彩虹斑点！"
+    },
+    {
+      "id": 1265,
+      "name": "新娘上衣",
+      "description": "漂亮的白色上衣，新娘穿正合适。"
+    },
+    {
+      "id": 1266,
+      "name": "棕色背带裤",
+      "description": "这件衣服沾了泥也看不出来。"
+    },
+    {
+      "id": 1267,
+      "name": "橘红色领结衫",
+      "description": "配有一个大号白色领结的橘红色条\r\n纹上衣。"
+    },
+    {
+      "id": 1268,
+      "name": "白色背带裤",
+      "description": "经典的农夫衣装，换上漂亮的白色\r\n设计。"
+    },
+    {
+      "id": 1269,
+      "name": "手冲咖啡 T 恤",
+      "description": "上面有熟悉的锯齿状图案。啊……\r\n这个味道。"
+    },
+    {
+      "id": 1270,
+      "name": "绿色 T 恤夹克",
+      "description": "灵感来自于绿头鸭。T 恤衫可以染\r\n色。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1271,
+      "name": "短夹克",
+      "description": "T 恤衫外面再穿一件可以染色的短\r\n夹克。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1272,
+      "name": "圆点上衣",
+      "description": "深色上衣，上面有可以染色的圆\r\n点。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1273,
+      "name": "白点上衣",
+      "description": "可以染色的上衣，上面有白色圆\r\n点。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1274,
+      "name": "迷彩上衣",
+      "description": "让你与环境融为一体。"
+    },
+    {
+      "id": 1275,
+      "name": "泥土 T 恤",
+      "description": "在农场上穿正合适！"
+    },
+    {
+      "id": 1276,
+      "name": "蟹黄糕上衣",
+      "description": "预先加入大量蒜泥蛋黄酱供你享\r\n受。用餐愉快！"
+    },
+    {
+      "id": 1277,
+      "name": "丝绸上衣",
+      "description": "面料是光滑的丝绸物质。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1278,
+      "name": "蓝色纽扣汗衫",
+      "description": "蓝色的上衣，袖子可以染色。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1279,
+      "name": "褪色牛仔上衣",
+      "description": "灰暗褪色的牛仔上衣。"
+    },
+    {
+      "id": 1280,
+      "name": "红色纽扣汗衫",
+      "description": "红色的上衣，袖子可以染色。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1281,
+      "name": "绿色纽扣汗衫",
+      "description": "绿色的上衣，袖子可以染色。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1282,
+      "name": "番茄 T 恤",
+      "description": "这件 T 恤解答了重大难题：“番茄\r\n是”……（剩余部分被抹去）"
+    },
+    {
+      "id": 1283,
+      "name": "流苏背心",
+      "description": "无袖上衣外面再穿一件有流苏的棕\r\n色背心。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1284,
+      "name": "杂乱 T 恤",
+      "description": "图案杂乱，难以辨认。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1285,
+      "name": "午夜狗 T 恤",
+      "description": "用鱿鱼墨汁染了午夜的深蓝色。"
+    },
+    {
+      "id": 1286,
+      "name": "虾爱好者 T 恤",
+      "description": "为那些天天吃虾的人设计。"
+    },
+    {
+      "id": 1287,
+      "name": "绿茶 T 恤",
+      "description": "这件 T 恤衫灵感来自于很受欢迎的\r\n饮品。"
+    },
+    {
+      "id": 1288,
+      "name": "饰品上衣",
+      "description": "装饰有大号彩色玻璃球的上衣。"
+    },
+    {
+      "id": 1289,
+      "name": "暗色西装",
+      "description": "黑色的西装上衣，配有暗红色方\r\n巾。"
+    },
+    {
+      "id": 1290,
+      "name": "矿物狗外套",
+      "description": "它充满了海洋中的微量矿物质。"
+    },
+    {
+      "id": 1291,
+      "name": "洋红色 T 恤",
+      "description": "熔岩菇独有的特别颜色。"
+    },
+    {
+      "id": 1292,
+      "name": "姜汁背带裤",
+      "description": "配色的灵感来自姜汁汽水。"
+    },
+    {
+      "id": 1293,
+      "name": "香蕉 T 恤",
+      "description": "如果你喜欢香蕉，可以试试这件 T \r\n恤。"
+    },
+    {
+      "id": 1294,
+      "name": "黄色西装",
+      "description": "敢穿这套西装说明你大胆自信。"
+    },
+    {
+      "id": 1295,
+      "name": "热粉色衬衫",
+      "description": "热带粉色的丝绸衬衫。"
+    },
+    {
+      "id": 1296,
+      "name": "热带日出 T 恤",
+      "description": "这件 T 恤有椰子的味道。"
+    },
+    {
+      "id": 1297,
+      "name": "姜岛比基尼",
+      "description": "芬群岛的经典款。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1997,
+      "name": "魔法斑点衣",
+      "description": "有五彩斑点的上衣。"
+    },
+    {
+      "id": 1998,
+      "name": "五彩上衣",
+      "description": "有五彩能量而微微发光。袖子是深\r\n色的。"
+    },
+    {
+      "id": 1999,
+      "name": "五彩上衣",
+      "description": "有五彩能量而微微发光。袖子是白\r\n色的。"
+    }
+  ],
+  "pants": [
+    {
+      "id": 0,
+      "name": "农夫裤",
+      "description": "舒适耐用，适合长时间田间劳作。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 1,
+      "name": "短裤",
+      "description": "炎炎夏日的绝配……你的腿会很感\r\n激。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 2,
+      "name": "长裙",
+      "description": "长长的、飘逸的裙子。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 3,
+      "name": "短裙",
+      "description": "漂亮的裙子。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 4,
+      "name": "褶裙",
+      "description": "漂亮的褶裙。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 5,
+      "name": "恐龙裤",
+      "description": "大家都以为这种裤子很久以前就灭\r\n绝了！"
+    },
+    {
+      "id": 6,
+      "name": "草裙",
+      "description": "干草编织的裙子。"
+    },
+    {
+      "id": 7,
+      "name": "夏威夷草裙",
+      "description": "注定让你成为派对之星的裙子！"
+    },
+    {
+      "id": 8,
+      "name": "精灵裤",
+      "description": "下端鼓出来的裤子。你的愿望实现\r\n了！\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 9,
+      "name": "紧身裤",
+      "description": "很紧的裤子。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 10,
+      "name": "宽松裤",
+      "description": "很宽松的裤子。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 11,
+      "name": "简单长裙",
+      "description": "柔软光滑、中等长度的裙子。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 12,
+      "name": "休闲裤",
+      "description": "这条裤子给腿留出了更多空间。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 13,
+      "name": "休闲短裤",
+      "description": "这条短裤给腿留出了更多空间。\r\r\n\r\r\n可以染色。"
+    },
+    {
+      "id": 14,
+      "name": "圆点短裤",
+      "description": "哦呀！"
+    },
+    {
+      "id": 15,
+      "name": "镶边幸运紫色短裤",
+      "description": "镶了金边的紫色丝织短裤……"
+    },
+    {
+      "id": 998,
+      "name": "五彩裤子",
+      "description": "有五彩能量而微微发光的裤子。"
+    },
+    {
+      "id": 999,
+      "name": "五彩神怪裤",
+      "description": "有五彩能量而微微发光的裤子。"
+    }
+  ]
+}
