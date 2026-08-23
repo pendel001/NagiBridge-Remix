@@ -779,6 +779,10 @@ class BombMineBot(BombMiner):
             # 2026-08-22 恒：没炸弹+玩家同矿→已转【内部】协同（_run_cooperate 处理跟随+撤退），这里不重复出矿
             log("🔄 === 协同模式结束 ===")
             return False
+        if retreat_reason and retreat_reason.startswith("背包满"):
+            # ⭐ 背包满：不撤退，留原地停手（AI 手动 bomb_organize/腾格，重跑 resume 原地续）——恒 2026-08-23
+            log("  背包满已停脚本交AI手动整理（不撤退，留原地）→ 处理完重跑 bomb_mine 原地续层")
+            return True
         self.retreat_to_entrance(retreat_reason or "到目标层")
         return retreat_reason is None
 
