@@ -28,6 +28,7 @@ os.environ.setdefault("NAGI_URL", "http://localhost:7843")
 os.environ.setdefault("NAGI_HOST_URL", "http://localhost:7842")
 
 from bomb_common import (BombMiner, log, is_mine_location, extract_mine_level,
+                         ManualChestFull,
                          BOMB_RADIUS, backpack_plan, is_rock, drop_value, is_volcano)
 
 # ═══════════ 已移除：主动打怪（2026-08-09，按user要求移到协同模式） ═══════════
@@ -98,10 +99,27 @@ def save_progress(deepest):
         json.dump({"deepest_level": deepest}, f)
 
 
-def resume_start_level():
+def _current_mine_level(port):
+    """读 AI 当前所在层（在矿里返回内部层号，不在矿里返回 None）。"""
+    try:
+        s = requests.get(f"http://localhost:{port}/state", timeout=10).json()
+    except Exception:
+        return None
+    loc = (s.get("location") or {}).get("name", "")
+    return extract_mine_level(loc or "")
+
+
+def resume_start_level(port=None):
+    """头骨矿洞恢复层（恒 2026-08-23）：在矿里→原地续当前层；不在矿里→一律 121（第一层），
+    不准从进度续层（头骨进度只在坑里层层爬才连续，出了坑就回第一层）。"""
+    if port is not None:
+        cur = _current_mine_level(port)
+        if cur is not None and cur >= 121:
+            return cur
+        return 121
     deepest = load_progress()
     if deepest >= 121:
-        return 121  # 头骨矿洞无电梯，必须从第一层(121)一层层下，不能跳层
+        return 121
     if deepest < 5:
         return 1
     return (deepest // 5) * 5
@@ -139,7 +157,7 @@ class BombMineBot(BombMiner):
     """自主炸矿矿工"""
 
     def __init__(self, port, host_port, bomb_type="Bomb", min_covered=4,
-                 hp_threshold=50, follow_host=True, lead=2, autodrop=15, weapon=None):
+                 hp_threshold=50, follow_host=True, lead=2, autodrop=0, weapon=None):
         super().__init__(port=port, host_port=host_port, bomb_type=bomb_type)
         self.min_covered = min_covered
         self.hp_threshold = hp_threshold
@@ -595,6 +613,10 @@ class BombMineBot(BombMiner):
         self.no_pause_on_unfocus()   # 后台也能走位，不抢user的焦点
         try:
             return self._run_rush_inner(start_level, target_floor, follow_host, max_floors=max_floors)
+        except ManualChestFull as e:
+            # ⭐ 开箱满包 → 停脚本交 AI 手动（不撤退、菜单留给 AI 处理完重开续层）
+            log(f"  ⭐ 开箱满包停脚本 → 交AI手动（战利品: {e}）→ 处理完重开 bomb_mine 原地续层")
+            return True
         finally:
             self.restore_pause_on_unfocus()
 
@@ -612,15 +634,17 @@ class BombMineBot(BombMiner):
         if target_floor >= 121:
             self.touch_skull_statue()
 
-        # 头骨矿洞（>=121）无电梯：默认从第一层(121)层层下。
-        # 用户显式 --start>121 时 warp 到该层（如 --start 220 = 沙漠100层），不强制 121
+        # 头骨矿洞（>=121）无电梯。恒 2026-08-23：在矿里原地续（resume 返回当前层），
+        # 不在矿里一律从 121（第一层）开；显式 --start>121 则 warp 到该层跳过浅层。
         if target_floor >= 121:
             if start_level > 121:
-                if not self.safe_warp(f"UndergroundMine{start_level}", x=5, y=5):
-                    log(f"  ❌ warp 到 {start_level} 层失败")
-                    return False
+                # 在矿里且正好在该层 → 原地续（不重复 warp）；否则 warp 到该层
+                if extract_mine_level(self.my_location()) != start_level:
+                    if not self.safe_warp(f"UndergroundMine{start_level}", x=5, y=5):
+                        log(f"  ❌ warp 到 {start_level} 层失败")
+                        return False
                 level = extract_mine_level(self.my_location()) or start_level
-                log(f"  从第 {level} 层开始（跳过浅层）")
+                log(f"  从第 {level} 层开始（原地续，不清场不重启）")
             else:
                 if not self.safe_warp("UndergroundMine121", x=5, y=5):
                     log("  ❌ 进不了头骨矿洞第一层")
@@ -777,7 +801,7 @@ def main():
     parser.add_argument("--follow-host", type=int, default=1, help="user在矿里就一起冲层（1开0关）")
     parser.add_argument("--weapon", type=str, default=None, help="武器绑定：指定用某把武器（如 'Galaxy Hammer'），不指定自动选真实武器")
     parser.add_argument("--lead", type=int, default=2, help="和user保持的层差（默认2）")
-    parser.add_argument("--autodrop", type=int, default=15, help="背包满时自动丢价值≤此值的物品（0=只报不丢）")
+    parser.add_argument("--autodrop", type=int, default=0, help="自动丢物（已退役，恒 2026-08-23 全退役）：0=只规划不丢，交AI手动整理腾格")
     parser.add_argument("--resume", action="store_true", default=True, help="从炸矿进度恢复（默认开）")
     parser.add_argument("--no-resume", action="store_false", dest="resume")
     parser.add_argument("--check-progress", action="store_true", help="查看炸矿进度")
@@ -827,8 +851,8 @@ def main():
             auto = _town_elevator_start(port)
             tag = "🪜 电梯当前到"
         else:
-            auto = resume_start_level()
-            tag = "📋 炸矿进度恢复"
+            auto = resume_start_level(port)
+            tag = "📋 头骨沙漠恢复"
         if auto > 1:
             log(f"  {tag} {auto} 层开始")
         start = auto

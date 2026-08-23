@@ -8742,18 +8742,27 @@ public class ModEntry : Mod
                 if (grab == null) { tcs.SetResult(new { ok = false, error = "领取侧没有物品" }); return; }
                 string grabName = grab.DisplayName ?? grab.Name;
 
-                // 2) 找背包替换格（replace 指定名；空=自动找首个非工具/武器(-99/-98)）
+                // 2) 找背包格：replace=""(自动) 优先空槽（不丢物，恒 2026-08-23）；没空槽才找可替换物
+                //    显式 replace 指定名则仍替换该物（AI 想清特定格）。
                 int junkSlot = -1; string junkName = "";
-                for (int i = 0; i < Game1.player.Items.Count; i++)
+                if (replace == "")
                 {
-                    var it = Game1.player.Items[i];
-                    if (it == null) continue;
-                    bool match = replace != ""
-                        ? (it.Name.Equals(replace, StringComparison.OrdinalIgnoreCase)
-                           || it.DisplayName.Equals(replace, StringComparison.OrdinalIgnoreCase)
-                           || it.QualifiedItemId == replace)
-                        : (it.Category > -98);   // 避开工具(-99)/武器(-98)
-                    if (match) { junkSlot = i; junkName = it.DisplayName ?? it.Name; break; }
+                    for (int i = 0; i < Game1.player.Items.Count; i++)
+                        if (Game1.player.Items[i] == null) { junkSlot = i; junkName = "(空槽)"; break; }
+                }
+                if (junkSlot < 0)
+                {
+                    for (int i = 0; i < Game1.player.Items.Count; i++)
+                    {
+                        var it = Game1.player.Items[i];
+                        if (it == null) continue;
+                        bool match = replace != ""
+                            ? (it.Name.Equals(replace, StringComparison.OrdinalIgnoreCase)
+                               || it.DisplayName.Equals(replace, StringComparison.OrdinalIgnoreCase)
+                               || it.QualifiedItemId == replace)
+                            : (it.Category > -98);   // 避开工具(-99)/武器(-98)
+                        if (match) { junkSlot = i; junkName = it.DisplayName ?? it.Name; break; }
+                    }
                 }
                 if (junkSlot < 0) { tcs.SetResult(new { ok = false, error = $"背包无可替换物[{(replace == "" ? "自动" : replace)}]" }); return; }
 

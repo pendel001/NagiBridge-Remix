@@ -5663,7 +5663,7 @@ def bomb_retreat() -> str:
 
 @mcp.tool()
 def bomb_mine(target: int = 80, bomb: str = "Bomb", min_covered: int = 3,
-              follow_host: bool = True, lead: int = 2, autodrop: int = 15,
+              follow_host: bool = True, lead: int = 2, autodrop: int = 0,
               one_floor: bool = False) -> str:
     """💣 自主炸矿（贪心炸弹下矿）
     每层贪心找覆盖最多岩体的点放炸弹，生存优先（血低吃/撤、没炸弹撤、卡死检测）。
@@ -5679,7 +5679,7 @@ def bomb_mine(target: int = 80, bomb: str = "Bomb", min_covered: int = 3,
         min_covered: 至少覆盖N块岩体才炸（默认3）
         follow_host: user 在矿里就一起冲层/增援（默认 True）
         lead: 和 user 保持的层差（默认2）
-        autodrop: 背包满时自动丢价值≤此值的物品，0=只报规划不丢（默认15）
+        autodrop: 自动丢物（已退役），0=只规划不丢交AI手动整理（默认0）
         one_floor: 逐层模式，跑一层返回摘要不撤退（默认 False）
     """
     args_list = [f"--target", str(target), f"--bomb", bomb,
@@ -5688,7 +5688,7 @@ def bomb_mine(target: int = 80, bomb: str = "Bomb", min_covered: int = 3,
         args_list.extend(["--follow-host", "0"])
     if lead != 2:
         args_list.extend(["--lead", str(lead)])
-    if autodrop != 15:
+    if autodrop != 0:
         args_list.extend(["--autodrop", str(autodrop)])
     if one_floor:
         args_list.append("--one-floor")

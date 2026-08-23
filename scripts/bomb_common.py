@@ -27,6 +27,12 @@ import requests
 NAGI_URL = os.environ.get("NAGI_URL", "http://localhost:7843")
 HOST_URL = os.environ.get("NAGI_HOST_URL", "http://localhost:7842")
 
+
+class ManualChestFull(Exception):
+    """开箱弹出满包领取菜单（战利品卡领取侧）→ 交 AI 手动处理（claim_swap/ok），脚本停下不撤退。
+    恒 2026-08-23：满包领不走就停，不自动丢物。str(e)=战利品名列表。"""
+    pass
+
 # ── 炸弹半径（SDV 1.6 爆炸半径：樱桃1 / 黑炸弹3 / 大红4） ──
 BOMB_RADIUS = {"Cherry Bomb": 1, "Bomb": 3, "Mega Bomb": 4}
 BOMB_NAMES = set(BOMB_RADIUS)
@@ -1286,8 +1292,9 @@ class BombMiner:
     # ═══════════ 炸弹核心 ═══════════
 
     def open_treasure_chests(self):
-        """宝箱层：开完所有 Chest。开箱弹 ItemGrabMenu（宝箱物品菜单），背包满先 /drop 腾格再拿取关闭；
-        也可能弹 DialogueBox 提示。然后直接到固定梯子(15,11) confirm 下楼（防死循环）。"""
+        """宝箱层：开完所有 Chest。开箱弹 ItemGrabMenu（宝箱物品菜单）——满包领不走 → raise ManualChestFull
+        停脚本交 AI 手动（menu_claim_swap/ok，恒 2026-08-23 不自动丢物）；有空位 → 循环 claim_swap(prefer空槽) 拿完再关；
+        DialogueBox 则推进。开完直接走下楼逻辑，不卡死循环。"""
         data = self.surroundings(30)
         chests = [(t["x"], t["y"]) for t in data.get("tiles", []) if t.get("object") == "Chest"]
         opened = 0
@@ -1306,10 +1313,27 @@ class BombMiner:
                     menu = s.get("activeMenu") or {}
                     mt = menu.get("type")
                     if mt == "ItemGrabMenu":
-                        # 背包满先丢低价值物腾格（拿取需要空位），再点 okButton 关闭
-                        self.autodrop_cheap()
-                        self._post("/menu/click", {"button": "ok"})
-                        time.sleep(2.0)
+                        loot = self.read_grab_items()
+                        if not loot:
+                            # 空箱（上次已领）直接关
+                            self._post("/menu/click", {"button": "ok"})
+                            time.sleep(2.0)
+                        elif self.inventory_free_slots() <= 0:
+                            # ⭐ 满包领不走 → 停脚本交 AI 手动（不自动丢物，菜单留给 AI）——恒 2026-08-23
+                            log(f"  ⭐ 宝箱满包领不走（战利品: {loot}）→ 停脚本交AI手动: "
+                                f"menu read 看待领取 → menu_claim_swap(替换物)领取 或 menu_click(button=ok)放弃；"
+                                f"处理完重开脚本原地续层")
+                            raise ManualChestFull(", ".join(loot))
+                        else:
+                            # 有空位：循环 claim_swap（replace="" 优先放空槽，不丢物）拿完领取侧，再关
+                            while self.read_grab_items() and self.inventory_free_slots() > 0:
+                                r = self._post("/menu/claim_swap", {"replace": ""})
+                                if not r.get("ok"):
+                                    break
+                                log(f"  🎁 开箱领取: {r.get('claimed')}")
+                                time.sleep(0.3)
+                            self._post("/menu/click", {"button": "ok"})
+                            time.sleep(2.0)
                     elif mt == "DialogueBox":
                         self._post("/menu/click", {})
                         time.sleep(2.0)
@@ -1317,6 +1341,8 @@ class BombMiner:
                         break
                 opened += 1
                 log(f"  🎁 开宝箱 ({cx},{cy})")
+            except ManualChestFull:
+                raise   # ⭐ 满包停：向上抛（run_rush 接住干净停），不能被下面的 except Exception 吞掉——恒 2026-08-23
             except Exception:
                 pass
             time.sleep(1.0)
@@ -1342,6 +1368,25 @@ class BombMiner:
                     return
         except Exception:
             pass
+
+    def inventory_free_slots(self):
+        """背包空位数（拿战利品需要空位；=0 即满包）。"""
+        try:
+            s = self.state()
+            inv = s.get("inventory", [])
+            used = sum(1 for i in inv if i)
+            return s.get("player", {}).get("maxItems", 36) - used
+        except Exception:
+            return 0
+
+    def read_grab_items(self):
+        """读当前 ItemGrabMenu 领取侧真物品名列表（/menu items=ItemsToGrabMenu.actualInventory，
+        恒 2026-08-23 治本读端，非 stale inventory）。"""
+        try:
+            m = self._get("/menu")
+            return [it.get("name") for it in (m.get("items") or []) if it.get("name")]
+        except Exception:
+            return []
 
     def place_bomb_at(self, x, y, bomb_type=None):
         """在指定格放炸弹（站在旁边→面向它→use）。返回 (ok, msg)
@@ -2085,6 +2130,10 @@ def backpack_plan(bot, drop_below=15, need_slots=3):
             name = i.get("name")
             if not name:
                 continue
+            # ⭐ 2026-08-23 恒拍板：自动丢物全退役 → autodrop<=0 = 只规划不丢（交 AI 手动整理腾格）
+            if drop_below <= 0:
+                lines.append(f"  🚫 背包满（自动丢物已退役）→ 交AI手动整理（menu/丢 或 bomb_organize）")
+                break
             bot._post("/drop", {"name": name, "count": i.get("stack", 1)})
             log(f"  🗑️ 丢了 {name}×{i.get('stack', 1)} (保留{keep})")
             freed += 1
