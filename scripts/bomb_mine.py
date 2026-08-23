@@ -798,7 +798,7 @@ def main():
     parser.add_argument("--port", type=int, default=None, help="AI 角色端口（默认7843）")
     parser.add_argument("--host-port", type=int, default=None, help="房主(user)端口（默认7842）")
     parser.add_argument("--start", type=int, default=1, help="起始层（配合 --no-resume）")
-    parser.add_argument("--target", type=int, default=80, help="目标层（默认80）")
+    parser.add_argument("--target", type=int, default=0, help="目标层（0=按当前层自适应：头骨≥121→500、城镇→80）")
     parser.add_argument("--bomb", type=str, default="Bomb", help="炸弹类型：Bomb/Mega Bomb/Cherry Bomb")
     parser.add_argument("--min-covered", type=int, default=4, help="至少覆盖N块岩体才炸（默认4，爆炸区不重叠后效率够）")
     parser.add_argument("--hp-threshold", type=int, default=30, help="血量低于此%撤退（默认30，user建议）")
@@ -845,7 +845,19 @@ def main():
     port = args.port or int(_re.search(r'(\d+)', NAGI_URL).group(1))
     hport = args.host_port or int(_re.search(r'(\d+)', HOST_URL).group(1))
 
-    target = min(args.target, 500)  # 头骨矿洞也算 UndergroundMine121+，上限放宽到500（测深层用）
+    # ⭐ 2026-08-23 恒：曾默认 target=80 → AI 在头骨/沙漠用会把 AI 拉去鹈鹕镇矿。按当前层自适应。
+    target = args.target
+    if target <= 0:
+        try:
+            s = requests.get(f"http://localhost:{port}/state", timeout=10).json()
+            _loc = (s.get("location") or {}).get("name", "")
+        except Exception:
+            _loc = ""
+        lv = extract_mine_level(_loc) or 0
+        in_skull = lv >= 121 or _loc.startswith("SkullCave")   # 头骨矿层(≥121) 或 头骨入口
+        target = 500 if in_skull else 80
+        log(f"  🎯 目标层自适应: {target}" + ("（在头骨/沙漠）" if in_skull else ""))
+    target = min(target, 500)  # 头骨矿洞也算 UndergroundMine121+，上限放宽到500（测深层用）
 
     # 起始层：进度恢复
     # 鹈鹕镇矿井(target<121) → 动态读电梯（接"深处的危险"重置后=1）；头骨(≥121)无电梯走原逻辑
