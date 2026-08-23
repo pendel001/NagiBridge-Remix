@@ -5668,10 +5668,10 @@ def bomb_mine(target: int = 0, bomb: str = "Bomb", min_covered: int = 3,
     """💣 自主炸矿（贪心炸弹下矿）
     每层贪心找覆盖最多岩体的点放炸弹，生存优先（血低吃/撤、没炸弹撤、卡死检测）。
     user 在矿里就一起冲层（目标层=user 层数±lead），user 同层打架就 position 增援只打 user 的对手。
-    one_floor=True：逐层模式，只跑一层返回结构化摘要（含背包/附近掉落/整理建议），
-    不撤退；AI 在层间整理背包后再次调用继续下一层（整理频率：困难矿井满包每1层、其他每3层）。
-    ⚠️ 逐层模式=同步（等摘要确认整理），冲层模式=自动异步（后台跑，autodrop 自动丢低价值腾格）——
-    两者互不干扰：逐层要 AI 层间确认整理所以保持同步，冲层不需中途确认所以走后台。
+    one_floor=True：逐层模式，只跑一层返回结构化摘要（含背包/附近掉落），不撤退；
+    AI 看摘要再调用继续下一层。⚠️ 逐层整理已禁（恒 2026-08-23：竖井一跳3~15层，逐层等AI响应太慢易暴毙）
+    ——organize_suggested 恒 False，摘要只为可见性不定决策；清包交给异步后台（冲层模式）。
+    ⚠️ 逐层模式=同步（等摘要），冲层模式=自动异步（后台跑）；推荐用冲层模式（异步后台整理）。
 
     Args:
         target: 目标层（0=按当前层自适应：在头骨≥121→500、城镇→120；头骨矿洞也算 UndergroundMine121+）
@@ -5708,8 +5708,8 @@ def bomb_mine(target: int = 0, bomb: str = "Bomb", min_covered: int = 3,
 
 @mcp.tool()
 def bomb_organize(disable: bool = False, reset: bool = False) -> str:
-    """💼 整理背包状态控制（逐层炸矿配合用）
-    逐层模式摘要里 organize_suggested=true 时，AI 看背包决策后调用：
+    """💼 整理背包状态控制（⚠️ 逐层整理已禁 2026-08-23，此工具基本不主动用；如需手动重置计数可调）
+    仅在逐层模式摘要里 organize_suggested=true（已禁，恒 False）时 AI 才需配合：
     - disable=True：判定后续都不需要腾格（重要的都在格子里）→ 后续不再提示整理
     - reset=True：刚整理完背包 → 重置间隔计数，下次按地点频率再提示
     """

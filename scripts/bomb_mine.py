@@ -55,6 +55,10 @@ from bomb_common import (BombMiner, log, is_mine_location, extract_mine_level,
 PROGRESS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bomb_progress.json")
 ORGANIZE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bomb_organize.json")
 
+# ⭐ 2026-08-23 恒：禁用所有矿井的逐层整理（竖井一跳3~15层，逐层等AI响应一次太慢→暴毙概率大增），
+# 只留异步后台整理（连续模式后台跑，背包满自动停本层拾取、不逐层停等AI）。要恢复改 True。
+PER_FLOOR_ORGANIZE = False
+
 
 def load_organize_state():
     """整理背包状态：{disabled: AI判定后续不需要再整理, floors_since_organize: 距上次整理层数}"""
@@ -313,7 +317,8 @@ class BombMineBot(BombMiner):
 
     def build_summary(self, level, target_floor, organize_suggested, os_state,
                       retreat_reason=None):
-        """逐层模式结构化摘要（JSON），给 AI 在层间整理背包/捡遗漏掉落用。"""
+        """逐层模式结构化摘要（JSON），给 AI 参考背包/掉落。organize_suggested 恒 False（恒 2026-08-23：
+        逐层整理已禁），不再主动提示 AI 层间整理——清包交给异步后台；摘要只为可见性。"""
         s = self.state()
         p = s.get("player", {})
         inv = [{"name": i.get("name"), "stack": i.get("stack"),
@@ -745,10 +750,12 @@ class BombMineBot(BombMiner):
             floors_since += 1
             os_state["floors_since_organize"] = floors_since
             save_organize_state(os_state)
-            # 整理判定：满包 + 到间隔 + 未禁用（逐层模式摘要里提示 AI 整理）
-            organize_suggested = (not os_state.get("disabled")) and \
+            # 整理判定：满包 + 到间隔 + 未禁用 + 未关闭逐层整理（摘要仍输出背包/掉落供 AI 参考，
+            # 但 organize_suggested 恒 False = 不主动提示整理；清包交给异步后台——恒 2026-08-23）
+            organize_suggested = PER_FLOOR_ORGANIZE and \
+                                 (not os_state.get("disabled")) and \
                                  (floors_since >= self.organize_interval()) and \
-                                 (self.inventory_free_slots() <= 0)   # ⭐ 2026-08-23 恒：满包才算，≤3格空不触发
+                                 (self.inventory_free_slots() <= 0)
             if level > load_progress():
                 log(f"  🏆 新纪录：炸到第 {level} 层")
             if max_floors and floors_done >= max_floors:
