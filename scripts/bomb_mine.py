@@ -630,30 +630,30 @@ class BombMineBot(BombMiner):
         self.select(self.bomb_type)
         time.sleep(0.2)
 
-        # 头骨矿洞：先摸入口雕像加竖井概率（雕像位置每存档不同，动态扫，没找到就不摸）
-        if target_floor >= 121:
-            self.touch_skull_statue()
-
         # 头骨矿洞（>=121）无电梯。恒 2026-08-23：在矿里原地续，以下最优先——"只要已在头骨矿里就绝不 warp、
         # 直接原地续下一个行为"（防弹窗完重开脚本误 warp 重生成层面/回入口）。不在矿里才 121 开。
         if target_floor >= 121:
             cur_lv = extract_mine_level(self.my_location())
             if cur_lv is not None and cur_lv >= 121:
-                # ⭐ 已在头骨矿里 → 绝不 warp，原地续（恒 2026-08-23：弹窗完继续脚本也走这，不重生成）
+                # ⭐ 已在头骨矿里 → 绝不 warp、绝不摸雕像！雕像在沙漠入口，摸=传沙漠=重载层面→箱子刷新！
+                # 原地续（恒 2026-08-23：弹窗完继续脚本也走这，不重生成）。
                 level = cur_lv
-                log(f"  从第 {level} 层原地续（已在头骨矿里，不 warp 不重生成）")
-            elif start_level > 121:
-                # 不在头骨矿里但显式 --start>121 → warp 到该层跳过浅层
-                if not self.safe_warp(f"UndergroundMine{start_level}", x=5, y=5):
-                    log(f"  ❌ warp 到 {start_level} 层失败")
-                    return False
-                level = extract_mine_level(self.my_location()) or start_level
-                log(f"  从第 {level} 层开始（跳过浅层）")
+                log(f"  从第 {level} 层原地续（已在头骨矿里，不 warp 不重生成，不摸雕像）")
             else:
-                if not self.safe_warp("UndergroundMine121", x=5, y=5):
-                    log("  ❌ 进不了头骨矿洞第一层")
-                    return False
-                level = 121
+                # 不在头骨矿里 → 正常开局：先摸入口雕像加竖井概率（雕像在沙漠，此时还没进矿，传沙漠摸安全）
+                self.touch_skull_statue()
+                if start_level > 121:
+                    # 不在头骨矿里但显式 --start>121 → warp 到该层跳过浅层
+                    if not self.safe_warp(f"UndergroundMine{start_level}", x=5, y=5):
+                        log(f"  ❌ warp 到 {start_level} 层失败")
+                        return False
+                    level = extract_mine_level(self.my_location()) or start_level
+                    log(f"  从第 {level} 层开始（跳过浅层）")
+                else:
+                    if not self.safe_warp("UndergroundMine121", x=5, y=5):
+                        log("  ❌ 进不了头骨矿洞第一层")
+                        return False
+                    level = 121
         else:
             level = start_level
             # 显式 start（--no-resume）：无论当前在哪都 warp 到目标层——
