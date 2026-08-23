@@ -209,6 +209,25 @@ def check_firewall():
                f"  netsh advfirewall firewall add rule name=\"{FIREWALL_RULE}\" dir=in action=allow protocol=TCP localport={MCP_PORT}")
 
 
+# ── 8. 端口被占（服务器已在跑 → 别重复双击）──
+def check_port_busy():
+    """8000 端口是否已被占用（说明 MCP 服务器/别的进程在跑）。
+    被占 → 返回 ('busy', msg)：launcher 应停下别再启动第二个服务器（防白痴重复双击）。"""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(0.5)
+        try:
+            s.connect(("127.0.0.1", MCP_PORT))
+            return ("busy", f"端口 {MCP_PORT} 已被占用——MCP 服务器可能已在跑（或别的程序占用）。\n"
+                            "别重复双击！关掉这个窗口即可；要重启先停掉旧服务器。")
+        except OSError:
+            return ("free", f"端口 {MCP_PORT} 空闲 ✓")
+        finally:
+            s.close()
+    except Exception as e:
+        return ("free", f"端口检测跳过({e})")
+
+
 # ── 汇总 ──
 def main():
     print("═" * 52)
@@ -230,6 +249,12 @@ def main():
     # 🔒 防火墙（单独, 需管理员很常见）
     fw_ok, fw_msg = check_firewall()
     print(f"[{'✓' if fw_ok else '✗'}] 防火墙 8000: {fw_msg}")
+    # 🚦 端口被占 → 硬停（防白痴重复双击，别再起第二个服务器）
+    pstat, pmsg = check_port_busy()
+    if pstat == "busy":
+        print()
+        print(f"[✗] {pmsg}")
+        return 2
 
     ip = get_lan_ip()
     print()
