@@ -479,9 +479,10 @@ def _safe_fname(s: str) -> str:
     return "".join(c for c in str(s) if c.isalnum() or c in "-_")[:60] or "unknown"
 
 
-def _menu_advice(menu_type: str, active_menu: dict) -> str:
+def _menu_advice(menu_type: str, active_menu: dict, active_event: dict = None) -> str:
     """🧭 按菜单/对话类型提示可用工具（2026-08-15 恒：只细化对话+菜单，一行，不报位置工具）。
-    覆盖常见卡点（AI 看见菜单但不知调哪个工具）；ShippingMenu 已有专门处理，这里跳过。"""
+    覆盖常见卡点（AI 看见菜单但不知调哪个工具）；ShippingMenu 已有专门处理，这里跳过。
+    active_event=当前事件 → createQuestionDialogue 场景问句（事件激活时普通 option 点不中真回调）区分用（2026-08-23 恒）。"""
     m = (menu_type or "").lower()
     if m == "shippingmenu":
         return ""
@@ -501,6 +502,10 @@ def _menu_advice(menu_type: str, active_menu: dict) -> str:
         return "📦 领取/箱子：menu click 取件/领奖励"
     if m == "dialoguebox":
         if active_menu.get("responses"):
+            # 🎪 场景问句（createQuestionDialogue：星币商店换奖品/跳舞邀请等）——事件激活时普通 option=N 走
+            #   event.answerDialogueQuestion 点不中真回调，须 real=true 走真实 receiveLeftClick（2026-08-23 恒实测）
+            if active_event:
+                return "🗳️ 场景问句（事件）：menu click(option=N, **real=true**) 选择——事件激活时普通 option 点不中真回调"
             return "🗳️ 对话选项：menu click(option=N) 选择"
         return "💬 对话推进：menu advance(推进剧情/对话)；**有选项用 menu click(option=N) 选**（confirm 选不了选项）"
     if m == "readycheckdialog":
@@ -636,6 +641,33 @@ def _tv_show_today(day) -> str:
     return {0: "离地而居", 3: "离地而居", 6: "酱料女王"}.get((day - 1) % 7)
 
 
+def _festival_currency_str(data: dict) -> str:
+    """🎪 节日货币常驻注入（2026-08-27 恒）：在节日场地把该节日的专属货币跟在钱数后面。
+    - 秋收节（星露谷展览会，fall16，Temp 图，9:00 开）= **星币**，读 player.festivalScore（/state 已有）。
+    - 沙漠节（春15-17，DesertFestival 图，10:00 开）= **卡利科三花蛋**，= 背包里 name=='CalicoEgg' 的 stack 和
+      （反编译确认沙漠节 HUD `eggMoneyDial` 读 `Items.CountId("CalicoEgg")`——是三花蛋物品在背包才计数；恒确认"要带在包里才算"）。
+    用 /state 的 time(season/dayOfMonth/tod) + 地图判定，不依赖 activeEvent.id 格式。不是对应节日场地/未开节 → 空串。"""
+    try:
+        t = data.get("time") or {}
+        tod = int(t.get("timeOfDay", 0) or 0)
+        season = (t.get("season") or "").lower()
+        day = int(t.get("dayOfMonth", 1) or 1)
+        loc = (data.get("location") or {}).get("name", "")
+        p = data.get("player") or {}
+        # 秋收节：Temp 拍卖场图 + 秋16 + 9:00 后 → ⭐星币
+        if loc == "Temp" and season == "fall" and day == 16 and tod >= 900:
+            return f" | ⭐星币 {int(p.get('festivalScore') or 0)}"
+        # 沙漠节：DesertFestival 图 + 春15-17 + 10:00 后 → 🥚三花蛋（数背包 CalicoEgg 物品）
+        if "DesertFestival" in loc and season == "spring" and day in (15, 16, 17) and tod >= 1000:
+            eggs = sum(int(it.get("stack") or 0)
+                       for it in (data.get("inventory") or [])
+                       if "CalicoEgg" in (it.get("name") or ""))
+            return f" | 🥚三花蛋 {eggs}"
+        return ""
+    except Exception:
+        return ""
+
+
 def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
     """从状态数据构建状态速报。
 
@@ -741,14 +773,14 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
     except Exception:
         pass
 
-    # 🎪 节日限定 POI enum（2026-08-19 恒：节日当天在当前节日图注入，非节日不显示；跟背包升级 POI 一样条件出现）
+    # 🎪 节日限定 POI enum（2026-08-24 恒：动态——未交互在前、交互过沉底、组内按离 AI 近的先；非节日不显示）
     try:
-        _fps = _festival_pois_here(loc_name)
+        _fps = _festival_pois_sorted(loc_name, x, y, maxn=3)   # 省 token，只列前3
         if _fps:
-            _hint = "、".join(_n.split("(")[0] for _n, _d in _fps[:3])
-            if len(_fps) > 3:
-                _hint += f" 等{len(_fps)}项"
-            lines.append(f"  🎪 可: {_hint}")
+            _names = "、".join(_n.split("(")[0] for _n, _d in _fps)
+            _total = len(_festival_pois_here(loc_name))
+            _suffix = f" 等{_total}项（细节→festival poi）" if _total > len(_fps) else ""
+            lines.append(f"  🎪 可: {_names}{_suffix}")
     except Exception:
         pass
 
@@ -863,7 +895,12 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
     except Exception:
         pass
 
-    lines.append(f"❤️ {hp} | 💪 {st_str} | 💰 {money_str} | {bag_str}{tool_str}")
+    # 🎪 节日货币跟在钱数后（2026-08-27 恒：秋收节星币 / 沙漠节三花蛋；非节日场地空串）
+    try:
+        _fest_curr = _festival_currency_str(data)
+    except Exception:
+        _fest_curr = ""
+    lines.append(f"❤️ {hp} | 💪 {st_str} | 💰 {money_str}{_fest_curr} | {bag_str}{tool_str}")
 
     # 📚 手持书 → 提示用 read_book 读（别用 /use 放地上收不回；2026-08-16 恒测读书）
     try:
@@ -932,7 +969,7 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
     if active_menu:
         dialog = active_menu.get("dialogue")
         lines.append(f"📋 菜单打开: {menu_type}")
-        _adv = _menu_advice(menu_type, active_menu)
+        _adv = _menu_advice(menu_type, active_menu, active_event)
         if _adv:
             lines.append(_adv)
         # 过夜结算：游戏时间暂停的聊天窗口——和 user 复盘今天、商量明天，聊完才确认进下一天
@@ -979,6 +1016,13 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
         _mgh = _minigame_guide_hint()
         if _mgh:
             lines.append(_mgh)
+    except Exception:
+        pass
+    # 🎮 小游戏开始/结束检测（2026-08-24 恒：只报开始/结束，玩法引导在上面已有）
+    try:
+        _act = _activity_change_notice(data)
+        if _act:
+            lines.append(_act)
     except Exception:
         pass
     # 🎪 到达节日地点弹一次引导（当天一次，2026-08-16 恒：鱿鱼节到海滩弹）
@@ -1608,7 +1652,8 @@ def _with_state(result: str, force_full: bool = False) -> str:
 # ⚠️ 2026-08-15 修复：这些脚本默认打 host 7842（会挪恒的角色/耗恒体力），必须注入 --port AI端口
 _PORT_SCRIPTS = {"water_crops", "chop_trees", "clear_area", "mine_run", "fish_run",
                  "bomb_mine", "bomb_escort", "bomb_volcano", "farm_row", "go_to",
-                 "berry_run", "spot_run", "moss_run"}   # 🍓🪱 2026-08-17：摇树莓/挖斑点脚本注入 AI 端口（防挪恒角色）；🌿 2026-08-21 moss_run
+                 "berry_run", "spot_run", "moss_run", "trash_run", "fair_fishing"}
+                 # 🍓🪱 2026-08-17：摇树莓/挖斑点脚本注入 AI 端口（防挪恒角色）；🌿 2026-08-21 moss_run；🗑️ 2026-08-24 trash_run；🎣 2026-08-28 fair_fishing(秋收钓鱼兜底)
 
 # 🚀 自动异步白名单（2026-08-16 恒拍板）：便利工具跑这些长脚本 → 自动后台异步，AI 不用手动 script_start。
 # 长任务（钓鱼/挖矿/炸矿/收放机器/浇水可能很久）被动异步；短任务（清地/砍树/摸动物/捡采集等）保持同步。
@@ -1882,6 +1927,7 @@ def _apply_poi_stand_face(poi_name: str) -> str:
     返回"，朝X/站位"日志串；无配置或失败返回空串。交互仍交给 AI（interact/interact_at）。
     ⚠️ 农场设施不在 POI_FACE（动态检测），这里只处理固定可交互 POI。"""
     try:
+        _mark_festival_poi_name(poi_name)   # 导航到达节日 POI → 记入交互历史
         cfg = getattr(locations, "POI_FACE", {}).get(poi_name)
         if not cfg:
             return ""
@@ -4775,13 +4821,10 @@ def _pet_pets_natural() -> str:
 
 @mcp.tool()
 def pet_pet() -> str:
-    """🐾 宠物摸摸（自然走）：先摸当前场景猫狗（_pet_pets_natural），再摸家畜（pet_walk）
+    """🐾 摸摸宠物（猫狗，2026-08-24 恒：pet 只指猫狗）：当前场景自然走摸猫狗（_pet_pets_natural）。
+    ⚠️ 牲畜（牛羊鸡鸭）不在这里——用 care_animals（摸+挤奶剪毛+室外放牧）。
     走过去→面朝→interact，够不着 position 兜底。区别于 petall 作弊摸。"""
-    parts = [_pet_pets_natural()]
-    parts.append("")
-    out = _run_script("pet_walk", [], timeout=180)
-    parts.append(f"🐾 摸家畜报告：\n{out[:400]}")
-    return _with_state("\n".join(parts))
+    return _with_state(_pet_pets_natural())
 
 
 # ⚠️ pet_pets 已退役（2026-08-16 恒：作弊一条龙不要了）——AI 自己组合 care ops="pet water"
@@ -4789,62 +4832,58 @@ def pet_pet() -> str:
 
 
 def _find_animal_buildings() -> list:
-    """从 /map 找所有动物建筑（鸡舍/畜棚等）"""
+    """找农场上所有动物建筑（鸡舍/畜棚等）。
+    ⚠️ 2026-08-26 恒：原来读 /map，而 /map 是**跟着玩家当前位置走**的——
+    站在 FarmHouse/棚内时 buildings 返回 0 个 → 误判"没有动物建筑"。
+    实测新档站 FarmHouse：/map 0 个，/farm_buildings 7 个（含 Coop+Barn）。
+    目前被 care_animals 开头的 _warp_home_if_needed("Farm") 挡着没出事，
+    但那是运气不是设计——改读 /farm_buildings（直接读 Farm.buildings，与站位无关）。
+    /map 保留兜底：万一新端点出错还能退回老路。"""
+    animal_types = {"Deluxe Coop", "Big Coop", "Coop",
+                    "Deluxe Barn", "Big Barn", "Barn"}
+    try:
+        info = api.farm_buildings()
+        found = [b for b in info.get("buildings", []) if b.get("type") in animal_types]
+        if found:
+            return found
+    except Exception:
+        pass
     try:
         map_info = api.map_data()
-        animal_types = {"Deluxe Coop", "Big Coop", "Coop",
-                        "Deluxe Barn", "Big Barn", "Barn"}
         return [b for b in map_info.get("buildings", [])
                 if b.get("type") in animal_types]
     except Exception:
         return []
 
 
+def _pet_digest(out: str, limit: int = 500) -> str:
+    """从 pet_walk 输出里挑真正有信息的行（结果/失败/告警）。
+    ⚠️ 2026-08-26 恒：以前是 out[:300] / out[:400] 从**头部**硬截——
+    pet_walk 开头先打一串"· 名字 [类型] (x,y)"清单，300 字全被清单吃掉
+    （实测截在「橙子 [White C」），摸没摸到一个字都看不见，
+    只能靠尾巴那句"还剩N只"反推。现在丢清单行、保留结果尾巴。"""
+    keep = []
+    for ln in (out or "").splitlines():
+        t = ln.strip()
+        if not t:
+            continue
+        if "·" in t and "[" in t and "]" in t:      # 动物清单行 → 丢
+            continue
+        keep.append(t)
+    s = "\n".join(keep)
+    return s[-limit:] if len(s) > limit else s
+
+
 def _pet_animals_in_building() -> str:
-    """摸当前建筑内所有动物：走一圈 → petall → 复查补摸
-    避免逐个 interact 触发菜单/误触背包。
-    """
+    """摸当前建筑内牲畜（牛羊鸡鸭，2026-08-24 恒）：拟人自然走路摸（pet_walk 已改读 /animals 物理位置）。
+    室内空则提示可能跑 Farm 放牧（室外放牧动物交给 _grazing_care / care_animals）。"""
     try:
         data = api.animals()
         all_a = data.get("animals", [])
         if not all_a:
-            return "没有动物"
-
-        # 第一步：petall 大法
-        api.petall()
-        time.sleep(0.3)
-
-        # 第二步：复查漏网之鱼
-        data2 = api.animals()
-        still = [a for a in data2.get("animals", []) if not a.get("wasPetToday")]
-
-        if still:
-            # 还有漏的，逐个补摸
-            for a in still[:]:
-                try:
-                    ax, ay = a.get("x", 0), a.get("y", 0)
-                    # 4方向尝试
-                    for px, py, fd in [(ax, ay+1, 0), (ax+1, ay, 3), (ax-1, ay, 1), (ax, ay-1, 2)]:
-                        api.position(px, py)
-                        time.sleep(0.08)
-                        api.face(fd)
-                        time.sleep(0.08)
-                        api.key("confirm")
-                        time.sleep(0.15)
-                        m = api.menu()
-                        if m.get("open"):
-                            # 弹窗了说明摸到了 → 关掉
-                            api.key("confirm")
-                            time.sleep(0.1)
-                            api.key("confirm")
-                            time.sleep(0.1)
-                            # 从待摸列表移除
-                            still = [x for x in still if x.get("name") != a.get("name")]
-                            break
-                except Exception:
-                    continue
-
-        return f"摸了 {len(all_a) - len(still)}/{len(all_a)} 只，还剩 {len(still)} 只"
+            return "没有动物（可能跑 Farm 放牧了——care 会去 Farm 处理室外放牧动物）"
+        out = _run_script("pet_walk", [], timeout=300)
+        return f"🐄 摸牲畜：\n{_pet_digest(out)}"
     except Exception as e:
         return f"摸动物出错: {e}"
 
@@ -4862,22 +4901,24 @@ def _has_tool(name: str) -> bool:
         return False
 
 
-def _milk_shear_animals() -> str:
+def _milk_shear_animals(skip_grabber: bool = False) -> str:
     """挤牛奶+剪羊毛（2026-08-16）：对当前建筑内奶牛/绵羊选对应工具逐个交互。
     游戏自动处理：有产物收集（进背包），没产物弹提示（"没有奶/没毛"，小牛小羊无产物）。
-    不依赖 productReady 预判（自动采集器档 product 恒 None，仍可尝试交互）。"""
+    不依赖 productReady 预判（自动采集器档 product 恒 None，仍可尝试交互）。
+    skip_grabber=True：当在 Farm 上处理室外放牧动物时跳过"自动采集器→不用挤奶剪毛"判断（室外无自动采集器，2026-08-24 恒）。"""
     try:
         # ⚠️ 恒 2026-08-16：畜棚/鸡舍有自动采集器 → 产物已自动收，不用挤奶/剪毛，只摸摸
-        try:
-            _ms = api.machines()
-            if any("Grabber" in (x.get("type") or "") for x in (_ms.get("machines") or [])):
-                return "🤖 这间有自动采集器，产物已自动收集——不用挤奶/剪毛，只用 care animals 摸摸"
-        except Exception:
-            pass
+        if not skip_grabber:
+            try:
+                _ms = api.machines()
+                if any("Grabber" in (x.get("type") or "") for x in (_ms.get("machines") or [])):
+                    return "🤖 这间有自动采集器，产物已自动收集——不用挤奶/剪毛，只用 care animals 摸摸"
+            except Exception:
+                pass
         data = api.animals()
         all_a = data.get("animals", [])
         if not all_a:
-            return "没有动物"
+            return "没有动物（可能跑 Farm 放牧了）"
         # ⚠️ 恒 2026-08-16：奶牛+山羊=奶（挤奶桶），绵羊=羊毛（剪刀），猪（松露靠找）不管
         cows = [a for a in all_a if "Cow" in a.get("type", "") or "Goat" in a.get("type", "")]
         sheep = [a for a in all_a if a.get("type") == "Sheep"]
@@ -4975,18 +5016,67 @@ def _enter_building(b: dict) -> tuple:
     dx, dy = b.get("doorX", b["x"]), b.get("doorY", b["y"])
     logs = []
 
+    # 🚪 2026-08-26 恒：进门前先确保人已经在 Farm 上。
+    #    以前直接 walk_to_coord("Farm", dx, dy)——人要是还在上一个棚里，这就是跨图寻路，
+    #    而 C# 跨图 walk_to 会拿"第一条通向该图的 warp 落点"当入口（HandleWalkTo 扫 Game1.locations），
+    #    实测扫到的第一条是 FarmHouse(27,31) → Farm(64,15)，也就是农舍门口。
+    #    症状：查完一个棚要先大老远传回农舍、再从农舍走到下一个棚。
+    #    直接 warp 到目标门口下方，跨图这一段就没了。
+    try:
+        cur = api.state().get("location", {}).get("name", "")
+        if cur != "Farm":
+            api.warp("Farm", dx, dy + 1)
+            time.sleep(0.8)
+            logs.append(f"↩️ 从 {cur} 直接落到门口下方 ({dx},{dy + 1})，不绕农舍")
+    except Exception as e:
+        logs.append(f"⚠️ 回 Farm 失败: {e}")
+
     # walk_to 到门瓷砖
     api.walk_to_coord("Farm", dx, dy)
+    arrived = False
     for _ in range(20):
         s = api.state()
         if s["player"]["x"] == dx and s["player"]["y"] == dy:
+            arrived = True
             break
         time.sleep(0.5)
-    logs.append(f"走到门口 ({dx},{dy})")
 
-    # 进门：confirm → face(0) → key("X")
+    # ⚠️ 2026-08-26 恒：这行以前是无条件打印"走到门口"——walk_to 没走到也照报，
+    #    把"进门失败"的真实原因（压根没站上门格）盖得死死的。现在报真实落点。
+    #    门格必须精确站上才能进，差几格就 position 顶上去。
+    s = api.state()
+    px, py = s["player"]["x"], s["player"]["y"]
+    if arrived:
+        logs.append(f"走到门口 ({dx},{dy})")
+    else:
+        logs.append(f"⚠️ 没走到门格：目标({dx},{dy}) 实际({px},{py})")
+        try:
+            api.position(dx, dy)
+            time.sleep(0.5)
+            s = api.state()
+            px, py = s["player"]["x"], s["player"]["y"]
+            if (px, py) == (dx, dy):
+                logs.append(f"  → position 校正成功 ({px},{py})")
+            else:
+                logs.append(f"  → position 校正后仍在 ({px},{py})")
+        except Exception as e:
+            logs.append(f"  → position 校正失败: {e}")
+
+    # 进门：interact(confirm) → 当场抓"建造中"对话（2026-08-24 恒：进在建建筑按 confirm 会弹它、被后续按键点掉，
+    # 得在它刚出现时抓，别等序列结束后读——对话早已被点没）
     api.key("confirm")
-    time.sleep(0.3)
+    time.sleep(0.4)
+    try:
+        dlg = (api.menu().get("dialogue") or "").strip()
+        low = dlg.lower()
+        if any(k in low for k in ("建造中", "在建", "施工", "未完工", "under construction", "in construction", "being built", "construction")):
+            api.key("confirm")   # 点掉"建造中"对话
+            time.sleep(0.2)
+            logs.append(f"⚠️ 建筑在建中（未完工）：「{dlg}」——跳过")
+            return False, "\n".join(logs)
+    except Exception:
+        pass
+
     api.face(0)
     time.sleep(0.2)
     api.key("X")
@@ -4995,7 +5085,8 @@ def _enter_building(b: dict) -> tuple:
     s = api.state()
     loc = s.get("location", {}).get("name", "")
     if loc == "Farm":
-        logs.append("❌ 进门失败")
+        # 2026-08-26 恒：带上真实站位——光一句"进门失败"查不出是没站上门格还是门本身没反应
+        logs.append(f"❌ 进门失败（人在 Farm({s['player']['x']},{s['player']['y']})，门在({dx},{dy})）")
         return False, "\n".join(logs)
 
     logs.append(f"✅ 进入 {loc} ({s['player']['x']},{s['player']['y']})")
@@ -5018,21 +5109,39 @@ def care_building() -> str:
     return _with_state("\n".join(report_parts))
 
 
+def _grazing_care() -> str:
+    """🌾 室外放牧牲畜照料（2026-08-24 恒：忘关门牛羊鸡跑 Farm 上）。AI 站在 Farm 上调用——
+    读 api.animals()(=farm.animals 放牧动物)，拟人自然走路摸（pet_walk 已改读 /animals 物理位置，
+    petall 摸不到室外）+ 挤奶剪毛(_milk_shear_animals skip_grabber=True，室外无自动采集器)。无放牧动物→空串。"""
+    try:
+        data = api.animals()
+        if not data.get("animals") or not data.get("count"):
+            return ""   # 全在室内 / 没放牧动物 → 不打扰
+        out = _run_script("pet_walk", [], timeout=300)
+        parts = [f"🌾 室外放牧:\n{_pet_digest(out)}"]
+        mss = _milk_shear_animals(skip_grabber=True)
+        if mss and "没有动物" not in mss:
+            parts.append(mss)
+        return "\n".join(parts)
+    except Exception as e:
+        return f"🌾 室外放牧出错: {e}"
+
+
 @mcp.tool()
 def care_animals() -> str:
-    """🐄 摸动物 + 收产物（不进不出，不动门）
-    进门摸所有动物 + 收取产物，然后出门。
-    门由 AI 根据天气/季节决定是否开（open_doors/close_doors）。
-    冬天、雨天不用开门放牧。
+    """🐄 摸牲畜 + 收产物（牛羊鸡鸭，不进不出，不动门）
+    进门摸所有牲畜 + 收取产物，然后出门；最后补一遍室外放牧牲畜（忘关门跑 Farm 上的）。
+    门由 AI 根据天气/季节决定是否开（open_doors/close_doors）。冬天、雨天不用开门放牧。
+    ⚠️ 宠物（猫狗）用 pet_pet；牲畜（牛羊鸡鸭）用本工具。
     """
     warp_log = _warp_home_if_needed("Farm")
     report_parts = []
 
     buildings = _find_animal_buildings()
     if not buildings:
-        return _with_state(f"{warp_log}⚠️ 没找到动物建筑（鸡舍/畜棚）")
-
-    report_parts.append(f"🔍 发现 {len(buildings)} 个动物建筑")
+        report_parts.append("⚠️ 没找到动物建筑（鸡舍/畜棚）——但仍可能有室外放牧牲畜")
+    else:
+        report_parts.append(f"🔍 发现 {len(buildings)} 个动物建筑")
 
     for b in buildings:
         name = b["type"]
@@ -5045,7 +5154,7 @@ def care_animals() -> str:
         if not ok:
             continue
 
-        # 摸动物
+        # 摸牲畜
         pet_report = _pet_animals_in_building()
         report_parts.append(f"  🐄 {pet_report}")
         # 挤奶+剪毛（2026-08-16：奶牛/绵羊用对应工具交互，游戏自动处理有/无产物）
@@ -5059,6 +5168,11 @@ def care_animals() -> str:
             report_parts.append(f"  ✅ 出门")
         except Exception as e:
             report_parts.append(f"  ⚠️ 出门失败: {e}")
+
+    # 🌾 室外放牧牲畜（忘关门跑 Farm 上的，2026-08-24 恒）
+    grazing = _grazing_care()
+    if grazing:
+        report_parts.append(grazing)
 
     return _with_state(f"{warp_log}畜牧时间：\n" + "\n".join(report_parts) + "\n" + _progress_line("animals"))
 
@@ -5851,6 +5965,32 @@ def moss_run(radius: int = 25, target_max: int = 80, rounds: int = 5, dry_run: b
         args_list.append("--dry-run")
     out = _run_script("moss_run", args_list, timeout=600)
     return _with_state(f"🌿 苔藓搜刮报告：\n{out[:800]}")
+
+
+def trash_run(loc: str = "", pos: str = "", wait: float = 1.0, dry_run: bool = False) -> str:
+    """🗑️ 翻垃圾桶刮刮乐（scene 域，2026-08-24 恒拍板傻瓜式）
+    垃圾桶=地图瓦片 Action="Garbage <id>"（不是 loc.objects，/surroundings、/dump_tile 都看不到它），
+    翻 = 对桶瓦片 checkAction → performAction "Garbage <id>" → CheckGarbage；现有 /interact?x=&y= 直接就是
+    （源码 loc.checkAction(瓦片)），无需改 C#（2026-08-24 实测 interact 52,63 → actionTriggered:true 真翻了）。
+    每天每桶 1 次（CheckedGarbage），掉物= dailyLuck+每桶确定性RNG，空翻正常；钓技 Salvager 拾荒者 perk 强化战利品。
+    流程：逐桶 /position 到桶旁可站格 → /interact 桶瓦片 → 停 wait 秒等掉落物飞进包 → 报掉物。
+
+    Args:
+        loc: 只翻该场景的桶（默认翻预设全部）
+        pos: 临时桶坐标 "场景:x,y|场景:x,y"（追加，不进预设）
+        wait: 翻后停留秒（等掉落物进包，默认1.0）
+        dry_run: 只报桶不翻
+    """
+    args_list = []
+    if loc:
+        args_list += ["--loc", str(loc)]
+    if pos:
+        args_list += ["--pos", str(pos)]
+    args_list += ["--wait", str(wait)]
+    if dry_run:
+        args_list.append("--dry-run")
+    out = _run_script("trash_run", args_list, timeout=300)
+    return _with_state(f"🗑️ 翻垃圾桶报告：\n{out[:800]}")
 
 
 @mcp.tool()
@@ -7375,7 +7515,7 @@ def social(ops: str = "", **kw) -> str:
 def scene(ops: str = "", **kw) -> str:
     """🖱️ 场景交互域。ops: at(x,y点格) front/interact(点面前) use(挥工具) face(转向) select(拿手上)
     pickup(拿起家具) furniture(扫家具) pickup_scene(捡地面物) berry(浆果) spot(挖蚯蚓) moss(绿雨苔藓)
-    forge_help(锻造攻略) drop(丢物)。细节→help(scene)。
+    garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物)。细节→help(scene)。
     Args:
         ops: 操作序列
         **kw: 对应操作参数
@@ -7391,6 +7531,7 @@ def scene(ops: str = "", **kw) -> str:
         "berry": berry_run, "摇树莓": berry_run, "浆果": berry_run,
         "spot": spot_run, "挖斑点": spot_run, "挖蚯蚓": spot_run,
         "moss": moss_run, "搜刮苔藓": moss_run, "绿雨": moss_run,
+        "garbage": trash_run, "翻垃圾桶": trash_run, "翻桶": trash_run, "rummage": trash_run,
         "forge_help": lambda: _with_state(FORGE_GUIDE), "锻造帮助": lambda: _with_state(FORGE_GUIDE),
         "drop": drop_item, "丢": drop_item,
         "furniture": scan_furniture, "家具": scan_furniture,
@@ -7400,17 +7541,24 @@ def scene(ops: str = "", **kw) -> str:
 
 @mcp.tool()
 def menu(ops: str = "", **kw) -> str:
-    """📋 界面/菜单域（开→看→点）。ops: read(看菜单) advance(推进剧情) click(option/item/button/xy)
-    key(confirm/esc/数字按键) cancel(关) shop(逛店 place,want) sell(卖) bin(出货箱) cook(做饭) craft(合成)
-    recipes(菜谱) craftables(配方) forge(锻造) geode/geodes(砸晶球) customize(捏人) bundle(献祭板)
-    bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读技能书领配方)。细节→help(menu)。
+    """📋 界面/菜单域（开→看→点）。ops: read(看菜单) number(数量输入 value=N/只读 confirm=确定)
+    display_fill(农展台放满 items='钻石,山羊奶酪' 或 '珍珠×2' 一次放N件) advance(推进剧情)
+    click(option/item/button/xy) key(confirm/esc/数字按键) cancel(关) shop(逛店 place,want) sell(卖) bin(出货箱)
+    cook(做饭) craft(合成) recipes(菜谱) craftables(配方) forge(锻造) geode/geodes(砸晶球) customize(捏人)
+    bundle(献祭板) bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读技能书领配方)
+    claim_swap(满包接鱼/领箱子:原子替换领取 replace=要丢的物品名)
+    minigame(赌场小游戏点按钮 action=hit/stand/bet10/…) minigame_state(读牌面/转盘)。细节→help(menu)。
     ⚠️ buy 直购已退役(走真实商店)；read_mail 已退役(邮箱用 /state.mailbox+交互)。
+    🔢 number 专用：星露谷展览会 50g换1星星币兑换台 / 转盘押注的 NumberSelectionMenu（输数量+确定/取消）。
     Args:
         ops: 操作序列
         **kw: 对应操作参数
     """
     dispatch = {
         "read": read_menu, "看": read_menu,
+        "number": number_select, "数量": number_select, "数量框": number_select,
+        "display_fill": _menu_display_fill, "放满": _menu_display_fill, "填槽": _menu_display_fill,
+        "display_takeback": _menu_display_takeback, "收好": _menu_display_takeback, "收": _menu_display_takeback,
         "advance": advance_story, "推进": advance_story, "剧情": advance_story,
         "click": menu_click, "点": menu_click,
         "key": press_key, "按键": press_key,
@@ -7430,6 +7578,16 @@ def menu(ops: str = "", **kw) -> str:
         "bundle_kb": bundle_kb, "献祭知识": bundle_kb, "知识库": bundle_kb,
         "donate": museum_donate, "捐": museum_donate, "捐赠": museum_donate,
         "read_book": read_book, "读书": read_book, "读技能书": read_book,
+        # 🎁🎰 2026-08-26 恒：这三个原本没有任何域 op 可达（domain_selftest 报"功能断档"），
+        #    而注入的引导文案却在指挥 AI 直接调 menu_claim_swap/minigame_click——
+        #    域模式下这些顶层工具已被隐藏 → AI 照提示调一个不存在的工具，当场卡死。
+        #    claim_swap 尤其要命：它出现的时机正是背包已满、必须立刻决策的时候。
+        #    归 menu 域的理由：claim_swap 本就是 ItemGrabMenu 操作；赌场小游戏虽是
+        #    Game1.currentMinigame 不是 IClickableMenu，但 read_menu 已有回落（无菜单时报小游戏状态），
+        #    AI 用统一的 `menu read` 探状态不会踩空，放这里心智负担最小。
+        "claim_swap": menu_claim_swap, "换领": menu_claim_swap, "替换领取": menu_claim_swap,
+        "minigame": minigame_click, "小游戏": minigame_click, "赌场": minigame_click,
+        "minigame_state": minigame_state, "小游戏状态": minigame_state,
     }
     return _with_state(_ops_run(ops, dispatch, kw))
 
@@ -7758,6 +7916,95 @@ def _festival_pois_here(location: str) -> list:
             fc = f"朝{p['face']}" if p.get("face") is not None else ""
         out.append((p["poi"], f"🎪 {p['poi']} {loc} {st}{fc} — {p.get('desc','')}"))
     return out
+
+
+# 🎪 节日 POI 交互历史（2026-08-24 恒：`🎪 可:` 动态——近的先 + 交互过沉底）。
+# 跨天按 (season, day) 清空；AI 导航到达(walk_to/map_go)或按瓦片交互(interact_at)命中某 POI 即标记。
+_POI_DONE_TAG = None
+_POI_DONE: set = set()
+
+
+def _poi_detail(p: dict) -> str:
+    """🎪 单条节日 POI 的展示文案（坐标/站位/朝向 + 描述）。"""
+    t = p.get("tile") or (0, 0)
+    if t == (0, 0):
+        loc, st, fc = "📍坐标待实测", "", ""
+    else:
+        loc = f"({t[0]},{t[1]})"
+        st = f"站{p['stand']}" if p.get("stand") else ""
+        fc = f"朝{p['face']}" if p.get("face") is not None else ""
+    return f"🎪 {p['poi']} {loc} {st}{fc} — {p.get('desc','')}"
+
+
+def _festival_poi_names_now() -> dict:
+    """当前节日 POI 名/节日商店名 -> {tile, stand}，供按名字/瓦片标记交互历史。非节日 → {}。"""
+    d = _festival_now_data()
+    if not d.get("ok"):
+        return {}
+    key = (d["season"], d["day"])
+    names = {}
+    for p in calendar_data.FESTIVAL_POI.get(key, []):
+        if p.get("tile") == (0, 0) and not p.get("stand"):
+            continue
+        names[p["poi"]] = {"tile": p.get("tile"), "stand": p.get("stand")}
+    shop = calendar_data.FESTIVAL_SHOPS.get(key)
+    if shop:
+        _n = str(shop.get("note", "节日商店")).split("：")[0]
+        names[_n] = {"tile": shop.get("counter"), "stand": shop.get("counter")}
+    return names
+
+
+def _mark_festival_poi_name(name: str) -> None:
+    """导航到达某 POI（walk_to/map_go/go_to 的 _apply_poi_stand_face 处调）→ 记入交互历史。"""
+    if name and name in _festival_poi_names_now():
+        _POI_DONE.add(name)
+
+
+def _mark_festival_poi_tile(x, y) -> None:
+    """按瓦片交互（interact_at）→ 若命中某节日 POI 的 tile/stand，记入交互历史。"""
+    if not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
+        return
+    for name, co in _festival_poi_names_now().items():
+        for c in (co.get("tile"), co.get("stand")):
+            if c and (int(c[0]), int(c[1])) == (int(x), int(y)):
+                _POI_DONE.add(name)
+                return
+
+
+def _festival_pois_sorted(location: str, x=0, y=0, maxn: int = 5) -> list:
+    """🎪 节日 POI 动态排序：未交互的在先、交互过的沉底；组内按离 AI（曼哈顿）近的先。
+    返回前 maxn 项 [(名称, 详情)]——状态条 `🎪 可:` 注入用（2026-08-24）。"""
+    d = _festival_now_data()
+    if not d.get("ok"):
+        return []
+    key = (d["season"], d["day"])
+    global _POI_DONE_TAG
+    if _POI_DONE_TAG != key:                      # 跨天清空
+        _POI_DONE.clear()
+        _POI_DONE_TAG = key
+    try:
+        xi, yi = int(x), int(y)                   # AI 坐标可能 "?"，容错回 0
+    except Exception:
+        xi = yi = 0
+
+    items = []
+    shop = calendar_data.FESTIVAL_SHOPS.get(key)
+    if shop and shop.get("location") == location:
+        nm = str(shop.get("note", "节日商店")).split("：")[0]
+        t = shop.get("counter") or (0, 0)
+        dist = abs(t[0] - xi) + abs(t[1] - yi) if t != (0, 0) else 10 ** 6
+        items.append((nm, nm in _POI_DONE, dist,
+                      f"🐷 节日商店：站{shop['counter']}朝{shop['face']} → {shop.get('note','')}"))
+    for p in calendar_data.FESTIVAL_POI.get(key, []):
+        if p.get("location") != location:
+            continue
+        nm = p["poi"]
+        t = p.get("tile") or (0, 0)
+        dist = abs(t[0] - xi) + abs(t[1] - yi) if t != (0, 0) else 10 ** 6
+        items.append((nm, nm in _POI_DONE, dist, _poi_detail(p)))
+
+    items.sort(key=lambda i: (i[1], i[2]))        # 未交互先 -> 组内距离近先
+    return [(nm, dt) for nm, hd, ds, dt in items[:maxn]]
 
 
 def _festival_pois_all() -> list:
@@ -8336,26 +8583,33 @@ def _minigame_guide_hint() -> str:
         mg = (api.state().get("player") or {}).get("minigame")
         if not mg:
             return ""
+        # ⚠️ 2026-08-26 恒：文案一律写**域形式**（menu minigame …）。
+        #    以前写裸工具名 minigame_click(...)，而域模式下该工具已被隐藏 → AI 照提示调不存在的工具。
         if mg == "Slots":
-            return "🎰 老虎机：minigame_click(action=bet10/bet100) 下注 · action=done 退出"
+            return "🎰 老虎机：menu minigame action=bet10/bet100 下注 · action=done 退出 · menu read 看转盘"
         if mg == "CalicoJack":
-            return "🃏 21点：minigame_click(action=hit) 加牌 · stand 停牌 · double 加倍 · quit 退出"
-        return f"🎰 小游戏 {mg}：用 minigame_click(action=...) 操作"
+            return "🃏 21点：menu minigame action=hit 加牌 · stand 停牌 · double 加倍 · quit 退出 · menu read 看牌面"
+        return f"🎰 小游戏 {mg}：用 menu minigame action=... 操作（menu read 读现状）"
     except Exception:
         return ""
 
 
 def _festival_activity_hint(menu_type: str = "") -> str:
-    """🎪 节日限时小游戏提示（2026-08-16）：ReadyCheckDialog/BobberBar → 注入今天节日引导。
-    让 AI 在小游戏/就绪确认时知道该去哪/干嘛（如冰钓比赛限时、只算池塘的鱼）。"""
+    """🎪 节日限时小游戏提示（2026-08-16）：ReadyCheckDialog/BobberBar → 注入今天节日引导；
+    农展台(StorageContainer)/数量框(NumberSelectionMenu) → 专用操作引导（2026-08-24 恒）。
+    让 AI 在节日小游戏/专用菜单打开时知道该干嘛（放展位/输数量/就绪/冰钓限时）。"""
     try:
-        if menu_type not in ("ReadyCheckDialog", "BobberBar"):
-            return ""
         d = _festival_now_data()
         if not d.get("ok"):
             return ""
         f = calendar_data.get_festival_today(d["season"], d["day"])
         if not f:
+            return ""
+        if menu_type == "StorageContainer":
+            return "🏆 农展台(放9件评分)：festival display_fill items='名,名…' 一次放满 · display_takeback 全部收好(评完必收)"
+        if menu_type == "NumberSelectionMenu":
+            return "🔢 数量框(金币换星币/转盘押注)：menu number value=N 设数量 · confirm=True 点确定 · button=cancel 取消"
+        if menu_type not in ("ReadyCheckDialog", "BobberBar"):
             return ""
         guide = _fest_guide(calendar_data.FESTIVAL_GUIDE.get((d["season"], d["day"]), ""))
         if not guide:
@@ -8363,6 +8617,90 @@ def _festival_activity_hint(menu_type: str = "") -> str:
         if menu_type == "ReadyCheckDialog":
             return f"🫂 {f['name']} 就绪确认——全员确认后开始！{guide}"
         return f"🎣 {f['name']} 钓鱼小游戏中（限时）：{guide}"
+    except Exception:
+        return ""
+
+
+# ── 🎮 小游戏开始/结束检测（2026-08-24 恒）────
+# 玩法引导已由 _festival_activity_hint/_minigame_guide_hint 注入；本检测只补"开始/结束"触发信号，
+# 让 AI 知道现在进入/退出小游戏。照 _buff_reminder 对比上次活动键，只在状态变化时弹一行。
+_ACT_TRACK = {"key": ""}
+
+
+def _activity_display_name(key: str) -> str:
+    """小游戏活动键→人类可读名。key 形如 casino:Slots / event:festival_spring13 / menu:BobberBar。"""
+    try:
+        if key.startswith("casino:"):
+            return {"casino:Slots": "老虎机", "casino:CalicoJack": "21点"}.get(key, key.split(":", 1)[1])
+        if key.startswith("mg:"):
+            # 通用 Minigame 映射（未知回退原始名，不让 AI 看到空白键）。反编译确认这些子类名叫啥（2026-08-27）。
+            return {"mg:FishingGame": "钓鱼小游戏", "mg:MineCart": "矿车游戏",
+                    "mg:AbigailGame": "Prairie King街机", "mg:CraneGame": "抓娃娃机",
+                    "mg:Darts": "飞镖", "mg:TargetGame": "弹弓游戏",
+                    "mg:BoatJourney": "小船历险", "mg:RobotBlastoff": "机器人升空"}.get(key, key.split(":", 1)[1])
+        if key.startswith("menu:"):
+            return {"menu:BobberBar": "钓鱼小游戏", "menu:ReadyCheckDialog": "节日活动就绪",
+                    "menu:StrengthGame": "力量测试"}.get(key, "小游戏菜单")
+        if key.startswith("event:"):
+            try:
+                d = _festival_now_data()
+                if d.get("ok"):
+                    f = calendar_data.get_festival_today(d["season"], d["day"])
+                    if f:
+                        return f["name"]
+            except Exception:
+                pass
+            return "节日活动"
+        return key
+    except Exception:
+        return key
+
+
+def _current_activity_key(st: dict) -> str:
+    """从 /state 数据算当前小游戏活动键；无→""。只认小游戏类信号，背包/商店/剧情等普通弹窗不触发。
+    ⚠️ ReadyCheckDialog 也用于睡觉确认——只有【节日当天且不在床】才算节日小游戏就绪。"""
+    try:
+        p = st.get("player") or {}
+        mg = p.get("minigame")
+        if mg in ("Slots", "CalicoJack"):
+            return f"casino:{mg}"
+        if mg:
+            # 通用：任意 Minigame 对象（秋收钓鱼FishingGame/街机矿车/飞镖/弹弓……）非空即"小游戏在线"。
+            # 反编译确认这些全是 StardewValley.Minigames 子类，一条规则覆盖，无需逐个节日写白名单（2026-08-27）。
+            return f"mg:{mg}"
+        am = st.get("activeMenu") or {}
+        amt = am.get("type")
+        if amt == "BobberBar":
+            return "menu:BobberBar"
+        if amt == "StrengthGame":
+            return "menu:StrengthGame"
+        if amt == "ReadyCheckDialog":
+            in_bed = bool(p.get("isInBed") or p.get("isSleeping"))
+            d = _festival_now_data()
+            return ("menu:ReadyCheckDialog" if (d.get("ok") and not in_bed) else "")
+        ev = st.get("activeEvent") or {}
+        evid = ev.get("id")
+        if evid and evid != "-1" and str(evid).startswith("festival_"):
+            return f"event:{evid}"
+        return ""
+    except Exception:
+        return ""
+
+
+def _activity_change_notice(st: dict) -> str:
+    """🎮 小游戏开始/结束检测（只报开始/结束，不给玩法）：对比上次活动键，状态变化时弹一行。
+    ""→key 开始·key→"" 结束·key→key2 切换。st=已读 /state 数据（复用，免二次调用）。"""
+    try:
+        cur = _current_activity_key(st)
+        prev = _ACT_TRACK.get("key", "")
+        _ACT_TRACK["key"] = cur
+        if prev == cur:
+            return ""
+        if not prev and cur:
+            return f"🎮 小游戏开始：{_activity_display_name(cur)}"
+        if prev and not cur:
+            return f"🎮 小游戏结束：{_activity_display_name(prev)}"
+        return f"🎮 小游戏切换：{_activity_display_name(prev)}→{_activity_display_name(cur)}"
     except Exception:
         return ""
 
@@ -8545,6 +8883,67 @@ def _festival_poi() -> str:
         return f"❌ {e}"
 
 
+def _festival_strength(delay: int = 400) -> str:
+    """💪 力量测试（星露谷展览会/秋16，反编译 StrengthGame.cs）：AI 调 delay(毫秒) 摸索逼近99。
+    【delay 区间】单轮时长有上限：进度条**完整一轮 0→99→0 约 1秒**(恒 2026-08-23 观感，半程~0.5s到顶)，
+    峰值每 ~1s 出现一次；推荐试 delay=200~1300ms 抓峰值（硬上限 2000ms 逾限直接 clamp——AI 别无限等）。
+    一次调用=完整一轮：开机器 → 等 delay → 挥锤 → **读结果对话 + 点掉那多余一下(清场)** → 返还「力量等级：X」。
+    机制：power 0↔100 震荡(changeSpeed=3或4 每局随机)→ 敲击后 ~640ms 冻结=等级；≥99 大成功 / <2 极弱都 festivalScore+1；
+    每局速度随机→ 不能锁 99，= 在盲猜和找规律间摸拍子的乐趣。"""
+    try:
+        # 清残留（上一个结果对话/StrengthGame）
+        for _ in range(4):
+            m = api._get("/menu")
+            if not m.get("open"):
+                break
+            if m.get("type") in ("DialogueBox", "StrengthGame"):
+                api._post("/click", {"no_move": True, "no_mouse": True})
+                time.sleep(0.4)
+            else:
+                break
+        # 开/复用力�测试机（站 29,56 朝右 1，机器 30,56）
+        m = api._get("/menu")
+        if not (m.get("open") and m.get("type") == "StrengthGame"):
+            api._post("/position", {"x": 29, "y": 56})
+            time.sleep(0.6)
+            api._post("/face", {"direction": 1})
+            time.sleep(0.3)
+            api._post("/interact", {"x": 30, "y": 56})
+            time.sleep(1.0)
+            m = api._get("/menu")
+            if not (m.get("open") and m.get("type") == "StrengthGame"):
+                return f"⚠️ 力量测试没开（当前: {m.get('type')}）"
+        # 等 delay（clamp 硬上限 2000ms）
+        delay = min(max(int(delay), 0), 2000)
+        time.sleep(delay / 1000.0)
+        # 挥锤
+        api._post("/click", {"no_move": True, "no_mouse": True})
+        # 轮询结果对话（约1.6~2.6s 后弹）
+        result = ""
+        for _ in range(22):
+            time.sleep(0.2)
+            m = api._get("/menu")
+            if m.get("open") and m.get("type") == "DialogueBox":
+                dlg = (m.get("dialogue") or "").strip()
+                if dlg and ("力量等级" in dlg):
+                    result = dlg
+                    break
+        # 点掉多余那一两下（结果对话→退 StrengthGame），清场
+        for _ in range(3):
+            m = api._get("/menu")
+            if not m.get("open"):
+                break
+            api._post("/click", {"no_move": True, "no_mouse": True})
+            time.sleep(0.4)
+        if not result:
+            return f"🔨 已挥锤 delay={delay}ms，但结果对话没读到（可能时序/已点掉）"
+        return (f"🔨 {result}（delay={delay}ms）"
+                f"\n💡 结果每局有随机(速度3/4)；进度条**循环震荡**，高点和低谷约每1s交替——可多试几个delay先看出波形，"
+                f"再奔着高点去，别只往单峰收缩（2026-08-23 恒：保留乐趣，只点机制不教策略）")
+    except Exception as e:
+        return f"❌ {e}"
+
+
 def _flower_dance_guard() -> str:
     """💃 花舞节门禁：dance 只在花舞节当天(spring24)暴露（恒 2026-08-20：非花舞节不显示）。
     返回空串=放行；否则=拒绝原因。"""
@@ -8647,6 +9046,10 @@ def festival(ops: str = "", **kw) -> str:
         "help": _festival_help, "引导": _festival_help, "玩法": _festival_help,
         "prep": _festival_prep, "准备": _festival_prep, "备战": _festival_prep,
         "poi": _festival_poi, "限定": _festival_poi, "厨师": _festival_poi,
+        "strength": _festival_strength, "力量": _festival_strength, "测力": _festival_strength,
+        "display_fill": _menu_display_fill, "放满": _menu_display_fill, "展位放": _menu_display_fill,
+        "display_takeback": _menu_display_takeback, "收好": _menu_display_takeback,
+        "收": _menu_display_takeback, "取回": _menu_display_takeback, "展位收": _menu_display_takeback,
     }
     return _with_state(_ops_run(ops, dispatch, kw))
 
@@ -8860,6 +9263,7 @@ def interact_at(tile_x: int, tile_y: int) -> str:
         _ensure_background()  # 开商店/锻造台等菜单前先确保不冻结
         r = api.interact_at(tile_x, tile_y)
         if r.get("ok") and r.get("actionTriggered"):
+            _mark_festival_poi_tile(tile_x, tile_y)   # 命中节日 POI 瓦片 → 记入交互历史
             what = r.get("furniture") or r.get("object") or "目标"
             return _with_state(f"🎯 与 {what} 交互成功")
         return _with_state(f"⚠️ 该位置没有可交互的东西（actionTriggered=false）")
@@ -9296,13 +9700,13 @@ _DOMAIN_GUIDES = {
 "care": "动物域(🐄 Farm)：animals(摸+收,不动门) building(这间屋) pet(猫狗) water(宠物碗) milk(挤奶剪毛) buy(买动物) doors(关门) petwalk(拟人摸) hay(干草) statue(祈福)。",
 "cabin": "小屋引导域(🏠 FarmHouse/Cabin/岛屋；不传=扫屋)：enum(扫屋查待收) collect(收机器) statue(雕像) furniture(扫家具) interact(点家具) pickup(拿起家具) sleep(睡觉)。",
 "social": "社交域：chat(跟NPC搭话) gift(送礼提好感) give(送玩家物品) send(发消息) emote(表情) friendship(查好感) movie(影院知识) snack(零食)。",
-"scene": "场景交互域(点东西/工具/转身/捡)：at(x,y)(点指定格/柜台) interact(点面前) use(挥工具) face(转向0上1右2下3左) select(拿手上) pickup(拿起家具) pickup_scene(捡当前场景物) berry(摇浆果) spot(挖蚯蚓点) moss(绿雨搜苔藓) forge_help(锻造攻略) drop(丢物) furniture(扫家具)。",
+"scene": "场景交互域(点东西/工具/转身/捡)：at(x,y)(点指定格/柜台) interact(点面前) use(挥工具) face(转向0上1右2下3左) select(拿手上) pickup(拿起家具) pickup_scene(捡当前场景物) berry(摇浆果) spot(挖蚯蚓点) moss(绿雨搜苔藓) garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物) furniture(扫家具)。",
 "menu": "菜单/界面域(开→看→点)：read(看菜单) advance(推进剧情/对话) click(option/item/button/xy 点) key(ok/esc/数字按键) cancel(关弹窗/撤就绪) shop(逛店) sell(卖商店) bin(投出货箱) cook(做饭) craft(合成) recipes(菜谱) craftables(配方) forge(锻造) geode/geodes(砸晶球) customize(捏人) bundle(献祭板) bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读技能书领配方)。",
 "quest": "任务域：list(全部) progress(进度)；接单走板上的 menu click(button=accept…)。",
 "storage": "箱子域：scan(扫当前图箱) store(存) take(取) smart(智能堆叠) layout(箱子网络) default/cleardefault/tag(默认箱/清/标记)。",
 "daily": "过日子域：sleep(睡觉) settle(确认过夜结算) eat(吃食物回血体力) wear(穿/脱衣物) lie_bed(躺床不过夜) heartbeat(心跳间隔) pause(后台不暂停) peek(看恒干嘛) whiteboard/wb_read/wb_pin/wb_clear(白板记忆) appearance(捏脸)。",
 "map": "导航域(🗺️跨图唯一入口)：lookup(查地点功能+出口) query(功能反查) go(走到目标/多段寻路+交通) walk(走到POI) movetile(同图精确走位) npc(找NPC) warp_safe(紧急逃脱)。⚠️出口走出口前一格；交通图腾柱>矿车>走路。",
-"festival": "节日域(🎪)：today(今天节日) next(下一个) go(去) info(实况) interact(互动) answer(应答) shop(节日商店) eggs(找蛋) egg_note(纸条) egg_run(捡蛋) dance(跳舞邀请) help(玩法) prep(备战) poi(限定点)。",
+"festival": "节日域(🎪)：today(今天节日) next(下一个) go(去) info(实况) interact(互动) answer(应答) shop(节日商店) eggs(找蛋) egg_note(纸条) egg_run(捡蛋) dance(跳舞邀请) strength(力量测试 delay=毫秒) help(玩法) prep(备战) poi(限定点)。",
 "fish": "钓鱼域(🎣 2026-08-22修复)：go(去钓 location=) info(查某地鱼) spots(钓点) bobber(浮漂样式) crab(蟹笼总览) crab_water(找水) crab_place(放笼) crab_bait(放饵) crab_collect(收笼)。⚠️鱼塘在 farm 域不在 fish。",
 "settings": "系统/设置域(⚙️ 合并捏脸进来)：status(看所有设置+退役工具) retire(退役工具) reactivate(召回) appearance(捏脸) customize(捏人) **confirm_look(核对捏人形象,ok前必做)** color(颜色条) hair/shirt/pants/hat/colorpreset(外观参考)。⚠️捏脸=创建定型:ok后set_appearance/捏人自动退役(不可逆);旧配置 settings(setting='async', value='on') 仍可。",
 }
@@ -10428,7 +10832,7 @@ def read_menu() -> str:
                         body = f"转盘{_st.get('slots')} 余额{_st.get('clubCoins')}🟣"
                 except Exception:
                     pass
-                return _with_state(f"🎰 小游戏 {_mg}（{body}）：minigame_click(action=hit/stand/quit 或 bet10/bet100/done)")
+                return _with_state(f"🎰 小游戏 {_mg}（{body}）：menu minigame action=hit/stand/quit 或 bet10/bet100/done")
             return _with_state("📋 当前没有菜单打开")
         t = m.get("type")
         lines = [f"📋 菜单: {t}"]
@@ -10504,16 +10908,27 @@ def read_menu() -> str:
         sl = m.get("slots")
         if sl and t != "ForgeMenu":
             lines.append(f"  槽位: {len(sl)} 个（点 slots 坐标放物品）")
+        # 🏆 农展台 StorageContainer（2026-08-24 恒：放9件评分；展示格+背包槽已由 DLL 暴露栏位坐标）
+        if t == "StorageContainer":
+            dsp = m.get("items") or []
+            _occ = [f"格{it['index']+1}:{it.get('name')}" for it in dsp
+                    if it.get('name') and it.get('name') != '（空）']
+            lines.append("  🏆 农展台展示格: " + ("、".join(_occ) if _occ else "空"))
+            _cds = [f"({it['bounds']['x']},{it['bounds']['y']})" for it in dsp if it.get('bounds')]
+            if _cds:
+                lines.append("  摆放坐标: " + " ".join(_cds) + "（点 slots 背包格拿起→点这些展示格放进）")
+            lines.append("  🎒 放: menu_click(x=背包格,y=背包格) → menu_click(x=展示格,y=展示格)；取回=点展示格拿起→点背包格放下")
         # 🎁 送礼菜单（冬星节神秘礼物）：点物品=送出，不是拿起！走 menu_click(item=名)
         if m.get("gift"):
-            lines.append("  🎁 送礼菜单：点物品直接送出（menu_click(item=物品名)），别点 okButton/收起——点了物品就被送走")
+            lines.append("  🎁 送礼菜单：点物品直接送出（menu click item=物品名），别点 okButton/收起——点了物品就被送走")
         # 🐟 满包接鱼/箱子领取（恒 2026-08-23 治本）：ItemGrabMenu 点领取物=拿起；背包满可手动替换或直接退出
         if t == "ItemGrabMenu":
-            lines.append("  🎁 ItemGrabMenu：点领取侧物品=拿起（一般领取用 menu_click(item=物品名, action=claim)）")
+            # ⚠️ 2026-08-26 恒：文案统一域形式——裸工具名在域模式下都被隐藏，AI 照着调会扑空
+            lines.append("  🎁 ItemGrabMenu：点领取侧物品=拿起（一般领取用 menu click item=物品名 action=claim）")
             lines.append("  🐟 背包满接鱼/箱子满（三选一，非必须替换）：")
-            lines.append("    ① 替换领取: menu_claim_swap(替换物名∈背包) 一步领取并丢弃旧物")
-            lines.append("    ② 拿起换进: menu_click(action=claim) 拿起 → 点背包某格换进 → menu_click(button=trashCan) 丢旧物")
-            lines.append("    ③ 直接退出(不替换→放弃这条鱼): menu_click(button=ok) 关菜单")
+            lines.append("    ① 替换领取: menu claim_swap replace=要丢的物品名（∈背包）一步领取并丢弃旧物")
+            lines.append("    ② 拿起换进: menu click action=claim 拿起 → 点背包某格换进 → menu click button=trashCan 丢旧物")
+            lines.append("    ③ 直接退出(不替换→放弃这条鱼): menu click button=ok 关菜单")
         if m.get("letterTitle"):
             lines.append(f"  📧 {m['letterTitle']}: {m.get('letterBody')}")
         return _with_state("\n".join(lines))
@@ -10521,7 +10936,156 @@ def read_menu() -> str:
         return _with_state(f"❌ 读取菜单失败: {e}")
 
 
+def _menu_display_fill(items: str = "") -> str:
+    """🏆 农展台(StorageContainer)一次放满空槽：指定物品名列表，一次工具调用
+    循环『点背包槽拿起 → 点展示格放进』N 件，不用一格格点。
+    items 逗号分隔，支持 名×N 要 N 个（如 '钻石×2,山羊奶酪'）；从展示格第一个空槽依次放。
+    例：menu ops=display_fill items='钻石,山羊奶酪,蛋黄酱'
+    Args:
+        items: 要放的物品名（逗号分隔；名×N=数量）
+    """
+    try:
+        _ensure_background()
+        m = api.menu()
+        if m.get("type") != "StorageContainer":
+            return _with_state(f"⚠️ 当前不是农展台(StorageContainer)，是 {m.get('type') or '无'}——先 scene interact 开农展台")
+        want = []
+        for part in (items or "").split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if "×" in part:
+                nm, ct = part.split("×", 1)
+                want += [nm.strip()] * max(0, int(ct or 1))
+            else:
+                want.append(part)
+        if not want:
+            return _with_state("⚠️ 没给 items，如 ops=display_fill items='钻石,山羊奶酪' 或 '珍珠×2'")
+        d = api._get("/state")
+        inv = d.get("inventory") or []
+        slots = {s["index"]: (s["x"], s["y"]) for s in (m.get("slots") or [])}
+        empty = [it for it in (m.get("items") or [])
+                 if (it.get("name") or "") in ("", "（空）") and it.get("bounds")]
+        if not empty:
+            return _with_state("🏆 展示格已满(9/9)")
+        used = set()          # 已用的背包槽(slotIndex)，防重复取同一格
+        placed = []
+        for nm in want:
+            if not empty:
+                placed.append(f"{nm}×未放(槽满)")
+                break
+            # /state inventory 的 name=英文、displayName=中文（AI 用中文名），两个都匹配
+            src = next((it for it in inv
+                        if it.get("slotIndex") not in used
+                        and (it.get("displayName") == nm or it.get("name") == nm
+                             or (it.get("name") or "").lower() == nm.lower())), None)
+            if src is None:
+                placed.append(f"{nm}×(背包无)")
+                continue
+            si = src.get("slotIndex")
+            sc = slots.get(si)
+            if not sc:
+                placed.append(f"{nm}×(无坐标)")
+                continue
+            used.add(si)
+            api.menu_click(x=sc[0], y=sc[1]); time.sleep(0.3)   # 背包槽拿起
+            ds = empty.pop(0)
+            b = ds["bounds"]
+            api.menu_click(x=b["x"], y=b["y"]); time.sleep(0.3)  # 展示格放进
+            placed.append(f"{nm}@格{ds['index'] + 1}")
+        note = f"（余{len(empty)}空槽）" if empty else "（满9格）"
+        return _with_state("🏆 放满: " + "、".join(placed) + note)
+    except Exception as e:
+        return _with_state(f"❌ 放满失败: {e}")
+
+
+def _menu_display_takeback() -> str:
+    """🏆 农展台(StorageContainer)一次性收好：把展示格所有物品撤回背包（评完'必须取回'）。
+    循环『点展示格(拿起)→点最前一个空背包槽(放回)』到格清空。例：menu ops=display_takeback
+    """
+    try:
+        _ensure_background()
+        m = api.menu()
+        if m.get("type") != "StorageContainer":
+            return _with_state(f"⚠️ 当前不是农展台(StorageContainer)，是 {m.get('type') or '无'}")
+        occupied = [it for it in (m.get("items") or [])
+                    if it.get("name") and it.get("name") != "（空）" and it.get("bounds")]
+        if not occupied:
+            return _with_state("🏆 展示格已全空")
+        d = api._get("/state")
+        taken = {it.get("slotIndex") for it in (d.get("inventory") or [])}
+        slots = {s["index"]: (s["x"], s["y"]) for s in (m.get("slots") or [])}
+        back = 0
+        for it in occupied:
+            b = it["bounds"]
+            api.menu_click(x=b["x"], y=b["y"]); time.sleep(0.3)            # 点展示格拿起
+            free = next((i for i in range(36) if i not in taken), None)     # 最前一个空背包槽
+            if free is None:
+                break
+            fc = slots.get(free)
+            if not fc:
+                break
+            api.menu_click(x=fc[0], y=fc[1]); time.sleep(0.3)               # 放回背包
+            taken.add(free)
+            back += 1
+        note = "（展示格已清空）" if back == len(occupied) else f"（收回{back}/{len(occupied)}，余仍在展示格）"
+        return _with_state(f"🏆 收好: {back} 件物品已取回背包{note}")
+    except Exception as e:
+        return _with_state(f"❌ 收好失败: {e}")
+
+
 @mcp.tool()
+def number_select(value: int = -1, confirm: bool = False) -> str:
+    """🔢 数量输入菜单（NumberSelectionMenu）：写数量框 + 可确定。
+    ⚠️ 星露谷展览会 50g换1星星币兑换台、转盘押注都弹它（对话完弹）。
+    · 只读：number_select() → 返回框当前文本 + min/max/单价（AI 判断能押/换几个）
+    · 设数量：number_select(value=N) → 写框（框每帧被游戏重读为 currentValue）
+    · 填完点确定：number_select(value=N, confirm=True) → 写框 + 直接点 okButton
+    · 取消：menu click(button=cancel)。
+    Args:
+        value: 要输入的数量（-1=只读不改）
+        confirm: True=填完直接点确定（否则只写框，确定/取消由 AI 分步调）
+    """
+    try:
+        _ensure_background()
+        data = {}
+        if value >= 0: data["value"] = value
+        if confirm: data["confirm"] = True
+        r = api.menu_number(value if value >= 0 else None, confirm)
+        if not r.get("ok"):
+            return _with_state(f"⚠️ {r.get('error', '数量输入失败')}")
+        cur = r.get("currentValue", 0)
+        price = r.get("price", -1)
+        pstr = f" 单价{price}g" if price >= 0 else ""
+        header = ""
+        if r.get("changed"):
+            header = f"✍️ 已设数量 {cur}" + (" ✅ 确定" if confirm else "")
+        return _with_state(f"{header}🔢 数量框={r.get('text')} (min{r.get('min')}~max{r.get('max')}{pstr})")
+    except Exception as e:
+        return _with_state(f"❌ 数量输入失败: {e}")
+
+
+def _fair_fishing_blocking() -> str:
+    """🎣 阻塞跑 fair_fishing（等秋收钓鱼小游戏结束），返回 Star币结果行。
+    2026-08-28 恒：异步后台时 AI 空转会调别的工具添乱（钓鱼最怕走位/开菜单）→ 改成菜单点击后**同步干等**，
+    AI 处于"等待工具返回"状态、不能添乱；游戏结束当场拿回"钓 N 条 +X 星币"。"""
+    import subprocess as _sp
+    script = os.path.join(SCRIPT_DIR, "fair_fishing.py")
+    args = [sys.executable, script, "--port", str(_ai_port())]
+    try:
+        proc = _sp.Popen(args, stdout=_sp.PIPE, stderr=_sp.STDOUT, text=True,
+                         encoding="utf-8", errors="replace", cwd=SCRIPT_DIR,
+                         env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"})
+        out, _ = proc.communicate(timeout=140)   # 游戏 ~100s + 结算，140s 上限
+        for ln in out.splitlines():
+            if "秋收钓鱼完成" in ln:
+                return ln.strip()
+        lines = [ln for ln in out.splitlines() if ln.strip()]
+        return lines[-1].strip() if lines else "（fair_fishing 无输出）"
+    except Exception as e:
+        return f"❌ fair_fishing 同步执行失败: {e}"
+
+
 def menu_click(option: int = -1, button: str = "", x: int = -1, y: int = -1, item: str = "", right: bool = False, quantity: int = 1, action: str = "", real: bool = False) -> str:
     """🖱️ 自适应点击当前菜单（商店/背包/奖励）
     按菜单类型自动适配：
@@ -10574,6 +11138,20 @@ def menu_click(option: int = -1, button: str = "", x: int = -1, y: int = -1, ite
                     _look_verified = False
                     return _with_state("🖱️ 已点击（ok）→ 角色已确认。🔒 捏脸/捏人工具已退役（基相外观定型，不可逆）。")
             extra = f" x{r.get('quantity')}" if r.get("quantity") else ""
+            # 🎣 秋收节钓鱼小游戏兜底（2026-08-28 恒）：点选"游戏（50金）"若起了 FishingGame → 自动后台兜底。
+            # 触发点=点下去的结果（起了小游戏），不是匹配选项文字——游戏里只有秋收钓鱼会启动 FishingGame。
+            # 最多等 ~3s 让小游戏注册（只确认"确实开了"，不用于判断时机）。fair_fishing.py 开头还会自查 minigame。
+            # ⚠️ 2026-08-28 实测小游戏 ~1.5s 才注册，1.2s 窗会漏 → 提到 3s（纯确认触发，非轮询时机）。
+            try:
+                for _ in range(10):
+                    time.sleep(0.3)
+                    if (api.state().get("player") or {}).get("minigame") == "FishingGame":
+                        # 🎣 2026-08-28 恒：改**阻塞**——同步跑 fair_fishing 等小游戏钓完，拿结果返回。
+                        #    异步会让 AI 空转乱调工具；阻塞则 AI 干等、不能添乱，结束当场拿"钓N条+X星币"。
+                        _res = _fair_fishing_blocking()
+                        return _with_state(f"🎣 钓鱼小游戏结束 → {_res}")
+            except Exception:
+                pass
             return _with_state(f"🖱️ 已点击（{r.get('clicked')}{extra}）")
         return _with_state(f"⚠️ {r.get('error', '点击失败')}")
     except Exception as e:

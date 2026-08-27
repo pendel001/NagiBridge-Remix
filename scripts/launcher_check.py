@@ -103,9 +103,16 @@ def check_smapi():
 
 # ── 4. mod 部署（缺/旧→自动复制 bin 产物到 C+F, 旧备份成 .bak-日期）──
 def check_mod():
-    src = os.path.join(ROOT_DIR, "bin", "Release", "net6.0", "NagiBridge.dll")
-    if not os.path.exists(src):
-        return _no("✗ 本地无编译产物 bin/Release/net6.0/NagiBridge.dll——先 dotnet build -c Release（不自动 build, 避免卡）")
+    # ⚠️ 2026-08-26 恒：以前写死 bin/Release/net6.0——但 `dotnet build` 不带 -c 出的是 **Debug**，
+    #    实际两盘部署的一直都是 Debug 产物。结果这步永远走 "先 dotnet build -c Release" 的死路，
+    #    自动部署从来没真正跑过（改了 DLL 以为同步了，其实没有）。
+    #    改成 Release/Debug 都找，取**较新**的那个。
+    cands = [os.path.join(ROOT_DIR, "bin", c, "net6.0", "NagiBridge.dll") for c in ("Release", "Debug")]
+    cands = [p for p in cands if os.path.exists(p)]
+    if not cands:
+        return _no("✗ 本地无编译产物 bin/{Release,Debug}/net6.0/NagiBridge.dll——先 dotnet build（不自动 build, 避免卡）")
+    src = max(cands, key=os.path.getmtime)
+    print(f"  产物: bin/{os.path.basename(os.path.dirname(os.path.dirname(src)))}/net6.0/NagiBridge.dll")
     src_m = os.path.getmtime(src)
     deployed = []
     changed = False
@@ -135,7 +142,10 @@ def check_mod():
             changed = True
             print(f"  {os.path.basename(gd)}: 已部署最新 DLL ✓")
         except Exception as e:
-            print(f"  {os.path.basename(gd)}: 部署失败({e})")
+            # 2026-08-26 恒：游戏开着时 DLL 被进程锁住，报 "Device or resource busy"/
+            # "另一个程序正在使用此文件"——不是权限问题，关掉游戏再跑就行。
+            hint = "（游戏还开着？DLL 被占用，关掉星露谷再跑）" if "busy" in str(e).lower() or "使用" in str(e) or "process" in str(e).lower() else ""
+            print(f"  {os.path.basename(gd)}: 部署失败({e}){hint}")
     if deployed:
         msg = "mod 部署 ✓ " + ", ".join(deployed)
         if changed:

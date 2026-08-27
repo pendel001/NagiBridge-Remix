@@ -326,6 +326,17 @@ def menu_click(option=None, button=None, x=None, y=None, item=None, right=None, 
     return _post("/menu/click", data)
 
 
+def menu_number(value=None, confirm=False):
+    """🔢 NumberSelectionMenu（数量输入）——反射写 numberSelectedBox.Text（同捏人 nameBox）。
+    星露谷展览会 50g 换 1 星星币兑换台 / 转盘押注都弹它。value 省略=只读（返回 box 文本 + min/max/price）；
+    value=N=设数量；confirm=True=填完直接点确定。取消用 /menu/click button=cancel。
+    返回 currentValue/min/max/price。"""
+    data = {}
+    if value is not None: data["value"] = value
+    if confirm: data["confirm"] = True
+    return _post("/menu/number", data)
+
+
 def minigame_click(action=None, x=None, y=None):
     """🎰 赌场小游戏（老虎机 Slots/21点 CalicoJack）点按钮——游戏原生 Minigame，/menu/click 对它无效。
     action 用语义点名：老虎机 bet10/bet100/done；21点 hit/stand/double/play_again/quit（反射定位按钮 bounds）。
@@ -404,8 +415,16 @@ def animals():
 
 
 def map_data():
-    """GET /map — 返回当前地图的建筑物、动物、NPC、传送点、动物"""
+    """GET /map — 返回**当前地图**的建筑物、动物、NPC、传送点
+    ⚠️ 2026-08-26 恒：名副其实——跟着玩家当前位置走。站在室内（FarmHouse/棚内）
+    读到的 buildings 是 0 个。要"农场上有哪些建筑"这种与站位无关的事实，用 farm_buildings()。"""
     return _get("/map")
+
+
+def farm_buildings():
+    """GET /farm_buildings — 农场所有建筑（直接读 Farm.buildings，与玩家站在哪无关）。
+    返回 {"buildings":[{type,x,y,width,height,doorX,doorY,indoorsName}, ...]}"""
+    return _get("/farm_buildings")
 
 
 def warp(location, x=None, y=None):

@@ -48,6 +48,7 @@ class VolcanoBot(BombMineBot):
                          follow_host=True, autodrop=autodrop, weapon=weapon)
         self.poll = poll
         self._last_wait_log = 0.0
+        self._last_swept_loc = None  # 一进层捡拾记忆（防止同一层重复扫，2026-08-27）
 
     def preflight(self):
         """火山预检（2026-08-16 恒）：只硬拦血量过低；没炸弹/没武器 → 黄（骑行模式可切镐子硬跟）。
@@ -104,6 +105,33 @@ class VolcanoBot(BombMineBot):
             time.sleep(1.0)  # 整轮失败可能是地图还在加载，等 1s 再试
         log(f"  ⚠️ warp 到 {hloc} 失败，等下轮重试")
         return False
+
+    # ═══════════ 一进层先捡（防炸弹炸没龙牙/采集物） ═══════════
+
+    def sweep_pickups_on_entry(self):
+        """进层先捡——一进图就扫地上采集物/高价值掉落，捡完再炸（恒 2026-08-27）。
+        火山龙牙=(O)852、熔岩菇、宝石等是 /surroundings 的 object，会被炸弹炸没；
+        /debris 的高价值掉落（银河之魂/五彩/铱/放射/龙牙）同理。先捡再炸就保得住。
+        仅每层扫一次（_last_swept_loc 记上次扫过的层，同层不重复），捡完这轮停下、
+        下轮才进炸矿/打怪逻辑，保证"有就先捡、再炸"。返回捡了几个。"""
+        loc = self.my_location()
+        if not self.is_volcano_loc(loc):
+            return 0
+        if loc == getattr(self, "_last_swept_loc", None):
+            return 0  # 本层已经扫过了（防同层反复扫描）
+        self._last_swept_loc = loc
+        picked = 0
+        # 1) 地上采集物/龙牙（surroundings object：熔岩菇/龙牙/宝石等）——炸弹会炸没，优先捡
+        try:
+            picked += self.pick_forage_nearby(radius=14, max_items=6)
+        except Exception:
+            pass
+        # 2) 高价值掉落（/debris：银河之魂/五彩碎片/铱/放射/龙牙）
+        try:
+            picked += self.pick_valuable_drops(max_items=4)
+        except Exception:
+            pass
+        return picked
 
     # ═══════════ 火山近身战斗（不追远，防走熔岩） ═══════════
 
@@ -224,10 +252,19 @@ class VolcanoBot(BombMineBot):
             if hloc != my_loc:
                 if self.warp_to_host(hloc, hx, hy):
                     follow_count += 1
+                    # ⭐ 一进层先捡（龙牙/熔岩菇/宝石/高价值掉落）再炸——防炸弹把龙牙炸没（2026-08-27）
+                    if self.sweep_pickups_on_entry():
+                        log("  🍄 进层捡拾完毕")
                 time.sleep(0.5)
                 continue
 
-            # ── 同层：帮user打怪 → 炸矿簇 → 自保近战 → 等user ──
+            # ── 同层：进层先捡 → 帮user打怪 → 炸矿簇 → 自保近战 → 等user ──
+            # ⭐ 一进层就扫掉落（龙牙/熔岩菇/宝石/高价值），捡完才进炸矿/打怪——_last_swept_loc
+            #    同层只跑一次，捡了就 continue，下一轮自然落到炸矿（恒 2026-08-27）
+            if self.sweep_pickups_on_entry():
+                log("  🍄 进层捡拾完毕")
+                time.sleep(0.3)
+                continue
             if self.reinforce_host():
                 time.sleep(0.3)
                 continue

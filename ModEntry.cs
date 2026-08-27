@@ -1502,8 +1502,19 @@ public class ModEntry : Mod
 
             // ⚠️ 2026-08-14：地点名比较用 NameOrUniqueName（真实名）。小屋 Name="Cabin" 但真实名
             //    "FarmHouse<guid>"，用 Name 比较永远不等 → 以为没到目标地图 → warpPending 不清 → 在门口傻等不走。
-            var curLocName = farmer.currentLocation?.NameOrUniqueName ?? farmer.currentLocation?.Name;
-            if (curLocName != seg.Location)
+            // ⚠️ 2026-08-26 恒：只比 NameOrUniqueName 会反向坑死农场建筑室内——
+            //    seg.Location 存的是调用方给的**显示名**（"Deluxe Barn"，/state 报的就是 loc.Name），
+            //    而 curLocName 是**GUID 真实名**（Barnf3ed75f9-a0e1-...），两者永不相等
+            //    → 执行器判定"人不在目标地图" → 第一个 tick 就 _walkSegIdx++ 把整条路线作废
+            //    → **一步都没走**。这才是"畜棚/鸡舍里自然走路成功率恒为 0"的完整真相：
+            //    路线在开跑前被自己取消，唯一发生过的位移是跨图分支那一下 warp。
+            //    修法同 HandleWalkTo：显示名/唯一名任一匹配即算已在该图。
+            var curUnique = farmer.currentLocation?.NameOrUniqueName ?? "";
+            var curName = farmer.currentLocation?.Name ?? "";
+            var curLocName = string.IsNullOrEmpty(curUnique) ? curName : curUnique;
+            bool onSegMap = string.Equals(curUnique, seg.Location, StringComparison.OrdinalIgnoreCase)
+                         || string.Equals(curName, seg.Location, StringComparison.OrdinalIgnoreCase);
+            if (!onSegMap)
             {
                 // Warp is still pending → wait for it to land on the target map
                 if (_warpPending)
@@ -1550,16 +1561,39 @@ public class ModEntry : Mod
                 _pathTickCooldown = 0;
                 if (path == null || path.Count == 0)
                 {
-                    // BFS couldn't find a path → teleport directly to destination as fallback
-                    EnqueueAlert("walk_teleport", $"BFS failed, teleporting to ({seg.TargetX},{seg.TargetY})", "warning", "walk");
-                    var targetPos = new Vector2(seg.TargetX, seg.TargetY) * Game1.tileSize;
-                    farmer.Position = targetPos;
+                    // BFS couldn't find a path → 兜底瞬移。
+                    // ⚠️ 2026-08-26 恒：这行以前**零校验**直接 farmer.Position = 目标——
+                    //    不查边界、不查可走性。指一个越界坐标（实测 Deluxe Coop 只有 23x10，
+                    //    给 (23,13)）人就当场飞到墙外，这就是"角色飞出墙外"的元凶。
+                    //    现在：先确认落点可站；站不住就**宁可不动**，只报错并清路线——
+                    //    走不到是可恢复的（调用方会重试/换策略），飞出地图是不可恢复的。
+                    var tp = new Point(seg.TargetX, seg.TargetY);
+                    if (IsTilePassable(farmer.currentLocation, tp))
+                    {
+                        EnqueueAlert("walk_teleport", $"BFS failed, teleporting to ({tp.X},{tp.Y})", "warning", "walk");
+                        farmer.Position = new Vector2(tp.X, tp.Y) * Game1.tileSize;
+                        EnqueueAlert("walk_completed", $"Teleported to {seg.Location} ({tp.X},{tp.Y})", "info", "walk");
+                    }
+                    else
+                    {
+                        var safe = FindNearestPassableTile(farmer.currentLocation, tp, 4);
+                        if (safe != null)
+                        {
+                            EnqueueAlert("walk_teleport", $"BFS failed, ({tp.X},{tp.Y}) 站不住 → 就近落到 ({safe.Value.X},{safe.Value.Y})", "warning", "walk");
+                            farmer.Position = new Vector2(safe.Value.X, safe.Value.Y) * Game1.tileSize;
+                            EnqueueAlert("walk_completed", $"Teleported to {seg.Location} ({safe.Value.X},{safe.Value.Y})", "info", "walk");
+                        }
+                        else
+                        {
+                            // 附近全堵死 → 原地不动，别把人扔进墙里
+                            EnqueueAlert("walk_failed", $"走不到 {seg.Location} ({tp.X},{tp.Y})，附近也没有可站格——原地不动", "warning", "walk");
+                        }
+                    }
                     // Also clear the route
                     _walkRoute = null;
                     _walkSegIdx = 0;
                     _walkSegmentStarted = false;
                     _pathQueue = null;
-                    EnqueueAlert("walk_completed", $"Teleported to {seg.Location} ({seg.TargetX},{seg.TargetY})", "info", "walk");
                 }
             }
             else if ((_pathQueue == null || _pathQueue.Count == 0) && _walkSegmentStarted
@@ -2112,6 +2146,7 @@ public class ModEntry : Mod
                 "/fishbot" => HandleFishbot(ctx),
                 "/menu" => HandleMenu(),
                 "/menu/click" => HandleMenuClick(ctx),
+                "/menu/number" => HandleMenuNumber(ctx),
                 "/menu/claim_swap" => HandleClaimSwap(ctx),
                 "/menu_close" => HandleMenuClose(),
                 "/forge_set" => HandleForgeSet(ctx),
@@ -4156,7 +4191,11 @@ public class ModEntry : Mod
                 if (tx >= mapW || ty >= mapH) continue;
 
                 var tileVec = new Vector2(tx, ty);
-                var passable = loc.isTilePassable(tileVec);
+                // ⚠️ 2026-08-26 恒：以前这里用裸 loc.isTilePassable —— 只查地图图层，不查物体，
+                //    畜棚 141 个物体格里 129 格谎报 passable=true（118 个小桶全中）。
+                //    改用寻路同款 IsTilePassable（含家具/物体/牲畜），和 walk_to 实际能走的完全一致，
+                //    AI 读到的地图不再骗人。
+                var passable = IsTilePassable(loc, new Point(tx, ty));
 
                 string? objName = null;
                 string? objId = null;
@@ -4300,6 +4339,33 @@ public class ModEntry : Mod
             .Select(f => new { name = f.Name, x = f.TilePoint.X, y = f.TilePoint.Y })
             .ToList();
 
+        // 🐄 2026-08-26 恒：牲畜以前完全不上报——npcs 只收 loc.characters（NPC/宠物/马），
+        //    而 FarmAnimal 存在 Farm.animals / AnimalHouse.animals 里，不是 NPC。
+        //    结果站在畜棚里 12 只牛羊对 /surroundings 全隐身，AI 根本不知道路被谁堵了。
+        var nearbyAnimals = new List<object>();
+        try
+        {
+            IEnumerable<FarmAnimal>? alist = loc is Farm farmLoc ? farmLoc.animals.Values
+                : loc is AnimalHouse ahLoc ? ahLoc.animals.Values
+                : null;
+            if (alist != null)
+                foreach (var a in alist)
+                {
+                    if (a == null) continue;
+                    if (Math.Abs(a.TilePoint.X - cx) > radius || Math.Abs(a.TilePoint.Y - cy) > radius) continue;
+                    nearbyAnimals.Add(new
+                    {
+                        name = a.Name,
+                        type = a.type.Value,
+                        x = a.TilePoint.X,
+                        y = a.TilePoint.Y,
+                        wasPetToday = a.wasPet.Value,
+                        productReady = a.currentProduce.Value != null && a.currentProduce.Value != "-1"
+                    });
+                }
+        }
+        catch { }
+
         return new
         {
             ok = true,
@@ -4309,7 +4375,8 @@ public class ModEntry : Mod
             tiles,
             npcs = nearbyNpcs,
             monsters = nearbyMonsters,
-            farmers = nearbyFarmers
+            farmers = nearbyFarmers,
+            animals = nearbyAnimals
         };
     }
 
@@ -7913,6 +7980,7 @@ public class ModEntry : Mod
                 bool menuIsChoice = false;
                 object? shopPage = null;
                 object? ccInfo = null;
+                object? numberSelect = null;   // 🔢 NumberSelectionMenu 数量框（50g换1星星币兑换台/转盘押注）
                 bool giftMenu = false;   // 🎁 ItemGrabMenu+reverseGrab/behaviorFunction（送礼菜单，点物品=送出不是拿起）
 
                 if (menu is DialogueBox db)
@@ -8489,6 +8557,20 @@ public class ModEntry : Mod
                     };
                 }
 
+                else if (menu is NumberSelectionMenu nsm)
+                {
+                    // 🔢 数量输入菜单（2026-08-24 星露谷展览会 50g换1星星币兑换台/转盘押注）：
+                    // numberSelectedBox=可输数量框（numbersOnly，自动聚焦）；min/max/price 反射读。
+                    var bFlags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
+                        | System.Reflection.BindingFlags.Instance;
+                    var box = typeof(NumberSelectionMenu).GetField("numberSelectedBox", bFlags)?.GetValue(nsm) as TextBox;
+                    int min = 0, max = 0, price = -1;
+                    try { min = (int)(typeof(NumberSelectionMenu).GetField("minValue", bFlags)?.GetValue(nsm) ?? 0); } catch { }
+                    try { max = (int)(typeof(NumberSelectionMenu).GetField("maxValue", bFlags)?.GetValue(nsm) ?? 0); } catch { }
+                    try { price = (int)(typeof(NumberSelectionMenu).GetField("price", bFlags)?.GetValue(nsm) ?? -1); } catch { }
+                    numberSelect = new { text = box?.Text, min, max, price };
+                }
+
                 // Collect named buttons via reflection（已从选效果菜单拿到选项则跳过，别覆盖）
                 if (buttons == null)
                 {
@@ -8537,6 +8619,47 @@ public class ModEntry : Mod
                     }
                 }
 
+                // 🏆 农展台 StorageContainer（2026-08-24 恒：放9件评分；标准箱子菜单,无需反编译——
+                //    public ItemsToGrabMenu=展示侧(actualInventory 真物品/inventory 槽位), base.inventory=背包侧）。
+                //    展示槽(grabItems 带 bounds) + 背包槽(grabSlots→slots), AI 才能 menu click 放/拿物品。
+                if (menu is StorageContainer scDisplay)
+                {
+                    var gm = scDisplay.ItemsToGrabMenu;
+                    if (gm?.actualInventory != null)
+                    {
+                        var gc = gm.inventory;
+                        var gl = new List<object>();
+                        for (int i = 0; i < gm.actualInventory.Count; i++)
+                        {
+                            var it = gm.actualInventory[i];
+                            var cc = (i < gc.Count) ? gc[i] : null;
+                            gl.Add(new
+                            {
+                                index = i,
+                                name = it?.DisplayName ?? (it?.Name ?? "（空）"),
+                                count = it?.Stack ?? 0,
+                                quality = (it as StardewValley.Object)?.Quality ?? 0,
+                                id = it?.QualifiedItemId,
+                                bounds = cc != null
+                                    ? new { x = cc.bounds.Center.X, y = cc.bounds.Center.Y, w = cc.bounds.Width, h = cc.bounds.Height }
+                                    : null
+                            });
+                        }
+                        if (gl.Count > 0) grabItems = gl;
+                    }
+                    if (scDisplay.inventory?.inventory != null)
+                    {
+                        var bl = new List<object>();
+                        for (int i = 0; i < scDisplay.inventory.inventory.Count; i++)
+                        {
+                            var cc = scDisplay.inventory.inventory[i];
+                            if (cc == null) continue;
+                            bl.Add(new { index = i, x = cc.bounds.Center.X, y = cc.bounds.Center.Y, w = cc.bounds.Width, h = cc.bounds.Height });
+                        }
+                        if (bl.Count > 0) grabSlots = bl;
+                    }
+                }
+
                 tcs.SetResult(new
                 {
                     ok = true,
@@ -8552,6 +8675,7 @@ public class ModEntry : Mod
                     slots = grabSlots != null && grabSlots.Count > 0 ? grabSlots : null,
                     letterTitle, letterBody, letterFrom,
                     characterCust = ccInfo,
+                    numberSelect,
                     gift = giftMenu
                 });
             }
@@ -9274,6 +9398,78 @@ public class ModEntry : Mod
         return tcs.Task.GetAwaiter().GetResult();
     }
 
+    /// <summary>
+    /// POST /menu/number  { "value"?, "confirm"? }
+    /// NumberSelectionMenu 数量输入（星露谷展览会 50g 换 1 星星币兑换台 / 转盘押注）。
+    /// 反射写 numberSelectedBox.Text（同捏人 nameBox 那套，框文本每帧被 update() 重读为 currentValue）。
+    /// 只传 value=设数量；confirm=true 填完直接点 okButton（确定）；全省略=只读当前 box/min/max/price。
+    /// 取消：/menu/click button=cancel。
+    /// </summary>
+    private object HandleMenuNumber(HttpListenerContext ctx)
+    {
+        var p = ReadJson(ctx);
+        var value = GetParamOr(p, "value", -1);   // -1=不设，只读
+        var confirm = GetParamOr(p, "confirm", false);
+
+        var tcs = new TaskCompletionSource<object>();
+        EnqueueMainThread(() =>
+        {
+            try
+            {
+                if (Game1.activeClickableMenu is not NumberSelectionMenu nsm)
+                {
+                    tcs.SetResult(new { ok = false, error = "当前不是数量输入菜单(NumberSelectionMenu)" });
+                    return;
+                }
+                var bFlags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
+                    | System.Reflection.BindingFlags.Instance;
+                var box = typeof(NumberSelectionMenu).GetField("numberSelectedBox", bFlags)?.GetValue(nsm) as TextBox;
+                if (box == null)
+                {
+                    tcs.SetResult(new { ok = false, error = "找不到 numberSelectedBox" });
+                    return;
+                }
+
+                bool changed = false;
+                if (value >= 0)
+                {
+                    box.Text = value.ToString();
+                    // 同步 currentValue（框文本每帧 update() 重读，但点确定在 frame 边界可能读旧值，这里一并写入）
+                    try { typeof(NumberSelectionMenu).GetField("currentValue", bFlags)?.SetValue(nsm, value); } catch { }
+                    changed = true;
+                }
+
+                int min = 0, max = 0, price = -1;
+                try { min = (int)(typeof(NumberSelectionMenu).GetField("minValue", bFlags)?.GetValue(nsm) ?? 0); } catch { }
+                try { max = (int)(typeof(NumberSelectionMenu).GetField("maxValue", bFlags)?.GetValue(nsm) ?? 0); } catch { }
+                try { price = (int)(typeof(NumberSelectionMenu).GetField("price", bFlags)?.GetValue(nsm) ?? -1); } catch { }
+
+                bool confirmed = false;
+                if (confirm)
+                {
+                    var ok = typeof(NumberSelectionMenu).GetField("okButton", bFlags)?.GetValue(nsm) as ClickableComponent;
+                    if (ok != null) nsm.receiveLeftClick(ok.bounds.Center.X, ok.bounds.Center.Y);
+                    else nsm.receiveLeftClick(nsm.xPositionOnScreen + nsm.width / 2, nsm.yPositionOnScreen + nsm.height / 2);
+                    confirmed = true;
+                }
+
+                tcs.SetResult(new
+                {
+                    ok = true,
+                    text = box.Text,
+                    currentValue = value >= 0 ? value : (int.TryParse(box.Text, out int cv3) ? cv3 : 0),
+                    min, max, price,
+                    changed, confirmed
+                });
+            }
+            catch (Exception ex)
+            {
+                tcs.SetResult(new { ok = false, error = ex.Message });
+            }
+        });
+        return tcs.Task.GetAwaiter().GetResult();
+    }
+
     /// <summary>反射读当前菜单的光标物品（heldItem）。heldItem 声明位置不统一：
     /// MenuWithInventory(ForgeMenu等) 是 Item 字段；ShopMenu 是 `new ISalable` 隐藏字段。反射最稳。</summary>
     private static Item? GetMenuHeldItem(IClickableMenu menu)
@@ -9705,7 +9901,11 @@ public class ModEntry : Mod
                         result["bushBloom"] = bush.tileSheetOffset.Value == 1;
                     }
                 }
-                result["passable"] = loc.isTilePassable(tv);
+                // ⚠️ 2026-08-26 恒：同 /surroundings，裸 isTilePassable 会把压着小桶/站着牛的格
+                //    报成可走（实测 (1,4) 上有 Keg 却 passable=true）。改用寻路同款。
+                //    mapPassable 留原始地图图层判定，排查"是墙挡的还是东西挡的"时用。
+                result["passable"] = IsTilePassable(loc, new Point(x, y));
+                result["mapPassable"] = loc.isTilePassable(tv);
                 result["isWater"] = loc.isWaterTile(x, y);   // 🦀 蟹笼部署找水用（2026-08-16）
                 // 🦀 蟹笼内部状态（2026-08-16 诊断饵挂不上）：bait/readyForHarvest/owner
                 if (loc.objects.TryGetValue(tv, out var obj2) && obj2 is StardewValley.Objects.CrabPot cp)
@@ -14631,7 +14831,18 @@ public class ModEntry : Mod
 
         var farmer = Game1.player;
         // ⚠️ 2026-08-14：fromLoc 用 NameOrUniqueName（真实名），同地图判断才不会把小屋(显示名 Cabin)误判为跨地图
-        var fromLoc = farmer.currentLocation.NameOrUniqueName ?? farmer.currentLocation.Name;
+        // ⚠️ 2026-08-26 恒：但只比 NameOrUniqueName 会把农场建筑室内**反向**判错——
+        //    畜棚/鸡舍室内的真实名是带 GUID 的实例名（如 Barnf3ed75f9-a0e1-...），
+        //    而 /state 报给外面的 location.name 是 loc.Name＝显示名「Deluxe Barn」。
+        //    调用方拿显示名回传 → 永远匹配不上 → **棚内每一次 walk_to 都走跨图分支**：
+        //    先 warp 到固定入口落点再走 = 肉眼看到的"穿插 warp + 反复落到同一个位置"，
+        //    自然走路在畜棚/鸡舍里成功率恒为 0。
+        //    修法：显示名和唯一名**任一匹配**即算同图（Cabin 靠唯一名、畜棚靠显示名，两边都保住）。
+        var fromUnique = farmer.currentLocation.NameOrUniqueName ?? "";
+        var fromName = farmer.currentLocation.Name ?? "";
+        var fromLoc = string.IsNullOrEmpty(fromUnique) ? fromName : fromUnique;
+        bool sameMap = string.Equals(fromUnique, location, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(fromName, location, StringComparison.OrdinalIgnoreCase);
 
         // Resolve target coordinates
         if (x < 0 || y < 0)
@@ -14640,12 +14851,50 @@ public class ModEntry : Mod
             y = farmer.TilePoint.Y;
         }
 
+        // 🛡️ 2026-08-26 恒：入口校验。以前给个越界/不可达坐标，walk_to 会**直接把人瞬移过去**——
+        //    实测 Deluxe Coop 只有 23x10，指 (23,13) 人当场飞到墙外。
+        //    现在：越界直接 ok:false 拒绝；地图内但站不住 → 退到最近可走格并在返回里注明 adjusted。
+        //    ⚠️ IsTilePassable 要遍历 furniture/objects，必须主线程读（同 /surroundings 主线程化教训），
+        //    所以整段校验塞进 EnqueueMainThread 再取回结果。
+        {
+            var vtcs = new TaskCompletionSource<(string kind, int a, int b)>();
+            string vErr = "";
+            int vx = x, vy = y;
+            EnqueueMainThread(() =>
+            {
+                try
+                {
+                    var tgt = sameMap ? farmer.currentLocation : Game1.getLocationFromName(location);
+                    if (tgt?.Map == null) { vtcs.SetResult(("notfound", 0, 0)); return; }
+                    int mw = tgt.Map.DisplayWidth / 64, mh = tgt.Map.DisplayHeight / 64;
+                    if (vx < 0 || vy < 0 || vx >= mw || vy >= mh) { vtcs.SetResult(("oob", mw, mh)); return; }
+                    var near = FindNearestPassableTile(tgt, new Point(vx, vy));
+                    vtcs.SetResult(near == null ? ("blocked", mw, mh) : ("ok", near.Value.X, near.Value.Y));
+                }
+                catch (Exception ex) { vErr = ex.Message; vtcs.SetResult(("error", 0, 0)); }
+            });
+            var (kind, a, b) = vtcs.Task.GetAwaiter().GetResult();
+            if (kind == "notfound")
+                return new { ok = false, error = $"Location '{location}' not found" };
+            if (kind == "error")
+                return new { ok = false, error = $"walk_to 校验出错: {vErr}" };
+            if (kind == "oob")
+                return new { ok = false, error = $"目标 ({x},{y}) 越界：{location} 只有 {a}x{b} 格（0..{a - 1}, 0..{b - 1}）" };
+            if (kind == "blocked")
+                return new { ok = false, error = $"目标 ({x},{y}) 及周围 8 圈都站不住（被墙/物体/牲畜堵死）" };
+            if (a != x || b != y)
+            {
+                Monitor.Log($"walk_to 目标 ({x},{y}) 站不住 → 就近改到 ({a},{b})", LogLevel.Trace);
+                x = a; y = b;
+            }
+        }
+
         // Cancel any ongoing movement
         _pathQueue = null;
         _walkRoute = null;
 
         // Same map → just walk
-        if (string.Equals(fromLoc, location, StringComparison.OrdinalIgnoreCase))
+        if (sameMap)
         {
             _walkRoute = new List<WalkSegment> { new WalkSegment(location, x, y) };
             _walkSegIdx = 0;
@@ -14919,6 +15168,64 @@ public class ModEntry : Mod
         return null;
     }
 
+    // 🐄 2026-08-26 恒：牲畜占格缓存。BFS 一趟要问几千格，逐格遍历 animals 太亏，
+    //    按 (地点 + tick) 缓存占格集合，30 tick(约半秒)内复用——动物走动也跟得上。
+    private HashSet<Point>? _animalTiles;
+    private string? _animalTilesLoc;
+    private int _animalTilesTick = int.MinValue;
+
+    /// <summary>
+    /// 🛡️ 2026-08-26 恒：找离 target 最近的可走格（含 target 自己）。walk_to 入口校验用。
+    /// 逐圈外扩，同圈内取曼哈顿最近；maxRadius 圈内找不到返回 null。
+    /// </summary>
+    private Point? FindNearestPassableTile(GameLocation loc, Point target, int maxRadius = 8)
+    {
+        if (IsTilePassable(loc, target)) return target;
+        for (int r = 1; r <= maxRadius; r++)
+        {
+            Point? best = null;
+            int bestD = int.MaxValue;
+            for (int dx = -r; dx <= r; dx++)
+            {
+                for (int dy = -r; dy <= r; dy++)
+                {
+                    if (Math.Abs(dx) != r && Math.Abs(dy) != r) continue;   // 只扫当前这一圈
+                    var c = new Point(target.X + dx, target.Y + dy);
+                    if (!IsTilePassable(loc, c)) continue;
+                    int d = Math.Abs(dx) + Math.Abs(dy);
+                    if (d < bestD) { bestD = d; best = c; }
+                }
+            }
+            if (best != null) return best;
+        }
+        return null;
+    }
+
+    /// <summary>当前地点牲畜占的格子（Farm 上放牧的 / 鸡舍畜棚内的）。非动物地点返回空集。</summary>
+    private HashSet<Point> GetAnimalTiles(GameLocation location)
+    {
+        var locName = location.NameOrUniqueName ?? location.Name;
+        if (_animalTiles != null && _animalTilesLoc == locName && Game1.ticks - _animalTilesTick < 30)
+            return _animalTiles;
+
+        var set = new HashSet<Point>();
+        try
+        {
+            IEnumerable<FarmAnimal>? list = location is Farm farm ? farm.animals.Values
+                : location is AnimalHouse ah ? ah.animals.Values
+                : null;
+            if (list != null)
+                foreach (var a in list)
+                    if (a != null) set.Add(a.TilePoint);
+        }
+        catch { }
+
+        _animalTiles = set;
+        _animalTilesLoc = locName;
+        _animalTilesTick = Game1.ticks;
+        return set;
+    }
+
     private bool IsTilePassable(GameLocation location, Point tile)
     {
         // Check map bounds
@@ -14930,6 +15237,13 @@ public class ModEntry : Mod
         // Use the game's built-in passability check（只查地图图层，不查家具/物体）
         var tileVec = new Vector2(tile.X, tile.Y);
         if (!location.isTilePassable(tileVec)) return false;
+
+        // 🐄 2026-08-26 恒：牲畜是实心的，BFS 以前不认它 → 规划出踩到牛身上的路，
+        //    人顶在动物上不动、walk_to 干等 20 秒超时，最后退化成满屋 position 乱传
+        //    （鸡舍只有 16 台机器照样卡死，证明根因是动物不是杂物）。
+        //    加上这条后：目标格是动物 → BFS 走不通 → FindPath 的"退到最近可走邻居"
+        //    兜底才真正生效，正好落在卡迪纳尔相邻格，interact 一次就摸到。
+        if (GetAnimalTiles(location).Contains(tile)) return false;
 
         // 额外：家具/摆放物碰撞（室内床/桌子/箱子等 isTilePassable 不查，会穿墙）
         try
