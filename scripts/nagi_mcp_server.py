@@ -11146,10 +11146,19 @@ def menu_click(option: int = -1, button: str = "", x: int = -1, y: int = -1, ite
                 for _ in range(10):
                     time.sleep(0.3)
                     if (api.state().get("player") or {}).get("minigame") == "FishingGame":
-                        # 🎣 2026-08-28 恒：改**阻塞**——同步跑 fair_fishing 等小游戏钓完，拿结果返回。
-                        #    异步会让 AI 空转乱调工具；阻塞则 AI 干等、不能添乱，结束当场拿"钓N条+X星币"。
-                        _res = _fair_fishing_blocking()
-                        return _with_state(f"🎣 钓鱼小游戏结束 → {_res}")
+                        # ⚠️ 2026-08-28 恒：防跑错场景——`FishingGame` 是**秋收节专属** minigame(图 fishingGame)，
+                        #    冬钓大赛(森林,跟刘易斯对话推进)是 BobberBar 不是此 minigame，正常不会到这；
+                        #    再保险一层：只认「正处 fishingGame 图」或「秋16」才兜，防误触发别的小游戏。
+                        _t = api.state().get("time") or {}
+                        _loc = (api.state().get("location") or {}).get("name", "") or ""
+                        _is_fair = (str(_t.get("season") or "").lower() == "fall" and int(_t.get("dayOfMonth") or 0) == 16) \
+                                   or _loc == "fishingGame"
+                        if _is_fair:
+                            # 🎣 阻塞——同步跑 fair_fishing 等小游戏钓完，拿结果返回。
+                            #    异步会让 AI 空转乱调工具；阻塞则 AI 干等、不能添乱，结束当场拿"钓N条+X星币"。
+                            _res = _fair_fishing_blocking()
+                            return _with_state(f"🎣 钓鱼小游戏结束 → {_res}")
+                        break
             except Exception:
                 pass
             return _with_state(f"🖱️ 已点击（{r.get('clicked')}{extra}）")

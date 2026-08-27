@@ -81,8 +81,17 @@ class FairFish:
         return not any(f.get(k) for k in _REEL_KEYS)
 
     def run(self, deadline=DEFAULT_DEADLINE):
-        if (self.state().get("player") or {}).get("minigame") != "FishingGame":
-            log(f"⚠️ 不在 FishingGame（minigame={(self.state().get('player') or {}).get('minigame')}），退出")
+        st = self.state()
+        if (st.get("player") or {}).get("minigame") != "FishingGame":
+            log(f"⚠️ 不在 FishingGame（minigame={(st.get('player') or {}).get('minigame')}），退出")
+            return False
+        # ⚠️ 2026-08-28 恒：防跑错场景——只认秋收节。冬钓大赛(森林=BobberBar)不是 fishingGame minigame，
+        #    更保险：必须 正处 fishingGame 图 或 秋16 才跑，否则退出（防误触发）。
+        loc = (st.get("location") or {}).get("name", "") or ""
+        t = st.get("time") or {}
+        if not ((str(t.get("season") or "").lower() == "fall" and int(t.get("dayOfMonth") or 0) == 16)
+                or loc == "fishingGame"):
+            log(f"⚠️ 场景不匹配(非秋收节钓鱼, loc={loc})，退出")
             return False
         try:
             self.set_pause(False)
