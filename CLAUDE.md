@@ -8,6 +8,7 @@ SMAPI mod（C# HTTP API）+ Python MCP 服务器（130 工具）让 AI 像真人
 - scripts/nagi_mcp_server.py — MCP 服务器(streamable-http:8000)+状态注入+心跳
 - stardew_api.py·player_activity.py·locations.py·calendar_data.py — API封装/行为检测/地图/日历
 - mine_run/bomb_*/fish_run/farm_row 等 — 自动化脚本
+- scripts/appearance_overrides.json — 捏脸默认上衣补描写(手动维护；gen 重烤自动合进 SHIRT_REF，list_shirt_ref 标※)
 - 详细知识 → CHANGELOG.md，改前先查
 
 ## 规范

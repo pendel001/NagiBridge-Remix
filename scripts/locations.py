@@ -128,12 +128,15 @@ POI = {
     "社区中心(门口)":     {"map": "Town",       "pos": (53, 20),"note": "入口"},
     "社区中心(献祭大厅)": {"map": "CommunityCenter", "pos": (32, 23),"note": "献祭面板"},
     "社区布告栏(特别任务板)": {"map": "Town", "pos": (62, 94), "unlock": {"year": 1, "season": "fall", "day": 2}, "note": "📋 鹈鹕镇社区布告栏/**特别任务板**(1.5)：⚠️不是社区中心献祭板！**年1秋2后出现**；人站(62,94)朝上交互(62,93)开 SpecialOrdersBoard；`menu read` 看任务卡(名称/目标/奖励/期限)→`menu click(button=acceptLeftQuestButton/acceptRightQuestButton)`接；订单如「起风的日子」「给谁送餐」等（2026-08-22 AI现场检测+read_menu修复，accept_quest已退役）"},
+    "社区布告栏(特别任务领奖箱)": {"map": "Town", "pos": (60, 94), "note": "📬 特别订单**领奖小邮箱**（社区布告栏左2格，⚠️不是接单板！板在(62,93)）：站(60,94)朝上交互(60,93)领已完成订单的**兑奖券(Prize Ticket)×1**（物品奖励需背包有空位，满格领不到——先丢低价值物腾格）；兑奖券再去**刘易斯家兑奖机**兑换实战奖励（2026-08-29 AI现场实测：completed的绿豆单在此领到兑奖券）"},
+    "皮埃尔商店(求助布告栏)": {"map": "Town", "pos": (42, 57), "note": "📋 皮埃尔店西墙**每日求助栏**(Help Wanted/Billboard)：⚠️**不是社区布告栏(特别任务板)**！站(42,57)朝上交互(42,56)开 Billboard 每日求助菜单；`menu read` 看今日求助(如帮罗宾收35木材)；求助内容=questOfTheDay(2026-08-29 AI现场检测，玩家站(42,57)开菜单)"},
     "博物馆(门口)":       {"map": "Town",       "pos": (101, 90),"note": "博物馆/图书馆门口"},
     "博物馆(门内)":       {"map": "ArchaeologyHouse","pos": (3, 14),"note": "博物馆入口处"},
     "博物馆(柜台)":       {"map": "ArchaeologyHouse","pos": (3, 10),"note": "博物馆柜台，捐矿物/古物"},
     "博物馆(历史碎片投递箱)": {"map": "ArchaeologyHouse", "pos": (6, 10), "require_order": {"requester": "Gunther"}, "note": "🦴 **「历史的碎片」交付点**(收集骨类文物放进箱；⚠️物品必须是任务期间收集的)：骨类=两栖动物化石/骨笛/骨头碎片/腿骨化石/肋骨化石/颅骨化石/脊柱化石/尾巴化石/蝙蝠木乃伊/青蛙木乃伊/鹦鹉螺化石/棕榈化石/史前肋骨/史前肩胛骨/史前头骨/史前胫骨/史前脊骨/手部骨骼/尾部骨骼/蛇头骨/蛇脊椎骨/三叶虫；人站(6,10)朝0交互(6,9)放箱；require_order=已接Gunther订单(进行中)才显示；⚠️(6,9)为AI面前solid推测,**坐标待恒确认**；内容可加 keywords:[\"骨头\",\"化石\"]（2026-08-22 恒带路）"},
     "镇长家(门外)":       {"map": "Town",       "pos": (59, 86),"note": "刘易斯镇长家门口"},
     "镇长家(门内)":       {"map": "ManorHouse", "pos": (5, 11), "note": "镇长家内，warp回Town(58-59,86)"},
+    "刘易斯家(特别订单兑奖机)": {"map": "ManorHouse", "pos": (1, 6), "note": "🎰 特别订单**兑奖机**(PrizeTicketMenu)：在刘易斯镇长家内左上；站(1,6)朝0交互(1,5)开兑奖菜单，把手里的**兑奖券(PrizeTicket)**换成实战奖励（物品奖励先腾背包空格）；⚠️/菜单对 PrizeTicketMenu 仅读到关闭钮(items空)，点名奖品格需补序列化（2026-08-29 AI现场实测：交互(1,5)弹出兑奖菜单，玩家站(1,6)）"},
     "哈维医院(门口)":     {"map": "Town",       "pos": (36, 56),"note": "医院入口"},
     "哈维医院(柜台)":     {"map": "Hospital",   "pos": (6, 17), "note": "买药、看病"},
     "哈维医院(出口)":     {"map": "Hospital",   "pos": (10, 19),"note": "回Town"},
@@ -175,6 +178,7 @@ POI = {
     "冰淇淋摊位":        {"map": "Town",       "pos": (88, 93), "season": "summer", "note": "🍦 冰淇淋摊(夏季限定)：博物馆桥东；**只在夏季营业**，周三/雨天休，13:00-17:00；亚历克斯站柜台(88,91)→人站(88,93)朝上交互(88,92)买冰淇淋；海莉常在这附近(夏季找她好地方)（2026-08-22 AI现场检测）"},
     "艾芙琳家(门内)":     {"map": "JoshHouse",  "pos": (9, 24),"note": "Alex+爷爷奶奶家，warp回Town(57,64)"},
     "艾芙琳家(门外)":     {"map": "Town",       "pos": (57, 64),"note": "JoshHouse门口在Town"},
+    "乔治家(给乔治的礼物)": {"map": "JoshHouse","pos": (9, 24),"require_order": {"any_keywords": ["韭葱"]}, "note": "🧾 **「给乔治的礼物」交付点**(艾芙琳订单,春季28天,收12韭葱)：交付=**带12韭葱进乔治家(进门)**→触发『韭葱惊喜礼物』过场即**自动交付**(进门就完成，不是放箱子)；reward=2000g+咖啡机+兑奖券；require_order=已接韭葱订单(进行中)才显示（2026-08-29 恒提供攻略）"},
 
     # ── 鹈鹕镇 ──
     "皮埃尔商店":        {"map": "SeedShop",   "pos": (4, 19), "note": "买种子、肥料"},
@@ -182,6 +186,9 @@ POI = {
     "星之果实餐吧(柜台)":{"map": "Saloon",     "pos": (10, 20),"note": "格斯柜台，买沙拉/啤酒 ✅"},
     "星之果实餐吧(可乐机)":{"map": "Saloon",   "pos": (38, 18),"note": "🥤 Joja可乐机(2026-08-22 恒 7842 检测)：买 Joja 可乐 75g；人站(38,18)朝上交互(38,17)→对话「是/否 花费75金买」选「是」买(菜单_click option=0,非 ShopMenu)；可乐=谢恩最爱/雷欧喜欢"},
     "酒吧冰箱(格斯煎蛋卷)": {"map": "Saloon", "pos": (18, 17), "require_order": {"requester": "Gus"}, "note": "🧾 酒吧冰箱=**「格斯的著名煎蛋卷」交付点**(疑似24个蛋放冰箱)：人站(18,17)朝0交互(18,16)；require_order=已接Gus订单(进行中)才显示；⚠️冰箱没接单不交互,(18,16)为AI面前solid推测,**坐标待恒确认**；内容匹配可再加 keywords:[\"煎蛋卷\"]（2026-08-22 恒带路）"},
+    "潘姆拖车(厨房柜)":   {"map": "Trailer",  "pos": (10, 7), "require_order": {"requester": "Pam"}, "note": "🧾 **「烈酒」交付点**(潘姆订单,春季14天,收12土豆果汁)：DropBox=Trailer(10,6) box_id=PamKitchen；**人站(10,7)朝0交互(10,6)**开 QuestContainerMenu→放12果汁→ok 结算 Complete；reward=3000g+友情+兑奖券；require_order=已接Pam订单(进行中)才显示；未接单时 DropBox 被 ignore(无问号)但瓦片一直在（2026-08-29 /scan 实测,坐标已定）"},
+    "木匠商店(木头堆)":   {"map": "ScienceHouse","pos": (10, 20),"require_order": {"requester": "Robin"}, "note": "🧾 **「罗宾的项目」交付点**(罗宾订单,7天,收80硬木)：DropBox=ScienceHouse(10,19)/(11,19) box_id=RobinWood(木头堆,相邻两格)；**人站(10,20)朝0交互(10,19)**开 QuestContainerMenu→放80硬木→ok 结算 Complete；reward=2000g+友情+兑奖券+解锁木匠店豪华红双人床购买；require_order=已接罗宾订单(进行中)才显示；未接单无问号但瓦片一直在（2026-08-29 /scan 实测,坐标已定）"},
+    "火车站(垃圾箱)":     {"map": "Railroad",  "pos": (28, 37),"require_order": {"requester": "Linus"}, "note": "🧾 **「社区清理」交付点**(莱纳斯订单,7天,收20垃圾([Joja可乐除外]))：DropBox=Railroad(28,36)/(29,36) box_id=Dumpster(垃圾箱,相邻两格)；**人站(28,37)朝0交互(28,36)**开 QuestContainerMenu→放20垃圾→ok 结算 Complete；reward=500g+友情+纤维种子配方(次日邮箱)+万能鱼饵配方(过场后)；⚠️**别跟齐先生 RailroadBox(45,40) 混淆**；require_order=已接莱纳斯订单(进行中)才显示（2026-08-29 /scan 实测,坐标已定）"},
     "哈维的医院":        {"map": "Hospital",   "pos": (4, 16), "note": "看病、买补给"},
     "木匠商店(柜台)":    {"map": "ScienceHouse","pos": (7, 20),"note": "罗宾柜台，买建筑/家具"},
     "木匠商店(门口内)":  {"map": "ScienceHouse","pos": (6, 24),"note": "店里入口处"},
@@ -237,7 +244,11 @@ POI = {
     "深山小路(→Mountain)": {"map": "Backwoods", "pos": (49, 14),"note": "Backwoods右出口warp到Mountain(0,13)"},
     "深山隧道(入口)":    {"map": "Backwoods", "pos": (22, 31),"note": "Backwoods隧道口→Tunnel"},
     "深山隧道(内部)":    {"map": "Tunnel",    "pos": (34, 9), "note": "隧道入口处"},
-    "齐先生电池箱":      {"map": "Tunnel",    "pos": (17, 7), "note": "齐先生任务：放入电池组"},
+    "齐先生电池箱":      {"map": "Tunnel",    "pos": (17, 7), "note": "🧾 **齐先生「神秘的齐」任务开头**(TunnelSafe 隧道锁盒)：**手持电池组(787)朝箱交互**→消耗放电池入箱→开「神秘的齐」纸条；TunnelSafe=Tunnel(17,5)/(17,6)，**人站(17,7)朝0交互(17,6)**；机制=手持物(ActiveObject)+mail标记(TH_Tunnel)，**不是**DropBox/容器菜单（2026-08-29 /scan 实测坐标已定）"},
+    "齐先生火车站台箱": {"map": "Railroad",  "pos": (45, 41),"note": "🧾 **齐先生「神秘的齐」步骤1b**(RailroadBox)：**手持彩虹贝壳(394)朝箱交互**→消耗+TH_Railroad+推「神秘的齐3」。机制=手持物(ActiveObject)+mail标记，**不是**DropBox容器；⚠️ 跟莱纳斯社区清理的 DropBox=Dumpster(28,36) 是俩箱,别混（2026-08-29 /scan 实测,站(45,41)朝0交互(45,40)）"},
+    "齐先生镇长冰箱":   {"map": "ManorHouse","pos": (9, 5), "note": "🧾 **齐先生「神秘的齐」步骤2**(MayorFridge 刘易斯家冰箱)：**手持10甜菜朝冰箱交互**→消耗+TH_MayorFridge（恒确认纯手持，非容器菜单）；人站(9,5)朝0交互(9,4)；机制=手持物+mail标记（2026-08-29 /scan 实测坐标已定）"},
+    "沙之巨龙嘴":       {"map": "Desert",    "pos": (9, 37),"note": "🧾 **齐先生「神秘的齐」步骤3**(SandDragon 沙漠沙之巨龙嘴)：**手持日光精华(768)朝龙嘴交互**→消耗+TH_SandDragon+推「神秘的齐4」(需先 TH_MayorFridge 即②完成)；SandDragon=Desert(9,36)/(10,36)；人站(9,37)朝0交互(9,36)；机制=手持物+mail标记（2026-08-29 /scan 实测坐标已定）"},
+    "齐先生收集箱":     {"map": "QiNutRoom",  "pos": (1, 5), "require_order": {"any_keywords": ["五彩碎片", "收集箱"]}, "note": "🧾 **齐先生特别订单交付点**(「四颗宝石」放4五彩碎片 / 「齐先生的五彩农场」放红橙黄绿蓝紫各100)：DropBox=QiNutRoom(1,4) box_id=QiChallengeBox；**人站(1,5)朝0交互(1,4)**开 QuestContainerMenu→放物品→ok 结算 Complete；奖励=Qi宝石(五彩农场≈35)+兑奖券；⚠️ 这是**特别订单容器机制**(同其它交付箱)，**非**「神秘的齐」纸条链手持机制；require_order=已接齐先生订单(进行中)才显示；旁有 QiChallengeBoard(2,3)=接单板、QiGemShop(11,3)=宝石商店、QiCat(13,4)（2026-08-29 /scan 实测坐标已定）"},
     "采石场矿车":        {"map": "Mountain",    "pos": (124,12),"note": "采石场桥头，需修桥才能从公会过来"},
     "采石场矿井(外)":    {"map": "Mountain",    "pos": (103, 18),"note": "采石场骷髅矿井入口，Mountain侧"},
     "采石场矿井(入口)":  {"map": "UndergroundMine","pos": (28, 96),"note": "一层骷髅矿井梯子下来处（地图名动态生成）"},
@@ -350,6 +361,9 @@ POI_FACE = {
     "电影院(门口)":      {"face": 0, "stand": (95, 51)},  # 门(95,50)在面前，站位(95,51)朝上
     "书摊(马尔赛罗)":    {"face": 0, "stand": (110, 27)}, # 书摊在面前(对话买/回收书)
     "社区布告栏(特别任务板)": {"face": 0, "stand": (62, 94)}, # 📋 站(62,94)朝上交互(62,93)开特别任务板(年1秋2后)（2026-08-22 AI现场检测）
+    "社区布告栏(特别任务领奖箱)": {"face": 0, "stand": (60, 94)}, # 📬 站(60,94)朝上交互(60,93)领特别订单兑奖券(板左2格)（2026-08-29 AI现场实测）
+    "刘易斯家(特别订单兑奖机)": {"face": 0, "stand": (1, 6)}, # 🎰 站(1,6)朝0交互(1,5)开兑奖菜单换兑奖券（2026-08-29 AI现场实测）
+    "皮埃尔商店(求助布告栏)": {"face": 0, "stand": (42, 57)}, # 📋 每日求助栏(Help Wanted)：站(42,57)朝上交互(42,56)开 Billboard（2026-08-29 AI现场检测）
     "齐先生任务板":      {"face": 0, "stand": (3, 4)},   # 📜 站(3,4)朝上交互(3,3)开齐钻任务板（2026-08-22 AI现场检测）
     # 🎇 夜市点位（2026-08-16 恒：柜台/商人在上方,全朝上交互）
     "夜市咖啡商人":      {"face": 0, "stand": (14, 38)},
@@ -382,6 +396,14 @@ POI_FACE = {
     "星之果实餐吧(柜台)": {"face": 0, "stand": (10, 20)},
     "星之果实餐吧(可乐机)": {"face": 0, "stand": (38, 18)}, # 🥤 站(38,18)朝上交互(38,17)买Joja可乐75g（2026-08-22 恒 7842 检测）
     "酒吧冰箱(格斯煎蛋卷)": {"face": 0, "stand": (18, 17)}, # 🧾 站(18,17)朝上交互(18,16)放蛋进冰箱(接Gus订单才显示)（2026-08-22 恒带路,坐标待确认）
+    "潘姆拖车(厨房柜)":   {"face": 0, "stand": (10, 7)},   # 🗄️ 站(10,7)朝上交互(10,6)DropBox=PamKitchen 放12果汁进柜(接Pam订单才显示)（2026-08-29 /scan 实测）
+    "木匠商店(木头堆)":   {"face": 0, "stand": (10, 20)},  # 🪵 站(10,20)朝上交互(10,19)DropBox=RobinWood 放80硬木进堆(接Robin订单才显示)（2026-08-29 /scan 实测）
+    "火车站(垃圾箱)":     {"face": 0, "stand": (28, 37)},  # 🗑️ 站(28,37)朝上交互(28,36)DropBox=Dumpster 放20垃圾进箱(接Linus订单才显示)（2026-08-29 /scan 实测；齐先生箱=45,40）
+    "齐先生电池箱":       {"face": 0, "stand": (17, 7)},    # 🔋 站(17,7)朝上交互(17,6)TunnelSafe 放电池组(787)开神秘齐(任务开头)（2026-08-29 /scan 实测）
+    "齐先生火车站台箱":   {"face": 0, "stand": (45, 41)},  # 🐚 站(45,41)朝上交互(45,40)手持彩虹贝壳(394)(齐先生神秘的齐步骤1b)（2026-08-29 /scan 实测）
+    "齐先生镇长冰箱":     {"face": 0, "stand": (9, 5)},    # 🥬 站(9,5)朝上交互(9,4)放10甜菜进冰箱(齐先生神秘的齐步骤2)（2026-08-29 /scan 实测）
+    "沙之巨龙嘴":         {"face": 0, "stand": (9, 37)},   # 🐉 站(9,37)朝上交互(9,36)手持日光精华(768)(齐先生神秘的齐步骤3)（2026-08-29 /scan 实测）
+    "齐先生收集箱":       {"face": 0, "stand": (1, 5)},    # 📦 站(1,5)朝上交互(1,4)DropBox=QiChallengeBox 放单改物品(齐先生特别订单交付)（2026-08-29 /scan 实测）
     "冰淇淋摊位":        {"face": 0, "stand": (88, 93)},   # 🍦 站(88,93)朝上，柜体(88,92)，Alex(88,91)（2026-08-22 AI现场检测）
     "铁匠铺(柜台)":      {"face": 0, "stand": (3, 15)},   # ✅ 2026-08-17 恒验证：站(3,15)朝上交互克林特(3,13)
     "矮人商店":          {"face": 0, "stand": (43, 7)},  # 🧱 站(43,7)朝上(0)正对矮人(43,6)（2026-08-23 恒带路+AI现场检测）
@@ -443,7 +465,7 @@ MAP_LINKS = {
         {"tile": (50, 28), "target": "BusStop", "kind": "warp", "note": "深山右侧→巴士站(14,8)"},
         {"tile": (50, 10), "target": "Mountain", "kind": "warp", "note": "深山右侧→山(0,13)"},
         {"tile": (13, 40), "target": "Farm", "kind": "warp", "note": "深山下方→农场(40,0)"},
-        {"tile": (22, 31), "target": "Tunnel", "kind": "door", "note": "隧道口→Tunnel(34,9)，齐先生电池箱在里头"},
+        {"tile": (22, 31), "target": "Tunnel", "kind": "warp", "note": "隧道口→Tunnel(39,9)（warp 瓦片站上自动传送，/warps 实测 22,29-32→39,9）；齐先生电池箱在里头"},
     ],
     # ── 鹈鹕镇 ──
     "Town": [
@@ -568,7 +590,7 @@ MAP_LINKS = {
               {"tile": (3, 18), "target": "BugLand", "kind": "door", "note": "下水道→变异虫穴(15,53)，变异鲤鱼钓点（/warps实测）"}],
     "BugLand": [{"tile": None, "target": "Sewer", "kind": "warp", "note": "变异虫穴→下水道"}],
     "BathHouse_Entry": [{"tile": None, "target": "Railroad", "kind": "warp", "note": "浴场→铁路"}],
-    "Tunnel": [{"tile": None, "target": "Backwoods", "kind": "warp", "note": "隧道→深山"}],
+    "Tunnel": [{"tile": (40, 9), "target": "Backwoods", "kind": "warp", "note": "隧道出口(40,7-12)→深山(23,30)；齐先生电池箱 TunnelSafe(17,6) 在里头"},{"tile": None, "target": "Backwoods", "kind": "warp", "note": "隧道→深山(兜底)"}],
     "Tent": [{"tile": None, "target": "Mountain", "kind": "warp", "note": "帐篷→山"}],
     "IslandFarmHouse": [{"tile": None, "target": "IslandWest", "kind": "warp", "note": "姜岛小屋门口→姜岛农场"}],
     "QiNutRoom": [{"tile": None, "target": "IslandWest", "kind": "warp", "note": "核桃房门口→姜岛农场"}],
