@@ -3449,6 +3449,12 @@ def map_go(destination: str) -> str:
                 face_log = _apply_poi_stand_face(destination)
                 return _with_state(f"🗺️ 已在 {dest}，走到 {destination}（{poi['pos']}）{face_log}")
             return _with_state(f"🗺️ 已经在 {cur} 了")
+        # 🎪 2026-08-29 恒：节日临时图(Temp/Forest-IceFestival)不在 MAP_LINKS，map_go 到逻辑场地
+        #   (Town/Forest/Beach)会误报"没路径"——玩家其实已被游戏自动送到节日场地。只在临时图且目标是
+        #   别的地点时兜底；夜市/沙漠节/鱿鱼节/鳟鱼大赛是真实场地图，玩家在对应可走图，不受影响照常导航。
+        if cur in _FESTIVAL_TEMP_MAPS and cur != dest:
+            return _with_state(f"🎪 节日进行中，你已在节日场地（{cur}）——地图走不了这里，直接玩"
+                               "（festival info/interact 互动）；退出/卡住→联系 user 帮忙，MCP 端 warp 已禁用")
         # 2.45 ⚠️ 2026-08-23 恒：站在农场室内(小屋/农舍/温室/洞穴) → 先走出到 Farm，
         #      否则 _try_transport(要求 cur==Farm) 检不到图腾柱 → 白白坐公交。
         #      先出屋再让交通节点触发（图腾柱 > 矿车 > 走路）。
@@ -7939,6 +7945,10 @@ _FESTIVAL_ONLY_MAPS = {
     "DesertFestival": {("spring", 15), ("spring", 16), ("spring", 17)},
 }
 
+# 🎪 节日临时图(2026-08-29 恒：玩家被游戏自动传送到这,不在 MAP_LINKS,map_go 会误报"没路径")
+# FESTIVAL_LOCATIONS 里的是逻辑场地(Town/Forest/Beach),实际在这几张图上。
+_FESTIVAL_TEMP_MAPS = {"Temp", "Forest-IceFestival"}
+
 # 📅 季节→季度序（春0夏1秋2冬3），配合 _date_ordinal 把游戏日期压成单调序数比较
 _SEASON_ORD = {"spring": 0, "summer": 1, "fall": 2, "winter": 3}
 
@@ -8258,8 +8268,8 @@ def _festival_go() -> str:
         st_loc = api.state().get("location", {}).get("name", "")
     except Exception:
         pass
-    if st_loc == "Temp":
-        return (f"🎪 你已在 {f['name']} 场地（Temp）——直接玩（festival info/interact 互动；"
+    if st_loc in _FESTIVAL_TEMP_MAPS:
+        return (f"🎪 你已在 {f['name']} 场地（{st_loc}）——直接玩（festival info/interact 互动；"
                 "退出/卡住→联系 user 帮忙，MCP 端 warp 已禁用）")
     try:
         r = map_go(f["map"])
@@ -8272,8 +8282,8 @@ def _festival_go() -> str:
         st_loc = api.state().get("location", {}).get("name", "")
     except Exception:
         pass
-    if st_loc == "Temp" and f.get("map") != "Temp":
-        return (r + "\n（map_go 可能误报失败——你已在节日场地 Temp，看状态条 🎪 节日进行中即可；"
+    if st_loc in _FESTIVAL_TEMP_MAPS and f.get("map") not in _FESTIVAL_TEMP_MAPS:
+        return (r + f"\n（map_go 可能误报失败——你已在节日场地 {st_loc}，看状态条 🎪 节日进行中即可；"
                 "退出/卡住→联系 user 帮忙，MCP 端 warp 已禁用）")
     return r
 

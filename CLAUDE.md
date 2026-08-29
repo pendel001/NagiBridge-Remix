@@ -16,9 +16,10 @@ SMAPI mod（C# HTTP API）+ Python MCP 服务器（130 工具）让 AI 像真人
 - 农活必走 farm 域；勿动 server.ts/ChatHud.cs/LlmClient.cs(遗留已ignore)与 plan_engine.py(退役)
 - 改 ModEntry.cs 要 rm -rf bin obj 再编；DLL 复制 C+F 双盘
 
-## 关键坑(5条)
+## 关键坑(6条)
 1. 导航：地面/walk_to、矿洞/position、跨图/map_go；别用/move+BFS
 2. DLL 必须 C+F 两处复制，否则"改了没生效"
 3. 对话推进用/click(no_mouse)或 press_key(ok)，别用 key confirm
 4. 敲一下→检查→碎了停，不硬编码次数
 5. 长脚本便利工具自动注入 --port AI 端口，防挪恒角色
+6. 1.6 矿节点 Name 全报"Stone"(宝石/放射矿藏在 objId)，判定靠 objId、`/dump_tile` 查真名，别按名认
