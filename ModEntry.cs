@@ -324,6 +324,7 @@ public class ModEntry : Mod
     private bool _isChargingTool;
     private int _chargePower;   // power level to use when charge completes
     private string? _chargeOp;  // "till" or "water"
+    private bool _walkAllowWater;  // 🪙 淘金/蟹笼走位: 允许落水格(站水上淘)+回调原位; 普通走位保持排水面
 
     // Tool area 蓄力补漏（取余补站位，2026-08-15）：主流程后自检漏格 → 聚矩形再蓄力补。
     private List<(int tx, int ty)> _toolAreaTargets = new();
@@ -2106,6 +2107,7 @@ public class ModEntry : Mod
                 "/appearance" => HandleAppearance(ctx),
                 "/appearance_info" => HandleAppearanceInfo(),
                 "/appearance_ref" => HandleAppearanceRef(),
+                "/appearance_creation" => HandleAppearanceCreation(),
                 "/character_customize" => HandleCharacterCustomize(ctx),
                 "/color_pick" => HandleColorPick(ctx),
                 "/stop" => HandleStop(),
@@ -2114,6 +2116,7 @@ public class ModEntry : Mod
                 "/face" => HandleFace(ctx),
                 "/select" => HandleSelect(ctx),
                 "/use" => HandleUse(ctx),
+                "/pan" => HandlePan(ctx),   // 🪙 淘金/铜锅：GET=读水下闪光点, POST=铜淘盘淘金(2026-08-29)
                 "/sleep" => HandleSleep(ctx),
                 "/wakeup" => HandleWakeup(),
                 "/queue" => HandleQueue(ctx),
@@ -2155,6 +2158,7 @@ public class ModEntry : Mod
                 "/menu/number" => HandleMenuNumber(ctx),
                 "/menu/claim_swap" => HandleClaimSwap(ctx),
                 "/menu_close" => HandleMenuClose(),
+                "/open_questlog" => HandleOpenQuestLog(),   // 📜 程序化开任务日志(QuestLog)：绕开按键/焦点，AI 自主看日志领奖（2026-08-29 恒）
                 "/forge_set" => HandleForgeSet(ctx),
                 "/dump_tile" => HandleDumpTile(ctx),
                 "/mine_rock" => HandleMineRock(),   // 🧱 矮人商店堵路石（(BC)78 在 Mine(27,8)）是否还在=未炸（cross-map 读，2026-08-23 恒）
@@ -2875,6 +2879,7 @@ public class ModEntry : Mod
         var p = ReadJson(ctx);
         var x = GetParam<int>(p, "x");
         var y = GetParam<int>(p, "y");
+        bool allowWater = GetParamOr(p, "allowWater", false);
 
         if (!Context.IsWorldReady)
             throw new InvalidOperationException("World not ready");
@@ -2885,7 +2890,8 @@ public class ModEntry : Mod
             try
             {
                 var loc = Game1.player.currentLocation;
-                bool passable = IsTilePassable(loc, new Point(x, y));
+                // 🪙 2026-08-29：allowWater=true 时水格也报可走(淘金/蟹笼立项逻辑走位时放行近水格)
+                bool passable = IsTilePassable(loc, new Point(x, y), allowWater);
                 tcs.SetResult(new { ok = true, passable, x, y, location = loc.Name });
             }
             catch (Exception ex)
@@ -3447,6 +3453,8 @@ public class ModEntry : Mod
                 stationarySeconds = (int)_stationarySeconds,
                 isInBed = farmer.isInBed.Value,   // 🧾 等睡/纯聊天环节检测用（2026-08-17 恒）
                 festivalScore = farmer.festivalScore,   // 🥚 蛋蛋节捡蛋进度（festival eggrun 用，2026-08-17）
+                voucherPending = Game1.player.stats.Get("specialOrderPrizeTickets"),   // 🎟️ 特别订单领奖箱**待领券数**（>0=有气泡可拿，2026-08-29 恒反编译 GameLocation "SpecialOrdersPrizeTickets"）
+                prizeTickets = farmer.Items.CountId("PrizeTicket"),   // 🎟️ 手头兑奖券数量（兑奖机 mainButton 兑换用）
                 buffs = EnumerateBuffs(farmer),
                 fishing = farmer.CurrentTool is FishingRod rod ? new
                 {
@@ -3459,6 +3467,17 @@ public class ModEntry : Mod
                 // 🎣 鱼竿装备（饵/钓具）——2026-08-29：AI 钓鱼意图=竿在手时能看挂的饵/钓具+背包饵量，据此决定补不补。
                 //    at 恒点：自动补饵仅在背包有饵时兜底，多数情况没饵，要从箱子取虫肉/买饵合成 → 0 也报。
                 rod = RodInfo(farmer),
+                // 🪙 淘金(铜锅)：当前图水下闪光点 orePanPoint(NetPoint，Point.Zero=无)+背包有没有 Pan。
+                //    ⚠️ 升级铜锅/附魔后名字仍叫 "Copper Pan"，必须按类型 `is Pan` 判，不靠名字(2026-08-29 反编译)。
+                orePan = new
+                {
+                    hasGlint = loc.orePanPoint.Value != Microsoft.Xna.Framework.Point.Zero,
+                    x = loc.orePanPoint.Value.X,
+                    y = loc.orePanPoint.Value.Y,
+                    hasPan = farmer.Items.OfType<StardewValley.Tools.Pan>().Any(),
+                    panUpgrade = farmer.Items.OfType<StardewValley.Tools.Pan>().FirstOrDefault()?.UpgradeLevel ?? 0,
+                    panInHand = farmer.CurrentItem is StardewValley.Tools.Pan,
+                },
                 riding = farmer.mount != null ? new
                 {
                     name = farmer.mount.Name,
@@ -4885,6 +4904,57 @@ public class ModEntry : Mod
     }
 
     /// <summary>
+    /// GET /appearance_creation
+    /// 创建（选人）页能选中的上衣 = Game1.player.GetValidShirtIds()：
+    /// 按 Game1.shirtData 顺序遍历、只留 CanChooseDuringCharacterCustomization 为真的那批（通常是112件）。
+    /// 这个顺序 = 创建页左右循环的"第N件"顺序，与 /appearance_ref(按ID排)不同。
+    /// 用反射读 flag，避免对 ShirtData 类型的编译期依赖。
+    /// </summary>
+    private object HandleAppearanceCreation()
+    {
+        if (Game1.shirtData == null)
+            return new { ok = false, error = "shirtData not loaded" };
+
+        try
+        {
+            var flags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+            var results = new List<object>();
+            foreach (var kv in Game1.shirtData)
+            {
+                var data = kv.Value;
+                if (data == null) continue;
+                // 读 CanChooseDuringCharacterCustomization（property 优先，退 field）
+                bool canChoose = false;
+                var prop = data.GetType().GetProperty("CanChooseDuringCharacterCustomization", flags);
+                if (prop != null)
+                {
+                    try { canChoose = Convert.ToBoolean(prop.GetValue(data) ?? false); } catch { }
+                }
+                else
+                {
+                    var field = data.GetType().GetField("CanChooseDuringCharacterCustomization", flags);
+                    if (field != null)
+                    {
+                        try { canChoose = Convert.ToBoolean(field.GetValue(data) ?? false); } catch { }
+                    }
+                }
+                if (!canChoose) continue;
+
+                var item = ItemRegistry.Create($"(S){kv.Key}");
+                var name = item?.DisplayName ?? "";
+                var desc = "";
+                try { desc = item?.getDescription() ?? ""; } catch { }
+                results.Add(new { id = kv.Key, name, description = desc });
+            }
+            return new { ok = true, count = results.Count, shirts = results };
+        }
+        catch (Exception ex)
+        {
+            return new { ok = false, error = ex.Message };
+        }
+    }
+
+    /// <summary>
     /// GET /alerts ?peek=true
     /// Returns queued game/system alerts. By default this drains the queue.
     /// </summary>
@@ -5066,24 +5136,162 @@ public class ModEntry : Mod
             }
             else if (item is StardewValley.Object obj)
             {
-                int px = ftx * 64, py = fty * 64;
+                // 🦀🧺 2026-08-30 恒拍板：放蟹笼/摆物要**零试错**——传 x,y 就放指定格。
+                //    以前只靠"玩家面前格"(ftx,fty)，放蟹笼常因面前格不是可放水面而 Cannot place 试错。
+                //    现在：请求带 x,y → 直接对那格 placementAction(站格/面朝无关)，淘金/蟹笼挑准水格一次放成；
+                //    没带 x,y → 退回面前格(旧逻辑，向后兼容)。
+                int placeX = ftx, placeY = fty;
+                var ppx = GetParamOr(p, "x", -1);
+                var ppy = GetParamOr(p, "y", -1);
+                if (ppx >= 0 && ppy >= 0) { placeX = ppx; placeY = ppy; }
+                int px = placeX * 64, py = placeY * 64;
                 bool placed = obj.placementAction(loc, px, py, farmer);
                 if (placed)
                 {
                     farmer.reduceActiveItemByOne();
                     tcs.SetResult(new { ok = true, action = "placed", item = item.Name,
-                        tile = new { x = ftx, y = fty } });
+                        tile = new { x = placeX, y = placeY } });
                 }
                 else
                 {
                     tcs.SetResult(new { ok = false, error = $"Cannot place '{item.Name}' here",
-                        tile = new { x = ftx, y = fty } });
+                        tile = new { x = placeX, y = placeY } });
                 }
             }
             else
             {
                 tcs.SetResult(new { ok = false, error = $"Cannot use '{item.Name}' (unsupported item type)" });
             }
+        });
+        return tcs.Task.GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// 🪙 淘金/铜锅(淘盘)端点：GET=读当前图水下闪光点快照；POST=用铜淘盘淘金。
+    /// 反编译 StardewValley.Tools.Pan(2026-08-29)：
+    ///   闪光点存 GameLocation.orePanPoint(NetPoint，Point.Zero=无)，必在开阔水距陆地≤1格(天然靠岸)。
+    ///   触发判定 beginUsing：以闪光点为圆心画 num 格矩形(num=4，ReachingTool 附魔=5)，
+    ///     玩家包围盒与该矩形相交即触发 → 无需站水里，岸上 2 格内即可。
+    ///   掉落生成在 DoFunction(满包自动开 ItemGrabMenu)。⚠️ 通用 /use 对 Tool 只 BeginUsingTool()
+    ///     不触发 DoFunction → 淘金必须走这里，直接调 beginUsing+DoFunction(镜像水壶/锄头两段式)。
+    /// </summary>
+    private object HandlePan(HttpListenerContext ctx)
+    {
+        if (!Context.IsWorldReady)
+            throw new InvalidOperationException("World not ready");
+
+        var method = ctx.Request.HttpMethod;
+        var p = method == "POST" ? ReadJson(ctx) : new Dictionary<string, object?>();
+        var tcs = new TaskCompletionSource<object>();
+
+        EnqueueMainThread(() =>
+        {
+            try
+            {
+                var farmer = Game1.player;
+                var loc = farmer.currentLocation;
+                var op = loc.orePanPoint.Value;
+                var pan = farmer.Items.OfType<StardewValley.Tools.Pan>().FirstOrDefault();
+
+                // ── GET：只读快照(手动 curl 验证用，与 /state.orePan 一致)──
+                if (method != "POST")
+                {
+                    tcs.SetResult(new
+                    {
+                        ok = true, location = loc.Name,
+                        hasGlint = op != Microsoft.Xna.Framework.Point.Zero,
+                        x = op.X, y = op.Y,
+                        hasPan = pan != null, panUpgrade = pan?.UpgradeLevel ?? 0,
+                        panInHand = farmer.CurrentItem is StardewValley.Tools.Pan,
+                        timesPanned = Game1.player.stats.Get("TimesPanned")
+                    });
+                    return;
+                }
+
+                // ── POST：淘金 ──
+                if (op == Microsoft.Xna.Framework.Point.Zero)
+                {
+                    tcs.SetResult(new { ok = false, error = "本图没有水下闪光点(需完成社区中心鱼缸+靠近水边才刷新)" });
+                    return;
+                }
+                if (pan == null)
+                {
+                    tcs.SetResult(new { ok = false, error = "没有铜锅(淘金盘)：背包/手上都没有 Pan" });
+                    return;
+                }
+
+                // 射程判定(镜像 Pan.beginUsing)：num=4，ReachingTool 附魔=5；矩形以闪光点瓦片为中心
+                int num = 4;
+                try { if (pan.hasEnchantmentOfType<StardewValley.Enchantments.ReachingToolEnchantment>()) num = 5; } catch { }
+                var rect = new Microsoft.Xna.Framework.Rectangle(op.X * 64 - num / 2 * 64, op.Y * 64 - num / 2 * 64, 64 * num, 64 * num);
+                if (!farmer.GetBoundingBox().Intersects(rect))
+                {
+                    tcs.SetResult(new { ok = false, error = $"离闪光点太远，走近岸边再淘(铜锅射程±{num / 2}格)" });
+                    return;
+                }
+
+                int before = (int)Game1.player.stats.Get("TimesPanned");
+                int px = op.X * 64 + 32, py = op.Y * 64 + 32;
+
+                // 🪙 2026-08-30 恒：淘金动画要**按游戏实际行为**——先选 Pan 在手，beginUsing 播挥锅动画(animateOnce 303)，
+                //    动画播完→Game1.toolAnimationDone(who)→who.CurrentTool.DoFunction(出产)。
+                //    ⚠️ toolAnimationDone 读的是 who.CurrentTool，所以必须先把当前手持切到 Pan，否则它作用到铲头/镐子上白淘。
+                bool started;
+                // ① 把当前手持切到 Pan(CurrentToolIndex 指向 Pan 槽位)——让 toolAnimationDone 对 Pan 调 DoFunction
+                try
+                {
+                    for (int i = 0; i < farmer.Items.Count; i++)
+                    {
+                        if (farmer.Items[i] is StardewValley.Tools.Pan) { farmer.CurrentToolIndex = i; break; }
+                    }
+                }
+                catch { }
+                // ② 用 Farmer.BeginUsingTool() 触发挥锅动画(内部调 CurrentTool.beginUsing=pan.beginUsing→animateOnce 303)，
+                //    ⚠️ 直调 pan.beginUsing 绕过了 Farmer 的 UsingTool 壳，动画帧不会被 Farmer.Update 逐帧渲染→看不到动画。
+                //    走 BeginUsingTool() 才让 UsingTool=true + FarmerSprite 播完整挥锅帧。
+                started = false;
+                try { farmer.BeginUsingTool(); started = true; } catch { started = false; }
+                try { farmer.faceDirection(2); } catch { }
+
+                // 🪙 2026-08-30 恒：动画播完(animateOnce 303 ≈ 4帧≈200ms)后用 DelayedAction 延时，再**直调 pan.DoFunction** 出产。
+                //    ✅ 动画=游戏真实 beginUsing 挥锅；出产=Pan.DoFunction(getPanItems→掉落+清闪点+slosh声)。
+                //    ⚠️ Game1.toolAnimationDone 读 who.CurrentTool(此时是 Pan)会走 else 分支也调 DoFunction——
+                //    但为可靠、避免它对非 Pan 分支迷茫，这里直接调 pan.DoFunction(已确认 up=holder 是 pan)。
+                const int animDelayMs = 2600;   // 挥锅动画 case303：16帧×150ms≈2.4s+末帧500ms≈2.6s(举锅→甩水×3→末帧Farmer.useTool出产)
+                try
+                {
+                    // DelayedAction.functionAfterDelay 回调是在**游戏主线程 Update**里执行的——
+                    // 所以回调里直接调 pan.DoFunction + tcs.SetResult，**不要再包一层 EnqueueMainThread**
+                    // (那会又排一队到 _mainThreadQueue，反而在主线程里 tcs 被提前 SetResult → 0.1s 就返回)。
+                    DelayedAction.functionAfterDelay(() =>
+                    {
+                        int after;
+                        try
+                        {
+                            pan.DoFunction(loc, px, py, 0, farmer);   // 出产+清闪点+slosh声(与真实 DoFunction 一致)
+                        }
+                        catch (Exception ex)
+                        {
+                            tcs.SetResult(new { ok = false, error = $"淘金异常: {ex.Message}" });
+                            return;
+                        }
+                        after = (int)Game1.player.stats.Get("TimesPanned");
+                        var menuType = Game1.activeClickableMenu?.GetType().Name;
+                        tcs.SetResult(new
+                        {
+                            ok = true, action = "pan",
+                            panned = after > before, timesPanned = after, started,
+                            upgrade = pan.UpgradeLevel,
+                            glintCleared = loc.orePanPoint.Value == Microsoft.Xna.Framework.Point.Zero,
+                            menuOpen = menuType,
+                            bagFull = Game1.activeClickableMenu is StardewValley.Menus.ItemGrabMenu,
+                            lootHint = after > before ? "掉落已进背包(满包会进取出菜单)" : "未产生掉落(可能闪点已淘过再刷)"
+                        });
+                    }, animDelayMs);
+                }
+                catch (Exception ex) { tcs.SetResult(new { ok = false, error = $"淘金调度异常: {ex.Message}" }); }
+            }
+            catch (Exception ex) { tcs.SetResult(new { ok = false, error = ex.Message }); }
         });
         return tcs.Task.GetAwaiter().GetResult();
     }
@@ -8693,6 +8901,115 @@ public class ModEntry : Mod
                     }
                 }
 
+                else if (menu is StardewValley.Menus.QuestContainerMenu qcm)
+                {
+                    // 🍳 订单交付容器（格斯煎蛋卷「把蛋放冰箱」等，2026-08-29 恒）：机制=点玩家背包里的物品格
+                    //    → receiveLeftClick → TryToPlace 放物进容器。暴露玩家背包槽 bounds(grabSlots) 供 AI 点；
+                    //    容器现状读 ItemsToGrabMenu.actualInventory。
+                    var qFlags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
+                        | System.Reflection.BindingFlags.Instance;
+                    try
+                    {
+                        var invField = typeof(StardewValley.Menus.MenuWithInventory).GetField("inventory", qFlags);
+                        var inv = invField?.GetValue(qcm) as StardewValley.Menus.InventoryMenu;
+                        if (inv?.inventory != null)
+                        {
+                            var qsl = new List<object>();
+                            for (int i = 0; i < inv.inventory.Count; i++)
+                            {
+                                var cc = inv.inventory[i];
+                                if (cc == null) continue;
+                                var bagIt = (i < inv.actualInventory.Count) ? inv.actualInventory[i] : null;
+                                qsl.Add(new { index = i, x = cc.bounds.Center.X, y = cc.bounds.Center.Y,
+                                    w = cc.bounds.Width, h = cc.bounds.Height,
+                                    item = bagIt?.DisplayName, name = bagIt?.Name, stack = bagIt?.Stack });
+                            }
+                            if (qsl.Count > 0) grabSlots = qsl;
+                        }
+                    }
+                    catch { }
+                    try
+                    {
+                        var gtmField = typeof(StardewValley.Menus.QuestContainerMenu).GetField("ItemsToGrabMenu", qFlags);
+                        var gtm = gtmField?.GetValue(qcm) as StardewValley.Menus.InventoryMenu;
+                        if (gtm?.actualInventory != null)
+                        {
+                            var gli = new List<object>();
+                            for (int i = 0; i < gtm.actualInventory.Count; i++)
+                            {
+                                var it = gtm.actualInventory[i];
+                                if (it == null) continue;
+                                gli.Add(new { index = i, field = "ItemsToGrabMenu", name = it.DisplayName,
+                                    id = it.QualifiedItemId, stack = it.Stack });
+                            }
+                            if (gli.Count > 0) grabItems = gli;
+                        }
+                    }
+                    catch { }
+                }
+
+                else if (menu is StardewValley.Menus.PrizeTicketMenu ptm)
+                {
+                    // 🎰 兑奖机（2026-08-29 恒）：暴露 currentPrizeTrack（上方旋转带上当前/下几个奖品）；mainButton 已在按钮表。
+                    try
+                    {
+                        var prizes = new List<object>();
+                        var track = ptm.currentPrizeTrack;
+                        if (track != null)
+                        {
+                            for (int i = 0; i < track.Count; i++)
+                            {
+                                var p = track[i];
+                                if (p == null) continue;
+                                prizes.Add(new { index = i, name = p.DisplayName, id = p.QualifiedItemId, stack = p.Stack });
+                            }
+                        }
+                        if (prizes.Count > 0) grabItems = prizes;
+                    }
+                    catch { }
+                }
+
+                else if (menu is StardewValley.Menus.QuestLog ql)
+                {
+                    // 📜 任务日志（2026-08-29 恒）：**游戏内为准**的完整任务视图——GetAllQuests = team.specialOrders + player.questLog，
+                    //    所以特别订单也在日志里；已完成+有钱的任务在日志点卡选中(questPage)→click(button=rewardBox)领钱。
+                    //    （我内部 /quest_progress 靠抽象字段，曾给"绿豆"这种不明数据——AI 看日志最稳，退役 /quest_progress 作指引。）
+                    //    暴露每张任务卡(pages[currentPage]，对 questLogButtons[i])：名称/来源/完成/钱 + 点击坐标。
+                    var qlFlags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
+                        | System.Reflection.BindingFlags.Instance;
+                    try
+                    {
+                        var pagesVal = ql.GetType().GetField("pages", qlFlags)?.GetValue(ql) as System.Collections.IList;
+                        var btnsVal = ql.GetType().GetField("questLogButtons", qlFlags)?.GetValue(ql) as System.Collections.IList;
+                        if (pagesVal != null && btnsVal != null)
+                        {
+                            int cur = 0;
+                            try { cur = (int)(ql.GetType().GetField("currentPage", qlFlags)?.GetValue(ql) ?? 0); } catch { }
+                            if (cur >= 0 && cur < pagesVal.Count && pagesVal[cur] is System.Collections.IList pq)
+                            {
+                                var cards = new List<object>();
+                                for (int i = 0; i < pq.Count && i < btnsVal.Count; i++)
+                                {
+                                    var q = pq[i];
+                                    var cc = btnsVal[i] as ClickableComponent;
+                                    if (q == null || cc == null) continue;
+                                    string nm = "?", src = "?";
+                                    bool done = false; int money = 0;
+                                    try
+                                    {
+                                        if (q is StardewValley.SpecialOrders.SpecialOrder so) { nm = so.GetName(); src = "specialOrders"; done = so.ShouldDisplayAsComplete(); money = so.GetMoneyReward(); }
+                                        else if (q is StardewValley.Quests.Quest quest) { nm = quest.questTitle; src = "questLog"; done = quest.completed.Value; money = quest.moneyReward.Value; }
+                                    }
+                                    catch { }
+                                    cards.Add(new { index = i, source = src, name = nm, completed = done, money, x = cc.bounds.Center.X, y = cc.bounds.Center.Y });
+                                }
+                                if (cards.Count > 0) grabItems = cards;
+                            }
+                        }
+                    }
+                    catch { }
+                }
+
                 else if (menu is LetterViewerMenu lvm)
                 {
                     // 信件视图（农场信箱/公会讨伐板等）：报出信件正文（mailMessage 是 List<string> 按行存）
@@ -8872,7 +9189,9 @@ public class ModEntry : Mod
                     "upArrow", "downArrow", "scrollBar",
                     "areaNextButton", "areaBackButton", "purchaseButton",
                     // 🆕 2026-08-18 任务板接取按钮（SpecialOrdersBoard）
-                    "acceptLeftQuestButton", "acceptRightQuestButton" })
+                    "acceptLeftQuestButton", "acceptRightQuestButton",
+                    // 🆕 2026-08-29 领奖按钮：QuestLog.rewardBox(点它=领完成+有钱任务的钱) / PrizeTicketMenu.mainButton(点它=消费1张兑奖券换奖)
+                    "rewardBox", "mainButton" })
                 {
                     var field = menu.GetType().GetField(fieldName,
                         System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic |
@@ -10090,6 +10409,26 @@ public class ModEntry : Mod
         if (h < 0) h += 360;
     }
 
+    private object HandleOpenQuestLog()
+    {
+        if (!Context.IsWorldReady)
+            return new { ok = false, error = "World not ready" };
+        var tcs = new TaskCompletionSource<object>();
+        EnqueueMainThread(() =>
+        {
+            try
+            {
+                Game1.activeClickableMenu = new StardewValley.Menus.QuestLog();
+                tcs.SetResult(new { ok = true, opened = "QuestLog" });
+            }
+            catch (Exception ex)
+            {
+                tcs.SetResult(new { ok = false, error = ex.Message });
+            }
+        });
+        return tcs.Task.GetAwaiter().GetResult();
+    }
+
     private object HandleMenuClose()
     {
         if (!Context.IsWorldReady)
@@ -10437,7 +10776,16 @@ public class ModEntry : Mod
                         int tx = x + dx, ty = y + dy;
                         if (tx < 0 || ty < 0 || tx >= mapW || ty >= mapH) continue;
                         if (loc.isWaterTile(tx, ty))
-                            water.Add(new { x = tx, y = ty });
+                        {
+                            // 🦀 2026-08-30 恒拍板零试错：/water 预筛每格能否放蟹笼。
+                            //    只能放在"左右都是水 OR 上下都是水"的宽水域(单格细流放不进)+无建筑遮挡(CrabPot.IsValidCrabPotLocationTile)。
+                            //    Python 选点只挑 canCrabPot=true → /use x,y 一次放成功，不再 Cannot place 试错。
+                            bool canCrab = loc.objects != null && !loc.objects.ContainsKey(new Vector2(tx, ty))
+                                && ((loc.isWaterTile(tx + 1, ty) && loc.isWaterTile(tx - 1, ty))
+                                    || (loc.isWaterTile(tx, ty + 1) && loc.isWaterTile(tx, ty - 1)))
+                                && loc.doesTileHaveProperty(tx, ty, "Passable", "Buildings") == null;
+                            water.Add(new { x = tx, y = ty, canCrabPot = canCrab });
+                        }
                     }
                 }
                 tcs.SetResult(new { ok = true, location = loc.Name, count = water.Count, water });
@@ -11491,7 +11839,11 @@ public class ModEntry : Mod
                     ["daysLeft"] = dailyQuest.daysLeft.Value,
                     ["moneyReward"] = dailyQuest.moneyReward.Value,
                     ["completed"] = dailyQuest.completed.Value,
-                    ["type"] = dailyQuest.GetType().Name
+                    ["type"] = dailyQuest.GetType().Name,
+                    // 🆕 2026-08-29 Part A 集齐提醒：读采集进度（照 questLog 子类分发反射）
+                    ["collected"] = ReflectField(dailyQuest, "numberCollected", "0"),
+                    ["required"] = ReflectField(dailyQuest, "numberToCollect", "0") + ReflectField(dailyQuest, "number", "0"),
+                    ["targetNPC"] = ReflectField(dailyQuest, "target", "")
                 });
             }
 
@@ -15229,6 +15581,9 @@ public class ModEntry : Mod
         var location = GetParam<string>(p, "location");
         var x = GetParamOr(p, "x", -1);
         var y = GetParamOr(p, "y", -1);
+        // 🪙 2026-08-29 恒拍板：淘金/蟹笼走位传 allowWater=true → 允许落水格(站水上淘)，淘完回原位。
+        //    每次 /walk_to 都重设(不传=按普通走位排水格)，避免残留影响下一次。
+        _walkAllowWater = GetParamOr(p, "allowWater", false);
 
         if (!Context.IsWorldReady)
             throw new InvalidOperationException("World not ready");
@@ -15630,7 +15985,11 @@ public class ModEntry : Mod
         return set;
     }
 
-    private bool IsTilePassable(GameLocation location, Point tile)
+    /// <summary>
+    /// 判定某格能否作为走位落点。allowWater=false(默认)：水格不可站(普通走位不落水)；
+    /// allowWater=true：放行水格(淘金/放蟹笼时允许站水上近格——SDV 站浅水合法，配合"淘完回原位")。
+    /// </summary>
+    private bool IsTilePassable(GameLocation location, Point tile, bool allowWater = false)
     {
         // Check map bounds
         if (tile.X < 0 || tile.Y < 0) return false;
@@ -15641,6 +16000,13 @@ public class ModEntry : Mod
         // Use the game's built-in passability check（只查地图图层，不查家具/物体）
         var tileVec = new Vector2(tile.X, tile.Y);
         if (!location.isTilePassable(tileVec)) return false;
+
+        // 💧 2026-08-29 恒拍板：默认(allowWater=false)水格不可站——SDV 地图层把水边/浅水标成 passable=true，
+        //    但玩家站上去半身浸水、不拟人。普通走位保持排除水格；淘金/蟹笼把 allowWater=true(或走位时 _walkAllowWater)
+        //    放行 → 选址能贴近闪光点(藏水中岸偏远)"站水上淘"，淘完回原位(见 _pan_run/_crab_place)。
+        //    ⚠️ /walk_to 内部走 FindPath/BfsTo/落点验证，全都调本函数——靠 _walkAllowWater(HandleWalkTo 读请求设置)
+        //    一次放行整条走位链，不用改 FindPath 签名。
+        if (!allowWater && !_walkAllowWater && location.isWaterTile(tile.X, tile.Y)) return false;
 
         // 🐄 2026-08-26 恒：牲畜是实心的，BFS 以前不认它 → 规划出踩到牛身上的路，
         //    人顶在动物上不动、walk_to 干等 20 秒超时，最后退化成满屋 position 乱传

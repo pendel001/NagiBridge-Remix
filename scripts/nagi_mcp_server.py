@@ -850,6 +850,28 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
     if _so:
         lines.append(_so)
 
+    # 📋 每日求助栏提醒（2026-08-29 恒：每天第一次进 Town 报新求助，没有不报，一天一次）
+    try:
+        _hw = _helpwanted_inject(loc_name)
+        if _hw:
+            lines.append(_hw)
+    except Exception:
+        pass
+    # 🧺 集齐提醒（2026-08-29 恒 Part A：每日求助收集够了但没交付 → 提示去交付，一天一次）
+    try:
+        _hwr = _helpwanted_ready_inject()
+        if _hwr:
+            lines.append(_hwr)
+    except Exception:
+        pass
+    # 🎯 特别订单奖励链提醒（2026-08-29 恒：接单/完成领奖/兑奖券可拿，到Town每日一次去重）
+    try:
+        _srw = _special_reward_inject(loc_name)
+        if _srw:
+            lines.append(_srw)
+    except Exception:
+        pass
+
     # 🌿 绿雨天提醒（2026-08-17 恒：weather=7，SDV 1.6 weather_green_rain；需重编译 DLL 才报对）。
     # 鼓励当天放下农活去打草收集苔藓（Moss）——绿雨专属掉落，能做苔藓肥料/树液采集器等。
     # ⚠️ 草/长苔藓的树/变异树的识别需真机实测（恒回来开游戏验证），这里先给方向提示。
@@ -1016,6 +1038,13 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
         _rh = _fishing_rod_hint(data)
         if _rh:
             lines.append(_rh)
+    except Exception:
+        pass
+    # 🪙 本图水下闪光点(淘金)提示——只在 orePanPoint != Zero 且未报过时注入(2026-08-29)
+    try:
+        _ph = _pan_hint(data)
+        if _ph:
+            lines.append(_ph)
     except Exception:
         pass
     # 🎫 背包有「读到即消耗腾占位」道具（秘密纸条/日记残页/技能书）提醒一句（2026-08-29 恒拍板：只提醒读掉腾格）
@@ -2054,6 +2083,30 @@ def _stuck_track(fn):
     return _w
 
 
+# ⚠️ 2026-08-29 恒：紧急脱离改"warp 回上次 walk_to/map_go 失败目标"（否则自家门口）。
+#    用 dict 容器（可变）避免跨函数写 global。
+_NAV_LAST = {"name": None, "loc": None, "x": None, "y": None}   # 上次导航目标（解析成坐标）
+_NAV_FAILED = {"v": False}                                      # 上次导航是否失败
+
+
+def _nav_resolve(name):
+    """把 POI/地点名解析成 {name,loc,x,y}（供紧急脱离 warp 回失败点）。"""
+    if not name:
+        return None
+    try:
+        p = locations.POI.get(name) or {}
+        if p.get("map") and "pos" in p:
+            return {"name": name, "loc": p["map"], "x": p["pos"][0], "y": p["pos"][1]}
+        if p.get("map"):
+            pf = locations.POI_FACE.get(name) or {}
+            st = pf.get("stand")
+            if st:
+                return {"name": name, "loc": p["map"], "x": st[0], "y": st[1]}
+    except Exception:
+        pass
+    return None
+
+
 @mcp.tool()
 @_stuck_track
 def walk_to(poi_name: str) -> str:
@@ -2075,6 +2128,10 @@ def walk_to(poi_name: str) -> str:
     Args:
         poi_name: POI 名称（见 locations.py 数据库）
     """
+    _nr = _nav_resolve(poi_name)
+    if _nr:
+        _NAV_LAST.update(_nr)
+    _NAV_FAILED["v"] = False
     try:
         # 🎇 节日限定 POI 门禁（2026-08-19 恒：非节日 map_go/walk_to 隐藏）
         if poi_name in locations.POI and not _festival_poi_active(poi_name, locations.POI[poi_name]):
@@ -2111,10 +2168,13 @@ def walk_to(poi_name: str) -> str:
             face_log = _apply_poi_stand_face(poi_name)
             return _with_state(f"🚶 已导航到「{poi_name}」{face_log}\n{short[:500]}")
         else:
+            _NAV_FAILED["v"] = True
             return _with_state(f"❌ 导航失败: {err or out[:300] or '无响应'}")
     except subprocess.TimeoutExpired:
+        _NAV_FAILED["v"] = True
         return _with_state(f"⚠️ 导航超时，可能未到达「{poi_name}」")
     except Exception as e:
+        _NAV_FAILED["v"] = True
         return _with_state(f"❌ {e}")
 
 
@@ -3035,6 +3095,94 @@ def _special_orders_inject(season: str, day, year, morning: bool) -> str:
         return ""
 
 
+def _helpwanted_inject(loc_name: str) -> str:
+    """📋 每天第一次进 Town：皮埃尔店西侧"需要帮助"求助栏（Billboard）有新求助就报，没有则不报（一天一次）。
+    求助内容=questOfTheDay（自动在任务簿里，Billboard 无 accept 按钮）；看=menu read 展板，
+    做=收集够任务物品→带到对应 NPC 交付领钱（交付能否复用 gift 待真机验证，2026-08-29 恒）。"""
+    try:
+        if loc_name != "Town":
+            return ""
+        dk = api.day_key()
+        if not dk or _HW_REMIND_KEY["last"] == dk:
+            return ""
+        r = api.quest_progress()
+        q = next((x for x in (r.get("quests") or [])
+                  if x.get("source") == "questOfTheDay" and not x.get("completed")), None)
+        if not q:
+            return ""
+        _HW_REMIND_KEY["last"] = dk
+        title = q.get("title", "?")
+        desc = (q.get("description") or "").replace("\n", " ")[:80]
+        npc = re.search(r"我是([一-龥A-Za-z·]+)", q.get("description") or "")
+        npcname = npc.group(1) if npc else "对应NPC"
+        return (f"📋 皮埃尔店求助栏有今日求助「{title}」！{desc}…看：menu read 展板；"
+                f"做：收集够任务物品带去找{npcname}，用 scene interact 交互交付（2026-08-29 恒实测"
+                f"交付=对NPC checkAction，未设ActiveObject也成）")
+    except Exception:
+        return ""
+
+
+def _helpwanted_ready_inject() -> str:
+    """🧺 Part A 集齐提醒（2026-08-29 恒）：每日求助已集齐(collected>=required)但未交付 → 提示去交付。
+    questOfTheDay 的 collected/required 由 DLL 返回（ResourceCollectionQuest numberCollected/numberToCollect）。"""
+    try:
+        r = api.quest_progress()
+        q = next((x for x in (r.get("quests") or [])
+                  if x.get("source") == "questOfTheDay" and not x.get("completed")), None)
+        if not q:
+            return ""
+        try:
+            ci = int(str(q.get("collected") or "0") or "0")
+        except Exception:
+            ci = -1
+        try:
+            ri = int(str(q.get("required") or "0") or "0")
+        except Exception:
+            ri = 0
+        if ci < 0 or ri <= 0 or ci < ri:
+            return ""
+        if _HW_READY_KEY["last"] == api.day_key():
+            return ""
+        _HW_READY_KEY["last"] = api.day_key()
+        return (f"🧺 今日求助「{q.get('title')}」已集齐 {ci}/{ri}，带去找对应NPC用 scene interact 交互交付"
+                f"（交付完成奖励在任务日志 rewardBox 领）")
+    except Exception:
+        return ""
+
+
+def _special_reward_inject(loc_name: str = "") -> str:
+    """🎯 特别订单奖励链提醒（2026-08-29 恒：接单/完成领奖/兑奖券邮箱可拿——到 Town 每日各一次，去重）。
+    奖励链：板上 accept 接单 → 交付完成 → 日志 rewardBox 领钱 + 板旁领奖箱(60,93)拿兑奖券 → 刘易斯家兑奖机(mainButton)兑换。
+    用 quest_progress 的 availableSpecialOrders / specialOrders(state) + /state.voucherPending 判定。"""
+    try:
+        if loc_name != "Town":
+            return ""
+        dk = api.day_key()
+        if not dk or _SPECIAL_RW_KEY["last"] == dk:
+            return ""
+        r = api.quest_progress()
+        quests = r.get("quests") or []
+        avail = [q for q in quests if q.get("source") == "availableSpecialOrders"]
+        done = [q for q in quests if q.get("source") == "specialOrders" and (q.get("state") or "") == "Complete"]
+        notes = []
+        if avail:
+            notes.append("📢 特别任务板有可接订单：去社区板/齐先生板 menu read → click(button=acceptLeftQuestButton/acceptRightQuestButton) 接")
+        if done:
+            notes.append(f"📢 {len(done)} 单特别订单已完成待领：①日志 rewardBox 领钱 ②板旁领奖箱(60,93)拿兑奖券 ③刘易斯家兑奖机 mainButton 兑换")
+        try:
+            vp = int((api.state().get("player") or {}).get("voucherPending") or 0)
+            if vp > 0:
+                notes.append("🎟️ 兑奖券邮箱有未领券（社区板旁领奖箱 60,93 交互拿；无券=静默）")
+        except Exception:
+            pass
+        if not notes:
+            return ""
+        _SPECIAL_RW_KEY["last"] = dk
+        return "\n".join(notes)
+    except Exception:
+        return ""
+
+
 def _re_requester(dump: str) -> str:
     m = re.search(r"requester=([^|]+)", dump or "")
     return m.group(1).strip() if m else ""
@@ -3330,6 +3478,7 @@ def _map_go_walk(path, destination: str, dest: str, lead_log: str = "") -> str:
                 if api.state().get("location", {}).get("name", "") == nxt:
                     log[-1] += "（🎫票流程失败，warp兜底）"
                     continue
+            _NAV_FAILED["v"] = True
             return _with_state("\n".join(log) + f"\n⚠️ {tkt['note']} 到 {nxt} 失败")
         arrived = False
         if kind == "warp":
@@ -3344,6 +3493,7 @@ def _map_go_walk(path, destination: str, dest: str, lead_log: str = "") -> str:
             # 恒 2026-08-13 可靠版：走到出口可站位 → 确认人到 → /warp 下一图入口
             arrived = _walk_trigger_warp(frm, nxt, ex, ey, wx, wy)
             if not arrived:
+                _NAV_FAILED["v"] = True
                 return _with_state("\n".join(log) + f"\n⚠️ 到 {nxt} 失败")
         elif kind == "door":
             ok = _enter_building_door(nxt)
@@ -3355,6 +3505,7 @@ def _map_go_walk(path, destination: str, dest: str, lead_log: str = "") -> str:
                     time.sleep(1.5)
                     ok = api.state().get("location", {}).get("name", "") == nxt
             if not ok:
+                _NAV_FAILED["v"] = True
                 return _with_state("\n".join(log) + f"\n⚠️ 进 {nxt} 失败")
         # ⚠️ 2026-08-16 恒：每段切图后检测剧情/对话（信件事件/节日等）——
         #    触发了就**停导航**，让 AI 处理（_with_state 自动走剧情），避免边移动边错位
@@ -3401,6 +3552,10 @@ def map_go(destination: str) -> str:
     Args:
         destination: 目标地点名（SeedShop / Mine / Town…）或 POI 名（皮埃尔商店）
     """
+    _nr = _nav_resolve(destination)
+    if _nr:
+        _NAV_LAST.update(_nr)
+    _NAV_FAILED["v"] = False
     try:
         # 0. 目标解析（POI → 地点名）
         dest = destination
@@ -3492,11 +3647,19 @@ def map_go(destination: str) -> str:
 
 @mcp.tool()
 def warp_safe() -> str:
-    """🏠 紧急逃脱：把角色 warp 回安全位（家 homeLocation；没有则 Farm）
+    """🏠 紧急逃脱：优先 warp 回上次 walk_to/map_go **失败的目标点**（2026-08-29 恒：落在失败点方便续走/救回），
+    没失败目标则回安全位（家 homeLocation；没有则 Farm）。
     ⚠️ **仅紧急逃脱/中断兜底**（血低被围、脚本卡死、火山被卡、地图转换失败）——
     日常移动请用 map_go 走真实路径，别拿它当导航。
     """
     try:
+        if _NAV_FAILED["v"] and _NAV_LAST.get("loc"):
+            try:
+                r = api.warp(_NAV_LAST["loc"], _NAV_LAST["x"], _NAV_LAST["y"])
+                if r.get("ok"):
+                    return _with_state(f"🏠 紧急逃脱 → 上次导航失败点「{_NAV_LAST.get('name')}」({_NAV_LAST['loc']} {_NAV_LAST['x']},{_NAV_LAST['y']})")
+            except Exception:
+                pass
         return _with_state(api.warp_safe())
     except Exception as e:
         return _with_state(f"❌ 紧急逃脱失败: {e}")
@@ -7367,23 +7530,36 @@ def _pond_fish(x: int = -1, y: int = -1) -> str:
 _CRAB_FACE = [(0, -1, 2), (0, 1, 0), (1, 0, 3), (-1, 0, 1)]  # 上/下/右/左 → 站在水邻居时的朝向
 
 
-def _crab_water(radius: int = 15) -> list:
-    """找当前地点半径内的水瓦片（/water 端点，需新 DLL）。"""
+def _crab_water_at(cx: int, cy: int, radius: int = 15) -> list:
+    """以指定瓦片为中心找水（/water 端点，需新 DLL；淘金/蟹笼共用）。"""
     try:
-        st = api.state()
-        px = (st.get("player") or {}).get("x") or 0
-        py = (st.get("player") or {}).get("y") or 0
-        r = api._get("/water", {"x": px, "y": py, "radius": radius})
+        r = api._get("/water", {"x": cx, "y": cy, "radius": radius})
         return (r.get("water") or []) if r.get("ok") else []
     except Exception:
         return []
 
 
+def _crab_water(radius: int = 15) -> list:
+    """找当前地点半径内的水瓦片（= _crab_water_at 以玩家为中心，2026-08-29 泛化）。"""
+    try:
+        st = api.state()
+        px = (st.get("player") or {}).get("x") or 0
+        py = (st.get("player") or {}).get("y") or 0
+        return _crab_water_at(px, py, radius)
+    except Exception:
+        return []
+
+
 def _crab_find_edges(radius: int = 15) -> list:
-    """水边可站陆地边：返回 [(站x, 站y, 朝水face, 水x, 水y), ...]。"""
+    """水边可站边：返回 [(站x, 站y, 朝水face, 水x, 水y), ...]。
+    ⚠️ 2026-08-30 恒铁律(同淘金)：站格=**纯陆地岸上格**(不 allowWater，排掉水格)，先走到岸上。
+    只在 **canCrabPot=true** 的水格旁放(/water 已预筛)——放进宽水域一次成功零试错；
+    /use 传 x,y 精准远程放到水格(AI 站岸上即可)。放完就在这岸格，不去爬水。"""
     water = _crab_water(radius)
     if not water:
         return []
+    # ✅ 只挑能放蟹笼的水格(宽水域：左右都是水或上下都是水，无建筑挡)——零试错关键
+    water = [w for w in water if w.get("canCrabPot")]
     water_set = {(w["x"], w["y"]) for w in water}
     edges = []
     for w in water:
@@ -7391,14 +7567,47 @@ def _crab_find_edges(radius: int = 15) -> list:
         for dx, dy, face in _CRAB_FACE:
             sx, sy = wx + dx, wy + dy
             if (sx, sy) in water_set:
-                continue  # 也是水
+                continue  # 纯水格(无陆地可站)——只要岸上格
             try:
+                # ✅ 不 allowWater：只认**纯陆地可走格**(排掉水格)，AI 站在岸上
                 if not api._post("/passable", {"x": sx, "y": sy}).get("passable"):
                     continue
             except Exception:
                 continue
             edges.append((sx, sy, face, wx, wy))
     return edges
+
+
+def _pan_stands(gx: int, gy: int, radius: int = 3) -> list:
+    """🪙 闪光点邻岸可站格：返回 [(站x, 站y, 朝水face, 闪x, 闪y, dist), ...] 按距闪点最近优先。
+    2026-08-30 恒铁律：会【下水】到贴近闪点的格子淘(不需要全程站水上，是操作格)。所以这里 **allowWater=true**
+    放行近水格——选到闪点射程内的最优操作格(曼哈顿≤2)。真正"人站岸上"的岸格由 _pan_shore 单独找。dist=到闪点曼哈顿。"""
+    stands = []
+    for r in range(1, radius + 1):
+        ring = []
+        for dx in range(-r, r + 1):
+            for dy in range(-r, r + 1):
+                if max(abs(dx), abs(dy)) != r:  # 只扫最外圈这层
+                    continue
+                sx, sy = gx + dx, gy + dy
+                try:
+                    # ✅ allowWater=true：放行近水/浅水格——操作格能贴近闪点(下水淘合法)
+                    if not api._post("/passable", {"x": sx, "y": sy, "allowWater": True}).get("passable"):
+                        continue
+                except Exception:
+                    continue
+                # 面朝闪点的最近正方向(0上/1右/2下/3左)——淘金靠包围盒相交不依赖朝向，只作拟人走位用
+                face = 2 if dy > 0 else 0 if dy < 0 else (1 if dx > 0 else 3)
+                if dy < 0 or (dy == 0 and dx < 0):
+                    face = 0 if dy < 0 else 3
+                elif dy > 0:
+                    face = 2
+                else:
+                    face = 1
+                ring.append((sx, sy, face, gx, gy, abs(dx) + abs(dy)))
+        ring.sort(key=lambda t: t[5])
+        stands.extend(ring)
+    return stands
 
 
 def _crab_water_report(radius: int = 15) -> str:
@@ -7423,34 +7632,204 @@ def _crab_cur_loc() -> str:
 
 
 def _crab_place(count: int = 5, radius: int = 15) -> str:
-    """沿水边放蟹笼：找水边陆地 → 逐格选蟹笼走位朝水 /use 放置。"""
+    """沿水边放蟹笼：找水边陆地 → 逐格选蟹笼走位朝水 /use 放置，放完换手持饵，回近水点岸边站定。
+    ⚠️ 2026-08-29 恒改：**不要从老远 walk_to 再来、放完又飞回老远处**——只走到**最近的近水点**，
+    放蟹笼→放饵→**回近水点旁的岸格站定**。缺蟹笼/鱼饵直接报错。"""
     loc = _crab_cur_loc()
+    if not api.has_item("Crab Pot"):
+        return "❌ 没有蟹笼(背包没有 Crab Pot)！先去买/造蟹笼再来"
     edges = _crab_find_edges(radius)
     if not edges:
         return "❌ 附近没找到水边可站的地方（/water 报 0 水格？鱼塘不算蟹笼水）"
+    # 📍 选"最近"近水点：按距玩家最近的站格优先(不是明明很多水却选大老远)——2026-08-29 恒
+    try:
+        st = api.state()
+        px = (st.get("player") or {}).get("x") or 0
+        py = (st.get("player") or {}).get("y") or 0
+        edges.sort(key=lambda e: (e[0] - px) ** 2 + (e[1] - py) ** 2)
+    except Exception:
+        pass
     placed = 0
     log = [f"🦀 找到 {len(edges)} 个水边点，放 {min(count, len(edges))} 个蟹笼:"]
+    planted = []   # 实放成功的 (原站格sx,sy,face,水x,水y) — 挂饵回原站格用
     for sx, sy, face, wx, wy in edges:
         if placed >= count:
             break
         try:
             api.select("Crab Pot")
             time.sleep(0.3)
+            # ✅ 2026-08-30 恒铁律：站格=纯陆地岸上格(不 allowWater)，走到岸上
             api._post("/walk_to", {"location": loc, "x": sx, "y": sy})
             _wait_arrival(loc, sx, sy, timeout=15)
             api._post("/face", {"direction": face})
             time.sleep(0.3)
-            r = api._post("/use", {"force": True})
+            # ✅ 2026-08-30 恒铁律：/use 传 x,y 精准远程放指定水格，一次成功零试错(操控无视水格)
+            r = api._post("/use", {"force": True, "x": wx, "y": wy})
             if r.get("ok"):
                 placed += 1
+                planted.append((sx, sy, face, wx, wy))
                 log.append(f"  ✓ 放 ({wx},{wy})")
             else:
                 log.append(f"  ✗ ({wx},{wy}) {r.get('error') or ''}")
         except Exception as e:
             log.append(f"  ✗ ({wx},{wy}) {e}")
         time.sleep(0.4)
-    log.append(f"📦 放好 {placed} 个；放饵→crab_pot bait")
+    # 📍 放完**换手持放饵**——只针对实放成功的笼。挂饵站**笼旁原岸格 (sx,sy)**(不 allowWater)，面朝笼 interact。
+    if placed:
+        if api.has_item("Bait"):
+            try:
+                api.select("Bait")
+                time.sleep(0.4)
+                for sx, sy, face, wx, wy in planted:
+                    try:
+                        # 回到放笼时的纯陆地岸格(就在笼近旁)，面朝笼挂饵
+                        api._post("/walk_to", {"location": loc, "x": sx, "y": sy})
+                        _wait_arrival(loc, sx, sy, timeout=15)
+                        api._post("/face", {"direction": face})
+                        time.sleep(0.2)
+                        r = api._post("/interact", {"x": wx, "y": wy})
+                        if r.get("ok"):
+                            log.append(f"  🎣 放饵 ({wx},{wy})")
+                        else:
+                            log.append(f"  🎣 放饵失败 ({wx},{wy}) {r.get('error') or ''}")
+                    except Exception as e:
+                        log.append(f"  🎣 放饵异常 ({wx},{wy}) {e}")
+            except Exception:
+                log.append("⚠️ 放饵出错")
+        else:
+            log.append("⚠️ 没带鱼饵，只放了笼没放饵（放饵→crab_pot bait）")
+    # 📍 2026-08-30 恒铁律：做完行为**回到岸上格**——站格本就是纯陆地岸格，挂饵时也已回原站格，原地即它，不再额外走位。
+    if planted:
+        ax, ay = planted[-1][0], planted[-1][1]
+        log.append(f"↩️ 已回近水点岸格 ({ax},{ay}) 站定")
+    log.append(f"📦 放好 {placed} 个(含放饵)；过夜出货，早上 crab_pot collect 收")
     return "\n".join(log)
+
+
+# ═══════════════════════════════════════════
+#  🪙 淘金/淘盘(铜锅)（2026-08-29 恒：找到水下闪光点；反编译 StardewValley.Tools.Pan 破译）
+# ═══════════════════════════════════════════
+def _pan_run(dry_run: bool = False, radius: int = 3, timeout: int = 20) -> str:
+    """🪙 淘金(铜锅/淘盘)：找当前图水下闪光点 → 走近岸上格→下水淘→回岸上格。scene 域。
+    ⭐ 恒的铁律(2026-08-30，反复确认)：人假设在(1,11)，中间水域，闪点在(0,5)。
+       流程 = ①walk_to 走到离闪点近的**岸上格**(1,5) ②为了够到闪点会**下水**到(0,5) ③淘金 ④**回到岸上格(1,5)**。
+       核心：最后一定回【出发的那个岸上格】，不是对岸、不是最近可走格。"""
+    try:
+        st = api.state()
+    except Exception as e:
+        return f"❌ 淘金: 读状态失败 {e}"
+    ore = (st.get("player") or {}).get("orePan") or {}
+    if not ore.get("hasGlint"):
+        return "❌ 本图没有水下闪光点(需完成社区中心鱼缸+靠近水边才刷新)"
+    if not ore.get("hasPan"):
+        return "❌ 没有铜锅(淘金盘)——背包/手上都没有 Pan"
+    loc = (st.get("location") or {}).get("name", "Farm")
+    gx, gy = ore.get("x"), ore.get("y")
+    if gx is None or gy is None:
+        return "❌ 闪光点坐标缺失，重查 /state.orePan"
+    if dry_run:
+        return f"🪙 本图水下有闪光点 ({gx},{gy})，你带了铜锅(升级{ore.get('panUpgrade')})。淘→ scene ops=pan"
+
+    # ── ① 找离闪点最近的【可站格】(允许下水 allowWater 才能贴近闪点；含 岸上格 + 近水操作格)──
+    stands = _pan_stands(gx, gy, radius=radius)
+    if not stands:
+        return f"⚠️ 闪光点 ({gx},{gy}) 对岸没找到可走格，走近点重试(radius={radius})"
+    in_range = [t for t in stands if t[5] <= 2]
+    if not in_range:
+        return f"⚠️ 闪光点 ({gx},{gy}) 藏水中、距最近可走格 {stands[0][5]} 超铜锅射程(±2)——等换个闪点"
+    stands = in_range
+    # ⭐ 玩家淘前位置 stx,sty（回岸格要回这一岸，别跳对岸）——在任何可能异常前先兜底取好
+    try:
+        _ps = (st.get("player") or {})
+        stx, sty = _ps.get("x") or 0, _ps.get("y") or 0
+    except Exception:
+        stx, sty = 0, 0
+    # 排序：先近闪点(dist 小)，同距再近玩家
+    try:
+        stands.sort(key=lambda t: (t[5], (t[0] - stx) ** 2 + (t[1] - sty) ** 2))
+    except Exception:
+        pass
+    opx, opy, face, wx, wy, dist = stands[0]   # 下水操作格(贴近闪点)
+
+    # ── ② 找【纯陆地岸上格】(人下水前站、淘完也要回的那格)——⭐优先回"玩家淘前所在的那一岸" ═─
+    shore = _pan_shore(opx, opy, gx, gy, stx, sty, radius=radius)
+    if not shore:
+        return f"⚠️ 闪点 ({gx},{gy}) 附近找不到岸上格里，无法靠近"
+    mx, my = shore   # 岸上格(M)，这是"回"，不是站水上跳对岸
+
+    # ── ③ 先走位到岸上格 (M) ──
+    try:
+        api._post("/walk_to", {"location": loc, "x": mx, "y": my})
+        if not _wait_arrival(loc, mx, my, timeout=timeout):
+            return f"⚠️ 走位超时(到 {loc} {mx},{my})——可能对岸被挡，换个可走格"
+    except Exception as e:
+        return f"❌ 走位出错 {e}"
+
+    # ── ④ 下水到操作格 (贴着闪点)——⭐水下用 /position 瞬移(水里走位会卡)，不是 walk_to ──
+    try:
+        api._post("/position", {"x": opx, "y": opy})
+        time.sleep(0.4)
+    except Exception as e:
+        return f"❌ 下水出错 {e}"
+
+    api._post("/face", {"direction": face})
+    try:
+        api.select("Copper Pan")
+    except Exception:
+        pass
+    time.sleep(0.3)
+
+    r = api._post("/pan", {}, timeout=60)
+    if not r.get("ok"):
+        # ⚠️ 淘失败了也要 position 回岸，别留在水里
+        try:
+            api._post("/position", {"x": mx, "y": my})
+        except Exception:
+            pass
+        return f"❌ 淘金失败: {r.get('error', '')}"
+
+    # ── ⑤ 淘完【position 瞬移回岸上格 (M)】——恒铁律核心：从起始位走位到近岸格，淘金/回程用 position ──
+    msg = f"🪙 淘金成功！position 下水点 ({opx},{opy}) 淘(闪点 {gx},{gy})，TimesPanned={r.get('timesPanned')}"
+    if r.get("bagFull"):
+        msg += "\n📦 背包满了！掉落进了取出菜单 → menu read / menu click 领一下，别丢"
+    if r.get("glintCleared"):
+        msg += "；闪光点已淘清"
+    try:
+        api._post("/position", {"x": mx, "y": my})
+        time.sleep(0.4)
+        msg += f"；已 position 回近岸格 ({mx},{my}) 站定"
+    except Exception:
+        msg += f"；⚠️ 回岸({mx},{my})失败"
+    return msg
+
+
+def _pan_shore(opx: int, opy: int, gx: int, gy: int, px: int, py: int, radius: int = 3):
+    """🪙 从下水操作格 (opx,opy) 找**纯陆地岸上格**(M)——淘完要回这格。
+    2026-08-30 恒铁律：人先到这岸格、下水淘、淘完回【这个岸格】。只认纯陆地(/passable 不 allowWater)。
+    排序优先级(恒怕"跳对岸")：①离玩家淘前位置近(回自己出发那一岸) ②离闪点近(够得着)。
+    环形扩散半径内挑最优，回 None=没岸格。"""
+    best = None
+    best_key = None
+    for r in range(1, radius + 3):   # radius+3 放宽，闪点藏水深处岸格可能远一些
+        for dx in range(-r, r + 1):
+            for dy in range(-r, r + 1):
+                if max(abs(dx), abs(dy)) != r:
+                    continue
+                tx, ty = opx + dx, opy + dy
+                try:
+                    # 纯陆地可走格(不 allowWater，排掉水格)——岸上格
+                    if not api._post("/passable", {"x": tx, "y": ty}).get("passable"):
+                        continue
+                except Exception:
+                    continue
+                # ⭐ 关键：优先回【玩家淘前所在的那一岸】(离 px,py 近)，其次离闪点近——绝不跳对岸
+                key = (abs(tx - px) + abs(ty - py), abs(tx - gx) + abs(ty - gy))
+                if best_key is None or key < best_key:
+                    best_key = key
+                    best = (tx, ty)
+        if best:
+            return best
+    return None
 
 
 def _crab_scan_placed() -> list:
@@ -7699,6 +8078,7 @@ def scene(ops: str = "", **kw) -> str:
     """🖱️ 场景交互域。ops: at(x,y点格) front/interact(点面前) use(挥工具) face(转向) select(拿手上)
     pickup(拿起家具) furniture(扫家具) pickup_scene(捡地面物) berry(浆果) spot(挖蚯蚓) moss(绿雨苔藓)
     rock(室外镐击 dig=true/false radius max_break break_stone——采石场/挖掘场/蚌矿场敲可破物,跳普通石)
+    pan(淘金/淘盘 dry_run=true/false——本图水下闪光点→岸边走位面水→铜锅淘金收掉落)
     garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物) maze(迷宫视图 r=半径 gx,gy=目标 渲染ASCII棋盘)
     maze_seg(走法链 gx,gy=目标 拆直走廊列表+拼链，AI按段walk_to)
     maze_seg(走法链 gx,gy=目标 拆直走廊+拼链) maze_walk(走迷宫 waypoints="x,y x,y…"依次walk_to)。细节→help(scene)。
@@ -7719,6 +8099,7 @@ def scene(ops: str = "", **kw) -> str:
         "moss": moss_run, "搜刮苔藓": moss_run, "绿雨": moss_run,
         "rock": rock_dig, "挖石": rock_dig, "敲石": rock_dig, "挖矿点": rock_dig, "采矿点": rock_dig,
         "garbage": trash_run, "翻垃圾桶": trash_run, "翻桶": trash_run, "rummage": trash_run,
+        "pan": _pan_run, "淘金": _pan_run, "淘盘": _pan_run, "铜锅": _pan_run, "淘": _pan_run,
         "forge_help": lambda: _with_state(FORGE_GUIDE), "锻造帮助": lambda: _with_state(FORGE_GUIDE),
         "drop": drop_item, "丢": drop_item,
         "furniture": scan_furniture, "家具": scan_furniture,
@@ -7727,6 +8108,17 @@ def scene(ops: str = "", **kw) -> str:
         "maze_walk": _maze_walk, "走迷宫": _maze_walk, "迷宫走": _maze_walk,
     }
     return _with_state(_ops_run(ops, dispatch, kw))
+
+
+def open_questlog() -> str:
+    """📜 程序化打开任务日志(QuestLog)：AI 自主看任务/领钱（绕开按键/焦点；2026-08-29 恒）。"""
+    try:
+        r = api._post("/open_questlog", {})
+        if r.get("ok"):
+            return _with_state("📜 已打开任务日志，menu read 看任务卡/领奖")
+        return _with_state(f"❌ 开日志失败: {r.get('error', '')}")
+    except Exception as e:
+        return _with_state(f"❌ 开日志出错: {e}")
 
 
 @mcp.tool()
@@ -7745,7 +8137,7 @@ def menu(ops: str = "", **kw) -> str:
         **kw: 对应操作参数
     """
     dispatch = {
-        "read": read_menu, "看": read_menu,
+        "read": read_menu, "看": read_menu, "journal": open_questlog, "日志": open_questlog, "开日志": open_questlog,
         "number": number_select, "数量": number_select, "数量框": number_select,
         "display_fill": _menu_display_fill, "放满": _menu_display_fill, "填槽": _menu_display_fill,
         "display_takeback": _menu_display_takeback, "收好": _menu_display_takeback, "收": _menu_display_takeback,
@@ -7875,6 +8267,9 @@ _SETTLE_REMIND_KEY = {"last": None}   # 过夜结算广播去重（2026-08-15 �
 _TU_REMIND = {"last": None}           # 铁匠铺"待取"去重（2026-08-22 恒：升级没领前只提一次，别每条返回都提）
 # 🧾 结算期 30s 轮询/超时兜底已并入 _chat_phase_line（2026-08-17 恒），原 _SETTLE_CHECK_IN 已移除
 _GREENRAIN_KEY = {"last": None}       # 绿雨天提醒去重（2026-08-17 恒：weather=7，一天一次）
+_HW_REMIND_KEY = {"last": None}       # 每日求助栏提醒去重（2026-08-29 恒：每天第一次进Town一次）
+_HW_READY_KEY = {"last": None}        # 每日求助"已集齐"提醒去重（2026-08-29 恒 Part A：集齐未交付提示去交付，一天一次）
+_SPECIAL_RW_KEY = {"last": None}      # 特别订单奖励链提醒去重（2026-08-29 恒：接单/完成领奖/兑奖券可拿，到Town每日一次）
 
 # 🌿 绿雨搜刮引导（2026-08-21 恒：像节日引导一样给 AI 推荐路线）：绿雨天逐图 moss_run，转一圈清完。
 GREENRAIN_GUIDE = (
@@ -8028,6 +8423,71 @@ def _order_match_active(spec) -> bool:
         return False
     except Exception:
         return False
+
+
+# 📍 特别订单卡名 → 交付点提示（2026-08-29 恒：AI 在任务日志里打开某单，就插这句"交付坐标+操作"）
+# 卡名 = /menu read 的 QuestLog 卡 source=specialOrders 的 name(= SpecialOrder.GetName() 订单标题)。
+# 提示含：交付点图/坐标 + 站位 + 放物/交互 + button=ok 结算（容/手持两套都说清）。
+_DELIVERY_HINT_BY_NAME = {
+    "给乔治的礼物":     "📍 交付：带12韭葱**进乔治家(进门)**触发『韭葱惊喜礼物』过场=自动交付(非放箱)；领奖=日志 rewardBox+兑奖券",
+    "烈酒":            "📍 交付：潘姆拖车厨房柜 Trailer(10,6)，站(10,7)朝上交互，放12土豆果汁→button=ok 结算",
+    "罗宾的项目":      "📍 交付：木匠商店木头堆 ScienceHouse(10,19)，站(10,20)朝上交互，放80硬木→button=ok 结算",
+    "社区清理":        "📍 交付：火车站垃圾箱 Railroad(28,36)，站(28,37)朝上交互，放20垃圾(非Joja可乐)→button=ok 结算",
+    "四颗宝石":        "📍 交付：齐先生收集箱 QiNutRoom(1,4)，站(1,5)朝上交互，放4五彩碎片→button=ok 结算",
+    "齐先生的五彩农场": "📍 交付：齐先生收集箱 QiNutRoom(1,4)，站(1,5)朝上交互，放红橙黄绿蓝紫各100→button=ok 结算",
+    "格斯的著名煎蛋卷": "📍 交付：酒吧冰箱 Saloon(18,16)，站(18,17)朝上交互，放蛋→button=ok 结算",
+    "需要多汁的虫子":   "📍 交付：鱼店旁虫桶 Beach(37,33)，站(37,34)朝上交互，放虫肉→button=ok 结算",
+}
+
+
+def _delivery_hint(cname: str) -> str:
+    """按特别订单卡名找交付点提示；精确/子串匹配（卡名可能带变体）。"""
+    if not cname:
+        return ""
+    cm = str(cname).strip()
+    for k, h in _DELIVERY_HINT_BY_NAME.items():
+        if cm == k or k in cm or cm in k:
+            return h
+    return ""
+
+
+# 🕵️ 齐先生「神秘的齐」纸条链交付提示（2026-08-29 恒：递进链，按 TH_* 进度给"当前步"）
+# 卡名 = /menu read 的 QuestLog 卡 source=questLog 的 name(= questTitle)，该链在日志里叫「奇怪纸条」。
+# 进度源 = /mail 的 received 里的 TH_Tunnel→TH_Railroad→TH_MayorFridge→TH_SandDragon→TH_LumberPile（重编译 GameLocation 定论）。
+_QI_CARD_KEYS = ("奇怪纸条", "神秘的齐", "神奇的齐", "纸条")
+
+
+def _qi_chain_hint() -> str:
+    """按 /mail 的 TH_* 标记算纸条链当前步→返回"下一步去哪"提示；没进度即第一步。"""
+    try:
+        m = api._get("/mail")
+        recv = set()
+        for r in (m.get("received") or []):
+            if isinstance(r, dict):
+                recv.add(r.get("id") or "")
+            elif isinstance(r, str):
+                recv.add(r)
+    except Exception:
+        return ""
+    if "TH_SandDragon" in recv:
+        return "🧾 神秘的齐④(最后步)：去家门口木材堆检查领会员卡（恒手动；木材堆到④才激活+随房型变，别硬记坐标）"
+    if "TH_MayorFridge" in recv:
+        return "🧾 神秘的齐③：手持日光精华(768)→沙漠沙之巨龙嘴(9,36)，站(9,37)朝上"
+    if "TH_Railroad" in recv:
+        return "🧾 神秘的齐②：手持10甜菜→镇长家冰箱(9,4)，站(9,5)朝上"
+    if "TH_Tunnel" in recv:
+        return "🧾 神秘的齐①b：手持彩虹贝壳(394)→火车站箱(45,40)，站(45,41)朝上"
+    return "🧾 神秘的齐①a(任务开头)：手持电池组(787)→隧道锁盒(17,6)，站(17,7)朝上"
+
+
+def _qi_chain_card_hint(cname: str) -> str:
+    """卡片名是否为「神秘的齐」纸条链→是则返回动态交付提示，否则空串。"""
+    if not cname:
+        return ""
+    cm = str(cname).strip()
+    if any(k in cm for k in _QI_CARD_KEYS):
+        return _qi_chain_hint()
+    return ""
 
 
 def _festival_poi_active(pname: str, p: dict) -> bool:
@@ -9060,6 +9520,30 @@ _SECRET_NOTE_NAMES = tuple(_SECRET_NOTE_ZH)
 _BOOK_HINT_KEYS = ("Quarterly", "Treatise", "Cookbook", "Monster", "Seasonal", "Almanac", "书", "秘籍", "Way", "草中窜", "年历")
 
 
+# 🪙 淘金提示(2026-08-29)：本图水下有闪光点时才报，不用每 tick 刷屏
+_PAN_TRACK = {"sig": None}
+
+
+def _pan_hint(data: dict) -> str:
+    """🪙 本图水下有闪光点时提一句(once per 坐标+有无Pan)，引导 AI 用 scene ops=pan 淘金。
+    2026-08-29：只在 orePanPoint != Zero 时注入；淘完(原点归零)/换图自动再判定。
+    有锅 → "scene ops=pan 淘金"；没锅 → 提醒但还缺淘金盘。"""
+    try:
+        ore = (data.get("player") or {}).get("orePan") or {}
+        if not ore.get("hasGlint"):
+            return ""
+        gx, gy = ore.get("x"), ore.get("y")
+        sig = (gx, gy, ore.get("hasPan"))
+        if _PAN_TRACK["sig"] == sig:
+            return ""
+        _PAN_TRACK["sig"] = sig
+        if ore.get("hasPan"):
+            return f"🪙 本图水下有闪光点 ({gx},{gy})——scene ops=pan 淘金"
+        return f"🪙 本图水下有闪光点 ({gx},{gy}) 但你没带铜锅(淘金盘)"
+    except Exception:
+        return ""
+
+
 def _read_to_free_hint(data: dict) -> str:
     """🎫 背包里有"读到即消耗、腾占位"的道具时提醒一次。2026-08-29 恒拍板：**只提醒一句**——
     检测到背包有【秘密纸条/日记残页/书】→ 说"读掉腾背包占位"即可，不做复杂判断、不加工具。
@@ -9962,20 +10446,49 @@ def list_color_presets() -> str:
     return _with_state("\n".join(lines))
 
 
+def _load_appearance_overrides() -> dict:
+    """加载 scripts/appearance_overrides.json 的"自定义描写"：{str(id): {name?, desc?}}。缺文件/坏JSON→{}。"""
+    path = os.path.join(SCRIPT_DIR, "appearance_overrides.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f) or {}
+        return {k: v for k, v in data.items() if k != "_doc"}
+    except (OSError, ValueError):
+        return {}
+
+
+def _merged_shirt_rows() -> list:
+    """ref_data.SHIRT_REF 运行时叠加自定义描写：返回 (id, 名, 描述, 是否你补录的描写) 四元组。"""
+    ovr = _load_appearance_overrides()
+    out = []
+    for _id, nm, desc in ref_data.SHIRT_REF:
+        o = ovr.get(str(_id))
+        if o:
+            if o.get("name"):
+                nm = o["name"]
+            if o.get("desc"):
+                desc = o["desc"]
+        custom = bool(o and (o.get("name") or o.get("desc")))
+        out.append((_id, nm, desc, custom))
+    return out
+
+
 @mcp.tool()
 def list_shirt_ref(q: str = "", start: int = 0, end: int = 0) -> str:
     """👕 上衣编号参考 (ID 1000~1999，共301件，中文名)
     捏脸选上衣用 set_appearance(shirt=N)。默认出紧凑索引(编号+名)；想看某件长什么样 →
     q=关键词 或 start/end=数字区间 → 出该批「编号+中文名+游戏描述」。
+    ※ = 你补录的自定义描写(默认上衣那批原本都叫「上衣/可以穿的上衣」。)
     """
-    rows = ref_data.SHIRT_REF
+    rows = _merged_shirt_rows()
     if not rows:
         return _with_state("❌ 无上衣数据")
     lo, hi = rows[0][0], rows[-1][0]
+    any_custom = any(r[3] for r in rows)
 
     if q:
         ql = q.strip().lower()
-        filtered = [r for r in rows if ql in r[1].lower() or ql in str(r[0])]
+        filtered = [r for r in rows if ql in r[1].lower() or ql in r[2].lower() or ql in str(r[0])]
         mode = "keyword"
     elif start or end:
         s, e = start or lo, end or hi
@@ -9990,14 +10503,21 @@ def list_shirt_ref(q: str = "", start: int = 0, end: int = 0) -> str:
 
     if mode == "index":
         lines = [f"👕 上衣编号索引 (ID {lo}~{hi}，共 {len(rows)} 件):\n"]
-        for sid, sname, _ in rows:
-            lines.append(f"  {sid}: {sname}")
-        lines.append("\n想看某件长什么样 → 上衣 q=关键词 或 start=1000 end=1050（出描述）。")
+        for sid, sname, sdesc, custom in rows:
+            mark = "※" if custom else ""
+            if custom:
+                # 自定义款：名多为"上衣"，用描写首小节当可识别标签
+                label = sdesc.split("。")[0][:14] or sname
+                lines.append(f"  {mark}{sid}: {label}")
+            else:
+                lines.append(f"  {mark}{sid}: {sname}")
+        lines.append("\n※ = 你补录的自定义描写（想看齐全 → q=关键词 或 start/end）。")
         return _with_state("\n".join(lines))
 
     lines = [f"👕 上衣详查 {len(filtered)} 件:\n"]
-    for sid, sname, sdesc in filtered:
-        lines.append(f"  {sid}: {sname} — {sdesc}")
+    for sid, sname, sdesc, custom in filtered:
+        mark = "※" if custom else ""
+        lines.append(f"  {mark}{sid}: {sname} — {sdesc}")
     lines.append("\n看上哪件 → set_appearance(shirt=<id>)；再搜 → 上衣 q=关键词。")
     return _with_state("\n".join(lines))
 
@@ -10098,7 +10618,7 @@ _DOMAIN_GUIDES = {
 "cabin": "小屋引导域(🏠 FarmHouse/Cabin/岛屋；不传=扫屋)：enum(扫屋查待收) collect(收机器) statue(雕像) furniture(扫家具) interact(点家具) pickup(拿起家具) sleep(睡觉)。",
 "social": "社交域：chat(跟NPC搭话) gift(送礼提好感) give(送玩家物品) send(发消息) emote(表情) friendship(查好感) movie(影院知识) snack(零食)。",
 "scene": "场景交互域(点东西/工具/转身/捡)：at(x,y)(点指定格/柜台) interact(点面前) use(挥工具) face(转向0上1右2下3左) select(拿手上) pickup(拿起家具) pickup_scene(捡当前场景物) berry(摇浆果) spot(挖蚯蚓点) moss(绿雨搜苔藓) rock(室外镐击:敲当前图可破物,采石场/挖掘场/蚌矿场跳普通石,dig/dry,battle-free) garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物) furniture(扫家具) maze(迷宫视图r半径,gx/gy目标格→ASCII棋盘#墙.可走P自己G目标) maze_seg(走法链gx,gy目标→拆直走廊列表+拼「左/右上/下走到(x,y)」多段链,AI按段walk_to)。",
-"menu": "菜单/界面域(开→看→点)：read(看菜单) advance(推进剧情/对话) click(option/item/button/xy 点;action=claim领/action=discard丢桶腾格;slot=序号领指定格) key(ok/esc/数字按键) cancel(关弹窗/撤就绪) shop(逛店) sell(卖商店) bin(投出货箱) cook(做饭) craft(合成) recipes(菜谱) craftables(配方) forge(锻造) geode/geodes(砸晶球) customize(捏人) bundle(献祭板) bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读消耗品:书/秘密纸条/日记残页,统一走右键读 name=物品名)。🚫满包接鱼/领箱:原 claim_swap(替换领取)已退役→**click action=discard 丢桶腾格(回收返金)+action=claim 领取(或用 slot 领指定格;不想要直接 button=ok 关掉)**。",
+"menu": "菜单/界面域(开→看→点)：read(看菜单) advance(推进剧情/对话) click(option/item/button/xy 点;action=claim领/action=discard丢桶腾格;slot=序号领指定格) key(ok/esc/数字按键) cancel(关弹窗/撤就绪) shop(逛店) sell(卖商店) bin(投出货箱) cook(做饭) craft(合成) recipes(菜谱) craftables(配方) forge(锻造) geode/geodes(砸晶球) customize(捏人) bundle(献祭板) bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读消耗品:书/秘密纸条/日记残页,统一走右键读 name=物品名)。🚫满包接鱼/领箱:原 claim_swap(替换领取)已退役→**click action=discard 丢桶腾格(回收返金)+action=claim 领取(或用 slot 领指定格;不想要直接 button=ok 关掉)**。🧾关闭菜单一律 click(button=upperRightCloseButton)（ItemGrabMenu/交付容器用 button=ok 确认才关）；订单交付容器(QuestContainerMenu)=点背包对应物品格(见slots的坐标)→放进→点 button=ok 结算；任务日志领钱=点击已完成的有钱任务卡后 click(button=rewardBox)；兑奖机兑换=click(button=mainButton)；特别订单领奖链=日志领钱(上面)→社区板旁领奖箱(60,93)拿兑奖券→刘易斯家兑奖机(mainButton)兑换。",
 "quest": "任务域：list(全部) progress(进度)；接单走板上的 menu click(button=accept…)。",
 "storage": "箱子域：scan(扫当前图箱) store(存) take(取) smart(智能堆叠) layout(箱子网络) default/cleardefault/tag(默认箱/清/标记)。",
 "daily": "过日子域：sleep(睡觉) settle(确认过夜结算) eat(吃食物回血体力) wear(穿/脱衣物) lie_bed(躺床不过夜) heartbeat(心跳间隔) pause(后台不暂停) peek(看恒干嘛) whiteboard/wb_read/wb_pin/wb_clear(白板记忆) appearance(捏脸)。",
@@ -11249,6 +11769,9 @@ def read_menu() -> str:
                              + (f" @({b['x']},{b['y']})" if b else ""))
         # 🆕 特别任务板（SpecialOrdersBoard：社区布告栏/齐先生核桃房/沙漠节马龙 同机制 2026-08-22 恒）
         #    订单卡序列化在 items（不进 shopItems）——read_menu 必须读 items 才显示任务卡。
+        #    ✅ 领奖链（2026-08-29 恒实测正确，之前"板上点accept领奖"是错的）：板上accept按钮只接新单；
+        #    完成单只在板上画✔不在此领。真正的领奖=①钱在任务日志点rewardBox领 ②板旁领奖箱(60,93)拿兑奖券
+        #    ③刘易斯家兑奖机点mainButton兑换。
         if t == "SpecialOrdersBoard":
             cards = m.get("items") or []
             if not cards:
@@ -11266,7 +11789,89 @@ def read_menu() -> str:
                     lines.append(f"      🎁 {'、'.join(rw)}")
                 if not c.get("accepted"):
                     lines.append(f"      🖱️ 接取: menu click(button=acceptLeftQuestButton)（左卡）/ acceptRightQuestButton（右卡）")
-            lines.append("  💡 特殊订单同时只能接一个；接完 quest progress 查子目标进度")
+            lines.append("  💡 特殊订单同时只能接一个；板只接单/看进度，**不在此领奖**（完成单只画✔）。")
+            lines.append("  💡 收起=button=upperRightCloseButton（这是接单板，接完/看完就关，别点 accept 误接）")
+            lines.append("  🏆 领奖链：①任务日志点 menu click(button=rewardBox) 领钱 ②社区布告栏左2格**领奖箱**站(60,94)朝上交互领**兑奖券**(背包要空位) "
+                         "③**刘易斯家兑奖机**站(1,6)朝上交互 → menu click(button=mainButton) 兑换")
+            return _with_state("\n".join(lines))
+        # 📋 每日求助栏（Billboard：皮埃尔店西侧"需要帮助"栏，2026-08-29 恒）：/menu 对 Billboard 不嵌内容，
+        #    由 MCP 从 quest_progress 补 questOfTheDay，让 AI 打开展板时能"看"今日求助。
+        if t == "Billboard":
+            try:
+                qpr = api.quest_progress()
+                q = next((x for x in (qpr.get("quests") or []) if x.get("source") == "questOfTheDay"), None)
+                if q:
+                    status = "✅ 已完成" if q.get("completed") else "⏳ 进行中"
+                    rw = q.get("moneyReward") or "?"
+                    lines.append(f"  {status} 今日求助：{q.get('title', '?')}")
+                    lines.append(f"    {q.get('description', '')}")
+                    lines.append(f"    ⏱ 剩 {q.get('daysLeft', '?')}天  💰 {rw}g")
+                    lines.append("  💡 交付：收集够任务物品带到对应NPC交给它；进度用 quest progress 看")
+                else:
+                    lines.append("  （今日没有求助任务）")
+            except Exception:
+                lines.append("  （读不到今日求助）")
+            return _with_state("\n".join(lines))
+        # 📜 任务日志（QuestLog）：点 rewardBox 领已完成+有钱任务的钱（2026-08-29 恒，DLL 已暴露按钮）
+        if t == "QuestLog":
+            # 📜 任务日志（游戏内为准，2026-08-29 恒：含特别订单）：列任务卡，点完成+有钱卡选中→rewardBox 领钱
+            cards = m.get("items") or []
+            rb = next((b for b in (m.get("buttons") or []) if b.get("name") == "rewardBox"), None)
+            if cards:
+                lines.append("  📜 任务日志（含特别订单，游戏内为准）:")
+                for c in cards:
+                    st = "✅" if c.get("completed") else "⏳"
+                    src = "📋特" if c.get("source") == "specialOrders" else "📜常"
+                    ln = f"    {st} [{src}] {c.get('name')}"
+                    if c.get("completed") and c.get("money"):
+                        ln += f" 💰{c.get('money')}g → menu click(x={c['x']}, y={c['y']}) 选中卡 → click(button=rewardBox) 领"
+                    else:
+                        ln += f" @(x={c['x']}, y={c['y']}) 点卡看详情"
+                    lines.append(ln)
+                    # 📍 打开某已接特别订单→插交付点提示（2026-08-29 恒）；「神秘的齐」纸条链按步动态给
+                    if c.get("source") == "specialOrders":
+                        dh = _delivery_hint(c.get("name"))
+                    else:
+                        dh = _qi_chain_card_hint(c.get("name"))
+                    if dh:
+                        lines.append(f"      {dh}")
+                if rb:
+                    lines.append("  💰 rewardBox 在 → 选中已完成+有钱的卡后 menu click(button=rewardBox) 领钱")
+            else:
+                if rb:
+                    lines.append("  💰 本日志有可领奖励：选中完成+有钱的任务卡后 menu click(button=rewardBox) 领钱")
+                lines.append("  💡 点任务条目看详情；已完成任务的奖励点 rewardBox 领")
+            return _with_state("\n".join(lines))
+        # 🎰 特别订单兑奖机（PrizeTicketMenu）：点 mainButton 消费1张兑奖券换奖（2026-08-29 恒，DLL 已暴露按钮）
+        if t == "PrizeTicketMenu":
+            mb = next((b for b in (m.get("buttons") or []) if b.get("name") == "mainButton"), None)
+            prizes = m.get("items") or []
+            if prizes:
+                lines.append("  🎰 兑奖机奖品带(固定顺序，当前/下几个): " + "、".join(f"{p.get('name')}×{p.get('stack')}" for p in prizes))
+            if mb:
+                lines.append("  🎰 兑奖机有 mainButton：menu click(button=mainButton) 消费1张兑奖券换 `currentPrizeTrack[0]`（手头要有兑奖券+背包空位）")
+            else:
+                lines.append("  🎰 兑奖机（没读到 mainButton，可能没兑奖券/已兑完？）")
+            return _with_state("\n".join(lines))
+        # 🍳 订单交付容器（QuestContainerMenu：格斯煎蛋卷/放物进箱）：点背包里对应物品的槽放进容器（2026-08-29 恒）
+        if t == "QuestContainerMenu":
+            slots = m.get("slots") or []
+            lines.append("  🍳 订单交付容器：点**背包里对应物品的槽**放进去（点槽=TryToPlace）。")
+            item_slots = [s for s in slots if s.get("item")]
+            if item_slots:
+                seen = set()
+                for s in item_slots:
+                    nm = s.get("item")
+                    if nm in seen: continue
+                    seen.add(nm)
+                    lines.append(f"     {nm} ×{s.get('stack')} → menu click(x={s['x']}, y={s['y']}) 放【{nm}】进容器")
+            else:
+                lines.append("     背包槽: " + "、".join(f"slot{s['index']}({s.get('item') or '空'})@{s['x']},{s['y']}" for s in slots[:12]))
+            given = m.get("items") or []
+            if given:
+                lines.append("  已放容器: " + ", ".join(f"{g.get('name')}×{g.get('stack')}" for g in given))
+            lines.append("  💡 放够后点 button=ok 结算（不点不完成）；收起=button=ok；左上X=upperRightCloseButton")
+            lines.append("  💡 交付完成后去任务日志 rewardBox 领钱，板旁领奖箱(60,93)领兑奖券")
             return _with_state("\n".join(lines))
         if m.get("responses"):
             lines.append("  选项:")
@@ -11322,6 +11927,18 @@ def read_menu() -> str:
         if t == "ItemGrabMenu":
             # ⚠️ 2026-08-26 恒：文案统一域形式——裸工具名在域模式下都被隐藏，AI 照着调会扑空
             lines.append("  🎁 ItemGrabMenu：点领取侧物品=拿起（一般领取用 menu click item=物品名 action=claim）")
+            grab = m.get("items") or []
+            if grab:
+                cnt = {}
+                for g in grab:
+                    nm = g.get("name")
+                    if not nm: continue
+                    c = g.get("count") or g.get("stack") or 1
+                    try: c = int(c) or 1
+                    except Exception: c = 1
+                    cnt[nm] = cnt.get(nm, 0) + c
+                lines.append("  可领取: " + "、".join(f"{nm}×{c}" for nm, c in cnt.items())
+                             + "（menu click item=物品名 action=claim / slot=序号）")
             lines.append("  🐟 背包满接鱼/箱子满（三选一，非必须替换；🚫claim_swap 替换领取已退役）：")
             lines.append("    ① 丢桶腾格: menu click action=discard item=低价值物（垃圾桶，升级有回收返金）→ 腾格后 action=claim 领取")
             lines.append("    ② 领指定格/多领: menu click action=claim slot=序号(领指定格,不想要1要4就 slot=4) · quantity=N 一次领N件(有空位多领;999=全领)")
