@@ -1011,6 +1011,20 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
             lines.append(_fh)
     except Exception:
         pass
+    # 🎣 鱼竿在手（钓鱼意图）：报竿上饵/钓具 + 背包饵量（2026-08-29 恒：AI 从没上过饵，没饵更要提示去哪补）
+    try:
+        _rh = _fishing_rod_hint(data)
+        if _rh:
+            lines.append(_rh)
+    except Exception:
+        pass
+    # 🎫 背包有「读到即消耗腾占位」道具（秘密纸条/日记残页/技能书）提醒一句（2026-08-29 恒拍板：只提醒读掉腾格）
+    try:
+        _sn = _read_to_free_hint(data)
+        if _sn:
+            lines.append(_sn)
+    except Exception:
+        pass
     # 🎰 赌场小游戏按钮引导（2026-08-23 恒）：AI 打开老虎机/21点，状态条直接告诉它该点啥
     try:
         _mgh = _minigame_guide_hint()
@@ -1409,11 +1423,9 @@ def _advance_story(active_menu, active_event) -> bool:
       （no-menu 分支走 pressActionButton，不用 OS mouse_event），这里退 /click 也传 no_mouse=true 彻底不碰 OS 鼠标。
     """
     if active_event and active_event.get("id"):
-        # 🎪 节日事件（festival_*）一律不自动推进（2026-08-19 恒揪出：_with_state 每次工具调用自动走剧情，
-        #    farmhand 一进节日拉起 festival_spring24 加入事件，自动按 confirm 打断节日脚本 → 被弹飞/对话串戏）。
-        #    节日脚本自己走，不靠按键；真有对话框让 AI 用 menu_click/press_key 显式处理。
-        if str(active_event.get("id", "")).startswith("festival_"):
-            return True
+        # 🎪 2026-08-28 恒：撤销"节日事件(festival_*)不自动推进"——当年是原作者的 festival bot 造成对话混乱才加的禁；
+        #    festival bot 已删除，现在 AI 用 advance_story 能正常推进节日 monologue/对话（冰钓 monologue 就用它推）。
+        #    ⚠️ 仅保留下方 festivalTimer>0（限时小游戏/冰钓进行中=玩家已接管）那条不推进。
         try:
             # 🥚 限时小游戏进行中（festivalTimer>0，如蛋蛋节寻宝/冰钓）= 玩家已接管 → 立刻停止推进
             #    （2026-08-17 恒：之前寻宝开始后 activeEvent 没变，_advance_story 还在点 confirm 造成延迟/干扰）
@@ -1644,7 +1656,16 @@ def _with_state(result: str, force_full: bool = False) -> str:
 
     strip = _build_state_strip(data, full=full, morning=morning)
     sep = "\n\n╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\n"
-    return f"{welcome}{result}{sep}{plan_note}{activity_line}{script_line}{strip}"
+    # 🎣 冰雪节冰钓自动 hook（2026-08-28 恒）：检测到比赛开钓(festivalTimer>0)且本局未发过 → 阻塞跑 ice_fishing
+    #    挂在 _with_state：**任意**工具调用（不等 AI 主动调 festival ice_fish）都能命中，且 AI 正在钓就干等不乱跑。
+    ice_line = ""
+    try:
+        ice_line = _maybe_ice_fishing_auto(data)
+        if ice_line:
+            ice_line += "\n"
+    except Exception:
+        pass
+    return f"{welcome}{result}{sep}{ice_line}{plan_note}{activity_line}{script_line}{strip}"
 
 
 # ── 工具辅助函数 ──
@@ -1652,8 +1673,9 @@ def _with_state(result: str, force_full: bool = False) -> str:
 # ⚠️ 2026-08-15 修复：这些脚本默认打 host 7842（会挪恒的角色/耗恒体力），必须注入 --port AI端口
 _PORT_SCRIPTS = {"water_crops", "chop_trees", "clear_area", "mine_run", "fish_run",
                  "bomb_mine", "bomb_escort", "bomb_volcano", "farm_row", "go_to",
-                 "berry_run", "spot_run", "moss_run", "trash_run", "fair_fishing"}
-                 # 🍓🪱 2026-08-17：摇树莓/挖斑点脚本注入 AI 端口（防挪恒角色）；🌿 2026-08-21 moss_run；🗑️ 2026-08-24 trash_run；🎣 2026-08-28 fair_fishing(秋收钓鱼兜底)
+                 "berry_run", "spot_run", "moss_run", "trash_run", "fair_fishing",
+                 "rock_run"}
+                 # 🍓🪱 2026-08-17：摇树莓/挖斑点脚本注入 AI 端口（防挪恒角色）；🌿 2026-08-21 moss_run；🗑️ 2026-08-24 trash_run；🎣 2026-08-28 fair_fishing(秋收钓鱼兜底)；⛏️ 2026-08-29 rock_run(室外镐击)
 
 # 🚀 自动异步白名单（2026-08-16 恒拍板）：便利工具跑这些长脚本 → 自动后台异步，AI 不用手动 script_start。
 # 长任务（钓鱼/挖矿/炸矿/收放机器/浇水可能很久）被动异步；短任务（清地/砍树/摸动物/捡采集等）保持同步。
@@ -5318,8 +5340,10 @@ def work_building(location: str, item: str = "", machine_type: str = "") -> str:
 
 @mcp.tool()
 def machine_report() -> str:
-    """⚙️ 全农场机器详细清单（按类型统计 + 每台位置 + 待收清单）
-    烘干机共x台闲置y台 / 小桶共x台闲置y台完成z台，每台标注室外Farm或建筑名。
+    """⚙️ 全农场机器清点（按类型统计总数 + 按建筑分组待收清单），只报数量不逐台列坐标
+    「烘干机 共x台 闲置y 加工z 完成w；…」按类型聚合；「📥 已就绪待收 N台：农舍: 小桶×3 烘干机×1 / 温室: 酿酒桶×5」按建筑分组。
+    ⚠️ 2026-08-28 恒：1450台机器逐台报坐标会爆 token——不逐台列坐标/持有物，只报建筑+类型+数量；
+    真正收机器用 collect_machines / farm collect（内部扫坐标），本工具只给 AI 决策"哪该收"。
     覆盖所有建筑室内 + 温室 + 地窖。随时可查，不受每日首次调用限制。
     """
     try:
@@ -5345,13 +5369,18 @@ def machine_report() -> str:
             lines.append(f"  • {cn}: 共{s['total']}台 闲置{s['idle']} 加工{s['processing']} 完成{s['ready']}  ({locs})")
         ready = [m for m in ml if m.get("status") == "ready"]
         if ready:
-            lines.append("📥 已就绪待收:")
+            # 📥 就绪清单：按建筑/场景分组只报数量——1450台机器逐台报坐标会爆 token（2026-08-28 恒）。
+            #    具体坐标留给 collect_machines / farm collect 内部扫，AI 只需知道"哪、几台、啥"来决策收不收。
+            rl = {}
             for m in ready:
-                held = m.get("heldItem", "?")
-                q = m.get("heldQuality", 0) or 0
-                qs = f" ⭐{q}" if q else ""
-                lines.append(f"  - {MACHINE_CN.get(m.get('type','?'), m.get('type','?'))} @ {m.get('location','?')} "
-                             f"({m.get('x','?')},{m.get('y','?')}): {held}{qs}")
+                loc = m.get("location", "?")
+                t = MACHINE_CN.get(m.get("type", "?"), m.get("type", "?"))
+                g = rl.setdefault(loc, {})
+                g[t] = g.get(t, 0) + 1
+            lines.append(f"📥 已就绪待收 {len(ready)} 台:")
+            for loc in sorted(rl):
+                parts = [f"{t}×{c}" for t, c in sorted(rl[loc].items())]
+                lines.append(f"  • {loc}: {', '.join(parts)}")
         return _with_state("\n".join(lines))
     except Exception as e:
         return _with_state(f"❌ {e}")
@@ -5481,6 +5510,47 @@ def _ai_port() -> int:
         return int(os.environ.get("NAGI_URL", "http://localhost:7843").rsplit(":", 1)[-1])
     except Exception:
         return 7843
+
+
+def _fmt_rod(rod: dict) -> str:
+    """把 /state 的 player.rod 快照格式化成人话。"""
+    if not rod:
+        return "没有鱼竿（背包/手上都不存在）"
+    name = rod.get("name") or "鱼竿"
+    parts = [f"{name}（{'手持' if rod.get('inHand') else '背包'}）"]
+    bait = rod.get("bait")
+    if bait:
+        parts.append(f"饵={bait}×{rod.get('baitStack') or 0}")
+    else:
+        parts.append("饵=无")
+    tk = rod.get("tackle") or []
+    if tk:
+        parts.append("钓具=" + "、".join(f"{t.get('name')}({t.get('uses', 0)}/{t.get('max', 20)})" for t in tk))
+    else:
+        parts.append("钓具=无")
+    parts.append(f"背包饵×{rod.get('baitInBag') or 0}")
+    parts.append(f"饵槽{'有' if rod.get('canBait') else '无'}/钓具槽{'有' if rod.get('canTackle') else '无'}")
+    return "🎣 " + "；".join(parts)
+
+
+def _rod_cmd(action: str = "show", item: str = "") -> str:
+    """🎣 鱼竿：看状态 / 上鱼饵 / 上钓具 / 摘附件。
+    action: show(读竿状态) | bait(上鱼饵 item=名) | tackle(上钓具 item=名) | clear(摘第一个附件回背包)
+    item: 物品名（可空；空=自动挑背包里第一个同类）。"""
+    st = api.state()
+    rod = (st.get("player") or {}).get("rod")
+    if action in ("show", ""):
+        return _fmt_rod(rod)
+    if not rod:
+        return "❌ 没有鱼竿——先去 Willy 鱼店买/升级一根再说"
+    if action not in ("bait", "tackle", "clear"):
+        return "❌ 未知 action，用 show/bait/tackle/clear"
+    r = api._post("/rod", {"action": action, "item": item or ""})
+    if not r.get("ok"):
+        return f"❌ {r.get('error', '上饵/摘失败')}"
+    ri = r.get("rodInfo") or (api.state().get("player") or {}).get("rod")
+    what = r.get("equipped") or (r.get("action") or "")
+    return f"✅ {what}\n{_fmt_rod(ri)}"
 
 
 def go_fishing(
@@ -5912,6 +5982,26 @@ def pickup_scene(max_items: int = 30) -> str:
     """
     out = _run_script("pickup_scene", [f"--max", str(max_items)], timeout=120)
     return _with_state(f"🎁 拾取报告：\n{out[:600]}")
+
+
+@mcp.tool()
+def rock_dig(dig: bool = True, radius: int = 14, max_break: int = 0, break_stone: bool = False) -> str:
+    """⛏️ 室外镐击当前图可破物(采石场/姜岛挖掘场/南滩蚌矿, scene 域, 2026-08-29 恒)
+    自动扫 surroundings 找可破节点(骨节/黏土/蚌矿/矿点/宝石/煤矿/放射矿)→走过去镐敲碎→拾掉落。
+    ⚠️ 只跳过普通石头;宝石/放射矿全认(dump_tile 真名, 2026-08-29 恒拍板不猜)。挖蚯蚓点/斑点用锄头(spot op,不归这)。
+    一图敲完自动换下一批;默认真敲,dig=false 只扫(报可破+objId)。
+
+    用法: scene ops=rock [dig=true/false] [radius=14] [max_break=0] [break_stone]
+    """
+    args_list = ["--radius", str(radius)]
+    if dig:
+        args_list.append("--dig")
+    if max_break:
+        args_list += ["--max", str(max_break)]
+    if break_stone:
+        args_list.append("--break-stone")
+    out = _run_script("rock_run", args_list, timeout=600)
+    return _with_state(f"⛏️ 室外镐击报告：\n{out[:900]}")
 
 
 @mcp.tool()
@@ -7469,7 +7559,8 @@ def _fish_all_spots() -> str:
 def fish(ops: str = "", **kw) -> str:
     """🎣 钓鱼域（蟹笼并入 2026-08-16）。ops:
     go(去钓 location=) info(查某地鱼 location) spots(钓点知识) bobber(浮漂样式 style)
-    crab(蟹笼概览) crab_water(找水) crab_place(放笼) crab_bait(放饵) crab_collect(收笼)。细节→help(fish)。
+    rod(鱼竿:show看状态/bait上饵 item=名/tackle上钓具/clear摘) crab(蟹笼概览) crab_water(找水)
+    crab_place(放笼) crab_bait(放饵) crab_collect(收笼)。细节→help(fish)。
     ⚠️鱼塘在 farm 域不在 fish。
     Args:
         ops: 操作序列
@@ -7480,6 +7571,7 @@ def fish(ops: str = "", **kw) -> str:
         "info": _fish_info, "能钓": _fish_info, "鱼": _fish_info, "查": _fish_info,
         "spots": _fish_all_spots, "钓点": _fish_all_spots,
         "bobber": bobber_style, "浮漂": bobber_style, "样式": bobber_style,
+        "rod": _rod_cmd, "鱼竿": _rod_cmd,
         # 🦀 蟹笼（2026-08-16 并入：能钓鱼的地方就能放）
         "crab": _crab_status, "蟹笼": _crab_status,
         "crab_water": _crab_water_report, "找水": _crab_water_report,
@@ -7511,11 +7603,99 @@ def social(ops: str = "", **kw) -> str:
     return _with_state(_ops_run(ops, dispatch, kw))
 
 
+def _maze_view(radius: int = 14, gx=None, gy=None) -> str:
+    """🗺️ 迷宫视图——把当前地图渲染成 ASCII 棋盘，让 AI 自己推算路线 → walk_to。
+    #=墙(不可走) .=可走 P=自己 G=目标(传 gx,gy) O=物体 ¥=资源 T=地形。
+    读 /surroundings(capped 30)；墙=passable False，只报墙/物，空地块默认可走。"""
+    radius = min(max(int(radius), 1), 30)
+    if gx is not None: gx = int(gx)
+    if gy is not None: gy = int(gy)
+    sur = api.surroundings(radius)
+    loc = sur.get("location", "?")
+    c = sur.get("center") or {}
+    cx, cy = c.get("x"), c.get("y")
+    if cx is None or cy is None:
+        return "⚠️ 拿不到地图中心，非正常场景？"
+    grid = {}
+    for t in (sur.get("tiles") or []):
+        x, y = t["x"], t["y"]
+        if t.get("passable") is False:
+            grid[(x, y)] = "#"
+        elif t.get("object"):
+            grid[(x, y)] = "O"
+        elif t.get("resource"):
+            grid[(x, y)] = "¥"
+        elif t.get("terrain") or t.get("largeTerrain"):
+            grid[(x, y)] = "T"
+    rows = []
+    for ty in range(cy - radius, cy + radius + 1):
+        row = []
+        for tx in range(cx - radius, cx + radius + 1):
+            if (tx, ty) == (cx, cy):
+                ch = "P"
+            elif gx is not None and gy is not None and (tx, ty) == (gx, gy):
+                ch = "G"
+            else:
+                ch = grid.get((tx, ty), ".")
+            row.append(ch)
+        rows.append("".join(row))
+    head = f"🗺️ 迷宫视图 {loc} 你=({cx},{cy}) r={radius}"
+    if gx is not None and gy is not None:
+        head += f" 目标=({gx},{gy})"
+    return head + "\n" + "\n".join(rows)
+
+
+def _maze_seg_view(gx=None, gy=None, radius=15) -> str:
+    """🧩 迷宫"走法链"——把可走格拆成直走廊列表，并拼 你→目标 的多段直线链（AI 自己按段 walk_to）。
+    优先 /passable_rect（整迷宫一次取全，需新 DLL），退回 /surroundings。共用 scripts/maze_seg.py 的 compile_chain。
+    参数：gx,gy=目标格；radius=退回用视野半径。"""
+    try:
+        from maze_seg import compile_chain
+    except Exception as e:
+        return f"⚠️ maze_seg 导入失败: {e}"
+    if gx is None: gx = 63
+    if gy is None: gy = 16
+    try:
+        p = (api.state() or {}).get("player", {})
+        cx, cy = p.get("x"), p.get("y")
+        PAD = 20   # 同 maze_seg：放宽防止走法链用到 bbox 外走廊被裁断
+        minX = min(cx, gx) - PAD; maxX = max(cx, gx) + PAD
+        minY = min(cy, gy) - PAD; maxY = max(cy, gy) + PAD
+        walk, src = None, ""
+        try:
+            r = api._get(f"/passable_rect?x1={minX}&y1={minY}&x2={maxX}&y2={maxY}")
+            if r.get("ok"):
+                src = "passable_rect"
+                walk = {(t["x"], t["y"]) for t in r.get("tiles", []) if t.get("passable") is True}
+        except Exception:
+            pass
+        if walk is None:
+            # ⚠️ 退回 surroundings：它只报墙/物体格，可走格=方形减去墙/物体（同 _maze_view 的 . 推断）
+            src = "surroundings(退回)"
+            sur = api.surroundings(radius)
+            c = sur.get("center") or {}; cx, cy = c.get("x"), c.get("y")
+            rw = {(t["x"], t["y"]) for t in sur.get("tiles", []) if t.get("passable") is False}
+            objs = {(t["x"], t["y"]) for t in sur.get("tiles", [])
+                    if t.get("object") or t.get("terrain") or t.get("resource") or t.get("largeTerrain")}
+            walk = set()
+            for tx in range(cx - radius, cx + radius + 1):
+                for ty in range(cy - radius, cy + radius + 1):
+                    if (tx, ty) not in rw and (tx, ty) not in objs:
+                        walk.add((tx, ty))
+        return (f"[maze_seg] 你=({cx},{cy}) 目标=({gx},{gy}) 数据源={src} 可走格={len(walk)}\n"
+                + compile_chain(walk, cx, cy, gx, gy))
+    except Exception as e:
+        return f"⚠️ maze_seg 出错: {e}"
+
+
 @mcp.tool()
 def scene(ops: str = "", **kw) -> str:
     """🖱️ 场景交互域。ops: at(x,y点格) front/interact(点面前) use(挥工具) face(转向) select(拿手上)
     pickup(拿起家具) furniture(扫家具) pickup_scene(捡地面物) berry(浆果) spot(挖蚯蚓) moss(绿雨苔藓)
-    garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物)。细节→help(scene)。
+    rock(室外镐击 dig=true/false radius max_break break_stone——采石场/挖掘场/蚌矿场敲可破物,跳普通石)
+    garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物) maze(迷宫视图 r=半径 gx,gy=目标 渲染ASCII棋盘)
+    maze_seg(走法链 gx,gy=目标 拆直走廊列表+拼链，AI按段walk_to)
+    maze_seg(走法链 gx,gy=目标 拆直走廊+拼链) maze_walk(走迷宫 waypoints="x,y x,y…"依次walk_to)。细节→help(scene)。
     Args:
         ops: 操作序列
         **kw: 对应操作参数
@@ -7531,10 +7711,14 @@ def scene(ops: str = "", **kw) -> str:
         "berry": berry_run, "摇树莓": berry_run, "浆果": berry_run,
         "spot": spot_run, "挖斑点": spot_run, "挖蚯蚓": spot_run,
         "moss": moss_run, "搜刮苔藓": moss_run, "绿雨": moss_run,
+        "rock": rock_dig, "挖石": rock_dig, "敲石": rock_dig, "挖矿点": rock_dig, "采矿点": rock_dig,
         "garbage": trash_run, "翻垃圾桶": trash_run, "翻桶": trash_run, "rummage": trash_run,
         "forge_help": lambda: _with_state(FORGE_GUIDE), "锻造帮助": lambda: _with_state(FORGE_GUIDE),
         "drop": drop_item, "丢": drop_item,
         "furniture": scan_furniture, "家具": scan_furniture,
+        "maze": _maze_view, "迷宫": _maze_view,
+        "maze_seg": _maze_seg_view, "迷宫链": _maze_seg_view, "分段": _maze_seg_view,
+        "maze_walk": _maze_walk, "走迷宫": _maze_walk, "迷宫走": _maze_walk,
     }
     return _with_state(_ops_run(ops, dispatch, kw))
 
@@ -7545,10 +7729,10 @@ def menu(ops: str = "", **kw) -> str:
     display_fill(农展台放满 items='钻石,山羊奶酪' 或 '珍珠×2' 一次放N件) advance(推进剧情)
     click(option/item/button/xy) key(confirm/esc/数字按键) cancel(关) shop(逛店 place,want) sell(卖) bin(出货箱)
     cook(做饭) craft(合成) recipes(菜谱) craftables(配方) forge(锻造) geode/geodes(砸晶球) customize(捏人)
-    bundle(献祭板) bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读技能书领配方)
-    claim_swap(满包接鱼/领箱子:原子替换领取 replace=要丢的物品名)
+    bundle(献祭板) bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读消耗品:书/秘密纸条/日记残页 name=物品名)
+    claim(领取/接鱼满包:item=名 或 slot=序号 领指定格;先 click action=discard 丢桶腾格)  —— 🚫 原 claim_swap(替换领取)已退役,改用丢桶+领
     minigame(赌场小游戏点按钮 action=hit/stand/bet10/…) minigame_state(读牌面/转盘)。细节→help(menu)。
-    ⚠️ buy 直购已退役(走真实商店)；read_mail 已退役(邮箱用 /state.mailbox+交互)。
+    ⚠️ buy 直购已退役(走真实商店)；read_mail 已退役(邮箱用 /state.mailbox+交互)；claim_swap 替换领取已退役(2026-08-28 恒:改 垃圾桶丢弃 action=discard + 领用 action=claim/slot,或不想要直接 button=ok)。
     🔢 number 专用：星露谷展览会 50g换1星星币兑换台 / 转盘押注的 NumberSelectionMenu（输数量+确定/取消）。
     Args:
         ops: 操作序列
@@ -7577,7 +7761,7 @@ def menu(ops: str = "", **kw) -> str:
         "bundle": bundle_status, "献祭": bundle_status,
         "bundle_kb": bundle_kb, "献祭知识": bundle_kb, "知识库": bundle_kb,
         "donate": museum_donate, "捐": museum_donate, "捐赠": museum_donate,
-        "read_book": read_book, "读书": read_book, "读技能书": read_book,
+        "read_book": read_book, "读书": read_book, "读物品": read_book, "读纸条": read_book, "读技能书": read_book,
         # 🎁🎰 2026-08-26 恒：这三个原本没有任何域 op 可达（domain_selftest 报"功能断档"），
         #    而注入的引导文案却在指挥 AI 直接调 menu_claim_swap/minigame_click——
         #    域模式下这些顶层工具已被隐藏 → AI 照提示调一个不存在的工具，当场卡死。
@@ -7585,7 +7769,8 @@ def menu(ops: str = "", **kw) -> str:
         #    归 menu 域的理由：claim_swap 本就是 ItemGrabMenu 操作；赌场小游戏虽是
         #    Game1.currentMinigame 不是 IClickableMenu，但 read_menu 已有回落（无菜单时报小游戏状态），
         #    AI 用统一的 `menu read` 探状态不会踩空，放这里心智负担最小。
-        "claim_swap": menu_claim_swap, "换领": menu_claim_swap, "替换领取": menu_claim_swap,
+        # 🚫 2026-08-28 恒：claim_swap(替换领取)已退役——不稳。改用 click action=discard 丢桶腾格 + action=claim(或 slot) 领；或 button=ok 直接关。
+        # "claim_swap": menu_claim_swap, "换领": menu_claim_swap, "替换领取": menu_claim_swap,
         "minigame": minigame_click, "小游戏": minigame_click, "赌场": minigame_click,
         "minigame_state": minigame_state, "小游戏状态": minigame_state,
     }
@@ -8568,12 +8753,49 @@ def _egg_festival_hint(loc_name: str) -> str:
         return ""
 
 
+def _maze_parity(year=None) -> str:
+    """迷宫奇偶性："even" if 年偶数 else "odd"（同蛋蛋节；Town-Halloween=偶/Town-Halloween2=奇）。"""
+    if year is None:
+        year = (_festival_now_data() or {}).get("year", 1)
+    return "even" if (year or 1) % 2 == 0 else "odd"
+
+
+def _festival_maze_coords() -> dict:
+    """今天(若是迷宫节)按奇偶年返回 {chest,minecart,goal}；非迷宫节 → {}。2026-08-28 恒实测。"""
+    d = _festival_now_data()
+    if not d.get("ok"):
+        return {}
+    mz = calendar_data.FESTIVAL_MAZE.get((d["season"], d["day"]), {})
+    if not mz:
+        return {}
+    return mz.get(_maze_parity(d["year"]), {}) or {}
+
+
 def _fest_guide(guide: str) -> str:
-    """🎪 玩法文本 {host} 占位 → 替换成房主实时名字（2026-08-22 恒：月光水母要跟恒搭话/求截图，名字不写死）。"""
+    """🎪 玩法文本 {host} 占位 → 替换房主实时名字；{chest}/{minecart}/{goal} → 按奇偶年填迷宫坐标（2026-08-28）。"""
     try:
-        return guide.replace("{host}", _host_name())
+        guide = guide.replace("{host}", _host_name())
+        mz = _festival_maze_coords()
+        if mz:
+            guide = (guide.replace("{chest}", str(mz.get("chest", "")))
+                          .replace("{minecart}", str(mz.get("minecart", "")))
+                          .replace("{goal}", str(mz.get("goal", ""))))
+        return guide
     except Exception:
         return guide
+
+
+def _festival_maze() -> str:
+    """🎃 迷宫标点（奇偶年感知）：返回当年宝箱/矿车/奖励坐标 + 玩法指引。AI 复现用。"""
+    mz = _festival_maze_coords()
+    if not mz:
+        return "⚠️ 今天不是迷宫节（万灵节=秋27），无迷宫数据"
+    parity = _maze_parity()
+    return (f"🎃 万灵节迷宫（{parity}年）——奇偶年布局不同但**坐标固定**：\n"
+            f"  🎁 宝箱 {mz.get('chest')}（奖励 {mz.get('goal')}）\n"
+            f"  🚂 矿车 {mz.get('minecart')}（交互回出口）\n"
+            f"  🧭 走法：`walk_to 宝箱坐标`（BFS 读实时迷宫墙自适配，含暗道/传送），想自己玩看棋盘用 scene maze/maze_seg，按段走 festival maze_walk。\n"
+            f"  ⚠️ AI 踩不好传送瓦片，结束节日请人类帮忙。")
 
 
 def _minigame_guide_hint() -> str:
@@ -8759,6 +8981,96 @@ def _buff_reminder(loc_name: str = "") -> str:
                 lines.append(f"buff结束: {name}")
         _BUFF_TRACK["buffs"] = cur
         return "  ".join(lines) if lines else ""
+    except Exception:
+        return ""
+
+
+_ROD_TRACK = {"sig": None, "day": None}
+
+
+def _fishing_rod_hint(data: dict) -> str:
+    """🎣 鱼竿在手（=有钓鱼意图）时，报当前竿上饵/钓具 + 背包饵量，AI 据此决定补不补/去哪补。
+    2026-08-29 恒三改：
+      ① 新手竿不注入——upgrade<=1 就是竹鱼竿(0)/训练竿(1)，装不了饵，注入=噪音（反编译 upgrade→ItemId 而定，不信名字）。
+      ② **当前鱼饵/鱼钩随时报**（按装备签名变化去重，不一天一次）——拿竿/装备变就报，AI 能随时看到装了什么。
+      ③ **补饵/补钩提醒一天只一次**（day_key 去重）——"可上饵/没饵了去补货/可上钓具"这种动作提示别刷屏；
+         ⚠️多数情况背包根本没饵（要拿虫肉合成/买），0 更要报并提示去哪补。竿不在手不注入。"""
+    try:
+        p = data.get("player") or {}
+        rod = p.get("rod")
+        if not rod or not rod.get("inHand"):
+            return ""
+        # ① 新手竿（竹=upgrade0/训练=upgrade1）不注入
+        if (rod.get("upgrade") or 0) <= 1:
+            return ""
+        name = rod.get("name") or "鱼竿"
+        bait = rod.get("bait")
+        bait_stack = rod.get("baitStack") or 0
+        bag_bait = rod.get("baitInBag") or 0
+        tackles = rod.get("tackle") or []
+        can_tackle = rod.get("canTackle")
+
+        # ② 当前装备：签名（竿名/饵/饵量/背包饵量/钓具(id,耐久)）变化才报
+        sig = (name, bait, bait_stack, bag_bait, tuple((t.get("name"), t.get("uses")) for t in tackles))
+        eq_changed = _ROD_TRACK["sig"] != sig
+        _ROD_TRACK["sig"] = sig
+
+        parts = [f"饵={bait}×{bait_stack}" if bait else "饵=无"]
+        if tackles:
+            tk = "、".join(f"{t.get('name')}({t.get('uses', 0)}/{t.get('max', 20)})" for t in tackles)
+            parts.append(f"钓具={tk}")
+        line = f"🎣 {name}：{'，'.join(parts)}；背包还有饵{bag_bait}"
+
+        # ③ 补饵/补钩提醒：动作提示才一天一次（装备没变时不刷）
+        reminder = ""
+        if (not bait and bag_bait > 0) or (not bait and bag_bait <= 0) or (can_tackle and not tackles):
+            day = api.day_key()
+            if _ROD_TRACK["day"] != day:
+                _ROD_TRACK["day"] = day
+                if not bait and bag_bait > 0:
+                    reminder = "（可上鱼饵：fish rod bait）"
+                elif not bait and bag_bait <= 0:
+                    reminder = " — 没饵了！去箱子取虫肉合成／买鱼饵／开箱拿，否则裸竿钓"
+                elif can_tackle and not tackles:
+                    reminder = "（可上钓具：fish rod tackle）"
+
+        if not eq_changed and not reminder:
+            return ""
+        if reminder:
+            line += reminder
+        return line
+    except Exception:
+        return ""
+
+
+_SECRET_NOTE_TRACK = {"sig": None}
+_SECRET_NOTE_ZH = {"Secret Note": "秘密纸条", "Journal Scrap": "日记残页"}
+_SECRET_NOTE_NAMES = tuple(_SECRET_NOTE_ZH)
+# 技能书（read_book 消耗领技能/配方）——同样读到即消耗腾占位
+_BOOK_HINT_KEYS = ("Quarterly", "Treatise", "Cookbook", "Monster", "Seasonal", "Almanac", "书", "秘籍", "Way", "草中窜", "年历")
+
+
+def _read_to_free_hint(data: dict) -> str:
+    """🎫 背包里有"读到即消耗、腾占位"的道具时提醒一次。2026-08-29 恒拍板：**只提醒一句**——
+    检测到背包有【秘密纸条/日记残页/书】→ 说"读掉腾背包占位"即可，不做复杂判断、不加工具。
+    ⚠️ 正常玩收集齐了不会再爆纸条→不会误触发；连书也带上（读了就腾格子）。按清单签名去重。"""
+    try:
+        inv = data.get("inventory") or []
+        names = [i.get("name") or "" for i in inv]
+        notes = sorted({n for n in names if n in _SECRET_NOTE_NAMES})
+        books = sorted({n for n in names if any(k in n for k in _BOOK_HINT_KEYS)})
+        if not notes and not books:
+            return ""
+        sig = (tuple(notes), tuple(books))
+        if _SECRET_NOTE_TRACK["sig"] == sig:
+            return ""
+        _SECRET_NOTE_TRACK["sig"] = sig
+        parts = []
+        if notes:
+            parts.append("、".join(_SECRET_NOTE_ZH.get(n, n) for n in notes))
+        if books:
+            parts.append("、".join(books))
+        return (f"🎫 背包有【{'；'.join(parts)}】读到就消耗、腾背包占位——用 menu read_book 读（书+纸条/残页统一走右键读）")
     except Exception:
         return ""
 
@@ -9022,11 +9334,83 @@ def _festival_prep() -> str:
         return f"❌ {e}"
 
 
+def _maze_walk(waypoints: str = "", location: str = None, max_wait: int = 18, max_seg: int = 200) -> str:
+    """🚶 走迷宫——依次 walk_to 多个中间点（"x,y x,y …"空格/分号分隔），每段等到达再走下一段。
+    万灵节迷宫（偶数/奇数年布局都变）通用：换了布局喂不同点位即可。参数：waypoints / location / max_wait。
+    段1: 右walk_to(21,54) 这种走法链可直接喂进来；也支持手挑中点。"""
+    pts = []
+    for tok in str(waypoints or "").replace(";", " ").split():
+        if "," in tok:
+            try:
+                x, y = tok.split(",", 1)
+                pts.append((int(x), int(y)))
+            except ValueError:
+                pass
+    if not pts:
+        return "⚠️ 没解析到中间点，用空格/分号分隔的 'x,y x,y …' 格式"
+    pts = pts[: max_seg]
+    try:
+        st = api.state()
+        loc = location or (st.get("location") or {}).get("name", "")
+        sp = st.get("player") or {}
+        start_pos = (sp.get("x"), sp.get("y"))
+    except Exception as ex:
+        return f"⚠️ 拿不到当前场景: {ex}"
+    # ⚠️ 只回摘要不逐段刷屏（省token；AI 用 walk_to 每段基本都能到，失败才值得提）
+    got = 0; fails = []; total = len(pts)
+    t0 = time.time()
+    for i, (x, y) in enumerate(pts, 1):
+        try:
+            api._post("/walk_to", {"location": loc, "x": x, "y": y})
+        except Exception as ex:
+            fails.append(f"段{i}({x},{y})发送失败:{ex}")
+            continue
+        ok = False
+        for _ in range(int(max_wait)):
+            time.sleep(0.7)
+            try:
+                pp = (api._get("/state") or {}).get("player", {})
+                if not pp.get("isMoving"):
+                    ok = True
+                    break
+            except Exception:
+                pass
+        if ok:
+            got += 1
+        else:
+            fails.append(f"段{i}({x},{y})超时")
+    end = (api._get("/state") or {}).get("player", {})
+    secs = int(time.time() - t0)
+    head = (f"🚶 迷宫走法 {total} 段, {got} 段到达✅, "
+            f"起({start_pos[0]},{start_pos[1]})→末({end.get('x')},{end.get('y')}), ∫{secs}s")
+    if fails:
+        return head + "\n⚠️ 未到段: " + "; ".join(fails)
+    return head + "\n✅ 全程走通，无需逐段日志"
+
+
+@mcp.tool()
+def _festival_ice_fish() -> str:
+    """🎣 冰雪节冰钓比赛自动化（2026-08-28 恒：冬8，阻塞跑 ice_fishing 等比赛自然结束发奖）。
+    前置：AI 在冰雪节场地 + 比赛已开始（festivalTimer>0——AI/玩家先对话刘易斯开赛）。
+    走位→钓满2分钟→结算。返回"钓 N 条（赢线/不足5条）"。"""
+    st = api.state()
+    t = st.get("time") or {}
+    if str(t.get("season") or "").lower() != "winter" or int(t.get("dayOfMonth") or 0) != 8:
+        return "❌ 今天不是冰雪节(冬8)，冰钓只在冬8能跑"
+    loc = (st.get("location") or {}).get("name", "") or ""
+    if loc not in ("Temp", "Forest-IceFestival"):
+        return f"❌ 不在冰雪节场地(loc={loc})——先 festival go 到冰雪节（比赛会在节日场地进行）"
+    ft = int((api.festival_status() or {}).get("festivalTimer") or -1)
+    if ft <= 0:
+        return "⏳ 冰钓比赛还没开始——先 festival interact 找刘易斯/请玩家开始比赛（比赛开始后本工具才钓，别白等）"
+    return _ice_fishing_blocking()
+
+
 @mcp.tool()
 def festival(ops: str = "", **kw) -> str:
     """🎪 节日域。ops: today(今天节日) next(下一个) go(去) info(实况) interact(互动,空参=社交巡礼)
     answer(应答 N) shop(节日商店) eggs(找蛋规划) egg_note(纸条) egg_run(捡蛋) poi(限定点)
-    dance(跳舞邀请 target) help(玩法) prep(备战明细)。细节→help(festival)。
+    dance(跳舞邀请 target) help(玩法) prep(备战明细) maze(迷宫坐标奇偶年) maze_walk(走迷宫 waypoints="x,y x,y …" 依次walk_to)。细节→help(festival)。
     Args:
         ops: 操作序列
         **kw: 对应操作参数（egg_note/egg_run 用 route=[(16,66),...]；dance 用 target）
@@ -9045,8 +9429,11 @@ def festival(ops: str = "", **kw) -> str:
         "dance": _festival_dance, "跳舞": _festival_dance, "邀请": _festival_dance, "舞": _festival_dance,
         "help": _festival_help, "引导": _festival_help, "玩法": _festival_help,
         "prep": _festival_prep, "准备": _festival_prep, "备战": _festival_prep,
+        "maze_walk": _maze_walk, "走迷宫": _maze_walk, "迷宫走": _maze_walk,
+        "maze": _festival_maze, "迷宫": _festival_maze,
         "poi": _festival_poi, "限定": _festival_poi, "厨师": _festival_poi,
         "strength": _festival_strength, "力量": _festival_strength, "测力": _festival_strength,
+        "ice_fish": _festival_ice_fish, "冰钓": _festival_ice_fish, "冰": _festival_ice_fish,
         "display_fill": _menu_display_fill, "放满": _menu_display_fill, "展位放": _menu_display_fill,
         "display_takeback": _menu_display_takeback, "收好": _menu_display_takeback,
         "收": _menu_display_takeback, "取回": _menu_display_takeback, "展位收": _menu_display_takeback,
@@ -9118,22 +9505,22 @@ def snack() -> str:
 
 @mcp.tool()
 def read_book(name: str) -> str:
-    """📚 读书（消耗书→领技能/配方/「博览群书」成就）。书摊(马尔赛罗 Town 110,27)买的技能书。
-    ⚠️ **读书= select_item(书名) + press_key(confirm)**（右键/动作键）。
-    **别用 /use**——/use 对书走 placementAction 会把书放地上（放下的 object 收不回！）。
-    书名：Combat Quarterly(战斗季刊) / Queen Of Sauce Cookbook(酱料女皇烹饪秘籍) / Horse Treatise(马术秘籍) 等。
-    先买书：book_stall 买/回收（书摊对话 [0]购买 [1]回收）。"""
+    """📚 读书/读纸条（统一走游戏真读法：Object.performUseAction = 右键读）。
+    ⚠️ 2026-08-29 恒反编译：旧 select+confirm 走 Game1.pressActionButton，只认 ActiveObject 不碰 CurrentItem → 读不了纸条。
+    真读= performUseAction（书领技能/纸条残页记收藏+弹内容，读到即消耗=腾背包占位）。本工具改为 select 设手持 → /use mode=read。
+    书：Combat Quarterly(战斗季刊) / Queen Of Sauce Cookbook / Horse Treatise 等；纸条：Secret Note / Journal Scrap。
+    先买书：book_stall 买/回收。"""
     try:
         r = api.select(name)
         if not r.get("ok"):
-            return _with_state(f"❌ 没找到书「{name}」: {r.get('error', '')}")
-        time.sleep(0.5)
-        api._post("/key", {"key": "confirm"})
-        time.sleep(1)
-        st = api.state()
-        inv = st.get("inventory") or []
-        gone = not any(name in (i.get("name") or "") for i in inv)
-        return _with_state(f"📚 已读「{name}」{'（书已消耗，技能/配方到手）' if gone else '（书还在？读取可能没生效）'}")
+            return _with_state(f"❌ 没找到「{name}」: {r.get('error', '')}")
+        time.sleep(0.4)
+        rr = api._post("/use", {"mode": "read"})
+        if rr.get("ok") and rr.get("consumed"):
+            menu = rr.get("menu")
+            note = f"，弹出{menu}" if menu else ""
+            return _with_state(f"📚 已读「{name}」（读到消耗、腾背包占位{note}）")
+        return _with_state(f"📚 读「{name}」没生效: {rr.get('error', '可能已读过/该物品不能读')}")
     except Exception as e:
         return _with_state(f"❌ {e}")
 
@@ -9700,14 +10087,14 @@ _DOMAIN_GUIDES = {
 "care": "动物域(🐄 Farm)：animals(摸+收,不动门) building(这间屋) pet(猫狗) water(宠物碗) milk(挤奶剪毛) buy(买动物) doors(关门) petwalk(拟人摸) hay(干草) statue(祈福)。",
 "cabin": "小屋引导域(🏠 FarmHouse/Cabin/岛屋；不传=扫屋)：enum(扫屋查待收) collect(收机器) statue(雕像) furniture(扫家具) interact(点家具) pickup(拿起家具) sleep(睡觉)。",
 "social": "社交域：chat(跟NPC搭话) gift(送礼提好感) give(送玩家物品) send(发消息) emote(表情) friendship(查好感) movie(影院知识) snack(零食)。",
-"scene": "场景交互域(点东西/工具/转身/捡)：at(x,y)(点指定格/柜台) interact(点面前) use(挥工具) face(转向0上1右2下3左) select(拿手上) pickup(拿起家具) pickup_scene(捡当前场景物) berry(摇浆果) spot(挖蚯蚓点) moss(绿雨搜苔藓) garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物) furniture(扫家具)。",
-"menu": "菜单/界面域(开→看→点)：read(看菜单) advance(推进剧情/对话) click(option/item/button/xy 点) key(ok/esc/数字按键) cancel(关弹窗/撤就绪) shop(逛店) sell(卖商店) bin(投出货箱) cook(做饭) craft(合成) recipes(菜谱) craftables(配方) forge(锻造) geode/geodes(砸晶球) customize(捏人) bundle(献祭板) bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读技能书领配方)。",
+"scene": "场景交互域(点东西/工具/转身/捡)：at(x,y)(点指定格/柜台) interact(点面前) use(挥工具) face(转向0上1右2下3左) select(拿手上) pickup(拿起家具) pickup_scene(捡当前场景物) berry(摇浆果) spot(挖蚯蚓点) moss(绿雨搜苔藓) rock(室外镐击:敲当前图可破物,采石场/挖掘场/蚌矿场跳普通石,dig/dry,battle-free) garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物) furniture(扫家具) maze(迷宫视图r半径,gx/gy目标格→ASCII棋盘#墙.可走P自己G目标) maze_seg(走法链gx,gy目标→拆直走廊列表+拼「左/右上/下走到(x,y)」多段链,AI按段walk_to)。",
+"menu": "菜单/界面域(开→看→点)：read(看菜单) advance(推进剧情/对话) click(option/item/button/xy 点;action=claim领/action=discard丢桶腾格;slot=序号领指定格) key(ok/esc/数字按键) cancel(关弹窗/撤就绪) shop(逛店) sell(卖商店) bin(投出货箱) cook(做饭) craft(合成) recipes(菜谱) craftables(配方) forge(锻造) geode/geodes(砸晶球) customize(捏人) bundle(献祭板) bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读消耗品:书/秘密纸条/日记残页,统一走右键读 name=物品名)。🚫满包接鱼/领箱:原 claim_swap(替换领取)已退役→**click action=discard 丢桶腾格(回收返金)+action=claim 领取(或用 slot 领指定格;不想要直接 button=ok 关掉)**。",
 "quest": "任务域：list(全部) progress(进度)；接单走板上的 menu click(button=accept…)。",
 "storage": "箱子域：scan(扫当前图箱) store(存) take(取) smart(智能堆叠) layout(箱子网络) default/cleardefault/tag(默认箱/清/标记)。",
 "daily": "过日子域：sleep(睡觉) settle(确认过夜结算) eat(吃食物回血体力) wear(穿/脱衣物) lie_bed(躺床不过夜) heartbeat(心跳间隔) pause(后台不暂停) peek(看恒干嘛) whiteboard/wb_read/wb_pin/wb_clear(白板记忆) appearance(捏脸)。",
 "map": "导航域(🗺️跨图唯一入口)：lookup(查地点功能+出口) query(功能反查) go(走到目标/多段寻路+交通) walk(走到POI) movetile(同图精确走位) npc(找NPC) warp_safe(紧急逃脱)。⚠️出口走出口前一格；交通图腾柱>矿车>走路。",
-"festival": "节日域(🎪)：today(今天节日) next(下一个) go(去) info(实况) interact(互动) answer(应答) shop(节日商店) eggs(找蛋) egg_note(纸条) egg_run(捡蛋) dance(跳舞邀请) strength(力量测试 delay=毫秒) help(玩法) prep(备战) poi(限定点)。",
-"fish": "钓鱼域(🎣 2026-08-22修复)：go(去钓 location=) info(查某地鱼) spots(钓点) bobber(浮漂样式) crab(蟹笼总览) crab_water(找水) crab_place(放笼) crab_bait(放饵) crab_collect(收笼)。⚠️鱼塘在 farm 域不在 fish。",
+"festival": "节日域(🎪)：today(今天节日) next(下一个) go(去) info(实况) interact(互动) answer(应答) shop(节日商店) eggs(找蛋) egg_note(纸条) egg_run(捡蛋) dance(跳舞邀请) strength(力量测试 delay=毫秒) ice_fish(冰雪节冰钓自动化) help(玩法) prep(备战) poi(限定点) maze(迷宫坐标奇偶年) maze_walk(走迷宫 waypoints=「x,y x,y…」依次walk_to)。",
+"fish": "钓鱼域(🎣 2026-08-22修复)：go(去钓 location=) info(查某地鱼) spots(钓点) bobber(浮漂样式) rod(鱼竿:看/上饵钓具 item=名) crab(蟹笼总览) crab_water(找水) crab_place(放笼) crab_bait(放饵) crab_collect(收笼)。⚠️鱼塘在 farm 域不在 fish。",
 "settings": "系统/设置域(⚙️ 合并捏脸进来)：status(看所有设置+退役工具) retire(退役工具) reactivate(召回) appearance(捏脸) customize(捏人) **confirm_look(核对捏人形象,ok前必做)** color(颜色条) hair/shirt/pants/hat/colorpreset(外观参考)。⚠️捏脸=创建定型:ok后set_appearance/捏人自动退役(不可逆);旧配置 settings(setting='async', value='on') 仍可。",
 }
 
@@ -10925,10 +11312,10 @@ def read_menu() -> str:
         if t == "ItemGrabMenu":
             # ⚠️ 2026-08-26 恒：文案统一域形式——裸工具名在域模式下都被隐藏，AI 照着调会扑空
             lines.append("  🎁 ItemGrabMenu：点领取侧物品=拿起（一般领取用 menu click item=物品名 action=claim）")
-            lines.append("  🐟 背包满接鱼/箱子满（三选一，非必须替换）：")
-            lines.append("    ① 替换领取: menu claim_swap replace=要丢的物品名（∈背包）一步领取并丢弃旧物")
-            lines.append("    ② 拿起换进: menu click action=claim 拿起 → 点背包某格换进 → menu click button=trashCan 丢旧物")
-            lines.append("    ③ 直接退出(不替换→放弃这条鱼): menu click button=ok 关菜单")
+            lines.append("  🐟 背包满接鱼/箱子满（三选一，非必须替换；🚫claim_swap 替换领取已退役）：")
+            lines.append("    ① 丢桶腾格: menu click action=discard item=低价值物（垃圾桶，升级有回收返金）→ 腾格后 action=claim 领取")
+            lines.append("    ② 领指定格/多领: menu click action=claim slot=序号(领指定格,不想要1要4就 slot=4) · quantity=N 一次领N件(有空位多领;999=全领)")
+            lines.append("    ③ 不想要直接 ok 关掉(放弃这条): menu click button=ok")
         if m.get("letterTitle"):
             lines.append(f"  📧 {m['letterTitle']}: {m.get('letterBody')}")
         return _with_state("\n".join(lines))
@@ -11086,12 +11473,64 @@ def _fair_fishing_blocking() -> str:
         return f"❌ fair_fishing 同步执行失败: {e}"
 
 
-def menu_click(option: int = -1, button: str = "", x: int = -1, y: int = -1, item: str = "", right: bool = False, quantity: int = 1, action: str = "", real: bool = False) -> str:
+def _ice_fishing_blocking() -> str:
+    """🎣 阻塞跑 ice_fishing（等冰雪节冰钓比赛自然结束），返回钓 N 条结果行。
+    2026-08-28 恒：与秋收 fair_fishing 同理——异步后台时 AI 空转会调别的工具添乱（钓鱼最怕走位/ESC）→
+    改成**同步干等**，AI 处于"等待工具返回"状态不能添乱；比赛结束当场拿"钓 N 条（赢线/不足5条）"。
+    ⚠️ 比赛限时 2 分钟 + 走位/等开赛/结算 → 上限给足 210s（秋收 140s 装不下 2min 比赛）。"""
+    import subprocess as _sp
+    script = os.path.join(SCRIPT_DIR, "ice_fishing.py")
+    args = [sys.executable, script, "--port", str(_ai_port())]
+    try:
+        proc = _sp.Popen(args, stdout=_sp.PIPE, stderr=_sp.STDOUT, text=True,
+                         encoding="utf-8", errors="replace", cwd=SCRIPT_DIR,
+                         env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"})
+        out, _ = proc.communicate(timeout=210)   # 比赛~120s + 走位 + 结算，210s 上限
+        for ln in out.splitlines():
+            if "冰雪冰钓完成" in ln:
+                return ln.strip()
+        lines = [ln for ln in out.splitlines() if ln.strip()]
+        return lines[-1].strip() if lines else "（ice_fishing 无输出）"
+    except Exception as e:
+        return f"❌ ice_fishing 同步执行失败: {e}"
+
+
+# 🎣 🚀 冰雪节冰钓自动 hook（2026-08-28 恒）：检测到比赛正式开钓(festivalTimer>0)且本局未跑过 → 自动阻塞跑 ice_fishing。
+#    恒：手动点/AI调都有延迟（我开始晚/被误点），只有"检测到就立刻开钓"才能钓满2分钟 → 才赢。
+#    只发一次（fired），比赛结束(festivalTimer<=0)复位；非冬8/非场地不触发。
+_ICE_FISH_AUTO = {"fired": False}
+
+
+def _maybe_ice_fishing_auto(data) -> str:
+    """每个工具调用都跑一次：冰钓比赛刚开始(festivalTimer>0)且本局没发过 → 阻塞跑 ice_fishing 拿结果。
+    ⚠️ 复用 _with_state 已抓好的 data（season/day/loc）判前置——**非冰雪节零额外 HTTP**（不添负担）；
+       只在 冬8+冰雪节场地 才补读一次 festival_status（一年就这几天，可忽略）。只在真要开钓时阻塞2min。"""
+    try:
+        t = (data or {}).get("time") or {}
+        if str(t.get("season") or "").lower() != "winter" or int(t.get("dayOfMonth") or 0) != 8:
+            _ICE_FISH_AUTO["fired"] = False
+            return ""
+        loc = (data.get("location") or {}).get("name", "") or ""
+        if loc not in ("Temp", "Forest-IceFestival"):
+            return ""
+        ft = int((api.festival_status() or {}).get("festivalTimer") or -1)
+        if ft <= 0:
+            _ICE_FISH_AUTO["fired"] = False     # 比赛结束/未开始 → 复位（下次再开赛可再触发）
+            return ""
+        if not _ICE_FISH_AUTO["fired"]:
+            _ICE_FISH_AUTO["fired"] = True      # 只开一次，别每个工具调用都重跑
+            return "🎣 " + _ice_fishing_blocking()
+    except Exception:
+        return ""
+    return ""
+
+
+def menu_click(option: int = -1, button: str = "", x: int = -1, y: int = -1, item: str = "", right: bool = False, quantity: int = 1, action: str = "", real: bool = False, slot: int = -1) -> str:
     """🖱️ 自适应点击当前菜单（商店/背包/奖励）
     按菜单类型自动适配：
     - 商店菜单：item 买 N 个（quantity）· 免翻页
-    - 背包菜单：action=split 拆 N 个 / action=discard 丢弃（自动找物品槽）
-    - 奖励/箱子菜单：item 领取该物品
+    - 背包菜单：action=split 拆 N 个 / action=discard 丢垃圾桶（自动找物品槽）
+    - 奖励/箱子/接鱼菜单：item 领取 / slot 领指定格（read 看 items 序号）
     也支持：对话选 option、点按钮（close/ok/upArrow/downArrow/trashCan）、精确坐标 (x,y)、右键。
 
     Args:
@@ -11104,7 +11543,8 @@ def menu_click(option: int = -1, button: str = "", x: int = -1, y: int = -1, ite
         real: True=对话选项走真实 receiveLeftClick 响应（createQuestionDialogue 用，如**跳舞邀请**——
               事件激活时默认走 event.answerDialogueQuestion 对跳舞无效；real=true 才点中真回调设舞伴）
         quantity: 批量数量（默认1；商店买 N 个 / 背包拆 N 个）
-        action: 背包专用——split=拆堆叠取 N / discard=拿起后丢垃圾桶
+        action: 背包专用——split=拆堆叠取 N / discard=拿起后丢垃圾桶；奖励菜单=claim 领取
+        slot: 领/点指定槽位序号（ItemGrabMenu 的 read items 下标，不想要1想要4就 slot=4；比坐标稳、不挪OS光标）
     """
     global _look_verified   # 🔒 捏人确认门禁：本函数会读+重置它（2026-08-22 恒）
     try:
@@ -11126,6 +11566,7 @@ def menu_click(option: int = -1, button: str = "", x: int = -1, y: int = -1, ite
         if quantity != 1: data["quantity"] = quantity
         if action: data["action"] = action
         if real: data["real"] = True
+        if slot >= 0: data["slot"] = slot
         r = api.menu_click(**data)
         if r.get("ok"):
             # 捏人窗 ok 提交成功（窗口消失=角色已确认）→ 自动退役捏脸/捏人工具（真拦截）
@@ -12571,7 +13012,9 @@ _KEEP_TOOLS = {
     # 无任何域 op 等价物的必需独立工具（系统/控制/感知/单点）
     #   buy_item 已退役（2026-08-16 直购作弊，买走真实商店 shop_visit/menu click）；sprinklers 本无此工具
     #   2026-08-22 收编: wear/lie_bed→daily ops, bundle_kb/donate/read_book→menu ops（域内可调，不再占顶层槽位）
-    "which_role", "run_script", "script_start", "script_status", "script_stop",
+    # 2026-08-28：advance_story 加入——`menu advance` 对事件对话只报"调 advance_story"，不真推进；
+    #  而 advance_story 是推进剧情/事件对话(含节日 monologue)的必要独立入口，隐藏=AI 推不动 + 触不了 hook。故暴露。
+    "advance_story", "which_role", "run_script", "script_start", "script_status", "script_stop",
     "session_status", "session_set", "session_export", "async_config",
     "screenshot", "help",
 }

@@ -49,6 +49,6 @@ if __name__ == "__main__":
     import os
     os.environ["NAGI_URL"] = f"http://localhost:{args.port}"
     import importlib
-    importlib.reload(stardew_api)
+    importlib.reload(api)
 
     run()

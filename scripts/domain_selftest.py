@@ -33,6 +33,7 @@ _KNOWN_SUBSUMED = {
     "go_to",         # → map ops="go"（map_go）/ walk_to POI
     "dance_invite",  # → festival ops="dance"（_festival_dance）
     "bomb_escort",   # 🚫 2026-08-22 恒：不对外暴露（协同内建进 bomb_mine 没炸弹自动转内部），AI 不主动启用
+    "menu_claim_swap", # 🚫 2026-08-28 恒：claim_swap(替换领取)退役——改 menu click action=discard 丢桶 + action=claim/slot 领；不判断档
 }
 
 PROBLEMS = []

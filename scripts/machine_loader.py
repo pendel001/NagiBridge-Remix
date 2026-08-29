@@ -82,7 +82,45 @@ def enter_building(loc, b):
     return False
 
 
-def load_one(m, item_name, skip_enter=False):
+# ── 机器需求判定(2026-08-29 细化装载失败报错, 数据源=恒提供的星露谷设备输入映射表) ──
+# 键=mod 报的机器 type(英文), 值=正确输入的描述(含煤条件)。2026-08-29 恒拍板:只列种类,给 AI 自查装对没
+_MACHINE_NEED = {
+    "Furnace": "矿产(铜/铁/金/铱矿石)+1煤炭",
+    "Heavy Furnace": "矿产+3煤炭",
+    "Fish Smoker": "鱼+1煤炭",
+    "Keg": "水果/蔬菜/蜂蜜/咖啡豆/茶叶",
+    "Seed Maker": "作物(水果/蔬菜)",
+    "Preserves Jar": "水果/蔬菜",
+    "Cheese Press": "牛奶/大壶牛奶",
+    "Mayonnaise Machine": "鸡蛋/鸭蛋/鸵鸟蛋/虚空蛋",
+    "Loom": "兔毛/绵羊毛",
+    "Oil Maker": "向日葵种子/玉米/油菜籽/松露",
+    "Dehydrator": "5个同星级同名果蔬/蘑菇",
+    "Crystalarium": "宝石(钻/翡翠/红宝/黄玉/紫/海蓝/绿宝石)",
+    "Charcoal Kiln": "木材×10",
+    "Bones Mill": "骨头碎片/古代骨头",
+    "Geode Crusher": "晶球",
+    "Recycling Machine": "垃圾/破碎CD/废报纸等",
+    "Wood Chipper": "硬木",
+    "Slime Egg Press": "史莱姆泥×100",
+    "Bait Maker": "鱼",
+}
+# 自动/放置类(无需放料、随时间自动产)——注意 Bait Maker 要放鱼,不算自动
+_AUTO_MACHINE = {"Bee House", "Tapper", "Heavy Tapper", "Lightning Rod", "Solar Panel",
+                 "Worm Bin", "Deluxe Worm Bin", "Mushroom Log",
+                 "Incubator", "Slime Incubator", "Ostrich Incubator",
+                 "Statue Of Perfection", "Statue Of Endless Fortune", "Garden Pot"}
+
+
+def _machine_missing_reason(mtype):
+    """机器 type(英文) → 一句话:这台机器要什么(列正确种类, AI 自己对照是否装错品类)。"""
+    mt = (mtype or "").strip()
+    if mt in _AUTO_MACHINE:
+        return f"{mt} 是自动/放置类,无需放料"
+    need = _MACHINE_NEED.get(mt)
+    if not need:
+        return f"{mt} 需求未登记(查 help 或让恒确认)"
+    return f"{mt} 需要 {need}"
     """拟人走路版：走门口开门进去（或已在屋内跳过）→ walk_to 走到机器旁过道 → 选原料 → interact。
     机器横排竖排留过道，walk_to 沿过道走（只走得到的地方，墙/被围就跳过）。
     返回 (成功?, 说明)。"""
@@ -136,7 +174,8 @@ def load_one(m, item_name, skip_enter=False):
             return True, ""
         if r2.get("actionTriggered"):
             return True, "触发未验证"
-        return False, "interact 后未装进"
+        # 细化报错:列这台机器要什么,给 AI 对照是否装错品类(2026-08-29 恒拍板:只说种类,别啰嗦)
+        return False, _machine_missing_reason(m["type"])
     return False, "四邻都走不到（被围死）"
 
 

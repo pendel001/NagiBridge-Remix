@@ -73,6 +73,9 @@ ORE_NODE_IDS = {
     "(O)CalicoEggStone_1": "Calico Egg Stone",   # 🥚 沙漠节骷髅洞蛋矿（2026-08-18 实测：objId 名字ID，Name 报 Stone）
 }
 
+# objId → dump_tile 真名(宝石/放射矿等 Name 也报 'Stone' 的节点解析用,https 2026-08-29)
+_TILENAME = {}
+
 # 梯子/竖井名称
 LADDER_NAMES = {"Ladder", "MineShaft"}
 
@@ -432,15 +435,35 @@ class MineBot:
 
     # ── 周围扫描 ──
 
+    def _tile_name(self, oid, x, y):
+        """objId 隐藏名(宝石/放射矿等 node 的 Name 也报 'Stone')→ dump_tile 真名。cache。
+        返回真名;解析失败返回 oid。"""
+        if oid in _TILENAME:
+            return _TILENAME[oid]
+        nm = oid
+        try:
+            r = self._get("/dump_tile", {"x": x, "y": y})
+            o = ((r or {}).get("tile") or {}).get("object") or {}
+            nm = o.get("name") or oid
+        except Exception:
+            pass
+        _TILENAME[oid] = nm
+        return nm
+
     def _rock_name(self, t):
-        """解析 tile 的矿石名：object 名优先（矿节点修复后报 'Iron Node' 等），
-        否则用 objId 兜底映射（SDV 1.6 矿节点 Name 报 'Stone'）。"""
+        """解析 tile 的矿石名：object 名优先(报 'Iron Node' 等)，
+        否则用 objId 兜底映射(ORE_NODE_IDS)；再不行(宝石/放射/未实测节点
+        Name 也报 'Stone')→ dump_tile 真名。2026-08-29 恒拍板:别猜,按真名认。"""
         o = t.get("object")
         if o and o != "Stone":
             return o
         oid = t.get("objId")
         if oid in ORE_NODE_IDS:
             return ORE_NODE_IDS[oid]
+        if oid:
+            real = self._tile_name(oid, t["x"], t["y"])
+            if real and real != oid and real != "石头" and str(real).lower() != "stone":
+                return real
         return o
 
     def find_rocks(self, priority_ore=None, radius=SCAN_RADIUS):
@@ -453,21 +476,24 @@ class MineBot:
         data = self.surroundings(radius)
         px, py = data["center"]["x"], data["center"]["y"]
 
-        # 优先级排序
+        # 优先级排序(2026-08-29 改成关键词:宝石/放射矿 Name 报 'Stone' 或 'X Stone',
+        # 不再只认硬编码的 "X Node" 名字)——放射矿最值钱，其次宝石
         def ore_score(name):
             if priority_ore and name == priority_ore:
-                return 0  # 最高优先级
-            if name in ("Gem Node", "Diamond Node", "Amethyst Node", "Topaz Node",
-                        "Emerald Node", "Aquamarine Node", "Jade Node", "Ruby Node"):
-                return 1  # 宝石（值钱）
+                return 0         # 最高优先级
+            if "Radioactive" in name:
+                return 1         # 放射矿(1.6 最值钱)
+            if any(g in name for g in ("Gem", "Jade", "Ruby", "Emerald", "Diamond",
+                                       "Topaz", "Amethyst", "Aquamarine")):
+                return 2         # 宝石(值钱)
             if name == "Copper Node":
-                return 2
-            if name == "Iron Node":
                 return 3
-            if name == "Gold Node":
+            if name == "Iron Node":
                 return 4
+            if name == "Gold Node":
+                return 5
             if name == "Stone":
-                return 5  # 石头最后
+                return 6         # 石头最后
             return 9
 
         targets = []
@@ -736,10 +762,11 @@ class MineBot:
             self.use_tool("Pickaxe")
             time.sleep(0.4)
 
-            # 检查石头还在不在
+            # 检查石头还在不在:目标那格还顶着 object 才算没碎
+            # (不对名字 —— 宝石/放射矿 objId 隐藏名,object 报 'Stone',比名字会误判)
             r = self.surroundings(3)
             still_there = any(
-                t["x"] == x and t["y"] == y and t.get("object") == name
+                t["x"] == x and t["y"] == y and t.get("object")
                 for t in r.get("tiles", [])
             )
             if not still_there:

@@ -195,6 +195,22 @@ def run(port, location, max_casts=0, stamina_pct=15, no_sleep=False):
         log("no fishing rod found!")
         return
 
+    # 🎣 2026-08-29 恒：拿竿后自动上饵/钓具。背包有饵但竿上没饵→上饵；可上钓具且背包有→上钓具。
+    #    多数情况背包没饵（要拿虫肉合成/买），这步只在有货时兜底；没货就裸竿钓，靠注入提示去补货。
+    try:
+        rs = bot.state()
+        rinfo = (rs.get("player") or {}).get("rod") or {}
+        if not rinfo.get("bait") and (rinfo.get("baitInBag") or 0) > 0:
+            rb = bot._post("/rod", {"action": "bait"})
+            if rb.get("ok"):
+                log(f"auto-bait: {rb.get('equipped')}")
+        if rinfo.get("canTackle") and not (rinfo.get("tackle") or []) and (rinfo.get("tackleInBag") or 0) > 0:
+            rt = bot._post("/rod", {"action": "tackle"})
+            if rt.get("ok"):
+                log(f"auto-tackle: {rt.get('equipped')}")
+    except Exception as e:
+        log(f"autorebait skipped: {e}")
+
     s = bot.state()
     p = s["player"]
     log(f"pos: ({p['x']},{p['y']}) tool: {p['currentTool']} stamina: {p['stamina']}")

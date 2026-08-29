@@ -7,9 +7,9 @@
 ╚══════════════════════════════════════════════════════════════════════════╝
 
 一句话：SMAPI C# mod（HTTP API，端口 7842/7843）+ Python MCP 服务器
-（153 工具，streamable-http 8000）让 AI 像真人一样操控星露谷——拟人走位、
-受限动作、自主决策。默认"域工具模式"只露 26 个（15 域入口 + 11 独立工具），
-`--full` 回退全量 153。
+（154 工具，streamable-http 8000）让 AI 像真人一样操控星露谷——拟人走位、
+受限动作、自主决策。默认"域工具模式"只露 27 个（15 域入口 + 独立工具，域内仍可调到全量），
+`--full` 回退全量 154。
 
 角色映射（由端口决定，不写死）：
   · 7842 = 房主「恒」   —— 检测/广播走这个端口
@@ -24,12 +24,12 @@ PROJECT_OVERVIEW = """
 ──────────────────────────────────────────────────────
 玩家(恒)开一个星露谷联机房 → AI(farmhand) 加入同一张图 → MCP 服务器暴露
 工具让 AI 做任何真人能做的事：走位/对话/商店/钓鱼/下矿/种地/节日。
-（153 注册工具，默认域模式只露 26 个：15 域入口 + 11 独立；域内部仍可调到全量。
+（154 注册工具，默认域模式只露 27 个：15 域入口 + 独立工具；域内部仍可调到全量。
 
 分三层：
   [游戏层]  Stardew Valley 1.6.15（SMAPI 4.5.2）+ NagiBridge C# mod
   [桥接层]  ModEntry.cs —— HTTP API（每个玩家一个端口 7842/7843）+ Harmony 补丁
-  [智能层]  scripts/nagi_mcp_server.py —— MCP 服务器（153 工具/15 域）+ 状态注入 + 心跳）
+  [智能层]  scripts/nagi_mcp_server.py —— MCP 服务器（154 工具/15 域）+ 状态注入 + 心跳）
 
 AI 每次调工具，返回都自动附带"状态速报"（眼睛）：位置/时间/天气/背包/体力/
 待办/节日/新闻。状态条分层：每天第一次全量，之后精简，省 token。
@@ -47,7 +47,7 @@ FILE_STRUCTURE = {
     "ChatHud.cs / LlmClient.cs / server.ts / index.ts": "⚠️ 原作者遗留，已 .claudeignore 忽略，勿改",
 
     # ── Python MCP 服务器（核心智能层）──
-    "scripts/nagi_mcp_server.py": "MCP 服务器（streamable-http:8000 或 --stdio）：153 个工具 + 状态注入(_with_state) + 心跳 + 节日/导航/脚本编排。所有工具按 15 域组织(check/farm/mine/care/cabin/social/scene/menu/quest/storage/daily/map/festival/fish/settings)；默认域模式只露 26(15域+11独立)，域内部调到全量。wear→daily ops，bundle_kb/donate/read_book→menu ops(2026-08-22 收编)",
+    "scripts/nagi_mcp_server.py": "MCP 服务器（streamable-http:8000 或 --stdio）：154 个工具 + 状态注入(_with_state) + 心跳 + 节日/导航/脚本编排。所有工具按 15 域组织(check/farm/mine/care/cabin/social/scene/menu/quest/storage/daily/map/festival/fish/settings)；默认域模式只露 26(15域+11独立)，域内部调到全量。wear→daily ops，bundle_kb/donate/read_book→menu ops(2026-08-22 收编)",
     "scripts/stardew_api.py": "HTTP API 封装层：Python 侧调 7842/7843 的 /xxx 端点，port↔角色自动检测",
     "scripts/player_activity.py": "行为检测 + 心跳：发呆检测/同场景玩家检测/窗口判定，描述房主活动给 AI 看",
     "scripts/locations.py": "地图知识库：MAP_LINKS(门/出口瓦片) + MAP_FEATURES(地点功能) + POI(兴趣点) + POI_FACE(结构化站位朝向) + SHOP_HOURS",
@@ -59,12 +59,13 @@ FILE_STRUCTURE = {
 
     # ── 自动化脚本（可后台异步跑，白名单内自动转后台 + 自动注入 --port）──
     "scripts/bomb_mine.py / bomb_escort.py / bomb_common.py / bomb_volcano.py": "炸矿三模式：自动/协同/火山（炸弹=select+placementAction 自动引爆，躲半径+4 防自伤）",
-    "scripts/mine_run.py": "矿洞/头骨矿冲层脚本（逐层+整理背包）",
-    "scripts/fish_run.py": "钓鱼自动化（walk_to 到钓点→拿竿→抛竿，--max-casts 收手）",
+    "scripts/mine_run.py": "矿洞/头骨矿冲层脚本（逐层+整理背包）——08-29 _rock_name 三级(object名>ORE_NODE_IDS>dump_tile真名)认隐藏名宝石/放射矿,ore_score 关键词(放射>宝石),mine_rock 校验改目标格有object",
+    "scripts/rock_run.py / rock_scan.py": "室外镐击：采石场/挖掘场/蚌矿场 敲可破物(骨/黏土/蚌/矿点/宝石/煤/放射矿)，只跳普通石。默认只扫不敲(--dig 才敲)，目标按 objId+dump_tile 真名认(1.6 节点 Name 全报 'Stone' 只 objId 可信)；MCP scene ops=rock",
+    "scripts/fish_run.py": "钓鱼自动化（walk_to 到钓点→拿竿→抛竿，--max-casts 收手）+ 拿竿后自动补饵/钓具",
     "scripts/farm_row.py / fruit_round.py / building_round.py / harvest.py / scythe_crops.py / keg_manager.py / furnace_manager.py": "农活：行田/果树圈收/建筑一轮/收获/镰刀收割/酒桶管理/熔炉",
     "scripts/pet_animals.py / feed_hay.py / pet_walk.py": "养动物：摸宠/喂干草/遛宠",
     "scripts/pickup_scene.py / scan_entries.py": "场景拾取/扫描",
-    "scripts/berry_run.py / blessing_statue.py / chop_trees.py / clear_area.py / machine_loader.py / check_design.py": "其他自动化：浆果/祝福像/砍树/清地/装机器/设计检查",
+    "scripts/berry_run.py / blessing_statue.py / chop_trees.py / clear_area.py / machine_loader.py / check_design.py": "其他自动化：浆果/祝福像/砍树/清地/装机器(装载失败列机器需求给AI自查,机器type→输入种类表_MACHINE_NEED)/设计检查",
     "scripts/chat_watcher.py / chat_overlay.py / channel_server.py": "聊天监听/悬浮/通道服务（广播/聊天联动）",
 
     # ── 文档（新知识写这里，别写回 CLAUDE.md）──
@@ -266,12 +267,12 @@ Python 侧：
 设计原则：连通域分析把设施/杂草/树纳入地块；蓄力用 tool_area；浇水失败根因=use_item 无释放，只用 /tool_area。
 """,
 
-    "域工具收敛（2026-08-22，15 域 + 11 独立）": """
-所有工具收敛成 15 个域入口 + 11 个必需独立工具（默认只露这 26 个，--full 回退全量）：
+    "域工具收敛（2026-08-22，15 域 + 独立）": """
+所有工具收敛成 15 个域入口 + 独立工具（默认只露这 27 个，--full 回退全量）：
 · 15 域 = check/farm/mine/care/cabin/social/scene/menu/quest/storage/daily/map/festival/fish/settings
 · 改名/合并：settings 域合并「捏脸」(appearance)+外观参考进来(不再拆)；scene 因 interact 占用改名；fish 域曾缺注册不可达(2026-08-22 修复)
 · 退役：plan(计划模式)/accept_quest/buy_item 已下线；bomb_escort 不再对外暴露(内建进 bomb_mine 自动转内部)；festival bot 体系全删
-· 收编：wear/lie_bed → daily ops；bundle_kb/donate/read_book → menu ops（都是低频生活/知识动作，不占顶层槽位）
+· 收编：wear/lie_bed → daily ops；bundle_kb/donate/read_book → menu ops；rock/挖石 → scene ops(2026-08-29 室外镐击)
 """,
 
     "长脚本便利（防坑）": """

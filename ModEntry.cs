@@ -182,7 +182,11 @@ internal static class AchievementToastPatch
         try
         {
             if (ModEntry.Instance == null || message == null) return;
-            if (!message.achievement) return;   // 只抓成就 toast（非新手/角色/提示等）
+            // 只抓真成就 toast。⚠️ HUDMessage(string,int) 构造函数【无条件】设 achievement=true（反编译 HUDMessage.cs:62-67），
+            // TimeSpeed 等 mod 显示提示走这个构造 → achievement 命中但 whatType≠1 → 全被误抓成"达成成就"（10分钟感觉就像10秒/Time has stopped…）。
+            // 真成就=ForAchievement（HUDMessage.cs:111-116）同时设 achievement=true 且 whatType==achievement_type(1)，
+            // 所以必须叠加 whatType 判别才干净（成就 toast 永远 whatType=1，见 switch 常量表）。
+            if (!message.achievement || message.whatType != HUDMessage.achievement_type) return;
             // message.message = LoadString("Strings\StringsFromCSFiles:HUDMessage.cs.3824") + 成就名。
             // 中文版前缀="新成就："（全角冒号），英文="Achievement!"/"New achievement!"。剥前缀只留成就名。
             string name = message.message ?? "";
@@ -2082,6 +2086,7 @@ public class ModEntry : Mod
                 "/furniture_pickup" => HandleFurniturePickup(ctx),
                 "/furniture" => HandleFurniture(ctx),
                 "/passable" => HandlePassable(ctx),
+                "/passable_rect" => HandlePassableRect(ctx),
                 "/chat" => HandleChat(ctx),
                 "/emote" => HandleEmote(ctx),
                 "/state" => HandleState(ctx),
@@ -2089,6 +2094,7 @@ public class ModEntry : Mod
                 "/warps" => HandleWarps(),
                 "/farm_buildings" => HandleFarmBuildings(),
                 "/fish_pond" => HandleFishPond(ctx),
+                "/rod" => HandleRod(ctx),
                 "/find_npc" => HandleFindNpc(ctx),
                 "/trinkets" => HandleTrinkets(),
                 "/trinket" => HandleTrinketEquip(ctx),
@@ -2890,6 +2896,90 @@ public class ModEntry : Mod
         return tcs.Task.GetAwaiter().GetResult();
     }
 
+    /// GET /passable_rect?x1=&y1=&x2=&y2=
+    /// 按矩形返回整片区域"每格"的可走+物体/地形（非 hasInfo 过滤），供 AI 看全图——
+    /// 迷宫直线段分解(maze_seg.py)一次取整张迷宫：passable(寻路同款 IsTilePassable)+object/terrain/largeTerrain/resource。
+    /// ⚠️ IsTilePassable 必须主线程读（同 /surroundings），矩形限 ~96×96 防爆。
+    private object HandlePassableRect(HttpListenerContext ctx)
+    {
+        if (!Context.IsWorldReady)
+            throw new InvalidOperationException("World not ready");
+
+        var qs = ctx.Request.QueryString;
+        int x1 = int.TryParse(qs["x1"], out var a) ? a : 0;
+        int y1 = int.TryParse(qs["y1"], out var b) ? b : 0;
+        int x2 = int.TryParse(qs["x2"], out var c) ? c : 0;
+        int y2 = int.TryParse(qs["y2"], out var d) ? d : 0;
+        var minX = Math.Min(x1, x2); var maxX = Math.Max(x1, x2);
+        var minY = Math.Min(y1, y2); var maxY = Math.Max(y1, y2);
+        if (maxX - minX > 96) maxX = minX + 96;   // ⚠️ 限尺寸防爆
+        if (maxY - minY > 96) maxY = minY + 96;
+
+        var tcs = new TaskCompletionSource<object>();
+        EnqueueMainThread(() =>
+        {
+            try
+            {
+                var loc = Game1.player.currentLocation;
+                var mapW = loc.Map.DisplayWidth / 64;
+                var mapH = loc.Map.DisplayHeight / 64;
+                var tiles = new List<object>();
+                for (int ty = minY; ty <= maxY; ty++)
+                {
+                    if (ty < 0 || ty >= mapH) continue;
+                    for (int tx = minX; tx <= maxX; tx++)
+                    {
+                        if (tx < 0 || tx >= mapW) continue;
+                        var vec = new Vector2(tx, ty);
+                        var passable = IsTilePassable(loc, new Point(tx, ty));
+
+                        string? objName = null, objId = null, objType = null;
+                        if (loc.objects.TryGetValue(vec, out var obj))
+                        {
+                            objName = SafeObjectName(obj);
+                            objId = obj.QualifiedItemId ?? obj.itemId?.Value;
+                            objType = obj.GetType().Name;   // Chest 等
+                        }
+                        string? terrainName = null;
+                        if (loc.terrainFeatures.TryGetValue(vec, out var tf))
+                            terrainName = tf.GetType().Name;
+                        string? largeTerrainName = null;
+                        foreach (var ltf in loc.largeTerrainFeatures)
+                        {
+                            if (ltf.Tile == vec) { largeTerrainName = ltf.GetType().Name; break; }
+                        }
+                        string? resourceName = null;
+                        var clump = loc.resourceClumps.FirstOrDefault(cc =>
+                            cc.Tile == vec || (tx >= cc.Tile.X && tx < cc.Tile.X + cc.width.Value
+                            && ty >= cc.Tile.Y && ty < cc.Tile.Y + cc.height.Value));
+                        if (clump != null)
+                            resourceName = clump.parentSheetIndex.Value switch
+                            {
+                                600 => "LargeStump", 602 => "LargeLog", 622 => "MeteoriteOre",
+                                672 => "LargeBoulder", 752 => "LargeBoulder", 754 => "LargeBoulder",
+                                _ => $"Clump:{clump.parentSheetIndex.Value}"
+                            };
+
+                        tiles.Add(new Dictionary<string, object?>
+                        {
+                            ["x"] = tx, ["y"] = ty, ["passable"] = passable,
+                            ["object"] = objName, ["objId"] = objId, ["objType"] = objType,
+                            ["terrain"] = terrainName, ["largeTerrain"] = largeTerrainName,
+                            ["resource"] = resourceName
+                        });
+                    }
+                }
+                tcs.SetResult(new
+                {
+                    ok = true, location = loc.Name,
+                    x1 = minX, y1 = minY, x2 = maxX, y2 = maxY, tiles
+                });
+            }
+            catch (Exception ex) { tcs.SetResult(new { ok = false, error = ex.Message }); }
+        });
+        return tcs.Task.GetAwaiter().GetResult();
+    }
+
     /// <summary>
     /// POST /chat  { "message": "Hello!" }
     /// Sends a chat message visible to all players.
@@ -3273,37 +3363,28 @@ public class ModEntry : Mod
                 catch { }
             }
 
-            // ⚠️ 光标手持物品（锻造合成/商店买后 heldItem）——2026-08-10 恒反馈：
-            //   AI 不知道合成完光标拿着戒指，乱点又放回锻造台。SDV 各版本字段/属性名不一
-            //   （IClickableMenu.heldItem / Farmer.CursorSlot / NetRef<Item> / 组件.item），
-            //   **穷举字段+属性+基类+Player** 全面抓，按 Item 值判断。
+            // ⚠️ 光标手持物品（锻造/商店买后 heldItem）——2026-08-10：AI 懒得管光标拿了啥又乱点放回。
+            //   🔧 2026-08-29 恒修（三轮，终于对）：`heldItem` 是 **MenuWithInventory 的属性**（mwi.cs:44，public Item heldItem，
+            //     backing=私有 `_heldItem`），**不是字段**。前两版 `GetField("heldItem")` 只找字段 → 真光标物（磁铁/钓到的鱼）
+            //     读成 null（把真实持有也清掉了）。**改：GetProperty("heldItem") 找属性**（+ `_heldItem` 字段兜底），
+            //     沿类型链逐层找，只读这一个特定位、不抓别处 Item 残留。退阶 Farmer.CursorSlotItem。
             object? heldItem = null;
+            Item? mh = null;
             var heldFlags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
                 | System.Reflection.BindingFlags.Instance;
-
-            void TryCaptureItem(object? obj)
-            {
-                if (obj == null || heldItem != null) return;
-                if (obj is Item oi && oi != null) { heldItem = new { name = oi.Name, stack = oi.Stack }; return; }
-                if (obj is Netcode.NetRef<Item> oni && oni.Value != null)
-                { heldItem = new { name = oni.Value.Name, stack = oni.Value.Stack }; return; }
-            }
             try
             {
-                var heldMenuType = Game1.activeClickableMenu.GetType();
-                // 1) 所有字段（含基类）
-                for (var t = heldMenuType; t != null && heldItem == null; t = t.BaseType)
-                    foreach (var f in t.GetFields(heldFlags))
-                        TryCaptureItem(f.GetValue(Game1.activeClickableMenu));
-                // 2) 所有可读属性（含基类）
-                for (var t = heldMenuType; t != null && heldItem == null; t = t.BaseType)
-                    foreach (var p in t.GetProperties(heldFlags))
-                        if (p.CanRead && p.GetIndexParameters().Length == 0)
-                            TryCaptureItem(p.GetValue(Game1.activeClickableMenu));
-                // 3) Farmer 上的 Item 字段（CursorSlot 等，字段名/类型因版本而异）
-                if (heldItem == null)
-                    foreach (var f in typeof(Farmer).GetFields(heldFlags))
-                        TryCaptureItem(f.GetValue(Game1.player));
+                for (var t = Game1.activeClickableMenu?.GetType(); t != null && mh == null; t = t.BaseType)
+                {
+                    var pf = t.GetProperty("heldItem", heldFlags);
+                    if (pf != null && pf.CanRead && pf.GetValue(Game1.activeClickableMenu) is Item pv && pv != null)
+                        mh = pv;
+                    if (mh == null && t.GetField("_heldItem", heldFlags)?.GetValue(Game1.activeClickableMenu) is Item bv && bv != null)
+                        mh = bv;
+                }
+                if (mh != null) heldItem = new { name = mh.Name, stack = mh.Stack };
+                if (heldItem == null && Game1.player.CursorSlotItem is Item ci && ci != null)
+                    heldItem = new { name = ci.Name, stack = ci.Stack };
             }
             catch { }
 
@@ -3375,6 +3456,9 @@ public class ModEntry : Mod
                     isReeling = rod.isReeling,
                     hit = rod.hit
                 } : null,
+                // 🎣 鱼竿装备（饵/钓具）——2026-08-29：AI 钓鱼意图=竿在手时能看挂的饵/钓具+背包饵量，据此决定补不补。
+                //    at 恒点：自动补饵仅在背包有饵时兜底，多数情况没饵，要从箱子取虫肉/买饵合成 → 0 也报。
+                rod = RodInfo(farmer),
                 riding = farmer.mount != null ? new
                 {
                     name = farmer.mount.Name,
@@ -3818,6 +3902,182 @@ public class ModEntry : Mod
         });
         return tcs.Task.GetAwaiter().GetResult();
     }
+
+    // ────────────────────────────────────────────────────────────────
+    // 🎣 鱼饵/钓具（2026-08-29 恒：AI 从没给鱼竿上过饵/钓具）
+    // 反编译定论（SDV1.6）：
+    //   - 饵/钓具非独立字段，是 Tool.attachments[]：BaitIndex=0(饵)、TackleIndex=1(钓具)。
+    //   - 分类：饵=Object.Category==-21 → slot0(需 CanUseBait=AttachmentSlotsCount>0)；钓具=Category==-22 → slot1+(需 CanUseTackle>1)。
+    //     玻璃纤维竿=1槽(只能饵)，铱金=2槽(饵+钓具)。
+    //   - 挂载= Tool.attach(o)（InventoryMenu.rightClick:399 右键点竿时真调的方法，直接调=等价，免开菜单/免定位/满包也不怕）。
+    //     返回值 null=挂上(物品进attachments)；否则=换出的旧饵或原物(没挂成)。
+    //   - 读取= rod.GetBait() / rod.GetTackle()；钓具耐久 Object.uses.Value，上限 FishingRod.maxTackleUses=20。
+
+    /// <summary>找要用的鱼竿：当前手持优先，否则扫背包挑升级最高那根。无竿返回 null。</summary>
+    private FishingRod? FindFishingRod(Farmer f)
+    {
+        if (f.CurrentTool is FishingRod cur) return cur;
+        FishingRod? best = null;
+        foreach (var it in f.Items)
+            if (it is FishingRod r && (best == null || r.UpgradeLevel > best.UpgradeLevel)) best = r;
+        return best;
+    }
+
+    /// <summary>累加背包里某 Category（-21饵 / -22钓具）的总堆叠数。</summary>
+    private int SumCategory(Farmer f, int cat)
+    {
+        int n = 0;
+        foreach (var it in f.Items)
+            if (it is StardewValley.Object o && o.Category == cat) n += o.Stack;
+        return n;
+    }
+
+    /// <summary>鱼竿装备快照（供 /state 的 player.rod 与 /rod show）。无竿返回 null。</summary>
+    private object? RodInfo(Farmer f, FishingRod? rod = null)
+    {
+        rod ??= FindFishingRod(f);
+        if (rod == null) return null;
+        var bait = rod.GetBait();  // attachments[0]
+        var tackle = rod.GetTackle();  // attachments[1..]
+        var tackleOut = new List<object>();
+        if (tackle != null)
+            foreach (var o in tackle)
+                if (o != null) tackleOut.Add(new
+                {
+                    name = o.DisplayName,
+                    uses = ReadTackleUses(o),
+                    max = FishingRod.maxTackleUses
+                });
+        return new
+        {
+            name = rod.DisplayName,
+            upgrade = rod.UpgradeLevel,
+            inHand = ReferenceEquals(f.CurrentTool, rod),  // 竿是否正握在手上（= 有钓鱼意图）
+            canBait = rod.CanUseBait(),
+            canTackle = rod.CanUseTackle(),
+            bait = bait?.DisplayName,
+            baitStack = bait?.Stack ?? 0,
+            baitId = bait?.QualifiedItemId,
+            baitInBag = SumCategory(f, -21),  // 背包剩余饵量（0 也要报，AI 据此决定补货）
+            tackleInBag = SumCategory(f, -22),  // 背包剩余钓具量（自动补钓具用）
+            tackle = tackleOut
+        };
+    }
+
+    /// <summary>钓具耐久（Object.uses 是 NetInt，反射读稳妥）。</summary>
+    private int ReadTackleUses(StardewValley.Object o)
+    {
+        try
+        {
+            var f = o.GetType().GetField("uses",
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            if (f?.GetValue(o) is Netcode.NetInt netInt) return netInt.Value;
+        }
+        catch { }
+        return 0;
+    }
+
+    /// <summary>从背包找 Category 对应的饵/钓具（name/DisplayName/QualifiedItemId 择一匹配），挂到竿上。
+    /// cat=-21 饵 / -22 钓具。返回：{ ok, error?, rodInfo, swapped? }。
+    /// 挂载直接调 rod.attach()（游戏真回调），成功后从背包扣掉该物品；换饵时旧饵回同格（满包也不丢）。</summary>
+    private object AttachRod(Farmer f, int cat, string item, string kind)
+    {
+        var rod = FindFishingRod(f);
+        if (rod == null) return new { ok = false, error = "没有鱼竿（背包/手上都不存在 FishingRod）" };
+
+        // 找背包里的目标物品（Category 匹配 + 名字/DisplayName/QualifiedItemId 择一）
+        int idx = -1; StardewValley.Object? it = null;
+        for (int i = 0; i < f.Items.Count; i++)
+        {
+            if (f.Items[i] is StardewValley.Object o && o.Category == cat
+                && (string.IsNullOrEmpty(item)
+                    || o.Name.Equals(item, StringComparison.OrdinalIgnoreCase)
+                    || o.DisplayName.Equals(item, StringComparison.OrdinalIgnoreCase)
+                    || o.QualifiedItemId == item))
+            { idx = i; it = o; break; }
+        }
+        if (it == null)
+            return new { ok = false, error = $"背包里没有（{kind}）「{(string.IsNullOrEmpty(item) ? "任意" : item)}」，Category={cat}。可用虫肉/买/开箱补给" };
+
+        // 杆子是否具备对应槽（attach 内部还会过 canThisBeAttached，这里先给清晰报错）
+        if (cat == -21 && !rod.CanUseBait())
+            return new { ok = false, error = $"这根竿（{rod.DisplayName}）没有鱼饵槽，装不了{kind}" };
+        if (cat == -22 && !rod.CanUseTackle())
+            return new { ok = false, error = $"这根竿（{rod.DisplayName}）没有钓具槽（需2槽钇金竿），装不了{kind}" };
+
+        var leftover = rod.attach(it);  // 真挂载：null=挂上；否则=换出的旧物或原物(没挂成)
+        if (leftover == null)
+        {
+            f.Items[idx] = null;  // 挂上了，物品进 attachments，背包腾掉
+        }
+        else if (!ReferenceEquals(leftover, it))
+        {
+            // 换饵：旧饵被换上来的顶出，放回刚腾出的同格
+            f.Items[idx] = leftover;
+        }
+        else
+        {
+            // attach 把原物原样返回 = 没挂成（未占槽）
+            return new { ok = false, error = $"没用成：这根竿装「{it.DisplayName}」被拒（check canThisBeAttached 未通过）", rodInfo = RodInfo(f, rod) };
+        }
+
+        return new { ok = true, action = kind, equipped = it.DisplayName, rodInfo = RodInfo(f, rod) };
+    }
+
+    /// <summary>
+    /// 🎣 /rod —— 鱼饵/钓具。body: action=show|bait|tackle|clear，item=物品名(可选)。
+    /// show(默认)=读竿状态；bait/tackle=从背包挂饵/钓具到竿；clear=摘首个非空附件回背包。
+    /// </summary>
+    private object HandleRod(HttpListenerContext ctx)
+    {
+        var p = ReadJson(ctx);
+        var action = GetParamOr<string>(p, "action", "show").ToLowerInvariant();
+        var item = GetParamOr<string>(p, "item", "");
+
+        var tcs = new TaskCompletionSource<object>();
+        EnqueueMainThread(() =>
+        {
+            try
+            {
+                var farmer = Game1.player;
+                var rod = FindFishingRod(farmer);
+                switch (action)
+                {
+                    case "bait":
+                        tcs.SetResult(AttachRod(farmer, -21, item, "鱼饵"));
+                        return;
+                    case "tackle":
+                        tcs.SetResult(AttachRod(farmer, -22, item, "钓具"));
+                        return;
+                    case "clear":
+                        // 摘第一个非空附件回背包（需空格，满包则摘下但放不回去）
+                        if (rod == null) { tcs.SetResult(new { ok = false, error = "没有鱼竿" }); return; }
+                        var removed = rod.attach(null);  // attach(null)=摘一下返回首个附件
+                        if (removed != null)
+                        {
+                            // addItemToInventory 返回装不下的剩余物(null=成功放入)
+                            var noFit = farmer.addItemToInventory(removed);
+                            if (noFit == null)
+                                tcs.SetResult(new { ok = true, action = "clear", removed = removed.DisplayName, rodInfo = RodInfo(farmer, rod) });
+                            else
+                                tcs.SetResult(new { ok = false, error = $"摘下了「{removed.DisplayName}」但背包无空位，没放回（物已从竿上取下、暂时丢了）", rodInfo = RodInfo(farmer, rod) });
+                        }
+                        else
+                            tcs.SetResult(new { ok = true, action = "clear", removed = (string?)null, rodInfo = RodInfo(farmer, rod) });
+                        return;
+                    default:
+                        tcs.SetResult(new { ok = true, action = "show", rodInfo = RodInfo(farmer) });
+                        return;
+                }
+            }
+            catch (Exception ex)
+            {
+                tcs.SetResult(new { ok = false, error = ex.Message });
+            }
+        });
+        return tcs.Task.GetAwaiter().GetResult();
+    }
+
 
     /// <summary>
     /// POST /equip { "name": "铁头靴" } 或 { "slot": "boots" }
@@ -4738,6 +4998,10 @@ public class ModEntry : Mod
 
         var p = ReadJson(ctx);
         var force = GetParamOr(p, "force", false);
+        // 🎫 2026-08-29 恒：read 模式=对当前手持物走 Object.performUseAction（右键读，书/纸条/残页统一用）。
+        //    反编译 Game1.pressActionButton 确认 confirm 只走 ActiveObject 不碰 CurrentItem → read_book 的 select+confirm 读不了纸条；
+        //    真正读法= performUseAction，返回值 true 才消耗（书领技能/纸条记收藏+弹 LetterViewerMenu）。
+        var mode = GetParamOr(p, "mode", "");
 
         var tcs = new TaskCompletionSource<object>();
         EnqueueMainThread(() =>
@@ -4747,6 +5011,34 @@ public class ModEntry : Mod
             if (item == null)
             {
                 tcs.SetResult(new { ok = false, error = "No item selected" });
+                return;
+            }
+
+            // ── 📚 read：右键读（书/纸条/残页统一入口）──
+            if (mode == "read")
+            {
+                if (item is StardewValley.Object rao)
+                {
+                    var rLoc = farmer.currentLocation;
+                    bool used = false;
+                    try { used = rao.performUseAction(rLoc); } catch (Exception ex) { used = false; }
+                    if (used)
+                    {
+                        farmer.reduceActiveItemByOne();  // 读了→消耗1个（腾背包占位；纸条进收藏/书领技能）
+                        tcs.SetResult(new { ok = true, action = "read", item = item.Name, consumed = true,
+                            menu = Game1.activeClickableMenu?.GetType().Name });
+                    }
+                    else
+                    {
+                        tcs.SetResult(new { ok = false, action = "read", item = item.Name, consumed = false,
+                            error = "读取没反应（可能已读过/或该物品不能读，performUseAction 返回 false）" });
+                    }
+                }
+                else
+                {
+                    tcs.SetResult(new { ok = false, action = "read", item = item?.Name,
+                        error = "只支持读 Object 类物品（书/纸条/残页），请先 select 目标再 mode=read" });
+                }
                 return;
             }
 
@@ -8986,7 +9278,14 @@ public class ModEntry : Mod
 
                 // ⚠️ 按背包槽位 index 直点（不依赖工具算坐标——2026-08-10 恒：按背包格点最可靠）。
                 // 用菜单的 InventoryMenu 组件真实坐标，菜单在哪都准（恒/锻造/AI 后台都行）。
-                if (slotIdx >= 0)
+                // ⚠️ 2026-08-29 恒：`action=="claim"` 让给领取分支（ItemGrabMenu 的 slot 领指定格）——
+                //    否则这里先拦截、对 behaviorFunction 菜单走 gift_send(打背包侧)丢镐子（退役 claim_swap 同类坑）。
+                //    🚫 非送礼 ItemGrabMenu 的 slot 不走这条背包槽处理器：反编译 InventoryMenu.leftClick(invmenu.cs:309-316)
+                //    认 Convert.ToInt32(item.name) 定 actualInventory 下标；这里"按列表位次点背包"对 ItemGrabMenu 的
+                //    "领取侧 slot" 语义冲突——那些 slot 该去下方 claim 分支（裸 slot=序号=领指定格，绝不误点背包）。
+                //    送礼 ItemGrabMenu(behaviorFunction) 仍走本条（下方 9117 的 gift_slot 路径，勿断）。
+                if (slotIdx >= 0 && action != "claim"
+                    && !(menu is ItemGrabMenu igmClaimable && !(igmClaimable.reverseGrab || igmClaimable.behaviorFunction != null)))
                 {
                     var bFlags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
                         | System.Reflection.BindingFlags.Instance;
@@ -8999,12 +9298,8 @@ public class ModEntry : Mod
                     {
                         if (f.GetValue(menu) is InventoryMenu cand && cand.inventory != null) { im = cand; break; }
                     }
-                    // 🎯 满包接鱼/领取：ItemGrabMenu 有两个 InventoryMenu（玩家背包 inventory + 领取侧 ItemsToGrabMenu）。
-                    // 点 slot 要操作玩家背包（放/拿/把物品），上面扫描可能先抓到 ItemsToGrabMenu → 强指定玩家背包（恒 2026-08-23 治本）。
-                    if (menu is ItemGrabMenu igmSlot && !(igmSlot.reverseGrab || igmSlot.behaviorFunction != null) && im != igmSlot.inventory)
-                    {
-                        im = igmSlot.inventory;
-                    }
+                    // 🎯 2026-08-29：非送礼 ItemGrabMenu 已在上面守卫排除（其 slot 归 claim 分支领指定格），
+                    //    这里不再需要"满包接鱼强指定玩家背包"那套（0823 治本已随 claim_swap 退役一并让位）。
                     // ⚠️ GameMenu 的背包在 InventoryPage（私有嵌套类）里，从当前页找
                     if (im == null && menu is GameMenu gm2 && gm2.currentTab >= 0 && gm2.currentTab < gm2.pages.Count)
                     {
@@ -9225,7 +9520,9 @@ public class ModEntry : Mod
                 }
 
                 // 🎒 自适应：背包菜单按物品名找槽操作（拆分/丢弃），奖励/箱子菜单领取指定物品
-                if (item != "")
+                //   2026-08-28 恒：item="" 但 slot>=0 也进（按槽位直领，不依赖物品名）——如 action=claim slot=3 领第4格。
+                //   2026-08-29 加 action=="claim"：多领/全领(quantity=999 无 item/slot)一门进领取分支（否则被外层挡死）。
+                if (item != "" || slotIdx >= 0 || action == "claim")
                 {
                     var bFlags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
                         | System.Reflection.BindingFlags.Instance;
@@ -9287,9 +9584,137 @@ public class ModEntry : Mod
                     }
                     else if (menu is ItemGrabMenu igm)
                     {
-                        // 🎁 送礼菜单（冬星节神秘礼物等：reverseGrab/behaviorFunction）：
-                        // 真人单击=base 拿起物品进 heldItem + 调 behaviorFunction(=chooseSecretSantaGift) 送出。
-                        // 必须 menu.receiveLeftClick（不能只 leftClick 拿起），且用底部 base.inventory 槽位坐标。
+                        // 🗑️ 2026-08-28 恒：ItemGrabMenu(领取/满包菜单)也能垃圾桶丢包内物品腾格——找玩家背包槽
+                        //    拿起→点菜单垃圾桶(升级有回收返金)。同 GameMenu 背包页的 action=discard，槽位走 igm.inventory。
+                        if (action == "discard" && item != "")
+                        {
+                            var bInv = igm.inventory;
+                            if (bInv != null)
+                            {
+                                bool found = false;
+                                for (int i = 0; i < Game1.player.Items.Count && i < bInv.inventory.Count; i++)
+                                {
+                                    var pItem = Game1.player.Items[i];
+                                    if (pItem == null) continue;
+                                    if (pItem.Name.Equals(item, StringComparison.OrdinalIgnoreCase)
+                                        || pItem.DisplayName.Equals(item, StringComparison.OrdinalIgnoreCase)
+                                        || pItem.QualifiedItemId == item)
+                                    {
+                                        var cc = bInv.inventory[i];
+                                        if (cc != null)
+                                        {
+                                            found = true;
+                                            igm.receiveLeftClick(cc.bounds.Center.X, cc.bounds.Center.Y);   // 拿起
+                                            var trashField = igm.GetType().GetField("trashCan", bFlags);
+                                            if (trashField?.GetValue(igm) is ClickableTextureComponent trashCan && trashCan.visible)
+                                            {
+                                                igm.receiveLeftClick(trashCan.bounds.Center.X, trashCan.bounds.Center.Y); // 丢桶
+                                                tcs.SetResult(new { ok = true, clicked = "itemgrab_discard", item, slot = i });
+                                            }
+                                            else
+                                            {
+                                                igm.receiveLeftClick(cc.bounds.Center.X, cc.bounds.Center.Y); // 没桶则放回
+                                                tcs.SetResult(new { ok = false, error = $"领取菜单没垃圾桶，未丢弃「{item}」" });
+                                            }
+                                            return;
+                                        }
+                                    }
+                                }
+                                if (!found)
+                                {
+                                    tcs.SetResult(new { ok = false, error = $"包里没有「{item}」" });
+                                    return;
+                                }
+                            }
+                        }
+                        // 🎁 领取侧（action=claim，或 ItemGrabMenu 上的 slot=序号——都走领取侧而非背包侧）。
+                        //    2026-08-29 恒修：原放 gift_send 之后，行为菜单(奖品/接鱼带 behaviorFunction)会被
+                        //    gift_send(背包侧)拦截，slot 打到背包丢了镐子；现在领取侧一律**先走这里**再谈赠送。
+                        //    多领(quantity>1)/指定格(slot>=0)/按名(item)，全走游戏内 receiveLeftClick，不挪 OS 光标。
+                        //    slot 无 action 也进领取侧：裸 slot=序号 才是"领指定格"，绝不误点背包槽（见外层的 menu is not ItemGrabMenu）。
+                        bool wantClaim = action == "claim"
+                            || (action != "discard" && slotIdx >= 0 && !(igm.reverseGrab || igm.behaviorFunction != null));
+                        if (wantClaim)
+                        {
+                            if (item == "" && slotIdx < 0 && quantity <= 1)
+                            {
+                                tcs.SetResult(new { ok = false, error = "领取需指定 item=名称 或 slot=序号(领指定格) 或 quantity>1(多领;999=全领)" });
+                                return;
+                            }
+                            var grabInv = igm.ItemsToGrabMenu.actualInventory;
+                            var grabSlots = igm.ItemsToGrabMenu.inventory;
+                            if (grabInv != null && grabSlots != null)
+                            {
+                                // 多领：quantity>1 一次拿 N 件。⚠️ 2026-08-29 恒修：原**连点第0格+第0格空就 break**——
+                                //    领取侧压实后可能第0格 null 而奖品在 idx1+（实测 idx0 空、磁铁在 idx1 → 全漏），
+                                //    改**每轮找第一个非空槽**再点。999=能拿多少拿多少。
+                                if (quantity > 1 && grabInv.Count > 0)
+                                {
+                                    int want = quantity >= 999 ? int.MaxValue : Math.Max(1, quantity);
+                                    int got = 0;
+                                    while (got < want && got < 999)
+                                    {
+                                        int grabIdx = -1;
+                                        for (int i = 0; i < grabInv.Count && i < grabSlots.Count; i++)
+                                            if (grabInv[i] != null && grabSlots[i] != null) { grabIdx = i; break; }
+                                        if (grabIdx < 0) break;   // 没有可领的了
+                                        int mx = grabSlots[grabIdx].bounds.Center.X, my = grabSlots[grabIdx].bounds.Center.Y;
+                                        try { Game1.setMousePosition(mx, my); } catch { }
+                                        igm.receiveLeftClick(mx, my);
+                                        got++;
+                                    }
+                                    tcs.SetResult(new { ok = true, clicked = "claim_multi", count = got });
+                                    return;
+                                }
+                                // 指定格：slot>=0 直领该格（不想要1想要4就 slot=4）。
+                                //   2026-08-29 恒修：反编译 InventoryMenu.leftClick(invmenu.cs:309-316) 用
+                                //   Convert.ToInt32(item.name) 定 actualInventory 下标，不认 List 位置 → 必须取
+                                //   name==slotIdx 的组件（inventory[j].name 恒=j，invmenu.cs:103，但别再赌顺序）。
+                                //   领取只认传入 x,y 不需鼠标位，仍补 setMousePosition 兜底（项目锻造/捐赠先例：部分槽位读 Game1.getMouseX）。
+                                if (slotIdx >= 0)
+                                {
+                                    var cc2 = grabSlots.FirstOrDefault(c => c != null && c.name != null
+                                        && c.name.Equals(slotIdx.ToString(), StringComparison.Ordinal));
+                                    var cit2 = (slotIdx < grabInv.Count) ? grabInv[slotIdx] : null;
+                                    if (cc2 == null)
+                                    {
+                                        tcs.SetResult(new { ok = false, error = $"领取菜单没有槽位 {slotIdx}（领取侧共 {grabInv.Count} 格；read_menu 看 items 序号）" });
+                                        return;
+                                    }
+                                    int ccx = cc2.bounds.Center.X, ccy = cc2.bounds.Center.Y;
+                                    try { Game1.setMousePosition(ccx, ccy); } catch { }
+                                    igm.receiveLeftClick(ccx, ccy);
+                                    string claimedName = cit2?.DisplayName ?? cit2?.Name ?? "?";
+                                    // 领后验证：物品对象是否已不在领取侧 actualInventory（压实后槽位会补位，别按槽看用对象身份）。
+                                    //   2026-08-29 恒修：cit2==null（空槽）也算 gone 会伪报"领成功了"——空槽是 no-op，必须 false。
+                                    bool gone = (cit2 != null) && !grabInv.Contains(cit2);
+                                    tcs.SetResult(new { ok = true, clicked = "claim_slot", item = claimedName, slot = slotIdx, claimed = gone });
+                                    return;
+                                }
+                                // 按名：读 actualInventory 真物品，用 inventory[i] 槽位坐标（治本"领取菜单里没有"）
+                                for (int i = 0; i < grabInv.Count && i < grabSlots.Count; i++)
+                                {
+                                    var cit = grabInv[i];
+                                    var cc = grabSlots[i];
+                                    if (cit == null || cc == null) continue;
+                                    if (cit.Name.Equals(item, StringComparison.OrdinalIgnoreCase)
+                                        || cit.DisplayName.Equals(item, StringComparison.OrdinalIgnoreCase)
+                                        || cit.QualifiedItemId == item)
+                                    {
+                                        igm.receiveLeftClick(cc.bounds.Center.X, cc.bounds.Center.Y);
+                                        tcs.SetResult(new { ok = true, clicked = "claim", item, slot = i });
+                                        return;
+                                    }
+                                }
+                                tcs.SetResult(new { ok = false, error = $"领取菜单里没有「{item}」" });
+                                return;
+                            }
+                            tcs.SetResult(new { ok = false, error = "领取菜单无物品列表" });
+                            return;
+                        }
+                        // 🎁 送礼菜单（冬星节神秘礼物等：reverseGrab/behaviorFunction）——非 claim 才走到这：
+                        //    真人单击=base 拿起物品进 heldItem + 调 behaviorFunction(=chooseSecretSantaGift) 送出。
+                        //    必须 menu.receiveLeftClick（不能只 leftClick 拿起），且用底部 base.inventory 槽位坐标。
                         if (igm.reverseGrab || igm.behaviorFunction != null)
                         {
                             var gInv = igm.inventory;   // 底部玩家背包（被点击侧）
@@ -9316,27 +9741,6 @@ public class ModEntry : Mod
                                 return;
                             }
                         }
-                        // 🎁 领取：找菜单里该物品的格子点击（公会奖励/箱子）——读 actualInventory 真物品，
-                        // 用 inventory[i] 槽位坐标（恒 2026-08-23 治本：ItemsToGrabMenu.inventory 组件 stale，
-                        // 真物品在 actualInventory，读错才"领取菜单里没有"；满包接鱼/弃箱手动替换全靠它）。
-                        var grabInv = igm.ItemsToGrabMenu.actualInventory;
-                        var grabSlots = igm.ItemsToGrabMenu.inventory;
-                        for (int i = 0; i < grabInv.Count && i < grabSlots.Count; i++)
-                        {
-                            var cit = grabInv[i];
-                            var cc = grabSlots[i];
-                            if (cit == null || cc == null) continue;
-                            if (cit.Name.Equals(item, StringComparison.OrdinalIgnoreCase)
-                                || cit.DisplayName.Equals(item, StringComparison.OrdinalIgnoreCase)
-                                || cit.QualifiedItemId == item)
-                            {
-                                igm.receiveLeftClick(cc.bounds.Center.X, cc.bounds.Center.Y);
-                                tcs.SetResult(new { ok = true, clicked = "claim", item, slot = i });
-                                return;
-                            }
-                        }
-                        tcs.SetResult(new { ok = false, error = $"领取菜单里没有「{item}」" });
-                        return;
                     }
                 }
 

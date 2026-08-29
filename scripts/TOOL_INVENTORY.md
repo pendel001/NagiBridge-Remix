@@ -1,6 +1,6 @@
-# NagiBridge MCP 域工具速查手册（2026-08-22 重写 · keep-set 26 个）
+# NagiBridge MCP 域工具速查手册（2026-08-22 重写 · keep-set 27 个 · 08-29 补 rock）
 
-> 给恒的速查手册：AI 现在**默认只看到 26 个工具**（15 个"域入口" + 11 个独立工具），
+> 给恒的速查手册：AI 现在**默认只看到 27 个工具**（15 个"域入口" + 独立工具），
 > 其余旧独立工具**全部收进域入口**（函数还在，只是 AI 不再直调）。
 > 记住一句话：**"想做 X → 调对应域的 ops"**。旧工具名大多能在域里找到等价物（见文末对照表）。
 > 🔍 **想查某域详细 ops/坑 → `help(域名)`**（如 help(farm)；docstring 已精简，深度靠这个查）。
@@ -9,7 +9,7 @@
 
 ## 🧭 一、总纲（先读这段）
 
-- **域模式默认开启**（`--full` / `NAGI_FULL_TOOLS=1` 可回退全量 151 个工具，调试/手机前端用）。
+- **域模式默认开启**（`--full` / `NAGI_FULL_TOOLS=1` 可回退全量 154 个工具，调试/手机前端用）。
 - **每个"域"就是一把瑞士军刀**：`farm(ops="till plant water")` 一次做多件事，ops 空格/逗号分隔。
 - **AI 调用 = 域名 + ops**，不是工具名。例：想点一个格子 → `scene(ops="at", tile_x=8, tile_y=24)`；想推进剧情 → `menu(ops="advance")`。
 - **✦ 域工具的子参数会收进 `kw`**：FastMCP 对带 `**kw` 的域工具生成 `{ops, kw}` 结构。Claude Code 自动处理（实际是 `farm(ops="till", kw={…})`），你**只需理解、不用手动拼**；但用脚本直调时子参数要放进 `kw`（如 `fish(ops="go", kw={"location":"Beach"})`），否则报 `kw Field required`。
@@ -66,6 +66,7 @@
 | `select`(物品名) | 选中背包物品拿手上 |
 | `pickup` / `pickup_scene` | 拿起家具 / 捡当前场景可拾取物 |
 | `berry` / `spot` / `moss` | 摇浆果 / 挖斑点蚯蚓 / 绿雨搜刮苔藓 |
+| `rock` | 室外镐击（采石场/挖掘场/蚌矿场敲可破物：骨/黏土/蚌/矿点/宝石/煤/放射矿，只跳普通石；dig=false 只扫） |
 | `forge_help` | 火山锻造台附魔攻略 |
 | `drop` / `furniture` | 丢背包物品 / 扫家具 |
 
@@ -173,6 +174,7 @@
 | `list_quests` / `quest_progress` | `quest(ops="list"/"progress")`；接单走板上 `menu click(button=accept…)`（accept_quest 已退役） |
 | `chat_npc` / `gift_npc` / `give_item` / `send_chat` / `emote` / `check_friendship` | `social(ops="chat"/"gift"/"give"/"send"/"emote"/"friendship")` |
 | `moss_run` / `berry_run` / `spot_run` / `pickup_scene` | `scene(ops="moss"/"berry"/"spot"/"pickup_scene")` |
+| `rock_run`（室外镐击） | `scene(ops="rock")`（08-29 新增） |
 | `go_mining` / `bomb_*` | `mine(ops="go"/"bomb_mine"…)` |
 | `go_fishing` / `bobber_style` | `fish(ops="go"/"bobber")` |
 | `set_appearance` / `character_customize` / `color_pick` / `list_hair_ref` 等 | `settings(ops="appearance"/"customize"/"color"/"hair"…)` |
