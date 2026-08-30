@@ -1418,10 +1418,14 @@ public class ModEntry : Mod
                 // ⚠️ 2026-08-15 恒：LevelUpMenu（升级界面）farmhand 自动确认——
                 //    AI 的 menu/click 坐标系统不匹配关不掉，卡死。只在非职业选择(isProfessionChooser=false)
                 //    时自动点 OK（5/10级职业选择留给 AI 决策）。
+                // ⚠️ 2026-08-30 补：LevelUpMenu.receiveLeftClick 是**空方法**（反编译确认），旧版这里调它=no-op，
+                //    普通升级 OK 实际关不掉。改调权威的 okButtonClicked()（public：getLevelPerk + RemoveLevelFromLevelList + 关菜单）。
+                //    ⚠️ 加 && lum.informationUp：parameterless ctor（星形屏）时 currentSkill/currentLevel 仍是0，
+                //    此时 okButtonClicked 会误发perk/误删等级；informationUp=true 才代表信息面板真的展开了(普通升级(skill,level)ctor 恒 true)。
                 if (Game1.activeClickableMenu is StardewValley.Menus.LevelUpMenu lum
-                    && lum.okButton != null && !lum.isProfessionChooser)
+                    && lum.okButton != null && !lum.isProfessionChooser && lum.informationUp)
                 {
-                    lum.receiveLeftClick(lum.okButton.bounds.Center.X, lum.okButton.bounds.Center.Y);
+                    lum.okButtonClicked();
                     // 🎉 播报升级给 AI（技能+等级用反射读——LevelUpMenu 字段非公开，2026-08-15 恒：
                     //    自动确认不能让 AI 蒙在鼓里）
                     try
@@ -2163,6 +2167,10 @@ public class ModEntry : Mod
                 "/dump_tile" => HandleDumpTile(ctx),
                 "/mine_rock" => HandleMineRock(),   // 🧱 矮人商店堵路石（(BC)78 在 Mine(27,8)）是否还在=未炸（cross-map 读，2026-08-23 恒）
                 "/water" => HandleWater(ctx),
+                "/crab_pots" => HandleCrabPots(ctx),      // 🦀 蟹笼诊断：列当前/指定图所有蟹笼真实状态(2026-08-30)
+                "/crab_retract" => HandleCrabRetract(ctx), // 🦀 蟹笼回收：收产+笼本体回背包，搁浅笼出路(2026-08-30)
+                "/profile" => HandleProfile(ctx),          // 🧬 读当前进程玩家技能等级+职业分支(2026-08-30 恒:AI 看自己)
+                "/levelup_choose" => HandleLevelUpChoose(ctx), // 🧬 6/10级职业选择：选分支(2026-08-30 恒:LevelUpMenu.receiveLeftClick空,须走这)
                 "/click" => HandleClick(ctx),
                 "/click_tile" => HandleClickTile(ctx),
                 "/drag" => HandleDrag(ctx),
@@ -2806,12 +2814,17 @@ public class ModEntry : Mod
             // 1) 手持饵 + 笼无饵 → 挂饵
             if (farmer.CurrentItem is StardewValley.Object bait && bait.Category == -21 && cp.bait.Value == null)
             {
+                // 🎬 2026-08-30 恒：挂饵要**忠实**——直接调游戏原版 CrabPot.performObjectDropInAction，
+                //    一个方法做全：owner.Value + bait.Value + location.playSound("Ship")(放饵音效) +
+                //    lidFlapping/lidFlapTimer=60(开盖动画)。游戏原版经 didPlayerJustRightClick 卡着不触发，
+                //    绕开它直调主内容即可。⚠️ 原版**不扣**玩家饵(由调用方减)，故这里照常 reduceActiveItemByOne()。
+                //    (反编译确认：dropInItem is Object{Category:-21} && NeedsBait(who)；含 returnFalseIfItemConsumed 默认参。)
                 var baitCopy = bait.getOne();
-                if (baitCopy is StardewValley.Object baitObj)
-                    cp.bait.Value = baitObj;
-                farmer.reduceActiveItemByOne();
-                cp.lidFlapTimer = 250f;
-                return true;
+                if (baitCopy is StardewValley.Object baitObj && cp.performObjectDropInAction(baitObj, false, farmer))
+                {
+                    farmer.reduceActiveItemByOne();
+                    return true;
+                }
             }
             // 2) 有产出 → 收进背包
             if (cp.readyForHarvest.Value && cp.heldObject.Value is Item outItem)
@@ -2820,6 +2833,9 @@ public class ModEntry : Mod
                 {
                     cp.heldObject.Value = null;
                     cp.readyForHarvest.Value = false;
+                    cp.bait.Value = null;   // 🎣 2026-08-30 恒：收产出**消耗饵**(同原版 checkForAction 收获分支)，一饵一捕，
+                                            //    收完笼空+无饵 → 明天要重新挂饵，不做"一饵连捕"。
+                                            //    (原 bypass 漏了这步导致笼一直挂饵重复出货，不符游戏实际。)
                     return true;
                 }
             }
@@ -3405,7 +3421,11 @@ public class ModEntry : Mod
                 // 🎁 送礼菜单（冬星节神秘礼物等：ItemGrabMenu+reverseGrab/behaviorFunction）：
                 // 点物品=送出（receiveLeftClick 内部调 behaviorFunction），不是拿起。状态条据此注入提示。
                 gift = Game1.activeClickableMenu is StardewValley.Menus.ItemGrabMenu giftIgm
-                       && (giftIgm.reverseGrab || giftIgm.behaviorFunction != null)
+                       && (giftIgm.reverseGrab || giftIgm.behaviorFunction != null),
+                // 🧬 技能升级菜单（LevelUpMenu, 2026-08-30 恒）：含 5/10 级职业选择(isProfessionChooser=true)。
+                //    AI 经 /state 看到 activeMenu.type=LevelUpMenu + 本 levelUp 对象，就知道该选分支了。
+                //    offered[0]=左、offered[1]=右；选完走 menu ops=levelup_choose。
+                levelUp = BuildLevelUpInfo(Game1.activeClickableMenu)
             };
         }
 
@@ -4069,7 +4089,8 @@ public class ModEntry : Mod
                         tcs.SetResult(AttachRod(farmer, -22, item, "钓具"));
                         return;
                     case "clear":
-                        // 摘第一个非空附件回背包（需空格，满包则摘下但放不回去）
+                        // 摘首个非空附件回背包。⚠️ 2026-08-30 恒：满包**不丢物**——摘下来放不回就挂回竿上，
+                        //    只报"先腾背包"；不再"物已取下、暂时丢了"（AI 随取随用不能把饵/钓具弄丢）。
                         if (rod == null) { tcs.SetResult(new { ok = false, error = "没有鱼竿" }); return; }
                         var removed = rod.attach(null);  // attach(null)=摘一下返回首个附件
                         if (removed != null)
@@ -4079,7 +4100,10 @@ public class ModEntry : Mod
                             if (noFit == null)
                                 tcs.SetResult(new { ok = true, action = "clear", removed = removed.DisplayName, rodInfo = RodInfo(farmer, rod) });
                             else
-                                tcs.SetResult(new { ok = false, error = $"摘下了「{removed.DisplayName}」但背包无空位，没放回（物已从竿上取下、暂时丢了）", rodInfo = RodInfo(farmer, rod) });
+                            {
+                                rod.attach(removed);   // 背包满：挂回竿上，不丢物
+                                tcs.SetResult(new { ok = false, error = $"背包无空位，「{removed.DisplayName}」留竿上未摘，先腾背包再 clear", rodInfo = RodInfo(farmer, rod) });
+                            }
                         }
                         else
                             tcs.SetResult(new { ok = true, action = "clear", removed = (string?)null, rodInfo = RodInfo(farmer, rod) });
@@ -10778,17 +10802,313 @@ public class ModEntry : Mod
                         if (loc.isWaterTile(tx, ty))
                         {
                             // 🦀 2026-08-30 恒拍板零试错：/water 预筛每格能否放蟹笼。
-                            //    只能放在"左右都是水 OR 上下都是水"的宽水域(单格细流放不进)+无建筑遮挡(CrabPot.IsValidCrabPotLocationTile)。
+                            //    直接调游戏真判定 CrabPot.IsValidCrabPotLocationTile(loc,tx,ty)——它内部就是
+                            //    "宽水域(左右都是水 OR 上下都是水) + 无建筑遮挡 + 无已有物体"，用真方法零漂移。
                             //    Python 选点只挑 canCrabPot=true → /use x,y 一次放成功，不再 Cannot place 试错。
-                            bool canCrab = loc.objects != null && !loc.objects.ContainsKey(new Vector2(tx, ty))
-                                && ((loc.isWaterTile(tx + 1, ty) && loc.isWaterTile(tx - 1, ty))
-                                    || (loc.isWaterTile(tx, ty + 1) && loc.isWaterTile(tx, ty - 1)))
-                                && loc.doesTileHaveProperty(tx, ty, "Passable", "Buildings") == null;
+                            bool canCrab = loc.objects != null
+                                && StardewValley.Objects.CrabPot.IsValidCrabPotLocationTile(loc, tx, ty);
                             water.Add(new { x = tx, y = ty, canCrabPot = canCrab });
                         }
                     }
                 }
                 tcs.SetResult(new { ok = true, location = loc.Name, count = water.Count, water });
+            }
+            catch (Exception ex) { tcs.SetResult(new { ok = false, error = ex.Message }); }
+        });
+        return tcs.Task.GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// GET /crab_pots?location=
+    /// 🦀 蟹笼诊断（2026-08-30 恒）：列当前/指定图所有蟹笼的真实状态，终结"放得进却挂不了饵"的猜测。
+    /// 关键字段：isCrabPotInstance（是真 CrabPot 实例，还是名字碰巧叫 Crab Pot 的普通 Object?）、
+    ///   tileIsWater + flankedWater（这只笼在不在合法鱼水——不受笼占据影响，是真正判据）、
+    ///   wouldAcceptNewPot（参考：CrabPot.IsValidCrabPotLocationTile 在已占据格恒 false）、
+    ///   bait/readyForHarvest（原版 checkForAction 空笼右键=收回、不挂饵；bait 非空却永不 ready=疑似卡死）。
+    /// </summary>
+    private object HandleCrabPots(HttpListenerContext ctx)
+    {
+        if (!Context.IsWorldReady)
+            throw new InvalidOperationException("World not ready");
+
+        var qs = ctx.Request.QueryString;
+        var locName = qs["location"];
+
+        var tcs = new TaskCompletionSource<object>();
+        EnqueueMainThread(() =>
+        {
+            try
+            {
+                var loc = string.IsNullOrEmpty(locName) || locName == Game1.player.currentLocation.Name
+                    ? Game1.player.currentLocation
+                    : Game1.getLocationFromName(locName);
+                if (loc == null)
+                {
+                    tcs.SetResult(new { ok = false, error = $"Location '{locName}' not found" });
+                    return;
+                }
+                var pots = new List<object>();
+                foreach (var pair in loc.objects.Pairs)
+                {
+                    var v = pair.Value;
+                    // 凡是真蟹笼实例、或名字/品类碰巧是蟹笼(O)710 的，都拉出来——>=分辨"到底是哪种"
+                    if (v is not StardewValley.Objects.CrabPot && v.QualifiedItemId != "(O)710")
+                        continue;
+                    int px = (int)pair.Key.X, py = (int)pair.Key.Y;
+                    bool isCp = v is StardewValley.Objects.CrabPot;
+                    var rec = new Dictionary<string, object?>
+                    {
+                        ["x"] = px,
+                        ["y"] = py,
+                        ["isCrabPotInstance"] = isCp,
+                        ["itemId"] = v.QualifiedItemId,
+                        ["name"] = SafeObjectName(v),
+                        ["tileIsWater"] = loc.isWaterTile(px, py),
+                        ["flankedWater"] = (loc.isWaterTile(px + 1, py) && loc.isWaterTile(px - 1, py))
+                            || (loc.isWaterTile(px, py + 1) && loc.isWaterTile(px, py - 1)),
+                        ["wouldAcceptNewPot"] = StardewValley.Objects.CrabPot.IsValidCrabPotLocationTile(loc, px, py),
+                    };
+                    if (isCp && v is StardewValley.Objects.CrabPot cp)
+                    {
+                        rec["bait"] = cp.bait?.Value?.DisplayName;
+                        rec["baitId"] = cp.bait?.Value?.QualifiedItemId;
+                        rec["readyForHarvest"] = cp.readyForHarvest.Value;
+                        rec["owner"] = cp.owner.Value;
+                        rec["heldObjectId"] = cp.heldObject?.Value?.QualifiedItemId;
+                    }
+                    pots.Add(rec);
+                }
+                tcs.SetResult(new { ok = true, location = loc.Name, count = pots.Count, pots });
+            }
+            catch (Exception ex) { tcs.SetResult(new { ok = false, error = ex.Message }); }
+        });
+        return tcs.Task.GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// POST /crab_retract  {"x":, "y":, "location":(可选)}
+    /// 🦀 蟹笼回收（2026-08-30 恒：搁浅笼出路，无论如何用/退役都要的清理能力）——
+    ///   已出货先收产出 → 从 loc.objects 移除笼 → 回背包一只新 Crab Pot（满包走 addItemByMenuIfNecessary 不丢）。
+    ///   无论笼是否合法/挂没挂上饵都能确定性清掉，保证农场不再留烂笼。满包放不下**产出**则不动笼（不丢物）。
+    /// </summary>
+    private object HandleCrabRetract(HttpListenerContext ctx)
+    {
+        if (!Context.IsWorldReady)
+            throw new InvalidOperationException("World not ready");
+
+        var p = ReadJson(ctx);
+        int ppx = GetParamOr(p, "x", -1);
+        int ppy = GetParamOr(p, "y", -1);
+        var locName = GetParamOr(p, "location", "");
+        if (ppx < 0 || ppy < 0)
+            throw new InvalidOperationException("x,y required");
+
+        var tcs = new TaskCompletionSource<object>();
+        EnqueueMainThread(() =>
+        {
+            try
+            {
+                var loc = string.IsNullOrEmpty(locName) ? Game1.player.currentLocation
+                    : Game1.getLocationFromName(locName) ?? Game1.player.currentLocation;
+                var tile = new Vector2(ppx, ppy);
+                if (!loc.objects.TryGetValue(tile, out var obj))
+                {
+                    tcs.SetResult(new { ok = false, error = "格子上没有蟹笼/物体", x = ppx, y = ppy });
+                    return;
+                }
+                var farmer = Game1.player;
+                bool isCp = obj is StardewValley.Objects.CrabPot;
+
+                // 1) 已出货先收产出。满包放不下产出 → 不动笼直接回(不丢物)，让 AI 先腾背包
+                bool output = false;
+                if (isCp && obj is StardewValley.Objects.CrabPot cp
+                    && cp.readyForHarvest.Value && cp.heldObject.Value is Item outItem)
+                {
+                    if (farmer.addItemToInventoryBool(outItem))
+                    {
+                        cp.heldObject.Value = null;
+                        cp.readyForHarvest.Value = false;
+                        output = true;
+                    }
+                    else
+                    {
+                        tcs.SetResult(new { ok = false,
+                            error = "背包满放不下产出，先腾空再回收（笼未移除，未丢物）", x = ppx, y = ppy });
+                        return;
+                    }
+                }
+
+                // 2) 移除笼本体（同 HandleClearGround 先例，清掉这块的水上笼）
+                loc.objects.Remove(tile);
+
+                // 3) 回背包一只新蟹笼（满包走菜单兜底，不丢）
+                var potToReturn = new StardewValley.Objects.CrabPot();
+                bool returned = farmer.addItemToInventoryBool(potToReturn);
+                if (!returned)
+                    farmer.addItemByMenuIfNecessary(potToReturn);
+
+                tcs.SetResult(new { ok = true, x = ppx, y = ppy, isCrabPotInstance = isCp,
+                    outputCollected = output, returnedToInventory = returned });
+            }
+            catch (Exception ex) { tcs.SetResult(new { ok = false, error = ex.Message }); }
+        });
+        return tcs.Task.GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// GET /profile — 读当前进程玩家的技能等级 + 职业分支(professions)。
+    /// 2026-08-30 恒：让 AI 能看自己技能等级和职业分支——尤其蟹笼的"Luremaster(无需饵)"。
+    /// Game1.player 在 AI 进程=轮回，在 host 进程=恒；角色由端口定。职业名不在此硬编(版本易变)，
+    /// 返回原始职业 ID 集合，Python 侧只认关键 ID(如 11=Luremaster)并诚实回退"分支#id"。
+    /// </summary>
+    private object HandleProfile(HttpListenerContext ctx)
+    {
+        if (!Context.IsWorldReady)
+            throw new InvalidOperationException("World not ready");
+
+        var tcs = new TaskCompletionSource<object>();
+        EnqueueMainThread(() =>
+        {
+            try
+            {
+                var f = Game1.player;
+                var profs = new List<int>();
+                foreach (var pid in f.professions)
+                    profs.Add(pid);
+                profs.Sort();
+                tcs.SetResult(new
+                {
+                    ok = true,
+                    name = f.Name,
+                    skills = new
+                    {
+                        farming = f.farmingLevel.Value,
+                        fishing = f.fishingLevel.Value,
+                        foraging = f.foragingLevel.Value,
+                        mining = f.miningLevel.Value,
+                        combat = f.combatLevel.Value,
+                    },
+                    professions = profs,
+                });
+            }
+            catch (Exception ex) { tcs.SetResult(new { ok = false, error = ex.Message }); }
+        });
+        return tcs.Task.GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// 当前激活菜单若为 LevelUpMenu，生成其详情；否则返回 null。
+    /// 2026-08-30 恒：LevelUpMenu 的 currentSkill/currentLevel/professionsToChoose 都是私有，
+    /// 用反射读；职业名走 public static LevelUpMenu.getProfessionTitleFromNumber（本地化，不硬编）。
+    /// </summary>
+    private object? BuildLevelUpInfo(IClickableMenu? menu)
+    {
+        if (menu is not StardewValley.Menus.LevelUpMenu lum)
+            return null;
+        var flags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
+            | System.Reflection.BindingFlags.Instance;
+        int skill = 0, level = 0;
+        var offered = new List<int>();
+        try
+        {
+            if (typeof(StardewValley.Menus.LevelUpMenu).GetField("currentSkill", flags)?.GetValue(lum) is int s)
+                skill = s;
+            if (typeof(StardewValley.Menus.LevelUpMenu).GetField("currentLevel", flags)?.GetValue(lum) is int lv)
+                level = lv;
+            if (typeof(StardewValley.Menus.LevelUpMenu).GetField("professionsToChoose", flags)?.GetValue(lum) is List<int> p)
+                offered = new List<int>(p);
+        }
+        catch { }
+        string skillName = "";
+        try { skillName = StardewValley.Farmer.getSkillDisplayNameFromIndex(skill); } catch { }
+        return new
+        {
+            isProfessionChooser = lum.isProfessionChooser,
+            skill,
+            skillName,
+            level,
+            offered = offered.Select(pid => new { id = pid, name = SafeProfessionName(pid) }).ToList(),
+        };
+    }
+
+    /// <summary>职业 id → 本地化分支名（LevelUpMenu.getProfessionTitleFromNumber）；失败回退"分支#id"。</summary>
+    private static string SafeProfessionName(int pid)
+    {
+        try { return StardewValley.Menus.LevelUpMenu.getProfessionTitleFromNumber(pid); }
+        catch { return $"分支#{pid}"; }
+    }
+
+    /// <summary>
+    /// POST /levelup_choose — 技能升级职业选择：确定选哪个分支。
+    /// 2026-08-30 恒：LevelUpMenu.receiveLeftClick(int,int) 是**空方法**，/menu click 对职业选择无效；
+    /// 原生触发在 update() 里靠"鼠标进左/右半区+按下松开"判 professionsToChoose 选哪个。这里镜像其副作用：
+    ///   Game1.player.professions.Add(pid) + lum.getImmediateProfessionPerk(pid) + 置 isActive/informationUp/
+    ///   isProfessionChooser=false + lum.RemoveLevelFromLevelList()（全部 public 成员，忠实无误）。
+    /// params: side=left/right（选左/右选项）或 profession=职业id。
+    /// </summary>
+    private object HandleLevelUpChoose(HttpListenerContext ctx)
+    {
+        if (!Context.IsWorldReady)
+            throw new InvalidOperationException("World not ready");
+
+        var p = ReadJson(ctx);
+        var side = GetParamOr<string>(p, "side", "").Trim();
+        var profession = GetParamOr<int>(p, "profession", -1);
+
+        var tcs = new TaskCompletionSource<object>();
+        EnqueueMainThread(() =>
+        {
+            try
+            {
+                if (Game1.activeClickableMenu is not StardewValley.Menus.LevelUpMenu lum)
+                {
+                    tcs.SetResult(new { ok = false, error = "当前没有技能升级菜单(LevelUpMenu)在开着" });
+                    return;
+                }
+                if (!lum.isProfessionChooser)
+                {
+                    tcs.SetResult(new { ok = false, error = "当前升级不是职业选择(普通升级自会确认OK，不用选分支)" });
+                    return;
+                }
+                var flags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
+                    | System.Reflection.BindingFlags.Instance;
+                var offered = typeof(StardewValley.Menus.LevelUpMenu)
+                    .GetField("professionsToChoose", flags)?.GetValue(lum) as List<int>;
+                if (offered == null || offered.Count < 2)
+                {
+                    tcs.SetResult(new { ok = false, error = "职业选项还没就绪——稍等半秒再试(或先读 /state 的 activeMenu.levelUp.offered)" });
+                    return;
+                }
+                int chosen;
+                if (profession >= 0)
+                {
+                    if (!offered.Contains(profession))
+                    {
+                        tcs.SetResult(new { ok = false, error = $"职业 {profession} 不在当前选项 [{string.Join("/", offered)}] 里——先读 activeMenu.levelUp.offered" });
+                        return;
+                    }
+                    chosen = profession;
+                }
+                else if (side == "left")
+                {
+                    chosen = offered[0];
+                }
+                else if (side == "right")
+                {
+                    chosen = offered[1];
+                }
+                else
+                {
+                    tcs.SetResult(new { ok = false, error = "要选职业用 side=left/right 或 profession=职业id（先看 activeMenu.levelUp.offered）" });
+                    return;
+                }
+                Game1.player.professions.Add(chosen);
+                lum.getImmediateProfessionPerk(chosen);
+                lum.isActive = false;
+                lum.informationUp = false;
+                lum.isProfessionChooser = false;
+                lum.RemoveLevelFromLevelList();
+                tcs.SetResult(new { ok = true, chosen, name = SafeProfessionName(chosen) });
             }
             catch (Exception ex) { tcs.SetResult(new { ok = false, error = ex.Message }); }
         });
@@ -16006,7 +16326,14 @@ public class ModEntry : Mod
         //    放行 → 选址能贴近闪光点(藏水中岸偏远)"站水上淘"，淘完回原位(见 _pan_run/_crab_place)。
         //    ⚠️ /walk_to 内部走 FindPath/BfsTo/落点验证，全都调本函数——靠 _walkAllowWater(HandleWalkTo 读请求设置)
         //    一次放行整条走位链，不用改 FindPath 签名。
-        if (!allowWater && !_walkAllowWater && location.isWaterTile(tile.X, tile.Y)) return false;
+        // 🔧 2026-08-30 恒：**必须认桥/可走过水面**。河流农场等地图把"跨水木桥"标成 isWaterTile=True 但
+        //    isTilePassable=True（玩家可站立走过），此前水排除把它们一刀切判不可走 → BFS 断在桥前、瞬移，
+        //    整个模组越不了河。修：**SDV 判可走的水格（mapPassable/isTilePassable=True）= 桥/浅滩，放行；
+        //    只有 SDV 都不让站的水（isTilePassable=False）= 真水，才排除**（此时上层 isTilePassable 已挡，
+        //    isWaterTile 只是双保险，不再误伤桥）。
+        if (!allowWater && !_walkAllowWater
+            && location.isWaterTile(tile.X, tile.Y)
+            && !location.isTilePassable(tileVec)) return false;
 
         // 🐄 2026-08-26 恒：牲畜是实心的，BFS 以前不认它 → 规划出踩到牛身上的路，
         //    人顶在动物上不动、walk_to 干等 20 秒超时，最后退化成满屋 position 乱传

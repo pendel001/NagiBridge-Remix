@@ -262,7 +262,7 @@ def _is_new_day(data: dict) -> bool:
     return False
 
 
-WELCOME_BANNER = "🌿 NagiBridge MCP 已就绪 · 基于原作者 小红书@里奈 的MCP适配+全面细化版本。 · 二改作者：恒（小红书@高冷 腿长 偷感重）"
+WELCOME_BANNER = "🌿 NagiBridge MCP 已就绪 · 基于原作者 小红书@里奈 的MCP适配+全面二改版本。 · 二改作者：恒（小红书@高冷 腿长 偷感重）"
 
 def _player_name() -> str:
     """当前被控制角色的名字（广播兜底用）。
@@ -518,6 +518,15 @@ def _menu_advice(menu_type: str, active_menu: dict, active_event: dict = None) -
         return "🎨 选效果菜单：menu click 选图标"
     if m == "specialordersboard":
         return "📋 任务板：menu read 看任务卡（名称/目标/奖励/期限/可接）→ menu click(button=acceptLeftQuestButton/acceptRightQuestButton) 点 accept 按钮接取（可靠UI路径，子目标会初始化；特殊订单同时只能接一个，别贪多）"
+    if m == "levelupmenu":
+        # 🧬 2026-08-30 恒：LevelUpMenu（升级/职业选择）。普通升级 auto-confirm 自会点OK；职业选择须 AI 决策。
+        lu = active_menu.get("levelUp") or {}
+        if lu.get("isProfessionChooser"):
+            off = lu.get("offered") or []
+            nm = " / ".join(f"{o.get('name')}({o.get('id')})" for o in off)
+            return (f"🔀 升级选职业(Skill {lu.get('skillName')} Lv{lu.get('level')})：{nm}。"
+                    f"→ 先 /profile 想清楚走哪条线，再 **menu ops=levelup_choose side=left/right**(或 profession=职业id) 定夺")
+        return f"🎉 升级到 {lu.get('skillName') or '?'} Lv{lu.get('level')}——普通升级已自动点OK"
     return ""
 
 
@@ -2520,6 +2529,83 @@ def _map_query_keywords(q: str):
     return kws
 
 
+# 🗺️ 场景名中文别名（2026-08-30 恒：map_go 的 MAP_LINKS 键是英文，AI 想的是中文场景名——
+#    "go 铁路" 报"知识库没有"。加这张表：destination 先查中文别名→认成 MAP_LINKS 键。
+#    ⚠️ 选近口已由 _map_bfs 天然正确(自动挑最少段数入口)，这里只补"名字认不出"。
+#    键=中文场景名(可含多个 alias)，值=MAP_LINKS 键；只收录"AI 会当作场景整体去"的地点名空间。）
+SCENE_NAME_ALIAS = {
+    # 主城区/农场
+    "农场": "Farm", "农庄": "Farm",
+    "巴士站": "BusStop", "车站": "BusStop",
+    "深山": "Backwoods", "林间小径": "Backwoods", "边远森林": "Backwoods",
+    "镇": "Town", "小镇": "Town", "鹈鹕镇": "Town",
+    "山": "Mountain", "山岭": "Mountain", "矿山": "Mountain",
+    "森林": "Forest",
+    "海滩": "Beach", "海边": "Beach",
+    "铁路": "Railroad", "火车站": "Railroad",
+    "沙漠": "Desert", "巴士沙漠": "Desert",
+    "山顶": "Summit",
+    "隧道": "Tunnel",
+    # 矿/冒险
+    "矿井": "Mine", "矿洞": "Mine", "下矿": "Mine",
+    "头骨矿洞": "SkullCave", "头骨洞穴": "SkullCave",
+    "下水道": "Sewer",
+    "秘密森林": "Woods", "硬木森林": "Woods",
+    "探险家公会": "AdventureGuild", "怪物公会": "AdventureGuild",
+    "精通山洞": "MasteryCave",
+    # 商业/服务
+    "皮埃尔": "SeedShop", "种子商店": "SeedShop", "商店": "SeedShop",
+    "医院": "Hospital", "诊所": "Hospital",
+    "餐吧": "Saloon", "酒吧": "Saloon", "星之果实": "Saloon",
+    "铁匠": "Blacksmith", "铁匠铺": "Blacksmith",
+    "博物馆": "ArchaeologyHouse", "图书馆": "ArchaeologyHouse",
+    "电影院": "MovieTheater",
+    "木匠": "ScienceHouse", "木匠店": "ScienceHouse", "罗宾": "ScienceHouse",
+    "鱼店": "FishShop", "威利": "FishShop",
+    "玛妮": "AnimalShop", "牧场": "AnimalShop",
+    "桑迪": "SandyHouse", "绿洲": "SandyHouse",
+    "赌场": "Club",
+    # 魔法/女巫区
+    "法师塔": "WizardHouse", "巫师塔": "WizardHouse", "法师家": "WizardHouse",
+    "法师地下室": "WizardHouseBasement", "幻觉神龛地下室": "WizardHouseBasement",
+    "女巫沼泽": "WitchSwamp", "沼泽": "WitchSwamp",
+    "女巫小屋": "WitchHut", "巫师小屋": "WitchHut",
+    "魔女沼泽洞穴": "WitchWarpCave", "黑暗护身符洞穴": "WitchWarpCave",
+    "温泉": "BathHouse_Entry", "浴场": "BathHouse_Entry",
+    # 姜岛
+    "姜岛": "IslandSouth", "岛": "IslandSouth",
+    "姜岛农场": "IslandWest",
+    "火山": "IslandNorth", "火山入口": "VolcanoEntrance",
+}
+
+
+def _resolve_scene_name(name):
+    """把中文/别名目的地认成 MAP_LINKS 场景键（模糊匹配）。
+    精确命中→返回场景键；找不到→返回原值(交给既有逻辑走 POI/建筑兜底)。
+    选近口不在这做——_map_bfs 会挑最少段数入口。"""
+    if not name:
+        return name
+    s = str(name).strip()
+    # 1. 本来就是 MAP_LINKS 键(英文) → 直接用
+    if s in locations.MAP_LINKS:
+        return s
+    # 2. 精确命中别名
+    if s in SCENE_NAME_ALIAS:
+        return SCENE_NAME_ALIAS[s]
+    # 3. 子串模糊：dest 含某别名 或 某别名含 dest(如 "去铁路"/"铁路(站台)")
+    #    ——优先更长匹配，别被单字"山/镇/岛"误伤(用 is 子串的双向 + 长度降序)
+    best = None
+    for alias, key in SCENE_NAME_ALIAS.items():
+        if len(alias) < 2:
+            continue
+        if alias in s or s in alias:
+            if best is None or len(alias) > len(best[0]):
+                best = (alias, key)
+    if best:
+        return best[1]
+    return s
+
+
 @mcp.tool()
 def map_query(function: str) -> str:
     """🗺️ 按功能/目的反查地点（"想买种子去哪" → 皮埃尔商店）
@@ -2717,118 +2803,108 @@ def _ticket_travel(frm: str, nxt: str, tkt: dict) -> bool:
         return False
 
 
-# ⚠️ 2026-08-16 恒拍板：每档房屋出口坐标固定，按室内尺寸识别档位匹配（比按名字可靠）。
-# 尺寸来自 /state location.mapWidth/mapHeight（同一名字如 FarmHouse 可能多档尺寸，尺寸才唯一）。
-# 已验证（实测，恒配合）：
-#   12x12 基础小屋 → 门 warp(3,12)→Farm(20,32)，玩家站门前 (3,11)（旧硬编码 position(3,12) 是踩门瓦片有挂起风险）
-#   30x12 中级农舍(扩厨房) → 门 warp(9,12)→Farm(64,15)，玩家站门前 (9,11)
-#   70x46 豪华大屋 → 门 warp(27,31)→Farm(55,13)，玩家站门前 (27,30)
-# 其他档位待开档实测后补表。
-INTERIOR_EXIT_APPROACH = {
-    (12, 12): (3, 11),
-    (30, 12): (9, 11),
-    (70, 46): (27, 30),
-}
+# ℹ️ INTERIOR_EXIT_APPROACH 固定表已于 2026-08-30 删除——_exit_farm_building 改读 /map 原生 warp 瓦片，
+#    任何室内建筑/任意档位通用，不再按尺寸查表。
 
 
 def _exit_farm_building(frm: str, nxt: str) -> bool:
     """室内(农场建筑: 小屋/农舍/洞穴/温室等)→室外。
-    ⚠️ 2026-08-16 卡死复盘定案：**别用 walk_to（豪华小屋家具密，BFS 会瞬移到家具里），
-    别踩门 warp 瓦片（会触发传送但挂起=黑屏+「正在加载」+硬崩）**。
-    安全路径 = position 到门前可走格（固定 approach）→ 显式 warp 出门。
-    approach 优先按房屋档位(室内尺寸)匹配固定表（INTERIOR_EXIT_APPROACH），
-    否则 /map 门瓦片上方一格，再探 passable。"""
+    ✍️ 2026-08-30 恒改：**以 /map 读到的室内真实出口 warp 瓦片为核心**，不再依赖 /farm_buildings 的
+    indoorsName 匹配——那套名字体系跟 /state 报的室内名对不上（室内名="FarmHouse"/"Cabin"，而
+    /farm_buildings 里主屋 indoorsName=None、小屋 indoorsName="Cabin"），导致 out_door 匹配失败、
+    掉进 ARRIVE 兜底瞬移（= 从床上瞬移到农场上口/河边）。
+
+    新流程（与固定地图 _walk_trigger_warp 同一套衔接）：
+      1. /map 读室内通往 nxt 的 warp 瓦片 (wx,wy) + 落点 (tx,ty)（游戏原生定义）
+      2. walk_to 走到瓦片旁一格（自然走路到门口）
+      3. /warp 到 (tx,ty) 出门（外部落点，地图框架通用）
+    任何室内建筑通用，名字对不上也能正确出门。"""
     try:
-        bs = _buildings()
-        out_door = None
-        for b in bs:
-            if (b.get("indoorsName") or "") == frm and "doorX" in b:
-                out_door = (int(b["doorX"]), int(b["doorY"]))
-                break
-        # approach 候选：按档位(室内尺寸)查固定表 → /map 门上方 → 门四邻 passable 探测
-        approach = None
+        # ⚠️ /map 读的是**当前**室内进程的 warp（player.currentLocation），不是跨图读——
+        #    本函数只在"人在室内、要出去"时调用，故直接读当前图即可。
+        wx = wy = tx = ty = None
         try:
-            loc = api.state().get("location", {})
-            size = (loc.get("mapWidth"), loc.get("mapHeight"))
-            approach = INTERIOR_EXIT_APPROACH.get(size)
+            m = api._get('/map')
+            for w in (m.get('warps') or []):
+                if w.get('targetLocation') == nxt:
+                    wx, wy = w['x'], w['y']
+                    tx, ty = w.get('targetX'), w.get('targetY')
+                    break
         except Exception:
             pass
-        door_tile = None
-        if approach is None:
+        if wx is None or tx is None:
+            return False  # 室内没有通往 nxt 的原生 warp → 交给调用方处理
+
+        # 门前可走格：挑「离玩家最近」的门瓦片邻格。
+        # ⚠️ 2026-08-30 恒：原按 (0,1)=下 优先，会把玩家领到门的对面/更外侧，走路必穿过门瓦片
+        #   (= 穿墙一两步)。改挑"离玩家最近的可走邻格" → 玩家在门哪一侧就停哪一侧门口站定 → /warp，
+        #   不穿门/墙折返。若玩家根本不在邻格(远在房间另一侧)，最近邻格也即其同侧那格，自然走过去再跳。
+        px = api.state().get("player", {}).get("x", 0)
+        py = api.state().get("player", {}).get("y", 0)
+        approach = None
+        best = None
+        for dx, dy in ((0, 1), (0, -1), (-1, 0), (1, 0)):
+            cand = (wx + dx, wy + dy)
             try:
-                m = api._get('/map')
-                for w in (m.get('warps') or []):
-                    if w.get('targetLocation') == nxt:
-                        door_tile = (w['x'], w['y'])
-                        approach = (door_tile[0], door_tile[1] - 1)  # 门上方一格
-                        break
+                if api._post('/passable', {'x': cand[0], 'y': cand[1]}).get('passable'):
+                    score = abs(cand[0] - px) + abs(cand[1] - py)
+                    if best is None or score < best:
+                        approach, best = cand, score
             except Exception:
                 pass
-        # 验证 approach 可走；不可走则探门四邻
-        if approach is not None:
+        # walk_to 走到门前可走格（自然走路；BFS 失败则内部退化为临近可站落点，不飞墙外）
+        if approach:
             try:
-                if api._post('/passable', {'x': approach[0], 'y': approach[1]}).get('passable') is False:
-                    approach = None
+                api._post("/walk_to", {"location": frm, "x": approach[0], "y": approach[1]})
+                _wait_arrival(frm, approach[0], approach[1], timeout=20)
             except Exception:
-                approach = None
-        if approach is None and door_tile is not None:
-            for dx, dy in ((0, -1), (0, 1), (-1, 0), (1, 0)):
-                cand = (door_tile[0] + dx, door_tile[1] + dy)
-                try:
-                    if api._post('/passable', {'x': cand[0], 'y': cand[1]}).get('passable'):
-                        approach = cand
-                        break
-                except Exception:
-                    pass
-        if out_door:
-            # 站到 approach（或兜底 (3,12)）→ warp 出门
-            if approach:
-                try:
-                    api.position(approach[0], approach[1])
-                    time.sleep(0.6)
-                except Exception:
-                    pass
-            else:
-                try:
-                    api.position(3, 12)
-                    time.sleep(0.6)
-                except Exception:
-                    pass
-            api.warp(nxt, out_door[0], out_door[1])
-            time.sleep(1.5)
-            return api.state().get("location", {}).get("name", "") == nxt
-        # 兜底：warp 到目标默认入口
-        ar = locations.ARRIVE.get(nxt)
-        if ar:
-            api.warp(nxt, ar[0], ar[1])
-            time.sleep(1.5)
-            return api.state().get("location", {}).get("name", "") == nxt
+                pass
+        # 面向门（warp 瓦片方向）再显式 /warp 出门（落点用游戏原生 targetX/targetY）
+        try:
+            face = 2  # 默认朝下；按 approach 相对门瓦片方向推断更准
+            if approach and wx is not None and wy is not None:
+                if approach[1] < wy: face = 2   # 站在门上方 → 脸朝下(进门方向)
+                elif approach[1] > wy: face = 0 # 站在门下方 → 脸朝上
+                elif approach[0] < wx: face = 1 # 站门左 → 脸朝右
+                elif approach[0] > wx: face = 3 # 站门右 → 脸朝左
+            api._post("/face", {"direction": face})
+        except Exception:
+            pass
+        api.warp(nxt, tx, ty)
+        time.sleep(1.5)
+        return api.state().get("location", {}).get("name", "") == nxt
     except Exception:
         pass
     return False
 
 
-def _walk_trigger_warp(frm: str, nxt: str, ex: int, ey: int, wx: int, wy: int) -> bool:
+def _walk_trigger_warp(frm: str, nxt: str, ex: int, ey: int, wx: int, wy: int, exact: bool = False) -> bool:
     """可靠版传送（恒 2026-08-13 拍板）：走到出口"前一格"（可达自然走）→ 确认人到 → /warp。
     ⚠️ 实测：walk_to 到 warp 瓦片本身(53,110)或往中心偏移(52,109)会 position 瞬移；
        只有到"边缘法线往内 1 格"(53,109)才自然走。别踩 warp 瓦片（/warp 会锁）。
+    ✍️ 2026-08-30 恒：exact=True 时按调用方标的 (ex,ey) **直接走**（不做过往退格换算）——
+       locations.MAP_LINKS 现在把出口 tile 标成**地图内可达格**（如 Farm→Backwoods (40,1)），
+       走到那一格站定再 /warp 跳，避免"出口在地图外(y=-1)边界换算"把 AI 引到错格/瞬移。
     返回是否已到达 nxt。"""
     locinfo = api.state().get("location", {})
     mw = locinfo.get("mapWidth", 80)
     mh = locinfo.get("mapHeight", 65)
-    # 出口"前一格" = 沿边缘法线往地图内退 1 格（保证可达 + 非 warp 瓦片）
-    if ey >= mh - 2:
-        bx, by = ex, ey - 1       # 下边缘 → 上方一格
-    elif ey <= 1:
-        bx, by = ex, ey + 1       # 上边缘 → 下方一格
-    elif ex >= mw - 2:
-        bx, by = ex - 1, ey       # 右边缘 → 左方一格
-    elif ex <= 1:
-        bx, by = ex + 1, ey       # 左边缘 → 右方一格
+    if exact:
+        bx, by = ex, ey
     else:
-        # 地图内 warp（如 BusStop 44,22 去 Town）：往地图中心退一格
-        bx = min(max(ex + (1 if ex < mw // 2 else -1), 0), mw - 1)
-        by = min(max(ey + (1 if ey < mh // 2 else -1), 0), mh - 1)
+        # 出口"前一格" = 沿边缘法线往地图内退 1 格（保证可达 + 非 warp 瓦片）
+        if ey >= mh - 2:
+            bx, by = ex, ey - 1       # 下边缘 → 上方一格
+        elif ey <= 1:
+            bx, by = ex, ey + 1       # 上边缘 → 下方一格
+        elif ex >= mw - 2:
+            bx, by = ex - 1, ey       # 右边缘 → 左方一格
+        elif ex <= 1:
+            bx, by = ex + 1, ey       # 左边缘 → 右方一格
+        else:
+            # 地图内 warp（如 BusStop 44,22 去 Town）：往地图中心退一格
+            bx = min(max(ex + (1 if ex < mw // 2 else -1), 0), mw - 1)
+            by = min(max(ey + (1 if ey < mh // 2 else -1), 0), mh - 1)
     # 0. 等角色完全停下（⚠️ 全程跑时刚 /warp 到达还在移动，walk_to 会失败→瞬移兜底。恒 2026-08-13）
     for _ in range(20):
         st = api.state()
@@ -2870,7 +2946,11 @@ def _walk_trigger_warp(frm: str, nxt: str, ex: int, ey: int, wx: int, wy: int) -
 
 
 def _map_bfs(from_loc: str, to_loc: str):
-    """在 MAP_LINKS 图上 BFS 找最短路径。返回 [(起点, 目标, link), ...] 或 None。"""
+    """在 MAP_LINKS 图上 BFS 找最短路径。返回 [(起点, 目标, link), ...] 或 None。
+    ⚠️ 2026-08-30 恒：from==to 时直接返回 []（空路径=原地不动）——不然 BFS 会找
+    Farm→BusStop→Farm 这种自环，把 AI 绕地图跑一圈（"出门第一步就乱走"根因）。"""
+    if from_loc == to_loc:
+        return []
     graph = {}
     for src, links in locations.MAP_LINKS.items():
         for l in links:
@@ -3421,12 +3501,16 @@ def _minecart_go(sname: str, stn, dest_station: str, dest: str) -> tuple:
 
 
 def _interior_to_farm(cur: str) -> bool:
-    """当前地图是否有通到 Farm 的链接（农场建筑室内：小屋/农舍/温室/洞穴…）。
-    map_go 第一步先走出室内进 Farm，好让图腾柱/矿车在 Farm 触发（2026-08-23 恒：从 Cabin 出发去赌场也要走柱子，别坐公交）。"""
+    """当前地图是否是「农场建筑室内」（小屋/农舍/温室/洞穴…），需先走出到 Farm。
+    map_go 第一步先走出室内进 Farm，好让图腾柱/矿车在 Farm 触发（2026-08-23 恒：从 Cabin 出发去赌场也要走柱子，别坐公交）。
+    ⚠️ 2026-08-30 恒：**只用「门式连接」(target==Farm 且 tile is None) 判定**——室内建筑(FarmHouse/Cabin/
+    Greenhouse/FarmCave) 走门连回 Farm，均 tile=None；而 Backwoods/Forest/BusStop 等紧邻农场的**室外图**
+    虽也连 Farm，但是**世界 warp 瓦片**(tile=(x,y))，不是室内，不许走这个"出屋"分支。
+    (旧版只判"有没有连 Farm"，把室外邻图也误判成室内 → 从深山回农场报"离开小屋"误导。)"""
     if cur == "Farm":
         return False
     for l in locations.MAP_LINKS.get(cur, []):
-        if l["target"] == "Farm":
+        if l["target"] == "Farm" and l.get("tile") is None:
             return True
     return False
 
@@ -3482,16 +3566,32 @@ def _map_go_walk(path, destination: str, dest: str, lead_log: str = "") -> str:
             return _with_state("\n".join(log) + f"\n⚠️ {tkt['note']} 到 {nxt} 失败")
         arrived = False
         if kind == "warp":
-            warps = _warps_to(nxt)
-            if not warps:
-                # ⚠️ 室内(农场建筑)→室外兜底（恒 2026-08-15：/warps 不报室内门）
-                if _exit_farm_building(frm, nxt):
-                    log[-1] += "（室内出口warp兜底）"
-                    continue
-                return _with_state("\n".join(log) + f"\n❌ /warps 没找到 {frm}→{nxt} 的出口")
-            ex, ey, wx, wy = warps[0]
+            # ✍️ 2026-08-30 恒：出口瓦片**优先用 MAP_LINKS 里我们自己标的 link['tile']**（必为边界内可达格，
+            #    见 locations.Farm→Backwoods 改用 (40,1)），落地用 link['arrive']；只有 link 没标时才回退
+            #    _warps_to(读 /warps 实时，可能报地图外负数出口如 (41,-1))。
+            #    ⚠️ 不用原生 warp 触发（不稳定），统一"walk_to 到出口站格 → /warp 跳"。
+            ltile = link.get("tile")
+            larive = link.get("arrive")
+            if ltile and ltile[0] >= 0 and ltile[1] >= 0:
+                ex, ey = ltile
+                if larive:
+                    wx, wy = larive
+                else:
+                    w = _warps_to(nxt)
+                    wx, wy = (w[0][2], w[0][3]) if w else (None, None)
+                use_exact = True   # 走我们标的边界内瓦片，不做边缘换算
+            else:
+                warps = _warps_to(nxt)
+                if not warps:
+                    # ⚠️ 室内(农场建筑)→室外兜底（恒 2026-08-15：/warps 不报室内门）
+                    if _exit_farm_building(frm, nxt):
+                        log[-1] += "（室内出口warp兜底）"
+                        continue
+                    return _with_state("\n".join(log) + f"\n❌ /warps 没找到 {frm}→{nxt} 的出口")
+                ex, ey, wx, wy = warps[0]
+                use_exact = False
             # 恒 2026-08-13 可靠版：走到出口可站位 → 确认人到 → /warp 下一图入口
-            arrived = _walk_trigger_warp(frm, nxt, ex, ey, wx, wy)
+            arrived = _walk_trigger_warp(frm, nxt, ex, ey, wx, wy, exact=use_exact)
             if not arrived:
                 _NAV_FAILED["v"] = True
                 return _with_state("\n".join(log) + f"\n⚠️ 到 {nxt} 失败")
@@ -3507,6 +3607,23 @@ def _map_go_walk(path, destination: str, dest: str, lead_log: str = "") -> str:
             if not ok:
                 _NAV_FAILED["v"] = True
                 return _with_state("\n".join(log) + f"\n⚠️ 进 {nxt} 失败")
+        elif kind == "portal":
+            # 🔮 传送阵/模拟出口 warp（2026-08-30 恒：女巫/法师区魔法传送，非原生 warp 瓦片）。
+            #    ⚠️ 恒拍板：传送阵要**精确站位**（像门 BUILDING_DOORS）——先 walk_to 到传送阵站格，
+            #       再 api.warp 跳过去。否则从远处瞬移、收尾 BFS 乱传。落地格优先 link['arrive'] > ARRIVE。
+            stand = link.get("stand")
+            if stand:
+                api._post("/walk_to", {"location": frm, "x": stand[0], "y": stand[1]})
+                _wait_arrival(frm, stand[0], stand[1], timeout=20)
+            ar = link.get("arrive") or locations.ARRIVE.get(nxt)
+            if ar:
+                api.warp(nxt, ar[0], ar[1])
+                time.sleep(1.5)
+                if api.state().get("location", {}).get("name", "") == nxt:
+                    log[-1] += f"（🔮传送阵前(stand {stand or '—'})warp→{nxt}({ar[0]},{ar[1]})）"
+                    continue
+            _NAV_FAILED["v"] = True
+            return _with_state("\n".join(log) + f"\n⚠️ 传送阵/模拟出口warp 到 {nxt} 失败（缺落地格或未达）")
         # ⚠️ 2026-08-16 恒：每段切图后检测剧情/对话（信件事件/节日等）——
         #    触发了就**停导航**，让 AI 处理（_with_state 自动走剧情），避免边移动边错位
         #    （之前 AI 接到信件以为去鱼店实际去海滩，路过海滩还在走→剧情错位）。
@@ -3557,10 +3674,12 @@ def map_go(destination: str) -> str:
         _NAV_LAST.update(_nr)
     _NAV_FAILED["v"] = False
     try:
-        # 0. 目标解析（POI → 地点名）
+        # 0. 目标解析（POI → 地点名；中文场景名→MAP_LINKS 键）
         dest = destination
         if destination in locations.POI:
             dest = locations.POI[destination]["map"]
+        else:
+            dest = _resolve_scene_name(destination)
         # 🎇 节日限定 POI 门禁（2026-08-19 恒：非节日期间 map_go/walk_to 隐藏）
         # 2026-08-23 恒：按门禁类型给针对性文案（石头/矮人语/日期/季节/订单），别一律报"只在节日"
         if destination in locations.POI and not _festival_poi_active(destination, locations.POI[destination]):
@@ -3614,9 +3733,14 @@ def map_go(destination: str) -> str:
         #      否则 _try_transport(要求 cur==Farm) 检不到图腾柱 → 白白坐公交。
         #      先出屋再让交通节点触发（图腾柱 > 矿车 > 走路）。
         if cur != "Farm" and _interior_to_farm(cur):
+            # ⚠️ 2026-08-30 恒：xlog 是 bool(出口成功与否)，非日志串。出屋后若目标就是
+            #   Farm → 直接返回已在农场；否则 BFS 对 Farm→Farm 会走自环绕地图(飞河边/绕圈)。
             xlog = _exit_farm_building(cur, "Farm")
-            if xlog:
-                cur = api.state().get("location", {}).get("name", "") or "Farm"
+            cur = api.state().get("location", {}).get("name", "") or "Farm"
+            if xlog and dest == "Farm":
+                return _with_state(f"🏡 已离开室内回到农场（{cur} {api.state().get('player',{}).get('x')},{api.state().get('player',{}).get('y')}）")
+            if not xlog:
+                return _with_state("⚠️ 走出室内到农场失败（可能被挡/在菜单里）")
         # 2.5 ⚠️ 2026-08-16 恒：图腾柱 > 矿车 > 走路（动态交通节点，玩家在对应位置才有）
         land, tlog = _try_transport(dest, cur)
         if land:
@@ -7631,10 +7755,11 @@ def _crab_cur_loc() -> str:
         return "Farm"
 
 
-def _crab_place(count: int = 5, radius: int = 15) -> str:
+def _crab_place(count: int = 5, radius: int = 15, bait: str = "Bait") -> str:
     """沿水边放蟹笼：找水边陆地 → 逐格选蟹笼走位朝水 /use 放置，放完换手持饵，回近水点岸边站定。
     ⚠️ 2026-08-29 恒改：**不要从老远 walk_to 再来、放完又飞回老远处**——只走到**最近的近水点**，
-    放蟹笼→放饵→**回近水点旁的岸格站定**。缺蟹笼/鱼饵直接报错。"""
+    放蟹笼→放饵→**回近水点旁的岸格站定**。缺蟹笼/鱼饵直接报错。
+    bait= 选鱼饵(默认普通鱼饵"Bait")；蟹笼能用:鱼饵/磁铁❌(那是钓具非饵)/野钓饵(774)/豪华鱼饵。"""
     loc = _crab_cur_loc()
     if not api.has_item("Crab Pot"):
         return "❌ 没有蟹笼(背包没有 Crab Pot)！先去买/造蟹笼再来"
@@ -7660,7 +7785,12 @@ def _crab_place(count: int = 5, radius: int = 15) -> str:
             time.sleep(0.3)
             # ✅ 2026-08-30 恒铁律：站格=纯陆地岸上格(不 allowWater)，走到岸上
             api._post("/walk_to", {"location": loc, "x": sx, "y": sy})
-            _wait_arrival(loc, sx, sy, timeout=15)
+            arrived = _wait_arrival(loc, sx, sy, timeout=15)
+            # ⛔ 2026-08-30 恒防搁浅：**必须真站上这格才放**——走位失败(被挡/到不了)就跳过，
+            #    绝不强放一个"旁边站不上人"的水潭笼，否则又变没人够得着的垃圾。
+            if not arrived:
+                log.append(f"  ⚠️ 岸格({sx},{sy})走不到,跳过 ({wx},{wy}) 不放(防搁浅)")
+                continue
             api._post("/face", {"direction": face})
             time.sleep(0.3)
             # ✅ 2026-08-30 恒铁律：/use 传 x,y 精准远程放指定水格，一次成功零试错(操控无视水格)
@@ -7676,9 +7806,9 @@ def _crab_place(count: int = 5, radius: int = 15) -> str:
         time.sleep(0.4)
     # 📍 放完**换手持放饵**——只针对实放成功的笼。挂饵站**笼旁原岸格 (sx,sy)**(不 allowWater)，面朝笼 interact。
     if placed:
-        if api.has_item("Bait"):
+        if api.has_item(bait):
             try:
-                api.select("Bait")
+                api.select(bait)
                 time.sleep(0.4)
                 for sx, sy, face, wx, wy in planted:
                     try:
@@ -7845,9 +7975,25 @@ def _crab_scan_placed() -> list:
         return []
 
 
-def _crab_bait() -> str:
-    """给已放置的蟹笼放饵（选 Bait → 逐个交互）。
-    ⚠️ 2026-08-16 实测：走位可能重置选中 → 每笼前重新 select Bait。"""
+def _crab_stand_for(wx: int, wy: int):
+    """🐟 找蟹笼 (wx,wy) 旁**纯陆地可站格**——任意朝向的岸都能站，不再写死"笼南边+朝北"。
+    _CRAB_FACE=上/下/右/左，站格非水(/passable 不 allowWater 排掉水格)、面朝笼。找不到返回 None。"""
+    for dx, dy, face in _CRAB_FACE:
+        sx, sy = wx + dx, wy + dy
+        try:
+            if api._post("/passable", {"x": sx, "y": sy}).get("passable"):
+                return (sx, sy, face)
+        except Exception:
+            continue
+    return None
+
+
+def _crab_bait(bait: str = "Bait") -> str:
+    """给已放置的蟹笼放饵（选 bait → 逐个交互）。
+    ⚠️ 2026-08-16 实测：走位可能重置选中 → 每笼前重新 select bait。
+    ⚠️ 2026-08-30 修：不再写死 (wx,wy+1)+朝北，用 _crab_stand_for 找真实岸格(任意朝向)。
+    走位超时也继续发 interact——/interact 是坐标定位(距离无关)，不必完美站格。
+    bait= 选鱼饵(默认普通鱼饵"Bait")；蟹笼只能用 Category -21 的饵(鱼饵/野钓饵/豪华鱼饵)。"""
     loc = _crab_cur_loc()
     pots = _crab_scan_placed()
     if not pots:
@@ -7855,25 +8001,36 @@ def _crab_bait() -> str:
     baited = 0
     log = [f"🦀 给 {len(pots)} 个蟹笼放饵:"]
     for wx, wy in pots:
+        st = _crab_stand_for(wx, wy)
+        if not st:
+            log.append(f"  ✗ ({wx},{wy}) 找不到旁侧可站岸格")
+            continue
+        sx, sy, face = st
         try:
-            api.select("Bait")
+            api.select(bait)
             time.sleep(0.4)
-            api._post("/walk_to", {"location": loc, "x": wx, "y": wy + 1})
-            _wait_arrival(loc, wx, wy + 1, timeout=15)
-            api._post("/face", {"direction": 0})
-            time.sleep(0.3)
-            api._post("/interact", {"x": wx, "y": wy})
-            baited += 1
-            log.append(f"  ✓ ({wx},{wy})")
+            # 走位尽力而为：超时/异常不中断，interact 按坐标仍能触发
+            try:
+                api._post("/walk_to", {"location": loc, "x": sx, "y": sy})
+                _wait_arrival(loc, sx, sy, timeout=15)
+                api._post("/face", {"direction": face})
+                time.sleep(0.3)
+            except Exception:
+                pass  # 站不好继续，interact 是坐标定位
+            r = api._post("/interact", {"x": wx, "y": wy})
+            ok = r.get("ok") and (r.get("actionTriggered") or r.get("crabPot"))
+            baited += 1 if ok else 0
+            log.append(f"  {('✓' if ok else '✗')} ({wx},{wy})" + ("" if ok else f" {r.get('error') or ''}"))
         except Exception as e:
             log.append(f"  ✗ ({wx},{wy}) {e}")
         time.sleep(0.4)
-    log.append("放完饵过夜就出货（蟹/贝壳/垃圾），早上 crab_pot collect 收")
+    log.append(f"🎣 成功挂饵 {baited}/{len(pots)}；过夜就出货(蟹/贝壳/垃圾)，早上 crab_pot collect 收")
     return "\n".join(log)
 
 
 def _crab_collect() -> str:
-    """收蟹笼产出（空手逐个交互；收了会出空笼，需要再放饵）。"""
+    """收蟹笼产出（空手逐个交互；收了会出空笼，需要再放饵）。
+    ⚠️ 2026-08-30 修：不再写死 (wx,wy+1)+朝北，用 _crab_stand_for 找真实岸格。"""
     loc = _crab_cur_loc()
     pots = _crab_scan_placed()
     if not pots:
@@ -7881,11 +8038,20 @@ def _crab_collect() -> str:
     got = 0
     log = [f"🦀 收 {len(pots)} 个蟹笼:"]
     for wx, wy in pots:
+        st = _crab_stand_for(wx, wy)
+        if not st:
+            log.append(f"  ✗ ({wx},{wy}) 找不到旁侧可站岸格")
+            continue
+        sx, sy, face = st
         try:
-            api._post("/walk_to", {"location": loc, "x": wx, "y": wy + 1})
-            _wait_arrival(loc, wx, wy + 1, timeout=15)
-            api._post("/face", {"direction": 0})
-            time.sleep(0.3)
+            # 走位尽力而为；interact 坐标定位，不依赖完美站格
+            try:
+                api._post("/walk_to", {"location": loc, "x": sx, "y": sy})
+                _wait_arrival(loc, sx, sy, timeout=15)
+                api._post("/face", {"direction": face})
+                time.sleep(0.3)
+            except Exception:
+                pass
             api._post("/interact", {"x": wx, "y": wy})
             got += 1
         except Exception as e:
@@ -7910,6 +8076,89 @@ def _crab_status() -> str:
         return "\n".join(lines)
     except Exception as e:
         return f"❌ {e}"
+
+
+def _crab_pots_scan(location: str = None) -> list:
+    """🦀 拉当前/指定图所有蟹笼的真实状态（/crab_pots 端点，需新 DLL）。"""
+    try:
+        params = {"location": location} if location else {}
+        r = api._get("/crab_pots", params)
+        return (r.get("pots") or []) if r.get("ok") else []
+    except Exception:
+        return []
+
+
+def _crab_diag(location: str = None) -> str:
+    """🦀 蟹笼诊断（2026-08-30 恒：定位"放得进却挂不了饵"）——逐笼报真实类型+位置合法性+挂饵/产出状态。
+    看 isCrabPotInstance(真 CrabPot 实例?) / tileIsWater+flankedWater(在不在合法鱼水) /
+    bait(空/已挂)+readyForHarvest(出没出货)。wouldAcceptNewPot 仅参考：笼占据该格时恒 false。"""
+    pots = _crab_pots_scan(location)
+    if not pots:
+        return "❌ 当前图没扫到蟹笼（location 可指定其它图；需新 DLL /crab_pots）"
+    loc_name = location or _crab_cur_loc()
+    lines = [f"🦀 {loc_name} 蟹笼 {len(pots)} 只:"]
+    bad = 0
+    for p in pots:
+        flag = []
+        if not p.get("isCrabPotInstance"):
+            flag.append("非CrabPot实例(普通Object710?)")
+        if not p.get("tileIsWater"):
+            flag.append("不在水格!")
+        if not p.get("flankedWater"):
+            flag.append("非宽水域!")
+        bait = p.get("bait")
+        ready = p.get("readyForHarvest")
+        if bait:
+            state = f"已挂饵[{bait}]"
+            if not ready:
+                state += "未出货"
+                flag.append("挂饵未出货")
+        elif ready:
+            state = "已出货"
+        else:
+            state = "空笼未挂饵"
+        mark = " ⚠️" + "/".join(flag) if flag else ""
+        lines.append(f"  ({p['x']},{p['y']}) 真笼={p.get('isCrabPotInstance')} 水={p.get('tileIsWater')} 宽水={p.get('flankedWater')} {state}{mark}")
+        if flag:
+            bad += 1
+    if bad:
+        lines.append(f"⚠️ {bad}/{len(pots)} 只有异常（上面带 ⚠️ 的）。修法见诊断结论")
+    else:
+        lines.append("✅ 类型/位置都正常——问题大概率在『挂饵状态』(bait 非空未 ready)或 AI 站格，配 crab_bait 修复")
+    return "\n".join(lines)
+
+
+def _crab_retract(x=None, y=None, location=None) -> str:
+    """🦀 回收蟹笼（2026-08-30 恒：搁浅笼出路，无论继续用/退役都要）——把已放蟹笼确定性收回背包。
+    x,y 给了=收这1只；不给=扫当前图全部（location 可跨图指定想收的图）。收产+笼本体，满包走菜单不丢。"""
+    pots = []
+    if x is not None and y is not None:
+        pots = [{"x": int(x), "y": int(y)}]
+    else:
+        pots = _crab_pots_scan(location)
+    if not pots:
+        return "❌ 没给坐标，当前图也没扫到蟹笼"
+    params_base = {"location": location} if location else {}
+    ok = 0
+    log = [f"🦀 回收 {len(pots)} 只蟹笼:"]
+    for p in pots:
+        try:
+            body = {"x": p["x"], "y": p["y"]}
+            body.update(params_base)
+            r = api._post("/crab_retract", body)
+            if r.get("ok"):
+                ok += 1
+                note = ""
+                if r.get("outputCollected"): note += " 收产出"
+                if not r.get("returnedToInventory"): note += " 满包走菜单"
+                log.append(f"  ✓ ({p['x']},{p['y']}) 已收回{note}")
+            else:
+                log.append(f"  ✗ ({p['x']},{p['y']}) {r.get('error') or ''}")
+        except Exception as e:
+            log.append(f"  ✗ ({p['x']},{p['y']}) {e}")
+        time.sleep(0.4)
+    log.append(f"📦 成功 {ok}/{len(pots)}；背包多了 {ok} 只蟹笼（若满包走菜单领）")
+    return "\n".join(log)
 
 
 @mcp.tool()
@@ -7945,7 +8194,9 @@ def fish(ops: str = "", **kw) -> str:
     """🎣 钓鱼域（蟹笼并入 2026-08-16）。ops:
     go(去钓 location=) info(查某地鱼 location) spots(钓点知识) bobber(浮漂样式 style)
     rod(鱼竿:show看状态/bait上饵 item=名/tackle上钓具/clear摘) crab(蟹笼概览) crab_water(找水)
-    crab_place(放笼) crab_bait(放饵) crab_collect(收笼)。细节→help(fish)。
+    crab_place(放笼) crab_bait(放饵) crab_collect(收笼) crab_diag(诊断笼/定位挂饵问题)
+    crab_retract(回收笼/清搁浅 location=可选)。细节→help(fish)。
+    蟹笼挂饵可用 bait= 选(默认"Bait"普通鱼饵): 鱼饵/野钓饵/豪华鱼饵(须 Category -21,磁铁是钓具不能放笼)。
     ⚠️鱼塘在 farm 域不在 fish。
     Args:
         ops: 操作序列
@@ -7963,6 +8214,8 @@ def fish(ops: str = "", **kw) -> str:
         "crab_place": _crab_place, "放笼": _crab_place,
         "crab_bait": _crab_bait, "放饵": _crab_bait,
         "crab_collect": _crab_collect, "收笼": _crab_collect,
+        "crab_diag": _crab_diag, "诊断笼": _crab_diag,
+        "crab_retract": _crab_retract, "回收笼": _crab_retract,
     }
     return _with_state(_ops_run(ops, dispatch, kw))
 
@@ -8128,6 +8381,7 @@ def menu(ops: str = "", **kw) -> str:
     click(option/item/button/xy) key(confirm/esc/数字按键) cancel(关) shop(逛店 place,want) sell(卖) bin(出货箱)
     cook(做饭) craft(合成) recipes(菜谱) craftables(配方) forge(锻造) geode/geodes(砸晶球) customize(捏人)
     bundle(献祭板) bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读消耗品:书/秘密纸条/日记残页 name=物品名)
+    levelup_choose(技能升级职业选择 5/10级:不带参读左右选项,side=left/right 或 profession=职业id 定分支)  —— 🧬 2026-08-30
     claim(领取/接鱼满包:item=名 或 slot=序号 领指定格;先 click action=discard 丢桶腾格)  —— 🚫 原 claim_swap(替换领取)已退役,改用丢桶+领
     minigame(赌场小游戏点按钮 action=hit/stand/bet10/…) minigame_state(读牌面/转盘)。细节→help(menu)。
     ⚠️ buy 直购已退役(走真实商店)；read_mail 已退役(邮箱用 /state.mailbox+交互)；claim_swap 替换领取已退役(2026-08-28 恒:改 垃圾桶丢弃 action=discard + 领用 action=claim/slot,或不想要直接 button=ok)。
@@ -8160,6 +8414,9 @@ def menu(ops: str = "", **kw) -> str:
         "bundle_kb": bundle_kb, "献祭知识": bundle_kb, "知识库": bundle_kb,
         "donate": museum_donate, "捐": museum_donate, "捐赠": museum_donate,
         "read_book": read_book, "读书": read_book, "读物品": read_book, "读纸条": read_book, "读技能书": read_book,
+        # 🧬 2026-08-30 恒：技能升级职业选择(5/10级)——LevelUpMenu.receiveLeftClick 空，/menu click 点不动，
+        #    只能走专用 op（镜像 vanilla 公共API）。不带参读选项，side/profession 定分支。
+        "levelup_choose": _menu_levelup_choose, "选职业": _menu_levelup_choose, "分支": _menu_levelup_choose, "职业选": _menu_levelup_choose,
         # 🎁🎰 2026-08-26 恒：这三个原本没有任何域 op 可达（domain_selftest 报"功能断档"），
         #    而注入的引导文案却在指挥 AI 直接调 menu_claim_swap/minigame_click——
         #    域模式下这些顶层工具已被隐藏 → AI 照提示调一个不存在的工具，当场卡死。
@@ -10618,7 +10875,7 @@ _DOMAIN_GUIDES = {
 "cabin": "小屋引导域(🏠 FarmHouse/Cabin/岛屋；不传=扫屋)：enum(扫屋查待收) collect(收机器) statue(雕像) furniture(扫家具) interact(点家具) pickup(拿起家具) sleep(睡觉)。",
 "social": "社交域：chat(跟NPC搭话) gift(送礼提好感) give(送玩家物品) send(发消息) emote(表情) friendship(查好感) movie(影院知识) snack(零食)。",
 "scene": "场景交互域(点东西/工具/转身/捡)：at(x,y)(点指定格/柜台) interact(点面前) use(挥工具) face(转向0上1右2下3左) select(拿手上) pickup(拿起家具) pickup_scene(捡当前场景物) berry(摇浆果) spot(挖蚯蚓点) moss(绿雨搜苔藓) rock(室外镐击:敲当前图可破物,采石场/挖掘场/蚌矿场跳普通石,dig/dry,battle-free) garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物) furniture(扫家具) maze(迷宫视图r半径,gx/gy目标格→ASCII棋盘#墙.可走P自己G目标) maze_seg(走法链gx,gy目标→拆直走廊列表+拼「左/右上/下走到(x,y)」多段链,AI按段walk_to)。",
-"menu": "菜单/界面域(开→看→点)：read(看菜单) advance(推进剧情/对话) click(option/item/button/xy 点;action=claim领/action=discard丢桶腾格;slot=序号领指定格) key(ok/esc/数字按键) cancel(关弹窗/撤就绪) shop(逛店) sell(卖商店) bin(投出货箱) cook(做饭) craft(合成) recipes(菜谱) craftables(配方) forge(锻造) geode/geodes(砸晶球) customize(捏人) bundle(献祭板) bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读消耗品:书/秘密纸条/日记残页,统一走右键读 name=物品名)。🚫满包接鱼/领箱:原 claim_swap(替换领取)已退役→**click action=discard 丢桶腾格(回收返金)+action=claim 领取(或用 slot 领指定格;不想要直接 button=ok 关掉)**。🧾关闭菜单一律 click(button=upperRightCloseButton)（ItemGrabMenu/交付容器用 button=ok 确认才关）；订单交付容器(QuestContainerMenu)=点背包对应物品格(见slots的坐标)→放进→点 button=ok 结算；任务日志领钱=点击已完成的有钱任务卡后 click(button=rewardBox)；兑奖机兑换=click(button=mainButton)；特别订单领奖链=日志领钱(上面)→社区板旁领奖箱(60,93)拿兑奖券→刘易斯家兑奖机(mainButton)兑换。",
+"menu": "菜单/界面域(开→看→点)：read(看菜单) advance(推进剧情/对话) click(option/item/button/xy 点;action=claim领/action=discard丢桶腾格;slot=序号领指定格) key(ok/esc/数字按键) cancel(关弹窗/撤就绪) shop(逛店) sell(卖商店) bin(投出货箱) cook(做饭) craft(合成) recipes(菜谱) craftables(配方) forge(锻造) geode/geodes(砸晶球) customize(捏人) bundle(献祭板) bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读消耗品:书/秘密纸条/日记残页,统一走右键读 name=物品名) levelup_choose(技能升级职业选择 5/10级:不带参读左右选项,side=left/right 或 profession=职业id 定分支;普通升级自会确认OK)。🚫满包接鱼/领箱:原 claim_swap(替换领取)已退役→**click action=discard 丢桶腾格(回收返金)+action=claim 领取(或用 slot 领指定格;不想要直接 button=ok 关掉)**。🧾关闭菜单一律 click(button=upperRightCloseButton)（ItemGrabMenu/交付容器用 button=ok 确认才关）；订单交付容器(QuestContainerMenu)=点背包对应物品格(见slots的坐标)→放进→点 button=ok 结算；任务日志领钱=点击已完成的有钱任务卡后 click(button=rewardBox)；兑奖机兑换=click(button=mainButton)；特别订单领奖链=日志领钱(上面)→社区板旁领奖箱(60,93)拿兑奖券→刘易斯家兑奖机(mainButton)兑换。",
 "quest": "任务域：list(全部) progress(进度)；接单走板上的 menu click(button=accept…)。",
 "storage": "箱子域：scan(扫当前图箱) store(存) take(取) smart(智能堆叠) layout(箱子网络) default/cleardefault/tag(默认箱/清/标记)。",
 "daily": "过日子域：sleep(睡觉) settle(确认过夜结算) eat(吃食物回血体力) wear(穿/脱衣物) lie_bed(躺床不过夜) heartbeat(心跳间隔) pause(后台不暂停) peek(看恒干嘛) whiteboard/wb_read/wb_pin/wb_clear(白板记忆) appearance(捏脸)。",
@@ -12046,6 +12303,42 @@ def _menu_display_takeback() -> str:
         return _with_state(f"🏆 收好: {back} 件物品已取回背包{note}")
     except Exception as e:
         return _with_state(f"❌ 收好失败: {e}")
+
+
+def _menu_levelup_choose(side: str = "", profession: int = -1) -> str:
+    """🧬 技能升级职业选择(5/10级)：确定选哪个分支。
+    不带参调用 → 只读当前 LevelUpMenu 给的左右选项（供 AI 配 /profile 分析后决定）。
+    例：menu ops=levelup_choose side=left / side=right / profession=8
+    """
+    try:
+        _ensure_background()
+        am = api.state().get("activeMenu") or {}
+        if am.get("type") != "LevelUpMenu":
+            return _with_state("⚠️ 当前没有技能升级菜单(LevelUpMenu)在开着")
+        lu = am.get("levelUp") or {}
+        off = lu.get("offered") or []
+        if side == "" and profession < 0:
+            # 只读：把左右选项亮出来让 AI 决策
+            if not lu.get("isProfessionChooser"):
+                return _with_state(f"🎉 升级到 {lu.get('skillName') or '?'} Lv{lu.get('level')}——普通升级自会确认OK，不用选分支")
+            if len(off) < 2:
+                return _with_state("🔀 职业选项还没就绪，稍等再试")
+            return _with_state(
+                f"🔀 选职业(Skill {lu.get('skillName')} Lv{lu.get('level')}): 左={off[0].get('name')}({off[0].get('id')}) 右={off[1].get('name')}({off[1].get('id')})。"
+                f"想清楚后 → menu ops=levelup_choose side=left/right（或 profession={off[0].get('id')}/{off[1].get('id')}）")
+        body = {}
+        if profession >= 0:
+            body["profession"] = int(profession)
+        elif side in ("left", "right"):
+            body["side"] = side
+        else:
+            return _with_state("⚠️ 用 side=left/right 或 profession=职业id（先看 menu ops=levelup_choose 不带参读选项）")
+        r = api._post("/levelup_choose", body)
+        if r.get("ok"):
+            return _with_state(f"✅ 已选职业分支: {r.get('name')} (id {r.get('chosen')})")
+        return _with_state(f"⚠️ {r.get('error') or '选职业失败'}")
+    except Exception as e:
+        return _with_state(f"❌ 选职业失败: {e}")
 
 
 @mcp.tool()
@@ -13624,6 +13917,48 @@ def _autopilot_loop():
 
 
 # ═══════════════════════════════════════════
+#  🧬 自我介绍（技能等级 + 职业分支）2026-08-30 恒：让 AI 看自己
+# ═══════════════════════════════════════════
+# 职业名不硬编(版本易变)；只在关键 ID 上标注，其余诚实回退"分支#id"。
+# 11=Luremaster(名不虚传·蟹笼免饵) 已由游戏 CrabPot.NeedsBait 的 Contains(11)+轮回实测确认；
+# 10=Mariner(无垃圾·蟹笼不出垃圾) 由 CrabPot.DayUpdate 的 Contains(10) 判 junk_ratio=0 推断。
+_PROF_NAMES = {
+    10: "Mariner(捕鱼达人·蟹笼不出垃圾)",
+    11: "Luremaster(名不虚传·蟹笼免饵)",
+}
+
+
+@mcp.tool()
+def profile() -> str:
+    """🧬 查看自己(当前角色)的技能等级 + 职业分支(professions)。
+    用来看:是不是 Luremaster(蟹笼免饵→放/挂饵是空操作)、各技能等级、学了哪些分支。
+    ops: profile(查看)。"""
+    try:
+        r = api._get("/profile")
+        if not r.get("ok"):
+            return f"❌ {r.get('error', '读取失败')}"
+        name = r.get("name") or "?"
+        sk = r.get("skills") or {}
+        lines = [
+            f"🧬 {name} 技能等级:",
+            f"  农{sk.get('farming')} | 渔{sk.get('fishing')} | 采集{sk.get('foraging')} | 矿{sk.get('mining')} | 战{sk.get('combat')}",
+        ]
+        profs = r.get("professions") or []
+        if profs:
+            parts = [_PROF_NAMES.get(i, f"分支#{i}") for i in profs]
+            lines.append(f"  🎓 职业分支: {', '.join(parts)}")
+            if 11 in profs:
+                lines.append("⚠️ 你是 Luremaster —— 蟹笼免饵出货,`crab_bait/crab_place` 挂饵是空操作,不用补饵。")
+            if 10 in profs:
+                lines.append("💡 你是 Mariner —— 蟹笼不出垃圾(全是鱼)。")
+        else:
+            lines.append("  🎓 职业分支: 无(还在升级/Mastery?)")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"❌ profile: {e}"
+
+
+# ═══════════════════════════════════════════
 #  启动入口
 # ═══════════════════════════════════════════
 
@@ -13644,6 +13979,7 @@ _KEEP_TOOLS = {
     "advance_story", "which_role", "run_script", "script_start", "script_status", "script_stop",
     "session_status", "session_set", "session_export", "async_config",
     "screenshot", "help",
+    "profile",  # 🧬 2026-08-30 恒：看自己技能等级+职业分支(尤其蟹笼 Luremaster)——独立感知工具，一直可见
 }
 
 

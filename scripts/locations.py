@@ -94,22 +94,18 @@ ROUTES = [
 # AI 根据"想干什么"查这个表，找到目的地的坐标
 POI = {
     # ── 农场 ──
-    "自己的小屋(床)":    {"map": "FarmHouse", "pos": (4, 9),  "note": "睡觉/设置重生点"},
-    "自己的小屋(门口外)": {"map": "Farm",     "pos": (64, 15),"note": "小屋门外（Farm侧），从门出去到这"},
-    "自己的小屋(门口内)": {"map": "FarmHouse","pos": (10, 6), "note": "小屋门内，进门站这"},
-    "自己的小屋(门内出)": {"map": "FarmHouse","pos": (3, 12), "note": "出门warp点，→Farm(64,15)"},
-    "爷爷的神龛":        {"map": "Farm",      "pos": (8, 8),  "note": "爷爷神龛，放钻石评估/拿铱猫"},
-    "农场上口(→深山)":  {"map": "Farm",      "pos": (41, 0), "note": "Farm上口，warp到Backwoods"},
-    "农场下口(→森林)":  {"map": "Farm",      "pos": (40, 64),"note": "Farm下口，warp到Forest(68,1)"},
-    "AI小屋(床)":          {"map": "Cabin",    "pos": (9, 9),  "note": "联机角色(AI farmhand)的床；小屋内部布局标准化，床user在(9,9)"},
-    "AI小屋(门)":          {"map": "Cabin",    "pos": (3, 12), "note": "联机小屋出口；map 可能是 Cabin/Cabin2/…按实际角色校准"},
-    "农场洞穴(外)":      {"map": "Farm",      "pos": (34, 7), "note": "农场洞穴门口"},
+    # ⚠️ 2026-08-30 恒拍板：农场里能动的建筑/物品**不留固定 POI**——全用权威动态读取：
+    #   · 床(自己/AI 小屋)= /crawl_bed locate（动态，别再写死模板坐标）
+    #   · 门口/家门= /state.homeDoor（带 GUID，权威）
+    #   · 建筑(温室/出货箱/图腾柱/宠物水碗/畜棚鸡舍…) = /farm_buildings（抗搬家）
+    #   · 箱子/小桶区 = 玩家自己放的位置，本就无固定
+    #   只保留**地图固有几何**（出入口 warp 瓦片、洞穴门），这些才是静态的。
+    "爷爷的神龛":        {"map": "Farm",      "pos": (8, 8),  "note": "爷爷神龛（农场西南角固定），放钻石评估/拿铱猫"},
+    "农场上口(→深山)":  {"map": "Farm",      "pos": (41, 0), "note": "Farm上口(warp瓦片固定)，warp到Backwoods"},
+    "农场下口(→森林)":  {"map": "Farm",      "pos": (40, 64),"note": "Farm下口(warp瓦片固定)，warp到Forest(68,1)"},
+    "农场洞穴(外)":      {"map": "Farm",      "pos": (34, 7), "note": "农场洞穴门口(地图固定)，蘑菇/果蝠洞"},
     "农场洞穴(内)":      {"map": "FarmCave",  "pos": (8, 11), "note": "蘑菇/果蝠洞内部"},
-    "宠物水碗":          {"map": "Farm",      "pos": (52, 7), "note": "宠物水碗（人站左边，朝右浇水）"},
-    "温室(门口)":        {"map": "Farm",      "pos": (28, 16),"note": "温室入口，需献祭解锁"},
-    "出货箱":            {"map": "Farm",      "pos": (71, 14),"note": "出售物品"},
-    "箱子(生产线)":      {"map": "Farm",      "pos": (70, 14),"note": "农场生产线旁的箱子"},
-    "酿酒桶区":          {"map": "Farm",      "pos": (75, 14),"note": "多个 keg 放置区"},
+    "出货箱":            {"map": "Farm",      "pos": (71, 14),"note": "出货箱(**固定不可移**，2026-08-30 恒确认)——田外金属箱，隔夜到账；menu bin 投放。宠物水碗(可移/multiple)不走这"},
 
     # ── 巴士站 ──
     "巴士站(售票处)":    {"map": "BusStop",    "pos": (17, 12),"note": "巴士售票处(机子在17,11站位17,12)：交互选'是'花500g去沙漠；等动画~7s（2026-08-15实测）"},
@@ -161,6 +157,7 @@ POI = {
     "下水道入口":         {"map": "Town",       "pos": (35, 97),"note": "需要钥匙才能进→科罗布斯商店/变异鲤鱼钓点"},
     "下水道(出口)":       {"map": "Forest",     "pos": (94, 100),"note": "从下水道出来在森林侧"},
     "科罗布斯商店":       {"map": "Sewer",      "pos": (31, 18),"note": "科罗布斯摊位：买铱环/电池/星之果/虚空蛋"},
+    "改变职业点(雕像)":   {"map": "Sewer",      "pos": (8, 21), "note": "🗿 **不确定之雕像(换职业点)**(2026-08-30 恒摆位+AI 记)：站(8,21)面朝0(上) interact(面前=雕像(8,20))→**花金重选职业分支**(换一个职业)。⚠️ 花钱改分支；交互会开职业重选菜单(LevelUpMenu职业选择)——**正好用来验 menu ops=levelup_choose**。需下水道钥匙(已解锁)"},
     "变异鲤鱼钓点":       {"map": "Sewer",      "pos": (16, 28),"note": "下水道钓变异鲤鱼（传说鱼之一）✅"},
     "变异虫穴(入口)":     {"map": "BugLand",    "pos": (15, 53),"note": "变异虫穴入口，有放射性矿石/蛆/蚊子"},
     "变异虫穴(钓鱼点)":   {"map": "BugLand",    "pos": (20, 40),"note": "变异鲤鱼也可以在这钓（待校准）"},
@@ -254,7 +251,16 @@ POI = {
     "采石场矿井(入口)":  {"map": "UndergroundMine","pos": (28, 96),"note": "一层骷髅矿井梯子下来处（地图名动态生成）"},
     "铁路(入口)":        {"map": "Railroad",    "pos": (29, 59),"note": "从Mountain上来到Railroad的入口"},
     "铁路(站台)":        {"map": "Railroad",    "pos": (35, 40),"note": "等火车的地方，可以捡掉落"},
-    "魔女沼泽洞口":    {"map": "Railroad",    "pos": (54, 33),"note": "魔女沼泽洞穴入口，warp到WitchWarpCave"},
+    "魔女沼泽洞口":    {"map": "Railroad",    "pos": (54, 33),"note": "魔女沼泽洞穴入口，warp到WitchWarpCave(4,9)"},
+    "魔女沼泽洞穴(内部)": {"map": "WitchWarpCave","pos": (4, 9), "note": "🧙 黑暗护身符洞穴内部（从铁路(54,33)进来落(4,9)=入口落点）；**传送阵在(4,5)**，站(4,6)面0 interact→女巫沼泽(20,42)，map_go 直达不需交互。需黑暗护身符(HasDarkTalisman)（2026-08-30 /warps+恒领跑实测，入口落点(4,9)/传送阵(4,5)别混）"},
+    "法师地下室(落点)":  {"map": "WizardHouseBasement","pos": (2, 5), "note": "🧙 法师塔地下室(WizardHouseBasement)——**新地点未在 /warps**(查无出入瓦片，纯魔法地点)。AI 从这里进来落 (2,5)/(3,5)；含**法师传送阵**(进女巫区)与**幻觉神龛**；从法师塔进地下室的**入口待探测**。传送阵连通女巫小屋(三大神龛)。需先有相关进度（2026-08-30 恒指引）"},
+    "幻觉神龛":        {"map": "WizardHouseBasement","pos": (12, 5),"note": "🎭 **幻觉神龛**(2026-08-30 恒+AI 实测)：站(12,5)面0 interact→DialogueBox「是否花500金使用幻觉神龛改变你的外表？」是/否。**500金重新捏脸**(可改发型/衣服/肤色等外观)。⚠️ 属花钱改外观，非破坏性。需黑暗护身符(进女巫区/法师地下室)。选否安全退出"},
+    "女巫沼泽":        {"map": "WitchSwamp",  "pos": (20, 42),"note": "🧹 女巫沼泽：传送阵落点(20,42)，**→女巫小屋走 warp 瓦片(20,21)**；→铁路(20,50)也可回。需黑暗护身符（2026-08-30 实测：传送阵落点是(20,42)非(20,21)，(20,21)是小屋门侧）"},
+    "女巫小屋(门口)":  {"map": "WitchSwamp",  "pos": (20, 21),"note": "🧙 女巫小屋门口（沼泽侧 warp 瓦片，站(20,21)→WitchHut(7,16)）。从传送阵落点(20,42)走过来到这→warp 进小屋。需黑暗护身符（2026-08-30 /warps实测）"},
+    "女巫小屋(内)":    {"map": "WitchHut",    "pos": (7, 15), "note": "🧙 女巫小屋内部：**从外面站(20,21)→面0 interact 进来后落(7,15)**；出口门/回去warp瓦片在(7,16)→女巫沼泽(20,21)。需黑暗护身符（2026-08-30 AI实测：进来落(7,15)、(7,16)是出口）"},
+    "私欲之黑暗神殿":  {"map": "WitchHut",    "pos": (2, 7), "note": "😈 **三大黑暗神殿·私欲**(2026-08-30 AI实测，**危险：不可逆**！站(2,7)面0 interact→DialogueBox:「你的孩子会变成鸽子飞走……是否确定献祭一块五彩碎片?」是/否确认。⚠️**真的把孩子变鸽子飞走**——AI 别碰,除非恒明确要求。选否安全退出。需黑暗护身符"},
+    "夜惊之黑暗神殿":  {"map": "WitchHut",    "pos": (12, 7),"note": "😈 **三大黑暗神殿·夜惊**(2026-08-30 AI实测，**危险：永久**！站(12,7)面0 interact→DialogueBox:「古老的魔法保护屏障会被撤走，怪物会在夜间出没你的农场。是否确定献祭一个奇怪小包子?」是/否确认。⚠️**撤掉农场夜间怪物保护、怪物夜里刷**——利弊大,AI 别碰除非恒明确要求。选否安全退出。需黑暗护身符"},
+    "记忆之黑暗神殿":  {"map": "WitchHut",    "pos": (7, 6), "note": "😈 **三大黑暗神殿·记忆**(2026-08-30 恒+AI 实测)：站(7,6)面0 interact→DialogueBox「雕像的锐利眼神透视你的身体……」纯叙述**无选项**。功能=**清除离婚/分手伴侣的记忆**(让前任不再恨你/恢复好感)。**因为本档还没离婚，所以只叙述勾选不了**——有了离婚经历才弹选项。⚠️ 会删除伴侣记忆,副作用需谨慎。需黑暗护身符"},
 
     # ── 沙漠 ──
     "沙漠(巴士站)":      {"map": "Desert",      "pos": (18, 27),"note": "巴士下车/上车点，warp回BusStop(22,10)"},
@@ -287,6 +293,7 @@ POI = {
     "巫师塔(门外)":      {"map": "Forest",      "pos": (5, 27), "note": "法师塔门口（森林侧）"},
     "巫师塔(门内)":      {"map": "WizardHouse", "pos": (8, 24), "note": "法师塔入口处"},
     "巫师塔(法师)":      {"map": "WizardHouse", "pos": (3, 18), "note": "法师位置：祝尼魔任务/开建筑/改宠物"},
+    "帽子老鼠":          {"map": "Forest",     "pos": (34, 96),"note": "🎩 **帽子老鼠**(2026-08-30 AI 实测)：站(34,96)面? interact→**ShopMenu 帽子店**(25件头饰:老伙计帽/幸运蝴蝶结/凉帽/圆顶礼帽/墨西哥帽/牛仔帽/蝴蝶结/老鼠耳朵…)。⚠️**解锁条件=获得首个成就的第二天**才出现；**非好感NPC**(不能送礼/不会因好感变，就一个商人)。买帽=menu click 点商品+确定。关闭=menu close（2026-08-30 恒：帽子老鼠不属于好感npc）"},
     "秘密森林(入口外)":  {"map": "Forest",      "pos": (0, 7),  "note": "秘密森林入口在森林右侧，需钢斧"},
     "秘密森林(入口内)":  {"map": "Woods",       "pos": (58, 15),"note": "秘密森林入口处"},
     "秘密森林(钓点)":    {"map": "Woods",       "pos": (12, 18),"note": "木跃鱼钓点"},
@@ -310,12 +317,8 @@ POI = {
     "丛林(西入口)":       {"map": "IslandEast",  "pos": (0, 41), "note": "IslandEast丛林/度假村区西入口，从IslandSouth(34,12)桥过来"},
     "姜岛农场(东入口)":   {"map": "IslandWest",  "pos": (104, 41),"note": "姜岛农场(IslandWest)东侧入口，从IslandSouth(0,11)过来"},
     "姜岛小屋(门口)":     {"map": "IslandWest",  "pos": (77, 40), "note": "姜岛农场小屋门口，进门到IslandFarmHouse"},
-    "姜岛图腾柱(→农场)": {"map": "IslandWest",  "pos": (72, 36), "note": "🔥 姜岛→农场图腾柱（2026-08-15恒实测）：站(72,37)朝上→key confirm→传回 Farm(48,7)。⚠️右键/interact不触发，必须 confirm；传送后等~2秒"},
-    "农场图腾柱落点(姜岛回)": {"map": "Farm", "pos": (48, 7), "note": "🔥 姜岛图腾柱传回农场的落点（2026-08-15实测）"},
-    "农场岛图腾柱(→姜岛)": {"map": "Farm", "pos": (57, 9), "note": "🗼 Island Obelisk：confirm→IslandSouth(11,11)。⚠️传送坐标≠买票码头(21,43)；等~2秒（2026-08-15实测）。⚠️农场建筑可挪→动态检测用/farm_buildings，此坐标为当前档参考"},
-    "农场沙漠图腾柱(→沙漠)": {"map": "Farm", "pos": (54, 9), "note": "🗼 Desert Obelisk：confirm→沙漠（落点待测）。⚠️动态建筑，/farm_buildings定位"},
-    "农场水图腾柱(→海滩)": {"map": "Farm", "pos": (73, 35), "note": "🗼 Water Obelisk：confirm→海滩（落点待测）。⚠️动态建筑，/farm_buildings定位"},
-    "农场土图腾柱(→山)": {"map": "Farm", "pos": (73, 41), "note": "🗼 Earth Obelisk：confirm→山（落点待测）。⚠️动态建筑，/farm_buildings定位"},
+    "姜岛图腾柱(→农场)": {"map": "IslandWest",  "pos": (72, 36), "note": "🔥 姜岛→农场图腾柱（**固定不可移**，2026-08-15恒实测）：站(72,37)朝上→key confirm→传回 Farm(48,7)。⚠️右键/interact不触发，必须 confirm；传送后等~2秒"},
+    "农场图腾柱落点(姜岛回)": {"map": "Farm", "pos": (48, 7), "note": "🔥 **姜岛**图腾柱传回农场的落点(48,7)——姜岛图腾柱固定，故落点也固定（2026-08-30 恒：姜岛的回家图腾柱不可移动，农场的才可移）。农场自家的大图腾柱(岛/沙漠/水/土)是可挪建筑，固定坐标误导→已删，动态走 /farm_buildings 的 *_Obelisk 定位+confirm（见 _obelisk_plan）。"},
     "姜岛小屋(门内六人房)": {"map": "IslandFarmHouse","pos": (14, 15),"note": "姜岛小屋内部，六张床的大通铺，map 30x18"},
     "姜岛农场(南沙滩蚌矿)": {"map": "IslandWest",  "pos": (70, 73), "note": "农场南侧沙滩，有蚌矿石(Clam rocks)可挖，捡拾翻找得蚌"},
     "姜岛农场(南桥拾贝)":  {"map": "IslandWest",  "pos": (42, 77), "note": "农场西南过桥的拾贝区，可捡珊瑚/海胆/贝壳等海滩采集品"},
@@ -447,7 +450,9 @@ MAP_LINKS = {
     "Farm": [
         {"tile": (80, 17), "target": "BusStop", "kind": "warp", "note": "农场右侧口(80,15-18)→巴士站（/warps 实测 2026-08-13）"},
         {"tile": (41, 65), "target": "Forest", "kind": "warp", "note": "农场下口(40-42,65)→森林(68,0)"},
-        {"tile": (41, -1), "target": "Backwoods", "kind": "warp", "note": "农场上口(40-41,-1)→深山(14,39)"},
+        # ⚠️ 2026-08-30 恒：出口瓦片标地图内可达格(40,1)——原(41,-1)地图外 walk_to 到不了；
+        #   AI 不用原生 warp 触发(不稳定)，走"walk_to 到 (40,1) 站定 → /warp 到深山(14,39)"。
+        {"tile": (40, 1), "target": "Backwoods", "kind": "warp", "arrive": (14, 39), "note": "农场上口站格(40,1)→/warp 深山(14,39)。原出口瓦片(41,-1)在地图外，已改边界内达格"},
         {"tile": (34, 5), "target": "FarmCave", "kind": "warp", "note": "农场洞穴口(34,5)→FarmCave(8,11)（/warps 实测）"},
         {"tile": None, "target": "FarmHouse", "kind": "door", "note": "主屋门（走门+confirm，建筑 warp 不在 /warps）"},
         {"tile": None, "target": "Cabin", "kind": "door", "note": "联机小屋门（多栋同名按建筑坐标）"},
@@ -464,7 +469,7 @@ MAP_LINKS = {
     "Backwoods": [
         {"tile": (50, 28), "target": "BusStop", "kind": "warp", "note": "深山右侧→巴士站(14,8)"},
         {"tile": (50, 10), "target": "Mountain", "kind": "warp", "note": "深山右侧→山(0,13)"},
-        {"tile": (13, 40), "target": "Farm", "kind": "warp", "note": "深山下方→农场(40,0)"},
+        {"tile": (14, 39), "target": "Farm", "kind": "warp", "arrive": (40, 0), "note": "深山下方站格(14,39)→/warp 农场(40,0)。原出口瓦片(13,40) y=40 在地图外(Backwoods 行0-39)，已改边界内达格；对侧 Farm→Backwoods 亦同(见 Farm(40,1))"},
         {"tile": (22, 31), "target": "Tunnel", "kind": "warp", "note": "隧道口→Tunnel(39,9)（warp 瓦片站上自动传送，/warps 实测 22,29-32→39,9）；齐先生电池箱在里头"},
     ],
     # ── 鹈鹕镇 ──
@@ -514,7 +519,7 @@ MAP_LINKS = {
         {"tile": (29, 62), "target": "Mountain", "kind": "warp", "note": "铁路下口→山(9,0)（/warps实测）"},
         {"tile": (33, -1), "target": "Summit", "kind": "warp", "note": "铁路→山顶(10,29)（需完美达成，/warps实测）"},
         {"tile": (10, 57), "target": "BathHouse_Entry", "kind": "door", "note": "浴场门→(5,9)，泡澡回体力"},
-        {"tile": (54, 33), "target": "WitchWarpCave", "kind": "door", "note": "魔女沼泽洞穴口→(4,9)"},
+        {"tile": (54, 33), "target": "WitchWarpCave", "kind": "warp", "note": "魔女沼泽洞穴口(54,33)→WitchWarpCave(4,9)（/warps实测，2026-08-30）"},
     ],
     # ── 沙漠 ──
     "Desert": [
@@ -577,7 +582,9 @@ MAP_LINKS = {
     "BoatTunnel": [{"tile": None, "target": "FishShop", "kind": "warp", "note": "船坞→鱼店"},
                    {"tile": None, "target": "IslandSouth", "kind": "door", "note": "上船→姜岛码头(21,43)，1000g（2026-08-15补）"}],
     "AnimalShop": [{"tile": None, "target": "Forest", "kind": "warp", "note": "玛妮牧场门口→森林"}],
-    "WizardHouse": [{"tile": None, "target": "Forest", "kind": "warp", "note": "法师塔门口→森林"}],
+    "WizardHouse": [{"tile": None, "target": "Forest", "kind": "warp", "note": "法师塔门口→森林"},
+                    {"tile": (4, 5), "target": "WizardHouseBasement", "kind": "door", "note": "法师塔**盖板/暗地板**=**面前格(4,4)**，站(4,5)面0 interact(面前(4,4))→下地下室WizardHouseBasement；含幻觉神龛/法师传送阵。door如门（2026-08-30 恒+AI 实测）"}],
+    "WizardHouseBasement": [{"tile": (4, 4), "target": "WizardHouse", "kind": "door", "note": "地下室**爬梯**=(4,4) 站此面0 interact→上法师塔WizardHouse(4,5)，再面0 interact面前(4,4)=盖板可回。door如门（2026-08-30 AI 实测）"}],
     "Woods": [{"tile": None, "target": "Forest", "kind": "warp", "note": "秘密森林→森林"}],
     "SandyHouse": [{"tile": None, "target": "Desert", "kind": "warp", "note": "桑迪店门口→沙漠"},
                    {"tile": (17, 1), "target": "Club", "kind": "warp", "note": "🎰 赌场入口（2026-08-23 恒拍板：**是出口瓦片 not 门**，走 map_go 的 warp 链）桑迪店(17,1)→warp→Club(8,13)；需会员卡（读AI自己的clubCard）。⚠️ 建筑室内普通/warp进不去，_walk_trigger_warp 已加 /warp_into 兜底"}],
@@ -600,7 +607,14 @@ MAP_LINKS = {
     "VolcanoDungeon0": [{"tile": None, "target": "IslandNorth", "kind": "warp", "note": "火山矿井口→火山入口区（2026-08-15补）"}],
     "MasteryCave": [{"tile": None, "target": "Forest", "kind": "warp", "note": "精通山洞门口→森林（2026-08-15补）"}],
     "Summit": [{"tile": None, "target": "Railroad", "kind": "warp", "note": "山顶下山→铁路（2026-08-15补）"}],
-    "WitchWarpCave": [{"tile": None, "target": "Railroad", "kind": "warp", "note": "魔女沼泽洞穴口→铁路（2026-08-15补）"}],
+    "WitchWarpCave": [{"tile": (4, 10), "target": "Railroad", "kind": "warp", "note": "魔女沼泽洞穴→铁路(54,34)（/warps实测，2026-08-30）"},
+                      {"tile": (4, 5), "target": "WitchSwamp", "kind": "portal", "stand": [4, 6], "note": "🔮 传送阵(准确坐标(4,5)，2026-08-30 恒领跑实测)：站(4,6)面0 interact(面前=(4,5))→女巫沼泽(20,42)。map_go 先walk到(4,6)站位再warp跨。需黑暗护身符(HasDarkTalisman)"}],
+    # 🧙 女巫沼泽/女巫小屋（2026-08-30 恒：黑暗护身符洞穴内传送阵→女巫区；LIVE /warps 实测）
+    "WitchSwamp": [{"tile": (20, 50), "target": "Railroad", "kind": "warp", "note": "女巫沼泽→铁路(54,34)（/warps实测，2026-08-30）"},
+                   {"tile": (20, 21), "target": "WitchHut", "kind": "door", "note": "女巫沼泽站(20,21)面0 interact→WitchHut(7,16)，**交互开门非warp**（2026-08-30 AI实测）"},
+                   {"tile": (20, 42), "target": "WitchWarpCave", "kind": "portal", "stand": [20, 42], "arrive": [4, 5], "note": "🔮 可逆传送阵(2026-08-30 恒领跑)：站(20,42)即沼泽入口/洞穴传送阵落点→回魔女洞穴(**walk到(20,42)站位再warp落(4,5)**)；再铁路。**回铁路=踩这→洞穴→(4,10)warp→铁路**"}],
+    "WitchHut": [{"tile": (7, 16), "target": "WitchSwamp", "kind": "portal", "stand": [7, 15], "arrive": [20, 21], "note": "🧙 女巫小屋→女巫沼泽**模拟出口warp**(2026-08-30 恒)：离开小屋→walk到(7,15)站位再warp落地沼泽门口(20,21)。⚠️真瓦片(7,16)/interact触发不了，靠模拟warp"},
+                 {"tile": (11, 11), "target": "WizardHouseBasement", "kind": "portal", "stand": [10, 11], "note": "🔮 传送阵(单向，面前格(11,11) 2026-08-30 恒确认)：女巫小屋(三大神龛)→法师塔地下室WizardHouseBasement(2,5)。**站(10,11)面右(1)面前(11,11) = 传送阵**；女巫→法师塔单向，不可回小屋；map_go 先walk到(10,11)再warp落(2,5)。需黑暗护身符"}],
     # 🎇 夜市内部（2026-08-16 恒：节日限定冬15-17，双向出入；只在夜市加载）
     "BeachNightMarket": [
         {"tile": (58, 32), "target": "MermaidHouse", "kind": "door", "note": "美人鱼船门→MermaidHouse（看秀点贝壳1-5-4-2-3拿珍珠）"},
@@ -772,6 +786,8 @@ BUILDING_DOORS = {
     "Woods":           ("Forest",   (0, 7)),
     "SandyHouse":      ("Desert",   (6, 52)),
     "Club":            ("SandyHouse", (17, 1)),   # 🎰 进赌场的门口在桑迪店内(17,1)（2026-08-23 恒：AI 实测 /map warp 出口=17,1→Club(8,13)；BUILDING_DOORS 新补，此前缺致 _enter_building_door 拿不到门口坐标进不去）
+    "WitchHut":        ("WitchSwamp", (20, 21)),  # 🧙 女巫小屋（2026-08-30 恒+AI 实测：站(20,21)面朝0交互→进 WitchHut(7,16)；交互开门非 warp）
+    "WizardHouseBasement": ("WizardHouse", (4, 5)),  # 🪜 法师塔地下室（2026-08-30 恒+AI 实测：站塔内(4,5)面0 interact 爬梯→下地下室；含幻觉神龛/法师传送阵）
     "SkullCave":       ("Desert",   (8, 6)),
     "FarmCave":        ("Farm",     (34, 7)),
     "Sewer":           ("Town",     (35, 97)),
@@ -839,6 +855,10 @@ ARRIVE = {
     "QiNutRoom": (7, 7),
     "MasteryCave": (7, 9),
     "Caldera": (22, 22),
+    "WitchWarpCave": (4, 9),
+    "WitchSwamp": (20, 42),
+    "WitchHut": (7, 15),
+    "WizardHouseBasement": (2, 5),
     "Summit": (10, 29),
     "WitchWarpCave": (4, 9),
 }
