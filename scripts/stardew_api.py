@@ -1089,6 +1089,13 @@ def screenshot_ai():
     MCP screenshot 工具用这个——AI 看到的是自己角色的视角。"""
     return _ai_get("/screenshot")
 
+
+def screenshot_portrait_ai():
+    """🪞 截取捏人弹窗(CharacterCustomization)的小人展示区(portraitBox)为 base64 PNG。
+    无捏人弹窗在开 → {"ok": false, "reason": "no_character_customization_menu"}。
+    区域由游戏自己按 uiViewport 居中算 → 分辨率自适应。set_appearance 每次修改后附给 AI 看。"""
+    return _ai_get("/screenshot_portrait")
+
 def petbowl():
     """查询游戏内宠物水碗的实际坐标（不再硬编码）。
     返回: {"ok": true, "bowl": {"x": ..., "y": ...}, "pet": {...}}

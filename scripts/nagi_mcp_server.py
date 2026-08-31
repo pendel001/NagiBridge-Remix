@@ -25,7 +25,7 @@ import base64
 import io
 import re
 import random
-from typing import Optional
+from typing import Any, Optional
 try:
     from mcp.server.fastmcp import Image
 except ImportError:
@@ -487,7 +487,7 @@ def _menu_advice(menu_type: str, active_menu: dict, active_event: dict = None) -
     if m == "shippingmenu":
         return ""
     if m == "charactercustomization":
-        return "🎭 捏人弹窗：menu customize(看状态/填名字喜好) + settings appearance(捏脸) + **settings ops=confirm_look 核对**(请host参谋+screenshot 满意) → menu click button=ok 确认(ok后不可逆且捏脸退役)"
+        return "🎭 捏人弹窗：menu customize(看状态/填名字喜好) + settings appearance(捏脸) + **settings ops=confirm_look 核对**(请host参谋+screenshot 满意) → menu click button=ok 确认(ok后基相定型，想再改需解锁幻觉神龛；捏脸只在菜单内可用)"
     if m == "shopmenu":
         return "🏪 商店：menu shop 逛店（自动走到柜台）/ menu read 看货 / menu click 买 / menu sell 卖"
     if m == "letterviewermenu":
@@ -6937,7 +6937,7 @@ def settings_reactivate(tool_name: str) -> str:
 
 
 @mcp.tool()
-def settings(setting: str = "", value: str = "", ops: str = "", **kw) -> str:
+def settings(setting: str = "", value: str = "", ops: str = "", **kw) -> Any:
     """⚙️ 系统/设置域（合并"捏脸"进来，2026-08-22）。
     ops: status(看设置+退役) retire(tool_name=X) reactivate(召回) appearance(捏脸) customize(起名) confirm_look(核对捏人形象,ok前必做) color(颜色条)
          hair/shirt/pants/hat/colorpreset(外观参考)。⚠️捏脸ok后自动退役不可逆。细节→help(settings)。
@@ -7366,6 +7366,8 @@ def farm(ops: str = "", **kw) -> str:
         "collect": collect_machines, "机器": collect_machines,
         "load": load_machines, "上料": load_machines,
         "building": work_building, "收放": work_building,
+        "break": break_tile, "拆": break_tile, "敲": break_tile,
+        "place": place_item, "放": place_item, "放置": place_item,
         # 🐟 鱼塘（养殖业，2026-08-16 恒拍板归 farm 域；需新 DLL）
         "pond": _pond_list, "鱼塘": _pond_list, "塘": _pond_list,
         "pond_add": _pond_add, "放鱼": _pond_add,
@@ -7518,6 +7520,8 @@ def cabin(ops: str = "", **kw) -> str:
         "statue": blessing_statue, "雕像": blessing_statue, "祈福": blessing_statue,
         "furniture": scan_furniture, "家具": scan_furniture,
         "interact": interact_at, "点": interact_at,
+        "place": place_item, "放": place_item, "放置": place_item,
+        "break": break_tile, "拆": break_tile, "敲": break_tile,
         "pickup": furniture_pickup, "拿": furniture_pickup, "摆": furniture_pickup,
         "sleep": go_sleep, "睡": go_sleep, "睡觉": go_sleep,
     }
@@ -8376,6 +8380,8 @@ def scene(ops: str = "", **kw) -> str:
     rock(室外镐击 dig=true/false radius max_break break_stone——采石场/挖掘场/蚌矿场敲可破物,跳普通石)
     pan(淘金/淘盘 dry_run=true/false——本图水下闪光点→岸边走位面水→铜锅淘金收掉落)
     garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物) maze(迷宫视图 r=半径 gx,gy=目标 渲染ASCII棋盘)
+    place(放置/播种 name=物品名 x,y=目标格——箱子/树种/蟹笼放到地上或种下;只放可放置物,非放置物安全报错不丢)
+    break(拆/敲 x,y=目标格 steps=挥击次 radius=方圆——镐子敲石头/翻已耕地,跳过箱子/容器格&空地格)
     maze_seg(走法链 gx,gy=目标 拆直走廊列表+拼链，AI按段walk_to)
     maze_seg(走法链 gx,gy=目标 拆直走廊+拼链) maze_walk(走迷宫 waypoints="x,y x,y…"依次walk_to)。细节→help(scene)。
     Args:
@@ -8399,6 +8405,8 @@ def scene(ops: str = "", **kw) -> str:
         "forge_help": lambda: _with_state(FORGE_GUIDE), "锻造帮助": lambda: _with_state(FORGE_GUIDE),
         "drop": drop_item, "丢": drop_item,
         "furniture": scan_furniture, "家具": scan_furniture,
+        "place": place_item, "放": place_item, "放置": place_item,
+        "break": break_tile, "拆": break_tile, "敲": break_tile, "敲击": break_tile,
         "maze": _maze_view, "迷宫": _maze_view,
         "maze_seg": _maze_seg_view, "迷宫链": _maze_seg_view, "分段": _maze_seg_view,
         "maze_walk": _maze_walk, "走迷宫": _maze_walk, "迷宫走": _maze_walk,
@@ -10554,6 +10562,143 @@ def scan_furniture() -> str:
         return _with_state(f"❌ 扫描家具失败: {e}")
 
 
+def _is_chest_tile(t: dict) -> bool:
+    """该格是否为箱子/容器（别砸：满箱会挪位、空箱变掉落——处理麻烦，AI 直接跳过）。
+    同时认 **objId(QualifiedItemId) 和 中英文名**——/surroundings 给英文名(Chest)、/dump_tile 给中文名(宝箱)，
+    靠 objId(含 chest/bigchest/box/storage) 才稳定；只匹配英文名会漏掉中文"宝箱"。"""
+    o = t.get("object")
+    name = (o.get("name") if isinstance(o, dict) else (o or "")) or ""
+    oid = (o.get("objId") if isinstance(o, dict) and o.get("objId") else None) or t.get("objId") or ""
+    s = str(name).lower(); oid = str(oid).lower()
+    if any(k in s for k in ("chest", "box", "宝箱", "石箱", "储物", "收纳", "贮藏", "junimo", "shipping bin")):
+        return True
+    if any(k in oid for k in ("chest", "box", "storage", "shipping")):
+        return True
+    return False
+
+
+def _break_worth(t: dict) -> bool:
+    """目标格是否值得挥镐：有设备/石头（object 存在，**排除箱子/容器**） 或 已耕且无作物（翻地重耕）。
+    其余(空地/作物/树/箱子)跳过——箱子别砸，白敲。"""
+    if _is_chest_tile(t):
+        return False
+    if t.get("object"):
+        return True
+    if (t.get("terrain") or "") == "HoeDirt" and not t.get("crop"):
+        return True
+    return False
+
+
+def _stand_near(tx: int, ty: int):
+    """目标格旁的可站格（4 正邻优先，/passable 判），找不到返回 None。"""
+    for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+        nx, ny = tx + dx, ty + dy
+        try:
+            if api._post("/passable", {"x": nx, "y": ny}).get("passable"):
+                return (nx, ny)
+        except Exception:
+            continue
+    return None
+
+
+@mcp.tool()
+def place_item(name: Optional[str] = None, x: Optional[int] = None, y: Optional[int] = None) -> str:
+    """🪧 放置物品/播种（把背包物品放到指定格：落地/种树；scene 域）
+    流程：select(name) → /use{x,y} → placementAction 放地上（箱子/机器/蟹笼）或种下（树种/作物种子）。
+    ⚠️ **只能放可放置/可种物**（箱子、机器、蟹笼、树种、作物种子等）；书/纸条等不可放置物会失败且**不消耗**（安全，不会丢地上收不回）。
+
+    Args:
+        name: 物品英文名（Chest / Keg / Maple Seed / Crab Pot …），不传则用当前手上物
+        x, y: 目标瓦片坐标（留空=放玩家面前格）
+    """
+    try:
+        if name:
+            api.select(name)
+            time.sleep(0.2)
+        if x is not None and y is not None:
+            r = api._post("/use", {"x": int(x), "y": int(y), "force": True})
+        else:
+            r = api.use_item(force=True)
+        if r.get("ok"):
+            _it = name or r.get("item") or "物品"
+            _tile = f"({x},{y})" if x is not None else "面前格"
+            return _with_state(f"🪧 已放置「{_it}」@{_tile}")
+        return _with_state(f"❌ 放置失败: {r.get('error', '未知')}（物品未消耗、未丢地）")
+    except Exception as e:
+        return _with_state(f"❌ 放置出错: {e}")
+
+
+@mcp.tool()
+def break_tile(x: int, y: int, steps: int = 1, radius: int = 0) -> str:
+    """⛏️ 拆/敲指定格或范围（敲石头 / 翻已耕 / 拆可回收小物件；farm 或家具附近）
+    换手持**镐子**（恒拍板：只敲镐子——锄头/斧头有蓄力/范围更难搞，翻地走 farm till、砍树走 farm chop）→
+    站到目标旁（够不着自动 /position 到相邻可站格）→ 面朝 → 挥步骤次数。
+    radius=N 扫周围 N 格方形范围，**自动跳过空地格**（无设备/石头且未耕——敲了白敲）。
+    能敲：石头/矿点（格上有物件，**排除箱子/容器**）、已耕地翻新（terrain=HoeDirt 且无作物）。
+    🧰 **箱子/容器格一律跳过不砸**（SDV：满箱会挪位、空箱变掉落——处理麻烦，AI 不碰，单独报"箱子格跳过"）。
+
+    Args:
+        x, y: 中心格（radius=0 时就是目标格）
+        steps: 每格挥击次数（石头可能要多下）
+        radius: 范围半径（0=只敲单格；>0 方圆并自动跳过空地格）
+    """
+    try:
+        tool = "Pickaxe"
+        api.select(tool)
+        time.sleep(0.2)
+        tgts, chest_skip = [], []
+        if radius and radius > 0:
+            try:
+                tiles = (api._get("/surroundings", {"radius": radius}).get("tiles") or [])
+            except Exception:
+                tiles = []
+            bypos = {(t.get("x"), t.get("y")): t for t in tiles if "x" in t and "y" in t}
+            for dx in range(-radius, radius + 1):
+                for dy in range(-radius, radius + 1):
+                    t = bypos.get((x + dx, y + dy))
+                    if t is None:
+                        continue
+                    if _is_chest_tile(t):
+                        chest_skip.append((x + dx, y + dy))   # 🧰 箱子/容器格：别砸
+                    elif _break_worth(t):
+                        tgts.append((x + dx, y + dy))
+        else:
+            # 单格也判箱子（避免 AI 把箱子砸出来/挪走），/dump_tile 拿 object 名
+            try:
+                dt = (api._get("/dump_tile", {"x": x, "y": y}).get("tile") or {})
+                if _is_chest_tile(dt):
+                    chest_skip.append((x, y))
+                else:
+                    tgts.append((x, y))
+            except Exception:
+                tgts.append((x, y))
+        hit, stood_fail = [], []
+        for tx, ty in tgts:
+            st = api.state().get("player") or {}
+            sx, sy = st.get("x"), st.get("y")
+            if sx is None or sy is None:
+                stood_fail.append((tx, ty)); continue
+            if abs(sx - tx) > 1 or abs(sy - ty) > 1:
+                stand = _stand_near(tx, ty)
+                if not stand:
+                    stood_fail.append((tx, ty)); continue
+                api.position(stand[0], stand[1]); time.sleep(0.2)
+            api.face(api.face_toward(tx, ty)); time.sleep(0.12)
+            for _ in range(max(1, steps)):
+                api.use_tool(tool)
+                time.sleep(0.15)
+            hit.append((tx, ty))
+        parts = [f"⛏️ 敲完（{tool} ×{steps}）"]
+        parts.append("命中: " + (" ".join(f"{a},{b}" for a, b in hit) if hit else "无"))
+        if chest_skip:
+            parts.append("🚫 箱子/容器格跳过(不砸): " + " ".join(f"{a},{b}" for a, b in chest_skip))
+        if stood_fail:
+            parts.append("⚠️ 找不到可站格: " + " ".join(f"{a},{b}" for a, b in stood_fail))
+        return _with_state("\n".join(parts))
+    except Exception as e:
+        return _with_state(f"❌ 敲击出错: {e}")
+
+
 @mcp.tool()
 def interact_at(tile_x: int, tile_y: int) -> str:
     """🎯 与指定瓦片交互（对角也行，不用贴脸）
@@ -10659,6 +10804,24 @@ COLOR_PRESETS = {
 }
 
 
+def _portrait_screenshot_image(delay=0.5):
+    """🪞 取捏人弹窗的小人展示区截图，返回 mcp Image；无弹窗/失败→None（调用方回退成纯文本，不阻断）。
+    set_appearance 改的是 Game1.player 字段，doll 下一帧才画出来 → 先 sleep <delay> 再截。
+    区域由游戏自己按 uiViewport 居中算 → 分辨率自适应。"""
+    time.sleep(delay)
+    try:
+        r = api.screenshot_portrait_ai()
+    except Exception:
+        return None
+    if not r.get("ok"):
+        return None
+    try:
+        data = base64.b64decode(r["image"])
+        return Image(data=data, format="png")
+    except Exception:
+        return None
+
+
 @mcp.tool()
 def set_appearance(
     hair: Optional[int] = None,
@@ -10670,7 +10833,7 @@ def set_appearance(
     acc: Optional[int] = None,
     eye_color: Optional[str] = None,
     pants_color: Optional[str] = None,
-) -> str:
+) -> Any:
     """💇 捏脸 — 修改角色外观
     运行时热改角色外观，无需退出游戏。
     所有参数都是可选的，只改你提供的字段。
@@ -10678,7 +10841,8 @@ def set_appearance(
     颜色参数支持 hex ("FF6600") 或预设名称 ("橙色")。
     用 list_color_presets() 查看所有预设。
 
-    ⚠️ 基相外观=创建时定型：确认点 ok 后 set_appearance/捏人工具退役（不可逆）。改前先 confirm_look 核对+让host参谋+screenshot 满意。
+    ⚠️ 只能在"捏脸菜单开着"时用（创建角色 or 幻觉神龛解锁后都开 CharacterCustomization）。确认(ok)后基相外观定型，想再改 → 解锁幻觉神龛再开捏脸页。**菜单外调用会报错**（防直调写覆盖值致之后换衣被覆盖，游戏错乱）。改前先 confirm_look 核对+让host参谋+screenshot 满意。
+    🪞 每次修改成功后本工具会额外附一张小人展示区截图（捏脸菜单开着才有；菜单外调用会被拦，只回错误）。
 
     上衣编号: 1000~1999（共301件，用 list_shirt_ref() 查中文名+描述；q=关键词 或 start/end 筛选）
     裤子编号: 0~999（共18条，用 list_pants_ref() 查中文名+描述）
@@ -10696,9 +10860,8 @@ def set_appearance(
         eye_color: 瞳色 hex 或预设名
         pants_color: 裤子颜色 hex 或预设名
     """
-    # 🔒 硬锁（2026-08-22 恒：捏脸=创建时定型，ok 后退役=真拦截，防重复改基础外观掉薯条）
-    if "set_appearance" in _retired_tools:
-        return _with_state("🔒 捏脸已退役：基相外观在确认(ok)时已定型。如需重设 → settings reactivate(set_appearance) 召回后重新 confirm_look。")
+    # 🔒 2026-08-31 恒：不退役 set_appearance（幻觉神龛解锁后仍可改）；硬门禁在 C# /appearance——只在捏脸菜单开着时允许，
+    #   菜单外调用会被 C# 拦（防直调写覆盖值→之后换衣被覆盖）。这里不留退役锁，直接调 /appearance，菜单未开会收到明确报错。
     try:
         kwargs = {}
 
@@ -10745,7 +10908,12 @@ def set_appearance(
         r = api.set_appearance(**kwargs)
         if r.get("ok"):
             changed = r.get("changed", [])
-            return _with_state(f"✅ 已修改: {', '.join(changed)}")
+            # 每次修改后附一张小人展示区截图，让 AI 看自己改成了什么样（2026-08-31 恒）。
+            msg = _with_state(f"✅ 已修改: {', '.join(changed)}")
+            img = _portrait_screenshot_image()
+            if img is not None:
+                return [msg + "\n🪞 下方是改完后的样子（小人展示区截图）：", img]
+            return msg + "\n（捏人弹窗未开，无法截小人展示区；可先 /menu 确认弹窗状态）"
         else:
             return _with_state(f"❌ 修改失败: {r.get('error', '未知')}")
     except Exception as e:
@@ -10789,7 +10957,7 @@ def character_customize(name: Optional[str] = None, farmname: Optional[str] = No
 def confirm_look() -> str:
     """🔍 确认捏人形象（ok 前必做，保险；2026-08-22 恒）
     读当前捏人窗完整形象，逐项核对（尤其发型/瞳色/配饰），满意再提示提交。
-    ⚠️ 一旦 menu_click(button='ok') 确认 → 基相外观定型、不可逆，且捏脸/捏人工具退役。
+    ⚠️ menu_click(button='ok') 确认后 → 基相外观定型（想再改要解锁幻觉神龛）；捏脸工具不退役，但只在捏脸菜单开着时可用。
     流程：①请恒帮忙参谋这个形象 → ②screenshot 截图自己看满意没 → ③满意后调本工具核对 → ok。
     """
     global _look_verified
@@ -10811,7 +10979,7 @@ def confirm_look() -> str:
         f"  👕 上衣: {shirt} | 裤子: {pants}\n"
         "⚠️ 核对重点：发型/瞳色/配饰最容易出错。\n"
         f"流程：①请{_host_name()}帮忙参谋这个形象 → ②screenshot 截图自己确认满意 → ③满意后再 menu_click(button='ok')。\n"
-        "✅ 已标记核对。一旦 ok=不可逆，且捏脸/捏人工具将退役。"
+        "✅ 已标记核对。ok 后基相外观定型（想再改要解锁幻觉神龛）；捏脸工具不退役，只在捏脸菜单开着时可用。"
     )
 
 
@@ -11042,7 +11210,7 @@ _DOMAIN_GUIDES = {
 "care": "动物域(🐄 Farm)：animals(摸+收,不动门) building(这间屋) pet(猫狗) water(宠物碗) milk(挤奶剪毛) buy(买动物) doors(关门) petwalk(拟人摸) hay(干草) statue(祈福)。",
 "cabin": "小屋引导域(🏠 FarmHouse/Cabin/岛屋；不传=扫屋)：enum(扫屋查待收) collect(收机器) statue(雕像) furniture(扫家具) interact(点家具) pickup(拿起家具) sleep(睡觉)。",
 "social": "社交域：chat(跟NPC搭话) gift(送礼提好感) give(送玩家物品) send(发消息) emote(表情) friendship(查好感) movie(影院知识) snack(零食)。",
-"scene": "场景交互域(点东西/工具/转身/捡)：at(x,y)(点指定格/柜台) interact(点面前) use(挥工具) face(转向0上1右2下3左) select(拿手上) pickup(拿起家具) pickup_scene(捡当前场景物) berry(摇浆果) spot(挖蚯蚓点) moss(绿雨搜苔藓) rock(室外镐击:敲当前图可破物,采石场/挖掘场/蚌矿场跳普通石,dig/dry,battle-free) garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物) furniture(扫家具) maze(迷宫视图r半径,gx/gy目标格→ASCII棋盘#墙.可走P自己G目标) maze_seg(走法链gx,gy目标→拆直走廊列表+拼「左/右上/下走到(x,y)」多段链,AI按段walk_to)。",
+"scene": "场景交互域(点东西/工具/转身/捡)：at(x,y)(点指定格/柜台) interact(点面前) use(挥工具) face(转向0上1右2下3左) select(拿手上) pickup(拿起家具) pickup_scene(捡当前场景物) berry(摇浆果) spot(挖蚯蚓点) moss(绿雨搜苔藓) rock(室外镐击:敲当前图可破物,采石场/挖掘场/蚌矿场跳普通石,dig/dry,battle-free) garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物) furniture(扫家具) place(放置/播种:name=物品名,x/y=目标格→箱子/树种/蟹笼落地或种下,只放可放置物) break(拆/敲:x,y=目标格,steps=挥击次,radius=方圆→镐子敲石头/翻已耕地,跳过箱子/容器格) maze(迷宫视图r半径,gx/gy目标格→ASCII棋盘#墙.可走P自己G目标) maze_seg(走法链gx,gy目标→拆直走廊列表+拼「左/右上/下走到(x,y)」多段链,AI按段walk_to)。",
 "menu": "菜单/界面域(开→看→点)：read(看菜单) advance(推进剧情/对话) click(option/item/button/xy 点;action=claim领/action=discard丢桶腾格;slot=序号领指定格) key(ok/esc/数字按键) cancel(关弹窗/撤就绪) shop(逛店) sell(卖商店) bin(投出货箱) cook(做饭) craft(合成) recipes(菜谱) craftables(配方) forge(锻造) geode/geodes(砸晶球) customize(捏人) bundle(献祭板) bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读消耗品:书/秘密纸条/日记残页,统一走右键读 name=物品名) levelup_choose(技能升级职业选择 5/10级:不带参读左右选项,side=left/right 或 profession=职业id 定分支;普通升级自会确认OK)。🚫满包接鱼/领箱:原 claim_swap(替换领取)已退役→**click action=discard 丢桶腾格(回收返金)+action=claim 领取(或用 slot 领指定格;不想要直接 button=ok 关掉)**。🧾关闭菜单一律 click(button=upperRightCloseButton)（ItemGrabMenu/交付容器用 button=ok 确认才关）；订单交付容器(QuestContainerMenu)=点背包对应物品格(见slots的坐标)→放进→点 button=ok 结算；任务日志领钱=点击已完成的有钱任务卡后 click(button=rewardBox)；兑奖机兑换=click(button=mainButton)；特别订单领奖链=日志领钱(上面)→社区板旁领奖箱(60,93)拿兑奖券→刘易斯家兑奖机(mainButton)兑换。",
 "quest": "任务域：list(全部) progress(进度)；接单走板上的 menu click(button=accept…)。",
 "storage": "箱子域：scan(扫当前图箱) store(存) take(取) smart(智能堆叠) layout(箱子网络) default/cleardefault/tag(默认箱/清/标记)。",
@@ -12661,11 +12829,12 @@ def menu_click(option: int = -1, button: str = "", x: int = -1, y: int = -1, ite
             if _cust_gate:
                 _mt2 = ((api.state().get("activeMenu") or {}).get("type") or "").lower()
                 if _mt2 != "charactercustomization":
-                    _retired_tools.add("set_appearance")
+                    # 🔒 2026-08-31 恒：不退役 set_appearance（幻觉神龛解锁后仍可改）；只退役 character_customize（起名/喜好一次性）。
+                    #   set_appearance 由 C# /appearance 硬门禁拦——只在捏脸菜单(创建/幻神龛)开着时可用。
                     _retired_tools.add("character_customize")
                     _settings_save()
                     _look_verified = False
-                    return _with_state("🖱️ 已点击（ok）→ 角色已确认。🔒 捏脸/捏人工具已退役（基相外观定型，不可逆）。")
+                    return _with_state("🖱️ 已点击（ok）→ 角色已确认。基相外观定型（想再改以后解锁幻觉神龛）；起名/喜好已定型。捏脸工具保留、只在捏脸菜单开时可用。")
             extra = f" x{r.get('quantity')}" if r.get("quantity") else ""
             # 🎣 秋收节钓鱼小游戏兜底（2026-08-28 恒）：点选"游戏（50金）"若起了 FishingGame → 自动后台兜底。
             # 触发点=点下去的结果（起了小游戏），不是匹配选项文字——游戏里只有秋收钓鱼会启动 FishingGame。

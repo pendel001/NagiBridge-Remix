@@ -2236,6 +2236,7 @@ public class ModEntry : Mod
                 "/settlement_confirm" => HandleSettlementConfirm(),
                 "/ready_state" => HandleReadyState(),
                 "/screenshot" => HandleScreenshot(),
+                "/screenshot_portrait" => HandleScreenshotPortrait(),
                 "/zoom" => HandleZoom(ctx),
                 "/resolution" => HandleResolution(ctx),
                 _ => throw new InvalidOperationException($"Unknown endpoint: {path}")
@@ -4706,6 +4707,16 @@ public class ModEntry : Mod
                 var farmer = Game1.player;
                 var changed = new List<string>();
 
+                // 🔒 2026-08-31 恒：不退役 set_appearance（幻觉神龛解锁后可再改），改为"捏脸菜单开着才允许"。
+                //   菜单外直调 change* 会写 Farmer 的覆盖值（shirt/pants override），之后在游戏里换衣服会被这个覆盖值盖掉（游戏错乱）。
+                //   创建角色 & 幻觉神龛 都开 CharacterCustomization —— 只在这种菜单里允许改外观。
+                var _ccMenu = Game1.activeClickableMenu as StardewValley.Menus.CharacterCustomization;
+                if (_ccMenu == null)
+                {
+                    tcs.SetResult(new { ok = false, error = "捏脸菜单未开：只能在创建角色/幻觉神龛的捏脸页改外观。菜单外直调会写覆盖值，导致之后换衣服被覆盖(游戏错乱)。" });
+                    return;
+                }
+
                 // ⚠️ 2026-08-15 恒：必须用 SDV 官方 change* 方法（CharacterCustomization 同款）改外观。
                 // 它们同时更新 Farmer 字段 + FarmerRenderer 字段（两者都是联机同步的 Net 字段），host 才渲染正确。
                 // 之前直接写 farmer.shirtItem/skin/hair 单字段导致联机贴图错乱，原因：
@@ -5164,6 +5175,8 @@ public class ModEntry : Mod
                 //    以前只靠"玩家面前格"(ftx,fty)，放蟹笼常因面前格不是可放水面而 Cannot place 试错。
                 //    现在：请求带 x,y → 直接对那格 placementAction(站格/面朝无关)，淘金/蟹笼挑准水格一次放成；
                 //    没带 x,y → 退回面前格(旧逻辑，向后兼容)。
+                // 🪧 2026-08-31 恒：基类 placementAction 对**不可放置小物件**返回 false(不消耗、不丢地)→ HandleUse 已能安全报错。
+                //    所以 open `place`/`/use` 只需 AI 自备可放置/可种物(箱子/种子/机器)；无需 C# 锁(IsPlaceable 编译不过，也无必要)。
                 int placeX = ftx, placeY = fty;
                 var ppx = GetParamOr(p, "x", -1);
                 var ppy = GetParamOr(p, "y", -1);
@@ -6343,6 +6356,78 @@ public class ModEntry : Mod
                 tex.SaveAsPng(ms, w, h);
                 var base64 = Convert.ToBase64String(ms.ToArray());
                 tcs.SetResult(new { ok = true, image = base64, width = w, height = h });
+            }
+            catch (Exception ex)
+            {
+                tcs.SetResult(new { ok = false, error = ex.Message });
+            }
+        });
+        return tcs.Task.GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// GET /screenshot_portrait
+    /// 截取捏人弹窗（CharacterCustomization）里的小人展示区（portraitBox）为 base64 PNG。
+    /// 无捏人弹窗在开 → ok:false（reason=no_character_customization_menu），调用方回退成普通截图/纯文本。
+    /// 区域由游戏自身布局算（xPositionOnScreen 用 uiViewport 居中、gameWindowSizeChanged 重算）→ 分辨率自适应。
+    /// （2026-08-31 恒：AI 每次 set_appearance 后想看到自己改成了什么样）
+    /// </summary>
+    private object HandleScreenshotPortrait()
+    {
+        if (!Context.IsWorldReady)
+            throw new InvalidOperationException("World not ready");
+
+        var tcs = new TaskCompletionSource<object>();
+        EnqueueMainThread(() =>
+        {
+            try
+            {
+                var cc = Game1.activeClickableMenu as StardewValley.Menus.CharacterCustomization;
+                if (cc == null)
+                {
+                    tcs.SetResult(new { ok = false, reason = "no_character_customization_menu" });
+                    return;
+                }
+
+                var pb = cc.portraitBox;   // 小人展示区（public Rectangle，128x192 基准）
+
+                var device = Game1.graphics.GraphicsDevice;
+                int bw = device.PresentationParameters.BackBufferWidth;
+                int bh = device.PresentationParameters.BackBufferHeight;
+                var data = new Microsoft.Xna.Framework.Color[bw * bh];
+                device.GetBackBufferData(data);
+
+                // 裁剪矩形：在展示区基础上略外扩容纳小人的头/脚（若超出屏幕则夹到边界）。
+                int pad = 8;
+                int rx = Math.Max(0, pb.X - pad);
+                int ry = Math.Max(0, pb.Y - pad);
+                int rw = Math.Min(bw - rx, pb.Width + pad * 2);
+                int rh = Math.Min(bh - ry, pb.Height + pad * 2);
+                if (rw < 1 || rh < 1)
+                {
+                    tcs.SetResult(new { ok = false, reason = "bad_portrait_box", boxX = pb.X, boxY = pb.Y, boxW = pb.Width, boxH = pb.Height });
+                    return;
+                }
+
+                var cdata = new Microsoft.Xna.Framework.Color[rw * rh];
+                for (int yy = 0; yy < rh; yy++)
+                    Array.Copy(data, (ry + yy) * bw + rx, cdata, yy * rw, rw);
+
+                using var tex = new Microsoft.Xna.Framework.Graphics.Texture2D(device, rw, rh);
+                tex.SetData(cdata);
+                using var ms = new MemoryStream();
+                tex.SaveAsPng(ms, rw, rh);
+                tcs.SetResult(new
+                {
+                    ok = true,
+                    image = Convert.ToBase64String(ms.ToArray()),
+                    width = rw,
+                    height = rh,
+                    boxX = pb.X,
+                    boxY = pb.Y,
+                    boxW = pb.Width,
+                    boxH = pb.Height
+                });
             }
             catch (Exception ex)
             {
