@@ -448,8 +448,8 @@ COMMUNITY_CENTER_BOARDS = {
 MAP_LINKS = {
     # ── 农场 ──
     "Farm": [
-        {"tile": (80, 17), "target": "BusStop", "kind": "warp", "note": "农场右侧口(80,15-18)→巴士站（/warps 实测 2026-08-13）"},
-        {"tile": (41, 65), "target": "Forest", "kind": "warp", "note": "农场下口(40-42,65)→森林(68,0)"},
+        {"tile": (79, 17), "target": "BusStop", "kind": "warp", "arrive": (11, 23), "note": "农场右侧口→巴士站。原出口瓦片标(80,15-18)，x=80 在宽度80边界外(x0..79)，walk_to 到不了=到不了巴士站根因；改边界内达格(79,17)(同 Farm→Backwoods 修正)，BusStop→Farm 落点正是(79,17)，站这里再/warp 巴士站(11,23)"},
+        {"tile": (41, 64), "target": "Forest", "kind": "warp", "arrive": (68, 0), "note": "农场下口站格(41,64)→/warp 森林(68,0)。原出口(41,65) y=65 在高度65边界外,walk_to 到不了(同 Farm→BusStop 修正)"},
         # ⚠️ 2026-08-30 恒：出口瓦片标地图内可达格(40,1)——原(41,-1)地图外 walk_to 到不了；
         #   AI 不用原生 warp 触发(不稳定)，走"walk_to 到 (40,1) 站定 → /warp 到深山(14,39)"。
         {"tile": (40, 1), "target": "Backwoods", "kind": "warp", "arrive": (14, 39), "note": "农场上口站格(40,1)→/warp 深山(14,39)。原出口瓦片(41,-1)在地图外，已改边界内达格"},
@@ -467,8 +467,8 @@ MAP_LINKS = {
     ],
     # ── 深山 ──
     "Backwoods": [
-        {"tile": (50, 28), "target": "BusStop", "kind": "warp", "note": "深山右侧→巴士站(14,8)"},
-        {"tile": (50, 10), "target": "Mountain", "kind": "warp", "note": "深山右侧→山(0,13)"},
+        {"tile": (49, 28), "target": "BusStop", "kind": "warp", "arrive": (14, 8), "note": "深山右侧站格(49,28)→/warp 巴士站(14,8)。原出口(50,28) x=50 在宽度50边界外"},
+        {"tile": (49, 10), "target": "Mountain", "kind": "warp", "arrive": (0, 13), "note": "深山右侧站格(49,10)→/warp 山(0,13)。原出口(50,10) x=50 越界"},
         {"tile": (14, 39), "target": "Farm", "kind": "warp", "arrive": (40, 0), "note": "深山下方站格(14,39)→/warp 农场(40,0)。原出口瓦片(13,40) y=40 在地图外(Backwoods 行0-39)，已改边界内达格；对侧 Farm→Backwoods 亦同(见 Farm(40,1))"},
         {"tile": (22, 31), "target": "Tunnel", "kind": "warp", "note": "隧道口→Tunnel(39,9)（warp 瓦片站上自动传送，/warps 实测 22,29-32→39,9）；齐先生电池箱在里头"},
     ],
@@ -492,7 +492,7 @@ MAP_LINKS = {
     # ── 山 ──
     "Mountain": [
         {"tile": (1, 12), "target": "Backwoods", "kind": "warp", "note": "山左侧→深山(49,14)"},
-        {"tile": (15, 41), "target": "Town", "kind": "warp", "note": "山下口→镇(81,0)，温泉旁"},
+        {"tile": (15, 40), "target": "Town", "kind": "warp", "arrive": (81, 0), "note": "山下口站格(15,40)→/warp 镇(81,0)，温泉旁。原出口(15,41) y=41 在高度41边界外"},
         {"tile": (9, 1), "target": "Railroad", "kind": "warp", "note": "山上口→铁路(29,59)"},
         {"tile": (54, 4), "target": "Mine", "kind": "door", "note": "矿井口→Mine(18,13)，下矿"},
         {"tile": (76, 9), "target": "AdventureGuild", "kind": "door", "note": "探险家公会门→(6,12)，买武器/怪物任务"},
@@ -501,9 +501,9 @@ MAP_LINKS = {
     ],
     # ── 森林 ──
     "Forest": [
-        {"tile": (120, 25), "target": "Town", "kind": "warp", "note": "森林东口→镇(0,90)（/warps实测）"},
-        {"tile": (67, -1), "target": "Farm", "kind": "warp", "note": "森林→农场(41,64)（/warps实测）"},
-        {"tile": (-1, 6), "target": "Woods", "kind": "door", "note": "秘密森林口（需钢斧）→Woods(59,15)，硬木/钓木跃鱼（/warps实测）"},
+        {"tile": (119, 25), "target": "Town", "kind": "warp", "arrive": (0, 90), "note": "森林东口站格(119,25)→/warp 镇(0,90)。原出口(120,25) x=120 在宽度120边界外"},
+        {"tile": (67, 0), "target": "Farm", "kind": "warp", "arrive": (41, 64), "note": "森林上口站格(67,0)→/warp 农场(41,64)。原出口(67,-1) y=-1 边界外(原靠push-in兜底,已显式标站格)"},
+        {"tile": (0, 6), "target": "Woods", "kind": "door", "note": "秘密森林口（需钢斧）→Woods(59,15)，硬木/钓木跃鱼。door 走砖门动态路径,此 tile 仅标注用,原(-1,6) 边界外已回0"},
         {"tile": (5, 27), "target": "WizardHouse", "kind": "door", "note": "法师塔门→(8,24)，祝尼魔任务/改宠物"},
         {"tile": (90, 16), "target": "AnimalShop", "kind": "door", "note": "玛妮牧场门→(13,19)，买动物/饲料"},
         {"tile": (27, 12), "target": "Forest", "kind": "door", "note": "猪车（周五/周日旅行货车）"},
@@ -516,8 +516,8 @@ MAP_LINKS = {
     ],
     # ── 铁路 ──
     "Railroad": [
-        {"tile": (29, 62), "target": "Mountain", "kind": "warp", "note": "铁路下口→山(9,0)（/warps实测）"},
-        {"tile": (33, -1), "target": "Summit", "kind": "warp", "note": "铁路→山顶(10,29)（需完美达成，/warps实测）"},
+        {"tile": (29, 61), "target": "Mountain", "kind": "warp", "arrive": (9, 0), "note": "铁路下口站格(29,61)→/warp 山(9,0)。原出口(29,62) y=62 在高度62边界外"},
+        {"tile": (33, 0), "target": "Summit", "kind": "warp", "arrive": (10, 29), "note": "铁路上口站格(33,0)→/warp 山顶(10,29)（需完美达成）。原出口(33,-1) y=-1 边界外"},
         {"tile": (10, 57), "target": "BathHouse_Entry", "kind": "door", "note": "浴场门→(5,9)，泡澡回体力"},
         {"tile": (54, 33), "target": "WitchWarpCave", "kind": "warp", "note": "魔女沼泽洞穴口(54,33)→WitchWarpCave(4,9)（/warps实测，2026-08-30）"},
     ],
@@ -534,7 +534,7 @@ MAP_LINKS = {
     "IslandSouth": [
         {"tile": (0, 11), "target": "IslandWest", "kind": "warp", "note": "西桥头→姜岛农场(105,41)"},
         {"tile": (36, 12), "target": "IslandEast", "kind": "warp", "note": "东桥头→丛林/度假村(0,46)"},
-        {"tile": (18, -1), "target": "IslandNorth", "kind": "warp", "note": "北边小路→火山入口区(36,89)"},
+        {"tile": (18, 0), "target": "IslandNorth", "kind": "warp", "arrive": (36, 89), "note": "北边小路站格(18,0)→/warp 火山入口区(36,89)。原出口(18,-1) y=-1 边界外"},
         {"tile": (17, 44), "target": "FishShop", "kind": "warp", "note": "码头→坐船返航直达鱼店(4,4)（/warps实测）"},
     ],
     "IslandWest": [
@@ -544,13 +544,13 @@ MAP_LINKS = {
         {"tile": None, "target": "IslandFarmCave", "kind": "door", "note": "农场洞穴(96,32)→IslandFarmCave(4,10)（2026-08-15补）"},
     ],
     "IslandNorth": [
-        {"tile": (36, 90), "target": "IslandSouth", "kind": "warp", "note": "南边→岛南(18,0)（/warps实测）"},
+        {"tile": (36, 89), "target": "IslandSouth", "kind": "warp", "arrive": (18, 0), "note": "南边站格(36,89)→/warp 岛南(18,0)。原出口(36,90) y=90 在高度90边界外"},
         {"tile": (40, 20), "target": "VolcanoEntrance", "kind": "door", "note": "火山口→火山入口(1,1)（/warps实测）"},
         {"tile": (46, 45), "target": "IslandFieldOffice", "kind": "door", "note": "办事处→(4,10)，捐化石（/warps实测）"},
         {"tile": (21, 45), "target": "IslandNorthCave1", "kind": "door", "note": "蘑菇洞→(6,11)（/warps实测）"},
     ],
     "IslandEast": [
-        {"tile": (-1, 46), "target": "IslandSouth", "kind": "warp", "note": "西桥→岛南(35,12)（/warps实测）"},
+        {"tile": (0, 46), "target": "IslandSouth", "kind": "warp", "arrive": (35, 12), "note": "西桥站格(0,46)→/warp 岛南(35,12)。原出口(-1,46) x=-1 边界外"},
         {"tile": (22, 9), "target": "IslandHut", "kind": "door", "note": "雷欧小屋→(7,13)（/warps实测）"},
         {"tile": (34, 30), "target": "IslandShrine", "kind": "door", "note": "神殿→(13,28)（/warps实测）"},
     ],
@@ -597,7 +597,7 @@ MAP_LINKS = {
               {"tile": (3, 18), "target": "BugLand", "kind": "door", "note": "下水道→变异虫穴(15,53)，变异鲤鱼钓点（/warps实测）"}],
     "BugLand": [{"tile": None, "target": "Sewer", "kind": "warp", "note": "变异虫穴→下水道"}],
     "BathHouse_Entry": [{"tile": None, "target": "Railroad", "kind": "warp", "note": "浴场→铁路"}],
-    "Tunnel": [{"tile": (40, 9), "target": "Backwoods", "kind": "warp", "note": "隧道出口(40,7-12)→深山(23,30)；齐先生电池箱 TunnelSafe(17,6) 在里头"},{"tile": None, "target": "Backwoods", "kind": "warp", "note": "隧道→深山(兜底)"}],
+    "Tunnel": [{"tile": (39, 9), "target": "Backwoods", "kind": "warp", "arrive": (23, 30), "note": "隧道出口站格(39,9)→/warp 深山(23,30)；原出口(40,9) x=40 在宽度40边界外；齐先生电池箱 TunnelSafe(17,6) 在里头"},{"tile": None, "target": "Backwoods", "kind": "warp", "note": "隧道→深山(兜底)"}],
     "Tent": [{"tile": None, "target": "Mountain", "kind": "warp", "note": "帐篷→山"}],
     "IslandFarmHouse": [{"tile": None, "target": "IslandWest", "kind": "warp", "note": "姜岛小屋门口→姜岛农场"}],
     "QiNutRoom": [{"tile": None, "target": "IslandWest", "kind": "warp", "note": "核桃房门口→姜岛农场"}],
@@ -607,10 +607,10 @@ MAP_LINKS = {
     "VolcanoDungeon0": [{"tile": None, "target": "IslandNorth", "kind": "warp", "note": "火山矿井口→火山入口区（2026-08-15补）"}],
     "MasteryCave": [{"tile": None, "target": "Forest", "kind": "warp", "note": "精通山洞门口→森林（2026-08-15补）"}],
     "Summit": [{"tile": None, "target": "Railroad", "kind": "warp", "note": "山顶下山→铁路（2026-08-15补）"}],
-    "WitchWarpCave": [{"tile": (4, 10), "target": "Railroad", "kind": "warp", "note": "魔女沼泽洞穴→铁路(54,34)（/warps实测，2026-08-30）"},
+    "WitchWarpCave": [{"tile": (4, 9), "target": "Railroad", "kind": "warp", "arrive": (54, 34), "note": "魔女沼泽洞穴→铁路(54,34)；原出口(4,10) y=10 在高度10边界外（/warps实测，2026-08-30）"},
                       {"tile": (4, 5), "target": "WitchSwamp", "kind": "portal", "stand": [4, 6], "note": "🔮 传送阵(准确坐标(4,5)，2026-08-30 恒领跑实测)：站(4,6)面0 interact(面前=(4,5))→女巫沼泽(20,42)。map_go 先walk到(4,6)站位再warp跨。需黑暗护身符(HasDarkTalisman)"}],
     # 🧙 女巫沼泽/女巫小屋（2026-08-30 恒：黑暗护身符洞穴内传送阵→女巫区；LIVE /warps 实测）
-    "WitchSwamp": [{"tile": (20, 50), "target": "Railroad", "kind": "warp", "note": "女巫沼泽→铁路(54,34)（/warps实测，2026-08-30）"},
+    "WitchSwamp": [{"tile": (20, 49), "target": "Railroad", "kind": "warp", "arrive": (54, 34), "note": "女巫沼泽→铁路(54,34)；原出口(20,50) y=50 在高度50边界外（/warps实测，2026-08-30）"},
                    {"tile": (20, 21), "target": "WitchHut", "kind": "door", "note": "女巫沼泽站(20,21)面0 interact→WitchHut(7,16)，**交互开门非warp**（2026-08-30 AI实测）"},
                    {"tile": (20, 42), "target": "WitchWarpCave", "kind": "portal", "stand": [20, 42], "arrive": [4, 5], "note": "🔮 可逆传送阵(2026-08-30 恒领跑)：站(20,42)即沼泽入口/洞穴传送阵落点→回魔女洞穴(**walk到(20,42)站位再warp落(4,5)**)；再铁路。**回铁路=踩这→洞穴→(4,10)warp→铁路**"}],
     "WitchHut": [{"tile": (7, 16), "target": "WitchSwamp", "kind": "portal", "stand": [7, 15], "arrive": [20, 21], "note": "🧙 女巫小屋→女巫沼泽**模拟出口warp**(2026-08-30 恒)：离开小屋→walk到(7,15)站位再warp落地沼泽门口(20,21)。⚠️真瓦片(7,16)/interact触发不了，靠模拟warp"},
@@ -619,7 +619,7 @@ MAP_LINKS = {
     "BeachNightMarket": [
         {"tile": (58, 32), "target": "MermaidHouse", "kind": "door", "note": "美人鱼船门→MermaidHouse（看秀点贝壳1-5-4-2-3拿珍珠）"},
         {"tile": (5, 35), "target": "Submarine", "kind": "door", "note": "钓鱼潜艇门→Submarine（艇长1000g深海钓）"},
-        {"tile": (38, -1), "target": "Town", "kind": "warp", "note": "夜市上口→镇(54,108)"},
+        {"tile": (38, 0), "target": "Town", "kind": "warp", "arrive": (54, 108), "note": "夜市上口站格(38,0)→/warp 镇(54,108)；原出口(38,-1) y=-1 边界外"},
     ],
     "MermaidHouse": [
         {"tile": (4, 11), "target": "BeachNightMarket", "kind": "warp", "note": "美人鱼船出口→夜市(58,32)"},

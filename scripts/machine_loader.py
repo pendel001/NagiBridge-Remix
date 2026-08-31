@@ -89,6 +89,7 @@ _MACHINE_NEED = {
     "Heavy Furnace": "矿产+3煤炭",
     "Fish Smoker": "鱼+1煤炭",
     "Keg": "水果/蔬菜/蜂蜜/咖啡豆/茶叶",
+    "Cask": "陈酿用成品(果酒/奶酪/腌菜——木桶收成品再陈化)",
     "Seed Maker": "作物(水果/蔬菜)",
     "Preserves Jar": "水果/蔬菜",
     "Cheese Press": "牛奶/大壶牛奶",

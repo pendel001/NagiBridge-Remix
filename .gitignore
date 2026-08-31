@@ -21,6 +21,8 @@ scripts/plan.json
 scripts/mine_progress.json
 scripts/bomb_progress.json
 scripts/bomb_organize.json
+# mcp_cli.py 的 streamable-http session 缓存（运行时态）
+scripts/._mcp_session
 *.log
 scripts/*.png
 scripts/*.jpg

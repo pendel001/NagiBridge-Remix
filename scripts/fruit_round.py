@@ -15,6 +15,7 @@ import sys
 import os
 import time
 import stardew_api as api
+from machine_loader import _AUTO_MACHINE as AUTO_MACHINE   # 自动/放置类设备(蜂房/避雷针/太阳能板/树液采集器/虫饵盒等)——只收不放
 
 EMPTY_HAND = "Pickaxe"   # 收产物时空手（选工具使 ActiveObject=null）
 # 行走只走 4 方向（正交）——之前 8 方向会把对角墙边格拉进行走集合导致绕墙
@@ -113,6 +114,7 @@ def interact_at(x, y):
 
 def process_tile(ax, ay, machines_by_pos, fruit):
     """站在 (ax,ay)，检测上下左右 4 邻机器：熟的空手收，空的选果放。
+    自动设备(蜂房/避雷针/太阳能板等)只收不放——收完置 "auto" 终态，不当空机塞料。
     返回 (收了几台, 放了几台, 日志)。"""
     collected = 0
     loaded = 0
@@ -122,6 +124,7 @@ def process_tile(ax, ay, machines_by_pos, fruit):
         if not m:
             continue
         x, y = m["x"], m["y"]
+        auto = str(m.get("type") or "") in AUTO_MACHINE
         if m["status"] == "ready":
             api.select(EMPTY_HAND)          # 空手
             time.sleep(0.1)
@@ -129,9 +132,9 @@ def process_tile(ax, ay, machines_by_pos, fruit):
             if r.get("actionTriggered"):
                 collected += 1
                 logs.append(f"收({x},{y})")
-            # 收了变空 → 接着放新果
-            m["status"] = "empty"
-        if fruit and m["status"] == "empty":
+            # 收了变空 → 接着放新果；但自动设备(蜂房/避雷针/太阳能板…)只收不放
+            m["status"] = "auto" if auto else "empty"
+        if fruit and m["status"] == "empty" and not auto:
             s = api.select(fruit)
             if s.get("ok"):
                 r = interact_at(x, y)
@@ -175,11 +178,15 @@ def run(location, machine_type, fruit):
             api.log(f"❌ 进不去 {location}")
             return
     else:
-        wr = api.warp_into(location)
-        if not wr.get("ok"):
-            api.log(f"❌ warp 进 {location} 失败")
-            return
-        time.sleep(0.5)
+        # 非建筑（Farm 室外/地窖等）→ warp_into 入口；但已在目标图就跳过（warp_into 无"已在此图"守卫，
+        # 会把你拉到图入口瓦——室外收蜂房/避雷针时别被拖走）
+        cur = (api.state().get("location") or {}).get("name", "")
+        if str(cur).lower() != str(location).lower():
+            wr = api.warp_into(location)
+            if not wr.get("ok"):
+                api.log(f"❌ warp 进 {location} 失败")
+                return
+            time.sleep(0.5)
 
     # 过道格集合：所有目标机器的 4 方向邻（只走正交，不走对角墙边格），去掉机器本格，去重
     machines_by_pos = {(m["x"], m["y"]): m for m in machines}
@@ -222,7 +229,7 @@ if __name__ == "__main__":
     parser.add_argument("--location", required=True, help="屋子/地点名，如 Cabin / Big Shed")
     parser.add_argument("--machine", default="", help="机器类型，如 Keg / Cask（留空=熟/空都做）")
     parser.add_argument("--fruit", default="", help="要放的原料英文名（留空=只收不放）")
-    parser.add_argument("--port", type=int, default=7842)
+    parser.add_argument("--port", type=int, default=7843)
     args = parser.parse_args()
 
     os.environ["NAGI_URL"] = f"http://localhost:{args.port}"

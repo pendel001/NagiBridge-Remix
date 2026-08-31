@@ -1091,6 +1091,13 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
             lines.append(_sr)
     except Exception:
         pass
+    # 🔔 本图设备实时就绪（2026-08-31 恒：短时设备当天中途完成也能看到，一次即止）
+    try:
+        _mr = _machine_ready_hint(loc_name)
+        if _mr:
+            lines.append(_mr)
+    except Exception:
+        pass
 
     # 🧾 纯聊天环节（2026-08-17 恒）：等睡（AI 在床等恒）/ 过夜结算（ShippingMenu）期——
     #    只聊天，30s 轮询 + 新消息推送（recent_events 的 chat/emote 重置超时）+ 无消息超时兜底。
@@ -1367,12 +1374,14 @@ def _worn_summary() -> str:
 
 # 机器类型中文名映射（晨报/ machine_report 用）
 MACHINE_CN = {
-    "Keg": "小桶", "Furnace": "熔炉", "Dehydrator": "烘干机",
-    "Preserves Jar": "腌菜罐", "Cheese Press": "压酪机",
-    "Mayonnaise Machine": "蛋黄酱机", "Loom": "织布机",
-    "Oil Maker": "产油机", "Seed Maker": "种子机",
-    "Crystalarium": "复制机", "Charcoal Kiln": "木炭窑",
-    "Bee House": "蜂房", "Tapper": "树液采集器",
+    "Keg": "小桶", "Cask": "酒桶", "Furnace": "熔炉", "Heavy Furnace": "重型熔炉",
+    "Dehydrator": "烘干机", "Fish Smoker": "熏鱼机", "Preserves Jar": "罐头瓶",
+    "Cheese Press": "压酪机", "Mayonnaise Machine": "蛋黄酱机", "Loom": "织布机",
+    "Oil Maker": "产油机", "Seed Maker": "种子机", "Crystalarium": "复制机",
+    "Charcoal Kiln": "木炭窑", "Bee House": "蜂房", "Tapper": "树液采集器",
+    "Heavy Tapper": "重型树液采集器", "Lightning Rod": "避雷针", "Solar Panel": "太阳能板",
+    "Wood Chipper": "碎木机", "Bones Mill": "碎骨机", "Worm Bin": "虫饵盒",
+    "Bait Maker": "鱼饵制造机", "Recycling Machine": "回收机",
 }
 
 
@@ -1382,6 +1391,27 @@ def _fetch_farm_report() -> dict:
         return api.farm_report()
     except Exception:
         return {}
+
+
+def _fetch_fish_ponds() -> list:
+    """抓取所有鱼塘状态（产出就绪=条目 output/outputId 非空），失败返回 []（不抛异常）。
+    鱼塘是 Building 不是 bigCraftable，不在 farm_report 的 machines 里——单独走 /fish_pond。"""
+    try:
+        r = api._ai_post("/fish_pond", {"action": "list"})
+        return (r or {}).get("ponds") or []
+    except Exception:
+        return []
+
+
+def _pond_ready_summary(ponds: list) -> str:
+    """把"有产出"的鱼塘按产物种类+数量聚合成一段（如 `鲑鱼子×1 蚌×1`），无则空串。"""
+    agg = {}
+    for p in ponds:
+        if not p.get("output"):
+            continue
+        out = p.get("output") or "?"
+        agg[out] = agg.get(out, 0) + 1
+    return " ".join(f"{k}×{v}" for k, v in agg.items())
 
 
 def _build_morning_report(fr: dict) -> str:
@@ -1416,15 +1446,23 @@ def _build_morning_report(fr: dict) -> str:
             if m.get("status") == "ready":
                 t["ready"] += 1
         # 只报有完成的 + 排除杂物（箱子/稻草人/装饰/储物类），省 token
+        # ⚠️ 2026-08-31 恒：回收机/避雷针/鱼饵制造机是"有产出要收"的设备——从 SKIP 去掉，别漏报
         SKIP = {"Chest", "Stone Chest", "Rarecrow", "Scarecrow", "Heater",
                 "Feed Hopper", "Incubator", "Mini-Jukebox", "Statue Of Blessings",
-                "Stardew Hero Trophy", "Sewing Machine", "Mini-Forge", "Recycling Machine",
-                "Lightning Rod", "Bait Maker", "Mini-Shipping Bin", "Auto-Petter",
-                "Auto-Grabber", "Garden Pot", "Anvil", "Stone Junimo"}
+                "Stardew Hero Trophy", "Sewing Machine", "Mini-Forge",
+                "Mini-Shipping Bin", "Auto-Petter", "Auto-Grabber",
+                "Garden Pot", "Anvil", "Stone Junimo"}
         parts = [f"{MACHINE_CN.get(k, k)} 完成 {v['ready']}/{v['total']} 台"
                  for k, v in agg.items() if v["ready"] > 0 and k not in SKIP]
         if parts:
             lines.append(f"  ⚙️ 机器: {' | '.join(parts)}")
+    # 🐟 鱼塘产出（2026-08-31 恒：鱼塘是建筑不在 machines 里，单独并入日报）
+    try:
+        _ps = _pond_ready_summary(_fetch_fish_ponds())
+        if _ps:
+            lines.append(f"  🐟 鱼塘: {_ps}")
+    except Exception:
+        pass
     return "\n".join(lines) if len(lines) > 1 else ""
 
 
@@ -1712,13 +1750,13 @@ def _with_state(result: str, force_full: bool = False) -> str:
 _PORT_SCRIPTS = {"water_crops", "chop_trees", "clear_area", "mine_run", "fish_run",
                  "bomb_mine", "bomb_escort", "bomb_volcano", "farm_row", "go_to",
                  "berry_run", "spot_run", "moss_run", "trash_run", "fair_fishing",
-                 "rock_run"}
+                 "rock_run", "fruit_round"}   # 🏠 2026-08-31：fruit_round 收放改走严格交互，注入 --port AI
                  # 🍓🪱 2026-08-17：摇树莓/挖斑点脚本注入 AI 端口（防挪恒角色）；🌿 2026-08-21 moss_run；🗑️ 2026-08-24 trash_run；🎣 2026-08-28 fair_fishing(秋收钓鱼兜底)；⛏️ 2026-08-29 rock_run(室外镐击)
 
 # 🚀 自动异步白名单（2026-08-16 恒拍板）：便利工具跑这些长脚本 → 自动后台异步，AI 不用手动 script_start。
 # 长任务（钓鱼/挖矿/炸矿/收放机器/浇水可能很久）被动异步；短任务（清地/砍树/摸动物/捡采集等）保持同步。
 _ASYNC_SCRIPTS = {"mine_run", "fish_run", "bomb_mine", "bomb_escort", "bomb_volcano",
-                  "building_round", "machine_loader", "water_crops"}
+                  "building_round", "fruit_round", "machine_loader", "water_crops"}
 
 
 @mcp.tool()
@@ -5611,21 +5649,23 @@ def load_machines(item: str, machine_type: str = "", location: str = "") -> str:
 
 @mcp.tool()
 def work_building(location: str, item: str = "", machine_type: str = "") -> str:
-    """🏠 一整间屋子收放一轮（进门→收→放，拟人走法）
+    """🏠 一整间屋子收放一轮（进门→收→放，逐台严格交互，拟人走法）
     走到建筑门口开门进去 → 收完该屋所有机器产物 → 把背包原料放进该屋空机器。
-    一屋一轮，AI 决定去哪些屋子、按什么顺序。跨屋会自动走到下一间门口。
+    走的是 4 邻+斜对角 8 方向真 checkAction（不是直加作弊）。站过道格一趟处理一圈。
+    一屋一轮（单地点），AI 决定去哪些屋子、按什么顺序。
 
     Args:
         location: 屋子/地点名（Big Shed / Cabin / Cellar / Farm…）
         item: 要放的原料英文名（如 Starfruit；留空=只收不放）
         machine_type: 放原料的机器类型（Keg / Cask…，留空=该屋所有空机器）
+    ⚠️ 2026-08-31 恒：作弊直加版 building_round 保留但不再走此路径（后续加作弊模式时再挂回）。
     """
-    args_list = ["--locations", location]
+    args_list = ["--location", location]
     if item:
-        args_list += ["--place", item]
-        if machine_type:
-            args_list += ["--place-type", machine_type]
-    out = _run_script("building_round", args_list, timeout=900, async_ok=True)
+        args_list += ["--fruit", item]
+    if machine_type:
+        args_list += ["--machine", machine_type]
+    out = _run_script("fruit_round", args_list, timeout=1500, async_ok=True)
     if out.startswith("🚀"):
         return _with_state(out)   # 长脚本自动异步：立即返回 job_id
     return _with_state(f"🏠 {location} 收放：\n{out[:600]}")
@@ -5634,18 +5674,19 @@ def work_building(location: str, item: str = "", machine_type: str = "") -> str:
 @mcp.tool()
 def machine_report() -> str:
     """⚙️ 全农场机器清点（按类型统计总数 + 按建筑分组待收清单），只报数量不逐台列坐标
-    「烘干机 共x台 闲置y 加工z 完成w；…」按类型聚合；「📥 已就绪待收 N台：农舍: 小桶×3 烘干机×1 / 温室: 酿酒桶×5」按建筑分组。
+    「烘干机 共x台 闲置y 加工z 完成w；…」按类型聚合；「📥 已就绪待收 N台：农舍: 小桶×3 烘干机×1 / 温室: 酿酒桶×5」按建筑分组；「🐟 鱼塘: 鲑鱼子×1」。
     ⚠️ 2026-08-28 恒：1450台机器逐台报坐标会爆 token——不逐台列坐标/持有物，只报建筑+类型+数量；
     真正收机器用 collect_machines / farm collect（内部扫坐标），本工具只给 AI 决策"哪该收"。
-    覆盖所有建筑室内 + 温室 + 地窖。随时可查，不受每日首次调用限制。
+    覆盖所有建筑室内 + 温室 + 地窖。随时可查，不受每日首次调用限制。2026-08-31 加鱼塘产出。
     """
     try:
         fr = _fetch_farm_report()
         if not fr.get("ok"):
             return _with_state(f"❌ 获取失败: {fr.get('error', '')}")
+        pond_s = _pond_ready_summary(_fetch_fish_ponds())
         ml = (fr.get("machines") or {}).get("machines") or []
-        if not ml:
-            return _with_state("⚙️ 农场里没有机器")
+        if not ml and not pond_s:
+            return _with_state("⚙️ 农场里没有机器/鱼塘产出")
         agg = {}
         for m in ml:
             t = agg.setdefault(m.get("type") or "?", {"total": 0, "idle": 0, "processing": 0, "ready": 0, "byLoc": {}})
@@ -5674,6 +5715,8 @@ def machine_report() -> str:
             for loc in sorted(rl):
                 parts = [f"{t}×{c}" for t, c in sorted(rl[loc].items())]
                 lines.append(f"  • {loc}: {', '.join(parts)}")
+        if pond_s:
+            lines.append(f"🐟 鱼塘: {pond_s}")
         return _with_state("\n".join(lines))
     except Exception as e:
         return _with_state(f"❌ {e}")
@@ -9920,6 +9963,131 @@ def _statue_reminder() -> str:
             _STATUE_REMIND_KEY = {"day": d, "found": txt}
         # 没找到且不在农场 → 不缓存（下次状态读到农场再试）
         return txt
+    except Exception:
+        return ""
+
+
+# 🛠️ 本图设备实时就绪(2026-08-31 恒)：只扫当前图(Farm含室内)，把"今天还没报过"的完成设备
+#    按产物(料)种类+数量报一次即止。短时设备(鱼饵机/熏鱼机)当天中途完成也能被看到。
+#    日报(晨报)仍每日重置再报，二者独立。全图扫描60s节流+切图必扫，避免每次调用都拉全图。
+_MACHINE_READY_SEEN = {}            # {(day_key, loc, x, y): True} 鱼塘专用"一天一次"去重
+_MACHINE_LAST_STATUS = {}           # {(day_key, loc, x, y): 上次状态} 机器就绪=边沿(非ready→ready)才报(恒 08-31)
+_MACHINE_READY_DAY = {"key": None, "loc": None}   # 日翻转/切图检测
+_MACHINE_READY_TS = {"ts": 0.0}
+_MACHINE_READY_COOLDOWN = 60        # 秒：全图扫描节流(只对非钓鱼点)
+# 恒 08-31 拍板：**只在这批钓鱼点做快速检测(不节流)**——鱼饵机 14s 一轮(游戏10min≈现实14s),节流会漏。
+#   这些图机器少,每次工具调用都扫、没机器直接跳。其余(农场/建筑室内/BusStop/Town/Woods等)照旧 60s 节流。
+#   ⚠️ 采石场= Mountain 图一部分(/warps 无 Quarry),鹈鹕镇矿井内= UndergroundMine(矿层名带层号→用前缀)。
+_FAST_SCAN_LOCS = {"desert", "forest", "mountain", "beach", "town",
+                   "islandsouth", "islandwest", "islandeast", "islandsoutheast"}  # 小写,配合 _is_fast_scan 里 loc.lower()
+
+
+def _is_fast_scan(loc: str) -> bool:
+    """是否钓鱼点(快速检测、不节流)。姜岛排除北部(无水的雷欧/宝石谜题丛林)。"""
+    if not loc:
+        return False
+    l = str(loc).lower()
+    return l in _FAST_SCAN_LOCS or l.startswith("undergroundmine")
+
+
+# 农场的**短时**设备做实时(恒 08-31 加回,排除长时小桶/木桶/罐头瓶/避雷针=那批上千台扫+报都重)。
+#   种子生产器=Seed Maker、鱼饵制造机=Bait Maker(恒 08-31 补"打得不太标准"更正)。Bone Mill/Loom 目前农场0台也入集。
+_FARM_SHORT_TYPES = {"Cheese Press", "Mayonnaise Machine", "Bait Maker", "Recycling Machine",
+                     "Fish Smoker", "Furnace", "Heavy Furnace", "Seed Maker", "Bone Mill", "Loom"}
+
+# 农场建筑室内(和 Farm 一起算"农产短时"实时场景);Farm 用 farm_report 扫全农场+室内,建筑内用 /machines。
+_FARM_BUILDING_LOCS = {"big shed", "cabin", "cellar", "greenhouse", "shed",
+                       "coop", "coop2", "coop3", "deluxe coop", "barn", "barn2", "barn3", "deluxe barn"}
+
+
+def _is_farm_short_scan(loc: str) -> bool:
+    """是否"农场短时设备"实时场景 = 农场室外(含建筑室内)。"""
+    if not loc:
+        return False
+    l = str(loc).lower()
+    return l == "farm" or l in _FARM_BUILDING_LOCS or l.startswith("cellar")
+
+
+def _machine_ready_hint(loc_name: str = "") -> str:
+    """🔔 设备实时就绪：机器就绪=**边沿+产物**(非ready→ready 或 换产物)才报(恒 08-31)。
+    - 钓鱼点 `_is_fast_scan`(沙漠/森林/Mountain/Town/沙滩/姜岛除北部/矿井内):不节流,报当前图**全部**机器(鱼饵机14s一轮不漏)。
+    - 农场(含建筑室内):节流60s,只报 `_FARM_SHORT_TYPES`(压酪机/蛋黄酱机/鱼饵机/回收机/熏鱼机/熔炉/重型熔炉/种子机/碎骨机/织布机),
+      排除长时小桶/木桶/罐头瓶/避雷针(那批上千台,日报一次就够)。
+    - 其它(BusStop/秘密森林):不实时,靠日报。按产物种类+数量聚合。"""
+    global _MACHINE_READY_SEEN, _MACHINE_READY_DAY, _MACHINE_READY_TS
+    try:
+        if not loc_name or str(loc_name).lower() in ("?", "未知"):
+            return ""
+        dk = api.day_key()
+        if not dk:
+            return ""
+        # 日翻转 → 清空已报集合（跟着晨报第二天重新报）
+        if _MACHINE_READY_DAY["key"] != dk:
+            _MACHINE_READY_DAY["key"] = dk
+            _MACHINE_READY_SEEN = {}
+            _MACHINE_LAST_STATUS = {}
+        fast = _is_fast_scan(loc_name)
+        farm_short = (not fast) and _is_farm_short_scan(loc_name)
+        if not fast and not farm_short:
+            # 非钓鱼点、非农场(如 BusStop/秘密森林/Woods):不实时,靠日报。
+            return ""
+        # 节流:农场短时 60s(扫 farm_report/建筑机器较多);钓鱼点不节流(机器少)。
+        loc_changed = _MACHINE_READY_DAY["loc"] != loc_name
+        _MACHINE_READY_DAY["loc"] = loc_name
+        now = time.time()
+        if farm_short:
+            if not loc_changed and (now - _MACHINE_READY_TS["ts"]) < _MACHINE_READY_COOLDOWN:
+                return ""
+            _MACHINE_READY_TS["ts"] = now
+        # 机器源:农场 → farm_report(含建筑室内)+当前室外;建筑内/钓鱼点 → 当前图 /machines。
+        if str(loc_name).lower() == "farm":
+            fr = _fetch_farm_report()
+            if not fr.get("ok"):
+                return ""
+            ml = (fr.get("machines") or {}).get("machines") or []
+            try:
+                ml = ml + (list((api._ai_get("/machines") or {}).get("machines") or []))
+            except Exception:
+                pass
+            scope = [m for m in ml if (m.get("location") or "") == "Farm" or m.get("building")]
+        else:
+            try:
+                ml = list((api._ai_get("/machines") or {}).get("machines") or [])
+            except Exception:
+                ml = []
+            if not ml:
+                return ""
+            scope = [m for m in ml if str(m.get("location") or "").lower() == loc_name.lower()]
+        # 农场短时:只报短时机型(排除小桶/木桶/罐头瓶/避雷针那批);钓鱼点报全部(机器少)。
+        if farm_short:
+            scope = [m for m in scope if (m.get("type") or "") in _FARM_SHORT_TYPES]
+
+        # 机器就绪=边沿+产物双重判(恒 2026-08-31):**状态非ready→ready** 或 **同台换产物(河豚→大头鱼)** 都算新完成、报出来。
+        #   ⚠️ 只比 status 会漏:上一台记成 ready(河豚),再放大头鱼完成仍 ready → ready==ready 跳过(恒实测漏报 Bullhead)。
+        #   记 (status, heldItem):就绪 且(上次非ready 或 产物变了)→报;同产物持续 ready 不重刷。
+        #   _MACHINE_LAST_STATUS[key] = (status, heldItem)
+        new_ready = []
+        for m in scope:
+            key = (dk, m.get("location"), m.get("x"), m.get("y"))
+            st = m.get("status")
+            item = m.get("heldItem") or ""
+            prev = _MACHINE_LAST_STATUS.get(key)      # (prev_status, prev_item) or None
+            if st == "ready":
+                if not prev or prev[0] != "ready" or prev[1] != item:
+                    new_ready.append(m)
+            _MACHINE_LAST_STATUS[key] = (st, item)
+        if not new_ready:
+            return ""
+
+        # 按产物(料)种类+数量聚合（日报按机型，这里按产出的东西）
+        agg = {}
+        for m in new_ready:
+            prod = m.get("heldItem") or "?"
+            agg[prod] = agg.get(prod, 0) + 1
+
+        # 🐟 鱼塘产出:现只在日报(morning_report)里报(农场实时已按恒拍板移除,不做本图实时)。
+        parts = [f"{k}×{v}" for k, v in sorted(agg.items(), key=lambda kv: -kv[1])]
+        return f"🔔 本图新就绪: {' '.join(parts)} —— work_building({loc_name}) 收"
     except Exception:
         return ""
 
