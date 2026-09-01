@@ -20,9 +20,13 @@ SESSION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "._mcp_s
 
 
 def _parse(resp):
+    # ⚠️ 服务器 SSE(streamable-http) 返回 text/event-stream 无 charset → requests 按 HTTP 规范默认
+    #    Latin-1 解码 → UTF-8 中文读成乱码(双重编码)。必须用 resp.content(bytes) 强制 utf-8 解码，
+    #    否则 mcp_cli 调试输出全乱(dict/json 路径同理，resp.json() 也走 resp.text 的 Latin-1)。
+    body = resp.content.decode("utf-8", errors="replace")
     ct = resp.headers.get("Content-Type", "")
     if "event-stream" in ct:
-        for block in resp.text.split("\n\n"):
+        for block in body.split("\n\n"):
             for line in block.split("\n"):
                 if line.startswith("data:"):
                     try:
@@ -31,7 +35,7 @@ def _parse(resp):
                         pass
         return None
     try:
-        return resp.json()
+        return json.loads(body)
     except Exception:
         return None
 

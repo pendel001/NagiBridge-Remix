@@ -243,27 +243,36 @@ def run(port, location, max_casts=0, stamina_pct=15, no_sleep=False):
     log("🎯 能抛，开始钓（水域固定，之后无需再判死水）")
 
     # monitor loop（max_casts=0 不限竿数 → 钓到体力<20 / 背包满 / 太晚才停）
-    fish_count = 0
-    last_stamina = initial_stamina
+    # 2026-09-01 恒拍板：0.6.1 fishbot 自动玩，靠"体力降/8"估抛竿的旧法（每轮降幅<8→恒0）已废 → 计数恒 0。
+    #   改按**状态边沿**数：not钓鱼→钓鱼 = 抛一竿；not reel→reel ≈ 钓上一条（fishbot 自动玩必胜）。
+    #   采样 3s→2s 提分辨率；极快竿漏掉可接受（不影响 max_casts 大致收手）。标签诚实化：抛N竿·钓上M条。
+    cast_count = 0       # 抛竿数（边沿：not钓鱼 → 钓鱼）
+    fish_caught = 0      # 钓上数（近似：not reel → reel）
     check_counter = 0
+    prev_fishing = False
+    prev_reeling = False
 
     while True:
-        time.sleep(3)
+        time.sleep(2)
 
         s = bot.state()
         p = s["player"]
         current_stamina = p["stamina"]
+        fishing = (p.get("fishing") or {})
+        is_fishing = bool(fishing.get("isFishing") or fishing.get("isCasting") or fishing.get("isReeling"))
+        is_reeling = bool(fishing.get("isReeling"))
 
-        # detect casts by stamina drop (each cast costs 8)
-        if current_stamina < last_stamina:
-            casts = int((last_stamina - current_stamina) / 8)
-            if casts > 0:
-                fish_count += casts
-                log(f"  ~{fish_count} 竿 (stamina {current_stamina}/{p['maxStamina']})")
-                if max_casts > 0 and fish_count >= max_casts:
-                    log(f"  达到 {max_casts} 竿，收手")
-                    break
-            last_stamina = current_stamina
+        # 抛竿/钓上：进入对应状态的一次边沿
+        if is_fishing and not prev_fishing:
+            cast_count += 1
+        if is_reeling and not prev_reeling:
+            fish_caught += 1
+        prev_fishing = is_fishing
+        prev_reeling = is_reeling
+
+        if max_casts > 0 and cast_count >= max_casts:
+            log(f"  达到 {max_casts} 竿，收手")
+            break
 
         check_counter += 1
         if check_counter >= CHECK_INTERVAL:
@@ -271,6 +280,7 @@ def run(port, location, max_casts=0, stamina_pct=15, no_sleep=False):
 
             # ⚠️ 2026-08-14 防呆：菜单挡住（BobberBar=钓鱼小游戏 fishbot 正在自动玩，不能关）
             # 🐟 2026-08-23 恒：满包又钓上鱼 → ItemGrabMenu(鱼在待领槽)。enum引导：先丢替换物领鱼；没有→ok 放弃这条鱼。
+            # 🎪 2026-09-01：fishbot 默认pause配置还会开背包补饵(GameMenu)——别一遇菜单就停，esc关+补饵后继续；真关不掉才停。
             menu = s.get("activeMenu") or {}
             mtype = menu.get("type")
             if mtype and mtype != "BobberBar":
@@ -279,17 +289,26 @@ def run(port, location, max_casts=0, stamina_pct=15, no_sleep=False):
                     if mtype == "ItemGrabMenu":
                         # 🐟 满包接鱼/箱子（恒拍板 2026-08-23）：停脚本，菜单留给 AI 手动处理——
                         #   用 menu_claim_swap(替换物名∈背包) 指定丢哪个，不自动丢（丢错亏大）。
-                        log("  🎒 满包接鱼(ItemGrabMenu)→ 停脚本交 AI 手动：menu_claim_swap(替换物名) 替换领取，"
-                            "或 menu_click(button=ok) 直接退出放弃这条鱼（非必须替换）；处理完再跑 fish_run")
+                        log("  🎒 满包接鱼(ItemGrabMenu)→ 停脚本交 AI 手动：menu click action=discard item=低价值物(丢桶腾格) 再 "
+                            "action=claim item=鱼名 领取；不想要就 menu click(button=ok) 直接退出放弃这条鱼；处理完再跑 fish_run")
                         break
+                    # 其它菜单（GameMenu=fishbot 开背包补饵等）：esc 关，关不掉就补饵后再试一次
                     bot.key("esc")
-                    time.sleep(1)
+                    time.sleep(0.8)
                     s2 = bot.state()
                     m2 = s2.get("activeMenu") or {}
                     if m2.get("type"):
-                        log(f"  ⚠️ 菜单关不掉: {m2.get('type')}，停止钓鱼")
-                        break
-                    log("  菜单已关闭")
+                        try:
+                            bot._post("/rod", {"action": "bait"})
+                        except Exception:
+                            pass
+                        bot.key("esc")
+                        time.sleep(0.8)
+                        if (bot.state().get("activeMenu") or {}).get("type"):
+                            log(f"  ⚠️ 菜单关不掉: {m2.get('type')}，停止钓鱼")
+                            break
+                    if not (s2.get("activeMenu") or {}).get("type"):
+                        log("  菜单已关闭")
                 except Exception as e:
                     log(f"  ⚠️ 关菜单出错: {e}，停止钓鱼")
                     break
@@ -311,11 +330,11 @@ def run(port, location, max_casts=0, stamina_pct=15, no_sleep=False):
                 break
 
             sta_pct = bot.stamina_pct()
-            log(f"  check: stamina {sta_pct:.0f}%, time {game_time}, ~{fish_count} fish")
+            log(f"  check: stamina {sta_pct:.0f}%, time {game_time}, 抛~{cast_count}竿 · 钓上~{fish_caught}条")
 
     # stop fishbot
     bot.fishbot("off")
-    log(f"fishbot off, caught ~{fish_count} fish")
+    log(f"fishbot off, 抛{cast_count}竿 · 钓上{fish_caught}条")
 
     # 🎣 收杆：鱼线还甩着（isFishing/isReeling/isCasting）就按 cancel(=use-tool) 收线，
     # 避免直接传送后"嘎啦嘎啦"收线音效一直残留。

@@ -89,7 +89,7 @@
 | `read_book`(name=…) | 读书（消耗技能书领配方）|
 
 ### `quest(ops)` — 任务
-`list` `progress` `accept`
+`know`(查特别任务详情)；**看任务/进度用 `menu(ops="journal")` + `menu(ops="read")`（QuestLog 卡，含每子目标 current/max）**；接单走板上 `menu click(button=accept…)`
 
 ### `storage(ops)` — 箱子
 `scan`(扫箱) `store`(存进箱) `take`(取) `smart`(智能堆叠) `layout`(箱子网络) `default`/`cleardefault`/`tag`(设默认箱/清/标记)
@@ -171,7 +171,7 @@
 | `read_menu` / `menu_click` / `press_key` / `advance_story` / `cancel` / `shop_visit` / `sell_to_shop` / `forge` / `process_geode` | `menu(ops="read"/"click"/"key"/"advance"/"cancel"/"shop"/"sell"/"forge"/"geode")` |
 | `go_sleep` / `confirm_settlement` / `eat_item` / `set_appearance` / `wear` / `lie_bed` | `daily(ops="sleep"/"settle"/"eat"/"appearance"/"wear"/"lie_bed")` |
 | `scan_chests` / `chest_store` / `chest_take` | `storage(ops="scan"/"store"/"take")` |
-| `list_quests` / `quest_progress` | `quest(ops="list"/"progress")`；接单走板上 `menu click(button=accept…)`（accept_quest 已退役） |
+| ~~`list_quests` / `quest_progress`~~（2026-09-01 已退役：任务/进度改 `menu(ops="journal"/"read")` 读 QuestLog 卡，卡上含每子目标 current/max；`quest(ops="know")` 查详情） | 接单走板上 `menu click(button=accept…)`（accept_quest 已退役） |
 | `chat_npc` / `gift_npc` / `give_item` / `send_chat` / `emote` / `check_friendship` | `social(ops="chat"/"gift"/"give"/"send"/"emote"/"friendship")` |
 | `moss_run` / `berry_run` / `spot_run` / `pickup_scene` | `scene(ops="moss"/"berry"/"spot"/"pickup_scene")` |
 | `rock_run`（室外镐击） | `scene(ops="rock")`（08-29 新增） |

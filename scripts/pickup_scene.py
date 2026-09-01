@@ -106,12 +106,21 @@ def main():
     # 可拾取 = 可走 + 有 object + 不在黑名单；🌱 成熟大葱（forageCrop=1 + harvestable）也摘
     targets = []
     for t in data.get("tiles", []):
+        obj = t.get("object") or ""
+        oid = t.get("objId") or ""
+        # 🍄 2026-09-01 猪松露：SDV 里松露是放在 location.Objects 的普通 Object，但它 isPassable()=false
+        #    （不在游戏 passable 白名单，Category -81 动物产物）→ /surroundings 的 passable=false、
+        #    被下面 `if not passable` 当成障碍跳过，所以之前"没收松露"。
+        #    松露=猪产、直接可捡（走过去 interact 就进包），第一等采集物，不依赖 passable，按 objId 认。
+        #    捡取仍走 pick_up_object：目标格非可走 → walk_to 会落相邻可走格 → face+interact 捡到手。
+        if obj == "Truffle" or oid in ("430", "(O)430"):
+            targets.append((t["x"], t["y"], "松露(Truffle)"))
+            continue
         if not t.get("passable", True):
             continue
         if t.get("forageCrop") == "1" and t.get("harvestable") is not False:
             targets.append((t["x"], t["y"], "成熟大葱"))   # interact 摘 crop（不用锄头）
             continue
-        obj = t.get("object")
         if not obj:
             continue
         if any(blk in obj for blk in BLACKLIST):

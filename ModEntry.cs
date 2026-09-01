@@ -9104,13 +9104,59 @@ public class ModEntry : Mod
                                     if (q == null || cc == null) continue;
                                     string nm = "?", src = "?";
                                     bool done = false; int money = 0;
+                                    // 🎯 2026-09-01 恒拍板：菜单为唯一权威 → 每张卡顺带读子目标进度(同一批游戏对象已拿到)，
+                                    //    使 menu read(QuestLog) 就能看"做了几/做满没"，遂退役 list_quests(原始dump)+quest_progress。
+                                    //    objectives=特别订单子目标；progress=常规任务进度(复用 ReflectField，同 /quest_progress 逻辑)。
+                                    object? objectives = null;
+                                    object? progress = null;
+                                    int daysLeft = 0;   // ⏱ 剩余天数（2026-09-01 恒：菜单详情要"时限"，卡上直接给，AI 不用点进去才知道）
                                     try
                                     {
-                                        if (q is StardewValley.SpecialOrders.SpecialOrder so) { nm = so.GetName(); src = "specialOrders"; done = so.ShouldDisplayAsComplete(); money = so.GetMoneyReward(); }
-                                        else if (q is StardewValley.Quests.Quest quest) { nm = quest.questTitle; src = "questLog"; done = quest.completed.Value; money = quest.moneyReward.Value; }
+                                        if (q is StardewValley.SpecialOrders.SpecialOrder so)
+                                        {
+                                            nm = so.GetName(); src = "specialOrders"; done = so.ShouldDisplayAsComplete(); money = so.GetMoneyReward();
+                                            daysLeft = so.GetDaysLeft();
+                                            var objList = new List<object>();
+                                            if (so.objectives != null)
+                                            {
+                                                foreach (var obj in so.objectives)
+                                                {
+                                                    if (obj == null) continue;
+                                                    var desc = obj.GetDescription();
+                                                    // 若返回的是 localization key 格式（含 [ 或 Objective 关键词），手动从游戏数据解
+                                                    if (desc.StartsWith("[") || desc.Contains("Objective"))
+                                                    {
+                                                        try
+                                                        {
+                                                            var sd = Game1.content.Load<Dictionary<string, string>>("Strings\\SpecialOrderStrings");
+                                                            var rawKey = desc.Trim('[', ']');
+                                                            if (sd.TryGetValue(rawKey, out var rtxt) && !string.IsNullOrEmpty(rtxt)) desc = rtxt;
+                                                        }
+                                                        catch { }
+                                                    }
+                                                    objList.Add(new { description = desc, currentCount = obj.currentCount.Value, maxCount = obj.maxCount.Value, complete = obj.IsComplete() });
+                                                }
+                                            }
+                                            objectives = objList;
+                                        }
+                                        else if (q is StardewValley.Quests.Quest quest)
+                                        {
+                                            nm = quest.questTitle; src = "questLog"; done = quest.completed.Value; money = quest.moneyReward.Value;
+                                            daysLeft = quest.daysLeft.Value;
+                                            var qobj = (object)quest;
+                                            progress = new
+                                            {
+                                                target = ReflectField(qobj, "monsterName", "") + ReflectField(qobj, "target", ""),
+                                                killed = ReflectField(qobj, "numberKilled", "0"),
+                                                caught = ReflectField(qobj, "numberFished", "0"),
+                                                collected = ReflectField(qobj, "numberCollected", "0"),
+                                                required = ReflectField(qobj, "numberToKill", "0") + ReflectField(qobj, "numberToFish", "0") + ReflectField(qobj, "number", "0"),
+                                                itemId = ReflectField(qobj, "itemId", "") + ReflectField(qobj, "resource", "") + ReflectField(qobj, "item", ""),
+                                            };
+                                        }
                                     }
                                     catch { }
-                                    cards.Add(new { index = i, source = src, name = nm, completed = done, money, x = cc.bounds.Center.X, y = cc.bounds.Center.Y });
+                                    cards.Add(new { index = i, source = src, name = nm, completed = done, money, x = cc.bounds.Center.X, y = cc.bounds.Center.Y, objectives, progress, daysLeft });
                                 }
                                 if (cards.Count > 0) grabItems = cards;
                             }
@@ -10985,14 +11031,23 @@ public class ModEntry : Mod
         int ppx = GetParamOr(p, "x", -1);
         int ppy = GetParamOr(p, "y", -1);
         var locName = GetParamOr(p, "location", "");
+        bool onlyNormalize = GetParamOr(p, "normalize", false);
         if (ppx < 0 || ppy < 0)
-            throw new InvalidOperationException("x,y required");
+            onlyNormalize = true;   // 🔧 2026-09-01：没给坐标=只归一背包蟹笼(修"旧回收笼不堆")，不回收任何笼
 
         var tcs = new TaskCompletionSource<object>();
         EnqueueMainThread(() =>
         {
             try
             {
+                var farmer = Game1.player;
+                // 🔧 只归一（没坐标/显式 normalize=true）：不回收任何笼，纯整理背包蟹笼类型，供一键修"旧回收笼不堆"。
+                if (onlyNormalize)
+                {
+                    var (nTotal, nReAdded) = NormalizeCrabStacks(farmer, 0);
+                    tcs.SetResult(new { ok = true, normalize = true, total = nTotal, reAdded = nReAdded, merged = nTotal > 0 && nReAdded > 0 });
+                    return;
+                }
                 var loc = string.IsNullOrEmpty(locName) ? Game1.player.currentLocation
                     : Game1.getLocationFromName(locName) ?? Game1.player.currentLocation;
                 var tile = new Vector2(ppx, ppy);
@@ -11001,7 +11056,6 @@ public class ModEntry : Mod
                     tcs.SetResult(new { ok = false, error = "格子上没有蟹笼/物体", x = ppx, y = ppy });
                     return;
                 }
-                var farmer = Game1.player;
                 bool isCp = obj is StardewValley.Objects.CrabPot;
 
                 // 1) 已出货先收产出。满包放不下产出 → 不动笼直接回(不丢物)，让 AI 先腾背包
@@ -11026,11 +11080,9 @@ public class ModEntry : Mod
                 // 2) 移除笼本体（同 HandleClearGround 先例，清掉这块的水上笼）
                 loc.objects.Remove(tile);
 
-                // 3) 回背包一只新蟹笼（满包走菜单兜底，不丢）
-                var potToReturn = new StardewValley.Objects.CrabPot();
-                bool returned = farmer.addItemToInventoryBool(potToReturn);
-                if (!returned)
-                    farmer.addItemByMenuIfNecessary(potToReturn);
+                // 3) 回背包"商店/合成同款"普通蟹笼 + 归一背包所有蟹笼类型（根治混堆，逻辑见 NormalizeCrabStacks helper）。
+                var (crabTotal, reAdded) = NormalizeCrabStacks(farmer, 1);
+                bool returned = reAdded == crabTotal;
 
                 tcs.SetResult(new { ok = true, x = ppx, y = ppy, isCrabPotInstance = isCp,
                     outputCollected = output, returnedToInventory = returned });
@@ -11038,6 +11090,33 @@ public class ModEntry : Mod
             catch (Exception ex) { tcs.SetResult(new { ok = false, error = ex.Message }); }
         });
         return tcs.Task.GetAwaiter().GetResult();
+    }
+
+    /// 🦀 归一玩家背包里所有蟹笼为"商店/合成同款"普通 Object(710)（2026-09-01 恒，反编译坐实）：
+    ///   旧版 new CrabPot() 留 CrabPot 子类 vs 玩家原有普通 Object(710) → Item.canStackWith 首行 `GetType()!=` 不堆("不认")。
+    ///   做法：摘走背包所有蟹笼(CrabPot子类/普通710) → 重加普通 ItemRegistry.Create("(O)710") → addItem 自动合并成一组。
+    ///   extra=本次额外要回背包的笼数(回收=1，纯归一=0)。返回 (背包蟹笼总数, 成功重加数)。
+    private (int total, int reAdded) NormalizeCrabStacks(Farmer farmer, int extra = 0)
+    {
+        int crabTotal = Math.Max(0, extra);
+        for (int i = 0; i < farmer.Items.Count; i++)
+        {
+            var it = farmer.Items[i];
+            if (it is StardewValley.Objects.CrabPot || (it is StardewValley.Object ito && ito.QualifiedItemId == "(O)710"))
+            {
+                crabTotal += it.Stack;
+                farmer.Items[i] = null;
+            }
+        }
+        int reAdded = 0;
+        for (int k = 0; k < crabTotal; k++)
+        {
+            if (farmer.addItemToInventoryBool(ItemRegistry.Create("(O)710")))
+                reAdded++;
+        }
+        if (reAdded < crabTotal)
+            farmer.addItemByMenuIfNecessary(ItemRegistry.Create("(O)710", Math.Max(1, crabTotal - reAdded)));
+        return (crabTotal, reAdded);
     }
 
     /// <summary>

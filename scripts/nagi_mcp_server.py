@@ -1256,6 +1256,7 @@ def _forage_summary(is_green_rain: bool = None) -> str:
         spot_count = 0      # 🪱 蚯蚓点590 + 远古斑点SeedSpot（锄）
         ginger_count = 0    # 🫚 姜点 forageCrop="2"（锄，hitWithHoe）
         onion_count = 0     # 🌱 大葱 forageCrop="1" 成熟可收（摘）
+        truffle_count = 0   # 🍄 猪产松露（放在 loc.Objects 的 (O)430，isPassable()=false，不靠 passable 判）
         moss_tree_count = 0       # 🌿 长苔藓树 moss:True（镰刀打苔藓）
         greenrain_tree_count = 0  # 🪓 苔雨树 greenRainTree:True（斧头砍）
         moss_weed_small = 0       # 🌿 苔藓杂草-小块 GreenRainWeeds* 对象（镰刀/剑）
@@ -1292,6 +1293,11 @@ def _forage_summary(is_green_rain: bool = None) -> str:
             if has_hoe and t.get("objId") in ("(O)590", "590", "(O)SeedSpot", "SeedSpot"):
                 spot_count += 1
                 continue
+            # 🍄 2026-09-01 猪松露：isPassable()=false（Category -81 动物产物不在游戏 passable 白名单）
+            #    → passable 判定会甩掉它；松露=直接可捡的第一等采集物，按 objId 认、不依赖 passable。
+            if t.get("object") == "Truffle" or t.get("objId") in ("430", "(O)430"):
+                truffle_count += 1
+                continue
             if not t.get("passable", True):
                 continue
             obj = t.get("object")
@@ -1302,13 +1308,14 @@ def _forage_summary(is_green_rain: bool = None) -> str:
             counts[obj] = counts.get(obj, 0) + 1
         moss_weed_big = _count_clump_blocks(moss_big_tiles)
         if not counts and not berry_bushes and not spot_count and not ginger_count \
-                and not onion_count and not moss_tree_count and not greenrain_tree_count \
-                and not moss_weed_big and not moss_weed_small:
+                and not onion_count and not truffle_count and not moss_tree_count \
+                and not greenrain_tree_count and not moss_weed_big and not moss_weed_small:
             return ""
         parts = []
         if berry_bushes: parts.append(f"🍓浆果灌木×{berry_bushes}")
         if ginger_count: parts.append(f"🫚姜×{ginger_count}")
         if onion_count: parts.append(f"🌱大葱×{onion_count}")
+        if truffle_count: parts.append(f"🍄松露×{truffle_count}")
         if moss_weed_big or moss_weed_small:
             _lbl = f"🌿苔藓杂草×{moss_weed_big + moss_weed_small}"
             if moss_weed_big and moss_weed_small:
@@ -3188,7 +3195,7 @@ def _order_display(quest_key: str, req_en: str) -> str:
 
 def _special_orders_inject(season: str, day, year, morning: bool) -> str:
     """📋 每周一注入一条**轻提醒**"特别任务可接取，去看展板"（2026-08-22 恒：不给清单，AI 自己去展板看）。
-    条件：周一 + 两块板都解锁（镇板=年1秋2后；齐板=姜岛解锁 IslandSouth 未锁）。具体可接单让 AI 去展板/quest list 看。"""
+    条件：周一 + 两块板都解锁（镇板=年1秋2后；齐板=姜岛解锁 IslandSouth 未锁）。具体可接单让 AI 去展板 menu read，或用 menu journal/menu read 看已接。"""
     try:
         if not morning or not isinstance(day, int):
             return ""
@@ -3207,8 +3214,8 @@ def _special_orders_inject(season: str, day, year, morning: bool) -> str:
         avail = [q for q in (r.get("quests") or []) if q.get("source") == "availableSpecialOrders"]
         if not avail:
             return ""
-        # ⚠️ 只提醒，不枚举具体哪单——AI 自己 map go 镇板/核桃房去看展板，或 quest list 查当前可接
-        return "📋 特别任务板本周有可接任务：去鹈鹕镇展板或齐先生核桃房看（接单走 menu click accept；quest list 查当前）"
+        # ⚠️ 只提醒，不枚举具体哪单——AI 自己 map go 镇板/核桃房去看展板，或 menu journal/menu read 看已接
+        return "📋 特别任务板本周有可接任务：去鹈鹕镇展板或齐先生核桃房 menu read 看（接单走 menu click accept；已接用 menu journal/menu read 查）"
     except Exception:
         return ""
 
@@ -3313,7 +3320,7 @@ def _re_questkey(dump: str) -> str:
 
 def _quest_know_hint() -> str:
     """📖 有已接/可接特别订单时 → 提示用 quest know <名> 查详情（知识库 enum 引导，2026-08-22 恒）。
-    挂在 list_quests / quest_progress 末尾——AI 看"已接任务面板"时知道去哪查详细。"""
+    挂在 menu read(QuestLog) / 任务相关输出末尾——AI 看"已接任务面板"时知道去哪查详细。"""
     try:
         r = api._get("/quest_list")
         has = any(q.get("source") in ("specialOrders", "availableSpecialOrders") for q in (r.get("quests") or []))
@@ -7049,6 +7056,13 @@ def settings(setting: str = "", value: str = "", ops: str = "", **kw) -> Any:
 #  🔍 check 超级工具（A2 查询域入口，2026-08-13 #10）
 #  ⚠️ 边界：check_status=概览（状态条同款）；check_backpack=逐格详细。查啥用 check。
 # ═══════════════════════════════════════════
+def _quest_menu_hint() -> str:
+    """📜 check quest 指引：任务/进度一律走菜单（2026-09-01 恒拍板：菜单为唯一权威，退役 list_quests/quest_progress）。"""
+    return _with_state(
+        "📜 任务看 **menu journal**(开日志) + **menu read**(读QuestLog卡，卡上含每子目标 current/max 进度)；"
+        "接单去展板 **menu read** + click(button=accept…)；查某单详情用 **quest know <名>**")
+
+
 @mcp.tool()
 def check(what: str) -> str:
     """🔍 查询域（what=...，非 ops）。status(完整状态) backpack(逐格价值/星级) worn(穿戴) machines(机器)
@@ -7067,7 +7081,7 @@ def check(what: str) -> str:
         "silo": silo_status, "hay": silo_status,
         "mastery": mastery_status, "精通": mastery_status,
         "buildings": building_list, "building": building_list, "building_list": building_list,
-        "quest": list_quests, "quests": list_quests, "任务": list_quests,
+        "quest": _quest_menu_hint, "quests": _quest_menu_hint, "任务": _quest_menu_hint,
         "chests": scan_chests, "箱子": scan_chests,
         "storage": storage_layout, "存储": storage_layout,
         "look": look_around, "周围": look_around, "环视": look_around,
@@ -8208,6 +8222,19 @@ def _crab_retract(x=None, y=None, location=None) -> str:
     return "\n".join(log)
 
 
+def _crab_normalize() -> str:
+    """🦀 归一背包所有蟹笼为"商店/合成同款"普通蟹笼，一键修"回收蟹笼不堆叠"(2026-09-01)。
+    根因：旧版 new CrabPot() 留 CrabPot 子类 vs 玩家原有普通 Object(710) → Item.canStackWith 首行比 GetType() 不堆。
+    纯整理不回收任何笼；调用 /crab_retract {normalize:true}（需新 DLL）。"""
+    r = api._post("/crab_retract", {"normalize": True})
+    if r.get("ok"):
+        total, re = r.get("total", 0), r.get("reAdded", 0)
+        if total <= 0:
+            return "✅ 背包里没有蟹笼，无需归一"
+        return f"✅ 背包蟹笼已归一：共 {total} 只 → 重加 {re} 只（{'合并成一组' if r.get('merged') else '异常，未合并'}）"
+    return f"❌ 归一失败: {r.get('error') or '?'}"
+
+
 @mcp.tool()
 def _fish_info(location: str) -> str:
     """🐟 查某地能钓什么鱼（含季节/天气条件）。知识源 locations.FISH_KNOWLEDGE。"""
@@ -8263,6 +8290,8 @@ def fish(ops: str = "", **kw) -> str:
         "crab_collect": _crab_collect, "收笼": _crab_collect,
         "crab_diag": _crab_diag, "诊断笼": _crab_diag,
         "crab_retract": _crab_retract, "回收笼": _crab_retract,
+        # 🚫 2026-09-01 恒：crab_normalize/归一笼 退役不暴露(仅清自己存档旧乱堆笼的一次性便利件，端用户遇不到；
+        #     修复本身靠回收时归一，`_crab_normalize` 函数留作内部兜底不注册)。
     }
     return _with_state(_ops_run(ops, dispatch, kw))
 
@@ -8428,6 +8457,8 @@ def open_questlog() -> str:
 @mcp.tool()
 def menu(ops: str = "", **kw) -> str:
     """📋 界面/菜单域（开→看→点）。ops: read(看菜单) number(数量输入 value=N/只读 confirm=确定)
+    journal(开任务日志→menu read 读每页≤6卡：卡含⏱时限+子目标current/max进度+📍交付点；翻页=click(button=forward/back)；
+    领已完成+有钱的卡奖励=click(button=rewardBox)；收起=click(button=close))  —— 🧭 2026-09-01 enum引导
     display_fill(农展台放满 items='钻石,山羊奶酪' 或 '珍珠×2' 一次放N件) advance(推进剧情)
     click(option/item/button/xy) key(confirm/esc/数字按键) cancel(关) shop(逛店 place,want) sell(卖) bin(出货箱)
     cook(做饭) craft(合成) recipes(菜谱) craftables(配方) forge(锻造) geode/geodes(砸晶球) customize(捏人)
@@ -8485,14 +8516,14 @@ def menu(ops: str = "", **kw) -> str:
 
 @mcp.tool()
 def quest(ops: str = "", **kw) -> str:
-    """📜 任务域。ops: list(全部) progress(进度) know(特别任务知识,如"know 岛屿食材")。**接单走板上 menu click(button=accept…)**（可靠 UI 路径，子目标会初始化）；quest accept 已退役。细节→help(quest)。
+    """📜 任务域。**看任务/进度走 `menu journal`(开日志) + `menu read`(读QuestLog卡，卡上含每子目标 current/max)**；
+    know(特别任务知识库，如"know 岛屿食材")。**接单走板上 menu click(button=accept…)**（可靠 UI 路径，子目标会初始化）。
+    🚫 2026-09-01：quest list / quest progress(原内部抽象，曾给"绿豆"数据)已退役——菜单为唯一权威，进度都从 menu read 的卡读。
     Args:
-        ops: 操作序列
+        ops: 操作序列 (know)
         **kw: 对应操作参数
     """
     dispatch = {
-        "list": list_quests, "列表": list_quests,
-        "progress": quest_progress, "进度": quest_progress,
         "know": calendar_data.special_orders_available, "知识": calendar_data.special_orders_available,
     }
     return _with_state(_ops_run(ops, dispatch, kw))
@@ -10140,7 +10171,7 @@ def _festival_strength(delay: int = 400) -> str:
                 time.sleep(0.4)
             else:
                 break
-        # 开/复用力�测试机（站 29,56 朝右 1，机器 30,56）
+        # 开/复用力量测试机（站 29,56 朝右 1，机器 30,56）
         m = api._get("/menu")
         if not (m.get("open") and m.get("type") == "StrengthGame"):
             api._post("/position", {"x": 29, "y": 56})
@@ -11212,7 +11243,7 @@ _DOMAIN_GUIDES = {
 "social": "社交域：chat(跟NPC搭话) gift(送礼提好感) give(送玩家物品) send(发消息) emote(表情) friendship(查好感) movie(影院知识) snack(零食)。",
 "scene": "场景交互域(点东西/工具/转身/捡)：at(x,y)(点指定格/柜台) interact(点面前) use(挥工具) face(转向0上1右2下3左) select(拿手上) pickup(拿起家具) pickup_scene(捡当前场景物) berry(摇浆果) spot(挖蚯蚓点) moss(绿雨搜苔藓) rock(室外镐击:敲当前图可破物,采石场/挖掘场/蚌矿场跳普通石,dig/dry,battle-free) garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物) furniture(扫家具) place(放置/播种:name=物品名,x/y=目标格→箱子/树种/蟹笼落地或种下,只放可放置物) break(拆/敲:x,y=目标格,steps=挥击次,radius=方圆→镐子敲石头/翻已耕地,跳过箱子/容器格) maze(迷宫视图r半径,gx/gy目标格→ASCII棋盘#墙.可走P自己G目标) maze_seg(走法链gx,gy目标→拆直走廊列表+拼「左/右上/下走到(x,y)」多段链,AI按段walk_to)。",
 "menu": "菜单/界面域(开→看→点)：read(看菜单) advance(推进剧情/对话) click(option/item/button/xy 点;action=claim领/action=discard丢桶腾格;slot=序号领指定格) key(ok/esc/数字按键) cancel(关弹窗/撤就绪) shop(逛店) sell(卖商店) bin(投出货箱) cook(做饭) craft(合成) recipes(菜谱) craftables(配方) forge(锻造) geode/geodes(砸晶球) customize(捏人) bundle(献祭板) bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读消耗品:书/秘密纸条/日记残页,统一走右键读 name=物品名) levelup_choose(技能升级职业选择 5/10级:不带参读左右选项,side=left/right 或 profession=职业id 定分支;普通升级自会确认OK)。🚫满包接鱼/领箱:原 claim_swap(替换领取)已退役→**click action=discard 丢桶腾格(回收返金)+action=claim 领取(或用 slot 领指定格;不想要直接 button=ok 关掉)**。🧾关闭菜单一律 click(button=upperRightCloseButton)（ItemGrabMenu/交付容器用 button=ok 确认才关）；订单交付容器(QuestContainerMenu)=点背包对应物品格(见slots的坐标)→放进→点 button=ok 结算；任务日志领钱=点击已完成的有钱任务卡后 click(button=rewardBox)；兑奖机兑换=click(button=mainButton)；特别订单领奖链=日志领钱(上面)→社区板旁领奖箱(60,93)拿兑奖券→刘易斯家兑奖机(mainButton)兑换。",
-"quest": "任务域：list(全部) progress(进度)；接单走板上的 menu click(button=accept…)。",
+"quest": "任务域：know(查特别任务详情,如 quest know 岛屿食材)。🚫看任务/进度改走 menu(ops=journal/read)读 QuestLog 卡(含每子目标 current/max,菜单为唯一权威)；接单走板上的 menu click(button=accept…)。",
 "storage": "箱子域：scan(扫当前图箱) store(存) take(取) smart(智能堆叠) layout(箱子网络) default/cleardefault/tag(默认箱/清/标记)。",
 "daily": "过日子域：sleep(睡觉) settle(确认过夜结算) eat(吃食物回血体力) wear(穿/脱衣物) lie_bed(躺床不过夜) heartbeat(心跳间隔) pause(后台不暂停) peek(看恒干嘛) whiteboard/wb_read/wb_pin/wb_clear(白板记忆) appearance(捏脸)。",
 "map": "导航域(🗺️跨图唯一入口)：lookup(查地点功能+出口) query(功能反查) go(走到目标/多段寻路+交通) walk(走到POI) movetile(同图精确走位) npc(找NPC) warp_safe(紧急逃脱)。⚠️出口走出口前一格；交通图腾柱>矿车>走路。",
@@ -12019,12 +12050,11 @@ def clear_ground(x: int, y: int) -> str:
 #  任务系统
 # ═══════════════════════════════════════════
 
-@mcp.tool()
+# 🚫 2026-09-01 恒拍板：list_quests / quest_progress 已退役——原靠 DumpObj 原始字段 + /quest_progress 抽象字段
+#    （曾给"绿豆"不明数据）。任务改成"菜单为唯一权威"：menu journal 开日志 + menu read 读 QuestLog 卡(含子目标进度)。
+#    这两个函数留作内部兜底(不再 @mcp.tool、不再域 dispatch；仅 /quest_list 端点仍被 _quest_know_hint 用)。
 def list_quests() -> str:
-    """📋 列出所有任务
-    返回当前已接任务（常规+特殊订单）以及布告板上可接的特殊订单。
-    dump 字段包含所有原始数据。
-    """
+    """📋 🚫 已退役（不再暴露给 AI）。任务看 menu journal + menu read。"""
     try:
         r = api._get("/quest_list")
         if r.get("ok"):
@@ -12052,12 +12082,8 @@ def list_quests() -> str:
 #    内部端点 /quest_accept 仍留在 C#（未删，需重编译 DLL 才清），此处不再暴露/推荐。
 
 
-@mcp.tool()
 def quest_progress() -> str:
-    """📋 查看所有任务详细进度
-    返回日常求助、常规任务、特殊订单的细分进度。
-    特殊订单会列出每个子目标的 currentCount/maxCount。
-    """
+    """📋 🚫 已退役（不再 @mcp.tool、不再域 dispatch）。任务进度一律走 menu read(QuestLog 卡含子目标）。"""  # kept internal for fallback
     try:
         r = api.quest_progress()
         if r.get("ok"):
@@ -12399,7 +12425,7 @@ def read_menu() -> str:
                     lines.append(f"  {status} 今日求助：{q.get('title', '?')}")
                     lines.append(f"    {q.get('description', '')}")
                     lines.append(f"    ⏱ 剩 {q.get('daysLeft', '?')}天  💰 {rw}g")
-                    lines.append("  💡 交付：收集够任务物品带到对应NPC交给它；进度用 quest progress 看")
+                    lines.append("  💡 交付：收集够任务物品带到对应NPC交给它；进度开 menu journal + menu read 看(卡上含每子目标 current/max)")
                 else:
                     lines.append("  （今日没有求助任务）")
             except Exception:
@@ -12416,11 +12442,31 @@ def read_menu() -> str:
                     st = "✅" if c.get("completed") else "⏳"
                     src = "📋特" if c.get("source") == "specialOrders" else "📜常"
                     ln = f"    {st} [{src}] {c.get('name')}"
+                    if (c.get("daysLeft") or 0) > 0:
+                        ln += f" ⏱{c.get('daysLeft')}天"
                     if c.get("completed") and c.get("money"):
                         ln += f" 💰{c.get('money')}g → menu click(x={c['x']}, y={c['y']}) 选中卡 → click(button=rewardBox) 领"
                     else:
                         ln += f" @(x={c['x']}, y={c['y']}) 点卡看详情"
                     lines.append(ln)
+                    # 🎯 2026-09-01 恒拍板：菜单为唯一权威 → 卡上直接读子目标/常规进度（读菜单正在用的游戏对象，不另调内部抽象）
+                    objs = c.get("objectives") or []
+                    if objs:
+                        for obj in objs:
+                            o_icon = "✅" if obj.get("complete") else "⏳"
+                            t = f"      {o_icon} {obj.get('description') or ''}"
+                            cur, mx = obj.get("currentCount"), obj.get("maxCount")
+                            if cur is not None and mx:
+                                t += f" ({cur}/{mx})"
+                            lines.append(t)
+                    prog = c.get("progress") or {}
+                    pparts = []
+                    for icon, key in (("💀", "killed"), ("🐟", "caught"), ("📦", "collected")):
+                        v = str(prog.get(key) or "0")
+                        if v and v != "0":
+                            pparts.append(f"{icon} {v}/{prog.get('required') or '?'}")
+                    if pparts:
+                        lines.append(f"      进度: {' | '.join(pparts)}")
                     # 📍 打开某已接特别订单→插交付点提示（2026-08-29 恒）；「神秘的齐」纸条链按步动态给
                     if c.get("source") == "specialOrders":
                         dh = _delivery_hint(c.get("name"))
@@ -12430,6 +12476,13 @@ def read_menu() -> str:
                         lines.append(f"      {dh}")
                 if rb:
                     lines.append("  💰 rewardBox 在 → 选中已完成+有钱的卡后 menu click(button=rewardBox) 领钱")
+                # 🧭 2026-09-01 恒拍板 enum引导：菜单交互四件套，让 AI 不猜（详情/领奖/翻页/关闭）。
+                #    卡上已直接给子目标进度+⏱时限+📍交付点；点卡看完整描述，>6张才翻页。
+                lines.append("  🧭 操作：①看详情=menu click(x,y) 选卡（完整描述在详情页；卡面已含子目标进度/⏱时限/📍交付） "
+                             "②领已完成+有钱=menu click(button=rewardBox) ③翻页(>6张)=menu click(button=forward/back) ④收起=menu click(button=close)")
+                _kh = _quest_know_hint()
+                if _kh:
+                    lines.append(_kh + "；接单走板上 menu click(button=accept…)")
             else:
                 if rb:
                     lines.append("  💰 本日志有可领奖励：选中完成+有钱的任务卡后 menu click(button=rewardBox) 领钱")
