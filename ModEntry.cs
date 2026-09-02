@@ -3232,6 +3232,32 @@ public class ModEntry : Mod
         }
     }
 
+    // 💎 齐钻 + 🌰 金核桃 计数（2026-09-02 恒：状态条"变才报"用——齐钻在矿/齐单变化、核桃房全程；金核桃只在姜岛）。
+    //   SafeWalnuts 用反射安全读 team.collectedWalnuts（SDV 字段名变体 NetInt/int 都兼容；读不到返回 0 静默，不炸编译）。
+    private static int SafeQiGems(Farmer f)
+    {
+        try { return f.QiGems; } catch { return 0; }
+    }
+    private static int SafeWalnuts(Farmer f)
+    {
+        try
+        {
+            var team = f.team;
+            if (team == null) return 0;
+            var p = team.GetType().GetProperty("collectedWalnuts");
+            if (p == null) return 0;
+            var v = p.GetValue(team);
+            if (v is int iv) return iv;
+            if (v != null)
+            {
+                var vp = v.GetType().GetProperty("Value");
+                if (vp != null && vp.GetValue(v) is int ii) return ii;
+            }
+            return 0;
+        }
+        catch { return 0; }
+    }
+
     private object HandleState(HttpListenerContext ctx)
     {
         if (!Context.IsWorldReady)
@@ -3476,6 +3502,8 @@ public class ModEntry : Mod
                 festivalScore = farmer.festivalScore,   // 🥚 蛋蛋节捡蛋进度（festival eggrun 用，2026-08-17）
                 voucherPending = Game1.player.stats.Get("specialOrderPrizeTickets"),   // 🎟️ 特别订单领奖箱**待领券数**（>0=有气泡可拿，2026-08-29 恒反编译 GameLocation "SpecialOrdersPrizeTickets"）
                 prizeTickets = farmer.Items.CountId("PrizeTicket"),   // 🎟️ 手头兑奖券数量（兑奖机 mainButton 兑换用）
+                qiGems = SafeQiGems(farmer),   // 💎 齐钻（矿/齐先生单变化；核桃房全程；2026-09-02 状态条变才报）
+                walnuts = SafeWalnuts(farmer),   // 🌰 金核桃（只在姜岛；2026-09-02 状态条变才报）
                 buffs = EnumerateBuffs(farmer),
                 fishing = farmer.CurrentTool is FishingRod rod ? new
                 {

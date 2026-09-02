@@ -586,7 +586,10 @@ def _chat_phase_line(data, menu_type, tod, loc_name) -> str:
         # 判定环节（互斥：结算菜单时 AI 已醒不在床；等睡时还在床上、无结算菜单）
         if menu_type == "ShippingMenu":
             phase = "settlement"
-        elif p.get("isInBed") or p.get("isSleeping") or menu_type == "ReadyCheckDialog":
+        elif p.get("isInBed") and menu_type == "ReadyCheckDialog":
+            # 2026-09-02 恒：等睡注入=【在床 isInBed + 弹准备菜单 ReadyCheckDialog】双条件。
+            #   isInBed 太宽(躺一下就成立→全天冻住)；ReadyCheckDialog 又不专属睡觉(一起参与节日/乘车
+            #   同样会弹等待菜单)。两者 AND 才=真"躺床等同伴入睡"，节日等车不误冻。
             phase = "wait_sleep"
         else:
             phase = None
@@ -677,6 +680,24 @@ def _festival_currency_str(data: dict) -> str:
         return ""
 
 
+# 🟡 step2 真增量(2026-09-02)：状态条"变才报"快照。记录上次注入的资源值；换天重置。
+#    血量/体力/钱/背包/手持 平时静默，变了(或当时上下文)才写。——查完整值走 /state / check status。
+_STATE_DELTA = {"day_key": None, "health": None, "stamina": None, "money": None, "bag_used": None, "tool": None,
+                "loc": None, "health_n": None, "qi": None, "walnut": None}
+_MONSTER_WARN = {"ts": 0.0}   # ⚔️ 农场掉血=有怪提醒，30s 节流防刷屏
+
+
+def _delta_show(key, val):
+    """状态条真增量判定：val 与上次注入不同 → 更新快照并返回 True；相同 → False(不重复报)。"""
+    try:
+        if _STATE_DELTA.get(key) != val:
+            _STATE_DELTA[key] = val
+            return True
+    except Exception:
+        return True
+    return False
+
+
 def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
     """从状态数据构建状态速报。
 
@@ -694,6 +715,16 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
     alerts = data.get("alerts", [])
     active_menu = data.get("activeMenu")
     active_event = data.get("activeEvent")
+
+    # 🟡 step2 真增量：换天重置快照 → 每天首次(晨报)展示整份地基，此后只吐变化项。
+    try:
+        _dk = api.day_key()
+        if _STATE_DELTA.get("day_key") != _dk:
+            _STATE_DELTA.update({"day_key": _dk, "health": None, "stamina": None,
+                                 "money": None, "bag_used": None, "tool": None,
+                                 "loc": None, "health_n": None})
+    except Exception:
+        pass
 
     # ── 位置 & 时间（必选） ──
 
@@ -803,13 +834,13 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
     if _bh:
         lines.append(f"  {_bh}")
 
-    # 🛠️ 动态工具检测（2026-08-14 #13）：本图可用的地点绑定域（farm/care/mine）——帮 AI 知道调哪些域
+    # 🛠️ 动态工具检测（2026-08-14 #13）：本图可用的地点绑定域（farm/mine/cabin）——帮 AI 知道调哪些域
     try:
         _dom = _domains_here(loc_name)
         if _dom:
             lines.append(f"  🛠️ 可用域: {'/'.join(_dom)}")
         elif loc_name not in ("Farm", "FarmHouse", "Cabin", "Backwoods", "Tunnel", "Mine", "SkullCave"):
-            lines.append("  🛠️ 本图 farm/mine/care 不适用")
+            lines.append("  🛠️ 本图 farm/mine/cabin 不适用")
     except Exception:
         pass
 
@@ -931,7 +962,53 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
         _fest_curr = _festival_currency_str(data)
     except Exception:
         _fest_curr = ""
-    lines.append(f"❤️ {hp} | 💪 {st_str} | 💰 {money_str}{_fest_curr} | {bag_str}{tool_str}")
+    # 🟡 step2 真增量：血量/体力/钱/背包/手持 变才报(或当时上下文常显)，平时静默省 token。
+    #    血量在矿井常显；钱在商店/节日常显；背包接近满(≤3空)常显。完整值 → /state / check status。
+    _in_mines = (loc_name in ("Mine", "SkullCave", "VolcanoDungeon", "VolcanoDungeon0")
+                 or loc_name.startswith("UndergroundMine"))
+    _menu_t2 = (active_menu or {}).get("type", "")
+    _res_parts = []
+    if _delta_show("health", hp) or _in_mines:
+        _res_parts.append(f"❤️ {hp}")
+    if _delta_show("stamina", st_str):
+        _res_parts.append(f"💪 {st_str}")
+    if _delta_show("money", money) or "Shop" in _menu_t2 or bool(active_event) or bool(_fest_curr):
+        _res_parts.append(f"💰 {money_str}{_fest_curr}")
+    if _delta_show("bag_used", used) or free <= 3:
+        _res_parts.append(bag_str)   # bag_str 已含 🎒 图标
+    _tool_changed = _delta_show("tool", ct)
+    if ct and _tool_changed:
+        _res_parts.append(f"🔧 {ct}")
+
+    # ⚔️ 2026-09-02 恒：农场掉血=可能有怪(荒野农场/女巫雕像引到普通农场)。
+    #    前一次+当前都在农场 且 血量下降 → 提醒快回家。30s 节流防连续挨打刷屏；基线首次/换天为 None 不误报。
+    try:
+        _hp_n = p.get("health")
+        if (loc_name == "Farm" and _STATE_DELTA.get("loc") == "Farm"
+                and _hp_n is not None and _STATE_DELTA.get("health_n") is not None
+                and _hp_n < _STATE_DELTA["health_n"]):
+            if time.time() - _MONSTER_WARN["ts"] > 30:
+                _MONSTER_WARN["ts"] = time.time()
+                lines.append("⚔️ 农场掉血！可能有怪(荒野/女巫雕像引来)——快回农舍躲屋里，别在场上硬扛")
+        _STATE_DELTA["loc"] = loc_name
+        if _hp_n is not None:
+            _STATE_DELTA["health_n"] = _hp_n
+    except Exception:
+        pass
+
+    if _res_parts:
+        lines.append(" | ".join(_res_parts))
+
+    # 💎🌰 step2 变才报：齐钻 + 金核桃（2026-09-02 恒）。齐钻=矿/齐先生单变化才报、核桃房(QiNutRoom)全程常显；
+    #    金核桃只在姜岛变化才报。持久货币换天不重置基线 → 只在真变化时出现。（/state 尚无这两字段时 p.get=Null，自动静默）
+    try:
+        _qi = p.get("qiGems"); _wal = p.get("walnuts")
+        if _qi is not None and (_delta_show("qi", _qi) or loc_name == "QiNutRoom"):
+            lines.append(f"💎 齐钻 {_qi}")
+        if _wal is not None and _delta_show("walnut", _wal) and loc_name.startswith("Island"):
+            lines.append(f"🌰 金核桃 {_wal}")
+    except Exception:
+        pass
 
     # 📚 手持书 → 提示用 read_book 读（别用 /use 放地上收不回；2026-08-16 恒测读书）
     try:
@@ -1766,16 +1843,9 @@ _ASYNC_SCRIPTS = {"mine_run", "fish_run", "bomb_mine", "bomb_escort", "bomb_volc
                   "building_round", "fruit_round", "machine_loader", "water_crops"}
 
 
-@mcp.tool()
 def async_config(show: bool = False, add: str = "", remove: str = "", enable: str = "") -> str:
-    """🚀 异步配置域（2026-08-16 恒拍板：白名单/开关暴露给 MCP 端改动）
-    长脚本自动异步：便利工具跑白名单里的长任务 → 自动后台跑（被动异步，AI 不用手动 script_start）。
+    """🚀 异步配置（长脚本自动后台=被动异步，AI 不用手动 script start）。show 看白名单+开关 / add·remove 改白名单(name,不带.py) / enable on|off(同 settings async_tools)。细节→help(scripts)。
 
-    Args:
-        show: 查看当前白名单 + 开关状态
-        add: 把脚本名加入异步白名单（如 "mine_run"；不加 .py）
-        remove: 把脚本名移出异步白名单
-        enable: 总开关 on/off（同 settings async_tools；默认 on）
     """
     global _ASYNC_SCRIPTS
     if enable:
@@ -1830,7 +1900,7 @@ def _run_script(name: str, args_list: Optional[list] = None, timeout: int = 60,
         if err:
             return err
         return (f"🚀 已后台启动「{name} {' '.join(args_list) if args_list else ''}」→ job {job.job_id}\n"
-                f"  查进度: script_status(\"{job.job_id}\")   停止: script_stop(\"{job.job_id}\")")
+                f"  查进度: script(ops=\"status\", kw={{\"job_id\":\"{job.job_id}\"}})   停止: script(ops=\"stop\", kw={{\"job_id\":\"{job.job_id}\"}})")
 
     cmd = [sys.executable, script_path]
     if args_list:
@@ -3319,14 +3389,14 @@ def _re_questkey(dump: str) -> str:
 
 
 def _quest_know_hint() -> str:
-    """📖 有已接/可接特别订单时 → 提示用 quest know <名> 查详情（知识库 enum 引导，2026-08-22 恒）。
+    """📖 有已接/可接特别订单时 → 提示用 menu know <名> 查详情（知识库 enum 引导，2026-08-22 恒）。
     挂在 menu read(QuestLog) / 任务相关输出末尾——AI 看"已接任务面板"时知道去哪查详细。"""
     try:
         r = api._get("/quest_list")
         has = any(q.get("source") in ("specialOrders", "availableSpecialOrders") for q in (r.get("quests") or []))
         if not has:
             return ""
-        return "📖 查某单详细用 quest know <任务名>（如 quest know 岛屿食材/历史的碎片；知识库 SPECIAL_ORDERS）"
+        return "📖 查某单详细用 menu know <任务名>（如 menu know 岛屿食材/历史的碎片；知识库 SPECIAL_ORDERS）"
     except Exception:
         return ""
 
@@ -5241,7 +5311,7 @@ def _pet_animals_in_building() -> str:
         data = api.animals()
         all_a = data.get("animals", [])
         if not all_a:
-            return "没有动物（可能跑 Farm 放牧了——care 会去 Farm 处理室外放牧动物）"
+            return "没有动物（可能跑 Farm 放牧了——farm animals 会去 Farm 处理室外放牧动物）"
         out = _run_script("pet_walk", [], timeout=300)
         return f"🐄 摸牲畜：\n{_pet_digest(out)}"
     except Exception as e:
@@ -5272,7 +5342,7 @@ def _milk_shear_animals(skip_grabber: bool = False) -> str:
             try:
                 _ms = api.machines()
                 if any("Grabber" in (x.get("type") or "") for x in (_ms.get("machines") or [])):
-                    return "🤖 这间有自动采集器，产物已自动收集——不用挤奶/剪毛，只用 care animals 摸摸"
+                    return "🤖 这间有自动采集器，产物已自动收集——不用挤奶/剪毛，只用 farm animals 摸摸"
             except Exception:
                 pass
         data = api.animals()
@@ -5541,7 +5611,7 @@ def care_animals() -> str:
 def milk_shear() -> str:
     """🐮🐑 挤牛奶 + 剪羊毛：进所有动物建筑，对奶牛/绵羊选对应工具逐个交互
     游戏自动处理：有产物收集进背包，没产物弹提示（小牛小羊无奶/刚挤过）。
-    没带挤奶桶/剪刀会提示去玛妮牧场买。配合 care animals（摸）一起用。
+    没带挤奶桶/剪刀会提示去玛妮牧场买。配合 farm animals（摸）一起用。
     """
     warp_log = _warp_home_if_needed("Farm")
     buildings = _find_animal_buildings()
@@ -6757,7 +6827,6 @@ def whiteboard_clear() -> str:
     return _with_state(f"🧹 白板已清（归档 {len(cleared)} 条，保留 pin {len(keep)} 条）")
 
 
-@mcp.tool()
 def session_status() -> str:
     """🧠 会话缓冲状态（条数 / 设置 / 导出文件路径）
     看看这一局记了多少上下文，设了啥。
@@ -6772,7 +6841,6 @@ def session_status() -> str:
     return _with_state("\n".join(lines))
 
 
-@mcp.tool()
 def session_set(setting: str, value: str) -> str:
     """🧠 改会话缓冲设置
     setting: max_turns(缓冲区轮次) / export_format(jsonl/markdown/both) / auto_export(true/false) / include_npc(true/false)
@@ -6798,13 +6866,42 @@ def session_set(setting: str, value: str) -> str:
     return _with_state(f"🧠 {setting} = {SESSION_CFG[setting]}")
 
 
-@mcp.tool()
 def session_export() -> str:
     """📤 手动导出会话缓冲（供 LLM 前端记忆归档）
     游戏结束自动导出（auto_export=true 时），也可手动调。
     """
     _session_export()
     return _with_state(f"📤 已导出 {len(_session_context)} 条会话（session_{_session_ts}）")
+
+
+# ═══════════════════════════════════════════
+#  🧠 会话域（2026-09-02：session_status/set/export 三合一并入此域）
+# ═══════════════════════════════════════════
+def _session_status():
+    return session_status()
+
+
+def _session_set(setting: str = "", value: str = ""):
+    return session_set(setting, value)
+
+
+def _session_exportop():
+    return session_export()
+
+
+@mcp.tool()
+def session(ops: str = "", kw: dict | None = None) -> str:
+    """🧠 会话域（上下文缓冲，多数不用）。ops: status(看缓冲条数/设置) set(改 setting,value) export(手动导出记忆)。
+    Args:
+        ops: 动作（status/set/export）
+        kw: set 的 {setting,value}；其余空参即可
+    """
+    dispatch = {
+        "status": _session_status, "看": _session_status,
+        "set": _session_set, "改": _session_set,
+        "export": _session_exportop, "导出": _session_exportop,
+    }
+    return _with_state(_ops_run(ops, dispatch, kw))
 
 
 # ═══════════════════════════════════════════
@@ -6944,11 +7041,9 @@ def settings_reactivate(tool_name: str) -> str:
 
 
 @mcp.tool()
-def settings(setting: str = "", value: str = "", ops: str = "", **kw) -> Any:
-    """⚙️ 系统/设置域（合并"捏脸"进来，2026-08-22）。
-    ops: status(看设置+退役) retire(tool_name=X) reactivate(召回) appearance(捏脸) customize(起名) confirm_look(核对捏人形象,ok前必做) color(颜色条)
-         hair/shirt/pants/hat/colorpreset(外观参考)。⚠️捏脸ok后自动退役不可逆。细节→help(settings)。
-    旧配置(兼容): settings(setting='async', value='on') → heartbeat/context_turns/async/async_tools/state_interval/mode/auto_sleep/moss/pin。
+def settings(setting: str = "", value: str = "", ops: str = "", kw: dict | None = None) -> Any:
+    """⚙️ 系统/设置域（含捏脸）。全 ops + 关键坑（捏脸ok后不可逆）→ help(settings)。
+
     Args:
         setting: 配置项名(旧路径)
         value: 配置项新值(旧路径)
@@ -6978,18 +7073,18 @@ def settings(setting: str = "", value: str = "", ops: str = "", **kw) -> Any:
         if v in ("on", "1", "true", "yes", "开"):
             _bg_cfg["enabled"] = True
             _settings_save()
-            return _with_state("🚀 异步脚本已开启（script_start 后台跑，AI 可并行聊天/整理背包）")
+            return _with_state("🚀 异步脚本已开启（script start 后台跑，AI 可并行聊天/整理背包）")
         if v in ("off", "0", "false", "no", "关"):
             _bg_cfg["enabled"] = False
             _settings_save()
-            return _with_state("🛑 异步脚本已关闭（script_start 退回同步等脚本跑完）")
+            return _with_state("🛑 异步脚本已关闭（script start 退回同步等脚本跑完）")
         return _with_state(f"❌ async 要 on/off，收到「{value}」")
     elif setting in ("async_tools", "auto_async", "自动异步"):
         v = value.strip().lower()
         if v in ("on", "1", "true", "yes", "开"):
             _bg_cfg["auto_async"] = True
             _settings_save()
-            return _with_state("🚀 长脚本自动异步已开启（钓鱼/挖矿/炸矿等便利工具自动后台跑，AI 不用手动 script_start）")
+            return _with_state("🚀 长脚本自动异步已开启（钓鱼/挖矿/炸矿等便利工具自动后台跑，AI 不用手动 script start）")
         if v in ("off", "0", "false", "no", "关"):
             _bg_cfg["auto_async"] = False
             _settings_save()
@@ -7014,7 +7109,7 @@ def settings(setting: str = "", value: str = "", ops: str = "", **kw) -> Any:
             _settings_save()
             return _with_state("🎮 自主模式（脚本由 AI 手动调，不自动连跑）")
         return _with_state("🚫 计划模式已退役（2026-08-17 恒）——AI 连续跑脚本的自动化暂不实现；当前只有自主模式。"
-                           "需要连跑时请手动 script_start / 逐任务调脚本。")
+                           "需要连跑时请手动 script(ops=\"start\") / 逐任务调脚本。")
     elif setting == "auto_sleep":
         v = value.strip().lower()
         if v in ("on", "1", "true", "yes", "开"):
@@ -7060,7 +7155,7 @@ def _quest_menu_hint() -> str:
     """📜 check quest 指引：任务/进度一律走菜单（2026-09-01 恒拍板：菜单为唯一权威，退役 list_quests/quest_progress）。"""
     return _with_state(
         "📜 任务看 **menu journal**(开日志) + **menu read**(读QuestLog卡，卡上含每子目标 current/max 进度)；"
-        "接单去展板 **menu read** + click(button=accept…)；查某单详情用 **quest know <名>**")
+        "接单去展板 **menu read** + click(button=accept…)；查某单详情用 **menu know <名>**")
 
 
 @mcp.tool()
@@ -7105,6 +7200,7 @@ _STATE_SEP = "\n\n╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌�
 def _ops_run(ops_str: str, dispatch: dict, kw: dict) -> str:
     """组合式 ops 执行器：空格/逗号拆多 op 逐个执行，kw 按签名自动过滤。
     dispatch: {op: callable}。结果去内嵌状态条，由调用方最后统一 _with_state 附一次。"""
+    kw = kw or {}  # 2026-09-02 kw 改为可选后，空参调用会是 None，归一成 {}
     import inspect
     # 🐛 FastMCP 对 **kw 函数生成的 schema 是 {ops, kw}，实际调用 map(ops=, kw={...}) 后 **kw
     #   收成 {"kw": {...}} 嵌套——解包回 {...} 再按签名过滤（2026-08-19 实测：带参域工具一直收不到参）
@@ -7117,7 +7213,9 @@ def _ops_run(ops_str: str, dispatch: dict, kw: dict) -> str:
     for op in ops:
         fn = dispatch.get(op)
         if fn is None:
-            results.append(f"❌ 未知操作「{op}」")
+            # 2026-09-02 零成本改：未知 op 直接列可用 ops，别只报错让 AI 再猜
+            _op_keys = [k for k in dispatch if isinstance(k, str) and not any("一" <= c <= "鿿" for c in k)]
+            results.append(f"❌ 未知操作「{op}」。此域可用 ops: {' '.join(sorted(_op_keys))}（或 help(域) 看详解）")
             continue
         try:
             sig = inspect.signature(fn)
@@ -7145,7 +7243,6 @@ def _ops_run(ops_str: str, dispatch: dict, kw: dict) -> str:
 DOMAIN_HOME = {
     # ⚠️ 2026-08-15 恒：温室/姜岛农场也是 farm 适用区（之前只认 Farm，温室给错建议）
     "farm": ["Farm", "Greenhouse", "IslandWest", "IslandNorth", "IslandEast"],
-    "care": ["Farm"],
     "mine": ["Mine", "SkullCave"],
     # 🏠 2026-08-16 恒：小屋域=屋里（FarmHouse/Cabin/岛屋）enum 引导
     "cabin": ["FarmHouse", "Cabin", "IslandFarmHouse"],
@@ -7157,7 +7254,7 @@ DOMAIN_PREFIX = {
 # 免建议的 op：导航类（自己会导航）/ API 直操作
 DOMAIN_EXEMPT = {
     "mine": {"go", "去"},
-    "care": {"buy", "买"},
+    "farm": {"buy", "买", "买动物"},   # 买动物去玛妮牧场不在农场，豁免建议（care 域 2026-09-02 并入 farm）
     "fish": {"go", "去", "钓", "fish"},
     "cabin": {"sleep", "睡", "睡觉"},   # go_sleep 自己会回家
 }
@@ -7340,16 +7437,9 @@ def bundle_kb(query: str = "") -> str:
 
 
 @mcp.tool()
-def farm(ops: str = "", **kw) -> str:
-    """🌾 农活域（必走；禁手动 use_tool/tool_area 组合）。ops 空格分隔自由组合。
-    till(蓄力锄) plant/sow(种,跳已种) till_plant(锄+种一龙) water(浇,自动跳雨+水壶满) harvest(收) scythe(镰刀收)
-    fertilize(化肥) clear(清杂) plot(规划) plan(方形规划) tillfield(蓄力锄矩) hoe(布局锄) plantlayout(按布局种)
-    chop(砍树) clearground(清格) collect(收机器) load(放料) building(一屋收放)
-    pond/pond_add/pond_feed/pond_collect/pond_fish(鱼塘)。细节/参数→help(farm)。
-    例: farm(ops="till plant water", seed_name=..., x, y, rows, length)
-    Args:
-        ops: 操作序列（空格分隔）
-        **kw: 对应操作参数（seed_name/fertilizer_name/x/y/rows/length/direction/trellis/radius/machine_type/location/item）
+def farm(ops: str = "", kw: dict | None = None) -> str:
+    """🌾 农活域（必走，禁手动 use_tool/tool_area）。高频：water 浇 / harvest 收 / plant 种 / till 锄 / fertilize 化肥 / clear 清杂 / collect 收机器。全 ops+参数 → help(farm)。
+
     """
     op_list = [o for o in re.split(r"[\s,，]+", (ops or "").strip()) if o]
     if not op_list:
@@ -7388,6 +7478,18 @@ def farm(ops: str = "", **kw) -> str:
         "pond_feed": _pond_feed, "喂塘": _pond_feed,
         "pond_collect": _pond_collect, "领籽": _pond_collect,
         "pond_fish": _pond_fish, "塘钓": _pond_fish,
+        # 🐄 动物照料（2026-09-02 care 域退役并入 farm；"water"=浇地/"building"=机器收放已占，
+        #    动物水/畜舍用 喂水/畜舍 不冲突：farm water 浇地，farm 喂水 宠物碗，farm building 一屋收放，farm 畜舍 这间屋动物）
+        "animals": care_animals, "摸动物": care_animals,
+        "畜舍": care_building, "这间": care_building,
+        "pet": pet_pet, "摸摸": pet_pet, "摸猫狗": pet_pet,
+        "喂水": pet_water, "碗": pet_water, "宠物碗": pet_water,
+        "milk": milk_shear, "挤奶": milk_shear, "剪毛": milk_shear, "shear": milk_shear,
+        "buy": buy_animal, "买动物": buy_animal, "买": buy_animal,
+        "doors": close_doors, "关门": close_doors,
+        "petwalk": pet_walk, "遛": pet_walk, "放牧": pet_walk,
+        "hay": feed_hay, "干草": feed_hay, "加草": feed_hay,
+        "statue": blessing_statue, "祈福": blessing_statue,
     }
     results = []
     # till+plant 合并后先锄+种，再接剩余 ops
@@ -7399,14 +7501,11 @@ def farm(ops: str = "", **kw) -> str:
 
 
 @mcp.tool()
-def mine(ops: str = "", **kw) -> str:
+def mine(ops: str = "", kw: dict | None = None) -> str:
     """⛏️ 下矿域。ops: go(去挖矿 mode=rush冲层/farm刷矿, start, target, ore, cycles) progress(进度)
     bomb_status/plan/place/collect/ladder/retreat(单步炸) bomb_mine(自动) bomb_volcano(火山)
     organize(整理背包)。⚠️无镐/血低硬拦；bomb_volcano 需 host 陪同。（协同=bomb_mine 没炸弹自动转内部,不对外）。
     电梯可达层检测不对外暴露工具——内置在 mine_run/bomb_mine 脚本启动时自动读。细节→help(mine)。
-    Args:
-        ops: 操作序列
-        **kw: 对应操作参数
     """
     # 🗺️ 动态工具检测：progress/bomb_* 建议在矿里做（go 豁免，不拦）
     _adv = _domain_advice("mine", ops)
@@ -7417,33 +7516,6 @@ def mine(ops: str = "", **kw) -> str:
         "bomb_collect": bomb_collect, "bomb_ladder": bomb_ladder, "bomb_retreat": bomb_retreat,
         "bomb_mine": bomb_mine, "bomb_volcano": bomb_volcano,   # 🚫 2026-08-22 恒：bomb_escort 不对外暴露(协同内建进 bomb_mine 自动转)，AI 不再能主动启用
         "organize": bomb_organize, "整理背包": bomb_organize,
-    }
-    _body = _ops_run(ops, dispatch, kw)
-    return _with_state((_adv + "\n\n" if _adv else "") + _body)
-
-
-@mcp.tool()
-def care(ops: str = "", **kw) -> str:
-    """🐄 动物域（Farm）。ops 自由组合。
-    animals(摸+收) building(这间屋) pet/petwalk(摸猫狗) water(宠物碗) milk(挤奶剪毛)
-    buy(买动物 animal_type/name/building) doors(关门) hay(干草) statue(祈福)。细节→help(care)。
-    Args:
-        ops: 操作序列
-        **kw: 对应操作参数（buy 需 animal_type/name/building）
-    """
-    # 🗺️ 动态工具检测：照顾动物建议在农场做（buy 豁免，不拦）
-    _adv = _domain_advice("care", ops)
-    dispatch = {
-        "animals": care_animals, "摸动物": care_animals,
-        "building": care_building, "这间": care_building,
-        "pet": pet_pet, "摸摸": pet_pet, "摸猫狗": pet_pet,
-        "water": pet_water, "喂水": pet_water, "碗": pet_water,
-        "milk": milk_shear, "挤奶": milk_shear, "剪毛": milk_shear, "shear": milk_shear,
-        "buy": buy_animal, "买": buy_animal,
-        "doors": close_doors, "关门": close_doors,
-        "petwalk": pet_walk, "遛": pet_walk,
-        "hay": feed_hay, "干草": feed_hay, "加草": feed_hay,
-        "statue": blessing_statue, "祈福": blessing_statue,
     }
     _body = _ops_run(ops, dispatch, kw)
     return _with_state((_adv + "\n\n" if _adv else "") + _body)
@@ -7519,12 +7591,9 @@ def _cabin_enum() -> str:
 
 
 @mcp.tool()
-def cabin(ops: str = "", **kw) -> str:
+def cabin(ops: str = "", kw: dict | None = None) -> str:
     """🏠 小屋/家域（屋内 FarmHouse/Cabin/岛屋；不传=扫屋）。ops: enum(扫屋查待收) collect(收本屋机器)
     statue(雕像) furniture(扫家具) interact(x,y点家具) pickup(x,y拿起家具) sleep(睡觉 who)。细节→help(cabin)。
-    Args:
-        ops: 操作（可组合）
-        **kw: tile_x/tile_y/who
     """
     # 🗺️ 动态工具检测：小屋域建议在屋里做（sleep 豁免，自己会回家）
     _adv = _domain_advice("cabin", ops)
@@ -8264,17 +8333,9 @@ def _fish_all_spots() -> str:
 
 
 @mcp.tool()
-def fish(ops: str = "", **kw) -> str:
-    """🎣 钓鱼域（蟹笼并入 2026-08-16）。ops:
-    go(去钓 location=) info(查某地鱼 location) spots(钓点知识) bobber(浮漂样式 style)
-    rod(鱼竿:show看状态/bait上饵 item=名/tackle上钓具/clear摘) crab(蟹笼概览) crab_water(找水)
-    crab_place(放笼) crab_bait(放饵) crab_collect(收笼) crab_diag(诊断笼/定位挂饵问题)
-    crab_retract(回收笼/清搁浅 location=可选)。细节→help(fish)。
-    蟹笼挂饵可用 bait= 选(默认"Bait"普通鱼饵): 鱼饵/野钓饵/豪华鱼饵(须 Category -21,磁铁是钓具不能放笼)。
-    ⚠️鱼塘在 farm 域不在 fish。
-    Args:
-        ops: 操作序列
-        **kw: location / style / count / radius
+def fish(ops: str = "", kw: dict | None = None) -> str:
+    """🎣 钓鱼域（蟹笼并入）：go 去钓(location=) / info 查鱼 / spots 钓点 / bobber 浮漂 / rod 竿(上饵钓具) / crab 蟹笼(place/bait/collect)。⚠️鱼塘在 farm 域。全 → help(fish)。
+
     """
     dispatch = {
         "go": go_fishing, "fish": go_fishing, "钓": go_fishing,
@@ -8297,12 +8358,9 @@ def fish(ops: str = "", **kw) -> str:
 
 
 @mcp.tool()
-def social(ops: str = "", **kw) -> str:
+def social(ops: str = "", kw: dict | None = None) -> str:
     """💬 社交域。ops: chat(跟NPC搭话) gift(送礼 npc_name,item_name) give(给玩家 player_name,item_name)
     send(发消息) emote(表情) friendship(查好感) movie(影院) snack(零食)。细节→help(social)。
-    Args:
-        ops: 操作序列
-        **kw: 对应操作参数
     """
     dispatch = {
         "chat": chat_npc, "搭话": chat_npc,
@@ -8403,19 +8461,9 @@ def _maze_seg_view(gx=None, gy=None, radius=15) -> str:
 
 
 @mcp.tool()
-def scene(ops: str = "", **kw) -> str:
-    """🖱️ 场景交互域。ops: at(x,y点格) front/interact(点面前) use(挥工具) face(转向) select(拿手上)
-    pickup(拿起家具) furniture(扫家具) pickup_scene(捡地面物) berry(浆果) spot(挖蚯蚓) moss(绿雨苔藓)
-    rock(室外镐击 dig=true/false radius max_break break_stone——采石场/挖掘场/蚌矿场敲可破物,跳普通石)
-    pan(淘金/淘盘 dry_run=true/false——本图水下闪光点→岸边走位面水→铜锅淘金收掉落)
-    garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物) maze(迷宫视图 r=半径 gx,gy=目标 渲染ASCII棋盘)
-    place(放置/播种 name=物品名 x,y=目标格——箱子/树种/蟹笼放到地上或种下;只放可放置物,非放置物安全报错不丢)
-    break(拆/敲 x,y=目标格 steps=挥击次 radius=方圆——镐子敲石头/翻已耕地,跳过箱子/容器格&空地格)
-    maze_seg(走法链 gx,gy=目标 拆直走廊列表+拼链，AI按段walk_to)
-    maze_seg(走法链 gx,gy=目标 拆直走廊+拼链) maze_walk(走迷宫 waypoints="x,y x,y…"依次walk_to)。细节→help(scene)。
-    Args:
-        ops: 操作序列
-        **kw: 对应操作参数
+def scene(ops: str = "", kw: dict | None = None) -> str:
+    """🖱️ 场景交互域：at(点格) / interact(点面前) / use(挥工具) / pickup_scene(捡采集物) / berry(摇浆果) / spot(挖蚯蚓) / moss(苔藓) / place(放置播种) / break(拆敲) / maze。全 ops+坑 → help(scene)。
+
     """
     dispatch = {
         "at": interact_at, "点": interact_at,
@@ -8455,22 +8503,9 @@ def open_questlog() -> str:
 
 
 @mcp.tool()
-def menu(ops: str = "", **kw) -> str:
-    """📋 界面/菜单域（开→看→点）。ops: read(看菜单) number(数量输入 value=N/只读 confirm=确定)
-    journal(开任务日志→menu read 读每页≤6卡：卡含⏱时限+子目标current/max进度+📍交付点；翻页=click(button=forward/back)；
-    领已完成+有钱的卡奖励=click(button=rewardBox)；收起=click(button=close))  —— 🧭 2026-09-01 enum引导
-    display_fill(农展台放满 items='钻石,山羊奶酪' 或 '珍珠×2' 一次放N件) advance(推进剧情)
-    click(option/item/button/xy) key(confirm/esc/数字按键) cancel(关) shop(逛店 place,want) sell(卖) bin(出货箱)
-    cook(做饭) craft(合成) recipes(菜谱) craftables(配方) forge(锻造) geode/geodes(砸晶球) customize(捏人)
-    bundle(献祭板) bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读消耗品:书/秘密纸条/日记残页 name=物品名)
-    levelup_choose(技能升级职业选择 5/10级:不带参读左右选项,side=left/right 或 profession=职业id 定分支)  —— 🧬 2026-08-30
-    claim(领取/接鱼满包:item=名 或 slot=序号 领指定格;先 click action=discard 丢桶腾格)  —— 🚫 原 claim_swap(替换领取)已退役,改用丢桶+领
-    minigame(赌场小游戏点按钮 action=hit/stand/bet10/…) minigame_state(读牌面/转盘)。细节→help(menu)。
-    ⚠️ buy 直购已退役(走真实商店)；read_mail 已退役(邮箱用 /state.mailbox+交互)；claim_swap 替换领取已退役(2026-08-28 恒:改 垃圾桶丢弃 action=discard + 领用 action=claim/slot,或不想要直接 button=ok)。
-    🔢 number 专用：星露谷展览会 50g换1星星币兑换台 / 转盘押注的 NumberSelectionMenu（输数量+确定/取消）。
-    Args:
-        ops: 操作序列
-        **kw: 对应操作参数
+def menu(ops: str = "", kw: dict | None = None) -> str:
+    """📋 界面/菜单域（菜单开着时用）。全 ops + 关键坑 → help(menu)。
+
     """
     dispatch = {
         "read": read_menu, "看": read_menu, "journal": open_questlog, "日志": open_questlog, "开日志": open_questlog,
@@ -8496,6 +8531,9 @@ def menu(ops: str = "", **kw) -> str:
         "bundle_kb": bundle_kb, "献祭知识": bundle_kb, "知识库": bundle_kb,
         "donate": museum_donate, "捐": museum_donate, "捐赠": museum_donate,
         "read_book": read_book, "读书": read_book, "读物品": read_book, "读纸条": read_book, "读技能书": read_book,
+        # 📖 2026-09-02 恒：quest 域退役并入 menu——特别订单知识库查询（原 quest know）
+        "know": calendar_data.special_orders_available, "任务知": calendar_data.special_orders_available,
+        "订单知": calendar_data.special_orders_available, "知": calendar_data.special_orders_available,
         # 🧬 2026-08-30 恒：技能升级职业选择(5/10级)——LevelUpMenu.receiveLeftClick 空，/menu click 点不动，
         #    只能走专用 op（镜像 vanilla 公共API）。不带参读选项，side/profession 定分支。
         "levelup_choose": _menu_levelup_choose, "选职业": _menu_levelup_choose, "分支": _menu_levelup_choose, "职业选": _menu_levelup_choose,
@@ -8515,27 +8553,9 @@ def menu(ops: str = "", **kw) -> str:
 
 
 @mcp.tool()
-def quest(ops: str = "", **kw) -> str:
-    """📜 任务域。**看任务/进度走 `menu journal`(开日志) + `menu read`(读QuestLog卡，卡上含每子目标 current/max)**；
-    know(特别任务知识库，如"know 岛屿食材")。**接单走板上 menu click(button=accept…)**（可靠 UI 路径，子目标会初始化）。
-    🚫 2026-09-01：quest list / quest progress(原内部抽象，曾给"绿豆"数据)已退役——菜单为唯一权威，进度都从 menu read 的卡读。
-    Args:
-        ops: 操作序列 (know)
-        **kw: 对应操作参数
-    """
-    dispatch = {
-        "know": calendar_data.special_orders_available, "知识": calendar_data.special_orders_available,
-    }
-    return _with_state(_ops_run(ops, dispatch, kw))
-
-
-@mcp.tool()
-def storage(ops: str = "", **kw) -> str:
+def storage(ops: str = "", kw: dict | None = None) -> str:
     """🎒 箱子域。ops: scan(扫箱) store(存 x,y,name) take(取 x,y,name,count) smart(智能堆叠) layout(箱子网络)
     default(设默认箱 x,y) cleardefault(清默认) tag(标记)。细节→help(storage)。
-    Args:
-        ops: 操作序列
-        **kw: 对应操作参数
     """
     dispatch = {
         "scan": scan_chests, "扫": scan_chests,
@@ -8551,12 +8571,9 @@ def storage(ops: str = "", **kw) -> str:
 
 
 @mcp.tool()
-def daily(ops: str = "", **kw) -> str:
+def daily(ops: str = "", kw: dict | None = None) -> str:
     """🗿 日常域。ops: sleep(睡觉 who) settle(过夜结算) eat(吃食物) wear(穿/脱衣物 name/slot/hand) lie_bed(躺床不过夜)
     heartbeat(心跳间隔) pause(后台不暂停) peek(看恒) appearance(捏脸) whiteboard/wb_read/wb_pin/wb_clear(白板记忆)。细节→help(daily)。
-    Args:
-        ops: 操作序列
-        **kw: 对应操作参数
     """
     dispatch = {
         "sleep": go_sleep, "睡": go_sleep,
@@ -8577,12 +8594,9 @@ def daily(ops: str = "", **kw) -> str:
 
 
 @mcp.tool()
-def map(ops: str = "", **kw) -> str:
+def map(ops: str = "", kw: dict | None = None) -> str:
     """🗺️ 地图导航域（跨图唯一入口）。ops: lookup(查地点) query(功能反查) go(走到目标,跨图唯一入口)
     walk(走到POI,同图) movetile(同图走瓦片) npc(找NPC) warp_safe(紧急逃脱)。⚠️跨图一律 go。细节→help(map)。
-    Args:
-        ops: 操作序列
-        **kw: 对应操作参数
     """
     dispatch = {
         "lookup": map_lookup, "查": map_lookup,
@@ -10365,13 +10379,10 @@ def _festival_ice_fish() -> str:
 
 
 @mcp.tool()
-def festival(ops: str = "", **kw) -> str:
+def festival(ops: str = "", kw: dict | None = None) -> str:
     """🎪 节日域。ops: today(今天节日) next(下一个) go(去) info(实况) interact(互动,空参=社交巡礼)
     answer(应答 N) shop(节日商店) eggs(找蛋规划) egg_note(纸条) egg_run(捡蛋) poi(限定点)
     dance(跳舞邀请 target) help(玩法) prep(备战明细) maze(迷宫坐标奇偶年) maze_walk(走迷宫 waypoints="x,y x,y …" 依次walk_to)。细节→help(festival)。
-    Args:
-        ops: 操作序列
-        **kw: 对应操作参数（egg_note/egg_run 用 route=[(16,66),...]；dance 用 target）
     """
     dispatch = {
         "today": _festival_today, "今天": _festival_today,
@@ -11235,21 +11246,42 @@ _SETTINGS_DISPATCH = {
 
 # 📖 详细域指引（2026-08-22：docstring 精简后，深度/坑靠 help 查，不丢细节）
 _DOMAIN_GUIDES = {
-"check": "查询域，what=...：status(完整状态) backpack(逐格价值/星级) worn(穿戴) machines(机器清单) mine(下矿进度) silo(干草) mastery(精通) buildings(木匠建筑) quest(任务) chests(当前图箱) storage(箱子网络) look(环视周围)。⚠️查概览用 status，查逐格用 backpack，别都调浪费 token。",
-"farm": "农活域(🌱必走，禁手动 use_tool/tool_area 组合)：till(蓄力锄) plant(种,跳过已种) water(浇,自动跳雨+水壶没水先装满) harvest(收) scythe(镰刀收蒜/花/茶) fertilize(化肥) clear(清杂草石树桩) plot(连通域规划) chop(砍树) clearground(清单格) collect(收机器) load(放原料) building(一屋收放) pond/pond_add/pond_feed/pond_collect/pond_fish(鱼塘)。⚠️漏格DLL自动补；高级工具蓄力用 tool_area(别用/tool)。只在 Farm/温室/姜岛。",
+"check": "查询域，what=...：status(完整状态) backpack(逐格价值/星级) worn(穿戴) machines(全场机器清单) mine(下矿进度) silo(干草) mastery(精通) buildings(木匠建筑) quest(任务) chests(当前图箱) storage(箱子网络) look(环视周围)。⚠️查概览用 status，查逐格用 backpack，别都调浪费 token。",
+"farm": "农活域(🌱必走，禁手动 use_tool/tool_area 组合)：till(蓄力锄) plant(种,跳过已种) water(浇,自动跳雨+水壶没水先装满) harvest(收) scythe(镰刀收蒜/花/茶) fertilize(化肥) clear(清杂草石树桩) plot(连通域规划) till_plant(锄+种一条龙) tillfield(蓄力锄矩) hoe(布局锄) plantlayout(按布局种) chop(砍树) clearground(清单格) collect(收机器) load(放原料) building(一屋收放) break(拆/敲同scene,镐子敲可破物/翻已耕地) place(放置/播种同scene) pond/pond_add/pond_feed/pond_collect/pond_fish(鱼塘)。⚠️漏格DLL自动补；高级工具蓄力用 tool_area(别用/tool)。只在 Farm/温室/姜岛。带参 op(plant 的 seed_name、till 的 x/y/rows、place 的 name)→ kw={'参数名':值}。🐄动物(2026-09-02 care域并入farm): animals(摸+收) 喂水/碗(宠物水) milk(挤奶剪毛) buy(买动物,豁免建议) doors(关门) hay(干草) pet(猫狗) petwalk(拟人摸) 畜舍/这间(这间屋动物) statue(祈福)——⚠️farm water=浇地,动物水用 喂水; farm building=机器收放,这屋动物用 畜舍。",
 "mine": "下矿域(⚒️ 矿井/头骨/火山)：go(冲层/刷矿) progress(进度) bomb_status/plan/place/collect/ladder/retreat(单步炸) bomb_mine(自动) bomb_volcano(火山) organize(整理背包)。⚠️无镐/血低硬拦；梯子 /ladder+confirm。⚠️bomb_mine 没炸弹+host在同矿井→自动转【内部】协同(跟随host+帮忙敲矿/打怪)不撤退出矿(bomb_escort 不对外暴露、AI 不主动启用)；bomb_retreat 结束协同+停脚本+脱离矿井回门口。⚠️接「深处的危险」重置电梯→起始层动态从1起(内置脚本自动读，不暴露工具)；刷矿目标层不可直达会上报，需先冲层带回或改浅层。💡出发前占位物(恒2026-08-23)：提前放1个可堆叠物(铱矿/铱锭/五彩碎片)在包，满包时同种战利品自动堆叠吸附、少触发满包停；别拿银河之魂这类带死亡会丢的稀有物当占位。",
-"care": "动物域(🐄 Farm)：animals(摸+收,不动门) building(这间屋) pet(猫狗) water(宠物碗) milk(挤奶剪毛) buy(买动物) doors(关门) petwalk(拟人摸) hay(干草) statue(祈福)。",
-"cabin": "小屋引导域(🏠 FarmHouse/Cabin/岛屋；不传=扫屋)：enum(扫屋查待收) collect(收机器) statue(雕像) furniture(扫家具) interact(点家具) pickup(拿起家具) sleep(睡觉)。",
+"cabin": "小屋引导域(🏠 FarmHouse/Cabin/岛屋；不传=扫屋)：enum(扫**本屋**查待收) collect(收机器) statue(雕像) furniture(扫家具) interact(点家具) pickup(拿起家具) sleep(睡觉)。",
 "social": "社交域：chat(跟NPC搭话) gift(送礼提好感) give(送玩家物品) send(发消息) emote(表情) friendship(查好感) movie(影院知识) snack(零食)。",
-"scene": "场景交互域(点东西/工具/转身/捡)：at(x,y)(点指定格/柜台) interact(点面前) use(挥工具) face(转向0上1右2下3左) select(拿手上) pickup(拿起家具) pickup_scene(捡当前场景物) berry(摇浆果) spot(挖蚯蚓点) moss(绿雨搜苔藓) rock(室外镐击:敲当前图可破物,采石场/挖掘场/蚌矿场跳普通石,dig/dry,battle-free) garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物) furniture(扫家具) place(放置/播种:name=物品名,x/y=目标格→箱子/树种/蟹笼落地或种下,只放可放置物) break(拆/敲:x,y=目标格,steps=挥击次,radius=方圆→镐子敲石头/翻已耕地,跳过箱子/容器格) maze(迷宫视图r半径,gx/gy目标格→ASCII棋盘#墙.可走P自己G目标) maze_seg(走法链gx,gy目标→拆直走廊列表+拼「左/右上/下走到(x,y)」多段链,AI按段walk_to)。",
-"menu": "菜单/界面域(开→看→点)：read(看菜单) advance(推进剧情/对话) click(option/item/button/xy 点;action=claim领/action=discard丢桶腾格;slot=序号领指定格) key(ok/esc/数字按键) cancel(关弹窗/撤就绪) shop(逛店) sell(卖商店) bin(投出货箱) cook(做饭) craft(合成) recipes(菜谱) craftables(配方) forge(锻造) geode/geodes(砸晶球) customize(捏人) bundle(献祭板) bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读消耗品:书/秘密纸条/日记残页,统一走右键读 name=物品名) levelup_choose(技能升级职业选择 5/10级:不带参读左右选项,side=left/right 或 profession=职业id 定分支;普通升级自会确认OK)。🚫满包接鱼/领箱:原 claim_swap(替换领取)已退役→**click action=discard 丢桶腾格(回收返金)+action=claim 领取(或用 slot 领指定格;不想要直接 button=ok 关掉)**。🧾关闭菜单一律 click(button=upperRightCloseButton)（ItemGrabMenu/交付容器用 button=ok 确认才关）；订单交付容器(QuestContainerMenu)=点背包对应物品格(见slots的坐标)→放进→点 button=ok 结算；任务日志领钱=点击已完成的有钱任务卡后 click(button=rewardBox)；兑奖机兑换=click(button=mainButton)；特别订单领奖链=日志领钱(上面)→社区板旁领奖箱(60,93)拿兑奖券→刘易斯家兑奖机(mainButton)兑换。",
-"quest": "任务域：know(查特别任务详情,如 quest know 岛屿食材)。🚫看任务/进度改走 menu(ops=journal/read)读 QuestLog 卡(含每子目标 current/max,菜单为唯一权威)；接单走板上的 menu click(button=accept…)。",
+"scene": "场景交互域(点东西/工具/转身/捡)：at(x,y)(点指定格/柜台) interact(点面前) use(挥工具) face(转向0上1右2下3左) select(拿手上) pickup(拿起家具) pickup_scene(捡当前场景物) berry(摇浆果) spot(挖蚯蚓点) moss(绿雨搜苔藓) rock(室外镐击:敲当前图可破物,采石场/挖掘场/蚌矿场跳普通石,dig/dry,battle-free) garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物) furniture(扫家具) place(放置/播种:name=物品名,x/y=目标格→箱子/树种/蟹笼落地或种下,只放可放置物) break(拆/敲:x,y=目标格,steps=挥击次,radius=方圆→镐子敲石头/翻已耕地,跳过箱子/容器格) maze(迷宫视图r半径,gx/gy目标格→ASCII棋盘#墙.可走P自己G目标) maze_seg(走法链gx,gy目标→拆直走廊列表+拼「左/右上/下走到(x,y)」多段链,AI按段walk_to) maze_walk(走迷宫 waypoints=「x,y x,y…」依次walk_to) pan(淘金/淘盘:本图水下闪光点→岸边走位面水→铜锅淘金收掉落) front/rummage(分别是interact/garbage的别名)。带参 op(at/break 的 x,y、place 的 name、maze_seg 的 gx/gy)→ kw={'参数名':值}。",
+"menu": "菜单/界面域(开→看→点)：read(看菜单) advance(推进剧情/对话) click(option/item/button/xy 点;action=claim领/action=discard丢桶腾格;slot=序号领指定格) key(ok/esc/数字按键) cancel(关弹窗/撤就绪) shop(逛店) sell(卖商店) bin(投出货箱) cook(做饭) craft(合成) recipes(菜谱) craftables(配方) forge(锻造) geode/geodes(砸晶球) customize(捏人) bundle(献祭板) bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读消耗品:书/秘密纸条/日记残页,统一走右键读 name=物品名) levelup_choose(技能升级职业选择 5/10级:不带参读左右选项,side=left/right 或 profession=职业id 定分支;普通升级自会确认OK) number(数量输入:展览会兑换台/转盘押注 NumberSelectionMenu) minigame(赌场小游戏点按钮 action=hit/stand/bet10/…) minigame_state(读牌面/转盘) display_fill(农展台放满 items='钻石,山羊奶酪') display_takeback(收好) journal(开任务日志→menu read 读卡,翻页=click(button=forward/back),领奖励=click(button=rewardBox)) know(查特别订单详情/知识库SPECIAL_ORDERS,如menu know 岛屿食材;2026-09-02 task域退役并入menu)。🚫满包接鱼/领箱:原 claim_swap(替换领取)已退役→**click action=discard 丢桶腾格(回收返金)+action=claim 领取(或用 slot 领指定格;不想要直接 button=ok 关掉)**。🧾关闭菜单一律 click(button=upperRightCloseButton)（ItemGrabMenu/交付容器用 button=ok 确认才关）；订单交付容器(QuestContainerMenu)=点背包对应物品格(见slots的坐标)→放进→点 button=ok 结算；任务日志领钱=点击已完成的有钱任务卡后 click(button=rewardBox)；兑奖机兑换=click(button=mainButton)；特别订单领奖链=日志领钱(上面)→社区板旁领奖箱(60,93)拿兑奖券→刘易斯家兑奖机(mainButton)兑换。",
 "storage": "箱子域：scan(扫当前图箱) store(存) take(取) smart(智能堆叠) layout(箱子网络) default/cleardefault/tag(默认箱/清/标记)。",
 "daily": "过日子域：sleep(睡觉) settle(确认过夜结算) eat(吃食物回血体力) wear(穿/脱衣物) lie_bed(躺床不过夜) heartbeat(心跳间隔) pause(后台不暂停) peek(看恒干嘛) whiteboard/wb_read/wb_pin/wb_clear(白板记忆) appearance(捏脸)。",
 "map": "导航域(🗺️跨图唯一入口)：lookup(查地点功能+出口) query(功能反查) go(走到目标/多段寻路+交通) walk(走到POI) movetile(同图精确走位) npc(找NPC) warp_safe(紧急逃脱)。⚠️出口走出口前一格；交通图腾柱>矿车>走路。",
 "festival": "节日域(🎪)：today(今天节日) next(下一个) go(去) info(实况) interact(互动) answer(应答) shop(节日商店) eggs(找蛋) egg_note(纸条) egg_run(捡蛋) dance(跳舞邀请) strength(力量测试 delay=毫秒) ice_fish(冰雪节冰钓自动化) help(玩法) prep(备战) poi(限定点) maze(迷宫坐标奇偶年) maze_walk(走迷宫 waypoints=「x,y x,y…」依次walk_to)。",
-"fish": "钓鱼域(🎣 2026-08-22修复)：go(去钓 location=) info(查某地鱼) spots(钓点) bobber(浮漂样式) rod(鱼竿:看/上饵钓具 item=名) crab(蟹笼总览) crab_water(找水) crab_place(放笼) crab_bait(放饵) crab_collect(收笼)。⚠️鱼塘在 farm 域不在 fish。",
+"fish": "钓鱼域(🎣 2026-08-22修复)：go(去钓 location=) info(查某地鱼) spots(钓点) bobber(浮漂样式) rod(鱼竿:看/上饵钓具 item=名) crab(蟹笼总览) crab_water(找水) crab_place(放笼) crab_bait(放饵) crab_collect(收笼) crab_diag(诊断笼/定位挂饵) crab_retract(回收笼/清搁浅 location=可选)。⚠️鱼塘在 farm 域不在 fish。带参 op(go 的 location、rod 的 item、crab 的 count)→ kw={'参数名':值}。",
 "settings": "系统/设置域(⚙️ 合并捏脸进来)：status(看所有设置+退役工具) retire(退役工具) reactivate(召回) appearance(捏脸) customize(捏人) **confirm_look(核对捏人形象,ok前必做)** color(颜色条) hair/shirt/pants/hat/colorpreset(外观参考)。⚠️捏脸=创建定型:ok后set_appearance/捏人自动退役(不可逆);旧配置 settings(setting='async', value='on') 仍可。",
+"session": "会话域(🧠 上下文缓冲，多数情况不用)：status(看缓冲条数/设置) set(改设置 setting,value) export(手动导出记忆)。",
+"scripts": "脚本/异步域(🚀被动异步优先)：status(查进度,job_id空=看全部+最近) stop(停任务,job_id空=停最近在跑) async(自动异步白名单 show/add/remove/enable=on|off) run(短任务同步 name=脚本名,args=参数) start(主动后台兜底 name,args→job_id)。常用脚本: farm_row(耕) water_crops(浇) harvest(收) chop_trees(砍) clear_area(清杂) pet_animals(摸动物) shop_buy(购物)。⚠️长任务(bomb_mine/炸矿/钓鱼)便利工具**自动后台**，别手动start(白名单async enable=on即可)；跑脚本时别用走动/挥工具同步工具，但聊天/看状态/开背包/整理背包没问题；一次只跑一个脚本。⚠️参数放kw别拼ops(如 script(ops=\"start\", kw={name,args})；script(ops=\"status\", kw={job_id}))。",
+}
+
+
+# 🧭 help 主题别名：中文/口语词 → 域名（精确匹配前的快捷映射，2026-09-02 消"首命中波动"）
+_HELP_ALIAS = {
+    "钓鱼": "fish", "钓": "fish", "鱼": "fish", "蟹笼": "fish", "鱼竿": "fish",
+    "睡觉": "daily", "睡": "daily", "躺床": "daily", "吃": "daily", "吃食物": "daily", "穿着": "daily", "穿戴": "daily", "过夜": "daily",
+    "菜单": "menu", "界面": "menu", "商店": "menu", "背包": "menu", "开日志": "menu", "菜单操作": "menu",
+    "设置": "settings", "配置": "settings", "捏脸": "settings", "外观": "settings", "起名": "settings",
+    "任务": "menu", "订单": "menu", "特别订单": "menu",
+    "箱子": "storage", "存储": "storage", "仓库": "storage",
+    "导航": "map", "地图": "map", "走路": "map", "寻路": "map", "走": "map", "到哪": "map",
+    "节日": "festival", "节": "festival",
+    "农场": "farm", "农活": "farm", "种地": "farm", "浇水": "farm", "耕地": "farm", "秧": "farm",
+    "矿": "mine", "挖矿": "mine", "下矿": "mine", "矿井": "mine", "炸矿": "mine",
+    "动物": "farm", "猫": "farm", "狗": "farm", "宠物": "farm", "挤奶": "farm", "喂": "farm", "摸动物": "farm",
+    "社交": "social", "送礼": "social", "好感": "social", "聊天": "social",
+    "场景": "scene", "交互": "scene", "采集": "scene", "捡": "scene", "点": "scene",
+    "查询": "check", "状态": "check", "看情况": "check",
+    "家": "cabin", "小屋": "cabin", "农舍": "cabin",
+    "脚本": "scripts", "脚本域": "scripts", "会话": "session", "缓冲": "session",
 }
 
 
@@ -11265,9 +11297,25 @@ def help(topic: str = "") -> str:
     if not topic:
         return "📖 可查话题: " + "、".join(_DOMAIN_GUIDES.keys())
     t = topic.strip()
-    for k, v in _DOMAIN_GUIDES.items():
-        if t in k or k in t or t in v:
-            return v
+    tl = t.lower()
+    # 1) 精确：域名（help farm / help task 等）
+    if tl in _DOMAIN_GUIDES:
+        return _DOMAIN_GUIDES[tl]
+    # 2) 别名：中文/口语词 → 域名（help 钓鱼 / help 睡觉 等）
+    if tl in _HELP_ALIAS:
+        return _DOMAIN_GUIDES[_HELP_ALIAS[tl]]
+    # 3) 域名作为子串（英文多字，如 "farm stuff"）→ 取最长命中的域
+    best = None; bl = 0
+    for k in _DOMAIN_GUIDES:
+        if k in tl and len(k) > bl:
+            best, bl = k, len(k)
+    if best:
+        return _DOMAIN_GUIDES[best]
+    # 4) 内容兜底（中文词 → 在指南文本里找），取"域名最长"命中，替代原首命中波动
+    hits = [(k, len(k)) for k, v in _DOMAIN_GUIDES.items() if t in v]
+    if hits:
+        hits.sort(key=lambda x: x[1], reverse=True)
+        return _DOMAIN_GUIDES[hits[0][0]]
     return f"❌ 没有「{t}」的指引。可查: " + "、".join(_DOMAIN_GUIDES.keys())
 
 
@@ -13373,32 +13421,12 @@ def list_recipes() -> str:
 #  脚本运行器
 # ═══════════════════════════════════════════
 
-@mcp.tool()
 def run_script(name: str, args: str = "") -> str:
-    """🤖 运行自动化脚本
-    直接执行 scripts/ 目录下的 Python 脚本。
-
-    常用脚本:
-    - farm_row       — 耕种（锄地→播种→浇水）需指定 --x --y --rows
-    - water_crops    — 给未浇水的作物浇水（自动扫描）
-    - harvest        — 收割成熟作物（自动扫描）
-    - chop_trees     — 砍树（先树干再树桩）
-    - clear_area     — 清理杂草/石头/树桩（按工具分组）
-    - keg_manager    — 小桶管理：收成品→装新料
-    - furnace_manager— 熔炉管理：收金属锭→装新矿石
-    - pet_animals    — 摸所有还没摸的动物
-    - shop_buy       — 自动购物（需指定 --shop 和 --items）
-    - mine_run       — 挖矿（建议用 go_mining 工具）
-    - bomb_mine      — 💣 自主炸矿（建议用 bomb_mine 工具）
-    - bomb_escort    — 👥 协同炸矿（跟 user，建议用 bomb_escort 工具）
-    - fish_run       — 钓鱼（建议用 go_fishing 工具）
+    """🤖 运行 scripts/ 下的自动化脚本（短任务同步；长任务→script start 后台，别同步等）。常用：farm_row(耕种) / water_crops(浇) / harvest(收) / chop_trees(砍树) / clear_area(清杂) / pet_animals(摸动物) / shop_buy(购物)。全清单→help(scripts)。
 
     Args:
         name: 脚本名（不含 .py）
         args: 命令行参数字符串（如 "--x 60 --y 14 --rows 5"）
-
-    ⚠️ 长任务（bomb_mine/bomb_escort/钓鱼/拟人浇水）用 script_start 后台跑，
-    别用 run_script 同步等——会阻塞整个对话直到跑完。短任务才用这个。
     """
     script_path = os.path.join(SCRIPT_DIR, f"{name}.py")
     if not os.path.exists(script_path):
@@ -13504,7 +13532,7 @@ def _bg_start(name: str, args_list: list):
         for j in _bg_jobs.values():
             if j.running:
                 return None, (f"⛔ 已有脚本「{j.name}」在跑（job {j.job_id}，"
-                              f"已跑{int(time.time()-j.start_ts)}s）。先 script_stop 再启动新的。")
+                              f"已跑{int(time.time()-j.start_ts)}s）。先 script(ops=\"stop\") 再启动新的。")
         script_path = os.path.join(SCRIPT_DIR, f"{name}.py")
         if not os.path.exists(script_path):
             return None, f"❌ 脚本不存在: {name}.py"
@@ -13573,19 +13601,11 @@ def _bg_activity_line() -> str:
     return (f"⏰ 异步唤醒时间——脚本「{job.name}」后台运行中（{elapsed}s，job {job.job_id}）\n"
             f"   ✅ 可做（不打断脚本）: 整理背包 / 查状态看事项 / 跟{_host}聊天 / 发表情 / 截图观察\n"
             f"   ⛔ 别做（会和脚本打架）: 走位 / 挥工具 / 开商店等强菜单（查邮箱要走去信箱=走位，也算）\n"
-            f"   → 要控制权: script_stop")
+            f"   → 要控制权: script(ops=\"stop\")")
 
 
-@mcp.tool()
 def script_start(name: str, args: str = "") -> str:
-    """🚀 后台启动自动化脚本（异步，不阻塞）
-    立即返回 job_id，脚本在后台跑——AI 可以继续聊天/看状态/整理背包，不打断脚本。
-    用 script_status(job_id) 查进度、script_stop(job_id) 停。
-
-    与 run_script 的区别：run_script 同步等脚本跑完（适合短任务）；
-    script_start 适合长任务（bomb_mine / bomb_escort / go_fishing / 拟人浇水）。
-    ⚠️ 一次只跑一个脚本；脚本跑的时候别用会走路/挥工具的同步工具（会打架），
-    但聊天、查状态、开背包、整理背包等轻操作完全没问题。
+    """🚀 后台启动脚本（异步不阻塞，返回 job_id；长任务用，AI 可继续聊天/看状态）。查 script status(job_id)、停 script stop(job_id)。⚠️一次只跑一个；跑时别用走动/挥工具同步工具，轻操作(聊天/看状态/开背包)没问题。用法→help(scripts)。
 
     Args:
         name: 脚本名（不含 .py）
@@ -13606,21 +13626,20 @@ def script_start(name: str, args: str = "") -> str:
         return _with_state(err)
     return _with_state(
         f"🚀 后台启动脚本「{name} {' '.join(arg_list)}」→ job {job.job_id}\n"
-        f"  查进度: script_status(\"{job.job_id}\")   停止: script_stop(\"{job.job_id}\")")
+        f"  查进度: script(ops=\"status\", kw={{\"job_id\":\"{job.job_id}\"}})   停止: script(ops=\"stop\", kw={{\"job_id\":\"{job.job_id}\"}})")
 
 
-@mcp.tool()
 def script_status(job_id: str = "") -> str:
     """📊 查询后台脚本任务状态
     传空 job_id：列出所有任务 + 最近一个（在跑的优先）的输出尾巴。
     返回：是否运行中/耗时/返回码/滚动输出（最近 N 行）。
 
     Args:
-        job_id: script_start 返回的任务ID；空 = 看全部+最近的
+        job_id: script start 返回的任务ID；空 = 看全部+最近的
     """
     with _bg_lock:
         if not _bg_jobs:
-            return _with_state("📭 没有后台脚本任务。用 script_start(name, args) 启动一个。")
+            return _with_state("📭 没有后台脚本任务。用 script(ops=\"start\", kw={name,args}) 启动一个。")
         if job_id:
             job = _bg_jobs.get(job_id)
             if not job:
@@ -13637,13 +13656,12 @@ def script_status(job_id: str = "") -> str:
     return _with_state(body)
 
 
-@mcp.tool()
 def script_stop(job_id: str = "") -> str:
     """🛑 停止后台脚本任务
     终止进程（terminate → 等 3s → 不行就 kill）。不传 job_id 停最近一个在跑的。
 
     Args:
-        job_id: script_start 返回的任务ID
+        job_id: script start 返回的任务ID
     """
     with _bg_lock:
         if not _bg_jobs:
@@ -13666,6 +13684,52 @@ def script_stop(job_id: str = "") -> str:
     if last:
         body += f"\n── 最后输出 ──\n{last[-1000:]}"
     return _with_state(body)
+
+
+# ═══════════════════════════════════════════
+#  📜 脚本/异步域（2026-09-02 恒：run_script/script_start/status/stop/async_config 五合一并入此域）
+#   核心=【被动异步】：便利工具白名单自动后台 + async 开关；AI 主要用 status/stop 管理、async 调白名单。
+#   start(主动后台)是兜底——长脚本优先交给便利工具(白名单自动后台)，AI 别主动手动后台。
+#   坑：ops 按空格拆成多个 op，脚本名/任务id/参数须放 kw（如 script(ops="start", kw={name,args})）。
+# ═══════════════════════════════════════════
+def _script_run(name: str = "", args: str = ""):
+    return run_script(name, args)
+
+
+def _script_start(name: str = "", args: str = ""):
+    return script_start(name, args)
+
+
+def _script_status(job_id: str = ""):
+    return script_status(job_id)
+
+
+def _script_stop(job_id: str = ""):
+    return script_stop(job_id)
+
+
+def _script_async(show: bool = False, add: str = "", remove: str = "", enable: str = ""):
+    return async_config(show, add, remove, enable)
+
+
+@mcp.tool()
+def script(ops: str = "", kw: dict | None = None) -> str:
+    """🚀 脚本/异步域。ops:
+    status(查进度,job_id空=看全部+最近) stop(停任务,job_id空=停最近在跑) async(自动异步白名单 show/add/remove/enable)
+    run(短任务同步 name=脚本名 args=参数) start(主动后台兜底 name,args→job_id)。
+    ⚠️长任务(bomb_mine/炸矿/钓鱼/挖矿)便利工具**自动后台**，别手动 start(白名单自动异步即可)；跑脚本时别用走位/挥工具,轻操作(聊天/看状态/开背包)没关系。①一次只跑一个脚本；②短任务用 run 别 start。
+    Args:
+        ops: 动作（run/start/status/stop/async，空格可连跑多个）
+        kw: 参数——run/start 的 {name,args}；async 的 {show/add/remove/enable}；status/stop 的 {job_id}。⚠️参数必须放 kw，别拼进 ops。
+    """
+    dispatch = {
+        "run": _script_run, "跑": _script_run,
+        "start": _script_start, "后台": _script_start, "开": _script_start,
+        "status": _script_status, "查": _script_status, "进度": _script_status,
+        "stop": _script_stop, "停": _script_stop,
+        "async": _script_async, "异步": _script_async, "自动": _script_async, "白名单": _script_async,
+    }
+    return _with_state(_ops_run(ops, dispatch, kw))
 
 
 # ═══════════════════════════════════════════
@@ -14358,16 +14422,18 @@ def profile() -> str:
 #     并入 settings 域 ops，不再单独注册；go_sleep/walk_to/pet_* 等已有域 op 的便捷项一并隐藏（走域 op）。
 #   模块常量：domain_selftest.py 直接 import 校验 keep-set 完整性。
 _KEEP_TOOLS = {
-    # 15 域 dispatcher
-    "check", "farm", "mine", "care", "cabin", "social", "scene",
-    "menu", "quest", "storage", "daily", "map", "festival", "fish", "settings",
+    # 13 域 dispatcher（2026-09-02 合并：quest→menu, care→farm）
+    "check", "farm", "mine", "cabin", "social", "scene",
+    "menu", "storage", "daily", "map", "festival", "fish", "settings",
+    # 🧭 2026-09-02 合并：script(五合一)/session(三合一)——run_script/script_start/status/stop/async_config→script；
+    #   session_status/set/export→session。⚠️旧工具名已隐藏，AI 别直调。
+    "script", "session",
     # 无任何域 op 等价物的必需独立工具（系统/控制/感知/单点）
     #   buy_item 已退役（2026-08-16 直购作弊，买走真实商店 shop_visit/menu click）；sprinklers 本无此工具
     #   2026-08-22 收编: wear/lie_bed→daily ops, bundle_kb/donate/read_book→menu ops（域内可调，不再占顶层槽位）
     # 2026-08-28：advance_story 加入——`menu advance` 对事件对话只报"调 advance_story"，不真推进；
     #  而 advance_story 是推进剧情/事件对话(含节日 monologue)的必要独立入口，隐藏=AI 推不动 + 触不了 hook。故暴露。
-    "advance_story", "which_role", "run_script", "script_start", "script_status", "script_stop",
-    "session_status", "session_set", "session_export", "async_config",
+    "advance_story", "which_role",
     "screenshot", "help",
     "profile",  # 🧬 2026-08-30 恒：看自己技能等级+职业分支(尤其蟹笼 Luremaster)——独立感知工具，一直可见
 }

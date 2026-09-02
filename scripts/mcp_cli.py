@@ -71,20 +71,38 @@ def call(method, params, sess):
     return _parse(r)
 
 
+def _session_gone(res):
+    """服务器重启后缓存的 session id 失效 → 返回 True。"""
+    return (res or {}).get("error", {}).get("message", "").startswith("Session not found")
+
+
+def _call_retry(method, params):
+    """调一次；若因旧 session 失效（Session not found）→ 作废缓存重建再试一次。"""
+    sess, _sid = _get_session()
+    res = call(method, params, sess)
+    if _session_gone(res):
+        try:
+            os.remove(SESSION_FILE)
+        except Exception:
+            pass
+        sess, _sid = _get_session()
+        res = call(method, params, sess)
+    return res, _sid
+
+
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "list"
-    sess, sid = _get_session()
     if mode == "list":
-        data = call("tools/list", {}, sess)
+        data, _sid = _call_retry("tools/list", {})
         tools = (data or {}).get("result", {}).get("tools", [])
-        print(f"MCP {BASE} · session={sid} · 工具数 {len(tools)}")
+        print(f"MCP {BASE} · 工具数 {len(tools)}")
         for t in tools:
             desc = (t.get("description") or "").split("\n")[0][:70]
             print(f"  - {t.get('name')}: {desc}")
         return
     name = sys.argv[1]
     args = json.loads(sys.argv[2]) if len(sys.argv) > 2 else {}
-    res = call("tools/call", {"name": name, "arguments": args}, sess)
+    res, _sid = _call_retry("tools/call", {"name": name, "arguments": args})
     if not res:
         print("❌ 无响应"); return
     if res.get("error"):

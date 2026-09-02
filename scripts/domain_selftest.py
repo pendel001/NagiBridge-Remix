@@ -21,10 +21,11 @@ if sys.stdout.encoding and sys.stdout.encoding.lower().startswith("gbk"):
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import nagi_mcp_server as M
 
-# 15 个域 dispatcher（settings 2026-08-22 融入设置子工具；fish 修复后注册）
+# 域 dispatcher（2026-09-02 合并后 15 个：13 原域 + script + session；quest→menu, care→farm 已并入）
 DOMAINS = [
-    "check", "farm", "mine", "care", "cabin", "social", "scene",
-    "menu", "quest", "storage", "daily", "map", "festival", "fish", "settings",
+    "check", "farm", "mine", "cabin", "social", "scene",
+    "menu", "storage", "daily", "map", "festival", "fish", "settings",
+    "script", "session",
 ]
 
 # 已被域 op 以"另一函数名"覆盖的独立工具（隐藏安全，不判断档）——人工核实，改 keep-set 时同步更新

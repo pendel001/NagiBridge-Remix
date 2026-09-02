@@ -1,6 +1,6 @@
-# NagiBridge MCP 域工具速查手册（2026-08-22 重写 · keep-set 27 个 · 08-29 补 rock）
+# NagiBridge MCP 域工具速查手册（2026-08-22 重写 · keep-set 20 个 · 09-02 合并 script/session 域）
 
-> 给恒的速查手册：AI 现在**默认只看到 27 个工具**（15 个"域入口" + 独立工具），
+> 给恒的速查手册：AI 现在**默认只看到 20 个工具**（13 域入口 + script/session 2 域 + 5 独立工具），
 > 其余旧独立工具**全部收进域入口**（函数还在，只是 AI 不再直调）。
 > 记住一句话：**"想做 X → 调对应域的 ops"**。旧工具名大多能在域里找到等价物（见文末对照表）。
 > 🔍 **想查某域详细 ops/坑 → `help(域名)`**（如 help(farm)；docstring 已精简，深度靠这个查）。
@@ -9,7 +9,7 @@
 
 ## 🧭 一、总纲（先读这段）
 
-- **域模式默认开启**（`--full` / `NAGI_FULL_TOOLS=1` 可回退全量 154 个工具，调试/手机前端用）。
+- **域模式默认开启**（`--full` / `NAGI_FULL_TOOLS=1` 可回退全量 151 个工具，调试/手机前端用）。
 - **每个"域"就是一把瑞士军刀**：`farm(ops="till plant water")` 一次做多件事，ops 空格/逗号分隔。
 - **AI 调用 = 域名 + ops**，不是工具名。例：想点一个格子 → `scene(ops="at", tile_x=8, tile_y=24)`；想推进剧情 → `menu(ops="advance")`。
 - **✦ 域工具的子参数会收进 `kw`**：FastMCP 对带 `**kw` 的域工具生成 `{ops, kw}` 结构。Claude Code 自动处理（实际是 `farm(ops="till", kw={…})`），你**只需理解、不用手动拼**；但用脚本直调时子参数要放进 `kw`（如 `fish(ops="go", kw={"location":"Beach"})`），否则报 `kw Field required`。
@@ -43,12 +43,11 @@
 | `chop` / `clearground` | 砍树 / 清单格 |
 | `collect` / `load` / `building` | 收机器产物 / 往机器放原料 / 一屋收放一轮 |
 | `pond` / `pond_add` / `pond_feed` / `pond_collect` / `pond_fish` | 鱼塘：状态/放鱼/喂/领鱼籽/直钓 |
+| `animals` / `milk` / `pet` / `petwalk` | 摸动物+收 / 挤奶剪毛 / 摸猫狗 / 拟人摸（care 域 09-02 并入 farm）|
+| `喂水`/`碗` / `畜舍`/`这间` / `buy` / `doors` / `hay` / `statue` | 宠物水 / 这间屋动物 / 买动物 / 关门 / 加干草 / 祈福 |
 
 ### `mine(ops)` — 下矿（冲层/刷矿/炸矿）**只在 矿井/头骨/火山**
 `go`(去挖矿) `progress`(进度) `bomb_status/plan/place/collect/ladder/retreat`(单步炸矿) `bomb_mine`(自动) `bomb_escort`(协同) `bomb_volcano`(火山) `organize`(整理背包)
-
-### `care(ops)` — 动物 **只在 Farm**
-`animals`(摸+收) `building`(这间屋) `pet`(摸猫狗) `water`(宠物碗喂水) `milk`(挤奶剪毛) `buy`(买动物) `doors`(关门) `petwalk`(拟人摸) `hay`(加干草) `statue`(祈福)
 
 ### `cabin(ops)` — 小屋引导 **只在 小屋/农场屋里**　不传=扫屋
 `enum`(扫屋待收) `collect`(收机器) `statue`(雕像) `furniture`(扫家具) `interact`(点家具) `pickup`(拿起家具) `sleep`(睡觉)
@@ -87,9 +86,14 @@
 | `bundle_kb`(query=…) | 献祭知识库（不用跑社区中心，查"原来要这些"）|
 | `donate` | 捐赠博物馆（走到柜台一键捐可捐矿物/古物）|
 | `read_book`(name=…) | 读书（消耗技能书领配方）|
+| `journal` | 开任务日志→`menu read` 读 QuestLog 卡（含每子目标 current/max）|
+| `know`(名) | 查特别订单详情（知识库；`menu know 岛屿食材`。原 quest 域 09-02 并入 menu）|
 
-### `quest(ops)` — 任务
-`know`(查特别任务详情)；**看任务/进度用 `menu(ops="journal")` + `menu(ops="read")`（QuestLog 卡，含每子目标 current/max）**；接单走板上 `menu click(button=accept…)`
+### `script(ops)` — 脚本/异步（09-02 五合一：run_script/start/status/stop/async_config）
+`status`(查进度) `stop`(停) `async`(自动异步白名单 show/add/remove/enable) `run`(短任务 name,args) `start`(主动后台兜底 name,args)。⚠️长任务便利工具**自动后台**，别手动 start；参数放 `kw` 别拼 ops。
+
+### `session(ops)` — 会话缓冲（多数不用）
+`status`(看条数/设置) `set`(改 setting,value) `export`(手动导出记忆)
 
 ### `storage(ops)` — 箱子
 `scan`(扫箱) `store`(存进箱) `take`(取) `smart`(智能堆叠) `layout`(箱子网络) `default`/`cleardefault`/`tag`(设默认箱/清/标记)
@@ -112,17 +116,15 @@
 
 ---
 
-## 🛠️ 三、11 个独立工具（无域等价物，直接调）
+## 🛠️ 三、5 个独立工具（无域等价物，直接调）
 
 | 工具 | 干嘛的 |
 |---|---|
 | `which_role` | 确认端口↔角色（AI/房主）|
 | `screenshot` | 截图看画面（AI 的"眼睛"）|
-| `async_config` | 长脚本自动异步配置 |
-| `script_start` / `script_status` / `script_stop` | B1 异步脚本控制 |
-| `session_status` / `session_set` / `session_export` | 会话上下文缓冲 |
-| `run_script` | 跑任意脚本（兜底）|
+| `advance_story` | 推进剧情/对话（事件对话专用，`menu advance` 只提示它）|
 | `help` | 查某域详细 ops/坑（docstring 精简后的细节兜底；不传=列话题）|
+| `profile` | 看自己技能等级+职业分支 |
 
 ---
 
@@ -135,7 +137,7 @@
 | 锄地种一片 | `farm(ops="till plant")` |
 | 浇水 / 收菜 | `farm(ops="water")` / `farm(ops="harvest")` |
 | 砍树 / 清地 | `farm(ops="chop")` / `farm(ops="clear")` |
-| 摸动物 / 挤奶 | `care(ops="animals milk")` |
+| 摸动物 / 挤奶 | `farm(ops="animals milk")` |
 | 穿/脱穿戴物（衣/裤/帽/鞋/戒指/饰品）| `daily(ops="wear", name="铁头靴")` / `daily(ops="wear", slot="boots")` |
 | 去挖矿 / 看进度 | `mine(ops="go")` / `mine(ops="progress")` |
 | 自动炸矿 | `mine(ops="bomb_mine")` |
@@ -156,7 +158,7 @@
 | 查献祭还缺啥 | `menu(ops="bundle_kb", query="工艺室")`（知识库）/ `menu(ops="bundle")` 实地看 |
 | 捏脸 / 起名 | `settings(ops="appearance", …)` / `menu(ops="customize")` |
 | 关掉卡住的弹窗 | `menu(ops="cancel")` |
-| 后台跑长脚本 | `script_start(name="fish_run", args="…")` |
+| 后台跑长脚本 | `script(ops="status")`/`script(ops="stop")`（长任务便利工具自动后台；短任务 `script(ops="run", kw={name,args})`）|
 | 截图看自己 | `screenshot()` |
 
 ---
@@ -171,7 +173,9 @@
 | `read_menu` / `menu_click` / `press_key` / `advance_story` / `cancel` / `shop_visit` / `sell_to_shop` / `forge` / `process_geode` | `menu(ops="read"/"click"/"key"/"advance"/"cancel"/"shop"/"sell"/"forge"/"geode")` |
 | `go_sleep` / `confirm_settlement` / `eat_item` / `set_appearance` / `wear` / `lie_bed` | `daily(ops="sleep"/"settle"/"eat"/"appearance"/"wear"/"lie_bed")` |
 | `scan_chests` / `chest_store` / `chest_take` | `storage(ops="scan"/"store"/"take")` |
-| ~~`list_quests` / `quest_progress`~~（2026-09-01 已退役：任务/进度改 `menu(ops="journal"/"read")` 读 QuestLog 卡，卡上含每子目标 current/max；`quest(ops="know")` 查详情） | 接单走板上 `menu click(button=accept…)`（accept_quest 已退役） |
+| ~~`list_quests` / `quest_progress`~~（2026-09-01 已退役：任务/进度改 `menu(ops="journal"/"read")` 读 QuestLog 卡，卡上含每子目标 current/max；`menu(ops="know")` 查详情，原 quest 域 09-02 并入 menu） | 接单走板上 `menu click(button=accept…)`（accept_quest 已退役） |
+| `run_script` / `script_start` / `script_status` / `script_stop` / `async_config`（09-02 五合一） | `script(ops="run"/"start"/"status"/"stop"/"async", kw={name,args/job_id})` |
+| `session_status` / `session_set` / `session_export`（09-02 三合一） | `session(ops="status"/"set"/"export", kw={setting,value})` |
 | `chat_npc` / `gift_npc` / `give_item` / `send_chat` / `emote` / `check_friendship` | `social(ops="chat"/"gift"/"give"/"send"/"emote"/"friendship")` |
 | `moss_run` / `berry_run` / `spot_run` / `pickup_scene` | `scene(ops="moss"/"berry"/"spot"/"pickup_scene")` |
 | `rock_run`（室外镐击） | `scene(ops="rock")`（08-29 新增） |
