@@ -1837,7 +1837,16 @@ def _with_state(result: str, force_full: bool = False) -> str:
             ice_line += "\n"
     except Exception:
         pass
-    return f"{welcome}{result}{sep}{ice_line}{plan_note}{activity_line}{script_line}{strip}"
+    # 🥚 蛋蛋节捡蛋自动 hook（2026-09-05）：寻宝开赛(festivalTimer>0)→有纸条自动阻塞捡/没纸条只提醒。
+    #    挂在 _with_state：**任意**工具调用（不等 AI 主动调 festival egg_run）都能命中，且开着就阻塞不能添乱。
+    egg_line = ""
+    try:
+        egg_line = _maybe_egg_run_auto(data)
+        if egg_line:
+            egg_line += "\n"
+    except Exception:
+        pass
+    return f"{welcome}{result}{sep}{ice_line}{egg_line}{plan_note}{activity_line}{script_line}{strip}"
 
 
 # ── 工具辅助函数 ──
@@ -9559,6 +9568,9 @@ def _dialogue_now() -> bool:
 
 # 📝 蛋蛋节小纸条：AI 预先规划好路线偷偷记这（防开赛忘记），egg_run 不传 route 时按它执行（2026-08-17 恒）
 _EGG_NOTE = {"route": []}
+# 🥚 蛋蛋节捡蛋自动 hook 标记（2026-09-05）：本局寻宝是否已"处理过"（自动跑了/提醒过了/手动跑过了）。
+#   每局只触发一次：开场有纸条→阻塞自动捡；没纸条→只提醒让 AI 自己跑。防重复启动/互相干扰。
+_EGG_RUN_AUTO = {"fired": False}
 
 
 def _festival_egg_note(route: str = "") -> str:
@@ -9597,6 +9609,8 @@ def _festival_egg_run(route: str = "") -> str:
             points = list(_EGG_NOTE.get("route") or [])
         if not points:
             return "❌ 没路线：festival eggs 看坐标→自己规划→egg_note route=... 记下；或直接 egg_run route=\"[(16,66),...]\""
+        # 🥚 2026-09-05：手动/自动跑到这都记一笔——防 _maybe_egg_run_auto 在同一工具调用里又自动启动一次(重复捡)
+        _EGG_RUN_AUTO["fired"] = True
         lines = [f"🥚 捡蛋开始（路线 {len(points)} 点，尽量多捡）："]
         collected = 0
         # 开跑先查：寻宝已结束（festivalTimer 归零）→ 立刻收手不白跑（恒：时机很重要；-1=读取失败不误停）
@@ -9691,7 +9705,7 @@ def _egg_festival_hint(loc_name: str) -> str:
             return ""
         if _festival_timer() > 0:
             return "🥚 寻宝中！egg_run 按 egg_note 记的路线捡"
-        return "🥚 蛋蛋节！festival eggs 看当年蛋坐标，赛前 egg_note 偷偷记路线再逛；开赛 egg_run 照着跑"
+        return "🥚 蛋蛋节！festival eggs 看当年蛋坐标，赛前 egg_note 偷偷记路线（写了开赛自动捡）；开赛 egg_run 照着跑"
     except Exception:
         return ""
 
@@ -13260,6 +13274,36 @@ def _maybe_ice_fishing_auto(data) -> str:
     except Exception:
         return ""
     return ""
+
+
+def _maybe_egg_run_auto(data) -> str:
+    """每个工具调用都跑一次：蛋蛋节寻宝刚开赛(festivalTimer>0)且本局没跑过 → 自动捡蛋/提醒。
+    ⚠️ 复用 _with_state 已抓好的 data（season/day/loc）判前置——**非蛋蛋节零额外 HTTP**（不添负担）；
+       只在 spring13+节日地图 才补读一次 festivalTimer（一年就这一天，可忽略）。只在真要捡蛋时阻塞。
+    - 有 egg_note 小纸条 → 阻塞跑 _festival_egg_run()（AI 干等、不能调别的工具干扰；_festival_egg_run 循环捡到底）。
+    - 没写纸条 → 只提醒游戏开始（fired 记一次，不再重复；让 AI 自己 festival eggs→egg_note→egg_run）。
+    ⚠️ 阻塞用现有 _festival_egg_run（同步就地捡，不新起子进程）——一场寻宝只发生一次，可接受。"""
+    try:
+        t = (data or {}).get("time") or {}
+        if str(t.get("season") or "").lower() != "spring" or int(t.get("dayOfMonth") or 0) != 13:
+            _EGG_RUN_AUTO["fired"] = False
+            return ""
+        loc = (data.get("location") or {}).get("name", "") or ""
+        if loc not in ("Temp", "Town-EggFestival", "Town-EggFestival2"):
+            return ""
+        ft = _festival_timer()
+        if ft <= 0:
+            _EGG_RUN_AUTO["fired"] = False     # 寻宝结束/未开始 → 复位（下次再开赛可再触发）
+            return ""
+        if _EGG_RUN_AUTO["fired"]:
+            return ""
+        _EGG_RUN_AUTO["fired"] = True          # 只开一次，别每个工具调用都重跑
+        if _EGG_NOTE.get("route"):
+            return "🥚 自动捡蛋：\n" + _festival_egg_run()
+        return ("🥚 蛋蛋节寻宝开始了（倒计时跑起来了）！没写 egg_note 小纸条——AI 自己上："
+                "festival eggs 看当年蛋坐标 → egg_note route=... 记路线 → egg_run 捡")
+    except Exception:
+        return ""
 
 
 def menu_click(option: int = -1, button: str = "", x: int = -1, y: int = -1, item: str = "", right: bool = False, quantity: int = 1, action: str = "", real: bool = False, slot: int = -1) -> str:
