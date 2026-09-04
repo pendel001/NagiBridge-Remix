@@ -868,7 +868,9 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
         else:
             lines.append("📺 今日无新节目：点电视看明日天气（scene at 点电视）")
         lines.append(morning)
-    elif cal_text:
+    elif cal_text and loc_name == "Town" and _CAL_TOWN_KEY["last"] != (season, day, year):
+        # 📅 2026-09-04 恒：常驻日历（生日/休店）只在每天第一次(TV) + 顶多进Town再弹一次，避免每条状态都刷
+        _CAL_TOWN_KEY["last"] = (season, day, year)
         lines.append(f"📅 {cal_text}")
 
     # 🎪 节日提醒（2026-08-14，省 token：只在节日当天早上 / 节日前一晚提醒一次）
@@ -2031,7 +2033,10 @@ def check_backpack() -> str:
             q = qmarks.get(i.get("quality", 0), "")
             parts = [f"{q}{name}×{i.get('stack', 1)}"]
             val = i.get("value") or 0
-            if val:
+            sellable = i.get("sellable", True)
+            if not sellable:
+                parts.append("🔒不可卖")   # 工具/武器/戒指/靴子（2026-09-04 恒：别让 AI 拿去卖）
+            elif val:
                 parts.append(f"{val}g")
             stats = i.get("stats") or ""
             if stats:
@@ -2260,6 +2265,10 @@ def walk_to(poi_name: str) -> str:
         # 🎇 节日限定 POI 门禁（2026-08-19 恒：非节日 map_go/walk_to 隐藏）
         if poi_name in locations.POI and not _festival_poi_active(poi_name, locations.POI[poi_name]):
             return _with_state(f"❌ {poi_name} 只在节日开放（现在去不了）")
+        # ⚠️ 2026-09-03 恒：宠物碗浇水是"动作"不是"走位"——locations 明确 map walk 不扛浇水；
+        #    AI 误用 walk 去宠物碗→BFS 找不到可直接站的落点→报 BFS failed/已到达但没动。直接引导走 farm 喂水。
+        if any(k in poi_name for k in ("宠物碗", "水碗", "宠物水")):
+            return _with_state(f"💡 「{poi_name}」的正确姿势是 `farm ops=喂水`（自动定位所有碗灌满），不用 walk——")
         # 跨图 → 走 map_go 真实路径（不飞）：解析 POI 的目标图，不在当前图就转 map_go
         poi_map = None
         if poi_name in locations.POI:
@@ -4122,6 +4131,26 @@ def _is_clear_name(name):
     return any(k in n for k in _CLEAR_KW)
 
 
+# ⚠️ 2026-09-04 恒：只有这些算"可绕过设施"（种植时留着、绕着走）——洒水器各级/稻草人各级/火把营火。
+#    别的 object（箱子/蟹笼/雕像/机器…）工具会铲起来 → 当阻挡，不进连通域、别框进种植区。
+_IS_BYPASS_FACILITY = (
+    "sprinkler",           # 基础/高品质/铱洒水器 + 压力喷嘴（名称都含 sprinkler）
+    "pressure nozzle",     # 洒水器升级件（也含 sprinkler，双保险）
+    "scarecrow",           # 稻草人
+    "rarecrow",            # 稀有稻草人（稀有稻草人(rare#) / Rarecrow）
+    "torch",               # 火把
+    "campfire",            # 营火
+)
+
+
+def _is_bypass_facility(name):
+    """是否是"可绕过设施"（留格绕过种植，不铲不挖）。名字子串命中即算。"""
+    n = (name or "").lower()
+    if not n:
+        return False
+    return any(k in n for k in _IS_BYPASS_FACILITY)
+
+
 def _plot_classify(t):
     """地块格分类：planted/tilled/diggable/clear/facility，None=阻挡（水/悬崖/路径/建筑/装饰）。"""
     terr = t.get("terrain") or ""
@@ -4130,15 +4159,20 @@ def _plot_classify(t):
     if terr == "HoeDirt":
         return "planted" if t.get("crop") else "tilled"
     if terr in ("FruitTree", "GiantCrop"):
-        return "facility"          # 果树/巨大作物：保留
+        return "facility"          # 果树/巨大作物：保留（不锄不铲）
     if res:
         return "clear"             # 石头/树桩/巨石/陨石
     if terr and _is_clear_name(terr):
         return "clear"             # 草/杂草/普通树
     if obj and _is_clear_name(obj):
         return "clear"
+    # ⚠️ 2026-09-04 恒：只有 洒水器各级+稻草人 算"可绕过设施"（留着，种植绕着走）；
+    #    别的 object（箱子/蟹笼/火把/雕像/机器…）工具会铲起来，当**阻挡(None)**——
+    #    方形会裁掉它、AI 不会把它框进种植区（否则以为能种，实际 object 格种不了）。
+    if obj and _is_bypass_facility(obj):
+        return "facility"
     if obj:
-        return "facility"          # 洒水器/稻草人/箱子/雕像等：保留
+        return None                # 其它设备：阻挡（不进连通域，裁边绕开）
     # ⚠️ 2026-08-15 修：可耕必须 **passable**——山地/荒野农场的山崖/墙格 Back 层带 Diggable 属性，
     #    但走不上去也耕不了（实测 29 格 diggable+非passable）。只看 diggable 会把它当可耕 → till 失败。
     if t.get("diggable") and t.get("passable"):
@@ -4175,9 +4209,14 @@ def _building_footprints() -> set:
 
 
 def _max_arable_square(pts, arable):
-    """在地块格范围内找**最大全可耕方形**（dp 最大全 1 子方形；可耕=diggable/tilled/planted，
-    设施/杂草/树=0）。避开池塘边角/内凹/孔洞，给规整种植区。
-    返回 (x, y, size) 方形左上角+边长；无可耕方形→None。"""
+    """在连通域范围内找**最大方形**（裁边，不重算）——2026-09-04 恒改。
+    旧版把设施/杂草/树当 0，另算一个"纯可耕无设施"的正方形 → 设施一多就缩成 3×3，
+    与 plot 连通域规则（设施纳入，不截断连通）打架。
+    ✅ 现在：方形内每一格只需是**连通域成员**（pts，含设施/清杂/可耕——都是种植区一部分），
+    设施保留、种的时候绕着转；真正把连通域打断的格（水/悬崖/路径，不在 pts）才裁边。
+    ⚠️ 所以这是"给不规则连通域裁方正区块"，不是"再把设施挖掉"。返回 (x,y,size)。
+    """
+    pts_set = set(pts)
     xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
     if not xs:
         return None
@@ -4187,7 +4226,7 @@ def _max_arable_square(pts, arable):
     best = 0; bx = by = 0
     for j in range(H):
         for i in range(W):
-            if (x1 + i, y1 + j) in arable:
+            if (x1 + i, y1 + j) in pts_set:   # 连通域成员（含设施）→ 算 1；不在 pts(打断格) → 0
                 dp[j][i] = 1 if (i == 0 or j == 0) else \
                     min(dp[j - 1][i], dp[j][i - 1], dp[j - 1][i - 1]) + 1
                 if dp[j][i] > best:
@@ -4261,17 +4300,21 @@ def plot_plan(x: int = -1, y: int = -1, radius: int = 15, all_plots: bool = Fals
             xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
             n_tilled = len(cells["tilled"]); n_digg = len(cells["diggable"])
             n_planted = len(cells["planted"]); n_clear = len(cells["clear"]); n_fac = len(cells["facility"])
+            # 可耕格数=本质需求（未锄可耕+已锄+已种）——AI 先看这个够不够，别被"最大方形"带偏
+            n_arable = n_digg + n_tilled + n_planted
             lines = [f"  ({min(xs)},{min(ys)})-({max(xs)},{max(ys)}) {len(pts)}格"
-                     f" | 已锄 {n_tilled} 未锄可耕 {n_digg} 已种 {n_planted} 需清 {n_clear} 设施 {n_fac}"]
-            # 🏁 最大可耕方形（避开池塘边角/设施/杂草，规整种植区）
-            arable = set(cells["diggable"]) | set(cells["tilled"]) | set(cells["planted"])
-            sq = _max_arable_square(pts, arable)
-            if sq:
+                     f" | 可耕 {n_arable}（未锄 {n_digg} 已锄 {n_tilled} 已种 {n_planted}）"
+                     f" 需清 {n_clear} 设施 {n_fac}"]
+            # 🏁 最大方形（在连通域内裁边：设施保留、绕着种；只有打断连通的格才裁掉边）——
+            #    2026-09-04 恒：旧版把设施当 0 重算出"纯可耕方形"缩成 3×3，与连通域规则打架。
+            #    ★传 pts（连通域全格，含设施）而非 arable——这才是"设施纳入后的裁边"。
+            sq = _max_arable_square(pts, None)   # new: 用 pts_set，arable 参数忽略
+            if sq and sq[2] >= 1:
                 lines.append(f"  🏁 最大可耕方形: ({sq[0]},{sq[1]})-({sq[0]+sq[2]-1},{sq[1]+sq[2]-1})"
-                             f" {sq[2]}×{sq[2]}")
+                             f" {sq[2]}×{sq[2]}（设施在内，种时绕着留格；可耕共 {n_arable} 格）")
             if cells["facility"]:
                 fac = _C(_plot_cell_label(grid[p]) for p in cells["facility"])
-                lines.append(f"      设施(保留): {' '.join(f'{k}×{v}' for k, v in fac.most_common())}")
+                lines.append(f"      设施(保留,种植留格绕过): {' '.join(f'{k}×{v}' for k, v in fac.most_common())}")
             if cells["clear"]:
                 clr = _C(_plot_cell_label(grid[p]) for p in cells["clear"])
                 lines.append(f"      需清(→ farm ops=clear): {' '.join(f'{k}×{v}' for k, v in clr.most_common())}")
@@ -4593,20 +4636,21 @@ def _norm_fert(fert_val):
 
 
 @mcp.tool()
-def apply_fertilizer(fertilizer_name: str, x: int = 60, y: int = 10,
-                     rows: int = 5, length: int = 5, direction: str = "horizontal") -> str:
+def apply_fertilizer(fertilizer_name: str, x: int = -1, y: int = -1,
+                     rows: int = 1, length: int = 1, direction: str = "horizontal") -> str:
     """🌱 撒化肥（照播种逻辑抄的：逐格走→撒→检测兜底）
 
     撒前扫描目标区：**已有同种化肥的格跳过**（不浪费），不同种才覆盖，
     没锄的格跳过并提醒。撒完 position 检测兜底，数落格报结果。
+    ⚠️ 尺寸默认 1×1 不擅自扩；缺坐标→玩家面向格（2026-09-03 恒）。
 
     Args:
         fertilizer_name: 化肥名（Basic Fertilizer / Quality Fertilizer / Speed-Gro /
             Deluxe Speed-Gro / Deluxe Fertilizer / Hyper Speed-Gro / 保留土壤类）
-        x: 起始 X 坐标（默认 60）
-        y: 起始 Y 坐标（默认 10）
-        rows: 撒几行（默认 5）
-        length: 每行多长（默认 5 格）
+        x: 起始 X 坐标（缺→玩家面向格）
+        y: 起始 Y 坐标（缺→玩家面向格）
+        rows: 撒几行（默认 1）
+        length: 每行多长（默认 1 格）
         direction: horizontal=横着 / vertical=竖着（默认 horizontal）
     """
     warp_log = _warp_home_if_needed("Farm")
@@ -4621,6 +4665,7 @@ def apply_fertilizer(fertilizer_name: str, x: int = 60, y: int = 10,
         return _with_state(f"{warp_log}❌ 背包里没有「{fertilizer_name}」")
 
     # 3. 算目标格
+    x, y = _farm_default_xy(x, y)   # 缺坐标→玩家面向格
     dx, dy = (1, 0) if direction == "horizontal" else (0, 1)
     rdx, rdy = (0, 1) if direction == "horizontal" else (1, 0)
     target_tiles = []
@@ -4714,10 +4759,10 @@ def apply_fertilizer(fertilizer_name: str, x: int = 60, y: int = 10,
 @mcp.tool()
 def till_and_plant(
     seed_name: str,
-    x: int = 60,
-    y: int = 10,
-    rows: int = 5,
-    length: int = 5,
+    x: int = -1,
+    y: int = -1,
+    rows: int = 1,
+    length: int = 1,
     direction: str = "horizontal",
     trellis: bool = False,
 ) -> str:
@@ -4742,6 +4787,7 @@ def till_and_plant(
     if seed_name.strip().lower().endswith("starter"):
         trellis = True
     warp_log = _warp_home_if_needed("Farm")
+    x, y = _farm_default_xy(x, y)   # 2026-09-03 恒：缺坐标→玩家面向格（旧常量 (60,10) 会锄播到别处）
 
     # 计算目标地格
     dx, dy = (1, 0) if direction == "horizontal" else (0, 1)
@@ -4771,21 +4817,30 @@ def till_and_plant(
                 continue
             obj = t.get("object", "")
             terrain = t.get("terrain", "")
-            if obj and "Sprinkler" not in obj:
+            # ⚠️ 2026-09-04 恒：可绕过设施（洒水器/稻草人/火把）不算障碍——它们留着、种的时候绕；
+            #    只有真播种不了 / 会被铲的（箱子/蟹笼/雕像等其它 object）才报障碍。
+            if obj and not _is_bypass_facility(obj):
                 blocked.append((tx, ty, obj))
             elif terrain and "Tree" in terrain:
                 blocked.append((tx, ty, terrain))
             elif t.get("passable") is False:
                 blocked.append((tx, ty, "水/不可走"))   # 河流农场：河不能锄
 
-        if blocked:
+        # ⚠️ 2026-09-03 恒：旧代码只要有水/设施就整单中止——农场设备+河密布，3×3 也凑不出"全净"
+        #    → 一条龙永远跑不成（冒烟实测"反复规划失败"）。但 tool_area 锄地本就会跳过 object/非Diggable
+        #    （ModEntry 逐格校验），farm_row --plant-only 也只种进有效格。所以障碍是"提示非中止"：
+        #    只在整块全被挡才中止，否则照跑并附跳过清单。
+        if blocked and len(blocked) >= len(target_tiles) * 0.8:
             lines = [f"  ({x},{y}): {name}" for x, y, name in blocked]
             return _with_state(
-                f"⚠️ 目标区域有 {len(blocked)} 个障碍物！\n"
-                + "\n".join(lines)
-                + "\n\n💡 请先用 clear_area 除杂，再回来种地。\n"
-                + f"   例: clear_area(x1={x}, y1={y}, x2={x+dx*length+rdx*rows}, y2={y+dy*length+rdy*rows})"
+                f"⚠️ 目标区域 {len(blocked)}/{len(target_tiles)} 格被挡（设备/水/树），几乎没法锄——"
+                + "请换块干净地或先 clear_area。\n"
+                + "\n".join(lines[:10])
+                + f"\n   例: clear_area(x1={x}, y1={y}, x2={x+dx*length+rdx*rows}, y2={y+dy*length+rdy*rows})"
             )
+        elif blocked:
+            # 只提示会跳过哪些，照跑（tool_area / farm_row 自会避开）
+            pass
     except Exception:
         pass  # 扫描失败不阻塞，让 farm_row 自己的检测兜底
 
@@ -4818,15 +4873,13 @@ def till_and_plant(
         out += f"\n  🧗 爬架播种 {len(plant_tiles)} 格 | 🚶 留 {p['walkway_rows']} 行走道（种2留1）"
         return _with_state(f"{warp_log}🌱 翻地播种爬架「{seed_name}」:\n{out[:800]}")
 
-    args_list = [
-        str(x), str(y), str(length),
-        f"--seed", seed_name,
-        f"--dir", farm_dir,
-        f"--rows", str(rows),
-        f"--skip-water",
-    ]
-    out = _run_script("farm_row", args_list, timeout=120)
-    return _with_state(f"{warp_log}🌱 翻地播种「{seed_name}」:\n{out[:600]}")
+    # 2026-09-03 恒：一条龙改用可靠路径——锄地走 tool_area(_till_rect 自验收+补漏)，播种走 farm_row --plant-only。
+    #    旧 farm_row 逐格走位+"position fallback"假成功（plot 0/0、种子未消耗）；tool_area 是已验证的可靠锄地。
+    x2 = x + dx * (length - 1) + rdx * (rows - 1)
+    y2 = y + dy * (length - 1) + rdy * (rows - 1)
+    till_out = _till_rect(min(x, x2), min(y, y2), max(x, x2), max(y, y2))
+    plant_out = _farm_plant_only(seed_name, x, y, rows, length, direction)
+    return _with_state(f"{warp_log}🌱 翻地播种「{seed_name}」:\n{till_out}\n{plant_out}")
 
 
 # 锄头优先级（中英文名都行——恒 2026-08-13：游戏可能切中英文，匹配要兼容）
@@ -5190,6 +5243,9 @@ def _water_pet_bowls() -> list:
             bx, by = bowl["x"], bowl["y"]
             try:
                 # ⚠️ 站碗建筑位 + 朝右 + /tool 浇 (bx+1, by) 碗格（恒实测：door_y+1 站远浇不到；别 walk_to）
+                # ⚠️ 2026-09-04 恒：回退用旧版 use_tool——新版 interact_at(站碗旁/checkAction)对宠物碗走不通
+                #    （checkAction 被 didPlayerJustRightClick 卡死，无 TryPetBowl 兜底），结果既不浇上也无动画。
+                #    旧版挥壶虽喷水像"尿尿"，但真把碗浇上（watered=true）。正式"灌水动画"留给 C# TryPetBowlInteract 再看。
                 api.position(bx, by)
                 time.sleep(0.5)
                 api.face(1)
@@ -7215,12 +7271,19 @@ def _ops_run(ops_str: str, dispatch: dict, kw: dict) -> str:
         if fn is None:
             # 2026-09-02 零成本改：未知 op 直接列可用 ops，别只报错让 AI 再猜
             _op_keys = [k for k in dispatch if isinstance(k, str) and not any("一" <= c <= "鿿" for c in k)]
-            results.append(f"❌ 未知操作「{op}」。此域可用 ops: {' '.join(sorted(_op_keys))}（或 help(域) 看详解）")
+            # 2026-09-03 恒：中文别名同义（喂水/浇/收…）照常可用，报错点明，别让 AI 以为只能英文
+            results.append(f"❌ 未知操作「{op}」。此域可用 ops: {' '.join(sorted(_op_keys))}"
+                           f"（中文别名同义可用，如 喂水=宠物碗水）；详查 help(域)）")
             continue
         try:
             sig = inspect.signature(fn)
-            has_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
-            call_kw = dict(kw) if has_var_kw else {k: v for k, v in kw.items() if k in sig.parameters}
+        except (ValueError, TypeError):
+            sig = None
+        try:
+            if sig and any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+                call_kw = dict(kw)
+            else:
+                call_kw = {k: v for k, v in (kw or {}).items() if sig and k in sig.parameters}
             out = fn(**call_kw)
             if isinstance(out, str):
                 if _STATE_SEP in out:
@@ -7228,6 +7291,10 @@ def _ops_run(ops_str: str, dispatch: dict, kw: dict) -> str:
                 results.append(out)
             else:
                 return out   # 非文本结果（如图片）直接返回，不能 join
+        except TypeError as e:
+            # 2026-09-03 恒：参数名猜错（缺参）→ 直接列出可用参数名，别再让 AI 靠报错猜
+            avail = ", ".join(p.name for p in sig.parameters.values()) if sig else "?"
+            results.append(f"❌ op「{op}」参数错: {e}（此 op 可用参数: {avail}）")
         except Exception as e:
             results.append(f"❌ op「{op}」: {e}")
     return "\n\n".join(r for r in results if r)
@@ -7300,6 +7367,21 @@ def _domains_here(cur: str) -> list:
     return [d for d in DOMAIN_HOME if _is_domain_applicable(d, cur)]
 
 
+def _farm_default_xy(x: int, y: int):
+    """x/y 传 -1（或默认哨兵）→ 解析成玩家面向格当田块起点（2026-09-03 恒）。
+    旧默认 (60,10) 是祖传硬编码：AI 锄完田再 plant 不给坐标，会播到八竿子打不着的 (60,10)，
+    冒烟实测"一直移到奇怪起点/种子没消耗"。改成玩家当前位置当起点，犁种都挨着人选。
+    面向 0上/1右/2下/3左：默认取面向格（面前 1 格）当田左上角，走位方向 horizontal 右延。
+    玩家在田上方站着往下锄的惯例 → 面向下时起点=(px, py+1)。其它朝向按面前 1 格。"""
+    if x >= 0 and y >= 0:
+        return x, y
+    st = api.state()
+    px, py = st["player"]["x"], st["player"]["y"]
+    fd = st.get("player", {}).get("facingDirection", 2)
+    front = {0: (px, py - 1), 1: (px + 1, py), 2: (px, py + 1), 3: (px - 1, py)}
+    return front.get(fd, (px, py + 1))
+
+
 def _farm_rect(x: int, y: int, rows: int, length: int, direction: str):
     """由 x,y,rows,length,direction 算矩形角点 (x1,y1,x2,y2)。"""
     dx, dy = (1, 0) if direction == "horizontal" else (0, 1)
@@ -7309,17 +7391,39 @@ def _farm_rect(x: int, y: int, rows: int, length: int, direction: str):
     return min(x, x2), min(y, y2), max(x, x2), max(y, y2)
 
 
-def _farm_till(x: int = 60, y: int = 10, rows: int = 5, length: int = 5,
+def _farm_kw_norm(x, y, rows, length, direction, extra, extra_ok=()):
+    """农活域 kw 归一化：cols/col/width/len → length；未知 kw 报错，别静默吞（2026-09-03 恒）。
+    返回 (length, None) 正常，或 (None, err)。extra_ok=额外允许键（plant 的 seed_name）。"""
+    for k in ("cols", "col", "width", "len"):
+        if k in extra:
+            length = extra.pop(k)
+    bad = set(extra) - set(extra_ok)
+    if bad:
+        avail = "x y rows length direction" + (f" {' '.join(sorted(extra_ok))}" if extra_ok else "")
+        return (None, f"❌ 未知参数 {sorted(bad)}。此 op 可用: {avail}（每行几格写 length，或 cols/width 别名，别同时写）")
+    return (length, None)
+
+
+def _farm_till(x: int = -1, y: int = -1, rows: int = 1, length: int = 1,
                direction: str = "horizontal", **extra) -> str:
-    """纯锄地（不开播种）。"""
+    """纯锄地（不开播种）。⚠️ 2026-09-03 恒：**尺寸默认 1×1，不擅自扩**——AI 说种多少就锄多少，
+    想锄多宽自己传 rows/length（旧默认 5×5 会把"就锄一下"扩成 25 格大田=意外耗体力）。
+    缺坐标→玩家面向格；缺尺寸→只锄面前 1 格。"""
+    length, err = _farm_kw_norm(x, y, rows, length, direction, extra)
+    if err: return err
+    x, y = _farm_default_xy(x, y)   # 2026-09-03 恒：缺坐标→玩家面向格（旧常量 (60,10) 会锄飞到别处）
     x1, y1, x2, y2 = _farm_rect(x, y, rows, length, direction)
     return _till_rect(x1, y1, x2, y2)
 
 
-def _farm_plant_only(seed_name: str, x: int = 60, y: int = 10, rows: int = 5,
-                     length: int = 5, direction: str = "horizontal", **extra) -> str:
+def _farm_plant_only(seed_name: str, x: int = -1, y: int = -1, rows: int = 1,
+                     length: int = 1, direction: str = "horizontal", **extra) -> str:
     """🌱 独立播种（在已锄好地上种，不锄不浇）——2026-08-15 恒：单独播种工具。
-    走 farm_row --plant-only（每格走位+select种子+种）。"""
+    走 farm_row --plant-only（每格走位+select种子+种）。缺坐标→玩家面向格（2026-09-03 恒）。
+    ⚠️ 尺寸默认 1×1 不擅自扩——AI 报多少格就种多少格。"""
+    length, err = _farm_kw_norm(x, y, rows, length, direction, extra)
+    if err: return err
+    x, y = _farm_default_xy(x, y)
     try:
         dir_map = {"horizontal": "right", "vertical": "down"}
         farm_dir = dir_map.get(direction, "right")
@@ -7332,9 +7436,12 @@ def _farm_plant_only(seed_name: str, x: int = 60, y: int = 10, rows: int = 5,
         return f"❌ 播种失败: {e}"
 
 
-def _farm_clear(x: int = 60, y: int = 10, rows: int = 5, length: int = 5,
+def _farm_clear(x: int = -1, y: int = -1, rows: int = 1, length: int = 1,
                 direction: str = "horizontal", **extra) -> str:
-    """清杂草/石头（按 x,y,rows,length 或 x1,y1,x2,y2 都行）。"""
+    """清杂草/石头（按 x,y,rows,length 或 x1,y1,x2,y2 都行）。缺坐标→玩家面向格；尺寸默认 1×1 不擅扩。"""
+    length, err = _farm_kw_norm(x, y, rows, length, direction, extra)
+    if err: return err
+    x, y = _farm_default_xy(x, y)
     x1, y1, x2, y2 = _farm_rect(x, y, rows, length, direction)
     return clear_area(x1, y1, x2, y2)
 
@@ -7439,6 +7546,7 @@ def bundle_kb(query: str = "") -> str:
 @mcp.tool()
 def farm(ops: str = "", kw: dict | None = None) -> str:
     """🌾 农活域（必走，禁手动 use_tool/tool_area）。高频：water 浇 / harvest 收 / plant 种 / till 锄 / fertilize 化肥 / clear 清杂 / collect 收机器。全 ops+参数 → help(farm)。
+    ⚠️ till/plant/till_plant/clear/fertilize **尺寸不设默认**（缺=只做 1 格，绝不默认 5×5）——要多少自己传 rows + length（如 rows=1 length=5 锄一行 5 格）。
 
     """
     op_list = [o for o in re.split(r"[\s,，]+", (ops or "").strip()) if o]
@@ -8554,17 +8662,18 @@ def menu(ops: str = "", kw: dict | None = None) -> str:
 
 @mcp.tool()
 def storage(ops: str = "", kw: dict | None = None) -> str:
-    """🎒 箱子域。ops: scan(扫箱) store(存 x,y,name) take(取 x,y,name,count) smart(智能堆叠) layout(箱子网络)
-    default(设默认箱 x,y) cleardefault(清默认) tag(标记)。细节→help(storage)。
+    """🎒 箱子域。ops: view(看箱,box=N看单箱全清单) store(存:target指定箱/留空智能) take(取:x,y+name单箱 或 items批量)
+    find(模糊查哪箱有某物) default(设/清默认箱,clear=清) tag(改名,可带color顺带改色)。
+    🤖 存取统一走位：store/take 都会先走到相关箱子旁（批量只走到第一个相关箱），不用区分拟人/原子。
+    ⭐ 每个箱子前自动带【类目标签】(内容过半自动归类:矿/作物/鱼/种子…)+颜色名,AI 看标签定位,别靠编号逐箱翻。
+    细节→help(storage)。
     """
     dispatch = {
-        "scan": scan_chests, "扫": scan_chests,
-        "store": chest_store, "存": chest_store,
-        "take": chest_take, "取": chest_take,
-        "smart": storage_store, "堆": storage_store, "存智能": storage_store,
-        "layout": storage_layout, "网络": storage_layout, "看箱": storage_layout,
+        "view": storage_view, "看": storage_view, "看箱": storage_view, "扫": storage_view,
+        "store": storage_store, "存": storage_store, "存智能": storage_store, "堆": storage_store,
+        "take": storage_take, "取": storage_take, "多取": storage_take, "批量取": storage_take,
+        "find": storage_find, "找": storage_find, "搜": storage_find, "查": storage_find,
         "default": storage_default, "默认": storage_default,
-        "cleardefault": storage_default_clear, "清默认": storage_default_clear,
         "tag": storage_tag, "标记": storage_tag,
     }
     return _with_state(_ops_run(ops, dispatch, kw))
@@ -8621,6 +8730,7 @@ _TU_REMIND = {"last": None}           # 铁匠铺"待取"去重（2026-08-22 恒
 # 🧾 结算期 30s 轮询/超时兜底已并入 _chat_phase_line（2026-08-17 恒），原 _SETTLE_CHECK_IN 已移除
 _GREENRAIN_KEY = {"last": None}       # 绿雨天提醒去重（2026-08-17 恒：weather=7，一天一次）
 _HW_REMIND_KEY = {"last": None}       # 每日求助栏提醒去重（2026-08-29 恒：每天第一次进Town一次）
+_CAL_TOWN_KEY = {"last": None}        # 📅 日历(生日/休店)去重（2026-09-04 恒：只每天第一次(TV) + 顶多进Town再弹一次，别每条都弹）
 _HW_READY_KEY = {"last": None}        # 每日求助"已集齐"提醒去重（2026-08-29 恒 Part A：集齐未交付提示去交付，一天一次）
 _SPECIAL_RW_KEY = {"last": None}      # 特别订单奖励链提醒去重（2026-08-29 恒：接单/完成领奖/兑奖券可拿，到Town每日一次）
 
@@ -11253,7 +11363,7 @@ _DOMAIN_GUIDES = {
 "social": "社交域：chat(跟NPC搭话) gift(送礼提好感) give(送玩家物品) send(发消息) emote(表情) friendship(查好感) movie(影院知识) snack(零食)。",
 "scene": "场景交互域(点东西/工具/转身/捡)：at(x,y)(点指定格/柜台) interact(点面前) use(挥工具) face(转向0上1右2下3左) select(拿手上) pickup(拿起家具) pickup_scene(捡当前场景物) berry(摇浆果) spot(挖蚯蚓点) moss(绿雨搜苔藓) rock(室外镐击:敲当前图可破物,采石场/挖掘场/蚌矿场跳普通石,dig/dry,battle-free) garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物) furniture(扫家具) place(放置/播种:name=物品名,x/y=目标格→箱子/树种/蟹笼落地或种下,只放可放置物) break(拆/敲:x,y=目标格,steps=挥击次,radius=方圆→镐子敲石头/翻已耕地,跳过箱子/容器格) maze(迷宫视图r半径,gx/gy目标格→ASCII棋盘#墙.可走P自己G目标) maze_seg(走法链gx,gy目标→拆直走廊列表+拼「左/右上/下走到(x,y)」多段链,AI按段walk_to) maze_walk(走迷宫 waypoints=「x,y x,y…」依次walk_to) pan(淘金/淘盘:本图水下闪光点→岸边走位面水→铜锅淘金收掉落) front/rummage(分别是interact/garbage的别名)。带参 op(at/break 的 x,y、place 的 name、maze_seg 的 gx/gy)→ kw={'参数名':值}。",
 "menu": "菜单/界面域(开→看→点)：read(看菜单) advance(推进剧情/对话) click(option/item/button/xy 点;action=claim领/action=discard丢桶腾格;slot=序号领指定格) key(ok/esc/数字按键) cancel(关弹窗/撤就绪) shop(逛店) sell(卖商店) bin(投出货箱) cook(做饭) craft(合成) recipes(菜谱) craftables(配方) forge(锻造) geode/geodes(砸晶球) customize(捏人) bundle(献祭板) bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读消耗品:书/秘密纸条/日记残页,统一走右键读 name=物品名) levelup_choose(技能升级职业选择 5/10级:不带参读左右选项,side=left/right 或 profession=职业id 定分支;普通升级自会确认OK) number(数量输入:展览会兑换台/转盘押注 NumberSelectionMenu) minigame(赌场小游戏点按钮 action=hit/stand/bet10/…) minigame_state(读牌面/转盘) display_fill(农展台放满 items='钻石,山羊奶酪') display_takeback(收好) journal(开任务日志→menu read 读卡,翻页=click(button=forward/back),领奖励=click(button=rewardBox)) know(查特别订单详情/知识库SPECIAL_ORDERS,如menu know 岛屿食材;2026-09-02 task域退役并入menu)。🚫满包接鱼/领箱:原 claim_swap(替换领取)已退役→**click action=discard 丢桶腾格(回收返金)+action=claim 领取(或用 slot 领指定格;不想要直接 button=ok 关掉)**。🧾关闭菜单一律 click(button=upperRightCloseButton)（ItemGrabMenu/交付容器用 button=ok 确认才关）；订单交付容器(QuestContainerMenu)=点背包对应物品格(见slots的坐标)→放进→点 button=ok 结算；任务日志领钱=点击已完成的有钱任务卡后 click(button=rewardBox)；兑奖机兑换=click(button=mainButton)；特别订单领奖链=日志领钱(上面)→社区板旁领奖箱(60,93)拿兑奖券→刘易斯家兑奖机(mainButton)兑换。",
-"storage": "箱子域：scan(扫当前图箱) store(存) take(取) smart(智能堆叠) layout(箱子网络) default/cleardefault/tag(默认箱/清/标记)。",
+"storage": "箱子域：view(看箱,box=N看单箱全清单) store(存:target指定箱/留空智能) take(取:x,y+name单箱 或 items批量) find(模糊查哪箱有某物) default(设/清默认箱 clear=清) tag(改名,可带color改色)。🤖存取统一走位：store/take都会先走到相关箱旁(批量只走到第一个),不区分拟人/原子,别靠编号逐箱翻。⭐每个箱子前自动带【类目标签】(内容过半归类):矿/古物/鱼/种子/作物/农产/建材/料理/装备——AI按标签定位箱,找东西用find。⚠️改色别染纯#000000(=默认木纹,识别成未染色);要黑箱用暗灰#303030。",
 "daily": "过日子域：sleep(睡觉) settle(确认过夜结算) eat(吃食物回血体力) wear(穿/脱衣物) lie_bed(躺床不过夜) heartbeat(心跳间隔) pause(后台不暂停) peek(看恒干嘛) whiteboard/wb_read/wb_pin/wb_clear(白板记忆) appearance(捏脸)。",
 "map": "导航域(🗺️跨图唯一入口)：lookup(查地点功能+出口) query(功能反查) go(走到目标/多段寻路+交通) walk(走到POI) movetile(同图精确走位) npc(找NPC) warp_safe(紧急逃脱)。⚠️出口走出口前一格；交通图腾柱>矿车>走路。",
 "festival": "节日域(🎪)：today(今天节日) next(下一个) go(去) info(实况) interact(互动) answer(应答) shop(节日商店) eggs(找蛋) egg_note(纸条) egg_run(捡蛋) dance(跳舞邀请) strength(力量测试 delay=毫秒) ice_fish(冰雪节冰钓自动化) help(玩法) prep(备战) poi(限定点) maze(迷宫坐标奇偶年) maze_walk(走迷宫 waypoints=「x,y x,y…」依次walk_to)。",
@@ -11335,23 +11445,27 @@ def select_item(name: str) -> str:
 
 
 @mcp.tool()
-def eat_item(name: str = "") -> str:
+def eat_item(name: str = "", item_name: str = "") -> str:
     """🍽️ 自己吃背包里的食物（真实吃法：eatObject 动画 + 回血/回体力）
     不指定 name 就吃当前手上选中的食物；指定则先把食物选到手上再吃。
     会先确保后台不冻结（失焦暂停关），动画完整播完后回血真实生效。
 
     Args:
         name: 食物名称（如 Salad、Pineapple、Farmer's Lunch），留空吃当前选中
+        item_name: name 的中文别名（AI 常传 item_name，2026-09-03 恒）
     """
     try:
         _ensure_background()  # 后台吃动画要完整播完(doneEating 结算回血)，先确保不冻结
+        if not name:
+            name = item_name
         if name:
             api.select(name)
             time.sleep(0.2)
         r = api._post("/eat")
         if r.get("ok"):
             return _with_state(f"🍽️ 吃了 {r.get('ate', name or '当前选中')}")
-        return _with_state(f"❌ {r.get('error', '吃失败')}")
+        # 2026-09-03 恒：AI 常先不选中食物就被拒——直接给路径，别只甩"先/select"
+        return _with_state(f"❌ {r.get('error', '吃失败')}——先选中食物再吃: scene ops=select name={name or '<食物名>'} → daily ops=eat")
     except Exception as e:
         return _with_state(f"❌ {e}")
 
@@ -11532,7 +11646,8 @@ def scan_chests(chest: int = -1) -> str:
         # 单箱完整页（一箱一页）
         if chest >= 0 and chest < len(chests):
             c = chests[chest]
-            lines = [f"📦 箱子#{chest} @ ({c['x']},{c['y']}) [{c['used']}/{c['capacity']}]"]
+            tag = f"【{c['autoTag']}】" if c.get("autoTag") else ""
+            lines = [f"📦 箱子#{chest} {tag} @ ({c['x']},{c['y']}) [{c['used']}/{c['capacity']}]"]
             items = c.get("items", [])
             if not items:
                 lines.append("  (空)")
@@ -11541,9 +11656,15 @@ def scan_chests(chest: int = -1) -> str:
             lines.append(f"💡 共 {len(items)} 种；其他箱子用 scan_chests(chest=N) 看")
             return "\n".join(lines)
         # 摘要模式
-        lines = [f"当前地图: {data['location']} | 共 {len(chests)} 个箱子（scan_chests(chest=N) 看单箱全清单）"]
+        lines = [f"当前地图: {data['location']} | 共 {len(chests)} 个箱子（scan_chests(chest=N) 看单箱全清单；【类目标签】=内容过半自动归类）"]
         for idx, c in enumerate(chests):
             pos = f"({c['x']},{c['y']})"
+            emo, czh = _color_display(c.get("color", ""))
+            ctag = (emo + czh) if czh else "⬜"
+            # ⚠️ 2026-09-04 恒：有 AI 人工标注名字就只显示名字，自动类目标签被覆盖，别双标
+            tag = "" if c.get("name") else (f"【{c['autoTag']}】" if c.get("autoTag") else "")
+            nm = (c.get("name") or "")
+            nmtxt = f" {nm}" if nm else ""
             items = c.get("items", [])
             if items:
                 item_str = ", ".join(f"{i['name']}x{i['count']}" for i in items[:5])
@@ -11551,7 +11672,7 @@ def scan_chests(chest: int = -1) -> str:
                     item_str += f"... 共{len(items)}种"
             else:
                 item_str = "(空)"
-            lines.append(f"  📦#{idx} {pos} [{c['used']}/{c['capacity']}] {item_str}")
+            lines.append(f"  📦#{idx}{tag}{ctag} {pos}{nmtxt} [{c['used']}/{c['capacity']}] {item_str}")
         return "\n".join(lines)
     except Exception as e:
         return f"扫描箱子失败: {e}"
@@ -11559,18 +11680,60 @@ def scan_chests(chest: int = -1) -> str:
 
 @mcp.tool()
 def _walk_to_chest(x, y):
-    """走到箱子旁边（站箱子上方朝下），自然走路+position兜底"""
+    """走到箱子旁边（站箱子上方朝下），自然走路+position兜底
+    ⚠️ 2026-09-03 恒：旧代码硬编码 location="Farm"——玩家在小屋/棚内存箱子会被拉到
+    Farm 地图 BFS 兜底瞬移到河边（冒烟实测"第一步就瞬移进河里"）。改成用当前实际地图。"""
     try:
         s = api.state()
         loc = s.get("location", {}).get("name", "Farm")
-        if loc != "Farm":
-            api.walk_to_coord("Farm", x, y - 1)
-        else:
-            api.walk_natural(x, y - 1)
+        api.walk_to_coord(loc, x, y - 1)
         time.sleep(0.3)
     except:
         api.position(x, y - 1)
         time.sleep(0.1)
+
+
+# ═══ 2026-09-04 恒：storage 域压缩 11→6（scan+layout→view / store+smart→store / take+takeall→take /
+#      default+cleardefault→default / tag+color→tag）。view=scan+layout 互补：layout 的⭐默认箱+剩余格 + scan 的单箱全页。 ═══
+def storage_view(box: int = -1) -> str:
+    """📦 看箱：box=-1 网络概览（⭐默认箱+剩余格+色名+【类目标签】，每箱一行）；
+    box=N 看第 N 箱完整清单（不截断，AI 装箱决策前看全）。
+    = 原 storage_layout(-1) + scan_chests(N) 互补合一。"""
+    if box >= 0:
+        return scan_chests(box)
+    return storage_layout()
+
+
+def _primary_chest_for_smart():
+    """智能 store 要走到的主箱：默认箱(若设) else 空位最多的箱。返回 {"x","y"} or None。"""
+    dflt = _storage_default_for_loc()
+    if dflt:
+        return {"x": dflt.get("x"), "y": dflt.get("y")}
+    try:
+        data = api._get("/scan_chests")
+        best = None
+        for c in data.get("chests") or []:
+            if best is None or c.get("freeSlots", 0) > best.get("freeSlots", 0):
+                best = c
+        return {"x": best["x"], "y": best["y"]} if best else None
+    except Exception:
+        return None
+
+
+def _first_chest_for_item(name):
+    """批量取的第一件物品所在的箱（中英名/ID 子串匹配，仿 storage_find）。返回 {"x","y"} or None。"""
+    q = (name or "").strip().lower()
+    if not q:
+        return None
+    try:
+        for c in (api._get("/scan_chests").get("chests") or []):
+            for i in c.get("items") or []:
+                if (q in (i.get("name", "") or "").lower() or q in (i.get("displayName", "") or "").lower()
+                        or q in (i.get("qualifiedId", "") or "").lower()):
+                    return {"x": c["x"], "y": c["y"]}
+    except Exception:
+        pass
+    return None
 
 
 @mcp.tool()
@@ -11620,6 +11783,122 @@ def chest_take(x: int, y: int, name: str, count: int = 999) -> str:
         return f"取物品失败: {e}"
 
 
+def storage_find(name: str = "") -> str:
+    """🔍 模糊查找哪个箱子放着该物品（中英文名/ID 子串都认，2026-09-03 恒）
+    一次扫当前场景所有箱，报「物品 在 【类目标签】箱@(x,y) ×count」。
+    想真正取出→storage take（精确）；想存→storage store/smart。
+    """
+    try:
+        q = (name or "").strip().lower()
+        if not q:
+            return "❌ 要查什么（storage find name=物品名/中文/子串）"
+        data = api._get("/scan_chests")
+        if not data.get("ok"):
+            return f"扫描失败: {data.get('error', '?')}"
+        chests = data.get("chests", [])
+        if not chests:
+            return f"当前地图 {data.get('location')} 没有箱子"
+        lines = [f"🔍 找「{name}」（当前地图 {data.get('location')}）:"]
+        for c in chests:
+            matched = [(i, i.get("count", 0)) for i in c.get("items", [])
+                       if q in (i.get("name", "") or "").lower()
+                       or q in (i.get("displayName", "") or "").lower()
+                       or q in (i.get("qualifiedId", "") or "").lower()]
+            if not matched:
+                continue
+            tag = f"【{c['autoTag']}】" if c.get("autoTag") else ""
+            nm = (c.get("name") or "")
+            nmtxt = f"「{nm}」" if nm else ""
+            cnt = sum(n for _, n in matched)
+            dname = matched[0][0].get("displayName") or matched[0][0].get("name")
+            lines.append(f"  · {tag}{nmtxt}@({c['x']},{c['y']}) {dname} x{cnt}")
+        if len(lines) == 1:
+            return f"❌ 当前场景没有箱子里有「{name}」——storage view 看看有哪些"
+        lines.append("  💡 取用：storage take items=\"……\")")
+        return _with_state("\n".join(lines))
+    except Exception as e:
+        return f"查找失败: {e}"
+
+
+def storage_take(items: str = "", x: int = -1, y: int = -1, name: str = "", count: int = 999) -> str:
+    """📤 取物（统一走位：先走到箱子旁）。两类取法：
+    x,y>0 且 name 给了 = 取指定箱的某物（拟人走到那箱）；否则按 items 智能找箱批量取，
+    只走到**第一个**配到的箱旁（跨箱凑数仍全收，2026-09-04 恒：智能存取也走位，不区分拟人/原子）。
+    items: 逗号/空格分隔，每项可带数量如 "西瓜,铜矿石×30,木材"（不带数=取该类全量）。
+    精确匹配（中英文名/ID）；模糊查哪个箱先用 storage find。
+    """
+    try:
+        # 单箱精确取（拟人走到那箱再取）
+        if name and x >= 0 and y >= 0:
+            _walk_to_chest(x, y)
+            return chest_take(x, y, name, count)
+        reqs = []
+        for part in re.split(r"[,，;；]+", (items or "").strip()):
+            part = part.strip()
+            if not part:
+                continue
+            m = re.match(r"^(.*?)\s*[xX×]\s*(\d+)$", part)
+            if m:
+                reqs.append({"name": m.group(1).strip(), "count": int(m.group(2))})
+            else:
+                reqs.append({"name": part, "count": -1})
+        if not reqs:
+            return "❌ 要取什么（storage take items=\"西瓜,铜矿石×30\" 或 x,y+name）"
+        # 🤖 2026-09-04：批量只走到第一个配到的箱旁（拟人），跨箱凑数仍全收
+        _first = _first_chest_for_item(reqs[0]["name"])
+        if _first:
+            _walk_to_chest(_first["x"], _first["y"])
+        r = api._post("/chest_take_list", {"items": reqs})
+        if not r.get("ok"):
+            return f"取物失败: {r.get('error', r)}"
+        lines = ["📤 从当前场景箱子取物" + (f" ({r.get('location')})" if r.get("location") else "")]
+        any_taken = False
+        for it in r.get("items", []):
+            itn = it.get("item")
+            taken = it.get("taken", 0)
+            if taken <= 0:
+                lines.append(f"  ⚠️ 「{itn}」没取到（箱子没有；storage find 搜搜）")
+                continue
+            any_taken = True
+            srcs = it.get("from", [])
+            src_txt = ", ".join(
+                f"({'【' + s['autoTag'] + '】' if s.get('autoTag') else ''}{s.get('name','')}@({s['x']},{s['y']}) ×{s.get('got',0)})"
+                for s in srcs) if srcs else "?"
+            w = it.get("wanted")
+            amt = f"x{taken}" if (w is None or w == -1) else f"{taken}/{w}"
+            lines.append(f"  ✅ {itn} {amt} ← {src_txt}")
+        if not any_taken:
+            lines.append("  什么都没取到（可能背包满了——先清背包/再找）")
+        return _with_state("\n".join(lines))
+    except Exception as e:
+        return f"取物失败: {e}"
+
+
+def storage_color(target: str = "", color: str = "") -> str:
+    """🎨 给箱子改色（写在箱子真实染色，storage view 立即可见）。改名用 storage tag。2026-09-04
+    target: 同其它(中文色名/#hex/名字/坐标/类目标签)定位箱。
+    color: #RRGGBB 或 色名(红/粉/紫/黑…)；留空/默认/clear/复位 = 复位默认木纹。
+    ⚠️ 别染纯 #000000（=默认木纹哨兵，被识别成未染色）；要"黑箱"用暗灰 #303030。
+    """
+    try:
+        if not target.strip():
+            return "❌ 要指定哪个箱子（storage color target=... color=...）"
+        targ = _resolve_storage_target(target.strip())
+        if isinstance(targ, str):
+            return _with_state(targ)
+        hexc = _color_to_hex(color)
+        if hexc and not (len(hexc) == 7 and hexc.startswith("#")):
+            return _with_state(f"❌ 颜色格式错: {color}（要 #RRGGBB 或 色名/默认 复位）")
+        r = api._post("/chest_color", {"x": targ.get("x"), "y": targ.get("y"), "color": hexc})
+        if not r.get("ok"):
+            return _with_state(f"改色失败: {r.get('error', r)}")
+        newc = r.get("color") or ""
+        act = "复位默认(木纹)" if r.get("reset") else f"染成 {newc}"
+        return _with_state(f"🎨 ({targ.get('x')},{targ.get('y')}) {act}")
+    except Exception as e:
+        return _with_state(f"改色失败: {e}")
+
+
 # ═══════════════════════════════════════════
 #  🧺 智能存储（/store_all，2026-08-14）
 #  只处理当前场景箱子（恒拍板：不跨地图）。
@@ -11628,19 +11907,70 @@ def chest_take(x: int, y: int, name: str, count: int = 999) -> str:
 
 # (hue 下限, hue 上限, 颜色名, emoji)
 _HEX_COLOR_BANDS = [
+    # ⚠️ 2026-09-03 恒：粉色区间扩到 315-360——浅粉难分（#FF75C3=326 之前算粉，但 #FFC0CB≈349
+    #    被原 (330,360) 抓成红）。粉=315-360，紫=260-315，避免粉/紫/红混淆（真草莓红在 0-20）。
     (0, 20, "red", "🟥"), (20, 45, "orange", "🟧"), (45, 70, "yellow", "🟨"),
     (70, 160, "green", "🟩"), (160, 200, "cyan", "🟦"), (200, 260, "blue", "🟦"),
-    (260, 300, "purple", "🟪"), (300, 330, "pink", "🟪"), (330, 360, "red", "🟥"),
+    (260, 315, "purple", "🟪"), (315, 360, "pink", "🟪"),
 ]
+_COLOR_ZH = {"red": "红", "orange": "橙", "yellow": "黄", "green": "绿", "cyan": "青",
+             "blue": "蓝", "purple": "紫", "pink": "粉", "gray": "灰", "black": "黑"}
+
+
+def _color_display(hexstr):
+    """→ (emoji, 中文色名)；未染色/默认/非法 → ('⬜', '')。AI 靠名字区分粉/紫/蓝（emoji 粉紫共用 🟪）。"""
+    emo, name = _hex_to_color_name(hexstr)
+    if not name:
+        return ("⬜", "")
+    return (emo, _COLOR_ZH.get(name, name))
 _COLOR_NAME_SYNONYMS = {
     "红色": "red", "红": "red", "橙色": "orange", "橙": "orange", "黄色": "yellow", "黄": "yellow",
     "绿色": "green", "绿": "green", "青色": "cyan", "蓝色": "blue", "蓝": "blue",
     "紫色": "purple", "紫": "purple", "粉色": "pink", "粉": "pink",
+    "黑色": "black", "黑": "black", "灰色": "gray", "灰": "gray",
+}
+
+# 🎨 2026-09-04 恒：改色工具的 色名→hex（storage color）。⚠️黑用暗灰 #303030——纯 #000000=默认木纹哨兵(被识别成未染色)。
+_COLOR_KEY_HEX = {
+    "red": "#C9423B", "orange": "#E98C2B", "yellow": "#E8C93B", "green": "#4FA33B",
+    "cyan": "#3BA7C9", "blue": "#3B6FC9", "purple": "#8A4FD0", "pink": "#F07BA9",
+    "gray": "#888888", "black": "#303030",
+}
+
+
+def _color_to_hex(name):
+    """storage color 的 color 参数 → ('#RRGGBB' 或 ''=复位默认)。支持 #hex/RRGGBB/英文key/中文色名/默认。"""
+    s = (name or "").strip()
+    low = s.lower()
+    if not s or low in ("clear", "默认", "木", "复位", "default", "reset", "none"):
+        return ""
+    if s.startswith("#"):
+        return s if len(s) == 7 else ("#" + s if len(s) == 6 else s)
+    if len(s) == 6 and all(c in "0123456789abcdefABCDEF" for c in s):
+        return "#" + s
+    if low in _COLOR_KEY_HEX:
+        return _COLOR_KEY_HEX[low]
+    for cn, key in _COLOR_NAME_SYNONYMS.items():
+        if s in cn or s == key:
+            return _COLOR_KEY_HEX.get(key, "")
+    return s  # 未知，交给 C# 报格式错
+
+# 🆕 2026-09-03 恒：自动类目标签词表（_resolve_storage_target 认「矿石箱」这类词→定位 autoTag 箱）
+_AUTO_LABEL_WORDS = {
+    "矿": {"矿", "矿石", "宝石", "矿箱", "宝石箱", "石英"},
+    "古物": {"古物", "古物箱", "骨骼"},
+    "鱼": {"鱼", "鱼箱", "水产", "鱼子", "鲑"},
+    "种子": {"种子", "种子箱"},
+    "作物": {"作物", "作物箱", "蔬果", "菜箱", "水果箱", "蔬菜箱", "果实", "花果"},
+    "农产": {"农产", "农产品", "蛋奶", "加工品", "奶酪", "蛋黄酱", "蜂蜜"},
+    "建材": {"建材", "建材箱", "木材", "石头", "建筑", "材料", "木头", "石块"},
+    "料理": {"料理", "食物", "熟食", "菜肴", "烹饪"},
+    "装备": {"装备", "装备箱", "工具箱", "武器", "钓具"},
 }
 
 
 def _hex_to_color_name(hexstr):
-    """#RRGGBB → (emoji, 颜色名)。纯白/透明/非法 → ('', '')（未染色）。"""
+    """#RRGGBB → (emoji, 颜色名)。纯白/纯黑(哨兵)/透明/非法 → ('', '')（未染色）。"""
     if not hexstr or not isinstance(hexstr, str):
         return ("", "")
     h = hexstr.lstrip("#")
@@ -11651,8 +11981,10 @@ def _hex_to_color_name(hexstr):
     except Exception:
         return ("", "")
     mx, mn = max(r, g, b), min(r, g, b)
+    # ⚠️ 2026-09-04 恒：SDV 未染色的默认箱 playerChoiceColor 读出来是纯 #000000(哨兵/木纹)，不是真黑。
+    #    真·黑(玩家染的)是暗灰如 #404040。把纯黑当未染色，别把原木默认箱认成黑。
     if mx == 0:
-        return ("⬛", "black")
+        return ("", "")
     if mn >= 250:
         return ("", "")  # 纯白 = 未染色
     if mx - mn < 25:
@@ -11707,13 +12039,19 @@ def _resolve_storage_target(t):
                 if (c.get("color") or "").lower() == hexc.lower():
                     return {"x": c["x"], "y": c["y"]}
             return f"❌ 当前场景没有 {hexc} 颜色的箱子"
-        # 中文颜色名 / 名字子串
+        # 中文颜色名 / 名字子串 / 自动类目标签词
         raw = t.lower()
         core = raw.replace("箱子", "").replace("箱", "").strip()
         want = None
         for cn, key in _COLOR_NAME_SYNONYMS.items():
             if core == cn or core == key:
                 want = key
+                break
+        # 🆕 2026-09-03 恒：认自动类目标签词（"矿箱"/"矿石"/"作物箱"→ 对应 autoTag 箱），AI 看标签定位箱
+        want_bucket = None
+        for bk, words in _AUTO_LABEL_WORDS.items():
+            if any(w in raw or w in core for w in words):
+                want_bucket = bk
                 break
         picked = None
         for c in chests:
@@ -11726,6 +12064,13 @@ def _resolve_storage_target(t):
                     if c.get("freeSlots", 0) > 0:
                         picked = c  # 优先挑有空位的同色箱子
                         break
+            elif want_bucket is not None:
+                if want_bucket in {"矿", "古物", "鱼", "种子", "作物", "农产", "建材", "料理", "装备"}:
+                    if (c.get("autoTag") or "") == want_bucket:
+                        picked = c
+                        if c.get("freeSlots", 0) > 0:
+                            picked = c  # 优先挑有空位的同类目箱
+                            break
             else:
                 # 名字子串：原始串 或 剥"箱"后的串 命中都算（矿石箱/矿石/内置冰箱）
                 if raw in dname or core in dname:
@@ -11733,8 +12078,8 @@ def _resolve_storage_target(t):
                     break
         if picked is not None:
             return {"x": picked["x"], "y": picked["y"]}
-        what = f"叫「{t}」" if want is None else f"{core}颜色的"
-        return f"❌ 当前场景没有{what}的箱子（storage_layout 看看有哪些）"
+        what = f"叫「{t}」" if want is None and want_bucket is None else (f"{core}颜色的" if want else f"{want_bucket}类的")
+        return f"❌ 当前场景没有{what}的箱子（storage view 看看有哪些）"
     except Exception as e:
         return f"❌ 解析目标失败: {e}"
 
@@ -11757,10 +12102,12 @@ def storage_layout() -> str:
         dflt = _storage_default_for_loc()
         for c in chests:
             pos = f"({c['x']},{c['y']})"
-            emo, cname = _hex_to_color_name(c.get("color", ""))
-            tag = emo if emo else "⬜"
+            emo, czh = _color_display(c.get("color", ""))
+            tag = (emo + czh) if czh else "⬜"   # 🆕 2026-09-03 恒：带中文色名（🟪粉 vs 🟪紫），AI 分得清粉/紫/蓝
             if c.get("name"):
-                tag += f"「{c['name']}」"
+                tag += f"「{c['name']}」"   # ⚠️ 2026-09-04 恒：AI 人工标注的名字优先——自动类目标签被覆盖，别双标
+            elif c.get("autoTag"):
+                tag += f"【{c['autoTag']}】"
             star = " ⭐" if dflt and (c["x"], c["y"]) == (dflt.get("x"), dflt.get("y")) else ""
             items = c.get("items", [])
             if items:
@@ -11793,6 +12140,13 @@ def storage_store(what: str = "", target: str = "", keepTools: bool = True) -> s
         # ⚠️ 只按逗号分隔：物品名可含空格（Wild Horseradish / Ancient Fruit / Triple Shot Espresso）
         what_list = [w.strip() for w in re.split(r"[,，;；]+", (what or "").strip()) if w.strip()] or None
         dflt = _storage_default_for_loc()
+        # 🤖 2026-09-04 恒：走位统一——smart/指定都先走到主箱旁（拟人），批量只走到第一个相关箱
+        if targ:
+            _walk_to_chest(targ["x"], targ["y"])
+        else:
+            _primary = _primary_chest_for_smart()
+            if _primary:
+                _walk_to_chest(_primary["x"], _primary["y"])
         r = api.store_all(keepTools=keepTools, what=what_list, target=targ, default=dflt)
         if not r.get("ok"):
             return _with_state(f"存储失败: {r.get('error', r)}")
@@ -11818,7 +12172,7 @@ def storage_store(what: str = "", target: str = "", keepTools: bool = True) -> s
         elif not stored:
             # 什么都没动：背包里没有 what 指定的物品，或都已堆在箱子里
             if what_list:
-                lines.append("  ⚠️ 没匹配到可存的物品（背包里没有指定的？storage_layout 看看背包）")
+                lines.append("  ⚠️ 没匹配到可存的物品（背包里没有指定的？storage view 看看背包）")
             else:
                 lines.append("  ✅ 没有要存的（背包没有非工具物品）")
         else:
@@ -11832,13 +12186,17 @@ def storage_store(what: str = "", target: str = "", keepTools: bool = True) -> s
 
 
 @mcp.tool()
-def storage_default(x: int, y: int) -> str:
-    """⭐ 设当前场景的默认箱（新物品没处堆时进这个箱子）
-    用坐标指定（storage_layout 看坐标）。某场景没设默认箱 → 智能模式自动选空位最多箱。
-    想改默认箱就再调一次；想取消：storage_default_clear
+def storage_default(x: int = -1, y: int = -1, clear: bool = False) -> str:
+    """⭐ 设/清 当前场景的默认箱（新物品没处堆时进这个箱子）
+    x,y 给坐标 = 设默认（storage view 看坐标）；clear=True 或 x<0 = 清除该场景默认（回退自动选空位最多箱）。
+    某场景没设默认箱 → 智能模式自动选空位最多箱。
     """
     try:
         loc = _current_location_name()
+        if clear or (x < 0 or y < 0):
+            (_storage_cfg.get("default") or {}).pop(loc, None)
+            _settings_save()
+            return _with_state(f"🧹 已清除 {loc} 的默认箱，回退自动选空位最多箱")
         (_storage_cfg.setdefault("default", {}))[loc] = {"x": x, "y": y}
         _settings_save()
         return _with_state(f"⭐ 默认箱已设: {loc}({x},{y})——新物品没处堆就进这里")
@@ -11859,12 +12217,13 @@ def storage_default_clear() -> str:
 
 
 @mcp.tool()
-def storage_tag(tag: str = "", target: str = "") -> str:
-    """🏷️ 给当前场景的箱子加括号标记（AI 自己给箱子分类）
+def storage_tag(tag: str = "", target: str = "", color: str = "") -> str:
+    """🏷️ 给当前场景的箱子加括号标记（AI 自己给箱子分类），可选同时改色。🌈一条命改名+改色
     名字变成「本名(标记)」，如 宝箱(矿石) / 迷你冰箱(食物)；tag 留空 = 清除标记只留本名。
+    color 填入：#RRGGBB / 色名(红/粉/紫…) → 顺带改色；留空 = 不改色（保持原样）。
     target 支持：中文色名("红色箱子")、#hex、箱子名字（含已标记的）、"x,y"。
-    直写 chest.Name（SDV 1.6 存档持久化），storage_layout 立即可见。
-    标记好之后 storage_store(what, target=标记名) 也能按标记定位箱子。
+    直写 chest.Name（SDV 1.6 存档持久化）+ /chest_color，storage view 立即可见。
+    标记好之后 storage store(what, target=标记名) 也能按标记定位箱子。
     """
     try:
         if not target.strip():
@@ -11872,13 +12231,24 @@ def storage_tag(tag: str = "", target: str = "") -> str:
         targ = _resolve_storage_target(target.strip())
         if isinstance(targ, str):
             return _with_state(targ)
-        r = api._post("/name_chest", {"x": targ.get("x"), "y": targ.get("y"), "tag": tag.strip()})
+        x, y = targ.get("x"), targ.get("y")
+        r = api._post("/name_chest", {"x": x, "y": y, "tag": tag.strip()})
         if not r.get("ok"):
             return _with_state(f"改名失败: {r.get('error', r)}")
-        act = "清除标记" if not tag.strip() else f"标记为「{r.get('name')}」"
-        return _with_state(f"🏷️ ({r['x']},{r['y']}) {act}")
+        name_txt = "清除标记" if not tag.strip() else f"标记为「{r.get('name')}」"
+        msgs = [f"🏷️ ({x},{y}) {name_txt}"]
+        # 🌈 color 填了才改色；留空=保持不改
+        if color.strip():
+            hexc = _color_to_hex(color)
+            if hexc and not (len(hexc) == 7 and hexc.startswith("#")):
+                return _with_state(f"❌ 颜色格式错: {color}（要 #RRGGBB 或 色名）")
+            cr = api._post("/chest_color", {"x": x, "y": y, "color": hexc})
+            if not cr.get("ok"):
+                return _with_state(f"改名成功但改色失败: {cr.get('error', cr)}")
+            msgs.append("改色→" + ("复位默认" if cr.get("reset") else f"#{cr.get('color','')}"))
+        return _with_state("；".join(msgs))
     except Exception as e:
-        return _with_state(f"改名失败: {e}")
+        return _with_state(f"改名/改色失败: {e}")
 
 
 def drop_item(name: str, count: int = 1) -> str:

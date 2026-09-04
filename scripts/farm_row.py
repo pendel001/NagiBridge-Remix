@@ -150,6 +150,14 @@ def run():
     flat = flatten_tiles(tiles)
     total = len(flat)
 
+    # ⚠️ 2026-09-03 恒：precheck_area 扫当前站位(radius~10)——先站到田边，否则扫不到目标田→检不到箱子/障碍
+    try:
+        sx0, sy0 = flat[0]
+        api.position(sx0, sy0 - 1)
+        time.sleep(0.3)
+    except Exception:
+        pass
+
     blocked = api.precheck_area(flat)
     if blocked:
         api.log(f"BLOCKED: {len(blocked)} obstacles in planting area:")
@@ -171,12 +179,14 @@ def run():
                 phases.append(("Watering Can", "water", True))
 
     # ⚠️ 2026-08-15 恒：播种前扫已种地块，跳过（不重复种/不覆盖）
+    # ⚠️ 2026-09-03 恒：连**设施/物体**格也跳过——洒水器/稻草人/箱子占了格不能播种，
+    #    否则 use_item 失败浪费种子（"围着设施种"靠这步：设施格跳过，别的照种）。
     planted = set()
     if any(pn == "plant" for _, pn, _ in phases):
         try:
             ps = api.surroundings(max(args.length, args.rows) // 2 + 8)
             for t in ps.get("tiles", []):
-                if t.get("crop"):
+                if t.get("crop") or t.get("object"):
                     planted.add((t["x"], t["y"]))
         except Exception:
             pass

@@ -411,6 +411,13 @@ def store_all(keepTools=True, what=None, target=None, default=None):
     return _post("/store_all", data)
 
 
+def chest_take_list(items):
+    """POST /chest_take_list — 从当前场景所有存储箱一次性取多项（智能路由，自动找对箱；单箱不够跨箱凑）。
+    items: list of {"name": "...", "count": int} 或字符串 "西瓜,铜矿石"（count=-1 缺省=取全量）。
+    不改玩家位置（原子直操）。返回 {ok, location, items:[{item,wanted,taken,from:[{x,y,name,color,autoTag,got}]}]}"""
+    return _post("/chest_take_list", {"items": items})
+
+
 def animals():
     return _get("/animals")
 
@@ -604,8 +611,19 @@ def inventory_items():
 
 def has_item(name):
     """按名匹配（2026-08-15 修：工具用包含匹配——"Hoe" 认 Iridium Hoe/Copper Hoe 等；
-    种子名也兼容）。"""
-    return any(name in (i.get("name") or "") for i in inventory_items())
+    种子名也兼容）。
+    ⚠️ 2026-09-04 恒改：种子「霜瓜种子」DisplayName 是中文、Name 是英文 → 只匹配 name 会漏检
+    （冒烟实测：till 成功但 precheck "背包没有种子"）。补 displayName 中英混双，与 ModEntry
+    store/take、HandleSelect 一致；大小写不敏感防英文名大小写差异。"""
+    n = (name or "").lower()
+    if not n:
+        return False
+    for i in inventory_items():
+        nm = (i.get("name") or "").lower()
+        dnm = (i.get("displayName") or "").lower()
+        if n in nm or n in dnm:
+            return True
+    return False
 
 def inventory_free_slots():
     s = state()

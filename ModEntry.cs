@@ -287,7 +287,7 @@ internal static class LidgrenServerPortPatch
 public class ModEntry : Mod
 {
     /// <summary>构建标记（防倒退：/status 报这个，部署/重启后核对，旧 DLL/原作者版会不同）。</summary>
-    public const string BuildStamp = "2026-08-18-dialog-advance";
+    public const string BuildStamp = "2026-09-04-anchor-remainder";
 
     /// <summary>当前 ModEntry 实例（Harmony 补丁等静态代码需要调实例方法时用）。</summary>
     internal static ModEntry? Instance;
@@ -318,6 +318,10 @@ public class ModEntry : Mod
     private bool _waitingForMove;
     private bool _waitingForBite;
     private int _biteTimeout;
+    // 🎯 2026-09-04 恒：move 命令的目标格——到位后把人精确对齐到这一格中心，
+    //    否则 walk 落偏 1 格(FindPath 对被判不可走的锚点退到邻居)会让挥锄几何整体偏移(+1)，
+    //    导致补余漏格/过锄。存下这格，走完在 _waitingForMove 清空处对齐。
+    private Point? _moveDest;
 
     // Tool charge state (visual delay before direct tile modification)
     private int _toolChargeTicks;
@@ -1280,9 +1284,18 @@ public class ModEntry : Mod
         return id;
     }
 
+    /// 能否卖（出货箱/商店）。与 HandleSell 的 keepCategories 一致：工具/武器/戒指/靴子不可卖
+    /// （这些 Category 属于 -99/-98/-97/-96）。否则背包/拾取会标价却卖不掉，误导 AI 去卖(2026-09-04)。
+    private static bool IsSellable(Item it)
+    {
+        if (it == null) return false;
+        int cat = it.Category;
+        return cat != -99 && cat != -98 && cat != -97 && cat != -96;
+    }
+
     private static int SafeSellPrice(Item it)
     {
-        try { return Math.Max(0, it.sellToStorePrice()); } catch { return 0; }
+        try { return IsSellable(it) ? Math.Max(0, it.sellToStorePrice()) : 0; } catch { return 0; }
     }
 
     private static string ShortDescription(Item? it)
@@ -1716,40 +1729,40 @@ public class ModEntry : Mod
                     var farmer = Game1.player;
                     if (farmer?.CurrentTool is Tool tool && _chargeOp != null)
                     {
-                        var loc = farmer.currentLocation;
                         var ft = farmer.TilePoint;
-                        // ⚠️ 还原真工具蓄力（2026-08-13）：DoFunction 真挥锄
-                        //   （游戏算真实地块+挥锄动画+自动尊重 Diggable；不再用自定义 GetToolAffectedTiles 几何）
                         try
                         {
                             var facingTile = GetFacingTile(farmer);
                             int px = (int)facingTile.X * 64 + 32;
                             int py = (int)facingTile.Y * 64 + 32;
-                            if (_chargeOp == "till" && tool is Hoe hoe)
-                                hoe.DoFunction(loc, px, py, _chargePower, farmer);
-                            else if (_chargeOp == "water" && tool is WateringCan wc)
-                                wc.DoFunction(loc, px, py, _chargePower, farmer);
-                            farmer.EndUsingTool();
+                            // 🔍 2026-09-03 恒（调体力）：蓄力释放每挥记一次——站在哪、朝哪、power
+                            ModEntry.Instance?.Monitor.Log($"[charge-release] op={_chargeOp} stand=({ft.X},{ft.Y}) target=({facingTile.X},{facingTile.Y}) power={_chargePower} 本锚点释放 1 次 (stamina BEFORE={farmer.Stamina:0})", LogLevel.Info);
+                            // ⚠️ 2026-09-04 恒（退回能落地+修体力）：动画顺序版卡住蓄力落地且 BeginUsingTool 无 EndUsingTool
+                            //    配对，蓄力姿势残留累计 → 最后一锚点按蓄满放大横扫 32 格烧 226 体力。
+                            //    ✅ 正解：DoFunction 立即落地（可靠），随后**一定 EndUsingTool** 关闭蓄力姿势，开关对称。
+                            if (_chargeOp == "till" && tool is Hoe hoe2)
+                                hoe2.DoFunction(farmer.currentLocation, px, py, _chargePower, farmer);
+                            else if (_chargeOp == "water" && tool is WateringCan wc2)
+                                wc2.DoFunction(farmer.currentLocation, px, py, _chargePower, farmer);
+                            farmer.EndUsingTool();   // ⚠️ 必须有——否则蓄力姿势不关，累计放大力
+                            var sft = farmer.TilePoint;
+                            var stiles = GetToolAffectedTiles(sft.X, sft.Y, farmer.FacingDirection, _chargePower);
+                            _commandResults.Add(new
+                            {
+                                ok = true, action = "charge_release", tool = tool.Name,
+                                power = _chargePower, tiles = stiles.Count, affected = stiles.Count, dofunction = true
+                            });
+                            ModEntry.Instance?.Monitor.Log($"[charge-release] 释放即 apply op={_chargeOp} 落地完 stamina={farmer.Stamina:0}", LogLevel.Info);
                         }
-                        catch (Exception ex)
+                        catch (Exception)
                         {
                             farmer.EndUsingTool();
+                            _commandDelay = 3;
+                            if (_commandQueue == null || _commandQueue.Count == 0) CompleteCommandQueue();
                         }
-
-                        // ⚠️ 2026-08-15 删：不再直接改地块兜底（会"判两次"+作弊——GetToolAffectedTiles 与 DoFunction
-                        //    覆盖不同/漂移时，把已浇的格也重浇 → 铜壶 3+1=4 格）。
-                        //    漏格由逐锚点验证 VerifyToolAreaAnchor 当场补（position+DoFunction 真补），不直接改 state。
-                        var tiles = GetToolAffectedTiles(ft.X, ft.Y, farmer.FacingDirection, _chargePower);
-                        _commandResults.Add(new
-                        {
-                            ok = true, action = "charge_release", tool = tool.Name,
-                            power = _chargePower, tiles = tiles.Count, affected = tiles.Count, dofunction = true
-                        });
                     }
                     _commandDelay = 3;
-                    // Check if queue is fully processed after this charge release
-                    if (_commandQueue == null || _commandQueue.Count == 0)
-                        CompleteCommandQueue();
+                    if (_commandQueue == null || _commandQueue.Count == 0) CompleteCommandQueue();
                 }
             }
             return;
@@ -1771,6 +1784,10 @@ public class ModEntry : Mod
                 if (_pathQueue != null && _pathQueue.Count > 0)
                     return; // still walking
                 _waitingForMove = false;
+                // 🎯 2026-09-04 恒：到位后精确对齐到目标格中心——walk 落偏(FindPath 对被判不可走的锚点退到邻居)
+                //    会被拉正，保证挥锄几何=锚点计算值，不再 +1 偏移(补余漏格/过锄的根因)。
+                if (_moveDest is Point md)
+                    Game1.player.Position = new Vector2(md.X * Game1.tileSize + Game1.tileSize / 2f, md.Y * Game1.tileSize + Game1.tileSize / 2f);
                 // ⚠️ 2026-08-16 恒：浇水到锚点后多停一拍（基础壶逐格，别接着就挥）
                 _commandDelay = _toolAreaOperation == "water" ? 10 : 5; // small gap after arriving
                 return;
@@ -1808,6 +1825,7 @@ public class ModEntry : Mod
                     {
                         var x = CmdInt(cmd, "x");
                         var y = CmdInt(cmd, "y");
+                        _moveDest = new Point(x, y);   // 🎯 2026-09-04：存目标格，到位后对齐用
                         var farmer = Game1.player;
                         // 关菜单（实测：菜单开着角色走不动，是 move 卡住根因）
                         if (Game1.activeClickableMenu != null)
@@ -1818,9 +1836,9 @@ public class ModEntry : Mod
                         var path = FindPath(farmer.currentLocation, farmer.TilePoint, new Point(x, y));
                         if (path == null || path.Count == 0)
                         {
-                            // BFS 失败 → 瞬移保底
+                            // BFS 失败 → 瞬移保底（2026-09-04 恒：对齐到格中心，别用左上角——否则 TilePoint 可能偏 1）
                             ClearMovementState();
-                            farmer.Position = new Vector2(x, y) * Game1.tileSize;
+                            farmer.Position = new Vector2(x * Game1.tileSize + Game1.tileSize / 2f, y * Game1.tileSize + Game1.tileSize / 2f);
                             CenterViewportOnFarmer(farmer);
                             _waitingForMove = false;
                             _commandResults.Add(new { ok = true, action = "move", x, y, teleported = true });
@@ -2152,8 +2170,10 @@ public class ModEntry : Mod
                 "/store" => HandleStore(ctx),
                 "/store_all" => HandleStoreAll(ctx),
                 "/name_chest" => HandleNameChest(ctx),
+                "/chest_color" => HandleChestColor(ctx),
                 "/chest" => HandleChest(ctx),
                 "/chest_take" => HandleChestTake(ctx),
+                "/chest_take_list" => HandleChestTakeList(ctx),
                 "/scan_chests" => HandleScanChests(),
                 "/placechest" => HandlePlaceChest(ctx),
                 "/fishbot" => HandleFishbot(ctx),
@@ -3280,7 +3300,20 @@ public class ModEntry : Mod
         var farmer = Game1.player;
         var loc = farmer.currentLocation;
 
+        // ⚠️ 2026-09-03 恒：loc.characters 含宠物/马/怪物/祝尼魔，全收进 npcs 会把猫狗当 NPC 注入给 AI
+        //     （AI 会去跟猫聊天/送礼，幽默但不该）。只留村民（NPC 且非怪物/宠物/马/祝尼魔/小孩），
+        //     宠物单独放 `pets` 字段（喂水/摸猫狗仍可用，见 /surroundings kind=pet）。
         var npcs = loc.characters
+            .Where(n => n is NPC && !(n is StardewValley.Monsters.Monster)
+                        && !(n is Pet) && !(n is Horse) && !(n is Junimo) && !(n is Child))
+            .Select(n => new
+            {
+                name = n.Name,
+                x = n.TilePoint.X,
+                y = n.TilePoint.Y
+            }).ToList();
+        var pets = loc.characters
+            .OfType<Pet>()
             .Select(n => new
             {
                 name = n.Name,
@@ -3319,6 +3352,7 @@ public class ModEntry : Mod
                         ["catNum"] = i.Category,
                         ["quality"] = (i as StardewValley.Object)?.Quality ?? 0,
                         ["value"] = SafeSellPrice(i),
+                        ["sellable"] = IsSellable(i),   // 🔒 不可卖的工具/武器/戒指/靴子（标 0 + 不可卖，别让 AI 拿去卖）
                         ["stats"] = DescribeItemStats(i),
                         ["slotIndex"] = x.slotIdx   // 真实背包槽位（点坐标用这个，不是列表 index）
                     };
@@ -3573,6 +3607,7 @@ public class ModEntry : Mod
             in_dialogue = Game1.activeClickableMenu is StardewValley.Menus.DialogueBox,
             recent_events = eventsSnapshot,
             npcs,
+            pets,
             inventory,
             otherPlayers = Game1.otherFarmers.Values
                 .Where(f => f.currentLocation != null)
@@ -7358,8 +7393,10 @@ public class ModEntry : Mod
                 var item = farmer.Items[i];
                 if (item == null) continue;
                 if (keepTools && item is Tool) continue;
+                // ⚠️ 2026-09-03 恒：中英混双——背包/箱子显示中文(DisplayName)，AI 可能传中文或英文，两者都匹配
                 if (!string.IsNullOrEmpty(name)
-                    && !item.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+                    && !item.Name.Equals(name, StringComparison.OrdinalIgnoreCase)
+                    && !(item.DisplayName ?? "").Equals(name, StringComparison.OrdinalIgnoreCase))
                     continue;
 
                 // 如果指定了数量，只存需要的部分
@@ -7525,6 +7562,12 @@ public class ModEntry : Mod
                     {
                         foreach (var (c, _, _) in chests)
                             if (DisplayName(c).IndexOf(targetName, StringComparison.OrdinalIgnoreCase) >= 0) return c;
+                        // 🆕 2026-09-03 恒：认自动类目标签（"矿箱"/"矿石"→ autoTag=矿 的箱），AI 看标签指定箱
+                        foreach (var (c, _, _) in chests)
+                        {
+                            var tag = ChestAutoTag(c);
+                            if (tag != "" && targetName.IndexOf(tag, StringComparison.OrdinalIgnoreCase) >= 0) return c;
+                        }
                         return null;
                     }
                     return null;
@@ -7562,7 +7605,7 @@ public class ModEntry : Mod
                     }
                     else
                     {
-                        // 1. 已有同类堆的箱子（空位最多）
+                        // 1. 已有同类堆（占位过的东西）→ 堆一起，别让已知物品散落（恒 2026-09-03）
                         int bf = -1;
                         foreach (var (c, _, _) in chests)
                         {
@@ -7571,9 +7614,24 @@ public class ModEntry : Mod
                             bool hasSame = c.Items.Any(ci => ci != null && ci.QualifiedItemId == item.QualifiedItemId);
                             if (hasSame && f > bf) { bf = f; target = c; }
                         }
-                        // 2. 默认箱
+                        // 2. 没存过/没占位的物品 → 同类目标签的箱有空位就进（矿箱/作物箱，恒 2026-09-03）
+                        if (target == null)
+                        {
+                            string ib = ItemBucket(item);
+                            if (ib != "杂")
+                            {
+                                int bfc = -1;
+                                foreach (var (c, _, _) in chests)
+                                {
+                                    int f = Free(c);
+                                    if (f <= 0) continue;
+                                    if (ChestAutoTag(c) == ib && f > bfc) { bfc = f; target = c; }
+                                }
+                            }
+                        }
+                        // 3. 默认箱
                         if (target == null && defChest != null && Free(defChest) > 0) target = defChest;
-                        // 3. 空位最多箱
+                        // 4. 空位最多箱
                         if (target == null) target = SpaceChest();
                         if (target == null) reason = "all_chests_full";
                     }
@@ -7681,6 +7739,95 @@ public class ModEntry : Mod
             }
         });
         return tcs.Task.GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// POST /chest_color  { "x": 65, "y": 17, "color": "#F07BA9" } — 给箱子改色
+    /// color 传 #RRGGBB（或 RRGGBB）→ 染成该色；color 传 ""/"clear"/"默认" → 复位默认(木纹)。
+    /// ⚠️ 2026-09-04 反编译确认：Chest.playerChoiceColor 是 NetColor，默认 Color.Black(纯黑=木纹哨兵)。
+    ///     set = playerChoiceColor.Value = new Color(r,g,b)（0 值 A 自动=255）；复位 = Value=Color.Black。
+    ///     ⚠️ 别染纯 #000000（那是"默认/木纹"，被识别成未染色）；要"黑箱"用暗灰如 #303030。
+    /// </summary>
+    private object HandleChestColor(HttpListenerContext ctx)
+    {
+        var p = ReadJson(ctx);
+        var cx = GetParam<int>(p, "x");
+        var cy = GetParam<int>(p, "y");
+        var colorStr = GetParamOr(p, "color", "");
+        if (!Context.IsWorldReady)
+            throw new InvalidOperationException("World not ready");
+
+        var tcs = new TaskCompletionSource<object>();
+        EnqueueMainThread(() =>
+        {
+            try
+            {
+                var loc = Game1.player.currentLocation;
+                if (loc == null) { tcs.SetResult(new { ok = false, error = "No location" }); return; }
+
+                Chest? chest = null;
+                foreach (var (c, t, _) in CollectStorageChests(loc))
+                    if ((int)t.X == cx && (int)t.Y == cy) { chest = c; break; }
+                if (chest == null)
+                {
+                    tcs.SetResult(new { ok = false, error = $"No storage chest at ({cx},{cy})" });
+                    return;
+                }
+
+                bool reset = string.IsNullOrWhiteSpace(colorStr)
+                    || colorStr.Equals("clear", StringComparison.OrdinalIgnoreCase)
+                    || colorStr.Equals("默认", StringComparison.OrdinalIgnoreCase)
+                    || colorStr.Equals("木", StringComparison.OrdinalIgnoreCase);
+                Color? target = null;
+                if (!reset)
+                {
+                    var hx = colorStr.TrimStart('#');
+                    if (hx.Length != 6
+                        || !int.TryParse(hx.Substring(0, 2), System.Globalization.NumberStyles.HexNumber, null, out var rr)
+                        || !int.TryParse(hx.Substring(2, 2), System.Globalization.NumberStyles.HexNumber, null, out var gg)
+                        || !int.TryParse(hx.Substring(4, 2), System.Globalization.NumberStyles.HexNumber, null, out var bb))
+                    {
+                        tcs.SetResult(new { ok = false, error = $"颜色格式错: {colorStr}（要 #RRGGBB，或 默认 复位）" });
+                        return;
+                    }
+                    target = new Color(rr, gg, bb);
+                }
+
+                if (!SetChestColor(chest, target))
+                {
+                    tcs.SetResult(new { ok = false, error = "设置颜色失败（playerChoiceColor 反射/写入失败）" });
+                    return;
+                }
+
+                tcs.SetResult(new { ok = true, x = cx, y = cy, reset, color = target.HasValue ? $"#{target.Value.R:X2}{target.Value.G:X2}{target.Value.B:X2}" : "" });
+            }
+            catch (Exception ex)
+            {
+                tcs.SetResult(new { ok = false, error = ex.Message });
+            }
+        });
+        return tcs.Task.GetAwaiter().GetResult();
+    }
+
+    /// <summary>写 Chest.playerChoiceColor（反射，回避编译依赖；NetColor 设 .Value，Color 字段直接 SetValue）。
+    /// color=null → 复位默认(Color.Black=木纹)。2026-09-04 反编译确认只可能是 NetColor（默认 Color.Black）。</summary>
+    private static bool SetChestColor(Chest c, Color? color)
+    {
+        try
+        {
+            var f = typeof(Chest).GetField("playerChoiceColor", BindingFlags.Public | BindingFlags.Instance);
+            if (f == null) return false;
+            var v = f.GetValue(c);
+            Color target = color ?? Color.Black;
+            if (v is Color) { f.SetValue(c, target); return true; }
+            if (v != null)
+            {
+                var vp = v.GetType().GetProperty("Value", BindingFlags.Public | BindingFlags.Instance);
+                if (vp != null) { vp.SetValue(v, target); return true; }
+            }
+        }
+        catch { }
+        return false;
     }
 
     /// <summary>
@@ -8018,7 +8165,7 @@ public class ModEntry : Mod
                 {
                     var items = chest.Items
                         .Where(i => i != null)
-                        .Select(i => new { name = i.Name, count = i.Stack, qualifiedId = i.QualifiedItemId })
+                        .Select(i => new { name = i.Name, displayName = i.DisplayName, count = i.Stack, qualifiedId = i.QualifiedItemId })
                         .ToList();
                     int used = items.Count;
                     chests.Add(new
@@ -8031,6 +8178,8 @@ public class ModEntry : Mod
                         location = loc.Name,
                         name = DisplayChestName(chest, label),
                         color = ChestColorHex(chest),
+                        // 🆕 2026-09-03 恒：自动预设标签（内容过半归一大类；混放/空箱为 ""）——AI 看标签不靠编号翻
+                        autoTag = ChestAutoTag(chest),
                         freeSlots = chest.GetActualCapacity() - used
                     });
                 }
@@ -8080,7 +8229,9 @@ public class ModEntry : Mod
                 {
                     var item = chest.Items[i];
                     if (item == null) continue;
-                    if (!item.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+                    // ⚠️ 2026-09-03 恒：中英混双——AI 可能传中文(DisplayName)或英文(Name)，都匹配
+                    if (!item.Name.Equals(name, StringComparison.OrdinalIgnoreCase)
+                        && !(item.DisplayName ?? "").Equals(name, StringComparison.OrdinalIgnoreCase))
                         continue;
 
                     int want = count == int.MaxValue ? item.Stack : Math.Min(count - taken, item.Stack);
@@ -8111,6 +8262,116 @@ public class ModEntry : Mod
                     item = name,
                     chestAt = new { x = cx, y = cy }
                 });
+            }
+            catch (Exception ex)
+            {
+                tcs.SetResult(new { ok = false, error = ex.Message });
+            }
+        });
+        return tcs.Task.GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// POST /chest_take_list  { "items": [{"name":"西瓜","count":4}, {"name":"Copper Ore"}] }
+    /// 从当前场景所有存储箱一次性取齐多项（智能路由：中英/ID 精确匹配自动找箱）。
+    /// 单箱不够跨箱累加；count 缺省=取该品类全量。不改玩家位置（原子直操，省 token）。
+    /// ⚠️ 取=精确匹配（Name/DisplayName/QualifiedItemId），模糊查哪个箱名用 /scan_chests + find（storage find）。
+    /// </summary>
+    private object HandleChestTakeList(HttpListenerContext ctx)
+    {
+        var p = ReadJson(ctx);
+        var items = new List<(string name, int count)>();
+        if (p.TryGetValue("items", out var iv) && iv is JsonElement iJe && iJe.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var el in iJe.EnumerateArray())
+            {
+                string name = "";
+                int count = int.MaxValue;
+                if (el.ValueKind == JsonValueKind.String) name = el.GetString() ?? "";
+                else if (el.ValueKind == JsonValueKind.Object)
+                {
+                    if (el.TryGetProperty("name", out var ne)) name = ne.GetString() ?? "";
+                    if (el.TryGetProperty("count", out var ce) && ce.ValueKind == JsonValueKind.Number) count = ce.GetInt32();
+                }
+                if (!string.IsNullOrWhiteSpace(name)) items.Add((name, count));
+            }
+        }
+
+        if (!Context.IsWorldReady)
+            throw new InvalidOperationException("World not ready");
+
+        var tcs = new TaskCompletionSource<object>();
+        EnqueueMainThread(() =>
+        {
+            try
+            {
+                var farmer = Game1.player;
+                var loc = farmer.currentLocation;
+                if (loc == null) { tcs.SetResult(new { ok = false, error = "No location" }); return; }
+
+                var chests = CollectStorageChests(loc);
+                var tileOf = new Dictionary<Chest, Vector2>();
+                var labelOf = new Dictionary<Chest, string>();
+                foreach (var (c, t, lb) in chests) { tileOf[c] = t; labelOf[c] = lb; }
+
+                bool Match(Item it, string name) =>
+                    it != null
+                    && (string.Equals(it.Name, name, StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(it.DisplayName ?? "", name, StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(it.QualifiedItemId ?? "", name, StringComparison.OrdinalIgnoreCase));
+
+                var results = new List<object>();
+                foreach (var (reqName, wantCount) in items)
+                {
+                    int targetCount = wantCount <= 0 ? int.MaxValue : wantCount;
+                    int taken = 0;
+                    var from = new List<object>();
+                    foreach (var (chest, _, _) in chests)
+                    {
+                        if (taken >= targetCount) break;
+                        for (int i = 0; i < chest.Items.Count; i++)
+                        {
+                            if (taken >= targetCount) break;
+                            var item = chest.Items[i];
+                            if (item == null) continue;
+                            if (!Match(item, reqName)) continue;
+
+                            int want = targetCount == int.MaxValue ? item.Stack : Math.Min(targetCount - taken, item.Stack);
+                            if (want <= 0) break;
+
+                            var toGive = item.getOne();
+                            toGive.Stack = want;
+                            var leftover = farmer.addItemToInventory(toGive);
+                            if (leftover != null && leftover.Stack > 0)
+                            {
+                                chest.Items[i] = item;   // 背包满了，放回箱子
+                                break;
+                            }
+                            var tile = tileOf[chest];
+                            from.Add(new
+                            {
+                                x = (int)tile.X,
+                                y = (int)tile.Y,
+                                name = DisplayChestName(chest, labelOf.TryGetValue(chest, out var lb) ? lb : ""),
+                                color = ChestColorHex(chest),
+                                autoTag = ChestAutoTag(chest),
+                                got = want
+                            });
+                            item.Stack -= want;
+                            if (item.Stack <= 0) chest.Items[i] = null;
+                            taken += want;
+                        }
+                    }
+                    results.Add(new
+                    {
+                        item = reqName,
+                        wanted = (wantCount <= 0) ? -1 : targetCount,
+                        taken,
+                        from
+                    });
+                }
+
+                tcs.SetResult(new { ok = true, location = loc.Name, items = results });
             }
             catch (Exception ex)
             {
@@ -12119,11 +12380,14 @@ public class ModEntry : Mod
         catch { return ""; }
     }
 
-    /// <summary>箱子默认物品名（没被 AI/玩家自定义过）。标记名如 "宝箱(矿石)" 不算默认。</summary>
+    /// <summary>箱子默认物品名（没被 AI/玩家自定义过）。标记名如 "宝箱(矿石)" 不算默认。
+    /// ⚠️ 2026-09-04：中文本地化默认名也要认——否则 default 箱清标记后存成"大箱子"，
+    ///    IsDefaultItemName 判不成默认→被当自定义名→显示「大箱子」并压掉自动标签。</summary>
     private static readonly HashSet<string> _defaultChestNames = new(StringComparer.OrdinalIgnoreCase)
     {
         "Chest", "Big Chest", "BigChest", "Stone Chest", "Big Stone Chest", "Mini-Fridge", "Mini Fridge", "Fridge",
         "Mini-Shipping Bin", "Junimo Chest",
+        "大箱子", "宝箱", "石箱", "大石箱", "迷你冰箱", "冰箱", "迷你出货箱", "祝尼魔箱", "收纳箱", "储物箱",
     };
 
     private static bool IsDefaultItemName(string? n)
@@ -12157,6 +12421,76 @@ public class ModEntry : Mod
         }
         catch { }
         return label != "" ? label : ChestName(c);
+    }
+
+    /// <summary>多关键词任一命中（大小写已统一，中文无大小写）。</summary>
+    private static bool _cnHas(string s, params string[] keys)
+    {
+        if (string.IsNullOrEmpty(s)) return false;
+        foreach (var k in keys)
+            if (s.Contains(k)) return true;
+        return false;
+    }
+
+    /// <summary>物品粗类目（autoTag 用，2026-09-03 恒）。
+    /// 优先级：类型/类目整数(已确认) > isFish/isFruit > getCategoryName 子串(中英) > 名称子串。
+    /// 返回"杂"兜底。类目名 getCategoryName 兼容中英文（en 词干 + 中文多字词），避免单字误判（"矿"/"花"）。</summary>
+    private static string ItemBucket(Item it)
+    {
+        if (it == null) return "杂";
+        int cat = it.Category;
+        string cn, nm, dn;
+        try { cn = (it.getCategoryName() ?? ""); } catch { cn = ""; }
+        cn = cn.ToLowerInvariant();
+        nm = (it.Name ?? "").ToLowerInvariant();
+        dn = (it.DisplayName ?? "").ToLowerInvariant();
+
+        // 装备/工具（含饵、钓具）
+        if (it is Tool || it is MeleeWeapon) return "装备";
+        if (cat == -99 || cat == -98 || cat == -21 || cat == -22) return "装备";
+        if (_cnHas(cn, "ring", "戒指")) return "装备";
+        // 鱼/水产（含蟹笼产出、鱼子）——isFish 在此 SDV API 面不存在，靠品类名/名子串
+        if (_cnHas(cn, "fish", "鱼") || _cnHas(nm, "roe") || _cnHas(dn, "鱼子", "鲑鱼子")) return "鱼";
+        // 古物
+        if (cat == -23 || _cnHas(cn, "artifact", "古物")) return "古物";
+        // 矿/宝石（-12矿物 / -2宝石；品类/名称含 ore/矿）
+        if (cat == -12 || cat == -2) return "矿";
+        if (_cnHas(cn, "mineral", "gem", "ore", "geo", "矿物", "宝石", "矿石")
+            || _cnHas(nm, "ore") || _cnHas(dn, "矿石", "矿")) return "矿";
+        // 种子
+        if (_cnHas(cn, "seed", "种子") || _cnHas(nm, "seed") || _cnHas(dn, "种子", "籽")) return "种子";
+        // 作物（菜/果/花/采集）——isFruit 同不存在，靠品类名/名子串
+        if (_cnHas(cn, "vegetab", "fruit", "flower", "forage", "green", "作物", "蔬菜", "水果", "花", "采集")
+            || _cnHas(dn, "作物", "蔬菜", "水果", "花", "采集")) return "作物";
+        // 农产（蛋/奶/动物产物+加工品）
+        if (_cnHas(cn, "egg", "milk", "animal", "artisan", "cheese", "mayo", "honey", "蛋", "奶", "加工", "奶酪", "蛋黄酱", "蜂蜜")
+            || _cnHas(dn, "蛋", "奶", "奶酪", "蛋黄酱", "蜂蜜")) return "农产";
+        // 建材（木/石/土/纤维/合金锭）
+        if (_cnHas(cn, "resource", "basic", "sell", "fiber", "wood", "stone", "clay", "建材", "资源", "木材", "石头", "纤维")
+            || _cnHas(nm, "wood", "stone", "clay", "fiber", "bar")
+            || _cnHas(dn, "木材", "石头", "粘土", "纤维", "锭", "木板")) return "建材";
+        // 料理
+        if (_cnHas(cn, "cook", "料理", "烹饪", "菜肴")) return "料理";
+        return "杂";
+    }
+
+    /// <summary>依据箱内容自动归类：统计各类目占的格子数(slot)，最高类目 > 半数 → 返回该类目名；
+    /// 混放/最高也是"杂"/空箱 → 返回 ""（不标）。用格子数而非堆叠量，防 999 木料掩盖 5 类作物。</summary>
+    private static string ChestAutoTag(Chest c)
+    {
+        var counts = new Dictionary<string, int>();
+        int total = 0;
+        foreach (var it in c.Items)
+        {
+            if (it == null) continue;
+            total++;
+            string b = ItemBucket(it);
+            counts[b] = counts.GetValueOrDefault(b) + 1;
+        }
+        if (total == 0) return "";
+        var top = counts.OrderByDescending(kv => kv.Value).First();
+        if (top.Key == "杂" || (double)top.Value / total <= 0.5) return "";
+        return top.Key;
     }
 
     private static (int, int, int) ParseHex(string hex)
@@ -13143,14 +13477,17 @@ public class ModEntry : Mod
                 // Determine target tiles
                 int x1 = GetParamOr(p, "x1", -1), y1 = GetParamOr(p, "y1", -1);
                 int x2 = GetParamOr(p, "x2", -1), y2 = GetParamOr(p, "y2", -1);
+                ModEntry.Instance?.Monitor.Log($"[tool-area] op={operation} 收到 rect: x1={x1} y1={y1} x2={x2} y2={y2}（-1=无，走自动检测）", LogLevel.Info);
                 List<(int tx, int ty)> targetTiles = new();
 
                 if (x1 >= 0 && y1 >= 0 && x2 >= 0 && y2 >= 0)
                 {
                     // ⚠️ 2026-08-13：矩形路径加 Diggable 校验——只锄可耕地，路径/建筑/水不碰（恒：栅栏外凭空造土块=bug）
+                    // ⚠️ 2026-09-03 恒：再加物件校验——箱子/洒水器等占了格就整格跳过，否则锄到箱子上（AI 冒烟实测打卡）
                     for (int x = Math.Min(x1, x2); x <= Math.Max(x1, x2); x++)
                         for (int y = Math.Min(y1, y2); y <= Math.Max(y1, y2); y++)
-                            if (loc.doesTileHaveProperty(x, y, "Diggable", "Back") != null)
+                            if (loc.doesTileHaveProperty(x, y, "Diggable", "Back") != null
+                                && !loc.objects.ContainsKey(new Vector2(x, y)))
                                 targetTiles.Add((x, y));
                 }
                 else
@@ -13227,8 +13564,11 @@ public class ModEntry : Mod
                 {
                     var missing = FindMissingToolAreaTiles(operation);
                     if (missing.Count == 0) break;
+                    // 🔍 2026-09-03 恒（调体力）：每轮补漏看漏了几格、补上几格
+                    ModEntry.Instance?.Monitor.Log($"[patch-loop] round={round} missing={missing.Count}", LogLevel.Info);
                     int fixedNow = PatchMissingOnMain(operation, missing.Select(m => (m.tx, m.ty)).ToList());
                     patches += fixedNow;
+                    ModEntry.Instance?.Monitor.Log($"[patch-loop] round={round} fixedNow={fixedNow} accumPatches={patches}", LogLevel.Info);
                     if (fixedNow == 0) break;   // 一轮都补不上（被包围/水挡）→ 报告原因
                 }
             }
@@ -13262,13 +13602,36 @@ public class ModEntry : Mod
         int nx = (int)Math.Ceiling((double)(maxX - minX + 1) / toolW);
         int ny = (int)Math.Ceiling((double)(maxY - minY + 1) / toolH);
         var commands = new List<Dictionary<string, object?>>();
+        // 🔍 2026-09-03 恒（调体力）：看目标矩形会切几个锚点（每个锚点=move+face+charge=3 条命令，释放一次 DoFunction）
+        ModEntry.Instance?.Monitor.Log($"[build-cmds] rect=({minX},{minY})-({maxX},{maxY}) toolW={toolW} toolH={toolH} → nx={nx} ny={ny} anchors={nx * ny} totalCmds={nx * ny * 3}", LogLevel.Info);
         for (int row = 0; row < ny; row++)
         {
             int start = row % 2 == 0 ? 0 : nx - 1, end = row % 2 == 0 ? nx - 1 : 0, step = row % 2 == 0 ? 1 : -1;
+            // 🎯 2026-09-04 恒（取余站位·根治）：站位从"机械 row*toolH 整推进"改成**顶对齐起手、底对齐收尾、允许相邻重叠**。
+            //    余数行靠上一排喷范围往回重叠延伸覆盖——锄过的地可再锄，重叠无害；不越界、不缺行。
+            //    ay = 锚点格子（面朝下喷 [ay+1, ay+toolH]）：首排站 minY-1，末排站 maxY-toolH，中间均匀。
+            //    ①整除(toolH|H) → 排距=toolH，零重叠零缺；②余数 → 排距<toolH，末排回拉覆盖余数行。
+            int ay;
+            if (ny <= 1) ay = minY - 1;
+            else
+            {
+                int hSpan = maxY - minY + 1;                     // H=目标行数
+                int hDelta = hSpan - toolH;                       // 首尾锚点站位差（余数时 <toolH 产生重叠）
+                ay = minY - 1 + (int)Math.Round((double)hDelta * row / (ny - 1), MidpointRounding.AwayFromZero);
+            }
             for (int col = start; ; col += step)
             {
-                int ax = Math.Clamp(minX + col * toolW + toolW / 2, minX, maxX);
-                int ay = Math.Max(minY + row * toolH - 1, minY - 1);
+                // 🎯 2026-09-04 恒（横向取余·对称）：列中心同规则——左对齐起手、右对齐收尾、允许重叠。
+                //    ax = 格子中心（喷 [ax-half, ax+half]，half=(toolW-1)/2）：首列中心 minX+half，末列中心 maxX-half，中间均匀。
+                int ax;
+                if (nx <= 1) ax = minX + toolW / 2;
+                else
+                {
+                    int wSpan = maxX - minX + 1;                 // W=目标列数
+                    int half = (toolW - 1) / 2;
+                    int wDelta = wSpan - toolW;                   // 首尾中心差（余数时 <toolW 产生重叠）
+                    ax = minX + half + (int)Math.Round((double)wDelta * col / (nx - 1), MidpointRounding.AwayFromZero);
+                }
                 commands.Add(new Dictionary<string, object?> { ["action"] = "move", ["x"] = ax, ["y"] = ay });
                 commands.Add(new Dictionary<string, object?> { ["action"] = "face", ["direction"] = 2 });
                 // 逐锚点验证用（2026-08-15 恒）：该锚点蓄力/单格覆盖的格（toolW 宽 × toolH 高，面向下）
@@ -13371,52 +13734,41 @@ public class ModEntry : Mod
         var farmer = Game1.player;
         var loc = farmer?.currentLocation;
         if (farmer == null || loc == null) return 0;
-        string requiredTool = operation == "water" ? "Watering Can" : "Hoe";
-        Tool? tool = farmer.CurrentTool;
-        if (tool == null || !tool.Name.Contains(requiredTool))
-        {
-            var found = farmer.Items.OfType<Tool>().FirstOrDefault(t => t.Name.Contains(requiredTool));
-            if (found == null) return 0;
-            farmer.CurrentToolIndex = farmer.Items.IndexOf(found);
-            tool = found;
-        }
-        // 补漏前灌满水壶（water 操作；直接改地块不做真浇水）
-        if (operation == "water" && tool is WateringCan wc)
-            wc.WaterLeft = wc.waterCanMax;
-        // 候选站位方向（相对漏格）：上/下/左/右，对应 face 2/0/1/3
-        var cands = new (int dx, int dy, int face)[] { (0, -1, 2), (0, 1, 0), (-1, 0, 1), (1, 0, 3) };
+        // ⚠️ 2026-09-03 恒（调体力，真根因）：补漏=直接改地块，**绝不挥 DoFunction**。
+        //    旧代码对每个漏格 × 4 方向 DoFunction——level-4 铱锄头每挥吃满 6×3=18 格能量，
+        //    实测 5×1 锄地(只想 5 格) → 补漏扫出 31 格 × 多方向 = 数十挥 = 366 能量(353→-13)。
+        //    根因：蓄力几何没盖到的"取余漏格"，本该零星几个，却因玩家漂移+重复触发被放大成一片；
+        //    且每挥都是整格面积能耗。→ 补漏直接放 HoeDirt / 改水态，等效原版、零能耗、不漂移。
+        //    真挥锄(带动画/蓄力感)交给 charge-release(每锚点恰 1 次)。
         int fixedCount = 0;
         foreach (var (tx, ty) in missing)
         {
+            var vec = new Vector2(tx, ty);
             bool patched = false;
-            foreach (var (dx, dy, face) in cands)
+            try
             {
-                int sx = tx + dx, sy = ty + dy;
-                farmer.Position = new Vector2(sx, sy) * Game1.tileSize;
-                farmer.FacingDirection = face;
-                var facingTile = GetFacingTile(farmer);
-                int px = (int)facingTile.X * 64 + 32;
-                int py = (int)facingTile.Y * 64 + 32;
-                try
-                {
-                    if (operation == "water" && tool is WateringCan wc2)
-                        wc2.DoFunction(loc, px, py, _toolAreaUpgradeLevel, farmer);
-                    else if (operation == "till" && tool is Hoe hoe)
-                        hoe.DoFunction(loc, px, py, _toolAreaUpgradeLevel, farmer);
-                }
-                catch (Exception) { }
-                var vec = new Vector2(tx, ty);
                 if (operation == "till")
-                    patched = loc.terrainFeatures.ContainsKey(vec) && loc.terrainFeatures[vec] is HoeDirt;
-                else
-                    patched = loc.terrainFeatures.TryGetValue(vec, out var tf) && tf is HoeDirt dirt && dirt.state.Value == 1;
-                if (patched) { fixedCount++; break; }
+                {
+                    // 目标格 Diggable 且无 object 才放（与 rect 校验一致，别在水/箱子/设备上造耕土）
+                    if (loc.doesTileHaveProperty(tx, ty, "Diggable", "Back") != null
+                        && !loc.objects.ContainsKey(vec)
+                        && !loc.terrainFeatures.ContainsKey(vec))
+                    {
+                        loc.terrainFeatures[vec] = new HoeDirt();   // 与人/132xxx 同款无参构造
+                        patched = true;
+                    }
+                }
+                else // water
+                {
+                    if (loc.terrainFeatures.TryGetValue(vec, out var wtf) && wtf is HoeDirt wdirt)
+                    {
+                        wdirt.state.Value = 1;
+                        patched = true;
+                    }
+                }
             }
-            // 4 方向都补不上：位置复位（避免留下卡位）
-            if (!patched)
-            {
-                try { farmer.Position = new Vector2(tx, ty - 1) * Game1.tileSize; } catch { }
-            }
+            catch (Exception) { }
+            if (patched) fixedCount++;
         }
         return fixedCount;
     }
