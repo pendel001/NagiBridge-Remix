@@ -1198,9 +1198,19 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
     # ── 系统警报（必选） ──
 
     warnings = [a for a in alerts if a.get("severity") in ("warning", "error")]
-    for w in warnings[-4:]:
+    # 🔧 2026-09-04 恒：/alerts 用 peek=True 不消费 → 旧"inventory_full:36/36"会一直重播（背包已腾出空位还报满）。
+    #    按 type 去重留最新 + inventory 用即时格数覆写，纠正"实际格子数"。
+    latest = {}
+    for a in warnings:
+        latest[a.get("type", "")] = a          # later wins → 每 type 留最新一条
+    for w in list(latest.values())[-4:]:
         wtype = w.get("type", "")
         msg = w.get("message", "")
+        if wtype in ("inventory_full", "inventory_space"):
+            if used >= total_slots:           # 即时格数覆写，别信排队旧文本
+                msg = f"Inventory full: {used}/{total_slots}"
+            else:
+                continue                        # 实际还有空位 → 不报满（纠正 stale full）
         icons = {
             "stamina_low": "💫", "inventory_full": "📦",
             "water_empty": "💧", "menu_opened": "📋",
