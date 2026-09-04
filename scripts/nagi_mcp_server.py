@@ -44,7 +44,7 @@ except ImportError:
     _HAS_PIL = False
 
 # ── 截图工具常量（screenshot()） ──
-_SCREENSHOT_MIN_WIDTH = 1600     # 源宽度低于此值 → 尝试 /resolution 提升（一次性）
+_SCREENSHOT_MIN_WIDTH = 1280     # 源宽度低于此值 → 尝试 /resolution 提升（一次性）；720p=1280 宽，≥1280不撑窗口
 _SCREENSHOT_RES_FIXED = False    # 本进程是否已尝试过提升源分辨率（避免反复 ApplyChanges）
 _SCREENSHOT_MAX_EDGE = 1568      # 模型最优长边上限（Claude vision 建议 ≤1568），超出用 LANCZOS 缩小
 
@@ -6704,12 +6704,13 @@ def screenshot() -> Image:
     sh = r.get("height", 0)
 
     # 源分辨率保障：截图=back buffer=窗口大小，窗口被拉小会让源图变糊。
-    # 若源太窄且本进程还没试过 → 一次性调 /resolution 提升到 1920x1080（带保护，失败不阻断截图）。
+    # 若源太窄且本进程还没试过 → 一次性调 /resolution 提升到 1280x720（720p；带保护，失败不阻断截图）。
+    # ⚠️ 2026-09-05 恒：不开 1080(1920x1080)——会把窗口强行撑全屏易卡；720=1280x720 是默认窗口尺寸、普通窗口不撑全屏。
     if sw < _SCREENSHOT_MIN_WIDTH and not _SCREENSHOT_RES_FIXED:
         _SCREENSHOT_RES_FIXED = True
         try:
-            api._ai_get("/resolution", {"w": 1920, "h": 1080})
-            print(f"[screenshot] 源分辨率 {sw}x{sh} 过低，已调 /resolution 1920x1080（下次截图生效）", flush=True)
+            api._ai_get("/resolution", {"w": 1280, "h": 720})
+            print(f"[screenshot] 源分辨率 {sw}x{sh} 过低，已调 /resolution 1280x720（下次截图生效）", flush=True)
         except Exception as e:
             print(f"[screenshot] 调 /resolution 失败（忽略）: {e}", flush=True)
 
