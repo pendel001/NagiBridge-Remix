@@ -5243,8 +5243,10 @@ def _water_pet_bowls() -> list:
             api.refill_water()
             time.sleep(0.3)
 
-        map_info = api.map_data()
-        bowls = [b for b in map_info.get("buildings", []) if b.get("type") == "Pet Bowl"]
+        # 🐾 2026-09-05 恒：改用 farm_buildings（/farm_buildings 直读 Farm.buildings，与站位无关）。
+        #    旧 map_data(/map) 的 buildings 跟着玩家走，站农场中央只看到附近碗 → "发现1个"漏浇其他碗。
+        fb = api.farm_buildings()
+        bowls = [b for b in fb.get("buildings", []) if b.get("type") == "Pet Bowl"]
         if not bowls:
             pb = api._get("/petbowl")
             if pb.get("ok") and pb.get("bowl"):
@@ -5262,11 +5264,17 @@ def _water_pet_bowls() -> list:
             bx, by = bowl["x"], bowl["y"]
             try:
                 # ⚠️ 站碗建筑位 + 朝右 + /tool 浇 (bx+1, by) 碗格（恒实测：door_y+1 站远浇不到；别 walk_to）
-                # ⚠️ 2026-09-04 恒：回退用旧版 use_tool——新版 interact_at(站碗旁/checkAction)对宠物碗走不通
-                #    （checkAction 被 didPlayerJustRightClick 卡死，无 TryPetBowl 兜底），结果既不浇上也无动画。
-                #    旧版挥壶虽喷水像"尿尿"，但真把碗浇上（watered=true）。正式"灌水动画"留给 C# TryPetBowlInteract 再看。
-                api.position(bx, by)
-                time.sleep(0.5)
+                # 🐾 2026-09-05 恒：自然走位到碗旁（walk_to 拟人，别硬瞬移）；够不着 position 兜底（同摸宠物）。
+                # ⚠️ 站碗建筑位 + 朝右 + /tool 浇 (bx+1, by) 碗格（恒实测：door_y+1 站远浇不到）
+                # ⚠️ 2026-09-04 恒：旧版 use_tool 挥壶只 DoFunction（"尿尿"无挥动画）但真浇上碗；新版 interact_at 对宠物碗走不通。
+                #    2026-09-05 恒挑战：/tool 水壶分支 BeginUsingTool+DoFunction+reset → 单次挥舞动画+效果+不卡蓄力。精动画留 TryPetBowlInteract。
+                _loc = (api.state().get("location") or {}).get("name", "Farm")
+                api.walk_to_coord(_loc, bx, by)
+                time.sleep(0.4)
+                _ax, _ay = api.player_tile()
+                if abs(_ax - bx) + abs(_ay - by) > 1:
+                    api.position(bx, by)   # 兜底：走不到就贴近（不硬卡）
+                    time.sleep(0.3)
                 api.face(1)
                 time.sleep(0.3)
                 api.select(wc_name)
@@ -5274,7 +5282,7 @@ def _water_pet_bowls() -> list:
                 api.refill_water()
                 time.sleep(0.2)
                 api.use_tool(wc_name)
-                time.sleep(0.3)
+                time.sleep(0.5)   # 🐾 挥动画(约0.5s)播完再走下一碗
                 report_parts.append(f"  🐾 碗{i+1} @ ({bx},{by}) 完成")
             except Exception as e:
                 report_parts.append(f"  ⚠️ 碗{i+1} 浇水失败: {e}")
@@ -8682,7 +8690,7 @@ def menu(ops: str = "", kw: dict | None = None) -> str:
 
 @mcp.tool()
 def storage(ops: str = "", kw: dict | None = None) -> str:
-    """🎒 箱子域。ops: view(看箱,box=N看单箱全清单) store(存:target指定箱/留空智能) take(取:x,y+name单箱 或 items批量)
+    """🎒 箱子域。ops: view(看箱,box=N看单箱全清单) store(存:what/items限定存哪些,留空=归位只存已有同类堆,target指定箱/all=True全存腾空间) take(取:x,y+name单箱 或 items批量)
     find(模糊查哪箱有某物) default(设/清默认箱,clear=清) tag(改名,可带color顺带改色)。
     🤖 存取统一走位：store/take 都会先走到相关箱子旁（批量只走到第一个相关箱），不用区分拟人/原子。
     ⭐ 每个箱子前自动带【类目标签】(内容过半自动归类:矿/作物/鱼/种子…)+颜色名,AI 看标签定位,别靠编号逐箱翻。
@@ -8725,7 +8733,9 @@ def daily(ops: str = "", kw: dict | None = None) -> str:
 @mcp.tool()
 def map(ops: str = "", kw: dict | None = None) -> str:
     """🗺️ 地图导航域（跨图唯一入口）。ops: lookup(查地点) query(功能反查) go(走到目标,跨图唯一入口)
-    walk(走到POI,同图) movetile(同图走瓦片) npc(找NPC) warp_safe(紧急逃脱)。⚠️跨图一律 go。细节→help(map)。
+    walk(走到POI,同图) movetile(同图走瓦片) npc(找NPC) warp_safe(紧急逃脱)。⚠️跨图一律 go。
+    ⚠️参数都放 kw 对象（别拼进 ops 串）：go kw={"destination":"地点名或POI"} / walk kw={"poi_name":"POI"} /
+    movetile kw={"x":int,"y":int}。细节→help(map)。
     """
     dispatch = {
         "lookup": map_lookup, "查": map_lookup,
@@ -10088,7 +10098,7 @@ def _festival_arrive_hint(location: str = "") -> str:
         return ""
 
 
-_STATUE_REMIND_KEY = {"day": None, "found": None}
+_STATUE_REMIND_KEY = {"day": None, "found": None, "shown": False}
 
 
 def _statue_reminder() -> str:
@@ -10101,7 +10111,12 @@ def _statue_reminder() -> str:
     global _STATUE_REMIND_KEY
     try:
         d = api.day_key()
-        if _STATUE_REMIND_KEY["day"] == d and _STATUE_REMIND_KEY["found"] is not None:
+        # 🗿 2026-09-05 恒：报一次就好——当天已报就不再注入（此前每条状态条都塞雕像提醒，太吵）
+        if _STATUE_REMIND_KEY.get("day") == d and _STATUE_REMIND_KEY.get("shown"):
+            return ""
+        # 当天扫过、找到雕像但还没报 → 报这一次并标记已报
+        if _STATUE_REMIND_KEY.get("day") == d and _STATUE_REMIND_KEY.get("found"):
+            _STATUE_REMIND_KEY["shown"] = True
             return _STATUE_REMIND_KEY["found"]
         # 🧱 精通门禁（2026-08-23 恒）：耕种精通→祝福雕像、采矿精通→矮人国王；都未领→不注入
         _farm = _mastery_claimed("farming")
@@ -10148,7 +10163,7 @@ def _statue_reminder() -> str:
                 if "Dwarf King" in n or "矮人国王" in n: why.append("矮人国王=采矿精通")
             why_txt = f"（{'，'.join(dict.fromkeys(why))}奖励）" if why else ""
             txt = f"🗿 摸{names}拿每日buff{why_txt}——interact 点 ({first[0]},{first[1]})"
-            _STATUE_REMIND_KEY = {"day": d, "found": txt}
+            _STATUE_REMIND_KEY = {"day": d, "found": txt, "shown": True}   # 报这一次，今天不再（2026-09-05）
         # 没找到且不在农场 → 不缓存（下次状态读到农场再试）
         return txt
     except Exception:
@@ -11388,9 +11403,9 @@ _DOMAIN_GUIDES = {
 "social": "社交域：chat(跟NPC搭话) gift(送礼提好感) give(送玩家物品) send(发消息) emote(表情) friendship(查好感) movie(影院知识) snack(零食)。",
 "scene": "场景交互域(点东西/工具/转身/捡)：at(x,y)(点指定格/柜台) interact(点面前) use(挥工具) face(转向0上1右2下3左) select(拿手上) pickup(拿起家具) pickup_scene(捡当前场景物) berry(摇浆果) spot(挖蚯蚓点) moss(绿雨搜苔藓) rock(室外镐击:敲当前图可破物,采石场/挖掘场/蚌矿场跳普通石,dig/dry,battle-free) garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物) furniture(扫家具) place(放置/播种:name=物品名,x/y=目标格→箱子/树种/蟹笼落地或种下,只放可放置物) break(拆/敲:x,y=目标格,steps=挥击次,radius=方圆→镐子敲石头/翻已耕地,跳过箱子/容器格) maze(迷宫视图r半径,gx/gy目标格→ASCII棋盘#墙.可走P自己G目标) maze_seg(走法链gx,gy目标→拆直走廊列表+拼「左/右上/下走到(x,y)」多段链,AI按段walk_to) maze_walk(走迷宫 waypoints=「x,y x,y…」依次walk_to) pan(淘金/淘盘:本图水下闪光点→岸边走位面水→铜锅淘金收掉落) front/rummage(分别是interact/garbage的别名)。带参 op(at/break 的 x,y、place 的 name、maze_seg 的 gx/gy)→ kw={'参数名':值}。",
 "menu": "菜单/界面域(开→看→点)：read(看菜单) advance(推进剧情/对话) click(option/item/button/xy 点;action=claim领/action=discard丢桶腾格;slot=序号领指定格) key(ok/esc/数字按键) cancel(关弹窗/撤就绪) shop(逛店) sell(卖商店) bin(投出货箱) cook(做饭) craft(合成) recipes(菜谱) craftables(配方) forge(锻造) geode/geodes(砸晶球) customize(捏人) bundle(献祭板) bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读消耗品:书/秘密纸条/日记残页,统一走右键读 name=物品名) levelup_choose(技能升级职业选择 5/10级:不带参读左右选项,side=left/right 或 profession=职业id 定分支;普通升级自会确认OK) number(数量输入:展览会兑换台/转盘押注 NumberSelectionMenu) minigame(赌场小游戏点按钮 action=hit/stand/bet10/…) minigame_state(读牌面/转盘) display_fill(农展台放满 items='钻石,山羊奶酪') display_takeback(收好) journal(开任务日志→menu read 读卡,翻页=click(button=forward/back),领奖励=click(button=rewardBox)) know(查特别订单详情/知识库SPECIAL_ORDERS,如menu know 岛屿食材;2026-09-02 task域退役并入menu)。🚫满包接鱼/领箱:原 claim_swap(替换领取)已退役→**click action=discard 丢桶腾格(回收返金)+action=claim 领取(或用 slot 领指定格;不想要直接 button=ok 关掉)**。🧾关闭菜单一律 click(button=upperRightCloseButton)（ItemGrabMenu/交付容器用 button=ok 确认才关）；订单交付容器(QuestContainerMenu)=点背包对应物品格(见slots的坐标)→放进→点 button=ok 结算；任务日志领钱=点击已完成的有钱任务卡后 click(button=rewardBox)；兑奖机兑换=click(button=mainButton)；特别订单领奖链=日志领钱(上面)→社区板旁领奖箱(60,93)拿兑奖券→刘易斯家兑奖机(mainButton)兑换。",
-"storage": "箱子域：view(看箱,box=N看单箱全清单) store(存:target指定箱/留空智能) take(取:x,y+name单箱 或 items批量) find(模糊查哪箱有某物) default(设/清默认箱 clear=清) tag(改名,可带color改色)。🤖存取统一走位：store/take都会先走到相关箱旁(批量只走到第一个),不区分拟人/原子,别靠编号逐箱翻。⭐每个箱子前自动带【类目标签】(内容过半归类):矿/古物/鱼/种子/作物/农产/建材/料理/装备——AI按标签定位箱,找东西用find。⚠️改色别染纯#000000(=默认木纹,识别成未染色);要黑箱用暗灰#303030。",
+"storage": "箱子域：view(看箱,box=N看单箱全清单) store(存:what/items限定存哪些,名可带xN数量只存那N份,留空=归位只存已有同类堆,target指定箱/all=True全存腾空间) take(取:x,y+name单箱 或 items批量) find(模糊查哪箱有某物) default(设/清默认箱 clear=清) tag(改名,可带color改色)。🤖存取统一走位：store/take都会先走到相关箱旁(批量只走到第一个),不区分拟人/原子,别靠编号逐箱翻。⭐每个箱子前自动带【类目标签】(内容过半归类):矿/古物/鱼/种子/作物/农产/建材/料理/装备——AI按标签定位箱,找东西用find。⚠️改色别染纯#000000(=默认木纹,识别成未染色);要黑箱用暗灰#303030。",
 "daily": "过日子域：sleep(睡觉) settle(确认过夜结算) eat(吃食物回血体力) wear(穿/脱衣物) lie_bed(躺床不过夜) heartbeat(心跳间隔) pause(后台不暂停) peek(看恒干嘛) whiteboard/wb_read/wb_pin/wb_clear(白板记忆) appearance(捏脸)。",
-"map": "导航域(🗺️跨图唯一入口)：lookup(查地点功能+出口) query(功能反查) go(走到目标/多段寻路+交通) walk(走到POI) movetile(同图精确走位) npc(找NPC) warp_safe(紧急逃脱)。⚠️出口走出口前一格；交通图腾柱>矿车>走路。",
+"map": "导航域(🗺️跨图唯一入口)：lookup(查地点功能+出口) query(功能反查) go(走到目标/多段寻路+交通) walk(走到POI) movetile(同图精确走位) npc(找NPC) warp_safe(紧急逃脱)。⚠️出口走出口前一格；交通图腾柱>矿车>走路。⚠️参数全放kw对象(别拼进ops串)：go kw={destination:地点名/POI} walk kw={poi_name:POI} movetile kw={x:int,y:int}。",
 "festival": "节日域(🎪)：today(今天节日) next(下一个) go(去) info(实况) interact(互动) answer(应答) shop(节日商店) eggs(找蛋) egg_note(纸条) egg_run(捡蛋) dance(跳舞邀请) strength(力量测试 delay=毫秒) ice_fish(冰雪节冰钓自动化) help(玩法) prep(备战) poi(限定点) maze(迷宫坐标奇偶年) maze_walk(走迷宫 waypoints=「x,y x,y…」依次walk_to)。",
 "fish": "钓鱼域(🎣 2026-08-22修复)：go(去钓 location=) info(查某地鱼) spots(钓点) bobber(浮漂样式) rod(鱼竿:看/上饵钓具 item=名) crab(蟹笼总览) crab_water(找水) crab_place(放笼) crab_bait(放饵) crab_collect(收笼) crab_diag(诊断笼/定位挂饵) crab_retract(回收笼/清搁浅 location=可选)。⚠️鱼塘在 farm 域不在 fish。带参 op(go 的 location、rod 的 item、crab 的 count)→ kw={'参数名':值}。",
 "settings": "系统/设置域(⚙️ 合并捏脸进来)：status(看所有设置+退役工具) retire(退役工具) reactivate(召回) appearance(捏脸) customize(捏人) **confirm_look(核对捏人形象,ok前必做)** color(颜色条) hair/shirt/pants/hat/colorpreset(外观参考)。⚠️捏脸=创建定型:ok后set_appearance/捏人自动退役(不可逆);旧配置 settings(setting='async', value='on') 仍可。",
@@ -12147,13 +12162,50 @@ def storage_layout() -> str:
         return f"扫描箱子失败: {e}"
 
 
+def _parse_store_spec(spec):
+    """解析 storage store 的 what/items 参数 → (名字列表, counts dict)。
+    spec: 逗号分隔字符串（项可带 xN/×N/*N 数量）/ 字符串列表 / [{name,count}] dict 列表。
+    名字只留物品名（剥计数后缀）；counts[name]=N → 只存那 N 份、余量留背包（C# 拆堆）。"""
+    if spec is None:
+        return None, None
+    if isinstance(spec, str):
+        raw = [w for w in re.split(r"[,，;；]+", spec) if w.strip()]
+    elif isinstance(spec, (list, tuple)):
+        raw = spec
+    else:
+        return None, None
+    names, counts = [], {}
+    for w in raw:
+        if isinstance(w, dict):
+            nm = str((w.get("name") or w.get("item") or "")).strip()
+            cnt = w.get("count", -1)
+            if nm:
+                names.append(nm)
+                if isinstance(cnt, (int, float)) and cnt >= 0:
+                    counts[nm] = int(cnt)
+            continue
+        w = str(w).strip()
+        if not w:
+            continue
+        m = re.match(r"^(?P<n>.*?)[\s]*(?:x|×|\*)\s*(?P<c>\d+)$", w)
+        if m:
+            nm = m.group("n").strip()
+            names.append(nm)
+            counts[nm] = int(m.group("c"))
+        else:
+            names.append(w)
+    return (names or None), (counts or None)
+
+
 @mcp.tool()
-def storage_store(what: str = "", target: str = "", keepTools: bool = True) -> str:
+def storage_store(what: str = "", items: str = "", target: str = "", keepTools: bool = True, all: bool = False) -> str:
     """🧺 场景内智能存储（AI 堆高高），或用户指定箱直放
     target 留空 = 智能模式：每个物品进已有同类堆的箱子（空位最多优先），新物品进默认箱。
-    target 填了 = 指定箱模式：全部(或 what 指定)放进那个箱子。
+    target 填了 = 指定箱模式：what/items 指定的（或 all）放进那个箱子。
       target 支持：中文颜色名("红色箱子"/"红箱")、#RRGGBB、箱子名字子串、坐标 "x,y"
-    what: 逗号/空格分隔的物品名，空=全部非工具。
+    what / items: 逗号/空格分隔的物品名，**只存这些**；名可带数量（树液x10 / ×10 / *10）→ 只存那 N 份、余量留背包（拆堆）。两个都留空=只归位（存"某箱已有同类堆"的，不清背包）。
+    all: True=显式存全部非工具腾空间（清背包剩工具）；默认 False **只存指定/归位**，不会全清。
+    ⚠️ 只存指定就用 what 或 items；想清背包腾空间才用 all=True。空参默认只归位、不搬背包。
     想存别的场景的箱子：先走过去再调用（只处理当前场景）。
     """
     try:
@@ -12162,8 +12214,10 @@ def storage_store(what: str = "", target: str = "", keepTools: bool = True) -> s
             targ = _resolve_storage_target(target.strip())
             if isinstance(targ, str):
                 return _with_state(targ)
-        # ⚠️ 只按逗号分隔：物品名可含空格（Wild Horseradish / Ancient Fruit / Triple Shot Espresso）
-        what_list = [w.strip() for w in re.split(r"[,，;；]+", (what or "").strip()) if w.strip()] or None
+        # 🐛 2026-09-05 恒：AI 照 take 的 items 参数给 store 传清单，但 store 本是 what —— items 被 _ops_run
+        #   按签名过滤静默丢掉 → what 空 → 全存（"只存指定却一键全清"根因）。两参数都接（items 当 what 别名）；
+        #   名后可带数量（树液x10/*10/×10）→ 只存那 N 份、余量留背包（counts 拆堆）。
+        what_list, counts = _parse_store_spec(what or items)
         dflt = _storage_default_for_loc()
         # 🤖 2026-09-04 恒：走位统一——smart/指定都先走到主箱旁（拟人），批量只走到第一个相关箱
         if targ:
@@ -12172,13 +12226,18 @@ def storage_store(what: str = "", target: str = "", keepTools: bool = True) -> s
             _primary = _primary_chest_for_smart()
             if _primary:
                 _walk_to_chest(_primary["x"], _primary["y"])
-        r = api.store_all(keepTools=keepTools, what=what_list, target=targ, default=dflt)
+        r = api.store_all(keepTools=keepTools, what=what_list, target=targ, default=dflt, clear_all=all, counts=counts)
         if not r.get("ok"):
             return _with_state(f"存储失败: {r.get('error', r)}")
 
         mode = r.get("mode", "smart")
-        mode_txt = "指定箱模式" if mode == "target" else "智能堆叠"
-        lines = [f"🧺 存储完成（{mode_txt}）" + (f" | {r.get('location')}" if r.get("location") else "")]
+        scope = r.get("scope", "tidy")
+        base = "指定箱" if mode == "target" else "智能堆叠"
+        scope_txt = {"specified": "只存指定", "all": "全存腾空间", "tidy": "归位整理"}.get(scope, "")
+        hint = "（要清背包腾空间传 all=True，只存指定用 items/what）" if scope == "tidy" else ""
+        lines = [f"🧺 {base}·{scope_txt}{hint}" + (f" | {r.get('location')}" if r.get("location") else "")]
+        if r.get("noHome"):
+            lines.append(f"  ⚠️ {r['noHome']} 个没有归属的物品留下背包（箱子里没同类堆；要存它们用 items/what 指定）")
         stored = r.get("stored", [])
         if stored:
             by_chest = {}

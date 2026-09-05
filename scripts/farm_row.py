@@ -181,13 +181,16 @@ def run():
     # ⚠️ 2026-08-15 恒：播种前扫已种地块，跳过（不重复种/不覆盖）
     # ⚠️ 2026-09-03 恒：连**设施/物体**格也跳过——洒水器/稻草人/箱子占了格不能播种，
     #    否则 use_item 失败浪费种子（"围着设施种"靠这步：设施格跳过，别的照种）。
-    planted = set()
+    planted_crop = set()   # 已有作物（不重复种——2026-08-15 恒）
+    planted_obj = set()    # 设施/物件占格（不能种——2026-09-03 恒）
     if any(pn == "plant" for _, pn, _ in phases):
         try:
             ps = api.surroundings(max(args.length, args.rows) // 2 + 8)
             for t in ps.get("tiles", []):
-                if t.get("crop") or t.get("object"):
-                    planted.add((t["x"], t["y"]))
+                if t.get("crop"):
+                    planted_crop.add((t["x"], t["y"]))
+                elif t.get("object"):
+                    planted_obj.add((t["x"], t["y"]))
         except Exception:
             pass
 
@@ -197,16 +200,23 @@ def run():
         time.sleep(0.15)
 
         order = flat if phase_idx % 2 == 0 else list(reversed(flat))
-        skipped = 0
+        skipped = 0; skip_crop = 0; skip_obj = 0
         for tx, ty in order:
-            if phase_name == "plant" and (tx, ty) in planted:
-                skipped += 1
-                continue  # 已种，跳过（2026-08-15 恒）
+            if phase_name == "plant":
+                if (tx, ty) in planted_crop:
+                    skip_crop += 1; skipped += 1
+                    continue  # 已有作物，跳过（2026-08-15 恒）
+                if (tx, ty) in planted_obj:
+                    skip_obj += 1; skipped += 1
+                    continue  # 设施/物件占格，跳过（2026-09-03 恒）
             if not do_action(tx, ty, tool, is_watering):
                 api.log(f"=== stopped during {phase_name} ===")
                 return
         if skipped:
-            api.log(f"  ↪ 跳过 {skipped} 个已种地块")
+            parts = []
+            if skip_crop: parts.append(f"{skip_crop} 格原地已有作物")
+            if skip_obj: parts.append(f"{skip_obj} 格被设施/物件占")
+            api.log(f"  ↪ 跳过 {skipped} 格未种: " + "、".join(parts))
 
     # --- Post-check ---
     api.postcheck_menu()

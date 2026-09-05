@@ -390,20 +390,26 @@ def farm_report():
     return _get("/farm_report")
 
 
-def store_all(keepTools=True, what=None, target=None, default=None):
+def store_all(keepTools=True, what=None, target=None, default=None, clear_all=False, counts=None):
     """POST /store_all — 场景内智能存储（"堆高高"）或用户指定箱直存。只处理当前场景箱子。
     keepTools: 工具不存（默认 True）
-    what: 限定物品名/ID（list 或逗号分隔字符串），None=全部非工具
+    what: 限定物品名/ID（list 或逗号分隔字符串），给了=只存这些
+    counts: dict {物品名: 数量}，给数量则只存那 N 份（余量留背包，拆堆）
+    clear_all: True=显式存全部非工具腾空间（默认 False → 只归位：只存某箱已有同类堆的物品，不清背包）
     target: dict 指定箱 —— {"color": "#C0C0C0"} / {"name": "矿石"} / {"x": 5, "y": 8}
     default: dict {"x": 20, "y": 15} 默认箱（None=自动选空位最多箱）
-    返回 {ok, mode, stored[], leftovers[], chests[], totalFree}
+    返回 {ok, mode, scope('specified'/'all'/'tidy'), noHome, stored[], leftovers[], chests[], totalFree}
     """
     data = {"keepTools": bool(keepTools)}
+    if clear_all:
+        data["all"] = True
     if what:
         if isinstance(what, (list, tuple)):
             data["what"] = list(what)
         else:
             data["what"] = str(what)
+    if counts:
+        data["counts"] = counts
     if target:
         data["target"] = target
     if default:

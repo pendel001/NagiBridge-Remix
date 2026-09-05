@@ -2426,8 +2426,20 @@ public class ModEntry : Mod
                 int py = (int)facingTile.Y * 64 + 32;
                 // power >= 0: charged watering, power=-1: single tile (old default)
                 int chargePower = power >= 0 ? power : 0;
+                // 🐾 2026-09-05 恒挑战(宠物碗喂水动画)：补 BeginUsingTool 出**完整单次挥舞动画**，再 DoFunction 落地——
+                //    同 _commandResults "use"(1888) 已验证的 拟人动画+效果 组合；之前只 DoFunction 像"漂移/尿尿"。
+                //    宠物碗/浇地都会先播挥动画、水再喷到面前格(farmer.Update 播完自动复位 UsingTool)。
+                farmer.BeginUsingTool();
                 wc.DoFunction(farmer.currentLocation, px, py, chargePower, farmer);
-                tcs.SetResult(new { ok = true, tool = wc.Name, action = "WateringCan.DoFunction",
+                // 🐾 2026-09-05 恒（蓄力不结束）：BeginUsingTool 让水壶持住蓄力pose，脚本结束没释放会卡在举壶。
+                //    延迟 ~0.5s 播完挥动画后 reset（EndUsingTool 清 UsingTool + forceCanMove 复位），同武器特殊攻击的复位模式。
+                var wcFarmer = farmer;
+                System.Threading.Tasks.Task.Run(() =>
+                {
+                    System.Threading.Thread.Sleep(500);
+                    try { EnqueueMainThread(() => { wcFarmer.EndUsingTool(); wcFarmer.forceCanMove(); }); } catch { }
+                });
+                tcs.SetResult(new { ok = true, tool = wc.Name, action = "WateringCan.BeginUsingTool+DoFunction+reset",
                     power = chargePower,
                     tile = new { x = (int)facingTile.X, y = (int)facingTile.Y } });
             }
@@ -7450,6 +7462,7 @@ public class ModEntry : Mod
     {
         var p = ReadJson(ctx);
         var keepTools = GetParamOr(p, "keepTools", true);
+        var storeAll = GetParamOr(p, "all", false);   // 🧺 2026-09-05 恒：显式 all=true 才全存腾空间（默认只归位）
 
         // what: 支持字符串（逗号/空格分隔）或字符串数组
         var whatList = new List<string>();
@@ -7461,6 +7474,15 @@ public class ModEntry : Mod
             else if (wJe.ValueKind == JsonValueKind.String)
                 foreach (var s in (wJe.GetString() ?? "").Split(new[] { ',', '，', ' ', '|' }, StringSplitOptions.RemoveEmptyEntries))
                     whatList.Add(s.Trim());
+        }
+
+        // 🧺 2026-09-05 恒：items 可带数量（树液x10 / *10 / ×10）→ counts[name]=N，store 只搬 N 份（余量留背包）
+        var counts = new Dictionary<string, int>();
+        if (p.TryGetValue("counts", out var cv) && cv is JsonElement cJe && cJe.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var prop in cJe.EnumerateObject())
+                if (prop.Value.ValueKind == JsonValueKind.Number)
+                    counts[prop.Name] = prop.Value.GetInt32();
         }
 
         // target / default
@@ -7532,6 +7554,15 @@ public class ModEntry : Mod
                         || string.Equals(qid, w, StringComparison.OrdinalIgnoreCase));
                 }
 
+                // 🧺 归位判定（2026-09-05 恒）：某箱已有同类堆 = "有家"，默认只存这类（不清背包）；
+                //   要全存腾空间 → all=true 或指定 what。防空 what 却把背包连根拔走。
+                bool HasHome(Item it)
+                {
+                    foreach (var (c, _, _) in chests)
+                        if (c.Items.Any(ci => ci != null && ci.QualifiedItemId == it.QualifiedItemId)) return true;
+                    return false;
+                }
+
                 // 指定箱匹配：坐标 > 颜色(最近) > 名字(子串)
                 Chest? ResolveTarget()
                 {
@@ -7588,12 +7619,17 @@ public class ModEntry : Mod
 
                 var stored = new List<object>();
                 var leftovers = new List<object>();
+                int noHome = 0;   // 🧺 归位模式：没有"同类堆"而留在背包的物品数（2026-09-05）
+                string dbgN = "", dbgD = "", dbgQ = ""; int dbgR = -1;   // 🐛 2026-09-05 数量诊断
                 for (int i = farmer.Items.Count - 1; i >= 0; i--)
                 {
                     var item = farmer.Items[i];
                     if (item == null) continue;
                     if (keepTools && item is Tool) continue;
                     if (!WhatMatches(item)) continue;
+                    // 🧺 2026-09-05 恒：空what 不代表"全清"。默认未显式 all=true 时只归位——
+                    //   只存"某箱已有同类堆"的物品，别连根拔走背包；全存腾空间 → all=true 或传 what 指定。
+                    if (whatList.Count == 0 && !storeAll && !HasHome(item)) { noHome++; continue; }
 
                     Chest? target = null;
                     string reason = "";
@@ -7642,24 +7678,44 @@ public class ModEntry : Mod
                         continue;
                     }
 
-                    var leftover = target.addItem(item);
+                    // 🧺 2026-09-05 恒：指定数量(counts)且小于整堆 → 拆 N 份进箱、余量留背包；否则整堆搬
                     var to = tileOf[target];
-                    if (leftover == null)
+                    // 🐛 2026-09-05 恒：数量匹配必须跟 WhatMatches 同款三路——之前只 TryGetValue(DisplayName)/Name，
+                    //    WhatMatches 用 name/DisplayName/qid 三路能匹配上"干草"，counts 却漏了（存成整堆）。逐键试最稳。
+                    int reqCount = -1;
+                    foreach (var kv in counts)
                     {
-                        stored.Add(new { item = item.Name, count = item.Stack,
-                            to = new { x = (int)to.X, y = (int)to.Y, name = DisplayName(target), color = ChestColorHex(target) } });
-                        farmer.Items[i] = null;
+                        if (string.Equals(kv.Key, item.DisplayName, StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(kv.Key, item.Name, StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(kv.Key, item.QualifiedItemId, StringComparison.OrdinalIgnoreCase))
+                        { reqCount = kv.Value; break; }
                     }
-                    else if (leftover.Stack < item.Stack)
+                    bool partial = reqCount >= 0 && reqCount < item.Stack;
+                    dbgN = item.Name ?? ""; dbgD = item.DisplayName ?? ""; dbgQ = item.QualifiedItemId ?? ""; dbgR = reqCount;   // 🐛 诊断
+                    Item moveItem = item;
+                    int moveTotal = item.Stack;
+                    if (partial) { moveItem = item.getOne(); moveItem.Stack = reqCount; moveTotal = reqCount; }
+                    var leftover = target.addItem(moveItem);
+                    int moved = moveTotal - (leftover != null ? leftover.Stack : 0);
+                    if (moved > 0)
                     {
-                        int moved = item.Stack - leftover.Stack;
                         stored.Add(new { item = item.Name, count = moved,
                             to = new { x = (int)to.X, y = (int)to.Y, name = DisplayName(target), color = ChestColorHex(target) } });
-                        farmer.Items[i] = leftover;
+                        if (partial)
+                        {
+                            // 拆了 moved 份进箱 → 背包原堆扣掉 moved，剩 (item.Stack - moved)
+                            item.Stack -= moved;
+                            if (item.Stack <= 0) farmer.Items[i] = null;
+                        }
+                        else
+                        {
+                            if (leftover == null) farmer.Items[i] = null;
+                            else farmer.Items[i] = leftover;
+                        }
                     }
                     else
                     {
-                        leftovers.Add(new { item = item.Name, count = item.Stack, reason = "chest_rejected" });
+                        leftovers.Add(new { item = item.Name, count = moveTotal, reason = "chest_rejected" });
                     }
                 }
 
@@ -7679,11 +7735,14 @@ public class ModEntry : Mod
                 {
                     ok = true,
                     mode = targetMode ? "target" : "smart",
+                    scope = whatList.Count > 0 ? "specified" : (storeAll ? "all" : "tidy"),   // 🧺 2026-09-05
+                    noHome,
                     location = loc.Name,
                     stored,
                     leftovers,
                     chests = chestSummary,
-                    totalFree = chests.Sum(x => Free(x.c))
+                    totalFree = chests.Sum(x => Free(x.c)),
+                    dbg = new { count = counts.Count, name = dbgN, displayName = dbgD, qid = dbgQ, reqCount = dbgR }   // 🐛 数量诊断
                 });
             }
             catch (Exception ex)
