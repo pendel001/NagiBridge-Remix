@@ -814,13 +814,13 @@ def _snap_onto_bed(bx, by):
     返回落点 (x,y)。"""
     for dy in (1, 0, 2):
         _ai_post("/position", {"x": bx, "y": by + dy})
-        time.sleep(0.6)
-        if _in_bed_now(retries=1):
+        time.sleep(0.9)   # 0.6→0.9：给游戏 tick 置 isInBed 时间（实测 0.7s 才 True，0.6 卡边界→无谓多探测一轮）
+        if _in_bed_now(retries=2):
             return (bx, by + dy)
     for dy in (1, 0, 2):  # 2 宽床兜底右列
         _ai_post("/position", {"x": bx + 1, "y": by + dy})
-        time.sleep(0.6)
-        if _in_bed_now(retries=1):
+        time.sleep(0.9)
+        if _in_bed_now(retries=2):
             return (bx + 1, by + dy)
     return (bx, by + 1)
 

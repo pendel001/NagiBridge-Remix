@@ -6098,7 +6098,27 @@ public class ModEntry : Mod
     }
 
     /// <summary>
-    /// 找房主在 FarmHouse 的床。优先扫家具里的 BedFurniture，找不到 fallback (10,6)。
+    /// 是否儿童床（不可用于睡觉）。⚠️ 按名字判（bedSize 属性在此 SDV 参考程序集不存在）：
+    /// 中文"儿童床"/英文"Child Bed"。成人床（单人/双人）不含关键词。
+    /// </summary>
+    private static bool IsChildBed(StardewValley.Objects.BedFurniture b)
+    {
+        try
+        {
+            var n = b.Name ?? "";
+            int idx = n.IndexOf("儿童", StringComparison.Ordinal);
+            if (idx >= 0) return true;
+            return n.IndexOf("Child", StringComparison.OrdinalIgnoreCase) >= 0
+                || n.IndexOf("child's", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 找房主在 FarmHouse 的床。优先扫家具里的 BedFurniture（跳过儿童床），找不到 fallback (10,6)。
     /// </summary>
     private (int x, int y) FindMasterBed(GameLocation? home)
     {
@@ -6106,7 +6126,9 @@ public class ModEntry : Mod
         {
             try
             {
-                var bed = home.furniture.OfType<StardewValley.Objects.BedFurniture>().FirstOrDefault();
+                var beds = home.furniture.OfType<StardewValley.Objects.BedFurniture>().ToList();
+                // ⚠️ 2026-09-05 恒：儿童床不可睡，优先选能睡床(单人/双人)，全儿童才退第一张
+                var bed = beds.FirstOrDefault(b => !IsChildBed(b)) ?? beds.FirstOrDefault();
                 if (bed != null)
                     return ((int)bed.TileLocation.X, (int)bed.TileLocation.Y);
             }
@@ -6135,7 +6157,9 @@ public class ModEntry : Mod
         {
             try
             {
-                var bed = home.furniture.OfType<StardewValley.Objects.BedFurniture>().FirstOrDefault();
+                var beds = home.furniture.OfType<StardewValley.Objects.BedFurniture>().ToList();
+                // ⚠️ 2026-09-05 恒：儿童床不可睡，优先选能睡床(单人/双人)，全儿童才退第一张
+                var bed = beds.FirstOrDefault(b => !IsChildBed(b)) ?? beds.FirstOrDefault();
                 if (bed != null)
                 {
                     // ⚠️ 2026-08-14 修复：必须用 homeName（真实地点名，如 FarmHouse183e6ea6-…），

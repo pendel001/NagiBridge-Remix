@@ -1666,10 +1666,7 @@ def _advance_story(active_menu, active_event) -> bool:
 
 @mcp.tool()
 def advance_story() -> str:
-    """🎬 推进剧情/对话（检测事件还在 → 自动走完当前段 → 返回台词+状态）
-    AI 卡剧情/不知道按啥时先调这个：检测 activeEvent/DialogueBox，推进到选项或结束。
-    事件对话阶段自动 /click 点（不动鼠标）、静默阶段 key confirm；选项出现停下让 AI 选。
-    返回已播放台词 + 当前进度（事件仍在播 / 到选项 / 剧情结束）。"""
+    """🎬 推进剧情/对话。卡剧情/不知道按啥时先调这个：检测事件还在 → 自动走完当前段 → 返回台词+状态。事件对话自动 /click，选项出现停下让 AI 选。"""
     try:
         st = api.state(light=True)
         ev = st.get("activeEvent") or {}
@@ -2438,11 +2435,35 @@ def _resolve_place(place: str):
     return None
 
 
+def _go_to_bed(bed_loc: str, bx: int, by: int) -> str:
+    """进屋后走到床边（自然走，别站床 tile——会被 game redirect 弹回门口）。
+    ⚠️ 到达判定用**玩家格距离**，不用 _wait_arrival（它拿 location.name 显示名，跟床唯一名比恒假→必超时）。"""
+    r3 = api._post("/walk_to", {"location": bed_loc, "x": bx, "y": by + 1})
+    if not r3.get("ok"):
+        return _with_state(f"❌ 到床失败: {r3.get('error', r3)}")
+    deadline = time.time() + 25
+    while time.time() < deadline:
+        s = api.state()
+        px, py = s.get("player", {}).get("x"), s.get("player", {}).get("y")
+        if px is not None and py is not None and abs(px - bx) <= 2 and abs(py - by) <= 2 \
+                and not s.get("player", {}).get("isMoving"):
+            return _with_state(f"🏠 已到家床上 ({bed_loc} {bx},{by})")
+        time.sleep(0.8)
+    return _with_state("⚠️ 到床超时")
+
+
 def _go_home() -> str:
-    """回家：走到门口（Farm外立面）→ 互动进门 → 动态找床 → 走到床。
+    """回家：走到自己屋门口（Farm外立面）→ 互动进门 → 动态找自己床 → 走到床边。
 
     出门不能自动化（walk_to 不肯踩上传送格），所以回家只做"进门"；
     出门用 /warp 传门外（见 go_to 兜底逻辑）。
+
+    ⚠️ 2026-09-05 修（恒实测，根因=显示名/唯一名混比 + 找错床）：
+    1. 进屋判定：用 crawl_bed locate 返回的 curLoc(当前场景**唯一名**)跟床所在唯一名比，
+       别拿 location.name(显示名"Cabin") 跟 homeLocation(唯一名"FarmHouse<guid>")比——恒不等 →
+       明明进屋却反复"当门外"反复点门 → 进不去/报"进门失败"。
+    2. 找床：crawl_bed locate 必须带 player=自己，否则默认找 host(恒/MasterPlayer)的床，不是自家床。
+    3. 到床：walk 到床边，别 walk_to 床 tile（会被 game redirect 弹回门口）。
     """
     try:
         p = api.state().get("player", {})
@@ -2451,19 +2472,35 @@ def _go_home() -> str:
         if not door or not home:
             return _with_state("❌ 拿不到 homeDoor/homeLocation（需要新DLL）")
 
-        # 1. 走到门口（Farm 外立面）
+        # ‑ 探测本进程玩家名（crawl_bed locate 返回 player2=本进程玩家），并带 player=自己找床
+        myname = api._post("/crawl_bed", {"action": "locate"}).get("player2") or "我"
+        bl = api._post("/crawl_bed", {"action": "locate", "player": myname})
+        bed = bl.get("bed", {})
+        if not bed:
+            return _with_state("⚠️ 进门了但找不到床")
+        bed_loc, bx, by = bed.get("location"), bed.get("x"), bed.get("y")
+
+        def _cur() -> str:
+            """当前场景唯一名（crawl_bed locate 的 curLoc），进屋判定用它。"""
+            return (api._post("/crawl_bed", {"action": "locate", "player": myname}).get("curLoc")
+                    or "?")
+
+        # ‑ 已在床所在场景 → 直接去床边
+        if _cur() == bed_loc:
+            return _go_to_bed(bed_loc, bx, by)
+
+        # 1. 走到自家门口（Farm 外立面）
         r = api._post("/walk_to", {"location": door["location"], "x": door["x"], "y": door["y"]})
         if not r.get("ok"):
             return _with_state(f"❌ 去门口失败: {r.get('error', r)}")
         if not _wait_arrival(door["location"], door["x"], door["y"], timeout=35):
             return _with_state("⚠️ 走到门口超时")
 
-        # 2. 若还在门外 → 下马 + 站门口正下方 + 面向门 + /interact 触发 checkAction
-        if api.state().get("location", {}).get("name") != home:
+        # 2. 若已在门外 → 下马 + 站门口正下方(门在正上) + 面朝门 + /interact 触发 checkAction
+        if _cur() != bed_loc:
             if api.state().get("player", {}).get("riding"):
                 api._post("/key", {"key": "confirm"})  # 下马
                 time.sleep(1.5)
-            # 站门口正下方（门在正上方），面向门
             api._post("/position", {"x": door["x"], "y": door["y"] + 1})
             time.sleep(0.5)
             api._post("/face", {"direction": 0})  # 0=上，门在头顶
@@ -2471,21 +2508,17 @@ def _go_home() -> str:
             api._post("/interact")
             for _ in range(10):
                 time.sleep(0.8)
-                if api.state().get("location", {}).get("name") == home:
+                if _cur() == bed_loc:
                     break
-        if api.state().get("location", {}).get("name") != home:
-            return _with_state("⚠️ 进门失败，可能被挡/在菜单里")
+            # ‑ 仍没进屋 → 精确点门瓦片兜底（interact_at 直接点 tile，不依赖面朝）
+            if _cur() != bed_loc:
+                api.interact_at(door["x"], door["y"])
+                time.sleep(1.5)
+        if _cur() != bed_loc:
+            return _with_state(f"⚠️ 进门失败（仍在 {_cur()}），可能被挡/在菜单里")
 
-        # 3. 动态找床并走过去
-        bed = api._post("/crawl_bed", {"action": "locate"}).get("bed", {})
-        if not bed:
-            return _with_state("⚠️ 进门了但找不到床")
-        r3 = api._post("/walk_to", {"location": bed["location"], "x": bed["x"], "y": bed["y"]})
-        if not r3.get("ok"):
-            return _with_state(f"❌ 到床失败: {r3.get('error', r3)}")
-        if _wait_arrival(bed["location"], bed["x"], bed["y"], timeout=25):
-            return _with_state(f"🏠 已到家床上 ({bed['location']} {bed['x']},{bed['y']})")
-        return _with_state("⚠️ 到床超时")
+        # 3. 到床边
+        return _go_to_bed(bed_loc, bx, by)
     except Exception as e:
         return _with_state(f"❌ 回家失败: {e}")
 
@@ -2526,8 +2559,14 @@ def go_to(place: str) -> str:
     """
     try:
         # 回家/自己小屋 → 完整走门流程（走到门口→互动进门→走到床）
-        if any(k in place for k in ("回家", "自己小屋", "我的小屋")):
-            return _go_home()
+        # ⚠️ 2026-09-05 恒：裸"小屋"也算自家（排除女巫/巫师/魔法/神殿，那些是真女巫小屋）
+        _pl = str(place or "").lower()
+        _excl = ("女巫", "巫师", "魔法", "神殿", "witch")
+        if "回家" in _pl and not any(k in _pl for k in _excl):
+            return _go_home()          # 明确"回家"→进屋到床边
+        if any(k in _pl for k in ("小屋", "cabin")) \
+                and not any(k in _pl for k in _excl):
+            return _nav_home_door()    # "进小屋/cabin"→只导航到门口（进屋交给 AI interact_at）
 
         target = _resolve_place(place)
         if target is None:
@@ -2843,7 +2882,7 @@ def _enter_building_door(loc: str) -> bool:
         if out_map != cur:
             # 先到门口所在的地图（一般就在当前图；不在就走 MAP_LINKS 到门口那张图）
             return False
-        # /walk_to 到门口瓦片（用户实测 2026-08-13：Saloon 门在 Town(45,71)，不是 dy+1）→ 面向门 → /interact 开门
+        # /walk_to 到门口瓦片（用户实测 2026-08-13：Saloon 门在 Town(45,71)，不是 dy+1）→ 精确点门瓦片开门
         r = api._post("/walk_to", {"location": out_map, "x": dx, "y": dy})
         if not r.get("ok"):
             return False
@@ -2852,8 +2891,14 @@ def _enter_building_door(loc: str) -> bool:
         # 若走位已触发进门（走到门瓦片上可能直接传），提前返回
         if api.state().get("location", {}).get("name", "") == loc:
             return True
-        # 面朝上（0）+ /interact 开门（实测 key confirm 开不了，/interact 才行）
-        api._post("/face", {"direction": 0})
+        # ‑ 2026-09-05 修：直接精确点门瓦片 interact_at（对角/不贴脸，不依赖面朝——
+        #   walk_to 有 ±2 容差会停偏、面朝可能歪 → 旧"面朝上+/interact(面前格)"会打歪）。
+        #   ⚠️ 不做通用"站门下方(dy+1)"——Saloon 门实测在 Town(45,71)，并非 dy+1。
+        api.interact_at(dx, dy)
+        time.sleep(1.2)
+        if api.state().get("location", {}).get("name", "") == loc:
+            return True
+        api._post("/face", {"direction": 0})   # 兜底：面朝门 + /interact
         time.sleep(0.3)
         api._post("/interact")
         time.sleep(1.5)
@@ -3816,6 +3861,16 @@ def map_go(destination: str) -> str:
     if _nr:
         _NAV_LAST.update(_nr)
     _NAV_FAILED["v"] = False
+    # 🏠 自家小屋拦截（2026-09-05 恒：裸"小屋"被 SCENE_NAME_ALIAS 的"女巫小屋/巫师小屋"子串劫持
+    #   → 误导航去 WitchHut（AI 说"去小屋"走到女巫小屋，找不到自家门）。"去小屋/进小屋/回家/我家"统一走回家进屋到床。
+    #   ⚠️ 排除"女巫/巫师/魔法/神殿"——那些是真女巫小屋，别劫持。）
+    _hp = str(destination or "").lower()
+    _excl = ("女巫", "巫师", "魔法", "神殿", "witch")
+    if "回家" in _hp and not any(k in _hp for k in _excl):
+        return go_to("回家")          # 明确"回家"→进屋到床边
+    if ("小屋" in _hp or "我的家" in _hp or _hp == "家" or "cabin" in _hp) \
+            and not any(k in _hp for k in _excl):
+        return _nav_home_door()       # "进小屋/cabin"→只导航到门口（进屋交给 AI interact_at）
     try:
         # 0. 目标解析（POI → 地点名；中文场景名→MAP_LINKS 键）
         dest = destination
@@ -6750,14 +6805,48 @@ def screenshot() -> Image:
 
 @mcp.tool()
 def which_role() -> str:
-    """🔌 确认当前端口↔角色映射（AI=farmhand轮回 / host=房主恒）。
-    端口按启动顺序分配（谁先开谁占7842），重启后可能翻转——复现睡觉/协作前先调这个确认。
-    返回两角色的端口+名字；游戏进程未就绪时返回 ok:false。"""
+    """🔌 确认当前端口↔角色映射（AI=farmhand / host=房主恒）。端口按启动顺序分配，重启可能翻转——睡觉/协作前先调确认。"""
     r = api.which_role()
     if not r.get("ok"):
         return _with_state(f"⚠️ 角色检测未完成: {r.get('error')}（{r.get('note','')}）")
     a, h = r["ai"], r["host"]
     return _with_state(f"🔌 角色映射: AI({a['name']})={a['port']} | host({h['name']})={h['port']}")
+
+
+def _aim_sleep_home(who: str) -> None:
+    """睡自家(传自己名)但人不在自家 → 先 _go_home 回自家小屋到床边，再 sleep_flow 才不拦"当前场景没有床"。
+    只处理 who==自己名；睡房主床(who空/房主名)不在自家时不做自动导航（AI 应用 map_go 到对方家，难自动）。
+    （2026-09-05 恒：go_sleep/lie_bed 睡自家一键，不用先"回家"。）"""
+    try:
+        r = api.detect_roles()
+        me = (r.get("ai") or {}).get("name") or ""
+        who = who or ""
+        if not who or who != me:
+            return  # 空=睡房主床 / 睡别人床：不自动
+        c = api._post("/crawl_bed", {"action": "locate", "player": who})
+        bed_loc = (c.get("bed") or {}).get("location")
+        cur = c.get("curLoc")
+        if bed_loc and cur and bed_loc != cur:
+            _go_home()  # 不在自家 → 回自家到床边
+    except Exception:
+        pass
+
+
+def _nav_home_door() -> str:
+    """导航到自家小屋门口（Farm 外立面，用动态 homeDoor），**不进屋**（进屋用 interact_at 门；睡觉用 go_sleep 自动回屋）。
+    解决"进 cabin 找不到门"：不依赖 _enter_building_door 的静态坐标(3,12)。"""
+    try:
+        door = api.state().get("player", {}).get("homeDoor")
+        if not door:
+            return _with_state("❌ 拿不到 homeDoor（需要新DLL）")
+        r = api._post("/walk_to", {"location": door["location"], "x": door["x"], "y": door["y"]})
+        if not r.get("ok"):
+            return _with_state(f"❌ 去自家门口失败: {r.get('error', r)}")
+        if _wait_arrival(door["location"], door["x"], door["y"], timeout=35):
+            return _with_state(f"🏠 已到自家小屋门口 ({door['location']} {door['x']},{door['y']})——进屋 interact_at 门；睡觉用 sleep(自动回屋)")
+        return _with_state("⚠️ 到自家门口超时")
+    except Exception as e:
+        return _with_state(f"❌ {e}")
 
 
 @mcp.tool()
@@ -6771,6 +6860,7 @@ def go_sleep(who: str = "") -> str:
     夜不过自动"走刷新"重爬。房主没配合(卡 ReadyCheckDialog)超时则取消起床，绝不卡死。
     """
     api.ensure_roles()  # 端口↔角色可能翻转，先对齐
+    _aim_sleep_home(who)  # 睡自家不在自家 → 自动回自家（2026-09-05 恒）
     r = api.go_sleep_flow(who)
     msg = r.get("summary", "❌ 睡觉失败")
     # 睡别人家 + 醒来位置核实 = 一起睡彩蛋成功
@@ -6788,10 +6878,11 @@ def lie_bed(who: str = "") -> str:
     就绪屏弹出想撤就绪/关屏→cancel。
     """
     api.ensure_roles()  # 端口↔角色可能翻转，先对齐
+    _aim_sleep_home(who)  # 躺自家不在自家 → 自动回自家（2026-09-05 恒）
     r = api.approach_bed(who)
     if not r.get("ok"):
         return _with_state(f"❌ 躺床失败: {r.get('error')}")
-    return _with_state(f"🛏️ 已躺上{r.get('player')}的床（没确认睡觉，日没结束）。过夜→go_sleep，撤就绪/关屏→cancel")
+    return _with_state(f"🛏️ 已躺上{r.get('player')}的床（只躺不睡，日没结束）。想过夜→go_sleep；撤就绪/关屏→cancel；想离开→walk_to 走离床格即可")
 
 
 @mcp.tool()
@@ -6975,10 +7066,11 @@ def _session_exportop():
 
 @mcp.tool()
 def session(ops: str = "", kw: dict | None = None) -> str:
-    """🧠 会话域（上下文缓冲，多数不用）。ops: status(看缓冲条数/设置) set(改 setting,value) export(手动导出记忆)。
+    """🧠 会话域（多数不用）。status 看缓冲 / set 改设置 / export 导出记忆。→ help(session)。
+
     Args:
-        ops: 动作（status/set/export）
-        kw: set 的 {setting,value}；其余空参即可
+        ops: status/set/export
+        kw: set 的 {setting,value}
     """
     dispatch = {
         "status": _session_status, "看": _session_status,
@@ -7244,11 +7336,10 @@ def _quest_menu_hint() -> str:
 
 @mcp.tool()
 def check(what: str) -> str:
-    """🔍 查询域（what=...，非 ops）。status(完整状态) backpack(逐格价值/星级) worn(穿戴) machines(机器)
-    mine(下矿进度) silo(干草) mastery(精通) buildings(木匠) quest(任务) chests(当前图箱) storage(箱子网络)
-    look(环视,radius)。⚠️查概览用 status，查逐格用 backpack。细节→help(check)。
+    """🔍 查询域（what=...）。status 全状态 / backpack 背包明细(逐格价值/星级) / worn 穿戴 / machines 机器 / look 环视周围 / quest 任务。完整 what 清单 → help(check)。
+
     Args:
-        what: 查什么（status/backpack/worn/machines/mine/silo/mastery/buildings/quest/chests/look）
+        what: 查什么（status/backpack/worn/…见 help(check)）
     """
     w = (what or "").strip().lower()
     dispatcher = {
@@ -7573,10 +7664,7 @@ def bundle_kb(query: str = "") -> str:
 
 @mcp.tool()
 def farm(ops: str = "", kw: dict | None = None) -> str:
-    """🌾 农活域（必走，禁手动 use_tool/tool_area）。高频：water 浇 / harvest 收 / plant 种 / till 锄 / fertilize 化肥 / clear 清杂 / collect 收机器。全 ops+参数 → help(farm)。
-    ⚠️ till/plant/till_plant/clear/fertilize **尺寸不设默认**（缺=只做 1 格，绝不默认 5×5）——要多少自己传 rows + length（如 rows=1 length=5 锄一行 5 格）。
-
-    """
+    """🌾 农活域（农场/温室/姜岛）。till 锄地 / plant 种 / water 浇地 / harvest 收 / fertilize 施化肥 / clear 清杂草石头树桩 / collect 收机器 / chop 砍树。动物：animals 摸+收 / 喂水 宠物碗 / milk 挤奶剪毛。全 ops → help(farm)。⚠️带尺寸 op(till/plant/clear/fertilize)必须传 rows×length（缺省只做 1 格）；动物水用 喂水，water=浇地。"""
     op_list = [o for o in re.split(r"[\s,，]+", (ops or "").strip()) if o]
     if not op_list:
         return _with_state("❌ ops 为空（如 farm(ops=\"till plant water\")）")
@@ -7638,11 +7726,7 @@ def farm(ops: str = "", kw: dict | None = None) -> str:
 
 @mcp.tool()
 def mine(ops: str = "", kw: dict | None = None) -> str:
-    """⛏️ 下矿域。ops: go(去挖矿 mode=rush冲层/farm刷矿, start, target, ore, cycles) progress(进度)
-    bomb_status/plan/place/collect/ladder/retreat(单步炸) bomb_mine(自动) bomb_volcano(火山)
-    organize(整理背包)。⚠️无镐/血低硬拦；bomb_volcano 需 host 陪同。（协同=bomb_mine 没炸弹自动转内部,不对外）。
-    电梯可达层检测不对外暴露工具——内置在 mine_run/bomb_mine 脚本启动时自动读。细节→help(mine)。
-    """
+    """⛏️ 下矿域。go 自动下楼挖矿(mode: rush冲层/farm刷矿) / progress 进度 / bomb_mine 普通炸矿(自动) / bomb_volcano 火山专用炸矿。全 ops+单步炸/协同坑(无镐血低硬拦、火山需 host 同行) → help(mine)。"""
     # 🗺️ 动态工具检测：progress/bomb_* 建议在矿里做（go 豁免，不拦）
     _adv = _domain_advice("mine", ops)
     dispatch = {
@@ -7728,9 +7812,7 @@ def _cabin_enum() -> str:
 
 @mcp.tool()
 def cabin(ops: str = "", kw: dict | None = None) -> str:
-    """🏠 小屋/家域（屋内 FarmHouse/Cabin/岛屋；不传=扫屋）。ops: enum(扫屋查待收) collect(收本屋机器)
-    statue(雕像) furniture(扫家具) interact(x,y点家具) pickup(x,y拿起家具) sleep(睡觉 who)。细节→help(cabin)。
-    """
+    """🏠 小屋/家域（屋内）。sleep 睡觉 / cook 做饭 / 布置家居 / 收放设备 / 摸雕像 等 → help(cabin)。"""
     # 🗺️ 动态工具检测：小屋域建议在屋里做（sleep 豁免，自己会回家）
     _adv = _domain_advice("cabin", ops)
     dispatch = {
@@ -7743,6 +7825,7 @@ def cabin(ops: str = "", kw: dict | None = None) -> str:
         "break": break_tile, "拆": break_tile, "敲": break_tile,
         "pickup": furniture_pickup, "拿": furniture_pickup, "摆": furniture_pickup,
         "sleep": go_sleep, "睡": go_sleep, "睡觉": go_sleep,
+        "cook": cook, "做饭": cook,
     }
     if not (ops or "").strip():
         return _with_state((_adv + "\n\n" if _adv else "") + _cabin_enum())
@@ -8495,9 +8578,7 @@ def fish(ops: str = "", kw: dict | None = None) -> str:
 
 @mcp.tool()
 def social(ops: str = "", kw: dict | None = None) -> str:
-    """💬 社交域。ops: chat(跟NPC搭话) gift(送礼 npc_name,item_name) give(给玩家 player_name,item_name)
-    send(发消息) emote(表情) friendship(查好感) movie(影院) snack(零食)。细节→help(social)。
-    """
+    """💬 社交域。chat 搭话 / gift 送礼 / friendship 查好感 / send 发消息 / emote 表情。全 ops+参数 → help(social)。"""
     dispatch = {
         "chat": chat_npc, "搭话": chat_npc,
         "gift": gift_npc, "送礼": gift_npc,
@@ -8655,7 +8736,6 @@ def menu(ops: str = "", kw: dict | None = None) -> str:
         "shop": shop_visit, "逛店": shop_visit,
         "sell": sell_to_shop, "卖": sell_to_shop,
         "bin": sell_to_bin, "出货": sell_to_bin,
-        "cook": cook, "做饭": cook,
         "craft": craft, "合成": craft,
         "recipes": list_recipes, "菜谱": list_recipes,
         "craftables": list_craftables, "配方": list_craftables,
@@ -8690,12 +8770,7 @@ def menu(ops: str = "", kw: dict | None = None) -> str:
 
 @mcp.tool()
 def storage(ops: str = "", kw: dict | None = None) -> str:
-    """🎒 箱子域。ops: view(看箱,box=N看单箱全清单) store(存:what/items限定存哪些,留空=归位只存已有同类堆,target指定箱/all=True全存腾空间) take(取:x,y+name单箱 或 items批量)
-    find(模糊查哪箱有某物) default(设/清默认箱,clear=清) tag(改名,可带color顺带改色)。
-    🤖 存取统一走位：store/take 都会先走到相关箱子旁（批量只走到第一个相关箱），不用区分拟人/原子。
-    ⭐ 每个箱子前自动带【类目标签】(内容过半自动归类:矿/作物/鱼/种子…)+颜色名,AI 看标签定位,别靠编号逐箱翻。
-    细节→help(storage)。
-    """
+    """🎒 箱子域。view 看箱 / store 存进去 / take 拿出来 / find 找东西在哪箱 / default 归位存进默认箱 / tag 标记+改色。全 ops → help(storage)。"""
     dispatch = {
         "view": storage_view, "看": storage_view, "看箱": storage_view, "扫": storage_view,
         "store": storage_store, "存": storage_store, "存智能": storage_store, "堆": storage_store,
@@ -8709,9 +8784,7 @@ def storage(ops: str = "", kw: dict | None = None) -> str:
 
 @mcp.tool()
 def daily(ops: str = "", kw: dict | None = None) -> str:
-    """🗿 日常域。ops: sleep(睡觉 who) settle(过夜结算) eat(吃食物) wear(穿/脱衣物 name/slot/hand) lie_bed(躺床不过夜)
-    heartbeat(心跳间隔) pause(后台不暂停) peek(看恒) appearance(捏脸) whiteboard/wb_read/wb_pin/wb_clear(白板记忆)。细节→help(daily)。
-    """
+    """🗿 日常域。sleep 睡觉 / eat 吃 / wear 穿脱衣物 / lie_bed 躺床不过夜 / heartbeat 心跳间隔 / peek 看 host 在干嘛。全 ops → help(daily)。"""
     dispatch = {
         "sleep": go_sleep, "睡": go_sleep,
         "settle": confirm_settlement, "结算": confirm_settlement,
@@ -8732,11 +8805,7 @@ def daily(ops: str = "", kw: dict | None = None) -> str:
 
 @mcp.tool()
 def map(ops: str = "", kw: dict | None = None) -> str:
-    """🗺️ 地图导航域（跨图唯一入口）。ops: lookup(查地点) query(功能反查) go(走到目标,跨图唯一入口)
-    walk(走到POI,同图) movetile(同图走瓦片) npc(找NPC) warp_safe(紧急逃脱)。⚠️跨图一律 go。
-    ⚠️参数都放 kw 对象（别拼进 ops 串）：go kw={"destination":"地点名或POI"} / walk kw={"poi_name":"POI"} /
-    movetile kw={"x":int,"y":int}。细节→help(map)。
-    """
+    """🗺️ 导航域（跨图唯一入口）。go 走到目标 / walk 走到地点(POI) / movetile 精确走到坐标(x,y) / lookup 查地点功能 / npc 找NPC / warp_safe 紧急逃脱。⚠️参数放 kw 对象。全 ops → help(map)。"""
     dispatch = {
         "lookup": map_lookup, "查": map_lookup,
         "query": map_query, "反查": map_query,
@@ -10530,10 +10599,7 @@ def _festival_ice_fish() -> str:
 
 @mcp.tool()
 def festival(ops: str = "", kw: dict | None = None) -> str:
-    """🎪 节日域。ops: today(今天节日) next(下一个) go(去) info(实况) interact(互动,空参=社交巡礼)
-    answer(应答 N) shop(节日商店) eggs(找蛋规划) egg_note(纸条) egg_run(捡蛋) poi(限定点)
-    dance(跳舞邀请 target) help(玩法) prep(备战明细) maze(迷宫坐标奇偶年) maze_walk(走迷宫 waypoints="x,y x,y …" 依次walk_to)。细节→help(festival)。
-    """
+    """🎪 节日域。today 今天节日 / go 去 / info 实况 / interact 互动 / answer 应答 / shop 节日商店 / prep 备战。节日专属 op（复活节捡蛋、花舞节跳舞、迷宫等）→ help(festival)。"""
     dispatch = {
         "today": _festival_today, "今天": _festival_today,
         "next": _festival_next, "下一个": _festival_next,
@@ -11397,14 +11463,14 @@ _SETTINGS_DISPATCH = {
 # 📖 详细域指引（2026-08-22：docstring 精简后，深度/坑靠 help 查，不丢细节）
 _DOMAIN_GUIDES = {
 "check": "查询域，what=...：status(完整状态) backpack(逐格价值/星级) worn(穿戴) machines(全场机器清单) mine(下矿进度) silo(干草) mastery(精通) buildings(木匠建筑) quest(任务) chests(当前图箱) storage(箱子网络) look(环视周围)。⚠️查概览用 status，查逐格用 backpack，别都调浪费 token。",
-"farm": "农活域(🌱必走，禁手动 use_tool/tool_area 组合)：till(蓄力锄) plant(种,跳过已种) water(浇,自动跳雨+水壶没水先装满) harvest(收) scythe(镰刀收蒜/花/茶) fertilize(化肥) clear(清杂草石树桩) plot(连通域规划) till_plant(锄+种一条龙) tillfield(蓄力锄矩) hoe(布局锄) plantlayout(按布局种) chop(砍树) clearground(清单格) collect(收机器) load(放原料) building(一屋收放) break(拆/敲同scene,镐子敲可破物/翻已耕地) place(放置/播种同scene) pond/pond_add/pond_feed/pond_collect/pond_fish(鱼塘)。⚠️漏格DLL自动补；高级工具蓄力用 tool_area(别用/tool)。只在 Farm/温室/姜岛。带参 op(plant 的 seed_name、till 的 x/y/rows、place 的 name)→ kw={'参数名':值}。🐄动物(2026-09-02 care域并入farm): animals(摸+收) 喂水/碗(宠物水) milk(挤奶剪毛) buy(买动物,豁免建议) doors(关门) hay(干草) pet(猫狗) petwalk(拟人摸) 畜舍/这间(这间屋动物) statue(祈福)——⚠️farm water=浇地,动物水用 喂水; farm building=机器收放,这屋动物用 畜舍。💡大田洒水器布局(可选,纯自动化建议,可用可不用)：要按洒水器留格/留走道(种2留1,AI能进田浇收)就 plan(方形规划算格)→hoe(布局锄)→plantlayout(按布局种)三件套；只管种直接 till+plant 也成。",
-"mine": "下矿域(⚒️ 矿井/头骨/火山)：go(冲层/刷矿) progress(进度) bomb_status/plan/place/collect/ladder/retreat(单步炸) bomb_mine(自动) bomb_volcano(火山) organize(整理背包)。⚠️无镐/血低硬拦；梯子 /ladder+confirm。⚠️bomb_mine 没炸弹+host在同矿井→自动转【内部】协同(跟随host+帮忙敲矿/打怪)不撤退出矿(bomb_escort 不对外暴露、AI 不主动启用)；bomb_retreat 结束协同+停脚本+脱离矿井回门口。⚠️接「深处的危险」重置电梯→起始层动态从1起(内置脚本自动读，不暴露工具)；刷矿目标层不可直达会上报，需先冲层带回或改浅层。💡出发前占位物(恒2026-08-23)：提前放1个可堆叠物(铱矿/铱锭/五彩碎片)在包，满包时同种战利品自动堆叠吸附、少触发满包停；别拿银河之魂这类带死亡会丢的稀有物当占位。",
-"cabin": "小屋引导域(🏠 FarmHouse/Cabin/岛屋；不传=扫屋)：enum(扫**本屋**查待收) collect(收机器) statue(雕像) furniture(扫家具) interact(点家具) pickup(拿起家具) sleep(睡觉)。",
-"social": "社交域：chat(跟NPC搭话) gift(送礼提好感) give(送玩家物品) send(发消息) emote(表情) friendship(查好感) movie(影院知识) snack(零食)。",
-"scene": "场景交互域(点东西/工具/转身/捡)：at(x,y)(点指定格/柜台) interact(点面前) use(挥工具) face(转向0上1右2下3左) select(拿手上) pickup(拿起家具) pickup_scene(捡当前场景物) berry(摇浆果) spot(挖蚯蚓点) moss(绿雨搜苔藓) rock(室外镐击:敲当前图可破物,采石场/挖掘场/蚌矿场跳普通石,dig/dry,battle-free) garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物) furniture(扫家具) place(放置/播种:name=物品名,x/y=目标格→箱子/树种/蟹笼落地或种下,只放可放置物) break(拆/敲:x,y=目标格,steps=挥击次,radius=方圆→镐子敲石头/翻已耕地,跳过箱子/容器格) maze(迷宫视图r半径,gx/gy目标格→ASCII棋盘#墙.可走P自己G目标) maze_seg(走法链gx,gy目标→拆直走廊列表+拼「左/右上/下走到(x,y)」多段链,AI按段walk_to) maze_walk(走迷宫 waypoints=「x,y x,y…」依次walk_to) pan(淘金/淘盘:本图水下闪光点→岸边走位面水→铜锅淘金收掉落) front/rummage(分别是interact/garbage的别名)。带参 op(at/break 的 x,y、place 的 name、maze_seg 的 gx/gy)→ kw={'参数名':值}。",
-"menu": "菜单/界面域(开→看→点)：read(看菜单) advance(推进剧情/对话) click(option/item/button/xy 点;action=claim领/action=discard丢桶腾格;slot=序号领指定格) key(ok/esc/数字按键) cancel(关弹窗/撤就绪) shop(逛店) sell(卖商店) bin(投出货箱) cook(做饭) craft(合成) recipes(菜谱) craftables(配方) forge(锻造) geode/geodes(砸晶球) customize(捏人) bundle(献祭板) bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读消耗品:书/秘密纸条/日记残页,统一走右键读 name=物品名) levelup_choose(技能升级职业选择 5/10级:不带参读左右选项,side=left/right 或 profession=职业id 定分支;普通升级自会确认OK) number(数量输入:展览会兑换台/转盘押注 NumberSelectionMenu) minigame(赌场小游戏点按钮 action=hit/stand/bet10/…) minigame_state(读牌面/转盘) display_fill(农展台放满 items='钻石,山羊奶酪') display_takeback(收好) journal(开任务日志→menu read 读卡,翻页=click(button=forward/back),领奖励=click(button=rewardBox)) know(查特别订单详情/知识库SPECIAL_ORDERS,如menu know 岛屿食材;2026-09-02 task域退役并入menu)。🚫满包接鱼/领箱:原 claim_swap(替换领取)已退役→**click action=discard 丢桶腾格(回收返金)+action=claim 领取(或用 slot 领指定格;不想要直接 button=ok 关掉)**。🧾关闭菜单一律 click(button=upperRightCloseButton)（ItemGrabMenu/交付容器用 button=ok 确认才关）；订单交付容器(QuestContainerMenu)=点背包对应物品格(见slots的坐标)→放进→点 button=ok 结算；任务日志领钱=点击已完成的有钱任务卡后 click(button=rewardBox)；兑奖机兑换=click(button=mainButton)；特别订单领奖链=日志领钱(上面)→社区板旁领奖箱(60,93)拿兑奖券→刘易斯家兑奖机(mainButton)兑换。",
+"farm": "农活域(🌱必走，别手动挥工具组合，用域 ops)：till(蓄力锄) plant(种,跳过已种) water(浇,自动跳雨+水壶没水先装满) harvest(收) scythe(镰刀收蒜/花/茶) fertilize(化肥) clear(清杂草石树桩) plot(连通域规划) till_plant(锄+种一条龙) tillfield(蓄力锄矩) hoe(布局锄) plantlayout(按布局种) chop(砍树) clearground(清单格) collect(收机器) load(放原料) building(一屋收放) break(拆/敲同scene,镐子敲可破物/翻已耕地) place(放置/播种同scene) pond/pond_add/pond_feed/pond_collect/pond_fish(鱼塘)。⚠️漏格DLL自动补；高级工具蓄力用 tool_area(别用/tool)。只在 Farm/温室/姜岛。带参 op(plant 的 seed_name、till/clear 的 x/y/rows、fertilize 的 fertilizer_name、place 的 name、building 的 location、collect 的 machine_type、pond_add 的 item)→ kw={'参数名':值}。🐄动物(2026-09-02 care域并入farm): animals(摸+收) 喂水/碗(宠物水) milk(挤奶剪毛) buy(买动物,豁免建议) doors(关门) hay(干草) pet(猫狗) petwalk(拟人摸) 畜舍/这间(这间屋动物) statue(祈福)——⚠️farm water=浇地,动物水用 喂水; farm building=机器收放,这屋动物用 畜舍。💡大田洒水器布局(可选,纯自动化建议,可用可不用)：要按洒水器留格/留走道(种2留1,AI能进田浇收)就 plan(方形规划算格)→hoe(布局锄)→plantlayout(按布局种)三件套；只管种直接 till+plant 也成。",
+"mine": "下矿域(⚒️ 矿井/头骨/火山)：go(去挖矿:mode=rush冲层/farm刷矿,start起始层,target目标层,ore矿石,cycles圈数) progress(进度) bomb_status/plan/place/collect/ladder/retreat(单步炸) bomb_mine(自动) bomb_volcano(火山) organize(整理背包)。⚠️无镐/血低硬拦；梯子 /ladder+confirm。⚠️bomb_mine 没炸弹+host在同矿井→自动转【内部】协同(跟随host+帮忙敲矿/打怪)不撤退出矿(bomb_escort 不对外暴露、AI 不主动启用)；bomb_retreat 结束协同+停脚本+脱离矿井回门口。⚠️接「深处的危险」重置电梯→起始层动态从1起(内置脚本自动读，不暴露工具)；刷矿目标层不可直达会上报，需先冲层带回或改浅层。💡出发前占位物(恒2026-08-23)：提前放1个可堆叠物(铱矿/铱锭/五彩碎片)在包，满包时同种战利品自动堆叠吸附、少触发满包停；别拿银河之魂这类带死亡会丢的稀有物当占位。",
+"cabin": "小屋引导域(🏠 FarmHouse/Cabin/岛屋；不传=扫屋)：enum(扫**本屋**查待收) collect(收机器) statue(雕像) furniture(扫家具) interact(点家具,tile_x/tile_y) pickup(拿起家具,tile_x/tile_y) cook(做饭,recipe_name) sleep(睡觉,who=谁床：不传/房主名=睡房主床一起睡,传自己名=睡自己床)。带参 op→ kw={'参数名':值}。",
+"social": "社交域：chat(搭话,name=NPC名) gift(送礼,npc_name/item_name) give(送玩家物品,player_name/item_name) send(发消息,message) emote(表情,name) friendship(查好感,npc_name) movie(影院,npc)。带参 op→ kw={'参数名':值}。",
+"scene": "场景交互域(点东西/工具/转身/捡)：at(tile_x,tile_y)(点指定格/柜台) interact(点面前) use(挥工具) face(转向0上1右2下3左) select(拿手上) pickup(拿起家具) pickup_scene(捡当前场景物) berry(摇浆果) spot(挖蚯蚓点) moss(绿雨搜苔藓) rock(室外镐击:敲当前图可破物,采石场/挖掘场/蚌矿场跳普通石,dig/dry,battle-free) garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物) furniture(扫家具) place(放置/播种:name=物品名,x/y=目标格→箱子/树种/蟹笼落地或种下,只放可放置物) break(拆/敲:x,y=目标格,steps=挥击次,radius=方圆→镐子敲石头/翻已耕地,跳过箱子/容器格) maze(迷宫视图r半径,gx/gy目标格→ASCII棋盘#墙.可走P自己G目标) maze_seg(走法链gx,gy目标→拆直走廊列表+拼「左/右上/下走到(x,y)」多段链,AI按段walk_to) maze_walk(走迷宫 waypoints=「x,y x,y…」依次walk_to) pan(淘金/淘盘:本图水下闪光点→岸边走位面水→铜锅淘金收掉落) front/rummage(分别是interact/garbage的别名)。带参 op(at 的 tile_x/tile_y、break 的 x/y、place 的 name、maze_seg 的 gx/gy)→ kw={'参数名':值}。",
+"menu": "菜单/界面域(开→看→点)：read(看菜单) advance(推进剧情/对话) click(option/item/button/xy 点;action=claim领/action=discard丢桶腾格;slot=序号领指定格) key(ok/esc/数字按键) cancel(关弹窗/撤就绪) shop(逛店) sell(卖商店) bin(投出货箱) craft(合成) recipes(菜谱) craftables(配方) forge(锻造) geode/geodes(砸晶球) customize(捏人) bundle(献祭板) bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读消耗品:书/秘密纸条/日记残页,统一走右键读 name=物品名) levelup_choose(技能升级职业选择 5/10级:不带参读左右选项,side=left/right 或 profession=职业id 定分支;普通升级自会确认OK) number(数量输入:展览会兑换台/转盘押注 NumberSelectionMenu) minigame(赌场小游戏点按钮 action=hit/stand/bet10/…) minigame_state(读牌面/转盘) display_fill(农展台放满 items='钻石,山羊奶酪') display_takeback(收好) journal(开任务日志→menu read 读卡,翻页=click(button=forward/back),领奖励=click(button=rewardBox)) know(查特别订单详情/知识库SPECIAL_ORDERS,如menu know 岛屿食材;2026-09-02 task域退役并入menu)。🚫满包接鱼/领箱:原 claim_swap(替换领取)已退役→**click action=discard 丢桶腾格(回收返金)+action=claim 领取(或用 slot 领指定格;不想要直接 button=ok 关掉)**。🧾关闭菜单一律 click(button=upperRightCloseButton)（ItemGrabMenu/交付容器用 button=ok 确认才关）；订单交付容器(QuestContainerMenu)=点背包对应物品格(见slots的坐标)→放进→点 button=ok 结算；任务日志领钱=点击已完成的有钱任务卡后 click(button=rewardBox)；兑奖机兑换=click(button=mainButton)；特别订单领奖链=日志领钱(上面)→社区板旁领奖箱(60,93)拿兑奖券→刘易斯家兑奖机(mainButton)兑换。",
 "storage": "箱子域：view(看箱,box=N看单箱全清单) store(存:what/items限定存哪些,名可带xN数量只存那N份,留空=归位只存已有同类堆,target指定箱/all=True全存腾空间) take(取:x,y+name单箱 或 items批量) find(模糊查哪箱有某物) default(设/清默认箱 clear=清) tag(改名,可带color改色)。🤖存取统一走位：store/take都会先走到相关箱旁(批量只走到第一个),不区分拟人/原子,别靠编号逐箱翻。⭐每个箱子前自动带【类目标签】(内容过半归类):矿/古物/鱼/种子/作物/农产/建材/料理/装备——AI按标签定位箱,找东西用find。⚠️改色别染纯#000000(=默认木纹,识别成未染色);要黑箱用暗灰#303030。",
-"daily": "过日子域：sleep(睡觉) settle(确认过夜结算) eat(吃食物回血体力) wear(穿/脱衣物) lie_bed(躺床不过夜) heartbeat(心跳间隔) pause(后台不暂停) peek(看恒干嘛) whiteboard/wb_read/wb_pin/wb_clear(白板记忆) appearance(捏脸)。",
+"daily": "过日子域：sleep(睡觉) eat(吃食物回血体力,name/item_name) wear(穿/脱衣物,name/slot/hand) lie_bed(躺床不过夜) settle(确认过夜结算) heartbeat(心跳间隔,minutes) pause(后台不暂停,out_of_focus) peek(看恒干嘛) whiteboard(写白板,content)。带参 op→ kw={'参数名':值}。📌sleep/lie_bed 的 who：不传或传房主名=睡房主床(一起睡+🌹彩蛋)；传自己名字=睡自己床。lie_bed 只躺不睡，想离开随时 walk_to 走离床格即可。",
 "map": "导航域(🗺️跨图唯一入口)：lookup(查地点功能+出口) query(功能反查) go(走到目标/多段寻路+交通) walk(走到POI) movetile(同图精确走位) npc(找NPC) warp_safe(紧急逃脱)。⚠️出口走出口前一格；交通图腾柱>矿车>走路。⚠️参数全放kw对象(别拼进ops串)：go kw={destination:地点名/POI} walk kw={poi_name:POI} movetile kw={x:int,y:int}。",
 "festival": "节日域(🎪)：today(今天节日) next(下一个) go(去) info(实况) interact(互动) answer(应答) shop(节日商店) eggs(找蛋) egg_note(纸条) egg_run(捡蛋) dance(跳舞邀请) strength(力量测试 delay=毫秒) ice_fish(冰雪节冰钓自动化) help(玩法) prep(备战) poi(限定点) maze(迷宫坐标奇偶年) maze_walk(走迷宫 waypoints=「x,y x,y…」依次walk_to)。",
 "fish": "钓鱼域(🎣 2026-08-22修复)：go(去钓 location=) info(查某地鱼) spots(钓点) bobber(浮漂样式) rod(鱼竿:看/上饵钓具 item=名) crab(蟹笼总览) crab_water(找水) crab_place(放笼) crab_bait(放饵) crab_collect(收笼) crab_diag(诊断笼/定位挂饵) crab_retract(回收笼/清搁浅 location=可选)。⚠️鱼塘在 farm 域不在 fish。带参 op(go 的 location、rod 的 item、crab 的 count)→ kw={'参数名':值}。",
@@ -14198,14 +14264,7 @@ def _script_async(show: bool = False, add: str = "", remove: str = "", enable: s
 
 @mcp.tool()
 def script(ops: str = "", kw: dict | None = None) -> str:
-    """🚀 脚本/异步域。ops:
-    status(查进度,job_id空=看全部+最近) stop(停任务,job_id空=停最近在跑) async(自动异步白名单 show/add/remove/enable)
-    run(短任务同步 name=脚本名 args=参数) start(主动后台兜底 name,args→job_id)。
-    ⚠️长任务(bomb_mine/炸矿/钓鱼/挖矿)便利工具**自动后台**，别手动 start(白名单自动异步即可)；跑脚本时别用走位/挥工具,轻操作(聊天/看状态/开背包)没关系。①一次只跑一个脚本；②短任务用 run 别 start。
-    Args:
-        ops: 动作（run/start/status/stop/async，空格可连跑多个）
-        kw: 参数——run/start 的 {name,args}；async 的 {show/add/remove/enable}；status/stop 的 {job_id}。⚠️参数必须放 kw，别拼进 ops。
-    """
+    """🚀 脚本/异步域（被动异步优先）。status 查进度 / run 短任务 / start 主动后台 / stop 停 / async 白名单。全 ops+参数 → help(scripts)。⚠️长任务自动后台别手动 start；参数放 kw 别拼 ops。"""
     dispatch = {
         "run": _script_run, "跑": _script_run,
         "start": _script_start, "后台": _script_start, "开": _script_start,
@@ -14868,9 +14927,7 @@ _PROF_NAMES = {
 
 @mcp.tool()
 def profile() -> str:
-    """🧬 查看自己(当前角色)的技能等级 + 职业分支(professions)。
-    用来看:是不是 Luremaster(蟹笼免饵→放/挂饵是空操作)、各技能等级、学了哪些分支。
-    ops: profile(查看)。"""
+    """🧬 看当前角色技能等级 + 职业分支(professions)——比如是不是 Luremaster(蟹笼免饵)。"""
     try:
         r = api._get("/profile")
         if not r.get("ok"):
