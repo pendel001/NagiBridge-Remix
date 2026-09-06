@@ -1864,14 +1864,14 @@ _PORT_SCRIPTS = {"water_crops", "chop_trees", "clear_area", "mine_run", "fish_ru
                  "rock_run", "fruit_round"}   # 🏠 2026-08-31：fruit_round 收放改走严格交互，注入 --port AI
                  # 🍓🪱 2026-08-17：摇树莓/挖斑点脚本注入 AI 端口（防挪恒角色）；🌿 2026-08-21 moss_run；🗑️ 2026-08-24 trash_run；🎣 2026-08-28 fair_fishing(秋收钓鱼兜底)；⛏️ 2026-08-29 rock_run(室外镐击)
 
-# 🚀 自动异步白名单（2026-08-16 恒拍板）：便利工具跑这些长脚本 → 自动后台异步，AI 不用手动 script_start。
+# 🚀 自动异步白名单（2026-08-16 恒拍板）：便利工具跑这些长脚本 → 自动后台异步，AI 不用手动后台。
 # 长任务（钓鱼/挖矿/炸矿/收放机器/浇水可能很久）被动异步；短任务（清地/砍树/摸动物/捡采集等）保持同步。
 _ASYNC_SCRIPTS = {"mine_run", "fish_run", "bomb_mine", "bomb_escort", "bomb_volcano",
-                  "building_round", "fruit_round", "machine_loader", "water_crops"}
+                  "fruit_round", "machine_loader", "water_crops"}
 
 
 def async_config(show: bool = False, add: str = "", remove: str = "", enable: str = "") -> str:
-    """🚀 异步配置（长脚本自动后台=被动异步，AI 不用手动 script start）。show 看白名单+开关 / add·remove 改白名单(name,不带.py) / enable on|off(同 settings async_tools)。细节→help(scripts)。
+    """🚀 异步配置（长脚本自动后台=被动异步，AI 不用手动后台）。show 看白名单+开关 / add·remove 改白名单(name,不带.py) / enable on|off(同 settings async_tools)。细节→help(scripts)。
 
     """
     global _ASYNC_SCRIPTS
@@ -1902,7 +1902,7 @@ def async_config(show: bool = False, add: str = "", remove: str = "", enable: st
     lines = ["🚀 长脚本自动异步:"]
     lines.append(f"  总开关: {'开' if _bg_cfg.get('auto_async', True) else '关'}（enable=on/off 切换；异步总开关 async on/off）")
     lines.append(f"  白名单({len(_ASYNC_SCRIPTS)}): {', '.join(sorted(_ASYNC_SCRIPTS))}")
-    lines.append("  白名单脚本便利工具（go_fishing/mine_run/bomb_mine 等）自动后台跑，AI 不用手动 script_start")
+    lines.append("  白名单脚本便利工具（go_fishing/mine_run/bomb_mine 等）自动后台跑，AI 不用手动后台")
     lines.append("  add=脚本名 加入 / remove=脚本名 移出")
     return _with_state("\n".join(lines))
 
@@ -1918,7 +1918,7 @@ def _run_script(name: str, args_list: Optional[list] = None, timeout: int = 60,
     script_path = os.path.join(SCRIPT_DIR, f"{name}.py")
     if not os.path.exists(script_path):
         return f"❌ 脚本不存在: {name}.py"
-    # 🚀 长脚本自动异步（2026-08-16 恒拍板：被动异步，AI 不用手动 script_start）
+    # 🚀 长脚本自动异步（2026-08-16 恒拍板：被动异步，AI 不用手动后台）
     if async_ok and name in _ASYNC_SCRIPTS and _bg_cfg.get("enabled", True):
         try:
             job, err = _bg_start(name, list(args_list) if args_list else [])
@@ -7402,18 +7402,18 @@ def settings(setting: str = "", value: str = "", ops: str = "", kw: dict | None 
         if v in ("on", "1", "true", "yes", "开"):
             _bg_cfg["enabled"] = True
             _settings_save()
-            return _with_state("🚀 异步脚本已开启（script start 后台跑，AI 可并行聊天/整理背包）")
+            return _with_state("🚀 异步脚本已开启（长脚本便利工具自动后台跑，AI 可并行聊天/整理背包）")
         if v in ("off", "0", "false", "no", "关"):
             _bg_cfg["enabled"] = False
             _settings_save()
-            return _with_state("🛑 异步脚本已关闭（script start 退回同步等脚本跑完）")
+            return _with_state("🛑 异步脚本已关闭（便利工具退回同步等脚本跑完）")
         return _with_state(f"❌ async 要 on/off，收到「{value}」")
     elif setting in ("async_tools", "auto_async", "自动异步"):
         v = value.strip().lower()
         if v in ("on", "1", "true", "yes", "开"):
             _bg_cfg["auto_async"] = True
             _settings_save()
-            return _with_state("🚀 长脚本自动异步已开启（钓鱼/挖矿/炸矿等便利工具自动后台跑，AI 不用手动 script start）")
+            return _with_state("🚀 长脚本自动异步已开启（钓鱼/挖矿/炸矿等便利工具自动后台跑，AI 不用手动后台）")
         if v in ("off", "0", "false", "no", "关"):
             _bg_cfg["auto_async"] = False
             _settings_save()
@@ -7438,7 +7438,7 @@ def settings(setting: str = "", value: str = "", ops: str = "", kw: dict | None 
             _settings_save()
             return _with_state("🎮 自主模式（脚本由 AI 手动调，不自动连跑）")
         return _with_state("🚫 计划模式已退役（2026-08-17 恒）——AI 连续跑脚本的自动化暂不实现；当前只有自主模式。"
-                           "需要连跑时请手动 script(ops=\"start\") / 逐任务调脚本。")
+                           "需要连跑时用对应便利工具(白名单自动后台)/逐任务调脚本；短任务走对应域 op。")
     elif setting == "auto_sleep":
         v = value.strip().lower()
         if v in ("on", "1", "true", "yes", "开"):
@@ -11647,7 +11647,7 @@ _DOMAIN_GUIDES = {
 "fish": "钓鱼域(🎣 2026-08-22修复)：go(去钓 location=) info(查某地鱼) spots(钓点) bobber(浮漂样式) rod(鱼竿:看/上饵钓具 item=名) crab(蟹笼总览) crab_water(找水) crab_place(放笼) crab_bait(放饵) crab_collect(收笼) crab_diag(诊断笼/定位挂饵) crab_retract(回收笼/清搁浅 location=可选)。⚠️鱼塘在 farm 域不在 fish。带参 op(go 的 location、rod 的 item、crab 的 count)→ kw={'参数名':值}。",
 "settings": "系统/设置域(⚙️ 合并捏脸进来)：status(看所有设置+退役工具) retire(退役工具) reactivate(召回) appearance(捏脸) customize(捏人) **confirm_look(核对捏人形象,ok前必做)** color(颜色条) hair/shirt/pants/hat/colorpreset(外观参考)。⚠️捏脸=创建定型:ok后set_appearance/捏人自动退役(不可逆);旧配置 settings(setting='async', value='on') 仍可。",
 "session": "会话域(🧠 上下文缓冲，多数情况不用)：status(看缓冲条数/设置) set(改设置 setting,value) export(手动导出记忆)。",
-"scripts": "脚本/异步域(🚀被动异步优先)：run(短任务同步 name=脚本名,args=参数) start(主动后台兜底 name,args→job_id) stop(停任务,job_id空=停最近在跑) async(自动异步白名单 show/add/remove/enable=on|off)。进度自动播报(运行中+收工含总时长)，无需查。常用脚本: farm_row(耕) water_crops(浇) harvest(收) chop_trees(砍) clear_area(清杂) pet_animals(摸动物) shop_buy(购物)。⚠️长任务(bomb_mine/炸矿/钓鱼)便利工具**自动后台**，别手动start(白名单async enable=on即可)；跑脚本时别用走动/挥工具同步工具，但聊天/看状态/开背包/整理背包没问题；一次只跑一个脚本。⚠️参数放kw别拼ops(如 script(ops=\"start\", kw={name,args})。",
+"scripts": "脚本/异步域(🚀被动异步优先)：continue(继续阻塞:确认脚本在跑/续跑,不新建不碰层数) stop(停任务,job_id空=停最近在跑) async(自动异步白名单 show/add/remove/enable=on|off)。进度自动播报(运行中+收工含总时长)，无需查。⚠️跑脚本用对应便利工具域 op——短任务(耕/浇/收/砍/清/摸动物)走 farm/scene 域 op(同步)、长任务(钓鱼/挖矿/炸矿/机器收放)走 mine/fish/farm 域便利工具(白名单自动后台)；start/run 已砍(改 continue 确认继续阻塞)；跑脚本时别用走动/挥工具同步工具，但聊天/看状态/开背包/整理背包没问题；一次只跑一个脚本。⚠️参数放kw别拼ops(如 script(ops=\"continue\", kw={job_id})。",
 }
 
 
@@ -14148,7 +14148,7 @@ def list_recipes() -> str:
 # ═══════════════════════════════════════════
 
 def run_script(name: str, args: str = "") -> str:
-    """🤖 运行 scripts/ 下的自动化脚本（短任务同步；长任务→script start 后台，别同步等）。常用：farm_row(耕种) / water_crops(浇) / harvest(收) / chop_trees(砍树) / clear_area(清杂) / pet_animals(摸动物) / shop_buy(购物)。全清单→help(scripts)。
+    """🤖 运行 scripts/ 下的脚本 —— ⚠️ 已退役（2026-09-06 恒：不再给 AI 直达，保留作内部兜底）。跑脚本用对应便利工具域 op：长任务(钓鱼/挖矿/炸矿/机器收放)走白名单自动后台、短任务(耕/浇/收/砍/清/摸动物)走 farm/scene 域 op。全清单→help(scripts)。
 
     Args:
         name: 脚本名（不含 .py）
@@ -14370,7 +14370,7 @@ def script_stop(job_id: str = "") -> str:
     终止进程（terminate → 等 3s → 不行就 kill）。不传 job_id 停最近一个在跑的。
 
     Args:
-        job_id: script start 返回的任务ID
+        job_id: 便利工具/后台任务返回的任务ID
     """
     with _bg_lock:
         if not _bg_jobs:
@@ -14403,7 +14403,7 @@ def script_stop(job_id: str = "") -> str:
 #  📜 脚本/异步域（2026-09-02 恒：run_script/script_start/status/stop/async_config 五合一并入此域；09-05 删 status——收工自动播报带总时长）
 #   核心=【被动异步】：便利工具白名单自动后台 + async 开关；AI 用 stop 管理、async 调白名单，不看 status。
 #   start(主动后台)是兜底——长脚本优先交给便利工具(白名单自动后台)，AI 别主动手动后台。
-#   坑：ops 按空格拆成多个 op，脚本名/任务id/参数须放 kw（如 script(ops="start", kw={name,args})）。
+#   坑：ops 按空格拆成多个 op，脚本名/任务id/参数须放 kw（如 script(ops="continue", kw={job_id})）。
 # ═══════════════════════════════════════════
 def _script_run(name: str = "", args: str = ""):
     return run_script(name, args)
@@ -14421,12 +14421,32 @@ def _script_async(show: bool = False, add: str = "", remove: str = "", enable: s
     return async_config(show, add, remove, enable)
 
 
+def _script_continue(job_id: str = ""):
+    """▶️ 确认脚本继续阻塞跑下去（不新建、不碰层数——替代旧 start 主动后台，恒 2026-09-06）。
+    脚本在跑：返回确认+阻塞状态；无脚本在跑：提示走便利工具(白名单自动后台)/短任务用对应域 op。"""
+    with _bg_lock:
+        running = [j for j in _bg_jobs.values() if j.running]
+        if not running:
+            msg = "📭 没有在跑的脚本可继续。想跑脚本用对应便利工具（白名单自动后台）；短任务用对应域 op。"
+        elif job_id:
+            job = _bg_jobs.get(job_id)
+            if not (job and job.running):
+                msg = f"❌ 任务 {job_id} 没在跑。"
+            else:
+                elapsed = int(time.time() - job.start_ts)
+                msg = f"▶️ 已确认继续：脚本「{job.name}」阻塞中（{elapsed}s，job {job.job_id}）。"
+        else:
+            job = running[0]
+            elapsed = int(time.time() - job.start_ts)
+            msg = f"▶️ 已确认继续：脚本「{job.name}」阻塞中（{elapsed}s，job {job.job_id}）。"
+    return _with_state(msg)   # ⚠️ 退出 _bg_lock 后再 _with_state：_with_state→_bg_activity_line 也拿 _bg_lock，不可重入会死锁
+
+
 @mcp.tool()
 def script(ops: str = "", kw: dict | None = None) -> str:
-    """🚀 脚本/异步域（被动异步优先）。run 短任务 / start 主动后台 / stop 停 / async 白名单。进度自动播报(收工带总时长)，无需查。全 ops+参数 → help(scripts)。⚠️长任务自动后台别手动 start；参数放 kw 别拼 ops。"""
+    """🚀 脚本/异步域（被动异步优先）。continue 继续阻塞 / stop 停 / async 白名单。进度自动播报(收工带总时长)，无需查。全 ops+参数 → help(scripts)。⚠️跑脚本用对应便利工具域 op（farm/scene/mine/fish）——长任务白名单自动后台、短任务同步；别手动后台；参数放 kw 别拼 ops。"""
     dispatch = {
-        "run": _script_run, "跑": _script_run,
-        "start": _script_start, "后台": _script_start, "开": _script_start,
+        "continue": _script_continue, "继续": _script_continue,
         "stop": _script_stop, "停": _script_stop,
         "async": _script_async, "异步": _script_async, "自动": _script_async, "白名单": _script_async,
     }
@@ -15147,7 +15167,7 @@ def profile() -> str:
 #  启动入口
 # ═══════════════════════════════════════════
 
-# 🔒 域工具模式 keep-set（2026-08-22 恒：默认开启，省 token + 测域工具；`--full`/NAGI_FULL_TOOLS=1 回退全量）
+# 🔒 域工具模式 keep-set（2026-08-22 恒：默认开启，省 token + 测域工具；`--full` 已退役 2026-09-06）
 #   只暴露 15 域入口 + 无域等价物的必需独立工具；其余独立工具隐藏（域内部仍调它们，只是不给 AI 直调）。
 #   2026-08-22：设置域=常规设置+捏脸(一次性)合并——settings_status/retire/reactivate/color_pick/list_*_ref
 #     并入 settings 域 ops，不再单独注册；go_sleep/walk_to/pet_* 等已有域 op 的便捷项一并隐藏（走域 op）。
@@ -15175,10 +15195,9 @@ if __name__ == "__main__":
 
     use_stdio = "--stdio" in sys.argv
 
-    # 🔒 域工具模式（2026-08-22 恒：默认开启；`--full`/NAGI_FULL_TOOLS=1 回退全量工具）
+    # 🔒 域工具模式（2026-08-22 恒：domain_only 恒开；`--full`/NAGI_FULL_TOOLS 已退役 2026-09-06）
     #   只暴露 _KEEP_TOOLS 白名单，隐藏其余独立工具（域内部仍调它们，只是不给 AI 直调）。
-    _full_requested = "--full" in sys.argv or os.environ.get("NAGI_FULL_TOOLS") == "1"
-    if not _full_requested:
+    if True:
         try:
             _before = len(mcp._tool_manager.list_tools())
             _hidden = 0
@@ -15189,7 +15208,7 @@ if __name__ == "__main__":
                         _hidden += 1
                     except Exception:
                         pass
-            print(f"  🔒 域工具模式（默认）：隐藏 {_hidden} 个，只留 {len(mcp._tool_manager.list_tools())} 个（{len(_KEEP_TOOLS)} 白名单）；--full 回退全量", file=sys.stderr)
+            print(f"  🔒 域工具模式（恒开）：隐藏 {_hidden} 个，只留 {len(mcp._tool_manager.list_tools())} 个（{len(_KEEP_TOOLS)} 白名单）", file=sys.stderr)
         except Exception as e:
             print(f"  ⚠️ 域工具过滤失败（继续全量）: {e}", file=sys.stderr)
 

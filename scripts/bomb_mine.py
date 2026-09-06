@@ -664,14 +664,19 @@ class BombMineBot(BombMiner):
                         return False
                     level = 121
         else:
-            level = start_level
-            # 显式 start（--no-resume）：无论当前在哪都 warp 到目标层——
-            # 之前只在"不在矿里"才 warp，AI 已在矿里会漏掉跨层（实测 --start 40 停在了 3 层）
-            if extract_mine_level(self.my_location()) != level:
+            # 城镇矿（<121）：AI 已在矿内某层 → 原地续当前层（跟头骨一致。恒 2026-09-06 实测：
+            #   便利工具触发被"读电梯进度层41已是深层"强制 warp 41 秒撤，根因——AI 明明在浅层却
+            #   被拉去电梯层，warp 失败即收工。以当前所在层为准，别跟电梯进度层。）
+            cur = extract_mine_level(self.my_location())
+            if cur is not None and cur <= 120:
+                level = cur   # 已在城镇矿内 → 原地续当前层，不 warp（跟头骨一样）
+            else:
+                # 不在城镇矿内 → warp 到 start（默认电梯层/进度层；或显式 --start N 指定层）
+                level = start_level
                 if not self.safe_warp(f"UndergroundMine{level}", x=5, y=5):
                     log("  ❌ 进不了矿")
                     return False
-            level = extract_mine_level(self.my_location()) or level
+                level = extract_mine_level(self.my_location()) or level
         self.mine_level = level
 
         retreat_reason = None
