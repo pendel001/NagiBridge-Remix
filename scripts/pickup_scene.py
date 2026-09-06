@@ -86,6 +86,10 @@ BLACKLIST |= {"Weeds", "Stone", "Rock", "Glass Shards", "Rotten Plant",
               "Coop", "Barn", "Shed", "Slime Hutch", "Fish Pond", "Milk Pail",
               "Shears", "Egg Basket", "Duck Egg Basket", "Mini-Fridge",
               "Ostrich Incubator", "Hay", "Automatic Feeders"}
+# 🦪 可捡但 isPassable()=false 的地面采集物（海边/岛上海胆/珊瑚/蛤蜊等，同松露会因不可走被 passable 甩掉）——按名先认。
+#    2026-09-06 恒：海胆/珊瑚不捡。objId 兜底：松露 430、(O)430。
+_NONPASS_FORAGE = {"Truffle", "Sea Urchin", "Coral", "Nautilus Shell", "Rainbow Shell",
+                   "海胆", "珊瑚", "松露", "鹦鹉螺壳", "彩虹贝壳"}
 
 
 def main():
@@ -115,6 +119,10 @@ def main():
         #    捡取仍走 pick_up_object：目标格非可走 → walk_to 会落相邻可走格 → face+interact 捡到手。
         if obj == "Truffle" or oid in ("430", "(O)430"):
             targets.append((t["x"], t["y"], "松露(Truffle)"))
+            continue
+        # 🦪 2026-09-06 海胆/珊瑚等海边采集物也是 isPassable()=false（同松露）会被 passable 甩掉——按名先认
+        if obj in _NONPASS_FORAGE or obj in ("海胆", "珊瑚"):
+            targets.append((t["x"], t["y"], obj))
             continue
         if not t.get("passable", True):
             continue

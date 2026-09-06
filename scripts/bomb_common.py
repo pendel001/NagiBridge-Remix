@@ -379,6 +379,19 @@ class WeaponMixin:
         self.select(self.bomb_type)
         return True
 
+    def retaliate_if_hit(self):
+        """受击及时回击：HP 比上次低 → 回击两下（补刀）。不依赖扫描循环（动作后立即调用，减少回击延迟）。
+        锤子第一下能重砸就重砸（受击反击也吃重砸），第二下在冷却里自动平砍。2026-09-06 复用给 MineBot。"""
+        try:
+            cur_hp = self.state().get("player", {}).get("health", 0)
+        except Exception:
+            return
+        if cur_hp < getattr(self, "_last_hp", 9999):
+            log("  🛡️ 受击！立刻回击两下")
+            for _ in range(2):
+                self.swing(special=self.weapon_class == "hammer")
+        self._last_hp = cur_hp
+
 
 class BombMiner(WeaponMixin):
     """炸弹矿工：协同/自动/手动三模式共用的一套底层动作"""
@@ -831,19 +844,6 @@ class BombMiner(WeaponMixin):
         except Exception:
             pass
         return True
-
-    def retaliate_if_hit(self):
-        """受击及时回击：HP 比上次低 → 回击两下。不依赖 attempt 循环（动作后立即调用，减少回击延迟）。"""
-        try:
-            cur_hp = self.state().get("player", {}).get("health", 0)
-        except Exception:
-            return
-        if cur_hp < getattr(self, "_last_hp", 9999):
-            log("  🛡️ 受击！立刻回击两下")
-            # 锤子第一下能重砸就重砸（受击反击也吃重砸），第二下在冷却里自动平砍
-            for _ in range(2):
-                self.swing(special=self.weapon_class == "hammer")
-        self._last_hp = cur_hp
 
     # ═══════════ 矿洞扫描 ═══════════
 

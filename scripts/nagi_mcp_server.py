@@ -1294,6 +1294,9 @@ _FORAGE_BLACKLIST = {
     "Slime Hutch", "Egg Basket", "Duck Egg Basket",
     "Ostrich Incubator", "Hay", "Automatic Feeders",
 }
+# 🦪 可捡但 isPassable()=false 的地面采集物（海边/岛上海胆/珊瑚/蛤蜊等，同松露会因不可走被 passable 甩掉）——按名先认。
+_NONPASS_FORAGE = {"Truffle", "Sea Urchin", "Coral", "Nautilus Shell", "Rainbow Shell",
+                   "海胆", "珊瑚", "松露", "鹦鹉螺壳", "彩虹贝壳"}
 _last_forage_loc = ""   # 上一次采集扫描的地图名（切图才扫一次，恒批注 2026-08-13）
 _FORAGE_INDOOR_KEYWORDS = ("House", "Mine", "Underground", "Cave", "Shed",
                            "Barn", "Coop", "Saloon", "Shop", "BathHouse")
@@ -1388,6 +1391,10 @@ def _forage_summary(is_green_rain: bool = None) -> str:
             #    → passable 判定会甩掉它；松露=直接可捡的第一等采集物，按 objId 认、不依赖 passable。
             if t.get("object") == "Truffle" or t.get("objId") in ("430", "(O)430"):
                 truffle_count += 1
+                continue
+            # 🦪 2026-09-06 海胆/珊瑚等 isPassable()=false 的海边采集物按名先认（不然被 passable 甩掉不报）
+            if t.get("object") in _NONPASS_FORAGE:
+                counts[t.get("object")] = counts.get(t.get("object"), 0) + 1
                 continue
             if not t.get("passable", True):
                 continue

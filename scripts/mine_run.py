@@ -86,7 +86,7 @@ _NON_FOOD = {"Keg", "Preserves Jar", "Cheese Press", "Loom", "Spinning Wheel",
              "Furnace", "Charcoal Kiln", "Tapper", "Recycling Machine",
              "Worm Bin", "Slime Egg", "Slime Incubator", "Crab Pot"}
 
-# 吃东西阈值（HP<60% 吃食物）；撤退阈值用 --hp-threshold（默认 30）——两者分开，别重合
+# 吃东西阈值（HP<60% 吃食物——**吃食物看血不看体力**，恒 2026-09-06 拍板）；撤退阈值用 --hp-threshold（默认 30）——两者分开，别重合
 EAT_HP = 60
 
 # 矿节点 itemId → 矿石名（SDV 1.6 矿节点 Name 报 'Stone'，靠 objId 区分）
@@ -216,6 +216,7 @@ class MineBot(WeaponMixin):
         self.weapon_speed = 0        # 武器速度 stat——挥击间隔自适应用
         self.weapon_override = None  # 可选：指定用某把武器
         self._last_special = 0.0     # 锤子重砸冷却跟踪
+        self._last_hp = 9999         # 受击回击：上次血量（retaliate_if_hit 用）
         self.bomb_type = "Pickaxe"   # WeaponMixin.swing 挥完切回的工具（下矿用镐子挖）
         self.mine_level = 0          # 当前矿井层数
         self._rock_count = 0         # 当前层敲了多少块
@@ -1338,6 +1339,9 @@ class MineBot(WeaponMixin):
                     else:
                         retreat_reason = "状态不足"
                         break
+
+                # ⚔️ 受击立即回击两下（每轮都查 HP-drop，不依赖扫描间隔——补刀 + 低延迟，2026-09-06）
+                self.retaliate_if_hit()
 
                 # 怪物检查（每 MONSTER_SCAN_INTERVAL 次检查）
                 monster_scan_counter += 1
