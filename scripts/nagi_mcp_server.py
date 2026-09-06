@@ -14256,6 +14256,9 @@ def script_start(name: str, args: str = "") -> str:
         f"  收工会自动播报（含总时长）   停止: script(ops=\"stop\", kw={{\"job_id\":\"{job.job_id}\"}})")
 
 
+_MINE_SCRIPTS = {"mine_run", "bomb_mine", "bomb_escort", "bomb_volcano"}
+
+
 def _mine_exit_from_loc(loc_name: str):
     """判断 farmhand 当前是否站在矿井，是则回对应出口（复用 bomb_common.retreat_to_entrance 约定）。
     返回 (location, x, y) 或 None（不在矿井→不动）。让"主动停矿"不把 farmhand 留在矿井里。"""
@@ -14292,9 +14295,10 @@ def script_stop(job_id: str = "") -> str:
     if not job.running:
         return _with_state(f"任务 {job.job_id} 已结束（返回码 {job.returncode}），无需停止。")
     is_fish = job.name in _FISHING_SCRIPTS
+    is_mine = job.name in _MINE_SCRIPTS
     _bg_kill(job)
-    # ⛏️ 2026-09-06 恒：主动停矿类脚本不能把 farmhand 留在矿井——杀完立刻看它在哪，还在矿井就 warp 回对应出口。
-    mine_exit = _mine_exit_from_loc(api.state().get("location", {}).get("name", ""))
+    # ⛏️ 2026-09-06 恒：停的是矿类脚本→杀完立刻看 farmhand 在哪，还在矿井就 warp 回对应出口（不留在矿井）。
+    mine_exit = _mine_exit_from_loc(api.state().get("location", {}).get("name", "")) if is_mine else None
     if mine_exit:
         try:
             api._post("/warp", {"location": mine_exit[0], "x": mine_exit[1], "y": mine_exit[2]})
