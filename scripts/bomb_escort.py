@@ -176,7 +176,7 @@ class EscortBot(BombMiner):
         - 排除已炸锚点 _bombed_anchors（防重复炸上一颗炸弹影响区）
         - 排序 (高价值, 覆盖数, 价值分)
         返回 (ax, ay, covered, has_high) 或 None。"""
-        bomb_radius = BOMB_RADIUS.get(self.bomb_type, 3)
+        bomb_radius = self.blast_reach()
         eff_radius = bomb_radius + 1
         hx, hy = around
         near = [(x, y, n) for x, y, n in rocks
@@ -232,7 +232,7 @@ class EscortBot(BombMiner):
         if ok:
             self._last_bomb = now
             # 从共享 rocks 移除爆炸影响区（防同轮重复推荐已炸区域）
-            eff = BOMB_RADIUS.get(self.bomb_type, 3) + 1
+            eff = self.blast_reach() + 1
             rocks[:] = [r for r in rocks if abs(r[0] - ax) + abs(r[1] - ay) > eff]
             time.sleep(0.5)
             return True

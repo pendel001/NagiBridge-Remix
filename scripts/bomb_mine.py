@@ -183,8 +183,8 @@ class BombMineBot(BombMiner):
             hp = p.get("health") or 0
             if mhp > 0 and hp * 100 / mhp < self.hp_threshold:
                 return f"❌ 当前血量 {hp}/{mhp}（{hp*100/mhp:.0f}%）低于阈值 {self.hp_threshold}%——先回血/睡觉再来"
-            if self.count_bombs() <= 0:
-                return f"❌ 背包没有 {self.bomb_type}！先去买/拿炸弹再来（可 /give 作弊）"
+            if not self.choose_bomb_type():
+                return f"❌ {self.absent_cause()}"
             if not self.detect_weapon():
                 log("  ⚠️ 没找到武器（炸矿也能切镐子，但危险，建议带剑）")
         except Exception as e:
@@ -614,6 +614,9 @@ class BombMineBot(BombMiner):
 
     def run_rush(self, start_level, target_floor, follow_host=True, max_floors=None):
         tag = "逐层" if max_floors else "整段"
+        # 🧨 2026-09-06 恒：按 黑>超级>樱桃 从背包挑"实际有的"炸弹（有超级/樱桃别空喊没黑弹）；
+        #   全没有则 self.bomb_type=""，内层报"没炸弹"降级。避免"有了不会用"。
+        self.bomb_type = self.choose_bomb_type(self.bomb_type)
         log(f"\n💣 === 炸矿模式({tag}): {start_level} → {target_floor}层 | 炸弹: {self.bomb_type} ===")
         self.no_pause_on_unfocus()   # 后台也能走位，不抢user的焦点
         try:
@@ -628,10 +631,11 @@ class BombMineBot(BombMiner):
     def _run_rush_inner(self, start_level, target_floor, follow_host, max_floors=None):
         if not self.detect_weapon():
             log("  ⚠️ 没找到武器")
-        # 出发前查炸弹——没炸弹直接报错，别飞矿里空手
-        if self.count_bombs() <= 0:
-            log(f"  ❌ 背包没有 {self.bomb_type}！先去买/拿炸弹再来（可 /give 作弊）")
+        # 出发前查炸弹——没炸弹直接报错，别飞矿里空手；有则已按 黑>超级>樱桃 挑好（run_rush 里解析）
+        if not self.bomb_type or self.count_bombs() <= 0:
+            log(f"  ❌ {self.absent_cause()}")
             return False
+        log(f"  🧨 用炸弹: {self.bomb_type}")
         self.select(self.bomb_type)
         time.sleep(0.2)
 

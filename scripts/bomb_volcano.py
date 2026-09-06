@@ -60,8 +60,8 @@ class VolcanoBot(BombMineBot):
             hp = p.get("health") or 0
             if mhp > 0 and hp * 100 / mhp < self.hp_threshold:
                 return f"❌ 当前血量 {hp}/{mhp}（{hp*100/mhp:.0f}%）低于阈值 {self.hp_threshold}%——先回血/睡觉再来"
-            if self.count_bombs() <= 0:
-                log("  ⚠️ 背包没有炸弹 → 切镐子敲石硬跟模式（能帮打，但炸不了矿簇）")
+            if not self.choose_bomb_type():
+                log("  ⚠️ 背包没炸弹 → 切镐子敲石硬跟模式（能帮打，但炸不了矿簇）")
             if not self.detect_weapon():
                 log("  ⚠️ 没找到武器（建议带剑防身）")
         except Exception as e:
@@ -186,10 +186,13 @@ class VolcanoBot(BombMineBot):
             log(f"  ⚔️ 武器: {self.weapon_name} ({self.weapon_class}) wspeed={self.weapon_speed}")
         else:
             log("  ⚠️ 没找到武器，只能用镐子防身")
-        if self.count_bombs() <= 0:
+        # 🧨 2026-09-06 恒：按 黑>超级>樱桃 从背包挑实际有的炸弹（有超级/樱桃别空喊没炸弹）
+        self.bomb_type = self.choose_bomb_type(self.bomb_type)
+        if not self.bomb_type:
             # 没炸弹不拒跑——user设计：炸弹用完切镐子敲石硬跟到出口层（5/10层）
-            log("  ⚠️ 背包没有炸弹 → 切镐子敲石硬跟模式（跟user换层，到出口层才能出）")
+            log("  ⚠️ 背包没炸弹 → 切镐子敲石硬跟模式（跟user换层，到出口层才能出）")
         else:
+            log(f"  🧨 用炸弹: {self.bomb_type}")
             self.select(self.bomb_type)
             time.sleep(0.2)
 
@@ -269,9 +272,14 @@ class VolcanoBot(BombMineBot):
                 time.sleep(0.3)
                 continue
 
-            # 💣 炸弹用完：不撤退！火山只有 5/10 层有出口，硬着头皮贪心敲石跟user到出口层
-            #（user换层照常 warp 跟；user退出火山(在5/10层离开) → AI 自然跟着出）
-            if self.count_bombs() <= 0:
+            # 💣 炸弹状态：当前类型用完→按 黑>超级>樱桃 自动换包里的（避免"有超级/樱桃却硬跟"）；
+            #   真没有才不撤退——火山只有 5/10 层有出口，硬着头皮贪心敲石跟user到出口层
+            #   （user换层照常 warp 跟；user退出火山(在5/10层离开) → AI 自然跟着出）
+            if self.count_bombs() <= 0 or not self.bomb_type:
+                self.bomb_type = self.choose_bomb_type()
+                if self.bomb_type:
+                    log(f"  🧨 换用炸弹: {self.bomb_type}")
+            if not self.bomb_type:
                 # 恒定空闲优先级：踩机关 → 贪心敲矿 → 捡采集物/掉落 → 敲user身边三圈石头（帮开路）
                 if self.step_mechanisms(max_steps=2):
                     time.sleep(0.3)

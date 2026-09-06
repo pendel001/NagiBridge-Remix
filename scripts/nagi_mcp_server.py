@@ -3546,8 +3546,8 @@ def _mine_entry_reminder(loc: str) -> str:
         f"\n📌 第一次到「{name}」入口层，叮咛一次（每天每个矿型仅一次）：\n"
         f"  ① 此处适用tool：{tip}。\n"
         f"  ② 若场景有矮人雕像——先摸雕像拿每日增益（有的场景才有，没有就跳过）。\n"
-        f"  ③ 整理好背包、带尽量少的东西；必带品：食物、镐子、武器；炸矿推荐带约两百个黑炸弹。\n"
-        f"  ④ 怕捡拾不及时，包包可先带目标战利品占堆叠格（如一颗铱矿/铱锭/放射性矿石/放射性锭）——"
+        f"  ③ 整理好背包、带尽量少的东西；必带品：食物、镐子、武器；炸矿带炸弹（黑>超级>樱桃，约两百黑炸弹或等效）。\n"
+        f"  ④ 怕捡拾不及时，包包可先带目标战利品占堆叠格（如一颗铱矿/铱锭/放射性矿石/放射性锭/五彩碎片/钻石）——"
         f"别带银河之魂（太珍贵，死了会丢）；死若丢东西，去马龙领回重要物品（如武器等）。"
     )
 
@@ -6439,23 +6439,23 @@ def bomb_plan(radius: int = 14, min_covered: int = 3, top: int = 3) -> str:
     try:
         if not bot.my_mine_level():
             return _with_state("❌ 不在矿洞（UndergroundMine）里，先 go_to 矿井")
-        bomb_radius = BOMB_RADIUS.get(bot.bomb_type, 3)
+        bomb_radius = bot.blast_reach()
         rocks, occupied, center = bot.scan_rocks(radius)
         if not rocks:
             return _with_state("🪨 本层没岩体了，找梯子下楼吧")
-        # 全量贪心排序
-        eff = bomb_radius + 1
+        # 全量贪心排序（🔥 2026-09-06 恒：按真实爆炸形状 blast_tiles 判覆盖，樱桃十字/黑钻石/超级方块）
+        blast = set(bot.blast_tiles(0, 0))   # 以 (0,0) 算形状偏移
         cx, cy = center
         cands = []
         for ax in range(cx - radius, cx + radius + 1):
             for ay in range(cy - radius, cy + radius + 1):
                 if (ax, ay) in occupied:
                     continue
-                count = sum(1 for x, y, n in rocks if abs(x - ax) + abs(y - ay) <= eff)
+                count = sum(1 for x, y, n in rocks if (x - ax, y - ay) in blast)
                 if count >= min_covered:
                     cands.append((count, -(abs(ax - cx) + abs(ay - cy)), ax, ay))
         cands.sort(reverse=True)
-        lines = [f"🪨 本层 {len(rocks)} 块岩体，炸弹半径{bomb_radius}，候选锚点:"]
+        lines = [f"🪨 本层 {len(rocks)} 块岩体，炸弹半径{bomb_radius}(按{bot.bomb_type}形状)，候选锚点:"]
         for count, negd, ax, ay in cands[:top]:
             lines.append(f"  · ({ax},{ay}) 覆盖 {count} 块")
         if not cands:
@@ -6563,7 +6563,7 @@ def bomb_mine(target: int = 0, bomb: str = "Bomb", min_covered: int = 3,
 
     Args:
         target: 目标层（0=按当前层自适应：在头骨≥121→500、城镇→120；头骨矿洞也算 UndergroundMine121+）
-        bomb: 炸弹类型 Bomb/Mega Bomb/Cherry Bomb（默认 Bomb）
+        bomb: 炸弹类型 Bomb/Mega Bomb/Cherry Bomb（默认 Bomb；**背包没有黑会按 黑>超级>樱桃 自动换有的用**）
         min_covered: 至少覆盖N块岩体才炸（默认3）
         follow_host: user 在矿里就一起冲层/增援（默认 True）
         lead: 和 user 保持的层差（默认2）
@@ -6645,7 +6645,7 @@ def bomb_volcano(bomb: str = "Bomb", min_covered: int = 3, hp_threshold: int = 3
     跟在 user 身边（warp 换层跟上），同层清矿簇（贪心炸弹）、帮打怪。
     （进矿跑前叮咛——工具/雕像/清包/占位物——统一在第一次到矿井入口层的 4 句话里，不重复。）
     Args:
-        bomb: Bomb/Mega Bomb/Cherry Bomb（默认 Bomb）
+        bomb: Bomb/Mega Bomb/Cherry Bomb（默认 Bomb；背包没有黑会按 黑>超级>樱桃 自动换有的用）
         min_covered: 至少覆盖N块岩体才炸（火山簇小，默认3）
         hp_threshold: 血量低于此%撤退（默认30）
         max_minutes: 最多跟随分钟数（默认不限）

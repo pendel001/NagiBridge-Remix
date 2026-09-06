@@ -33,9 +33,17 @@ class ManualChestFull(Exception):
     恒 2026-08-23：满包领不走就停，不自动丢物。str(e)=战利品名列表。"""
     pass
 
-# ── 炸弹半径（SDV 1.6 爆炸半径：樱桃1 / 黑炸弹3 / 大红4） ──
+# ── 炸弹爆炸形状（⚡ 2026-09-06 恒 游戏 tooltip 实测，非 wiki 模糊数） ──
+#   樱桃 Bomb：边长7 的十字(缺4角，共~12格) — "边长为7的正方形缺少4个角"
+#   黑炸弹    ：钻石(曼哈顿)半径3 — 25格（旧默认，主弹）
+#   超级 Mega ：15×15 方块 — "向上8 向左8 向右6 向下6（即边长15的正方形）"
+# BOMB_RADIUS 保留作旧"等效钻石半径"兜底（escort/plan 等次级用，勿改以免扰动）；真实形状见 BombMiner.blast_tiles()/blast_reach()
 BOMB_RADIUS = {"Cherry Bomb": 1, "Bomb": 3, "Mega Bomb": 4}
 BOMB_NAMES = set(BOMB_RADIUS)
+# 最大单向偏移（躲远/防重叠/安全距离用）：樱桃=3(十字臂长)、黑=3(钻石R)、超级=8(方块单向)
+BOMB_REACH = {"Cherry Bomb": 3, "Bomb": 3, "Mega Bomb": 8}
+# 🥇 炸矿炸弹优先级（恒 2026-09-06：黑 > 超级 > 樱桃）——背包里挑实际有的、按此序选
+BOMB_PRIORITY = ["Bomb", "Mega Bomb", "Cherry Bomb"]
 
 # 锤子右键重砸（Super Slam）冷却（秒）：直接砸不蓄力、有冷却。
 # 反编译确认 clubCooldown=6000ms（6秒）；Artful 附魔/职业28 减半→3秒。取 6 保守（冷却中调用会被游戏静默跳过）
@@ -409,9 +417,56 @@ class BombMiner(WeaponMixin):
         self._last_special = 0.0   # 上次特殊攻击时间（锤子重砸冷却跟踪）
         self._bombed_anchors = set()   # 炸过的锚点，贪心跳过，防重复选同点
         self._bombed_rocks = set()     # 已爆炸覆盖的石头，贪心排除，防同范围重复放炸弹
-        self._pending_bombs = []       # [(ax, ay, 放置时间)] 还没爆炸的炸弹——选锚点/敲石头要避开其范围
+        self._pending_bombs = []       # [(ax, ay, 放置时间, bomb_type)] 还没爆炸的炸弹——选锚点/敲石头要避开其范围
         self._floor_entrance = None    # 当前层入口梯子（逃出用）
         self._buff_track = {}          # buff 自跟踪 {"dish":{start,duration}, "drink":{...}}——重启不重复吃
+
+    # ═══════════ 炸弹类型选择（黑>超级>樱桃，背包实际有才算数） ═══════════
+
+    def choose_bomb_type(self, prefer=None):
+        """按优先级挑"背包里实际有的"炸弹：prefer(显式要的，如黑)有就用，否则按 黑>超级>樱桃 回调。
+        全没有→返回 ''（调用方自己降级成镐子/提示）。避免"有了超级/樱桃却只认黑而报没炸弹"。"""
+        cand = (prefer or self.bomb_type)
+        if cand in BOMB_NAMES and self.count_bombs(cand) > 0:
+            return cand
+        for b in BOMB_PRIORITY:
+            if b != cand and self.count_bombs(b) > 0:
+                return b
+        return ""
+
+    def absent_cause(self):
+        """（已没炸弹时）给 AI 一句人话。"""
+        return "背包里黑/超级/樱桃炸弹都没有了——先去买/拿炸弹再来（可 /give 作弊）"
+
+    def blast_tiles(self, bx, by, bomb_type=None):
+        """某炸弹放在 (bx,by) 爆炸覆盖的瓦片（含中心）列表。
+        🔥 2026-09-06 恒 tooltip 实测形状：樱桃=边长7十字(缺4角)；黑=钻石R3；超级=15×15方块。"""
+        bt = bomb_type or self.bomb_type
+        out = []
+        if bt == "Mega Bomb":
+            # 超级：向上8 向左8 向右6 向下6 → 15×15 整方块（dx∈[-8,6], dy∈[-8,6]）
+            for dx in range(-8, 7):
+                for dy in range(-8, 7):
+                    out.append((bx + dx, by + dy))
+        elif bt == "Cherry Bomb":
+            # 樱桃：边长7 十字(缺4角)——横臂 |dx|<=3 且 dy==0 + 竖臂 |dy|<=3 且 dx==0（13格含中心；tooltip 说12格=不含中心）
+            for dx in range(-3, 4):
+                out.append((bx + dx, by))
+            for dy in range(-3, 4):
+                if dy != 0:
+                    out.append((bx, by + dy))
+        else:
+            # 黑炸弹：钻石（曼哈顿）半径3
+            R = BOMB_RADIUS.get(bt, 3)
+            for dx in range(-R, R + 1):
+                for dy in range(-R, R + 1):
+                    if abs(dx) + abs(dy) <= R:
+                        out.append((bx + dx, by + dy))
+        return out
+
+    def blast_reach(self, bomb_type=None):
+        """该炸弹最大单向偏移（躲远/安全距离/防重叠粗略用）。樱桃3、黑3、超级8。"""
+        return BOMB_REACH.get(bomb_type or self.bomb_type, 3)
 
     # ═══════════ 底层 API ═══════════
 
@@ -984,20 +1039,43 @@ class BombMiner(WeaponMixin):
     def _prune_pending_bombs(self, ttl=6.0):
         """清理已爆炸的炸弹记录（普通炸弹 ~3 秒爆，6 秒后清掉）。"""
         now = time.time()
-        self._pending_bombs = [(bx, by, t) for bx, by, t in self._pending_bombs
+        self._pending_bombs = [(bx, by, t, bt) for bx, by, t, bt in self._pending_bombs
                                if now - t < ttl]
 
-    def _pending_near(self, x, y, radius):
-        """是否在某个未爆炸炸弹的 radius（曼哈顿）内。"""
+    def _pending_overlaps(self, x, y, bomb_type=None):
+        """(x,y) 放炸弹是否会跟某个未爆炸炸弹的爆炸区**重叠**（防重叠浪费）。
+        精确按各自 blast_tiles 形状判交集——樱桃十字/黑钻石/超级方块两两不同，不能用单一半径近似。"""
+        bt = bomb_type or self.bomb_type
         self._prune_pending_bombs()
-        return any(abs(x - bx) + abs(y - by) <= radius for bx, by, _ in self._pending_bombs)
+        mine = set(self.blast_tiles(x, y, bt))
+        for bx, by, _, pbt in self._pending_bombs:
+            if mine & set(self.blast_tiles(bx, by, pbt)):
+                return True
+        return False
+
+    def _pending_near(self, x, y, radius):
+        """是否在某个未爆炸炸弹的 radius（曼哈顿）内（粗略，钻石近似/敲石头避开用）。"""
+        self._prune_pending_bombs()
+        return any(abs(x - bx) + abs(y - by) <= radius for bx, by, _, _ in self._pending_bombs)
 
     def best_bomb_anchor(self, radius=14, bomb_radius=None, min_covered=3, max_dist=6):
         """贪心：找最值得放炸弹的空格（矿石价值分优先 + 覆盖数 + 距离）。
         头骨矿洞等有高价值矿的地方，优先炸铱/钻石/宝石簇。
         返回 (ax, ay, covered_count, rocks) 或 None
         """
-        bomb_radius = bomb_radius or BOMB_RADIUS.get(self.bomb_type, 3)
+        # 🔥 2026-09-06 恒：覆盖/防重叠按 bomb_type 的**真实爆炸形状**算（樱桃十字/黑钻石/超级方块）。
+        #   显式传 bomb_radius（_bomb_selftest 用）→ 退回钻石近似。
+        use_shape = bomb_radius is None
+        eff_type = self.bomb_type
+        radius_override = bomb_radius
+
+        def _blast(ax, ay):
+            if use_shape:
+                return set(self.blast_tiles(ax, ay, eff_type))
+            R = radius_override
+            return {(ax + dx, ay + dy) for dx in range(-R, R + 1)
+                    for dy in range(-R, R + 1) if abs(dx) + abs(dy) <= R}
+
         rocks, occupied, (cx, cy) = self.scan_rocks(radius)
         # 怪物格不能放炸弹（surroundings 的 monsters 位置）
         try:
@@ -1018,8 +1096,6 @@ class BombMiner(WeaponMixin):
             pass
         if not rocks:
             return None
-        # 炸弹要放在空格；爆炸覆盖半径内 = 曼哈顿 <= bomb_radius（SDV 爆炸实际影响，不用+1避免高估空炸）
-        eff_radius = bomb_radius
         self._prune_pending_bombs()
         best = None
         best_score = -1
@@ -1029,15 +1105,20 @@ class BombMiner(WeaponMixin):
             for ay in range(cy - radius, cy + radius + 1):
                 if (ax, ay) in occupied or (ax, ay) in self._bombed_anchors:
                     continue
-                # 别放在还没爆炸的炸弹附近（bomb_radius*2：两颗炸弹爆炸区完全不相交，防重叠浪费）
-                if self._pending_near(ax, ay, bomb_radius * 2):
-                    continue
+                # 防重叠：精确判两颗炸弹爆炸区不相交（避免浪费）；钻石兜底路径用半径*2 近似
+                if use_shape:
+                    if self._pending_overlaps(ax, ay, eff_type):
+                        continue
+                else:
+                    if self._pending_near(ax, ay, radius_override * 2):
+                        continue
                 dist = abs(ax - cx) + abs(ay - cy)
                 if dist > max_dist:  # 锚点别离 AI 太远（避免长距离瞬移/空炸）
                     continue
+                blast = _blast(ax, ay)
                 # 覆盖的岩体
                 inside = [(x, y, n) for x, y, n in rocks
-                          if abs(x - ax) + abs(y - ay) <= eff_radius
+                          if (x, y) in blast
                           and (x, y) not in self._bombed_rocks]
                 # 数量门槛：普通簇要 ≥min_covered；但高价值宝石簇（≥3块铱/钻/宝石）网开一面——
                 # 1钻石+2铱 或 3铱 紧挨就值得炸，哪怕总数不够5块（评分里宝石分优先自然胜出）
@@ -1149,7 +1230,7 @@ class BombMiner(WeaponMixin):
         空闲优先级"贪心敲矿→捡东西→敲普通石头"的第一档。
         无梯子时刷梯子/攒石头，顺带把散的高价值矿捡走。返回是否敲了。
         跳过还没爆炸炸弹范围内的石头（浪费——马上会被炸掉）。"""
-        bradius = BOMB_RADIUS.get(self.bomb_type, 3)
+        bradius = self.blast_reach()
         knocked = 0
         for _ in range(max_n):
             rocks, _, _ = self.scan_rocks(radius)
@@ -1497,19 +1578,20 @@ class BombMiner(WeaponMixin):
         下一次放炸弹的 position 落点自然瞬移离开爆炸范围；高价值等爆炸路径从未触发过，一并删掉。
         collect/safe_dist 参数保留（协同模式调用传的，暂不使用）。
         返回 (ok, message, broken_estimate)"""
-        bomb_radius = BOMB_RADIUS.get(self.bomb_type, 3)
+        _bt = self.bomb_type
         ok, msg = self.place_bomb_at(ax, ay)
         if not ok:
             self._bombed_anchors.add((ax, ay))  # 失败锚点也跳过（不可放置），防反复选死循环
             return False, msg, 0
         log(f"  💣 {msg}")
         self._bombed_anchors.add((ax, ay))  # 记下炸过的点，贪心不再选
-        self._pending_bombs.append((ax, ay, time.time()))  # 记下还没爆炸的炸弹（选锚点/敲石头避开）
-        # 标记爆炸覆盖的石头（防同范围重复放炸弹）
+        self._pending_bombs.append((ax, ay, time.time(), _bt))  # 记下还没爆炸的炸弹（选锚点/敲石头避开）
+        # 标记爆炸覆盖的石头（防同范围重复放炸弹）；按该炸弹真实爆炸形状标（樱桃十字/黑钻石/超级方块）
         try:
+            blast = set(self.blast_tiles(ax, ay, _bt))
             b_rocks, _, _ = self.scan_rocks(8)
             for rx, ry, rn in b_rocks:
-                if abs(rx - ax) + abs(ry - ay) <= bomb_radius:
+                if (rx, ry) in blast:
                     self._bombed_rocks.add((rx, ry))
         except Exception:
             pass
