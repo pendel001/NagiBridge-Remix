@@ -3737,7 +3737,7 @@ def _try_transport(dest: str, cur: str):
     return None, ""
 
 
-def _map_go_walk(path, destination: str, dest: str, lead_log: str = "") -> str:
+def _map_go_walk(path, destination: str, dest: str, lead_log: str = "", npc_target=None, npc0=None) -> str:
     """执行 BFS 路径逐段走路（map_go 与交通续走共用；2026-08-16 抽取）。
     lead_log: 交通节点成功日志（前缀显示）。"""
     log = [f"🗺️ 导航 {path[0][0]} → {dest}（{len(path)} 段）"]
@@ -3840,8 +3840,9 @@ def _map_go_walk(path, destination: str, dest: str, lead_log: str = "") -> str:
             pass
     # 到目标地点后：带 npc → 贴近人；否则若 POI → 走到 POI 精确位置
     final_txt = f"\n✅ 到达 {dest}"
-    if _npc_target:
-        final_txt += "\n" + _npc_arrive_note(npc, _npc0, dest)
+    if npc_target:
+        _nn = npc_target.get("name") or npc_target.get("displayName") or ""
+        final_txt += "\n" + _npc_arrive_note(_nn, npc0, dest)
     elif destination in locations.POI:
         poi = locations.POI[destination]
         if poi.get("map") == dest:
@@ -4022,13 +4023,13 @@ def map_go(destination: str = "", npc: str = "") -> str:
             path = _map_bfs(cur, dest)
             if not path:
                 return _with_state(f"{tlog}，但从 {cur} 到 {dest} 缺地图链接（先手动到 {cur} 再走）")
-            return _map_go_walk(path, destination, dest, lead_log=tlog)
+            return _map_go_walk(path, destination, dest, lead_log=tlog, npc_target=_npc_target, npc0=_npc0)
         # 3. BFS 路径
         path = _map_bfs(cur, dest)
         if not path:
             return _with_state(f"🗺️ 知识库没找到从 {cur} 到 {dest} 的路径（缺地图链接）")
         # 4. 逐段执行（恒 2026-08-13 多段走路：走到出口瓦片 → 传送到下一图入口(ARRIVE) → 继续走）
-        return _map_go_walk(path, destination, dest)
+        return _map_go_walk(path, destination, dest, npc_target=_npc_target, npc0=_npc0)
     except Exception as e:
         return _with_state(f"❌ {e}")
 
