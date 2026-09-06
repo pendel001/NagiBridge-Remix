@@ -23,7 +23,7 @@ import urllib.request
 # 改用我们 locations.py 校准的钓点 POI（✅ 已验证的）。face 为抛竿朝向（待实测校准）。
 FISHING_TARGETS = {
     "Beach":    ("海滩钓鱼点(码头)", 2),   # (52,25) 码头，面下
-    "Mountain": ("山湖钓鱼点(左)", 1),     # (68,24) 山湖左岸，面右
+    "Mountain": ("山湖钓鱼点(左)", 2),     # (68,24) 山湖左岸，面下（2026-09-05 恒：抛竿朝向下更准）
     "Forest":   ("森林小池塘钓点", 2),     # (34,25) 猪车旁小池塘，面下
     "Town":     ("镇鲶鱼钓点", 2),        # (3,93) 雨天鲶鱼钓点（2026-08-15恒：暴雨天钓鲶鱼）
 }
@@ -136,6 +136,27 @@ class FishBot:
         return f.get("isFishing", False) or f.get("isCasting", False) or f.get("isReeling", False)
 
 
+def finish_cast(bot, reason):
+    """🎣 停止条件触发：关鱼机自动抛(防停不掉/再抛下一竿) + cancel 收线(即时停，小游戏中也可退出)。
+    竿抛着没咬(isFishing/isCasting)→ cancel 收线(实时)；正收线(isReeling)→ 短等放行当前竿(钓上就钓上，
+    没钓上也无妨——能即时停就是好事，恒 2026-09-05 确认)。不再问 AI 等一杆钓完/别操作。"""
+    try:
+        bot.fishbot("off")   # 停自动抛竿（≠收杆，线留在原地）——"钓完这竿就暂停、不抛下一竿"的关键
+    except Exception:
+        pass
+    time.sleep(2)   # 给当前竿收完的时间（钓完这一竿）
+    try:
+        for _ in range(3):
+            try:
+                bot.key("cancel")   # 竿还悬着/还在收 → 收线（实时终止，别让竿悬空/声效残留）
+            except Exception:
+                pass
+            time.sleep(0.3)
+    except Exception:
+        pass
+    log(f"⏸ 已停钓（{reason}，鱼机已关、竿已收）")
+
+
 def run(port, location, max_casts=0, stamina_pct=15, no_sleep=False):
     bot = FishBot(port)
 
@@ -172,14 +193,21 @@ def run(port, location, max_casts=0, stamina_pct=15, no_sleep=False):
         # 瓦片扫描会误杀）。不预扫不转向，开 fishbot 让它自己找水抛；抛没抛到水里交给监控 isFishing 判定。
         log("  🎯 就地钓: 当前站位（不预扫不转向；抛没抛进水由 isFishing 判定）")
     else:
-        # warp to fishing spot
-        bot.warp("Farm")
-        time.sleep(1)
-        bot.warp(location)
-        time.sleep(2)
-        # move to position
-        bot.move_to(spot["x"], spot["y"])
-        time.sleep(0.5)
+        # 🎣 导航到钓点：用 /walk_to 跨图找路（mod 自动找入口+走路），别 warp 回农场再跳（恒 2026-09-05：
+        #    钓鱼该像 map_go 一样走真实路径，不是一上来就瞬移）。/walk_to 跨图=选目标图入口 warp + 走，比"回农场再跳"干净。
+        r = bot._post("/walk_to", {"location": location, "x": spot["x"], "y": spot["y"]})
+        if not r.get("ok"):
+            log(f"walk_to 到 {location} 失败: {r.get('error', '?')}")
+            return
+        # 等到达钓点（真站到 spot 附近、停下才继续）
+        deadline = time.time() + 40
+        while time.time() < deadline:
+            s = bot.state()
+            p = s["player"]
+            cur = (s.get("location") or {}).get("name", "") or ""
+            if cur == location and abs(p.get("x", 0) - spot["x"]) <= 2 and abs(p.get("y", 0) - spot["y"]) <= 2 and not p.get("isMoving"):
+                break
+            time.sleep(0.5)
         bot.face(spot["face"])
         time.sleep(0.3)
 
@@ -271,7 +299,7 @@ def run(port, location, max_casts=0, stamina_pct=15, no_sleep=False):
         prev_reeling = is_reeling
 
         if max_casts > 0 and cast_count >= max_casts:
-            log(f"  达到 {max_casts} 竿，收手")
+            finish_cast(bot, f"达到 {max_casts} 竿")   # 🎣 2026-09-05：钓完这竿暂停，不抛下一竿
             break
 
         check_counter += 1
@@ -320,13 +348,13 @@ def run(port, location, max_casts=0, stamina_pct=15, no_sleep=False):
 
             # check stamina（绝对值 20，百分比不合理因为星之果实会拉高上限）
             if current_stamina < 20:
-                log(f"  stamina low ({current_stamina}/{p['maxStamina']}), stopping")
+                finish_cast(bot, f"体力不足 ({current_stamina}/{p['maxStamina']})")   # 钓完这竿暂停
                 break
 
             # check time
             game_time = s.get("time", {}).get("timeOfDay", 600)
             if game_time >= 2300:
-                log(f"  too late ({game_time}), stopping")
+                finish_cast(bot, f"太晚 ({game_time})")   # 钓完这竿暂停
                 break
 
             sta_pct = bot.stamina_pct()

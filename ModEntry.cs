@@ -3362,6 +3362,10 @@ public class ModEntry : Mod
                         ["stack"] = i.Stack,
                         ["category"] = i.getCategoryName(),
                         ["catNum"] = i.Category,
+                        // ⚠️ 2026-09-06 进食挑食要用：SDV Object 方法 staminaRecoveredOnConsumption(体力)+
+                        //    healthRecoveredOnConsumption(血)——咖啡=只有体力、奶酪=回血，AI 按需求挑食才不会"血低了吃咖啡"。
+                        ["edibleValue"] = (i as StardewValley.Object)?.staminaRecoveredOnConsumption() ?? 0,
+                        ["healthRecovered"] = (i as StardewValley.Object)?.healthRecoveredOnConsumption() ?? 0,
                         ["quality"] = (i as StardewValley.Object)?.Quality ?? 0,
                         ["value"] = SafeSellPrice(i),
                         ["sellable"] = IsSellable(i),   // 🔒 不可卖的工具/武器/戒指/靴子（标 0 + 不可卖，别让 AI 拿去卖）
@@ -7983,7 +7987,7 @@ public class ModEntry : Mod
                 var farmer = Game1.player;
                 var loc = farmer.currentLocation;
 
-                // 找背包物品（先匹配名字，再匹配 QualifiedItemId）
+                // 找背包物品（先匹配英文内部名 Name，再匹配本地化显示名 DisplayName[中文]，最后 QualifiedItemId）
                 int idx = -1;
                 Item item = null;
                 for (int i = 0; i < farmer.Items.Count; i++)
@@ -7991,6 +7995,7 @@ public class ModEntry : Mod
                     var it = farmer.Items[i];
                     if (it == null) continue;
                     if (it.Name.Equals(itemName, StringComparison.OrdinalIgnoreCase)
+                        || (it.DisplayName ?? "").Equals(itemName, StringComparison.OrdinalIgnoreCase)
                         || (it.QualifiedItemId ?? "").Equals(itemName, StringComparison.OrdinalIgnoreCase))
                     { idx = i; item = it; break; }
                 }
@@ -11742,6 +11747,26 @@ public class ModEntry : Mod
     /// Cook a recipe. Must be in the farmhouse with a kitchen upgrade (or use wizardry).
     /// Uses CraftingRecipe with isCooking=true.
     /// </summary>
+    /// <summary>配方名解析：支持英文 key 或**当前语言显示名 DisplayName（中文）**→ 返回英文 key。
+    /// 2026-09-06：游戏里 AI 看到的是中文成品名（如"炸蘑菇"），直接按英文 key 查会 not found。
+    /// 反查全表按成品 DisplayName 匹配；找不到原样返回让上层报 not found。</summary>
+    private static string ResolveRecipeKey(string name)
+    {
+        if (string.IsNullOrEmpty(name)) return name;
+        if (CraftingRecipe.cookingRecipes.ContainsKey(name)) return name;
+        foreach (var key in CraftingRecipe.cookingRecipes.Keys)
+        {
+            try
+            {
+                var prod = new CraftingRecipe(key, true).createItem();
+                if (prod != null && prod.DisplayName.Equals(name, StringComparison.OrdinalIgnoreCase))
+                    return key;
+            }
+            catch { }
+        }
+        return name;
+    }
+
     private object HandleCook(HttpListenerContext ctx)
     {
         if (!Context.IsWorldReady)
@@ -11758,22 +11783,25 @@ public class ModEntry : Mod
             {
                 var farmer = Game1.player;
 
+                // 中文名（成品 DisplayName）→ 英文 key（2026-09-06：AI 传"炸蘑菇"也能做）
+                var rname = ResolveRecipeKey(name);
+
                 // Check cooking recipes dictionary
-                if (!CraftingRecipe.cookingRecipes.ContainsKey(name))
+                if (!CraftingRecipe.cookingRecipes.ContainsKey(rname))
                 {
                     var known = farmer.cookingRecipes.Keys.ToList();
-                    tcs.SetResult(new { ok = false, error = $"Cooking recipe '{name}' not found",
+                    tcs.SetResult(new { ok = false, error = $"Cooking recipe '{rname}' not found（中文名请用游戏里的成品名，如 炸蘑菇）",
                         knownRecipes = known });
                     return;
                 }
 
-                if (!farmer.cookingRecipes.ContainsKey(name))
+                if (!farmer.cookingRecipes.ContainsKey(rname))
                 {
-                    tcs.SetResult(new { ok = false, error = $"Player hasn't learned recipe '{name}'" });
+                    tcs.SetResult(new { ok = false, error = $"Player hasn't learned recipe '{rname}'" });
                     return;
                 }
 
-                var recipe = new CraftingRecipe(name, true);
+                var recipe = new CraftingRecipe(rname, true);
                 int crafted = 0;
                 var missing = new Dictionary<string, int>();
 

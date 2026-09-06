@@ -41,6 +41,9 @@ import argparse
 import math
 import requests
 
+# ⚔️ 2026-09-06 复用 bomb 的武器系统（WeaponMixin：选武器/类别/挥速自适应/锤子重砸）
+from bomb_common import WeaponMixin
+
 # ── 常量 ──
 
 TOOL_DELAY = 0.85          # 每次挥工具后的等待（秒）
@@ -61,6 +64,27 @@ FORAGABLES = {
     "Fire Quartz", "Diamond", "Prismatic Shard",
     "Purple Mushroom", "Red Mushroom", "Common Mushroom",
 }
+
+# 进食挑食兜底：老 DLL 无 edibleValue/healthRecovered 时按这些关键词/排除项认食物
+_FOOD_KEYWORDS = {"Salad", "Bread", "Cheese", "Fish", "Soup", "Stew",
+                  "Berry", "Fruit", "Mushroom", "Egg", "Milk", "Juice",
+                  "Coffee", "Tea", "Cake", "Cookie", "Pie", "Brew",
+                  "Wine", "Beer", "Mead", "Pale", "Sashimi", "Sushi",
+                  "Curry", "Stir", "Pancake", "Omelet", "Porridge",
+                  "Bagel", "Tortilla", "Wrap", "Taco", "Burrito",
+                  "Hashbrowns", "Pancakes", "Bacon", "Carp", "Chub",
+                  "Perch", "Salmon", "Trout", "Tuna", "Bream", "Bass",
+                  "Algae", "Seaweed", "Crab", "Lobster", "Shrimp",
+                  "Chowder", "Escargot", "Oyster", "Ceviche",
+                  "Hot Pepper", "Cheese Cauli", "Parmesan", "Pizza",
+                  "Chocolate", "Ice Cream", "Rice Pudding",
+                  "Plum Pudding", "Blackberry Cobbler", "Apple",
+                  "Apricot", "Banana", "Cherry", "Coconut", "Mango",
+                  "Orange", "Peach", "Pomegranate", "Tomato"}
+_NON_FOOD = {"Keg", "Preserves Jar", "Cheese Press", "Loom", "Spinning Wheel",
+             "Mayonnaise Machine", "Oil Maker", "Seed Maker", "Crystalarium",
+             "Furnace", "Charcoal Kiln", "Tapper", "Recycling Machine",
+             "Worm Bin", "Slime Egg", "Slime Incubator", "Crab Pot"}
 
 # 吃东西阈值（HP<60% 吃食物）；撤退阈值用 --hp-threshold（默认 30）——两者分开，别重合
 EAT_HP = 60
@@ -120,22 +144,21 @@ def _is_town_mine(loc: str) -> bool:
 
 def resume_start_level(port: int = None) -> int:
     """动态算鹈鹕镇矿井起始层（替代静态进度文件，2026-08-22）。
-    读当前地点 → 在鹈鹕镇矿井就读电梯当前可达最高层（重置→1），否则按起始=1。
-    读层失败兜底返回 1（宁可重下，不跳错层）。头骨/火山(≥121)不在这走。"""
+    读当前地点 → **确实在地下矿层(UndergroundMine≤120)就按当前所在层继续**，
+    否则（入口建筑 Mine / 户外 / 头骨火山）按起始=1。
+    ⚠️ 2026-09-06 缠修：原逻辑在"镇矿地点就读电梯 maxFloor"——正常态电梯恒满 120，
+       `start>=target` 判成"不挖了"→ 只要 AI 停在镇矿里（满包停/手动停/下到入口）就**每次 mine go 空跑**。
+       改成按玩家当前真实所在层恢复 + 不在矿层就回 1；头骨/火山(≥121)不在这走。"""
     base = f"http://localhost:{port}" if port else NAGI_URL
     try:
         s = requests.get(f"{base}/state", timeout=10).json()
     except Exception:
         return 1
     loc = (s.get("location") or {}).get("name", "")
-    if not _is_town_mine(loc):
-        return 1
-    try:
-        r = requests.get(f"{base}/mine/elevator", timeout=10).json()
-        if r.get("ok"):
-            return max(1, int(r.get("maxFloor", 1) or 1))
-    except Exception:
-        pass
+    lv = extract_mine_level(loc)
+    # 只在确实在地下矿层时按"当前层"恢复；入口建筑(Mine)/户外/收矿停上都从1开始
+    if lv is not None and lv <= 120:
+        return max(1, lv)
     return 1
 
 # ── 日志 ──
@@ -178,7 +201,7 @@ def is_mine_location(loc_name):
 #  MineBot
 # ═══════════════════════════════════════════════════════════════════
 
-class MineBot:
+class MineBot(WeaponMixin):
     def __init__(self, port):
         self.port = port
         self.base = f"http://localhost:{port}"
@@ -189,6 +212,11 @@ class MineBot:
         self.pickaxe_level = 0       # 0-4
         self.pickaxe_name = "Basic"
         self.weapon_name = None      # 背包里找到的武器
+        self.weapon_class = None     # 复用 bomb WeaponMixin：hammer/sword/dagger——挥击节奏 & 锤子重砸判定
+        self.weapon_speed = 0        # 武器速度 stat——挥击间隔自适应用
+        self.weapon_override = None  # 可选：指定用某把武器
+        self._last_special = 0.0     # 锤子重砸冷却跟踪
+        self.bomb_type = "Pickaxe"   # WeaponMixin.swing 挥完切回的工具（下矿用镐子挖）
         self.mine_level = 0          # 当前矿井层数
         self._rock_count = 0         # 当前层敲了多少块
 
@@ -275,17 +303,7 @@ class MineBot:
         log(f"  Tool: {tool} (level {self.pickaxe_level})")
         return True
 
-    def detect_weapon(self):
-        """在背包里找武器"""
-        s = self.state()
-        for item in s.get("inventory", []):
-            name = item.get("name", "")
-            if any(kw in name for kw in WEAPON_KEYWORDS):
-                self.weapon_name = name
-                log(f"  ⚔️ 找到武器: {name}")
-                return True
-        log("  ⚠️ 背包里没有找到武器（只能用镐子防身）")
-        return False
+    # ⚔️ detect_weapon 已复用 bomb_common.WeaponMixin（选武器/类别/挥速，跳过工具镰）——不再本地定义
 
     def preflight(self, hp_threshold):
         """启动预检（2026-08-16 恒）：返回硬性拦截原因（str=阻止启动）；黄色警告只 log 不拦。
@@ -315,43 +333,37 @@ class MineBot:
         return None
 
     def detect_inventory_food(self):
-        """查背包里有什么可以吃的东西"""
+        """查背包里能吃的（按回体力/回血值挑，2026-09-06 修复"按关键词乱抓→血低吃咖啡"）。
+        优先用 /state 新字段 edibleValue(体力)+healthRecovered(血)（机器/工具=0 自动排除）；
+        旧 DLL 无这些字段时退回关键词+类别兜底。
+        返回 [(name, edibleValue, healthRecovered), ...]。"""
         s = self.state()
-        # 只要有食物类或烹饪类的东西就算
-        # category 负数表示工具/武器等，正数一般是物品
-        # 简单：检查名字含常见食物关键词
-        food_keywords = {"Salad", "Bread", "Cheese", "Fish", "Soup", "Stew",
-                        "Berry", "Fruit", "Mushroom", "Egg", "Milk", "Juice",
-                        "Coffee", "Tea", "Cake", "Cookie", "Pie", "Brew",
-                        "Wine", "Beer", "Mead", "Pale", "Sashimi", "Sushi",
-                        "Curry", "Stir", "Pancake", "Omelet", "Porridge",
-                        "Bagel", "Tortilla", "Wrap", "Taco", "Burrito",
-                        "Hashbrowns", "Pancakes", "Bacon", "Carp", "Chub",
-                        "Perch", "Salmon", "Trout", "Tuna", "Bream", "Bass",
-                        "Algae", "Seaweed", "Crab", "Lobster", "Shrimp",
-                        "Chowder", "Escargot", "Oyster", "Ceviche",
-                        "Hot Pepper", "Cheese Cauli", "Parmesan", "Pizza",
-                        "Chocolate", "Ice Cream", "Cookie", "Rice Pudding",
-                        "Plum Pudding", "Blackberry Cobbler", "Apple",
-                        "Apricot", "Banana", "Cherry", "Coconut", "Mango",
-                        "Orange", "Peach", "Pomegranate", "Tomato"}
+        inv = s.get("inventory", [])
+        has_info = any("edibleValue" in (it or {}) for it in inv)  # 新 DLL 才有
         foods = []
-        for item in s.get("inventory", []):
+        seen = set()
+        for item in inv:
+            if not item:
+                continue
             name = item.get("name", "")
-            cat = item.get("category", "")
-            # 烹饪成品、蔬菜、水果、花、鱼等可食用
-            if any(kw.lower() in name.lower() for kw in food_keywords):
-                foods.append(name)
-            elif cat in ("Cooking", "Fish", "Vegetable", "Fruit", "Flower",
-                         "Forage", "Artisan Goods", "Syrup"):
-                if name not in ("Keg", "Preserves Jar", "Cheese Press",
-                                "Loom", "Spinning Wheel", "Mayonnaise Machine",
-                                "Oil Maker", "Seed Maker", "Crystalarium",
-                                "Furnace", "Charcoal Kiln", "Tapper",
-                                "Recycling Machine", "Worm Bin", "Slime Egg",
-                                "Slime Incubator", "Crab Pot"):
-                    foods.append(name)
-        return list(set(foods))
+            if not name or name in seen:
+                continue
+            if has_info:
+                ed = int(item.get("edibleValue") or 0)
+                hp = int(item.get("healthRecovered") or 0)
+                if ed > 0 or hp > 0:  # 真能吃（机器/工具=0 自动排除）
+                    seen.add(name)
+                    foods.append((name, ed, hp))
+            else:
+                # 兜底：关键词 + 类别（老 DLL 无回血/体力值，回血当 0）
+                cat = item.get("category", "")
+                if (any(kw.lower() in name.lower() for kw in _FOOD_KEYWORDS)
+                        or cat in ("Cooking", "Fish", "Vegetable", "Fruit",
+                                   "Flower", "Forage", "Artisan Goods", "Syrup")):
+                    if name not in _NON_FOOD:
+                        seen.add(name)
+                        foods.append((name, 1, 0))
+        return foods
 
     # ── 导航 ──
 
@@ -830,43 +842,40 @@ class MineBot:
             return 0
 
     def combat_step(self, location):
-        """检查附近怪物，贴脸就砍"""
+        """检查附近怪物，贴脸/近身就砍。⚠️ 2026-09-06 修：原来距离2只"警戒"不反击（怪物磨血不还手）。
+        距离≤1 直接砍；距离2 先贴到旁边再砍（能还手就别傻等）。"""
         monsters = self.nearby_monsters(radius=4)
         if not monsters:
             return "safe"
 
         name, mx, my, hp, dist = monsters[0]
+        if hp <= 0:
+            return "safe"  # 已死
         if dist <= 1:
-            # 贴脸了！砍它
+            # 贴脸了！砍它（复用 bomb WeaponMixin.swing：挥速自适应 + 锤子重砸 + 挥完切回镐子）
             log(f"  ⚔️ 怪物 {name} 贴脸！({mx},{my}) HP={hp}")
-            self.face_toward(mx, my)
-            if self.weapon_name:
-                self.select(self.weapon_name)
-                time.sleep(0.1)
-                self.use_tool()
-                time.sleep(0.4)
-                # 切回镐子
-                self.select("Pickaxe")
-            else:
-                # 用镐子砍
-                self.use_tool("Pickaxe")
-                time.sleep(TOOL_DELAY)
+            self.swing((mx, my), special=self.weapon_class == "hammer")
             return "fighting"
         elif dist <= 2:
-            # 近距离，警戒
-            if hp > 0:
-                log(f"  👀 {name} 在 ({mx},{my}) 距离 {dist}，警戒")
-                self.face_toward(mx, my)
-            return "watching"
+            # 近身：先瞬移到旁边再砍，别被磨血还站桩
+            log(f"  ⚔️ 怪物 {name} 近身 ({mx},{my})，贴近反击")
+            adj_x, adj_y, _, _ = self.find_adjacent_tile(mx, my)
+            self.mine_teleport(adj_x, adj_y)
+            time.sleep(0.15)
+            self.swing((mx, my), special=self.weapon_class == "hammer")
+            return "fighting"
         elif dist <= 4:
             # 在附近但不太近
+            log(f"  👀 {name} 在 ({mx},{my}) 距离 {dist}，警戒")
             return "aware"
         return "safe"
 
     # ── 进食 ──
 
     def auto_eat(self, hp_threshold=50, sta_threshold=15):
-        """自动扫背包找吃的，不依赖外部参数"""
+        """自动扫背包找吃的，不依赖外部参数。⚠️ 2026-09-06 按需求挑食：
+        血低→挑回血(healthRecovered>0)的（奶酪/沙拉，绝不拿纯体力咖啡保命）；
+        体力低→挑回体力(edibleValue>0)的；都低→回血优先。"""
         foods = self.detect_inventory_food()
         if not foods:
             return False
@@ -876,27 +885,41 @@ class MineBot:
         hp_pct = (p["health"] / p["maxHealth"] * 100) if p["maxHealth"] > 0 else 100
         sta_pct = (p["stamina"] / p["maxStamina"] * 100) if p["maxStamina"] > 0 else 100
 
-        if sta_pct < sta_threshold or hp_pct < hp_threshold:
-            # 先停下（边走边吃动画不生效），再吃 + 等 2 秒动画播完（bomb 同款逻辑）
+        if sta_pct >= sta_threshold and hp_pct >= hp_threshold:
+            return False
+
+        # 先停下（边走边吃动画不生效），再吃 + 等 2 秒动画播完（bomb 同款逻辑）
+        try:
+            for _ in range(5):
+                s = self.state()
+                if not s.get("player", {}).get("isMoving", True):
+                    break
+                time.sleep(0.3)
+        except Exception:
+            pass
+
+        # 挑食排序：血低→**回血量×10 主导**（山羊奶酪101 >> 咖啡1，别抓早出现的咖啡）；体力低→回体力加分
+        def _rank(f):
+            name, ed, hp = f
+            score = 0
+            if hp_pct < hp_threshold:
+                score += hp * 10 - (10000 if hp <= 0 else 0)   # 血低：回血越多越优先；0回血重罚垫底
+            if sta_pct < sta_threshold:
+                score += ed                                    # 体力低：回体力越多越优先
+            return score
+        foods.sort(key=_rank, reverse=True)
+
+        for fname, ed, hp in foods:
             try:
-                for _ in range(5):
-                    s = self.state()
-                    if not s.get("player", {}).get("isMoving", True):
-                        break
-                    time.sleep(0.3)
+                self.select(fname)
+                time.sleep(0.2)
+                r = self._post("/eat")
+                time.sleep(2.0)  # 等动画播完效果才生效
+                if r.get("ok"):
+                    log(f"  🍽️ 吃了 {fname}（体{ed} 血{hp}）")
+                    return True
             except Exception:
-                pass
-            for fname in foods:
-                try:
-                    self.select(fname)
-                    time.sleep(0.2)
-                    r = self._post("/eat")
-                    time.sleep(2.0)  # 等动画播完效果才生效
-                    if r.get("ok"):
-                        log(f"  🍽️ 吃了 {fname}")
-                        return True
-                except:
-                    continue
+                continue
         return False
 
     def eat_if_needed(self, food_sta, food_hp, hp_threshold, sta_threshold):
@@ -1055,12 +1078,16 @@ class MineBot:
     # ── 战斗主循环（每敲完几块石头调用） ──
 
     def combat_check(self, location):
-        """定时检查怪物 + 处理"""
-        result = self.combat_step(location)
-        if result == "fighting":
-            # 刚打完，等等再继续挖
-            time.sleep(0.5)
-        return result
+        """定时检查怪物 + 处理。⚠️ 2026-09-06 修：原来只砍一下就地回去挖，怪物继续磨血→
+        现在靠近/贴脸怪就连续反击到清掉（最多 8 刀，防死循环），再回来挖。"""
+        for _ in range(8):
+            result = self.combat_step(location)
+            if result != "fighting":
+                if result == "safe":
+                    time.sleep(0.2)
+                return result
+            time.sleep(0.35)
+        return "fighting"
 
     def hunt_for_coal(self, location, radius=30, kill_timeout=20):
         """刷煤：大范围主动清怪，只打尘埃精灵和蝙蝠（掉煤），其他怪不打（危险+浪费时间）。
@@ -1155,15 +1182,27 @@ class MineBot:
         if resume and start_level <= 1:
             auto_start = resume_start_level(self.port)
             if auto_start > 1:
-                log(f"  🪜 电梯当前到 {auto_start} 层 → 从第 {auto_start} 层开始（重置则=1）")
+                log(f"  🪜 当前就在第 {auto_start} 层 → 从该层继续（重置/入口=1）")
                 start_level = auto_start
             else:
                 start_level = 1
         else:
             start_level = max(1, start_level)
+            # ⚠️ 2026-09-06 恒：AI 可显式设起始层（go_mining start=），但要 ≤ 电梯可达上限且 5 的倍数——
+            #    否则打通 120 后"自动送到120层就没得玩"；给 AI 设 start=40→120 能自己挑层刷。
+            elevator_max, _reset = self.mine_elevator_max()
+            if start_level > 1:
+                # 电梯只有 1(入口旁路) 和 5/10/15…的倍数，且**往下取**（88→85，不往上），<5 都落回 1（从入口爬）
+                snapped = max(1, (start_level // 5) * 5)
+                if snapped != start_level:
+                    log(f"  ⚠️ 电梯只有第1层+5的倍数（往下取），{start_level} 折到 {snapped}")
+                start_level = snapped
+            if start_level > elevator_max:
+                log(f"  ⚠️ 起始层 {start_level} 超电梯可达上限 {elevator_max}，钳到 {elevator_max}")
+                start_level = elevator_max
 
         if start_level >= target_floor:
-            log(f"  ⚠️ 起始层 {start_level} ≥ 目标层 {target_floor}，不挖了")
+            log(f"  ⚠️ 起始层 {start_level} ≥ 目标层 {target_floor}，不挖了（设 start<target 或 target 更深）")
             return
 
         # 检查状态，体力太低先去睡觉

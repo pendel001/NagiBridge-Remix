@@ -319,9 +319,11 @@ def _gather_state() -> dict:
     except Exception as e:
         data["error"] = str(e)
 
-    # 警报队列（只 peek 不消费）
+    # 警报队列（⚠️ 2026-09-05 恒：改为消费一次即清——之前 peek=True 只读不消费，
+    # 某条 walk_teleport 等警告永远留在队列(FIFO 上限100,安静农场无新警报挤) → 每条工具输出重播同一句。
+    # 改成默认消费：每条警报渲染一次即消失；真实新警报照常显示一次。
     try:
-        alerts_resp = api.alerts(peek=True)
+        alerts_resp = api.alerts()          # peek=False 默认消费/drain
         data["alerts"] = alerts_resp.get("alerts", [])
     except Exception:
         data["alerts"] = []
@@ -1918,7 +1920,7 @@ def _run_script(name: str, args_list: Optional[list] = None, timeout: int = 60,
         if err:
             return err
         return (f"🚀 已后台启动「{name} {' '.join(args_list) if args_list else ''}」→ job {job.job_id}\n"
-                f"  查进度: script(ops=\"status\", kw={{\"job_id\":\"{job.job_id}\"}})   停止: script(ops=\"stop\", kw={{\"job_id\":\"{job.job_id}\"}})")
+                f"  收工会自动播报（含总时长）   停止: script(ops=\"stop\", kw={{\"job_id\":\"{job.job_id}\"}})")
 
     cmd = [sys.executable, script_path]
     if args_list:
@@ -5990,14 +5992,15 @@ def go_mining(
     food_hp: Optional[str] = None,
     resume: bool = True,
 ) -> str:
-    """⛏️ 去矿井挖矿（双模式）
-    冲层模式(rush)：从进度恢复（或指定层），一路敲石头找梯子下到目标层
-    刷矿模式(farm)：在特定层反复刷指定矿石
+    """⛏️ 去矿井挖矿（双模式最全）
+    🏃 冲层 = 下矿(rush)：从指定/当前层往**更深**敲石头找梯子下到 target 层（打通往下冲）；
+    🔁 刷矿 = farm：在电梯直达层反复刷指定 ore（Copper铜21/Iron铁41/Gold金71），适合定点囤矿；
+       💡 想刷煤：farm Iron 铁层(41) 时会顺手清尘埃精灵/蝙蝠——它们掉煤（不是 ore 选项，内部自动刷）。
+    两者都是「mine go」，用 **mode** 切换：mode=rush 下矿、mode=farm 刷矿。已打通的层别担心没得玩——设 start 挑层。
 
     自动检测镐子级别算好敲击次数，不浪费体力。
-    附近有怪物自动切剑砍。
-    背包有食物会自动吃。
-    自动记录已到达最深层，下次可从中断处继续。
+    附近有怪物自动切剑砍（贴脸/近身主动反击，不是站桩被磨死）。
+    背包有食物会自动吃（按需求：血低优先吃回血的，别再拿纯体力咖啡保命）。
 
     调用前请用 check_status 或 peek_player 检查背包：
     - 确保带了镐子和剑
@@ -6009,9 +6012,10 @@ def go_mining(
     ⚠️ 别拿**银河之魂**这类带出去死了丢了划不来的稀有物当占位；用铱矿这类死了不心疼的。
 
     Args:
-        mode: 模式（rush=冲层, farm=刷矿，默认 rush）
-        start: 起始层数，仅 rush 模式（默认 1，开了 resume 则被进度覆盖）
-        target: 目标层数，仅 rush 模式
+        mode: 模式（rush=下矿/冲层, farm=刷矿，默认 rush）
+        start: 起始层数，仅 rush 模式。⚠️ 2026-09-06 可让 AI 显式挑层——**≤电梯可达上限且 5 的倍数**（如 40/60/90），
+               打通 120 后照样能 start=90 从 90 下到 120，不会"送我到120就没得玩"；start=1+resume=True=从当前所在层继续（不再被进度覆盖）。
+        target: 目标层数，仅 rush 模式（默认 120）
         ore: 目标矿石，仅 farm 模式（Copper/Iron/Gold，默认 Iron）
         cycles: 刷矿循环次数，仅 farm 模式（默认 5）
         hp_threshold: 血量低于此 % 吃食物/撤退（默认 50%）
@@ -6111,25 +6115,43 @@ def go_fishing(
 ) -> str:
     """🎣 钓鱼（AI 角色）
     默认【就地钓】：就在 AI 当前站位原地钓（不传送）——开 Fishbot 自己找水抛；
-    开局一次性用 isFishing(等待咬钩) 判定能否抛：5s 内建立就开钓（水域固定，能抛一杆就能抛很多竿）；没建立(没水/死点)就收手。
-    指定 location → 自动 warp 到该校准钓点再钓。开 Fishbot 自动钓鱼 → 抛够竿数/体力不足收杆。
+    开局一次性用 isFishing(等待咬钩) 判定能否抛：5s 内建立就开钓；没建立(没水/死点)就收手。
+    指定 location → 先用 map_go 走真实路径到该校准钓点(跨图多段，和 walk_to/map_go 分工一致，不是 warp)，再就地钓。
+    开 Fishbot 自动钓鱼 → 抛够竿数/体力不足收杆。
 
     Args:
-        location: None=就地钓（当前站位，须 AI 自己站到水边）；指定（Beach / Mountain / Forest / Town）=自动去钓点
+        location: None=就地钓（当前站位，须 AI 自己站到水边）；指定（Beach / Mountain / Forest / Town）=map_go 去钓点再钓
         max_casts: 抛 N 竿就收手（0=不限，钓到体力<20/背包满/太晚/抛不出去收杆）
         no_sleep: True=钓完不睡觉（留在原地）；False=钓完回家睡。
                   ⚠️ 2026-08-15 改默认 True：睡觉由 AI 用 go_sleep 统一控制（白天钓鱼别早睡）。
     """
+    nav = ""
     args_list = ["--port", str(_ai_port()), "--max-casts", str(max_casts)]
     if location:
-        args_list.extend(["--location", location])
+        # 🎣 2026-09-05 恒：钓点是 POI，跨图该走 map_go（和 walk_to 的跨图委派一致）——不再是 warp 回家再跳。
+        try:
+            from fish_run import FISHING_TARGETS as _FT   # 懒导入，单一来源
+        except Exception:
+            _FT = {}
+        if location in _FT:
+            poi_name, face = _FT[location]
+            nav = map_go(poi_name)                        # map_go 真实路径到钓点（可跨图多段）
+            try:
+                api._post("/face", {"direction": face})   # 抛竿朝向（面下等）
+            except Exception:
+                pass
+            # 已到钓点 → 就地钓（不带 --location，fish_run 不再 warp）；nav 日志拼到结果前
+            pass
+        else:
+            args_list.extend(["--location", location])    # 未识别钓点 → 交 fish_run 自带 /walk_to 兜底
     if no_sleep:
         args_list.append("--no-sleep")
 
     out = _run_script("fish_run", args_list, timeout=180, async_ok=True)
+    head = (nav + "\n\n") if nav else ""
     if out.startswith("🚀"):
-        return _with_state(out)   # 长脚本自动异步：立即返回 job_id，script_status 查进度
-    return _with_state(f"🎣 钓鱼报告：\n{out[:800]}")
+        return _with_state(head + out)   # 长脚本自动异步：立即返回 job_id，进度/收工自动播报
+    return _with_state(head + f"🎣 钓鱼报告：\n{out[:800]}")
 
 
 def _bobber_menu_image(icons):
@@ -7327,16 +7349,9 @@ def settings(setting: str = "", value: str = "", ops: str = "", kw: dict | None 
 #  🔍 check 超级工具（A2 查询域入口，2026-08-13 #10）
 #  ⚠️ 边界：check_status=概览（状态条同款）；check_backpack=逐格详细。查啥用 check。
 # ═══════════════════════════════════════════
-def _quest_menu_hint() -> str:
-    """📜 check quest 指引：任务/进度一律走菜单（2026-09-01 恒拍板：菜单为唯一权威，退役 list_quests/quest_progress）。"""
-    return _with_state(
-        "📜 任务看 **menu journal**(开日志) + **menu read**(读QuestLog卡，卡上含每子目标 current/max 进度)；"
-        "接单去展板 **menu read** + click(button=accept…)；查某单详情用 **menu know <名>**")
-
-
 @mcp.tool()
 def check(what: str) -> str:
-    """🔍 查询域（what=...）。status 全状态 / backpack 背包明细(逐格价值/星级) / worn 穿戴 / machines 机器 / look 环视周围 / quest 任务。完整 what 清单 → help(check)。
+    """🔍 查询域（what=...）。status 全状态 / backpack 背包明细(逐格价值/星级) / worn 穿戴 / machines 机器 / look 环视周围 / quest 开任务日志。完整 what 清单 → help(check)。
 
     Args:
         what: 查什么（status/backpack/worn/…见 help(check)）
@@ -7351,7 +7366,7 @@ def check(what: str) -> str:
         "silo": silo_status, "hay": silo_status,
         "mastery": mastery_status, "精通": mastery_status,
         "buildings": building_list, "building": building_list, "building_list": building_list,
-        "quest": _quest_menu_hint, "quests": _quest_menu_hint, "任务": _quest_menu_hint,
+        "quest": open_questlog, "quests": open_questlog, "任务": open_questlog,
         "chests": scan_chests, "箱子": scan_chests,
         "storage": storage_layout, "存储": storage_layout,
         "look": look_around, "周围": look_around, "环视": look_around,
@@ -7370,6 +7385,26 @@ def check(what: str) -> str:
 #  AI 自己决定粒度（如 farm(ops="till plant water")）。
 # ═══════════════════════════════════════════
 _STATE_SEP = "\n\n╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\n"
+
+# ➤ 跨域参数别名归一（2026-09-05 恒：map npc=name / social friendship=npc_name / storage find=name
+#   **不一致**，AI 传 npc/item/name 常报"参数错"）。候选链按语义优先级，取第一个出现在目标签名里的。
+_TARGET_ALIAS = {
+    "npc": ("npc_name", "name"),
+    "npc_name": ("name",),
+    "item": ("item_name", "name"),
+    "item_name": ("name",),
+    "name": ("npc_name", "item_name"),
+}
+
+
+def _normalize_kw_key(k, sig) -> str:
+    """把 AI 常用别名键改写成目标函数签名里的正式参数名；改不到就保留原键（报错逻辑不变）。"""
+    if sig is None or k in sig.parameters:
+        return k
+    for cand in _TARGET_ALIAS.get(k, ()):
+        if cand in sig.parameters:
+            return cand
+    return k
 
 
 def _ops_run(ops_str: str, dispatch: dict, kw: dict) -> str:
@@ -7402,7 +7437,12 @@ def _ops_run(ops_str: str, dispatch: dict, kw: dict) -> str:
             if sig and any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
                 call_kw = dict(kw)
             else:
-                call_kw = {k: v for k, v in (kw or {}).items() if sig and k in sig.parameters}
+                # 别名归一：AI 传 npc/item/npc_name/item_name/name 都能落到正式参数名（跨域统一）
+                call_kw = {}
+                for _k, _v in (kw or {}).items():
+                    _nk = _normalize_kw_key(_k, sig)
+                    if sig and _nk in sig.parameters:
+                        call_kw[_nk] = _v
             out = fn(**call_kw)
             if isinstance(out, str):
                 if _STATE_SEP in out:
@@ -7726,7 +7766,7 @@ def farm(ops: str = "", kw: dict | None = None) -> str:
 
 @mcp.tool()
 def mine(ops: str = "", kw: dict | None = None) -> str:
-    """⛏️ 下矿域。go 自动下楼挖矿(mode: rush冲层/farm刷矿) / progress 进度 / bomb_mine 普通炸矿(自动) / bomb_volcano 火山专用炸矿。全 ops+单步炸/协同坑(无镐血低硬拦、火山需 host 同行) → help(mine)。"""
+    """⛏️ 下矿域。go 自动下楼挖矿(mode: rush冲层/farm刷矿；farm 定点刷 ore=Copper铜21/Iron铁41/Gold金71，煤靠铁层41清怪掉) / progress 进度 / bomb_mine 普通炸矿(自动) / bomb_volcano 火山专用炸矿。全 ops+单步炸/协同坑(无镐血低硬拦、火山需 host 同行) → help(mine)。"""
     # 🗺️ 动态工具检测：progress/bomb_* 建议在矿里做（go 豁免，不拦）
     _adv = _domain_advice("mine", ops)
     dispatch = {
@@ -11462,9 +11502,9 @@ _SETTINGS_DISPATCH = {
 
 # 📖 详细域指引（2026-08-22：docstring 精简后，深度/坑靠 help 查，不丢细节）
 _DOMAIN_GUIDES = {
-"check": "查询域，what=...：status(完整状态) backpack(逐格价值/星级) worn(穿戴) machines(全场机器清单) mine(下矿进度) silo(干草) mastery(精通) buildings(木匠建筑) quest(任务) chests(当前图箱) storage(箱子网络) look(环视周围)。⚠️查概览用 status，查逐格用 backpack，别都调浪费 token。",
+"check": "查询域，what=...：status(完整状态) backpack(逐格价值/星级) worn(穿戴) machines(全场机器清单) mine(下矿进度) silo(干草) mastery(精通) buildings(木匠建筑) quest(开任务日志) chests(当前图箱) storage(箱子网络) look(环视周围)。⚠️查概览用 status，查逐格用 backpack，别都调浪费 token。",
 "farm": "农活域(🌱必走，别手动挥工具组合，用域 ops)：till(蓄力锄) plant(种,跳过已种) water(浇,自动跳雨+水壶没水先装满) harvest(收) scythe(镰刀收蒜/花/茶) fertilize(化肥) clear(清杂草石树桩) plot(连通域规划) till_plant(锄+种一条龙) tillfield(蓄力锄矩) hoe(布局锄) plantlayout(按布局种) chop(砍树) clearground(清单格) collect(收机器) load(放原料) building(一屋收放) break(拆/敲同scene,镐子敲可破物/翻已耕地) place(放置/播种同scene) pond/pond_add/pond_feed/pond_collect/pond_fish(鱼塘)。⚠️漏格DLL自动补；高级工具蓄力用 tool_area(别用/tool)。只在 Farm/温室/姜岛。带参 op(plant 的 seed_name、till/clear 的 x/y/rows、fertilize 的 fertilizer_name、place 的 name、building 的 location、collect 的 machine_type、pond_add 的 item)→ kw={'参数名':值}。🐄动物(2026-09-02 care域并入farm): animals(摸+收) 喂水/碗(宠物水) milk(挤奶剪毛) buy(买动物,豁免建议) doors(关门) hay(干草) pet(猫狗) petwalk(拟人摸) 畜舍/这间(这间屋动物) statue(祈福)——⚠️farm water=浇地,动物水用 喂水; farm building=机器收放,这屋动物用 畜舍。💡大田洒水器布局(可选,纯自动化建议,可用可不用)：要按洒水器留格/留走道(种2留1,AI能进田浇收)就 plan(方形规划算格)→hoe(布局锄)→plantlayout(按布局种)三件套；只管种直接 till+plant 也成。",
-"mine": "下矿域(⚒️ 矿井/头骨/火山)：go(去挖矿:mode=rush冲层/farm刷矿,start起始层,target目标层,ore矿石,cycles圈数) progress(进度) bomb_status/plan/place/collect/ladder/retreat(单步炸) bomb_mine(自动) bomb_volcano(火山) organize(整理背包)。⚠️无镐/血低硬拦；梯子 /ladder+confirm。⚠️bomb_mine 没炸弹+host在同矿井→自动转【内部】协同(跟随host+帮忙敲矿/打怪)不撤退出矿(bomb_escort 不对外暴露、AI 不主动启用)；bomb_retreat 结束协同+停脚本+脱离矿井回门口。⚠️接「深处的危险」重置电梯→起始层动态从1起(内置脚本自动读，不暴露工具)；刷矿目标层不可直达会上报，需先冲层带回或改浅层。💡出发前占位物(恒2026-08-23)：提前放1个可堆叠物(铱矿/铱锭/五彩碎片)在包，满包时同种战利品自动堆叠吸附、少触发满包停；别拿银河之魂这类带死亡会丢的稀有物当占位。",
+"mine": "下矿域(⚒️ 矿井/头骨/火山)：go(去挖矿:mode=rush冲层/farm刷矿,start起始层,target目标层,ore,cycles圈数) progress(进度) bomb_status/plan/place/collect/ladder/retreat(单步炸) bomb_mine(自动) bomb_volcano(火山) organize(整理背包)。🔁**刷矿=mode=go(mode=farm)**：定点刷指定矿→ore=Copper铜(21层)/Iron铁(41层)/Gold金(71层)；**煤靠 farm 铁层(41)顺手清尘埃精灵/蝙蝠掉**（不是 ore 选项，跑 auto 内部刷）。🏃下矿=mode=go(mode=rush,start可选≤电梯上限+5倍数,target默认120)。⚠️无镐/血低硬拦；梯子 /ladder+confirm。⚠️bomb_mine 没炸弹+host在同矿井→自动转【内部】协同(跟随host+帮忙敲矿/打怪)不撤退出矿(bomb_escort 不对外暴露、AI 不主动启用)；bomb_retreat 结束协同+停脚本+脱离矿井回门口。⚠️接「深处的危险」重置电梯→起始层动态从1起(内置脚本自动读，不暴露工具)；刷矿目标层不可直达会上报，需先冲层带回或改浅层。💡出发前占位物(恒2026-08-23)：提前放1个可堆叠物(铱矿/铱锭/五彩碎片)在包，满包时同种战利品自动堆叠吸附、少触发满包停；别拿银河之魂这类带死亡会丢的稀有物当占位。",
 "cabin": "小屋引导域(🏠 FarmHouse/Cabin/岛屋；不传=扫屋)：enum(扫**本屋**查待收) collect(收机器) statue(雕像) furniture(扫家具) interact(点家具,tile_x/tile_y) pickup(拿起家具,tile_x/tile_y) cook(做饭,recipe_name) sleep(睡觉,who=谁床：不传/房主名=睡房主床一起睡,传自己名=睡自己床)。带参 op→ kw={'参数名':值}。",
 "social": "社交域：chat(搭话,name=NPC名) gift(送礼,npc_name/item_name) give(送玩家物品,player_name/item_name) send(发消息,message) emote(表情,name) friendship(查好感,npc_name) movie(影院,npc)。带参 op→ kw={'参数名':值}。",
 "scene": "场景交互域(点东西/工具/转身/捡)：at(tile_x,tile_y)(点指定格/柜台) interact(点面前) use(挥工具) face(转向0上1右2下3左) select(拿手上) pickup(拿起家具) pickup_scene(捡当前场景物) berry(摇浆果) spot(挖蚯蚓点) moss(绿雨搜苔藓) rock(室外镐击:敲当前图可破物,采石场/挖掘场/蚌矿场跳普通石,dig/dry,battle-free) garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物) furniture(扫家具) place(放置/播种:name=物品名,x/y=目标格→箱子/树种/蟹笼落地或种下,只放可放置物) break(拆/敲:x,y=目标格,steps=挥击次,radius=方圆→镐子敲石头/翻已耕地,跳过箱子/容器格) maze(迷宫视图r半径,gx/gy目标格→ASCII棋盘#墙.可走P自己G目标) maze_seg(走法链gx,gy目标→拆直走廊列表+拼「左/右上/下走到(x,y)」多段链,AI按段walk_to) maze_walk(走迷宫 waypoints=「x,y x,y…」依次walk_to) pan(淘金/淘盘:本图水下闪光点→岸边走位面水→铜锅淘金收掉落) front/rummage(分别是interact/garbage的别名)。带参 op(at 的 tile_x/tile_y、break 的 x/y、place 的 name、maze_seg 的 gx/gy)→ kw={'参数名':值}。",
@@ -11476,7 +11516,7 @@ _DOMAIN_GUIDES = {
 "fish": "钓鱼域(🎣 2026-08-22修复)：go(去钓 location=) info(查某地鱼) spots(钓点) bobber(浮漂样式) rod(鱼竿:看/上饵钓具 item=名) crab(蟹笼总览) crab_water(找水) crab_place(放笼) crab_bait(放饵) crab_collect(收笼) crab_diag(诊断笼/定位挂饵) crab_retract(回收笼/清搁浅 location=可选)。⚠️鱼塘在 farm 域不在 fish。带参 op(go 的 location、rod 的 item、crab 的 count)→ kw={'参数名':值}。",
 "settings": "系统/设置域(⚙️ 合并捏脸进来)：status(看所有设置+退役工具) retire(退役工具) reactivate(召回) appearance(捏脸) customize(捏人) **confirm_look(核对捏人形象,ok前必做)** color(颜色条) hair/shirt/pants/hat/colorpreset(外观参考)。⚠️捏脸=创建定型:ok后set_appearance/捏人自动退役(不可逆);旧配置 settings(setting='async', value='on') 仍可。",
 "session": "会话域(🧠 上下文缓冲，多数情况不用)：status(看缓冲条数/设置) set(改设置 setting,value) export(手动导出记忆)。",
-"scripts": "脚本/异步域(🚀被动异步优先)：status(查进度,job_id空=看全部+最近) stop(停任务,job_id空=停最近在跑) async(自动异步白名单 show/add/remove/enable=on|off) run(短任务同步 name=脚本名,args=参数) start(主动后台兜底 name,args→job_id)。常用脚本: farm_row(耕) water_crops(浇) harvest(收) chop_trees(砍) clear_area(清杂) pet_animals(摸动物) shop_buy(购物)。⚠️长任务(bomb_mine/炸矿/钓鱼)便利工具**自动后台**，别手动start(白名单async enable=on即可)；跑脚本时别用走动/挥工具同步工具，但聊天/看状态/开背包/整理背包没问题；一次只跑一个脚本。⚠️参数放kw别拼ops(如 script(ops=\"start\", kw={name,args})；script(ops=\"status\", kw={job_id}))。",
+"scripts": "脚本/异步域(🚀被动异步优先)：run(短任务同步 name=脚本名,args=参数) start(主动后台兜底 name,args→job_id) stop(停任务,job_id空=停最近在跑) async(自动异步白名单 show/add/remove/enable=on|off)。进度自动播报(运行中+收工含总时长)，无需查。常用脚本: farm_row(耕) water_crops(浇) harvest(收) chop_trees(砍) clear_area(清杂) pet_animals(摸动物) shop_buy(购物)。⚠️长任务(bomb_mine/炸矿/钓鱼)便利工具**自动后台**，别手动start(白名单async enable=on即可)；跑脚本时别用走动/挥工具同步工具，但聊天/看状态/开背包/整理背包没问题；一次只跑一个脚本。⚠️参数放kw别拼ops(如 script(ops=\"start\", kw={name,args})。",
 }
 
 
@@ -12487,20 +12527,20 @@ def give_item(player_name: str, item_name: str) -> str:
 
 
 @mcp.tool()
-def check_friendship(npc_name: str) -> str:
+def check_friendship(name: str) -> str:
     """❤️ 查询与某 NPC 的好感度
     送礼前先查，挑好感低/喜欢的东西送。
 
     Args:
-        npc_name: NPC 名字（如 "Leah"）
+        name: NPC 名字（如 "Leah"）
     """
     try:
-        r = api._get("/friendship", {"npc": npc_name})
+        r = api._get("/friendship", {"npc": name})
         if not r.get("ok"):
             return f"查询失败: {r.get('error', r)}"
         if not r.get("known"):
-            return f"还没认识 {npc_name}（好感 0）"
-        return (f"与 {npc_name} 好感 {r.get('points')} 分（{r.get('hearts')}❤️），"
+            return f"还没认识 {name}（好感 0）"
+        return (f"与 {name} 好感 {r.get('points')} 分（{r.get('hearts')}❤️），"
                 f"本周已送 {r.get('giftsThisWeek')}/2 次，今天已送 {r.get('giftsToday')} 次")
     except Exception as e:
         return f"查询失败: {e}"
@@ -14007,7 +14047,7 @@ def _list_scripts() -> list:
 # ═══════════════════════════════════════════
 #  🚀 后台脚本任务（B1 异步，2026-08-14）
 #  核心目的（恒 08-14 澄清）：脚本跑的时候 AI 还能聊天/看状态/整理背包，
-#  不打断脚本——script_start 立即返回 job_id，AI 随时 script_status 查进度。
+#  不打断脚本——script_start 立即返回 job_id；进度/收工(含总时长)自动播报，AI 不用查。
 #  值得异步的长任务：bomb_mine / bomb_escort / go_fishing / 拟人浇水。
 #  短任务继续用同步 run_script。
 # ═══════════════════════════════════════════
@@ -14034,6 +14074,7 @@ class _BgJob:
         self.end_ts = None
         self.returncode = None
         self.running = False      # 读线程 EOF 后置 False
+        self.finish_announced = False   # 收工信号只播报一次（_bg_activity_line 守卫，防循环）
         self.output = []
         self.reader = None
 
@@ -14121,18 +14162,27 @@ def _bg_job_display(job: "_BgJob") -> str:
 
 
 def _bg_activity_line() -> str:
-    """异步脚本运行期间的状态条提醒（按 wake_interval 限频，仿心跳系统）。
+    """异步脚本状态条提醒：运行中按 wake_interval 限频；刚跑完一次性播报收工(带总时长)。
     返回空串=不提醒。interval=0 表示每次都提醒。
-    ⚠️ 2026-08-16 恒：AI 正在连续操作（上次工具调用 < interval，如整理背包/连续查状态）时不提醒——
-      异步唤醒不打断 AI 正在做的事，等 AI 空闲超过 interval 才重新计时。"""
+    ⚠️ 2026-08-16 恒：AI 正在连续操作（上次工具调用 < interval）时不提醒，不打断 AI。
+    收工信号不受此限频——它是单次事件，finish_announced 守卫只播一次，之后彻底闭嘴。"""
     global _bg_last_wake
     if not _bg_cfg.get("enabled", True):
         return ""
     with _bg_lock:
         active = [j for j in _bg_jobs.values() if j.running]
-        if not active:
-            return ""
-        job = active[0]
+        finished = [j for j in _bg_jobs.values()
+                    if not j.running and not j.finish_announced]
+        # ✅ 收工一次性信号（优先，不受 AI 活跃限频；守卫打一次即止）
+        if finished:
+            j = finished[0]
+            j.finish_announced = True
+            dur = int((j.end_ts or time.time()) - j.start_ts)
+            tail = "🎣 已停钓（鱼机已关、未再抛竿）" if j.name in _FISHING_SCRIPTS else ""
+            return f"✅ 脚本「{j.name}」收工（跑了 {dur}s）{'，' + tail if tail else ''}"
+    if not active:
+        return ""
+    job = active[0]
     now = time.time()
     interval = int(_bg_cfg.get("wake_interval", 60))
     # ⚠️ AI 活跃时重置计时：上次 AI 操作距今 < interval → 正在连续操作，不提醒（不打断）
@@ -14155,7 +14205,7 @@ def _bg_activity_line() -> str:
 
 
 def script_start(name: str, args: str = "") -> str:
-    """🚀 后台启动脚本（异步不阻塞，返回 job_id；长任务用，AI 可继续聊天/看状态）。查 script status(job_id)、停 script stop(job_id)。⚠️一次只跑一个；跑时别用走动/挥工具同步工具，轻操作(聊天/看状态/开背包)没问题。用法→help(scripts)。
+    """🚀 后台启动脚本（异步不阻塞，返回 job_id；长任务用，AI 可继续聊天/看状态）。进度/收工自动播报(含总时长)、停 script stop(job_id)。⚠️一次只跑一个；跑时别用走动/挥工具同步工具，轻操作(聊天/看状态/开背包)没问题。用法→help(scripts)。
 
     Args:
         name: 脚本名（不含 .py）
@@ -14176,34 +14226,7 @@ def script_start(name: str, args: str = "") -> str:
         return _with_state(err)
     return _with_state(
         f"🚀 后台启动脚本「{name} {' '.join(arg_list)}」→ job {job.job_id}\n"
-        f"  查进度: script(ops=\"status\", kw={{\"job_id\":\"{job.job_id}\"}})   停止: script(ops=\"stop\", kw={{\"job_id\":\"{job.job_id}\"}})")
-
-
-def script_status(job_id: str = "") -> str:
-    """📊 查询后台脚本任务状态
-    传空 job_id：列出所有任务 + 最近一个（在跑的优先）的输出尾巴。
-    返回：是否运行中/耗时/返回码/滚动输出（最近 N 行）。
-
-    Args:
-        job_id: script start 返回的任务ID；空 = 看全部+最近的
-    """
-    with _bg_lock:
-        if not _bg_jobs:
-            return _with_state("📭 没有后台脚本任务。用 script(ops=\"start\", kw={name,args}) 启动一个。")
-        if job_id:
-            job = _bg_jobs.get(job_id)
-            if not job:
-                return _with_state(f"❌ 找不到任务 {job_id}。现有: {', '.join(_bg_jobs)}")
-        else:
-            active = [j for j in _bg_jobs.values() if j.running]
-            job = active[0] if active else sorted(
-                _bg_jobs.values(), key=lambda j: (j.end_ts or j.start_ts))[-1]
-        info = _bg_job_display(job)
-        tail = job._tail(120)
-    body = info
-    if tail:
-        body += f"\n\n── 输出（最近 {job.name}）──\n{tail[-2000:]}"
-    return _with_state(body)
+        f"  收工会自动播报（含总时长）   停止: script(ops=\"stop\", kw={{\"job_id\":\"{job.job_id}\"}})")
 
 
 def script_stop(job_id: str = "") -> str:
@@ -14227,9 +14250,13 @@ def script_stop(job_id: str = "") -> str:
             job = running[-1]
     if not job.running:
         return _with_state(f"任务 {job.job_id} 已结束（返回码 {job.returncode}），无需停止。")
+    is_fish = job.name in _FISHING_SCRIPTS
     _bg_kill(job)
     last = job._tail(60)
     body = f"🛑 已停止任务 {job.job_id} 「{job.name}」。"
+    if is_fish:
+        # 🎣 2026-09-05 恒：停钓鱼可小游戏中即时收杆（鱼机已关+收线），不用等一杆钓完——别再说"等收线/别操作"。
+        body += "\n🎣 钓鱼已即时停止（鱼机已关、竿已收，不再抛竿）。"
     # 🚫 2026-08-17：原"计划当前任务→暂停"逻辑已随计划模式退役移除。
     if last:
         body += f"\n── 最后输出 ──\n{last[-1000:]}"
@@ -14237,8 +14264,8 @@ def script_stop(job_id: str = "") -> str:
 
 
 # ═══════════════════════════════════════════
-#  📜 脚本/异步域（2026-09-02 恒：run_script/script_start/status/stop/async_config 五合一并入此域）
-#   核心=【被动异步】：便利工具白名单自动后台 + async 开关；AI 主要用 status/stop 管理、async 调白名单。
+#  📜 脚本/异步域（2026-09-02 恒：run_script/script_start/status/stop/async_config 五合一并入此域；09-05 删 status——收工自动播报带总时长）
+#   核心=【被动异步】：便利工具白名单自动后台 + async 开关；AI 用 stop 管理、async 调白名单，不看 status。
 #   start(主动后台)是兜底——长脚本优先交给便利工具(白名单自动后台)，AI 别主动手动后台。
 #   坑：ops 按空格拆成多个 op，脚本名/任务id/参数须放 kw（如 script(ops="start", kw={name,args})）。
 # ═══════════════════════════════════════════
@@ -14248,10 +14275,6 @@ def _script_run(name: str = "", args: str = ""):
 
 def _script_start(name: str = "", args: str = ""):
     return script_start(name, args)
-
-
-def _script_status(job_id: str = ""):
-    return script_status(job_id)
 
 
 def _script_stop(job_id: str = ""):
@@ -14264,11 +14287,10 @@ def _script_async(show: bool = False, add: str = "", remove: str = "", enable: s
 
 @mcp.tool()
 def script(ops: str = "", kw: dict | None = None) -> str:
-    """🚀 脚本/异步域（被动异步优先）。status 查进度 / run 短任务 / start 主动后台 / stop 停 / async 白名单。全 ops+参数 → help(scripts)。⚠️长任务自动后台别手动 start；参数放 kw 别拼 ops。"""
+    """🚀 脚本/异步域（被动异步优先）。run 短任务 / start 主动后台 / stop 停 / async 白名单。进度自动播报(收工带总时长)，无需查。全 ops+参数 → help(scripts)。⚠️长任务自动后台别手动 start；参数放 kw 别拼 ops。"""
     dispatch = {
         "run": _script_run, "跑": _script_run,
         "start": _script_start, "后台": _script_start, "开": _script_start,
-        "status": _script_status, "查": _script_status, "进度": _script_status,
         "stop": _script_stop, "停": _script_stop,
         "async": _script_async, "异步": _script_async, "自动": _script_async, "白名单": _script_async,
     }
@@ -14306,8 +14328,40 @@ _fallback_last_fail_ts = 0.0 # 兜底爬床失败时间（冷却用，防反复�
 _FALLBACK_FAIL_COOLDOWN = 300  # 爬床失败后冷却秒数（5 分钟）——失败不重试，避免反复打断脚本
 
 
+_FISHING_SCRIPTS = {"fish_run", "fair_fishing", "ice_fishing"}
+
+
 def _bg_kill(job):
-    """终止后台脚本进程（terminate → 等3s → 不行 kill）。"""
+    """终止后台脚本进程（terminate → 等3s → 不行 kill）。
+    ⚠️ 2026-09-05 恒：钓鱼脚本先 `/fishbot off` 再杀——否则直接 terminate 子进程、C# fishbot 的
+    AutomationEnabled 还开着 → 停不掉、一直自动抛竿。先关鱼机自动抛、给当前竿一个收完的机会。"""
+    try:
+        if getattr(job, "name", "") in _FISHING_SCRIPTS:
+            try:
+                api._post("/fishbot", {"action": "off"})
+            except Exception:
+                pass
+            # 🎣 停钓（2026-09-05 恒：**别用 state 轮询等收线**——鱼机连环抛竿时 isReeling 恒真、
+            #   轮询空转把 stop 拖超时；且 api.state() 走 C# 主线程在鱼机狂抛时会卡）。
+            #   改为快速三步：fishbot off(立刻停自动抛=不再抛下一竿，关键) → 短等给 cancel/当前竿一点时间
+            #   → 补几次 cancel(竿还悬着就收一下) → 立即 kill。全程 ~3s，不阻塞。
+            #   ⚠️ 小游戏中也可即时停（收线/退出），不承诺"钓完这条"——恒 2026-09-05 确认可行。
+            try:
+                api._post("/fishbot", {"action": "off"})   # 停自动抛竿，快且关键
+            except Exception:
+                pass
+            time.sleep(2)   # 给当前竿收完的时间（钓完这一竿）
+            try:
+                for _ in range(3):
+                    try:
+                        api._post("/key", {"key": "cancel"})   # 竿还悬着/还在收 → 收线
+                    except Exception:
+                        pass
+                    time.sleep(0.3)
+            except Exception:
+                pass
+    except Exception:
+        pass
     try:
         job.proc.terminate()
         job.proc.wait(timeout=3)

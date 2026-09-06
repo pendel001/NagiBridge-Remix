@@ -256,7 +256,131 @@ def focus_game(base_url=None):
     return False
 
 
-class BombMiner:
+class WeaponMixin:
+    """⚔️ 武器复用（2026-09-06 抽成 mixin，BombMiner & MineBot 共用）：选武器(跳过工具镰)+武器类别+挥速自适应+锤子重砸。
+    依赖宿主类属性：weapon_name/weapon_class/weapon_speed/weapon_override/_last_special/bomb_type，
+    及方法 select()/use_tool()/face_toward()/state()/_post()/detect_weapon()。"""
+
+    def detect_weapon(self):
+        """选当前武器：武器绑定优先 > 真实武器（带 wtype，跳过工具镰） > 关键词兜底。
+        实测 AI 背包 Iridium Scythe（工具镰，无 wtype）排在 Galaxy Hammer 前，旧逻辑会拿镰刀打架。
+        ⚠️ 2026-08-10 user反馈"拿大镰刀挥挥挥"——兜底分支用 WEAPON_KEYWORDS 含 Scythe，
+        若 wtype 路径失效会选中工具镰。加固：兜底跳过"工具镰"（名字含 Scythe 且类别=工具）。"""
+        s = self.state()
+        inv = s.get("inventory", [])
+        # 1️⃣ 武器绑定：指定了就优先用指定的
+        if self.weapon_override:
+            for item in inv:
+                name = item.get("name", "")
+                if name == self.weapon_override or self.weapon_override in name:
+                    return self._adopt_weapon(item)
+        # 2️⃣ 真实武器优先（带 wtype 的 MeleeWeapon）。⚠️ 2026-08-10 实测 Iridium Scythe
+        #    是 MeleeWeapon(wtype=3) 不是 Tool，背包排第3位会抢在 Galaxy Hammer(第18位)前被选！
+        #    → 跳过 wtype=3(镰) 优先选剑/锤/匕首(0/1/2)，只有镰时才用镰。
+        for item in inv:
+            if item.get("wtype") not in (None, 3) and "Sling" not in (item.get("name") or ""):
+                return self._adopt_weapon(item)
+        for item in inv:
+            if item.get("wtype") == 3 and "Sling" not in (item.get("name") or ""):
+                return self._adopt_weapon(item)
+        # 3️⃣ 兜底：名字/类别关键词（旧 DLL 无 wtype）
+        weapon_cat = ("武器", "Weapon", "剑", "匕首", "锤", "刀", "刃", "鞭", "杖", "爪", "戟")
+        for item in inv:
+            name = item.get("name", "")
+            if "Sling" in name:
+                continue
+            cat = str(item.get("category", "") or "")
+            # ⚠️ 工具镰（Iridium Scythe 等 Tool）不是武器——名字含 Scythe 且类别=工具（"工具"）就跳过
+            if "Scythe" in name and ("工具" in cat or cat == "Tool"):
+                continue
+            if any(kw in name for kw in WEAPON_KEYWORDS) or any(k in cat for k in weapon_cat):
+                return self._adopt_weapon(item)
+        self.weapon_name = None
+        self.weapon_class = None
+        self.weapon_speed = 0
+        return False
+
+    def _adopt_weapon(self, item):
+        """把物品设为当前武器（name/class/speed）。"""
+        name = item.get("name", "")
+        cat = str(item.get("category", "") or "")
+        wtype = item.get("wtype")
+        self.weapon_name = name
+        try:
+            self.weapon_speed = int(item.get("wspeed") or 0)
+        except (TypeError, ValueError):
+            self.weapon_speed = 0
+        # 武器类型：优先 wtype。⚠️ SDV 1.6 反编译确认：0=剑(旋风) 1=匕首(冲刺) 2=锤(重砸) 3=格挡剑/镰
+        if wtype == 2:
+            self.weapon_class = "hammer"
+        elif wtype == 1:
+            self.weapon_class = "dagger"
+        elif wtype is not None:
+            self.weapon_class = "sword"
+        else:
+            cls_src = f"{name} {cat}"
+            if any(k in cls_src for k in ("Hammer", "Club", "Slammer", "锤", "棒", "压碎")):
+                self.weapon_class = "hammer"
+            elif any(k in cls_src for k in ("Dagger", "Kunai", "匕首")):
+                self.weapon_class = "dagger"
+            else:
+                self.weapon_class = "sword"
+        return True
+
+    def weapon_special(self):
+        """触发当前武器特殊攻击（锤=右键重砸 Super Slam，直接砸不蓄力、有冷却）。
+        需要 ModEntry /tool {special:true}（重编译后可用）。返回是否 ok。"""
+        try:
+            r = self._post("/tool", {"special": True})
+            return r.get("ok", False)
+        except Exception:
+            return False
+
+    def _swing_wait(self):
+        """按武器类型+速度算挥击等待（秒）：速度越快动画越短，下限防 spam 判定丢失。
+        反编译确认（2026-08-09）：攻击动画时长 swipeSpeed = 400 - speed×40 ms（setFarmerAnimating）。
+        脚本要等"下一刀能判定"，加 ~0.12s 安全垫；锤子挥击动画更长加 ~0.1s。
+        附魔附速度后 wspeed 实时变，这里自动跟随。"""
+        sp = getattr(self, "weapon_speed", 0) or 0
+        anim_ms = max(100, 400 - sp * 40)   # 速度8→80ms，保底100ms
+        base = anim_ms / 1000.0 + 0.12
+        if self.weapon_class == "hammer":
+            return max(0.28, base + 0.10)   # 锤平砍也慢
+        if self.weapon_class == "dagger":
+            return max(0.20, base - 0.05)
+        return max(0.24, base)              # sword（含镰）
+
+    def swing(self, toward=None, special=False):
+        """统一武器挥击（等待按类型+速度自适应）→ 挥完切回 bomb_type。
+        toward=(x,y) 先面向目标；special=True 且手持锤子 → 右键重砸（范围杀伤，直接砸不蓄力，有冷却）。
+        返回是否挥了。"""
+        if toward:
+            self.face_toward(*toward)
+        self.detect_weapon()
+        if not self.weapon_name:
+            self.use_tool("Pickaxe")
+            time.sleep(0.25)
+            self.select(self.bomb_type)
+            return True
+        self.select(self.weapon_name)
+        time.sleep(0.1)
+        if special and self.weapon_class == "hammer":
+            if time.time() - self._last_special >= HAMMER_SPECIAL_COOLDOWN:
+                log("  🔨 锤子重砸！")
+                self.weapon_special()
+                self._last_special = time.time()
+                time.sleep(0.8)   # 重砸动画+判定落地
+            else:
+                self.use_tool()   # 冷却中 → 平砍
+                time.sleep(self._swing_wait())
+        else:
+            self.use_tool()
+            time.sleep(self._swing_wait())
+        self.select(self.bomb_type)
+        return True
+
+
+class BombMiner(WeaponMixin):
     """炸弹矿工：协同/自动/手动三模式共用的一套底层动作"""
 
     def __init__(self, port=None, host_port=None, bomb_type="Bomb"):
@@ -416,72 +540,6 @@ class BombMiner:
         s = self.state()
         return s.get("inventory", [])
 
-    def detect_weapon(self):
-        """选当前武器：武器绑定优先 > 真实武器（带 wtype，跳过工具镰） > 关键词兜底。
-        实测 AI 背包 Iridium Scythe（工具镰，无 wtype）排在 Galaxy Hammer 前，旧逻辑会拿镰刀打架。
-        ⚠️ 2026-08-10 user反馈"拿大镰刀挥挥挥"——兜底分支用 WEAPON_KEYWORDS 含 Scythe，
-        若 wtype 路径失效会选中工具镰。加固：兜底跳过"工具镰"（名字含 Scythe 且类别=工具）。"""
-        s = self.state()
-        inv = s.get("inventory", [])
-        # 1️⃣ 武器绑定：指定了就优先用指定的
-        if self.weapon_override:
-            for item in inv:
-                name = item.get("name", "")
-                if name == self.weapon_override or self.weapon_override in name:
-                    return self._adopt_weapon(item)
-        # 2️⃣ 真实武器优先（带 wtype 的 MeleeWeapon）。⚠️ 2026-08-10 实测 Iridium Scythe
-        #    是 MeleeWeapon(wtype=3) 不是 Tool，背包排第3位会抢在 Galaxy Hammer(第18位)前被选！
-        #    → 跳过 wtype=3(镰) 优先选剑/锤/匕首(0/1/2)，只有镰时才用镰。
-        for item in inv:
-            if item.get("wtype") not in (None, 3) and "Sling" not in (item.get("name") or ""):
-                return self._adopt_weapon(item)
-        for item in inv:
-            if item.get("wtype") == 3 and "Sling" not in (item.get("name") or ""):
-                return self._adopt_weapon(item)
-        # 3️⃣ 兜底：名字/类别关键词（旧 DLL 无 wtype）
-        weapon_cat = ("武器", "Weapon", "剑", "匕首", "锤", "刀", "刃", "鞭", "杖", "爪", "戟")
-        for item in inv:
-            name = item.get("name", "")
-            if "Sling" in name:
-                continue
-            cat = str(item.get("category", "") or "")
-            # ⚠️ 工具镰（Iridium Scythe 等 Tool）不是武器——名字含 Scythe 且类别=工具（"工具"）就跳过
-            if "Scythe" in name and ("工具" in cat or cat == "Tool"):
-                continue
-            if any(kw in name for kw in WEAPON_KEYWORDS) or any(k in cat for k in weapon_cat):
-                return self._adopt_weapon(item)
-        self.weapon_name = None
-        self.weapon_class = None
-        self.weapon_speed = 0
-        return False
-
-    def _adopt_weapon(self, item):
-        """把物品设为当前武器（name/class/speed）。"""
-        name = item.get("name", "")
-        cat = str(item.get("category", "") or "")
-        wtype = item.get("wtype")
-        self.weapon_name = name
-        try:
-            self.weapon_speed = int(item.get("wspeed") or 0)
-        except (TypeError, ValueError):
-            self.weapon_speed = 0
-        # 武器类型：优先 wtype。⚠️ SDV 1.6 反编译确认：0=剑(旋风) 1=匕首(冲刺) 2=锤(重砸) 3=格挡剑/镰
-        if wtype == 2:
-            self.weapon_class = "hammer"
-        elif wtype == 1:
-            self.weapon_class = "dagger"
-        elif wtype is not None:
-            self.weapon_class = "sword"
-        else:
-            cls_src = f"{name} {cat}"
-            if any(k in cls_src for k in ("Hammer", "Club", "Slammer", "锤", "棒", "压碎")):
-                self.weapon_class = "hammer"
-            elif any(k in cls_src for k in ("Dagger", "Kunai", "匕首")):
-                self.weapon_class = "dagger"
-            else:
-                self.weapon_class = "sword"
-        return True
-
     # 可吃类别（中文版游戏类别是中文：菜品/采集品/蔬菜/水果/鱼/花）
     FOOD_CATEGORIES = {"Cooking", "Vegetable", "Fruit", "Fish", "Forage", "Flower",
                        "菜品", "蔬菜", "水果", "鱼", "采集品", "花"}
@@ -506,16 +564,30 @@ class BombMiner:
                            "Green Tea", "绿茶", "Ginger Ale", "姜汁汽水"]
 
     def detect_food(self):
-        """找背包里可回血/补体力的食物名列表（中英文类别都认）"""
+        """找背包里可回血/补体力的食物列表。⚠️ 2026-09-06 复用 /state 的 edibleValue/healthRecovered
+        判真实回血/体力值（老 DLL 无字段时按类别兜底、回血当0），返回 [(name, edibleValue, healthRecovered)]。
+        血低挑食用（bomb_common 维护 buff 另走 maintain_buffs，不受这影响）。"""
         s = self.state()
+        inv = s.get("inventory", [])
+        has_info = any("edibleValue" in (it or {}) for it in inv)
         foods = []
-        for item in s.get("inventory", []):
+        seen = set()
+        for item in inv:
+            if not item:
+                continue
             name = item.get("name", "")
-            if name in BOMB_NAMES:
+            if not name or name in seen or name in BOMB_NAMES:
                 continue
             cat = item.get("category", "")
-            if cat in self.FOOD_CATEGORIES:
-                foods.append(name)
+            if has_info:
+                ed = int(item.get("edibleValue") or 0)
+                hp = int(item.get("healthRecovered") or 0)
+                if (ed > 0 or hp > 0) and cat in self.FOOD_CATEGORIES:
+                    seen.add(name)
+                    foods.append((name, ed, hp))
+            elif cat in self.FOOD_CATEGORIES:
+                seen.add(name)
+                foods.append((name, 1, 0))
         return foods
 
     def is_safe(self, hp_threshold=40):
@@ -547,10 +619,22 @@ class BombMiner:
                (max_sta > 0 and sta / max_sta * 100 < sta_threshold)
         if not need:
             return False
-        for fname in foods:
+        hp_pct = (hp / max_hp * 100) if max_hp > 0 else 100
+        sta_pct = (sta / max_sta * 100) if max_sta > 0 else 100
+        # 挑食（2026-09-06）：血低→回血量×10 主导；体力低→回体力加分；0回血重罚
+        def _rank(f):
+            name, ed, hpv = f
+            score = 0
+            if hp_pct < hp_threshold:
+                score += hpv * 10 - (10000 if hpv <= 0 else 0)
+            if sta_pct < sta_threshold:
+                score += ed
+            return score
+        foods.sort(key=_rank, reverse=True)
+        for fname, ed, hpv in foods:
             try:
                 if self.eat(fname):
-                    log(f"  🍽️ 吃了 {fname}")
+                    log(f"  🍽️ 吃了 {fname}（体{ed} 血{hpv}）")
                     return True
             except Exception:
                 continue
@@ -746,58 +830,6 @@ class BombMiner:
                 log(f"  🚑 吃完仍低血({hp2 / max2 * 100:.0f}%)，/heal 兜底")
         except Exception:
             pass
-        return True
-
-    def weapon_special(self):
-        """触发当前武器特殊攻击（锤=右键重砸 Super Slam，直接砸不蓄力、有冷却）。
-        需要 ModEntry /tool {special:true}（重编译后可用）。返回是否 ok。"""
-        try:
-            r = self._post("/tool", {"special": True})
-            return r.get("ok", False)
-        except Exception:
-            return False
-
-    def _swing_wait(self):
-        """按武器类型+速度算挥击等待（秒）：速度越快动画越短，下限防 spam 判定丢失。
-        反编译确认（2026-08-09）：攻击动画时长 swipeSpeed = 400 - speed×40 ms（setFarmerAnimating）。
-        脚本要等"下一刀能判定"，加 ~0.12s 安全垫；锤子挥击动画更长加 ~0.1s。
-        附魔附速度后 wspeed 实时变，这里自动跟随。"""
-        sp = getattr(self, "weapon_speed", 0) or 0
-        anim_ms = max(100, 400 - sp * 40)   # 速度8→80ms，保底100ms
-        base = anim_ms / 1000.0 + 0.12
-        if self.weapon_class == "hammer":
-            return max(0.28, base + 0.10)   # 锤平砍也慢
-        if self.weapon_class == "dagger":
-            return max(0.20, base - 0.05)
-        return max(0.24, base)              # sword（含镰）
-
-    def swing(self, toward=None, special=False):
-        """统一武器挥击（等待按类型+速度自适应）→ 挥完切回炸弹。
-        toward=(x,y) 先面向目标；special=True 且手持锤子 → 右键重砸（范围杀伤，直接砸不蓄力，有冷却）。
-        返回是否挥了。"""
-        if toward:
-            self.face_toward(*toward)
-        self.detect_weapon()
-        if not self.weapon_name:
-            self.use_tool("Pickaxe")
-            time.sleep(0.25)
-            self.select(self.bomb_type)
-            return True
-        self.select(self.weapon_name)
-        time.sleep(0.1)
-        if special and self.weapon_class == "hammer":
-            if time.time() - self._last_special >= HAMMER_SPECIAL_COOLDOWN:
-                log("  🔨 锤子重砸！")
-                self.weapon_special()
-                self._last_special = time.time()
-                time.sleep(0.8)   # 重砸动画+判定落地
-            else:
-                self.use_tool()   # 冷却中 → 平砍
-                time.sleep(self._swing_wait())
-        else:
-            self.use_tool()
-            time.sleep(self._swing_wait())
-        self.select(self.bomb_type)
         return True
 
     def retaliate_if_hit(self):
