@@ -2742,7 +2742,7 @@ SCENE_NAME_ALIAS = {
     "头骨矿洞": "SkullCave", "头骨洞穴": "SkullCave",
     "下水道": "Sewer",
     "秘密森林": "Woods", "硬木森林": "Woods",
-    "探险家公会": "AdventureGuild", "怪物公会": "AdventureGuild",
+    "探险家公会": "AdventureGuild", "怪物公会": "AdventureGuild", "冒险家协会": "AdventureGuild", "冒险者公会": "AdventureGuild",
     "精通山洞": "MasteryCave",
     # 商业/服务
     "皮埃尔": "SeedShop", "种子商店": "SeedShop", "商店": "SeedShop",
@@ -3505,6 +3505,53 @@ def _is_mine_loc(loc) -> bool:
     return loc.startswith("UndergroundMine") or loc.startswith("Volcano")
 
 
+# ⛏️ 每日第一次到【矿井入口层】的叮咛（2026-09-06 恒）：工具/雕像/清包/占位物 4 件事。
+#    ⚠️ 只在"入口层"弹：Mine(城镇1层厅)/SkullCave(沙漠121)/VolcanoDungeon0(火山入口层)。
+#      已在矿内深层(UndergroundMine*/VolcanoDungeon1+)不算"入口层"，不重复弹。
+#    ⚠️ 用文件持久化——服务重启（本仓库常发生）后当天不重复提醒。key 按矿型分，三种矿每天各一次。
+_MINE_ENTRY_STATE_FILE = os.path.join(SCRIPT_DIR, "mine_entry_reminder.json")
+
+
+def _mine_entry_reminder(loc: str) -> str:
+    """每天第一次到某类矿井入口层时返回叮咛文本（①适用tool ②有雕像才摸 ③清包必带+黑炸弹 ④占堆叠格）；
+    不在入口层 / 已提醒过 → 返回 ''。只认入口层，矿内深层不算。"""
+    if not loc:
+        return ""
+    if loc == "Mine":
+        key, name, tip = "mine", "普通矿井(鹈鹕镇)", "`mine go`（mode：rush=下矿冲层 / farm=刷矿刷指定矿石 ore=Copper铜/Iron铁/Gold金）"
+    elif loc == "SkullCave":
+        key, name, tip = "skull", "头骨矿洞(沙漠)", "`mine bomb_mine` 自主炸矿（头骨从 121 层开始）"
+    elif loc == "VolcanoDungeon0":
+        key, name, tip = "volcano", "火山矿洞", "`mine bomb_volcano` 火山炸矿（需房主陪同，特殊瓦片不能程序化换层）"
+    else:
+        return ""   # 已在矿内深层 / 不在矿井：不算"入口层"，不弹
+    _today = time.strftime("%Y-%m-%d")
+    try:
+        with open(_MINE_ENTRY_STATE_FILE, encoding="utf-8") as f:
+            st = json.load(f) or {}
+    except Exception:
+        st = {}
+    if st.get("day") == _today and key in st.get("shown", []):
+        return ""   # 今天该矿型已叮咛过
+    st["day"] = _today
+    st.setdefault("shown", [])
+    if key not in st["shown"]:
+        st["shown"].append(key)
+    try:
+        with open(_MINE_ENTRY_STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(st, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+    return (
+        f"\n📌 第一次到「{name}」入口层，叮咛一次（每天每个矿型仅一次）：\n"
+        f"  ① 此处适用tool：{tip}。\n"
+        f"  ② 若场景有矮人雕像——先摸雕像拿每日增益（有的场景才有，没有就跳过）。\n"
+        f"  ③ 整理好背包、带尽量少的东西；必带品：食物、镐子、武器；炸矿推荐带约两百个黑炸弹。\n"
+        f"  ④ 怕捡拾不及时，包包可先带目标战利品占堆叠格（如一颗铱矿/铱锭/放射性矿石/放射性锭）——"
+        f"别带银河之魂（太珍贵，死了会丢）；死若丢东西，去马龙领回重要物品（如武器等）。"
+    )
+
+
 def _volcano_gate() -> str:
     """火山门禁（2026-08-16 恒）：火山特殊瓦片无法程序化换层 → host(7842) 不在矿井/火山里就拦，
     要求 AI 请 user 陪同。消息用 host 真实名字（自适应，不写死角色名）。放行返回 ""。
@@ -3852,7 +3899,7 @@ def _map_go_walk(path, destination: str, dest: str, lead_log: str = "", npc_targ
             # 2026-08-16 恒：POI 结构化站位+朝向（宠物水碗朝右/柜台朝上；幂等，walk_to 双调无害）
             face_log = _apply_poi_stand_face(destination)
             final_txt = f"\n✅ 到达 {destination}（{poi['pos']}）{face_log}"
-    final_txt += mine_hint
+    final_txt += mine_hint + _mine_entry_reminder(dest)
     return _with_state("\n".join(log) + final_txt)
 
 
@@ -3919,22 +3966,29 @@ def map_go(destination: str = "", npc: str = "") -> str:
     _npc_target = None
     _npc0 = None
     if npc:
-        try:
-            fr = api._get("/find_npc", {"name": npc})
-            ns = fr.get("npcs") if fr.get("ok") else []
-        except Exception:
-            ns = []
-        if not ns:
-            return _with_state(f"❌ 找不到 NPC「{npc}」——用 find_npc 确认名字再试")
-        n0 = ns[0]
-        _npc_target = n0
-        _npc0 = (n0.get("location"), n0.get("x"), n0.get("y"))
-        if n0.get("location"):
-            destination = n0["location"]       # 人所在图作为导航目标
-            _NAV_LAST.update({"name": npc, "loc": destination,
-                              "x": n0.get("x"), "y": n0.get("y")})
+        _nn = str(npc).strip()
+        # 🔧 2026-09-06 恒：马龙不在"亮好感"NPC行列（find_npc 查不到/不可按人路由）——AI map_go 传参马龙
+        #   → 直接送冒险家协会(探险家公会 AdventureGuild)，别走 find_npc 贴近。
+        if _nn in ("马龙", "Marlon", "marlon"):
+            destination = "探险家公会"
+            _NAV_LAST.update({"name": "马龙", "loc": "AdventureGuild", "x": 6, "y": 12})
         else:
-            return _with_state(f"❌ 「{npc}」没有位置信息")
+            try:
+                fr = api._get("/find_npc", {"name": npc})
+                ns = fr.get("npcs") if fr.get("ok") else []
+            except Exception:
+                ns = []
+            if not ns:
+                return _with_state(f"❌ 找不到 NPC「{npc}」——用 find_npc 确认名字再试")
+            n0 = ns[0]
+            _npc_target = n0
+            _npc0 = (n0.get("location"), n0.get("x"), n0.get("y"))
+            if n0.get("location"):
+                destination = n0["location"]       # 人所在图作为导航目标
+                _NAV_LAST.update({"name": npc, "loc": destination,
+                                  "x": n0.get("x"), "y": n0.get("y")})
+            else:
+                return _with_state(f"❌ 「{npc}」没有位置信息")
     if not destination:
         return _with_state("❌ 请给 destination（目的地名）或 npc（NPC 名）再导航")
     try:
@@ -3994,7 +4048,7 @@ def map_go(destination: str = "", npc: str = "") -> str:
                 #    与另两条 POI 终止路径(transport/BFS)一致：position 瞬移到 stand + 设朝向。
                 face_log = _apply_poi_stand_face(destination)
                 return _with_state(f"🗺️ 已在 {dest}，走到 {destination}（{poi['pos']}）{face_log}")
-            return _with_state(f"🗺️ 已经在 {cur} 了" + _mine_hint)
+            return _with_state(f"🗺️ 已经在 {cur} 了" + _mine_hint + _mine_entry_reminder(cur))
         # 🎪 2026-08-29 恒：节日临时图(Temp/Forest-IceFestival)不在 MAP_LINKS，map_go 到逻辑场地
         #   (Town/Forest/Beach)会误报"没路径"——玩家其实已被游戏自动送到节日场地。只在临时图且目标是
         #   别的地点时兜底；夜市/沙漠节/鱿鱼节/鳟鱼大赛是真实场地图，玩家在对应可走图，不受影响照常导航。
@@ -4023,8 +4077,8 @@ def map_go(destination: str = "", npc: str = "") -> str:
                     api._post("/walk_to", {"location": dest, "x": poi["pos"][0], "y": poi["pos"][1]})
                     _wait_arrival(dest, poi["pos"][0], poi["pos"][1], timeout=20)
                     face_log = _apply_poi_stand_face(destination)
-                    return _with_state(f"{tlog} → 到达 {destination}（{poi['pos']}）{face_log}")
-                return _with_state(f"{tlog} → 到达 {dest}")
+                    return _with_state(f"{tlog} → 到达 {destination}（{poi['pos']}）{face_log}" + _mine_entry_reminder(dest))
+                return _with_state(f"{tlog} → 到达 {dest}" + _mine_entry_reminder(dest))
             # 落点≠dest（岛柱落岛南等）：从落点续走 BFS
             cur = land
             path = _map_bfs(cur, dest)
@@ -6074,14 +6128,8 @@ def go_mining(
     附近有怪物自动切剑砍（贴脸/近身主动反击，不是站桩被磨死）。
     背包有食物会自动吃（按需求：血低优先吃回血的，别再拿纯体力咖啡保命）。
 
-    调用前请用 check_status 或 peek_player 检查背包：
-    - 确保带了镐子和剑
-    - 确保有足够空格子装矿石（至少留 10 格）
-    - 如有食物（沙拉/奶酪/鱼等）可传 food_sta/food_hp，状态低会自动吃
-    - 如果背包满了，先用 chest_store 存到箱子再出发
-    💡 占位物技巧（出发前，恒2026-08-23）：可提前往背包放 1 个可堆叠占位物——铱矿/铱锭/五彩碎片——
-    背包满时其实已含该类，后续同种战利品会自动**堆叠吸附**进去、少触发满包停。
-    ⚠️ 别拿**银河之魂**这类带出去死了丢了划不来的稀有物当占位；用铱矿这类死了不心疼的。
+    调用前请用 check_status / peek_player 确认带了镐子和剑、有食物、背包留 ≥10 格（满先用 chest_store 存箱子）。
+    （进矿时的跑前叮咛——工具/雕像/清包/占位物——统一在第一次到矿井入口层弹出的那 4 句话里，不重复。）
 
     Args:
         mode: 模式（rush=下矿/冲层, farm=刷矿，默认 rush）
@@ -6127,11 +6175,12 @@ def go_mining(
         return _with_state(f"❌ 现在不在矿井里（{_cur}）——先 map_go('Mine') 到矿井口，再触发下矿（防瞬移/音乐乱）")
 
     # 先看进度
+    _rem = _mine_entry_reminder(_cur)   # 若这是今天第一次到该矿井入口层，叮咛（进矿随手带）
     progress_out = _run_script("mine_run", ["--check-progress"], timeout=10)
     out = _run_script("mine_run", args_list, timeout=600, async_ok=True)
     if out.startswith("🚀"):
-        return _with_state(out)   # 长脚本自动异步：立即返回 job_id
-    return _with_state(f"⛏️ 挖矿报告：\n{progress_out}\n{out[:700]}")
+        return _with_state(_rem + "\n" + out)   # 长脚本自动异步：立即返回 job_id
+    return _with_state(_rem + f"⛏️ 挖矿报告：\n{progress_out}\n{out[:700]}")
 
 
 @mcp.tool()
@@ -6510,9 +6559,7 @@ def bomb_mine(target: int = 0, bomb: str = "Bomb", min_covered: int = 3,
     AI 看摘要再调用继续下一层。⚠️ 逐层整理已禁（恒 2026-08-23：竖井一跳3~15层，逐层等AI响应太慢易暴毙）
     ——organize_suggested 恒 False，摘要只为可见性不定决策；清包交给异步后台（冲层模式）。
     ⚠️ 逐层模式=同步（等摘要），冲层模式=自动异步（后台跑）；推荐用冲层模式（异步后台整理）。
-    💡 占位物技巧（出发前，恒2026-08-23）：可提前往背包放 1 个可堆叠占位物——铱矿/铱锭/五彩碎片——
-    背包满时其实已含该类，后续同种战利品（开箱/拾取）会自动**堆叠吸附**进去、少触发满包停。
-    ⚠️ 别拿**银河之魂**这类带出去死了丢了划不来的稀有物当占位；用铱矿这类死了不心疼的。
+    （进矿跑前叮咛——工具/雕像/清包/占位物——统一在第一次到矿井入口层的 4 句话里，不重复。）
 
     Args:
         target: 目标层（0=按当前层自适应：在头骨≥121→500、城镇→120；头骨矿洞也算 UndergroundMine121+）
@@ -6536,18 +6583,19 @@ def bomb_mine(target: int = 0, bomb: str = "Bomb", min_covered: int = 3,
         args_list.extend(["--autodrop", str(autodrop)])
     if one_floor:
         args_list.append("--one-floor")
+    _rem = _mine_entry_reminder(_cur)   # 今天第一次到头骨/矿井入口层→叮咛
     progress_out = _run_script("bomb_mine", ["--check-progress"], timeout=10)
     # 逐层模式(one_floor)是快速单层摘要，保持同步看结果；冲层是长任务→自动异步
     out = _run_script("bomb_mine", args_list, timeout=600, tail=3000, async_ok=not one_floor)
     if out.startswith("🚀"):
-        return _with_state(out)   # 长脚本自动异步：立即返回 job_id
+        return _with_state(_rem + "\n" + out)   # 长脚本自动异步：立即返回 job_id
     if one_floor:
         import re as _re
         m = _re.search(r'===BOMB_SUMMARY===(.*?)===END===', out, _re.S)
         if m:
-            return _with_state(f"💣 炸矿摘要（目标{target}层，本层完成）：\n{m.group(1).strip()}")
-        return _with_state(f"💣 炸矿逐层（未拿到摘要）：\n{out[:700]}")
-    return _with_state(f"💣 炸矿报告：\n{progress_out}\n{out[:700]}")
+            return _with_state(_rem + f"💣 炸矿摘要（目标{target}层，本层完成）：\n{m.group(1).strip()}")
+        return _with_state(_rem + f"💣 炸矿逐层（未拿到摘要）：\n{out[:700]}")
+    return _with_state(_rem + f"💣 炸矿报告：\n{progress_out}\n{out[:700]}")
 
 
 @mcp.tool()
@@ -6595,9 +6643,7 @@ def bomb_volcano(bomb: str = "Bomb", min_covered: int = 3, hp_threshold: int = 3
     """🌋 火山骑行炸矿（跟 user 换层）——**火山适配，需 user 陪同**
     ⚠️ 火山特殊瓦片无法程序化换层 → 要求 user(host) 已在矿井/火山里才放行（否则拦下请先 ask user 陪同）。
     跟在 user 身边（warp 换层跟上），同层清矿簇（贪心炸弹）、帮打怪。
-    💡 占位物技巧（出发前，恒2026-08-23）：可提前往背包放 1 个可堆叠占位物——铱矿/铱锭/五彩碎片——
-    背包满时其实已含该类，后续同种战利品会自动**堆叠吸附**进去、少触发满包停。
-    ⚠️ 别拿**银河之魂**这类带出去死了丢了划不来的稀有物当占位；用铱矿这类死了不心疼的。
+    （进矿跑前叮咛——工具/雕像/清包/占位物——统一在第一次到矿井入口层的 4 句话里，不重复。）
     Args:
         bomb: Bomb/Mega Bomb/Cherry Bomb（默认 Bomb）
         min_covered: 至少覆盖N块岩体才炸（火山簇小，默认3）
@@ -6614,14 +6660,15 @@ def bomb_volcano(bomb: str = "Bomb", min_covered: int = 3, hp_threshold: int = 3
             return _with_state(f"❌ 现在不在火山里（{_cur}）——先 map_go('火山入口') 到火山再炸（防瞬移/音乐乱）")
         args_list = [f"--bomb", bomb, f"--min-covered", str(min_covered),
                      f"--hp-threshold", str(hp_threshold)]
+        _rem = _mine_entry_reminder(_cur)   # 今天第一次到火山入口层(VolcanoDungeon0)→叮咛
         if max_minutes:
             args_list.extend(["--max-minutes", str(max_minutes)])
         if poll != 2.5:
             args_list.extend(["--poll", str(poll)])
         out = _run_script("bomb_volcano", args_list, timeout=1200, async_ok=True)
         if out.startswith("🚀"):
-            return _with_state(out)   # 长脚本自动异步：立即返回 job_id
-        return _with_state(f"🌋 火山炸矿报告：\n{out[:800]}")
+            return _with_state(_rem + "\n" + out)   # 长脚本自动异步：立即返回 job_id
+        return _with_state(_rem + f"🌋 火山炸矿报告：\n{out[:800]}")
     except Exception as e:
         return _with_state(f"❌ 火山炸矿失败: {e}")
 
