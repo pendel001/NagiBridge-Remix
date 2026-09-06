@@ -2768,7 +2768,8 @@ SCENE_NAME_ALIAS = {
     # 姜岛
     "姜岛": "IslandSouth", "岛": "IslandSouth",
     "姜岛农场": "IslandWest",
-    "火山": "IslandNorth", "火山入口": "VolcanoEntrance",
+    "火山": "VolcanoDungeon0", "火山矿井": "VolcanoDungeon0", "火山矿洞": "VolcanoDungeon0",  # 火山=入口层(第一层)，先到这准备/站位
+    "火山入口": "VolcanoEntrance", "火山区域": "IslandNorth", "火山入口区": "IslandNorth",
 }
 
 
@@ -3737,7 +3738,7 @@ def _try_transport(dest: str, cur: str):
     return None, ""
 
 
-def _map_go_walk(path, destination: str, dest: str, lead_log: str = "", npc_target=None, npc0=None) -> str:
+def _map_go_walk(path, destination: str, dest: str, lead_log: str = "", npc_target=None, npc0=None, mine_hint: str = "") -> str:
     """执行 BFS 路径逐段走路（map_go 与交通续走共用；2026-08-16 抽取）。
     lead_log: 交通节点成功日志（前缀显示）。"""
     log = [f"🗺️ 导航 {path[0][0]} → {dest}（{len(path)} 段）"]
@@ -3851,6 +3852,7 @@ def _map_go_walk(path, destination: str, dest: str, lead_log: str = "", npc_targ
             # 2026-08-16 恒：POI 结构化站位+朝向（宠物水碗朝右/柜台朝上；幂等，walk_to 双调无害）
             face_log = _apply_poi_stand_face(destination)
             final_txt = f"\n✅ 到达 {destination}（{poi['pos']}）{face_log}"
+    final_txt += mine_hint
     return _with_state("\n".join(log) + final_txt)
 
 
@@ -3942,6 +3944,11 @@ def map_go(destination: str = "", npc: str = "") -> str:
             dest = locations.POI[destination]["map"]
         else:
             dest = _resolve_scene_name(destination)
+        # 💡 2026-09-06 恒：泛"矿井/矿洞"默认=普通矿井，顺带提示火山/头骨(沙漠)关键词
+        _mine_hint = ""
+        if dest == "Mine" and any(k in destination for k in ("矿井", "矿洞", "下矿", "挖矿", "采矿")):
+            _mine_hint = ("\n💡「矿井/矿洞」默认=普通矿井(地下1-120)；要下**火山**写「火山矿井/火山矿洞」，"
+                          "**头骨(沙漠)**写「头骨矿洞/骷髅洞穴/沙漠矿井」")
         # 🎇 节日限定 POI 门禁（2026-08-19 恒：非节日期间 map_go/walk_to 隐藏）
         # 2026-08-23 恒：按门禁类型给针对性文案（石头/矮人语/日期/季节/订单），别一律报"只在节日"
         if destination in locations.POI and not _festival_poi_active(destination, locations.POI[destination]):
@@ -3987,7 +3994,7 @@ def map_go(destination: str = "", npc: str = "") -> str:
                 #    与另两条 POI 终止路径(transport/BFS)一致：position 瞬移到 stand + 设朝向。
                 face_log = _apply_poi_stand_face(destination)
                 return _with_state(f"🗺️ 已在 {dest}，走到 {destination}（{poi['pos']}）{face_log}")
-            return _with_state(f"🗺️ 已经在 {cur} 了")
+            return _with_state(f"🗺️ 已经在 {cur} 了" + _mine_hint)
         # 🎪 2026-08-29 恒：节日临时图(Temp/Forest-IceFestival)不在 MAP_LINKS，map_go 到逻辑场地
         #   (Town/Forest/Beach)会误报"没路径"——玩家其实已被游戏自动送到节日场地。只在临时图且目标是
         #   别的地点时兜底；夜市/沙漠节/鱿鱼节/鳟鱼大赛是真实场地图，玩家在对应可走图，不受影响照常导航。
@@ -4023,13 +4030,13 @@ def map_go(destination: str = "", npc: str = "") -> str:
             path = _map_bfs(cur, dest)
             if not path:
                 return _with_state(f"{tlog}，但从 {cur} 到 {dest} 缺地图链接（先手动到 {cur} 再走）")
-            return _map_go_walk(path, destination, dest, lead_log=tlog, npc_target=_npc_target, npc0=_npc0)
+            return _map_go_walk(path, destination, dest, lead_log=tlog, npc_target=_npc_target, npc0=_npc0, mine_hint=_mine_hint)
         # 3. BFS 路径
         path = _map_bfs(cur, dest)
         if not path:
             return _with_state(f"🗺️ 知识库没找到从 {cur} 到 {dest} 的路径（缺地图链接）")
         # 4. 逐段执行（恒 2026-08-13 多段走路：走到出口瓦片 → 传送到下一图入口(ARRIVE) → 继续走）
-        return _map_go_walk(path, destination, dest, npc_target=_npc_target, npc0=_npc0)
+        return _map_go_walk(path, destination, dest, npc_target=_npc_target, npc0=_npc0, mine_hint=_mine_hint)
     except Exception as e:
         return _with_state(f"❌ {e}")
 
