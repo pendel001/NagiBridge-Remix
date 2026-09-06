@@ -6113,6 +6113,12 @@ def go_mining(
         if food_hp:
             args_list.extend(["--food-hp", food_hp])
 
+    # ⚠️ 2026-09-06 恒：门禁——只能在矿井里触发下矿，别让 mine_run 从远图 warp 飞进矿(音乐乱)。
+    #    AI 先自己 map_go('Mine') 自然到矿井口，再下矿。
+    _cur = api.state().get("location", {}).get("name", "")
+    if not (_cur == "Mine" or _cur.startswith("UndergroundMine")):
+        return _with_state(f"❌ 现在不在矿井里（{_cur}）——先 map_go('Mine') 到矿井口，再触发下矿（防瞬移/音乐乱）")
+
     # 先看进度
     progress_out = _run_script("mine_run", ["--check-progress"], timeout=10)
     out = _run_script("mine_run", args_list, timeout=600, async_ok=True)
@@ -6510,6 +6516,9 @@ def bomb_mine(target: int = 0, bomb: str = "Bomb", min_covered: int = 3,
         autodrop: 自动丢物（已退役），0=只规划不丢交AI手动整理（默认0）
         one_floor: 逐层模式，跑一层返回摘要不撤退（默认 False）
     """
+    _cur = api.state().get("location", {}).get("name", "")
+    if not (_cur == "Mine" or _cur.startswith("UndergroundMine")):
+        return _with_state(f"❌ 现在不在矿井里（{_cur}）——先 map_go 到矿井/头骨矿洞再炸（防瞬移/音乐乱）")
     args_list = [f"--target", str(target), f"--bomb", bomb,
                  f"--min-covered", str(min_covered)]
     if not follow_host:
@@ -6593,6 +6602,9 @@ def bomb_volcano(bomb: str = "Bomb", min_covered: int = 3, hp_threshold: int = 3
         vg = _volcano_gate()
         if vg:
             return _with_state(vg)
+        _cur = api.state().get("location", {}).get("name", "")
+        if not (_cur == "Caldera" or _cur.startswith("Volcano")):
+            return _with_state(f"❌ 现在不在火山里（{_cur}）——先 map_go('火山入口') 到火山再炸（防瞬移/音乐乱）")
         args_list = [f"--bomb", bomb, f"--min-covered", str(min_covered),
                      f"--hp-threshold", str(hp_threshold)]
         if max_minutes:

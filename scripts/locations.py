@@ -604,7 +604,7 @@ MAP_LINKS = {
     "BathHouse_Entry": [{"tile": None, "target": "Railroad", "kind": "warp", "note": "浴场→铁路"}],
     "Tunnel": [{"tile": (39, 9), "target": "Backwoods", "kind": "warp", "arrive": (23, 30), "note": "隧道出口站格(39,9)→/warp 深山(23,30)；原出口(40,9) x=40 在宽度40边界外；齐先生电池箱 TunnelSafe(17,6) 在里头"},{"tile": None, "target": "Backwoods", "kind": "warp", "note": "隧道→深山(兜底)"}],
     "Tent": [{"tile": None, "target": "Mountain", "kind": "warp", "note": "帐篷→山"}],
-    "LeoTreeHouse": [{"tile": (3, 9), "target": "Mountain", "kind": "warp", "arrive": (16, 8), "note": "🌳 雷欧树屋出口(3,9)→山(16,8)（/warps实测，2026-09-06）"}],
+    "LeoTreeHouse": [{"tile": (3, 8), "target": "Mountain", "kind": "warp", "arrive": (16, 8), "note": "🌳 雷欧树屋出口→山(16,8)：树屋仅7x9(0..6,0..8)，/warps报(3,9)越界，站(3,8)边格warp（2026-09-06实测；门单向，进=interact<16,7> 出=warp站边格）"}],
     "IslandFarmHouse": [{"tile": None, "target": "IslandWest", "kind": "warp", "note": "姜岛小屋门口→姜岛农场"}],
     "QiNutRoom": [{"tile": None, "target": "IslandWest", "kind": "warp", "note": "核桃房门口→姜岛农场"}],
     "IslandFieldOffice": [{"tile": None, "target": "IslandNorth", "kind": "warp", "note": "办事处门口→火山入口区（2026-08-15补）"}],
