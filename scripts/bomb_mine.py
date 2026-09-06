@@ -645,8 +645,8 @@ class BombMineBot(BombMiner):
                 level = cur_lv
                 log(f"  从第 {level} 层原地续（已在头骨矿里，不 warp 不重生成，不摸雕像）")
             else:
-                # 不在头骨矿里 → 正常开局：先摸入口雕像加竖井概率（雕像在沙漠，此时还没进矿，传沙漠摸安全）
-                self.touch_skull_statue()
+                # 不在头骨矿里 → 直接 warp 121 开（恒 2026-09-06：不传沙漠摸雕像，直接在矿内开；
+                #   要竖井buff自己去沙漠摸——省一次"传沙漠洞口"的来回）
                 if start_level > 121:
                     # 不在头骨矿里但显式 --start>121 → warp 到该层跳过浅层
                     if not self.safe_warp(f"UndergroundMine{start_level}", x=5, y=5):
