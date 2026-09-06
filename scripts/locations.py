@@ -67,7 +67,8 @@ ROUTES = [
     ("Mountain",     "up",    "Railroad",     (29, 59)),  # ✅ Warp(9,-1) → Railroad(29,59)
     ("Mountain",     "door",  "Mine",         (18, 13)),  # ✅ 入口warp (54,4)→Mine(18,13) 门口在(54,5)
     ("Mountain",     "door",  "AdventureGuild", (6, 12)),  # ✅ 门口在Mountain(76,9) 需验证内部坐标
-    ("Mountain",     "door",  "Tent",          (2, 5)),    # ⛺ 莱纳斯帐篷 (29,6)→Tent(2,5)
+    ("Mountain",     "warp",  "Tent",          (2, 5)),    # ⛺ 莱纳斯帐篷 warp(29,6)→Tent(2,5)（2026-09-06 恒：/warps实测非门）
+    ("Mountain",     "door",  "LeoTreeHouse",  (3, 8)),    # 🌳 雷欧树屋：站(16,8)面0 interact(16,7) 进（2026-09-06 树屋门口实测）
 
     # ── 姜岛（2026-08-15 按实时 /warps 校正：IslandSouth 为枢纽）──
     ("IslandSouth",  "west",  "IslandWest",    (104, 41)),  # 🏝️ 西桥→姜岛农场(105,41)
@@ -338,7 +339,10 @@ POI = {
     "姜岛商人":           {"map": "IslandNorth", "pos": (35, 75), "note": "姜岛商人(IslandParrot)去火山路上拐角，面向右互动弹ShopMenu，2026-08-02实测"},
     "丛林(鹦鹉特快)":     {"map": "IslandEast",  "pos": (28, 29), "note": "IslandEast丛林/度假村区鹦鹉特快站"},
     "雷欧小屋(门口)":     {"map": "IslandEast",  "pos": (22, 11), "note": "雷欧(Leo)的小屋门口，在姜岛东部丛林"},
+    "雷欧小屋(门口)":     {"map": "IslandEast",  "pos": (22, 11), "note": "雷欧(Leo)的小屋门口，在姜岛东部丛林"},
     "雷欧小屋(内)":       {"map": "IslandHut",   "pos": (7, 12), "note": "雷欧小屋内部(16x16)"},
+    "雷欧树屋(门口)":     {"map": "Mountain",    "pos": (16, 8), "note": "🌳 雷欧(Leo)树屋门口(雪山)，面0 interact(16,7) 进屋"},
+    "雷欧树屋(内)":       {"map": "LeoTreeHouse","pos": (3, 8),  "note": "雷欧树屋内部（雷欧6心搬来住/常在树屋）"},
 
     # ── 🐄 畜棚/鸡舍 ──
     "高级鸡舍(门内)":     {"map": "Deluxe Coop", "pos": (2, 9),  "note": "高级鸡舍内部入口(23x10)，进门位置"},
@@ -496,8 +500,9 @@ MAP_LINKS = {
         {"tile": (9, 1), "target": "Railroad", "kind": "warp", "note": "山上口→铁路(29,59)"},
         {"tile": (54, 4), "target": "Mine", "kind": "door", "note": "矿井口→Mine(18,13)，下矿"},
         {"tile": (76, 9), "target": "AdventureGuild", "kind": "door", "note": "探险家公会门→(6,12)，买武器/怪物任务"},
-        {"tile": (29, 6), "target": "Tent", "kind": "door", "note": "莱纳斯帐篷→(2,5)"},
+        {"tile": (29, 6), "target": "Tent", "kind": "warp", "arrive": (2, 5), "note": "⛺ 莱纳斯帐篷 warp(29,6)→Tent(2,5)（2026-09-06 恒：/warps实测非门，站上自动传）"},
         {"tile": (12, 26), "target": "ScienceHouse", "kind": "door", "note": "罗宾木匠店门→(6,24)，买建筑/家具"},
+        {"tile": (16, 8), "target": "LeoTreeHouse", "kind": "door", "arrive": (3, 8), "note": "🌳 雷欧树屋(雷欧6心搬来住/常在)：站(16,8)面0 interact(16,7)开树屋门→LeoTreeHouse(3,8)（2026-09-06 树屋门口实测）"},
     ],
     # ── 森林 ──
     "Forest": [
@@ -599,6 +604,7 @@ MAP_LINKS = {
     "BathHouse_Entry": [{"tile": None, "target": "Railroad", "kind": "warp", "note": "浴场→铁路"}],
     "Tunnel": [{"tile": (39, 9), "target": "Backwoods", "kind": "warp", "arrive": (23, 30), "note": "隧道出口站格(39,9)→/warp 深山(23,30)；原出口(40,9) x=40 在宽度40边界外；齐先生电池箱 TunnelSafe(17,6) 在里头"},{"tile": None, "target": "Backwoods", "kind": "warp", "note": "隧道→深山(兜底)"}],
     "Tent": [{"tile": None, "target": "Mountain", "kind": "warp", "note": "帐篷→山"}],
+    "LeoTreeHouse": [{"tile": (3, 9), "target": "Mountain", "kind": "warp", "arrive": (16, 8), "note": "🌳 雷欧树屋出口(3,9)→山(16,8)（/warps实测，2026-09-06）"}],
     "IslandFarmHouse": [{"tile": None, "target": "IslandWest", "kind": "warp", "note": "姜岛小屋门口→姜岛农场"}],
     "QiNutRoom": [{"tile": None, "target": "IslandWest", "kind": "warp", "note": "核桃房门口→姜岛农场"}],
     "IslandFieldOffice": [{"tile": None, "target": "IslandNorth", "kind": "warp", "note": "办事处门口→火山入口区（2026-08-15补）"}],
@@ -780,6 +786,7 @@ BUILDING_DOORS = {
     "AdventureGuild":  ("Mountain", (76, 9)),
     "ScienceHouse":    ("Mountain", (12, 26)),
     "Tent":            ("Mountain", (29, 6)),
+    "LeoTreeHouse":    ("Mountain", (16, 8)),
     "FishShop":        ("Beach",    (30, 34)),
     "AnimalShop":      ("Forest",   (90, 16)),
     "WizardHouse":     ("Forest",   (5, 27)),
@@ -846,6 +853,7 @@ ARRIVE = {
     "IslandNorth": (40, 24),        # 火山入口区（2026-08-15补，待实测）
     "IslandFieldOffice": (4, 10),
     "IslandHut": (7, 13),
+    "LeoTreeHouse": (3, 8),
     "IslandNorthCave1": (6, 11),
     "IslandFarmCave": (4, 10),
     "IslandShrine": (13, 28),

@@ -2763,6 +2763,8 @@ SCENE_NAME_ALIAS = {
     "女巫小屋": "WitchHut", "巫师小屋": "WitchHut",
     "魔女沼泽洞穴": "WitchWarpCave", "黑暗护身符洞穴": "WitchWarpCave",
     "温泉": "BathHouse_Entry", "浴场": "BathHouse_Entry",
+    "莱纳斯帐篷": "Tent", "帐篷": "Tent",  # ⛺ 莱纳斯住帐篷室内（2026-09-06 恒：map_go 进帐篷，warp 瓦片自动传）
+    "雷欧树屋": "LeoTreeHouse", "树屋": "LeoTreeHouse",  # 🌳 雷欧住树屋（星露谷树屋，雷欧6心搬来/常在），门交互进
     # 姜岛
     "姜岛": "IslandSouth", "岛": "IslandSouth",
     "姜岛农场": "IslandWest",
@@ -3836,9 +3838,11 @@ def _map_go_walk(path, destination: str, dest: str, lead_log: str = "") -> str:
                     f"\n🎬 切图到 {nxt} 后触发剧情/对话（停在 {_cloc}）——事件自动推进中，先处理剧情再继续导航")
         except Exception:
             pass
-    # 到目标地点后，如果是 POI，再走到 POI 精确位置
+    # 到目标地点后：带 npc → 贴近人；否则若 POI → 走到 POI 精确位置
     final_txt = f"\n✅ 到达 {dest}"
-    if destination in locations.POI:
+    if _npc_target:
+        final_txt += "\n" + _npc_arrive_note(npc, _npc0, dest)
+    elif destination in locations.POI:
         poi = locations.POI[destination]
         if poi.get("map") == dest:
             api._post("/walk_to", {"location": dest, "x": poi["pos"][0], "y": poi["pos"][1]})
@@ -3849,9 +3853,34 @@ def _map_go_walk(path, destination: str, dest: str, lead_log: str = "") -> str:
     return _with_state("\n".join(log) + final_txt)
 
 
+def _npc_arrive_note(npc_name, npc0, at_loc):
+    """map_go 带 npc 到场处理：重新查人 → 判是否移动 → 走近 NPC，返回提示给 AI。
+    npc0 = 出发时 (location, x, y)，到场再查一次对比位置差 → 判"移动中/延时偏差"。"""
+    try:
+        fr = api._get("/find_npc", {"name": npc_name})
+        ns = fr.get("npcs") if fr.get("ok") else []
+    except Exception:
+        ns = []
+    if not ns:
+        return f"⚠️ 到 {at_loc} 了，但没找到 {npc_name}——可能移到别的图，重新 find_npc"
+    n = ns[0]
+    if (n.get("location") or "") != at_loc:
+        return (f"⚠️ {npc_name} 不在 {at_loc}（现在在 {n.get('location')}）——"
+                "移动走了，重新 find_npc 或 map_go(npc=…) 追")
+    # 贴近 NPC（站其正下方 y+1）
+    try:
+        api.walk_natural(int(n.get("x", 0)), int(n.get("y", 0)) + 1)
+    except Exception:
+        pass
+    moved = bool(npc0 and (n.get("location"), n.get("x"), n.get("y")) != npc0)
+    hint = (f"  ⏱️ {npc_name} 正在移动，NPC 位置和导航到达时可能有延时偏差——"
+            "贴近后重新 find_npc 确认再互动") if moved else ""
+    return f"📍 已在 {at_loc}，走到 {npc_name} 旁边（{n['x']},{n['y']}）{hint}"
+
+
 @mcp.tool()
 @_stuck_track
-def map_go(destination: str) -> str:
+def map_go(destination: str = "", npc: str = "") -> str:
     """🗺️ 走地图网络导航到目标地点（交通节点 > BFS 逐段执行）
     ⚠️ 2026-08-16 恒：**跨场景切换的唯一入口**——走出口瓦片/门/买票的真实路径，
     不瞬移。同图 POI 落点才用 walk_to / go_to。
@@ -3865,6 +3894,8 @@ def map_go(destination: str) -> str:
 
     Args:
         destination: 目标地点名（SeedShop / Mine / Town…）或 POI 名（皮埃尔商店）
+        npc: 可选，传 NPC 名则直接路由到该 NPC 当前所在场景，到场自动贴近；
+             NPC 正在移动会提示"位置可能有延时偏差"（到场建议重新 find_npc 确认）。
     """
     _nr = _nav_resolve(destination)
     if _nr:
@@ -3880,6 +3911,29 @@ def map_go(destination: str) -> str:
     if ("小屋" in _hp or "我的家" in _hp or _hp == "家" or "cabin" in _hp) \
             and not any(k in _hp for k in _excl):
         return _nav_home_door()       # "进小屋/cabin"→只导航到门口（进屋交给 AI interact_at）
+
+    # 🔍 npc 优先：路由到该 NPC 当前所在场景（2026-09-06 恒：手机实测员建议）
+    _npc_target = None
+    _npc0 = None
+    if npc:
+        try:
+            fr = api._get("/find_npc", {"name": npc})
+            ns = fr.get("npcs") if fr.get("ok") else []
+        except Exception:
+            ns = []
+        if not ns:
+            return _with_state(f"❌ 找不到 NPC「{npc}」——用 find_npc 确认名字再试")
+        n0 = ns[0]
+        _npc_target = n0
+        _npc0 = (n0.get("location"), n0.get("x"), n0.get("y"))
+        if n0.get("location"):
+            destination = n0["location"]       # 人所在图作为导航目标
+            _NAV_LAST.update({"name": npc, "loc": destination,
+                              "x": n0.get("x"), "y": n0.get("y")})
+        else:
+            return _with_state(f"❌ 「{npc}」没有位置信息")
+    if not destination:
+        return _with_state("❌ 请给 destination（目的地名）或 npc（NPC 名）再导航")
     try:
         # 0. 目标解析（POI → 地点名；中文场景名→MAP_LINKS 键）
         dest = destination
@@ -3919,6 +3973,9 @@ def map_go(destination: str) -> str:
         # 1. 当前地点
         cur = api.state().get("location", {}).get("name", "")
         if cur == dest:
+            # npc：人已在当前图 → 直接贴近，不等 POI
+            if _npc_target and _npc_target.get("location") == cur:
+                return _with_state(_npc_arrive_note(npc, _npc0, cur))
             # 已在目标地点：若指定了 POI 且 POI 就在本图，仍走到 POI 精确位置
             if destination in locations.POI and locations.POI[destination].get("map") == dest:
                 poi = locations.POI[destination]
@@ -12486,22 +12543,27 @@ def menu_claim_swap(replace: str = "") -> str:
 def gift_npc(npc_name: str, item_name: str) -> str:
     """🎁 送礼物给 NPC 村民（真实好感度系统）
     自然走到该 NPC 面前再送（不"飞过去"），好感度按喜好度变化（最爱/喜欢/一般/不喜欢/讨厌）。
-    每周限 2 次、每天限 1 次（SDV 机制）。NPC 在别的图时先 go_to 过去再送。
+    每周限 2 次、每天限 1 次（SDV 机制）。NPC 在别的图时自动 map_go 过去再送（全图可做）。
 
     Args:
         npc_name: NPC 名字（如 "Leah"）
         item_name: 背包里的物品名（如 "Grape"）
     """
     try:
-        # 0. 自然走到 NPC 面前（当前图内走 /move 自然走路，走不到 position 兜底）
-        try:
-            fr = api._get("/find_npc", {"name": npc_name})
-            if fr.get("ok") and fr.get("npcs"):
-                n = fr["npcs"][0]
-                if n.get("location") == api.current_location():
-                    api.walk_natural(int(n["x"]), int(n["y"]) + 1)
-        except Exception:
-            pass  # 找不到/跨图就跳过走位，交给 /gift 处理
+        # 0. 找到 NPC → 同图走位；跨图先 map_go 过去再走（镜像 chat_npc，全图可做）
+        fr = api._get("/find_npc", {"name": npc_name})
+        if fr.get("npcs"):
+            n = fr["npcs"][0]
+            nloc = n.get("location")
+            nname = n.get("displayName") or n.get("name") or npc_name
+            if nloc and nloc != api.current_location():
+                go = map_go(nloc)
+                if "✅ 到达" not in go and "已经在" not in go:
+                    return f"❌ 到不了「{nname}」所在的 {nloc}：\n{go[:300]}"
+                fr2 = api._get("/find_npc", {"name": npc_name})   # 人可能移动了，重查一次走位
+                if fr2.get("npcs"):
+                    n = fr2["npcs"][0]
+            api.walk_natural(int(n.get("x", 0)), int(n.get("y", 0)) + 1)
         r = api._post("/gift", {"target": npc_name, "item": item_name})
         if not r.get("ok"):
             return f"送礼失败: {r.get('error', r)}"
