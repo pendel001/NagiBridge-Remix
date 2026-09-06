@@ -34,14 +34,16 @@ class ManualChestFull(Exception):
     pass
 
 # ── 炸弹爆炸形状（⚡ 2026-09-06 恒 游戏 tooltip 实测，非 wiki 模糊数） ──
-#   樱桃 Bomb：边长7 的十字(缺4角，共~12格) — "边长为7的正方形缺少4个角"
-#   黑炸弹    ：钻石(曼哈顿)半径3 — 25格（旧默认，主弹）
-#   超级 Mega ：15×15 方块 — "向上8 向左8 向右6 向下6（即边长15的正方形）"
-# BOMB_RADIUS 保留作旧"等效钻石半径"兜底（escort/plan 等次级用，勿改以免扰动）；真实形状见 BombMiner.blast_tiles()/blast_reach()
-BOMB_RADIUS = {"Cherry Bomb": 1, "Bomb": 3, "Mega Bomb": 4}
+#   樱桃 Bomb：边长7 的十字(缺4角，共~12格) — "边长为7的正方形缺少4个角"  bombRadius=3
+#   黑炸弹    ：边长11 方块 — "向左6 向上6 向右4 向下4（即边长为11格的正方形）"  bombRadius=5
+#   超级 Mega ：15×15 方块 — "向上8 向左8 向右6 向下6（即边长15的正方形）"  bombRadius=7
+#   🔥 反编译实锤（TemporaryAnimatedSprite 构造函数 804-815）：樱桃3 / 黑5 / 超级7，
+#   爆炸盒=2r+1=7/11/15，与 tooltip 边长完全对上。见 blast_tiles()/blast_reach()。
+#   BOMB_RADIUS 仅剩 _selftest 钻石近似兜底用，已按游戏真值改过（樱桃3/黑5/超级7）。
+BOMB_RADIUS = {"Cherry Bomb": 3, "Bomb": 5, "Mega Bomb": 7}
 BOMB_NAMES = set(BOMB_RADIUS)
-# 最大单向偏移（躲远/防重叠/安全距离用）：樱桃=3(十字臂长)、黑=3(钻石R)、超级=8(方块单向)
-BOMB_REACH = {"Cherry Bomb": 3, "Bomb": 3, "Mega Bomb": 8}
+# 最大单向偏移（躲远/防重叠/安全距离用）：樱桃=3(十字臂长)、黑=6(方块向左6)、超级=8(方块单向)
+BOMB_REACH = {"Cherry Bomb": 3, "Bomb": 6, "Mega Bomb": 8}
 # 🥇 炸矿炸弹优先级（恒 2026-09-06：黑 > 超级 > 樱桃）——背包里挑实际有的、按此序选
 BOMB_PRIORITY = ["Bomb", "Mega Bomb", "Cherry Bomb"]
 
@@ -440,32 +442,30 @@ class BombMiner(WeaponMixin):
 
     def blast_tiles(self, bx, by, bomb_type=None):
         """某炸弹放在 (bx,by) 爆炸覆盖的瓦片（含中心）列表。
-        🔥 2026-09-06 恒 tooltip 实测形状：樱桃=边长7十字(缺4角)；黑=钻石R3；超级=15×15方块。"""
+        🔥 2026-09-06 恒 tooltip 实测 + 反编译 bombRadius：樱桃=边长7十字(缺4角)；黑=边长11方块；超级=15×15方块。"""
         bt = bomb_type or self.bomb_type
         out = []
         if bt == "Mega Bomb":
-            # 超级：向上8 向左8 向右6 向下6 → 15×15 整方块（dx∈[-8,6], dy∈[-8,6]）
+            # 超级：向上8 向左8 向右6 向下6 → 15×15 整方块（dx∈[-8,6], dy∈[-8,6]，bombRadius=7）
             for dx in range(-8, 7):
                 for dy in range(-8, 7):
                     out.append((bx + dx, by + dy))
         elif bt == "Cherry Bomb":
-            # 樱桃：边长7 十字(缺4角)——横臂 |dx|<=3 且 dy==0 + 竖臂 |dy|<=3 且 dx==0（13格含中心；tooltip 说12格=不含中心）
+            # 樱桃：边长7 十字(缺4角)——横臂 |dx|<=3 且 dy==0 + 竖臂 |dy|<=3 且 dx==0（13格含中心；bombRadius=3）
             for dx in range(-3, 4):
                 out.append((bx + dx, by))
             for dy in range(-3, 4):
                 if dy != 0:
                     out.append((bx, by + dy))
         else:
-            # 黑炸弹：钻石（曼哈顿）半径3
-            R = BOMB_RADIUS.get(bt, 3)
-            for dx in range(-R, R + 1):
-                for dy in range(-R, R + 1):
-                    if abs(dx) + abs(dy) <= R:
-                        out.append((bx + dx, by + dy))
+            # 黑炸弹：向左6 向上6 向右4 向下4 → 边长11 整方块（dx∈[-6,4], dy∈[-6,4]，bombRadius=5）
+            for dx in range(-6, 5):
+                for dy in range(-6, 5):
+                    out.append((bx + dx, by + dy))
         return out
 
     def blast_reach(self, bomb_type=None):
-        """该炸弹最大单向偏移（躲远/安全距离/防重叠粗略用）。樱桃3、黑3、超级8。"""
+        """该炸弹最大单向偏移（躲远/安全距离/防重叠粗略用）。樱桃3、黑6、超级8。"""
         return BOMB_REACH.get(bomb_type or self.bomb_type, 3)
 
     # ═══════════ 底层 API ═══════════
@@ -520,12 +520,24 @@ class BombMiner(WeaponMixin):
     def warp(self, location, x=5, y=5):
         return self._post("/warp", {"location": location, "x": x, "y": y})
 
-    def position(self, x, y):
-        return self._post("/position", {"x": x, "y": y})
+    def position(self, x, y, check_passable=False, check_connectivity=False):
+        """瞬移到 (x,y)。check_passable=True 时（炸矿用）C# 校验落点可走（墙/岩石/水拒），
+        墙/孤岛格拒绝（返回 ok=false），防止 AI position 落进矿井迷宫死穴。
+        check_connectivity=True 时再加**墙圈连通域**校验：目标格必须与 AI 当前格同一个墙圈胞腔，
+        否则是"被墙圈死的隔区"，position 进去够不到梯子/矿就会打转卡死。"""
+        d = {"x": x, "y": y}
+        if check_passable:
+            d["check_passable"] = True
+        if check_connectivity:
+            d["check_connectivity"] = True
+        return self._post("/position", d)
 
-    def position_safe(self, x, y, exact=False):
+    def position_safe(self, x, y, exact=False, check_passable=False, check_connectivity=False):
         """position 前检查地图内 + 后验证位置（站位不可走被游戏传送就放弃，防反复重试）。
-        exact=True 时要求精确落在 (x,y)（梯子/楼梯站位必须精确，差1格 confirm 无效）。"""
+        exact=True 时要求精确落在 (x,y)（梯子/楼梯站位必须精确，差1格 confirm 无效）。
+        check_passable=True（炸矿用）时 C# 拒"不可走格"——本方法读返回，被拒立即放弃，
+        否则落地验证只见位置被弹就误判成功，把 AI 留在墙/孤岛格。
+        check_connectivity=True（炸矿用）时 C# 再校验墙圈连通域（防瞬移进隔区卡死）。"""
         s = self.state()
         loc = s.get("location", {})
         w = loc.get("mapWidth", 100)
@@ -533,7 +545,11 @@ class BombMiner(WeaponMixin):
         if x < 0 or y < 0 or x >= w or y >= h:
             log(f"  ⚠️ 目标 ({x},{y}) 在地图外（{w}x{h}），放弃")
             return False
-        self.position(x, y)
+        r = self.position(x, y, check_passable=check_passable, check_connectivity=check_connectivity)
+        # ⚠️ position 被拒（落点不可走）→ 立即放弃，别把被弹走的位置当成功
+        if not r.get("ok"):
+            log(f"  ⚠️ position ({x},{y}) 被拒（不可走/孤岛），放弃")
+            return False
         time.sleep(0.4)
         s = self.state()
         p = s.get("player", {})
@@ -597,6 +613,36 @@ class BombMiner(WeaponMixin):
             if item.get("name") in BOMB_NAMES:
                 total += item.get("stack", 0)
         return total
+
+    def ground_bombs(self, cache_ttl=1.5):
+        """读 /bombs——当前地图**躺在地上还没爆炸**的真炸弹列表 [{x,y,bomb_type}]。
+        🔥 2026-09-06 反编译：放炸弹=塞 TemporaryAnimatedSprite(bombRadius>0) 进 temporarySprites，
+        爆炸后 endFunction 移除→自动清空。这比自家 _pending_bombs 记账可靠——记账会漏
+        "被游戏拒绝的放置"、"房主放的炸弹"等。带短 TTL 缓存：best_bomb_anchor 嵌套循环里
+        每候选格都判重叠，避免每格都打一次网络（1.5s 内复用）。"""
+        now = time.time()
+        cache = getattr(self, "_gb_cache", None)
+        if cache is not None and now - getattr(self, "_gb_ts", 0) < cache_ttl:
+            return cache
+        try:
+            out = self._get("/bombs").get("bombs", [])
+        except Exception:
+            out = []
+        self._gb_cache = out
+        self._gb_ts = now
+        return out
+
+    def _rock_in_ground_bomb(self, rx, ry):
+        """(rx,ry) 是否落在某个真实地面未爆炸弹的爆炸覆盖范围内（敲石头排除用）。
+        读 /bombs 按各弹真实爆炸形状判，防止浪费镐子敲"马上会被炸弹炸掉的石头"。"""
+        try:
+            for b in self.ground_bombs():
+                bt = b.get("bomb_type") or "Bomb"
+                if (rx, ry) in set(self.blast_tiles(b.get("x", -99), b.get("y", -99), bt)):
+                    return True
+        except Exception:
+            pass
+        return False
 
     def inventory_free_slots(self):
         s = self.state()
@@ -1044,13 +1090,22 @@ class BombMiner(WeaponMixin):
 
     def _pending_overlaps(self, x, y, bomb_type=None):
         """(x,y) 放炸弹是否会跟某个未爆炸炸弹的爆炸区**重叠**（防重叠浪费）。
-        精确按各自 blast_tiles 形状判交集——樱桃十字/黑钻石/超级方块两两不同，不能用单一半径近似。"""
+        精确按各自 blast_tiles 形状判交集——樱桃十字/黑方块/超级方块两两不同，不能用单一半径近似。
+        除自家 _pending_bombs 记账，还会读 /bombs 叠加**真实躺地上的炸弹**（记账漏的：被拒放置/房主放的）。"""
         bt = bomb_type or self.bomb_type
         self._prune_pending_bombs()
         mine = set(self.blast_tiles(x, y, bt))
         for bx, by, _, pbt in self._pending_bombs:
             if mine & set(self.blast_tiles(bx, by, pbt)):
                 return True
+        # 真实地面炸弹（反编译 /bombs）：与任一颗的爆炸形状相交就跳过
+        try:
+            for b in self.ground_bombs():
+                gbt = b.get("bomb_type") or "Bomb"
+                if mine & set(self.blast_tiles(b.get("x", -99), b.get("y", -99), gbt)):
+                    return True
+        except Exception:
+            pass
         return False
 
     def _pending_near(self, x, y, radius):
@@ -1202,7 +1257,9 @@ class BombMiner(WeaponMixin):
         sx, sy, dx, dy = self.find_stand_tile(x, y, occupied)
         if sx is None:
             return False
-        self.position(sx, sy)
+        # 🔥 2026-09-06 恒：敲石站位走 check_passable+check_connectivity（墙格拒瞬移 + 墙圈隔区拒瞬移防卡死）
+        if not self.position_safe(sx, sy, check_passable=True, check_connectivity=True):
+            return False
         time.sleep(0.3)
         self.face_toward(x, y)
         # 找背包实际镐子名（如 Iridium Pickaxe——select "Pickaxe" 精确名匹配不到）
@@ -1237,9 +1294,12 @@ class BombMiner(WeaponMixin):
             if not rocks:
                 break
             # 剔除未爆炸炸弹覆盖范围内的石头（被炸是迟早的事，别浪费镐击）
-            if self._pending_bombs:
+            # 除自家记账外，还叠加 /bombs 读到的真实地面炸弹——两者都排除
+            if self._pending_bombs or self.ground_bombs():
                 self._prune_pending_bombs()
-                rocks = [r for r in rocks if not self._pending_near(r[0], r[1], bradius)]
+                rocks = [r for r in rocks
+                         if not self._pending_near(r[0], r[1], bradius)
+                         and not self._rock_in_ground_bomb(r[0], r[1])]
                 if not rocks:
                     break
             s = self.state()
@@ -1516,7 +1576,9 @@ class BombMiner(WeaponMixin):
         sx, sy, dx, dy = self.find_stand_tile(x, y, occupied)
         if sx is None:
             return False, f"({x},{y}) 旁边没有可站位"
-        self.position(sx, sy)
+        # 🔥 2026-09-06 恒：炸矿站位走 check_passable+check_connectivity——墙/孤岛格拒瞬移 + 墙圈隔区拒瞬移防卡死
+        if not self.position_safe(sx, sy, check_passable=True, check_connectivity=True):
+            return False, f"站位 ({sx},{sy}) 不可走，跳过"
         time.sleep(0.3)
         # 面向目标
         if dx == 1:
@@ -1915,7 +1977,8 @@ class BombMiner(WeaponMixin):
             return False
         lx, ly = ladder
         for attempt in range(3):
-            # 1. position 精确站上梯子格（差1格 confirm 无效）
+            # 1. position 精确站上梯子格（差1格 confirm 无效）。⚠️ 不加连通校验——梯子就是要去的出口，
+            #    即使它在另一胞腔，瞬移到梯子=成功逃出（比"卡隔区回不去"好）；加了反而会拒掉合法逃生
             if not self.position_safe(lx, ly, exact=True):
                 log(f"  ⚠️ 站不上梯子 ({lx},{ly})，重试 {attempt + 1}/3")
                 time.sleep(0.5)

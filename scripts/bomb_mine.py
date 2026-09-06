@@ -684,8 +684,9 @@ class BombMineBot(BombMiner):
             log(f"\n--- 💣 第 {level} 层 ---")
             self.maintain_buffs(threshold=30)  # 每层开打前看一遍 buff（补被沙拉顶掉的菜品 buff）
 
-            # 宝箱层（沙漠整百层 = 游戏120+100n）才开箱，避免每层检测卡死
-            if (level - 120) % 100 == 0:
+            # 宝箱层开箱（恒 2026-09-06：城镇【整10层】也有宝箱，之前只认沙漠整百层120+100n——40层整10的宝箱从没被开）
+            #   沙漠整百层=120+100n（宝箱房）；城镇整10层=level%10==0。open_treasure_chests 内部扫不到 Chest 即无操作不卡。
+            if (level - 120) % 100 == 0 or (level < 121 and level % 10 == 0):
                 self.open_treasure_chests()
 
             # 安全
@@ -798,6 +799,14 @@ class BombMineBot(BombMiner):
             # ⭐ 背包满：不撤退，留原地停手（AI 手动 bomb_organize/腾格，重跑 resume 原地续）——恒 2026-08-23
             log("  背包满已停脚本交AI手动整理（不撤退，留原地）→ 处理完重跑 bomb_mine 原地续层")
             return True
+        # 🔥 2026-09-06 恒：城镇没显式设 target 走默认 120 时，若电梯/进度已到顶(start>=target)，
+        #   其实"没层可炸就撤"。点名让 AI/人知道这不是真冲到更深，而是城镇到头了。头骨(≥121)无此概念，不提示。
+        if (not self.target_was_default_skull) and getattr(self, "target_was_default", False) \
+                and start_level >= target_floor:
+            log(f"  🚩 提醒：鹈鹕镇普通矿井 target {target_floor} 层是【默认值】（未显式指定），"
+                f"且电梯/进度已到这一层——其实是没层可炸就撤，不是真冲到更深了。")
+            log(f"     ⚠️ 城镇【普通矿井最高120层】就到头了，更深处在【头骨矿洞/沙漠】(121+，"
+                f"mine bomb_mine 会进头骨)，别再本矿井给 target>120。")
         self.retreat_to_entrance(retreat_reason or "到目标层")
         return retreat_reason is None
 
@@ -861,32 +870,65 @@ def main():
     hport = args.host_port or int(_re.search(r'(\d+)', HOST_URL).group(1))
 
     # ⭐ 2026-08-23 恒：曾默认 target=80 → AI 在头骨/沙漠用会把 AI 拉去鹈鹕镇矿。按当前层自适应。
+    # 🔥 2026-09-06 恒：AI 没显式设 --target 就默认到 120（城镇）/500（头骨）——默认是**电梯/进度层数**，
+    #   不是"AI 真心想冲的深度"。AI 懵懵懂懂冲到 120 就撤，不知道还能冲。这里必须把默认层数点名，
+    #   让 AI（或人）知道这是"没设 target 的兜底"，该不该继续冲得显式给 target 才算数。
+    # ── 场景判定（先统一算，显式/默认 target 都要用） ──
+    # 🔥 2026-09-06 恒：城镇【普通矿井最高120层】；头骨矿洞(≥121 或 SkullCave 入口)才是更深，无电梯直通深层。
+    try:
+        s = requests.get(f"http://localhost:{port}/state", timeout=10).json()
+        _loc = (s.get("location") or {}).get("name", "")
+    except Exception:
+        _loc = ""
+    _lv = extract_mine_level(_loc) or 0
+    in_skull = _lv >= 121 or _loc.startswith("SkullCave")   # 头骨矿层(≥121) 或 头骨入口
+
     target = args.target
+    target_was_default = False   # 是否走了"未指定→默认"的兜底（城镇：没设→120电梯顶；头骨：没设→500深层目标）
+    # 🔥 2026-09-06 恒：城镇普通矿井【最高120层】，target >120 = 到不了的层，**硬拦**（不是提示，防 AI 误设）；
+    #   头骨矿洞(≥121)无限制（从121连续深挖，想冲多深都行）。
+    if not in_skull and target > 120:
+        log(f"  ❌ 城镇普通矿井最高【120层】，target={target} 超了——这不是城镇能炸到的层。"
+            f"更深处在【头骨矿洞/沙漠】(121+，mine bomb_mine 会进头骨)。若只想到120，target 设 120 或用默认。")
+        return
+    if not in_skull:
+        target = min(target, 120)   # 城镇 target 上限120
+    else:
+        target = min(target, 500)   # 头骨/沙漠上限放500（测深层，恒 2026-08-23 确认500不用改）
+
     if target <= 0:
-        try:
-            s = requests.get(f"http://localhost:{port}/state", timeout=10).json()
-            _loc = (s.get("location") or {}).get("name", "")
-        except Exception:
-            _loc = ""
-        lv = extract_mine_level(_loc) or 0
-        in_skull = lv >= 121 or _loc.startswith("SkullCave")   # 头骨矿层(≥121) 或 头骨入口
-        target = 500 if in_skull else 120   # ⭐ 城镇矿井到120（默认曾80=电梯到120时start>=target空转，恒 2026-08-23）；头骨/沙漠默认深目标500，恒2026-08-23确认原本500挺好不改
-        log(f"  🎯 目标层自适应: {target}" + ("（在头骨/沙漠）" if in_skull else ""))
-    target = min(target, 500)  # 头骨/沙漠上限放500（测深层用，恒2026-08-23确认500不用改）
+        target = 500 if in_skull else 120
+        target_was_default = True
+        if in_skull:
+            log(f"  ℹ️ 头骨矿洞：从第一层(121)起连续往下爬（无电梯/进度层数概念），target={target} 是想爬到的最深层。")
+            log(f"     （头骨连续深层，爬到 {target} 层是正常目标，不是「默认兜底就撤」；想更深改 --target。）")
+        else:
+            log(f"  ⚠️ 没指定 --target，用默认目标层: {target}（城镇，≈电梯到顶120）")
+            log(f"     注意：鹈鹕镇【普通矿井最高120层】，target=120 就是到头了——这是电梯顶，不是 AI 想冲更深的预设目标。")
 
     # 起始层：进度恢复
-    # 鹈鹕镇矿井(target<121) → 动态读电梯（接"深处的危险"重置后=1）；头骨(≥121)无电梯走原逻辑
+    # 🔥 2026-09-06 恒：城镇(≤120) start 不得超过"电梯/进度层"，跳更深=报错（要往深只能一层层炸上去）。
+    #   头骨(≥121)从121连续深挖，start=要爬到的起点（resume 在坑里原地续/不在坑回121）。
+    # ⚠️ maxFloor 可能受"深处的危险"重置影响（重置后电梯=1），动态读。
     start = args.start
-    if args.resume and start <= 1:
-        if target < 121:
-            auto = _town_elevator_start(port)
-            tag = "🪜 电梯当前到"
-        else:
+    if target < 121:
+        # ── 城镇：基准=电梯当前到 ──
+        elev = _town_elevator_start(port)
+        if args.resume and start <= 1:
+            start = elev if elev > 1 else 1   # 默认从电梯层继续
+            if elev > 1:
+                log(f"  🪜 电梯当前到 {elev} 层开始")
+        elif start > elev:
+            log(f"  ❌ 城镇起始层 start={start} 超过电梯/进度层 {elev}——不能跳到比进度更深的层。"
+                f"（只能从进度浅层往上炸；想到更深先把浅层炸到那一层，或 start 设 ≤ {elev}。）")
+            return
+    else:
+        # ── 头骨：从进度/121 恢复 ──
+        if args.resume and start <= 1:
             auto = resume_start_level(port)
-            tag = "📋 头骨沙漠恢复"
-        if auto > 1:
-            log(f"  {tag} {auto} 层开始")
-        start = auto
+            if auto > 1:
+                log(f"  📋 头骨沙漠恢复 {auto} 层开始")
+            start = auto
 
     bot = BombMineBot(port, hport, bomb_type=args.bomb,
                       min_covered=args.min_covered,
@@ -894,6 +936,8 @@ def main():
                       follow_host=bool(args.follow_host),
                       lead=args.lead, autodrop=args.autodrop,
                       weapon=args.weapon)
+    bot.target_was_default = target_was_default   # 🔥 结束段据此点名"默认target到顶就撤"（2026-09-06 恒）
+    bot.target_was_default_skull = target_was_default and in_skull   # 默认 target 且是头骨(≥121)→结束段不提示（头骨无电梯/进度层数概念）
 
     # ⚠️ 2026-08-16 预检：炸弹/血量/武器告知原因（没炸弹/血低硬拦，没武器黄）
     block = bot.preflight()

@@ -2225,6 +2225,7 @@ public class ModEntry : Mod
                 "/petall" => HandlePetAll(),
                 "/waterbowl" => HandleWaterBowl(),
                 "/ladder" => HandleLadder(),
+                "/bombs" => HandleBombs(),
                 "/silo" => HandleSilo(),
                 "/mastery" => HandleMastery(),
                 "/special_items" => HandleSpecialItems(),   // 💼 钱包特殊物品列表（含 mastery_xxx/TownKey，2026-08-23 恒）
@@ -6946,6 +6947,9 @@ public class ModEntry : Mod
         var p = ReadJson(ctx);
         var x = GetParam<int>(p, "x");
         var y = GetParam<int>(p, "y");
+        // 🔥 2026-09-06 恒：默认不校验落点可走（保持全项目 position 现状，farm/钓鱼/社交等掉血少不需严）。
+        //    只有**炸矿**显式传 check_passable=true（矿井迷宫易 position 落进墙/孤岛，AI 卡死打转）。
+        bool checkPassable = GetParamOr(p, "check_passable", false);
 
         if (!Context.IsWorldReady)
             throw new InvalidOperationException("World not ready");
@@ -6955,13 +6959,76 @@ public class ModEntry : Mod
         {
             ClearMovementState();
             var farmer = Game1.player;
+            var loc = farmer.currentLocation;
+            // 🔥 2026-09-06 恒：炸矿落点校验（连通域 + 可停双层）。
+            //    模型（恒拍板）：室内/矿井可走区 = 一圈墙格围着的内部区域（地图图层 isTilePassable 圈定）
+            //       减去 家具/石头/水等 object 层不可走格（区域内部障碍，不是区域分界）。
+            //    所以连通网格**只用地图图层 isTilePassable**（不含 object/家具/水）——
+            //       岩石在 object 层，地图图层仍判"可走"→ 岩石不划区域分界、可炸穿过去；
+            //       只有墙格（地图图层 isTilePassable=false）才是"墙圈分界"，把可走区切成多个胞腔。
+            //    ⛔ 墙圈隔区卡死根治：锚点=AI**当前所在格**，BFS 从锚点沿地图层连通，
+            //       目标格必须在**同一个墙圈胞腔**里。否则是"被墙圈死的隔区"，position 瞬移进去
+            //       就回不了当前区（够不到梯子/矿）→ 打转卡死。从入口主区起步，AI 永远锁在一个胞腔。
+            bool checkConnectivity = GetParamOr(p, "check_connectivity", false);
+
+            if (checkPassable && !IsTilePassable(loc, new Point(x, y)))
+            {
+                // ① 落点本身不可走（含岩石/家具/水/墙）→ 拒绝
+                tcs.SetResult(new
+                {
+                    ok = false,
+                    action = "position_rejected",
+                    reason = $"({x},{y}) 不可走，炸矿拒绝瞬移（矿井迷宫墙/崖边不可走）",
+                    location = loc.Name,
+                    x = farmer.TilePoint.X, y = farmer.TilePoint.Y
+                });
+                return;
+            }
+            // ② 连通域：目标格必须与 AI 当前格同一个墙圈胞腔（防瞬移进隔区卡死）
+            if (checkPassable && checkConnectivity)
+            {
+                var cur = farmer.TilePoint;
+                if (IsTilePassable(loc, cur) && !ConnectedMapLayer(loc, cur, new Point(x, y)))
+                {
+                    tcs.SetResult(new
+                    {
+                        ok = false,
+                        action = "position_rejected",
+                        reason = $"({x},{y}) 与当前格({cur.X},{cur.Y})被墙圈隔开（非同一连通区），炸矿拒绝瞬移防隔区卡死",
+                        location = loc.Name,
+                        x = cur.X, y = cur.Y
+                    });
+                    return;
+                }
+            }
+            else if (checkPassable)
+            {
+                // ③（无 check_connectivity 时退路）孤岛检测：4 方向至少一个可走邻格（否则是墙围死的死穴）
+                var pt = new Point(x, y);
+                bool anyNeighbor = IsTilePassable(loc, new Point(pt.X + 1, pt.Y))
+                    || IsTilePassable(loc, new Point(pt.X - 1, pt.Y))
+                    || IsTilePassable(loc, new Point(pt.X, pt.Y + 1))
+                    || IsTilePassable(loc, new Point(pt.X, pt.Y - 1));
+                if (!anyNeighbor)
+                {
+                    tcs.SetResult(new
+                    {
+                        ok = false,
+                        action = "position_rejected",
+                        reason = $"({x},{y}) 是孤立格（四周都被墙围死），炸矿拒绝瞬移防卡死",
+                        location = loc.Name,
+                        x = farmer.TilePoint.X, y = farmer.TilePoint.Y
+                    });
+                    return;
+                }
+            }
             farmer.Position = new Vector2(x, y) * Game1.tileSize;
             CenterViewportOnFarmer(farmer);
             tcs.SetResult(new
             {
                 ok = true,
                 action = "positioned",
-                location = farmer.currentLocation.Name,
+                location = loc.Name,
                 x = farmer.TilePoint.X,
                 y = farmer.TilePoint.Y
             });
@@ -15713,6 +15780,59 @@ public class ModEntry : Mod
     }
 
     /// <summary>
+    /// GET /bombs
+    /// Returns bombs currently sitting un-exploded on the ground (as TemporaryAnimatedSprite
+    /// in currentLocation.temporarySprites with bombRadius &gt; 0).
+    /// 🔥 反编译：放炸弹时 placementAction 塞一个 TemporaryAnimatedSprite(ParentSheetIndex=286/287/288)，
+    /// currentParentTileIndex 即炸弹 object id（樱桃/黑/超级），position/64 即瓦片，爆炸后 endFunction 移除→自动清空。
+    /// 用于炸矿防重叠：AI 规划下一个落点可先看这地上哪些格已有真炸弹，避开其爆炸区。
+    /// </summary>
+    private object HandleBombs()
+    {
+        if (!Context.IsWorldReady)
+            throw new InvalidOperationException("World not ready");
+
+        var loc = Game1.player?.currentLocation;
+        if (loc == null)
+            return new { ok = false, error = "No location" };
+
+        // 读 temporarySprites 也必须主线程（同 /surroundings 的地图状态访问限制）
+        var tcs = new TaskCompletionSource<object>();
+        EnqueueMainThread(() =>
+        {
+            try
+            {
+                var bombs = new List<object>();
+                foreach (var s in loc.temporarySprites)
+                {
+                    if (s == null || s.bombRadius <= 0)
+                        continue;   // 只认真炸弹（bombRadius 只在炸弹构造时被设为 3/5/7）
+                    int x = (int)(s.position.X / 64f);
+                    int y = (int)(s.position.Y / 64f);
+                    // currentParentTileIndex=炸弹 object id：286=樱桃 287=黑 288=超级
+                    string? bt = s.currentParentTileIndex switch
+                    {
+                        286 => "Cherry Bomb",
+                        288 => "Mega Bomb",
+                        _ => "Bomb"
+                    };
+                    bombs.Add(new Dictionary<string, object?>
+                    {
+                        ["x"] = x, ["y"] = y, ["bomb_type"] = bt,
+                        ["bomb_radius"] = s.bombRadius, ["tile"] = $"{x},{y}"
+                    });
+                }
+                tcs.SetResult(new { ok = true, location = loc.Name, bombs });
+            }
+            catch (Exception ex)
+            {
+                tcs.SetResult(new { ok = false, error = ex.Message });
+            }
+        });
+        return tcs.Task.GetAwaiter().GetResult();
+    }
+
+    /// <summary>
     /// GET /mine_debug
     /// 调试用：dump MineShaft 的所有字段和当前值，找梯子字段。
     /// </summary>
@@ -16964,6 +17084,45 @@ public class ModEntry : Mod
     /// 判定某格能否作为走位落点。allowWater=false(默认)：水格不可站(普通走位不落水)；
     /// allowWater=true：放行水格(淘金/放蟹笼时允许站水上近格——SDV 站浅水合法，配合"淘完回原位")。
     /// </summary>
+    /// <summary>
+    /// 连通域洪水填充：从 start 沿**地图图层 isTilePassable**（不含 object/家具/水）能走到 target 吗。
+    /// ⚠️ 刻意只用地图图层——岩石是 object 层且可炸穿，不该当连通分界；只有墙/地形（地图层不可走）才切胞腔。
+    /// 返回 false 表示 target 与 start 被一圈墙格隔开（不同墙圈胞腔，position 进去会卡死）。越界格直接视为不可达。
+    /// </summary>
+    private bool ConnectedMapLayer(GameLocation location, Point start, Point target)
+    {
+        if (!location.isTilePassable(new Vector2(start.X, start.Y))) return start == target;
+        if (!location.isTilePassable(new Vector2(target.X, target.Y))) return false;
+
+        int mapWidth = location.Map.DisplayWidth / 64;
+        int mapHeight = location.Map.DisplayHeight / 64;
+        var seen = new HashSet<string>();
+        var q = new Queue<Point>();
+        q.Enqueue(start);
+        seen.Add(cellKey(start));
+        int[] dx = { 1, -1, 0, 0 };
+        int[] dy = { 0, 0, 1, -1 };
+        while (q.Count > 0)
+        {
+            var cur = q.Dequeue();
+            if (cur.X == target.X && cur.Y == target.Y) return true;
+            for (int i = 0; i < 4; i++)
+            {
+                int nx = cur.X + dx[i], ny = cur.Y + dy[i];
+                if (nx < 0 || ny < 0 || nx >= mapWidth || ny >= mapHeight) continue;
+                var np = new Point(nx, ny);
+                var key = cellKey(np);
+                if (seen.Contains(key)) continue;
+                if (!location.isTilePassable(new Vector2(nx, ny))) continue;
+                seen.Add(key);
+                q.Enqueue(np);
+            }
+        }
+        return false;
+    }
+
+    private static string cellKey(Point p) => p.X + "," + p.Y;
+
     private bool IsTilePassable(GameLocation location, Point tile, bool allowWater = false)
     {
         // Check map bounds
