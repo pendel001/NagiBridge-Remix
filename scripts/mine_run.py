@@ -52,6 +52,7 @@ WALK_TIMEOUT = 45          # 单次 /walk_to 超时
 LADDER_SCAN_INTERVAL = 4   # 每敲 N 块石头扫一次梯子
 MONSTER_SCAN_INTERVAL = 3  # 每敲 N 块石头扫一次怪物
 PICKUP_SCAN_INTERVAL = 3   # 每敲 N 块石头扫一次地上物品
+NEAR_ROCK_POSITION_DIST = 3  # 🎯 石头距玩家≤3格→直接position精确落格敲（近处走位偏敲不准；3格才够触发，2格太小）
 
 NAGI_URL = os.environ.get("NAGI_URL", "http://localhost:7842")
 
@@ -738,7 +739,9 @@ class MineBot(WeaponMixin):
         return self.state().get("player", {}).get("x", x), self.state().get("player", {}).get("y", y)
 
     def natural_walk(self, tx, ty, location=None):
-        """装模作样走路：近的用 go_to 走路，远的才闪现"""
+        """装模作样走路：目标已到 → True；否则统一走 /walk_to（自然），不做长距离闪现。
+        ⚠️ 2026-09-06 恒：要的是【长距离走路、短距离 position】——近处(≤2格)由 mine_rock 直接
+        position 精确敲；这里专管"走过去"，别再给长距离加"闪现"分支（远距离瞬移看着假）。"""
         if not location:
             s = self.state()
             location = s.get("location", {}).get("name", "")
@@ -749,18 +752,14 @@ class MineBot(WeaponMixin):
 
         if dist <= 1:
             return True  # 到了
-        elif dist <= 4:
-            # 短距离：用游戏自带 /walk_to 走路（自然）
-            try:
-                r = self.walk_to_coord(location, tx, ty)
-                if r.get("ok"):
-                    return self.wait_arrival(location, tx, ty, timeout=15)
-            except:
-                pass
-            return self.mine_teleport(tx, ty)
-        else:
-            # 远距离：直接闪现
-            return self.mine_teleport(tx, ty)
+        # 走路（自然）；走不到/触发剧情才兜底 position——不做长距离闪现
+        try:
+            r = self.walk_to_coord(location, tx, ty)
+            if r.get("ok"):
+                return self.wait_arrival(location, tx, ty, timeout=15)
+        except:
+            pass
+        return self.mine_teleport(tx, ty)
 
     # ── 核心操作 ──
 
@@ -772,7 +771,16 @@ class MineBot(WeaponMixin):
         if teleport:
             ok = self.mine_teleport(adj_x, adj_y)
         elif is_mine_location(location):
-            ok = self.natural_walk(adj_x, adj_y)
+            # 🎯 2026-09-06 恒：近处石头（距玩家≤3格）走 /walk_to 易偏、面向/敲击错位 → 直接
+            #    position 到精确相邻格敲（体感准）；稍远仍走自然路（长距离走路、短距离 position）。
+            s0 = self.state()
+            rock_dist = abs(x - int(s0["player"]["x"])) + abs(y - int(s0["player"]["y"]))
+            if rock_dist <= NEAR_ROCK_POSITION_DIST:
+                log(f"  📍 position→敲 {name} ({x},{y}) 距{rock_dist}")   # 近处精确落格
+                ok = self.mine_teleport(adj_x, adj_y)
+            else:
+                log(f"  🚶 走→敲 {name} ({x},{y}) 距{rock_dist}")            # 远处走路（自然）
+                ok = self.natural_walk(adj_x, adj_y)
         else:
             ok = self.safe_walk_to(adj_x, adj_y, location, timeout=30)
 

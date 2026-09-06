@@ -14226,7 +14226,7 @@ def _bg_activity_line() -> str:
     except Exception:
         _host = "host"
     return (f"⏰ 异步唤醒时间——脚本「{job.name}」后台运行中（{elapsed}s，job {job.job_id}）\n"
-            f"   ✅ 可做（不打断脚本）: 整理背包 / 查状态看事项 / 跟{_host}聊天 / 发表情 / 截图观察\n"
+            f"   ✅ 可做（不打断脚本）: 整理背包(⚠️摸完立刻关，别留菜单挡脚本吃东西/动作) / 查状态看事项 / 跟{_host}聊天 / 发表情 / 截图观察\n"
             f"   ⛔ 别做（会和脚本打架）: 走位 / 挥工具 / 开商店等强菜单（查邮箱要走去信箱=走位，也算）\n"
             f"   → 要控制权: script(ops=\"stop\")")
 
