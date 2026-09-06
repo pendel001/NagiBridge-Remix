@@ -6517,8 +6517,8 @@ def bomb_mine(target: int = 0, bomb: str = "Bomb", min_covered: int = 3,
         one_floor: 逐层模式，跑一层返回摘要不撤退（默认 False）
     """
     _cur = api.state().get("location", {}).get("name", "")
-    if not (_cur == "Mine" or _cur.startswith("UndergroundMine")):
-        return _with_state(f"❌ 现在不在矿井里（{_cur}）——先 map_go 到矿井/头骨矿洞再炸（防瞬移/音乐乱）")
+    if not (_cur in ("Mine", "SkullCave") or _cur.startswith("UndergroundMine")):
+        return _with_state(f"❌ 现在不在矿井/头骨矿洞里（{_cur}）——先 map_go 到矿井(✓)或头骨矿洞(121+)再炸（防瞬移/音乐乱）")
     args_list = [f"--target", str(target), f"--bomb", bomb,
                  f"--min-covered", str(min_covered)]
     if not follow_host:
