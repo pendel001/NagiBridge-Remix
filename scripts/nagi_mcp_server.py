@@ -3602,6 +3602,27 @@ MINE_CART_TO = {
     "BusStop": "巴士站",
     "Mountain": "采石场",
 }
+
+# 🚂 矿车"直达/近"路由表（2026-09-06 恒：可指定路由——这些 destination 走到最近站坐矿车，**压过图腾柱**）。
+#   其余目的地仍走"图腾柱 > 矿车(已站上) > 走路"原序。值 = (矿车坐到的图, 最后小走目标 或 None)。
+#   直达: cart_target(如 Mine/Mountain/BusStop)，最后小走 None（到即止）。
+#   镇东南 POI(铁匠铺/博物馆/冰淇淋摊): cart 到 Town（镇矿车站就在东南，近）→ 再走动到该 POI。
+#   农场: cart 到 BusStop（巴士站旁就是农场）→ 再走回 Farm（跨图续走）。
+_AUTO_MINECART_ROUTES = {
+    # 直达矿井
+    "矿井": ("Mine", None), "矿洞": ("Mine", None), "鹈鹕镇矿井": ("Mine", None),
+    "mine": ("Mine", None),
+    # 直达采石场
+    "采石场": ("Mountain", None), "quarry": ("Mountain", None),
+    # 直达巴士站
+    "巴士站": ("BusStop", None), "busstop": ("BusStop", None), "bus stop": ("BusStop", None),
+    # 镇东南 POI（车到 Town 再走近；final 用 POI 真名落门口，见 locations.POI"铁匠铺(门口)"等）
+    "铁匠铺": ("Town", "铁匠铺(门口)"), "blacksmith": ("Town", "铁匠铺(门口)"),
+    "博物馆": ("Town", "博物馆(门口)"), "museum": ("Town", "博物馆(门口)"), "考古": ("Town", "博物馆(门口)"),
+    "冰淇淋摊": ("Town", "冰淇淋摊位"), "冰淇淋摊位": ("Town", "冰淇淋摊位"), "ice cream": ("Town", "冰淇淋摊位"),
+    # 农场（车到巴士站再走回农场）
+    "农场": ("BusStop", "Farm"), "farm": ("BusStop", "Farm"),
+}
 _FACE_DELTA = [(0, -1), (1, 0), (0, 1), (-1, 0)]   # 0上/1右/2下/3左
 
 
@@ -3701,6 +3722,30 @@ def _minecart_plan(dest: str, cur: str):
     return None
 
 
+def _minecart_walk_plan(cart_target: str, cur: str):
+    """矿车直达规划：从 cur 走到"菜单能直达 cart_target"的最近可达站 → 坐车到 cart_target。
+    ⚠️ 2026-09-06 恒：_AUTO_MINECART_ROUTES 用——先走到站再坐车（原来 _minecart_plan 只在"已站上"才坐）。
+    返回 (walk_path, 站名, 站数据, 目的站名) 或 None；walk_path 空=cur 即该站（直接坐）。"""
+    ds = MINE_CART_TO.get(cart_target)
+    if not ds:
+        return None                          # cart_target 不在矿车网络
+    direct = _map_bfs(cur, cart_target)      # 纯走到 cart_target 的段数（None=走不到）
+    if direct is not None and len(direct) <= 1:
+        return None                          # 已紧邻/就在 → 不绕矿车
+    best = None
+    for sname, stn in locations.MINE_CART_STATIONS.items():
+        if not any(opt == ds for opt in (stn.get("menu") or {}).values()):
+            continue                          # 此站菜单不能直达 cart_target
+        mc_steps = [] if cur == stn["map"] else _map_bfs(cur, stn["map"])
+        if mc_steps is None:
+            continue                          # 到不了此站 → 跳过
+        if direct is not None and len(mc_steps) >= len(direct):
+            continue                          # 走站 ≥ 走全程 → 矿车不省路
+        if best is None or len(mc_steps) < len(best[0]):
+            best = (mc_steps, sname, stn, ds)
+    return best
+
+
 def _minecart_go(sname: str, stn, dest_station: str, dest: str) -> tuple:
     """站到矿车格 → 朝站面 → 交互开菜单 → 选目的站 → 等传送。返回 (是否到 dest, 日志)。"""
     try:
@@ -3746,6 +3791,44 @@ def _minecart_go(sname: str, stn, dest_station: str, dest: str) -> tuple:
         return cur == dest, f"🚂 矿车 → {cur or '?'}"
     except Exception as e:
         return False, f"🚂 矿车失败({e})"
+
+
+def _minecart_route_go(walk_path, sname, stn, ds, cart_target, final_dest,
+                       destination, npc_target=None, npc0=None, mine_hint: str = "") -> str:
+    """执行【先走到矿车站 + 坐车到 cart_target】；最后小走 final_dest（同图 POI / None=直达 / 异图续走 BFS）。
+    ⚠️ 2026-09-06 恒：复用 _map_go_walk 走段（**调用不改它**）+ _minecart_go 坐车；到站失败/途中剧情→交回走路结果不硬坐车。"""
+    walk_txt = ""
+    if walk_path:
+        walk_txt = _map_go_walk(walk_path, destination, stn["map"], npc_target=None, npc0=None)
+    if api.state().get("location", {}).get("name", "") != stn["map"]:
+        # 到站失败/途中触发剧情 → 交回走路结果（不硬坐车）
+        return walk_txt if walk_txt else _with_state(f"⚠️ 走向矿车站 {stn['map']} 未达")
+    ok, mlog = _minecart_go(sname, stn, ds, cart_target)
+    # 前缀 = 走站叙事(_with_state 正文部分) + 车段
+    prefix = mlog
+    if walk_path and walk_txt and _STATE_SEP in walk_txt:
+        prefix = walk_txt.split(_STATE_SEP)[0] + "\n" + mlog
+    if not ok:
+        _NAV_FAILED["v"] = True
+        return _with_state(prefix + f"\n⚠️ 矿车坐车失败，未到 {cart_target}")
+    # ✅ 已到 cart_target；最后小走
+    if final_dest and final_dest != cart_target:
+        path = _map_bfs(cart_target, final_dest)
+        if path:
+            return _map_go_walk(path, destination, final_dest, lead_log=prefix,
+                                npc_target=npc_target, npc0=npc0, mine_hint=mine_hint)
+    body = prefix
+    if final_dest and final_dest in locations.POI and locations.POI[final_dest].get("map") == cart_target:
+        poi = locations.POI[final_dest]
+        api._post("/walk_to", {"location": cart_target, "x": poi["pos"][0], "y": poi["pos"][1]})
+        _wait_arrival(cart_target, poi["pos"][0], poi["pos"][1], timeout=20)
+        face_log = _apply_poi_stand_face(final_dest)
+        body += f" → 到达 {destination}（{poi['pos']}）{face_log}"
+    else:
+        body += f" → 到达 {cart_target}"
+    if npc_target:
+        body += "\n" + _npc_arrive_note(npc_target.get("name") or npc_target.get("displayName") or "", npc0, cart_target)
+    return _with_state(body + mine_hint + _mine_entry_reminder(cart_target))
 
 
 def _interior_to_farm(cur: str) -> bool:
@@ -4068,6 +4151,17 @@ def map_go(destination: str = "", npc: str = "") -> str:
                 return _with_state(f"🏡 已离开室内回到农场（{cur} {api.state().get('player',{}).get('x')},{api.state().get('player',{}).get('y')}）")
             if not xlog:
                 return _with_state("⚠️ 走出室内到农场失败（可能被挡/在菜单里）")
+        # 2.45 ⚠️ 2026-09-06 恒：特定 destination（矿车"直达/近"，见 _AUTO_MINECART_ROUTES）
+        #   → 走到最近站坐矿车直达，**压过图腾柱**。其余目的地仍走下方"图腾柱 > 矿车(已站上) > 走路"。
+        _mroute = _AUTO_MINECART_ROUTES.get(destination) \
+            or _AUTO_MINECART_ROUTES.get(str(destination).lower()) \
+            or _AUTO_MINECART_ROUTES.get(str(dest).lower())
+        if _mroute:
+            _cart_target, _final = _mroute
+            _mc = _minecart_walk_plan(_cart_target, cur)
+            if _mc:
+                return _minecart_route_go(_mc[0], _mc[1], _mc[2], _mc[3], _cart_target, _final,
+                                          destination, _npc_target, _npc0, mine_hint=_mine_hint)
         # 2.5 ⚠️ 2026-08-16 恒：图腾柱 > 矿车 > 走路（动态交通节点，玩家在对应位置才有）
         land, tlog = _try_transport(dest, cur)
         if land:
