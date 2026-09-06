@@ -328,7 +328,7 @@ POI = {
     "齐先生任务板":      {"map": "QiNutRoom",   "pos": (3, 4),  "note": "📜 齐先生任务板(QiNutRoom)：接齐钻任务/挑战；人站(3,4)朝上交互(3,3)开 SpecialOrdersBoard；menu read 看任务卡→menu click(button=acceptLeftQuestButton/acceptRightQuestButton)接；⚠️与社区布告栏同型(2026-08-22 AI现场检测+实测接单，accept_quest已退役)"},
     "姜岛农场(鹦鹉特快)": {"map": "IslandWest",  "pos": (74, 9),  "note": "农场上方鹦鹉特快站，给金核桃解锁后快速传送"},
     "火山区域(鹦鹉特快)": {"map": "IslandNorth", "pos": (60, 17), "note": "IslandNorth火山入口区鹦鹉特快站"},
-    "火山(入口)":         {"map": "IslandNorth", "pos": (40, 24), "note": "火山矿洞入口(IslandNorth)，进门到VolcanoDungeon0"},
+    "火山(入口)":         {"map": "IslandNorth", "pos": (41, 24), "note": "🌋 火山入口(IslandNorth)(恒2026-09-06牵定)：火山墙间隙(41,24)，别往里钻；旁边 Statue Of The Dwarf King(42,26)可摸；进门warp(39-42,20)→VolcanoEntrance→VolcanoDungeon0"},
     "火山矿井(入口)":      {"map": "VolcanoDungeon0", "pos": (31, 50), "note": "🌋 火山矿井入口层落点(2026-09-06恒牵定，避免顶部不稳定warp)：入口窄，落地(31,50)别硬钻墙——往下是VolcanoDungeon1"},
     "办事处(门口)":       {"map": "IslandNorth", "pos": (46, 47), "note": "姜岛办事处/Field Office门口（IslandNorth右下方），可捐赠化石"},
     "办事处(室内)":       {"map": "IslandFieldOffice", "pos": (4, 9), "note": "姜岛办事处内部入口，捐赠化石/领奖励"},
