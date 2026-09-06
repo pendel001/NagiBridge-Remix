@@ -14256,9 +14256,23 @@ def script_start(name: str, args: str = "") -> str:
         f"  收工会自动播报（含总时长）   停止: script(ops=\"stop\", kw={{\"job_id\":\"{job.job_id}\"}})")
 
 
+def _mine_exit_from_loc(loc_name: str):
+    """判断 farmhand 当前是否站在矿井，是则回对应出口（复用 bomb_common.retreat_to_entrance 约定）。
+    返回 (location, x, y) 或 None（不在矿井→不动）。让"主动停矿"不把 farmhand 留在矿井里。"""
+    ln = loc_name or ""
+    if "VolcanoDungeon" in ln:
+        return ("IslandNorth", 40, 24)    # 火山矿洞出口（姜岛火山入口）
+    if "SkullCave" in ln:
+        return ("Desert", 8, 6)           # 头骨矿洞出口（沙漠）
+    if "UndergroundMine" in ln:
+        return ("Mountain", 54, 5)        # 普通矿井出口（鹈鹕镇矿井口）
+    return None
+
+
 def script_stop(job_id: str = "") -> str:
     """🛑 停止后台脚本任务
     终止进程（terminate → 等 3s → 不行就 kill）。不传 job_id 停最近一个在跑的。
+    矿类脚本被杀后立刻把 farmhand 送回矿井口（不留在矿井——恒 2026-09-06）。
 
     Args:
         job_id: 便利工具/后台任务返回的任务ID
@@ -14279,11 +14293,20 @@ def script_stop(job_id: str = "") -> str:
         return _with_state(f"任务 {job.job_id} 已结束（返回码 {job.returncode}），无需停止。")
     is_fish = job.name in _FISHING_SCRIPTS
     _bg_kill(job)
+    # ⛏️ 2026-09-06 恒：主动停矿类脚本不能把 farmhand 留在矿井——杀完立刻看它在哪，还在矿井就 warp 回对应出口。
+    mine_exit = _mine_exit_from_loc(api.state().get("location", {}).get("name", ""))
+    if mine_exit:
+        try:
+            api._post("/warp", {"location": mine_exit[0], "x": mine_exit[1], "y": mine_exit[2]})
+        except Exception:
+            mine_exit = None   # warp 失败就不谎报"已送回"
     last = job._tail(60)
     body = f"🛑 已停止任务 {job.job_id} 「{job.name}」。"
     if is_fish:
         # 🎣 2026-09-05 恒：停钓鱼可小游戏中即时收杆（鱼机已关+收线），不用等一杆钓完——别再说"等收线/别操作"。
         body += "\n🎣 钓鱼已即时停止（鱼机已关、竿已收，不再抛竿）。"
+    if mine_exit:
+        body += f"\n⛏️ 已把 farmhand 送回矿井口（{mine_exit[0]} {mine_exit[1]},{mine_exit[2]}）——主动停矿不再留矿。"
     # 🚫 2026-08-17：原"计划当前任务→暂停"逻辑已随计划模式退役移除。
     if last:
         body += f"\n── 最后输出 ──\n{last[-1000:]}"
