@@ -468,6 +468,29 @@ class BombMiner(WeaponMixin):
         """该炸弹最大单向偏移（躲远/安全距离/防重叠粗略用）。樱桃3、黑6、超级8。"""
         return BOMB_REACH.get(bomb_type or self.bomb_type, 3)
 
+    def plan_anchors(self, radius=14, min_covered=3, top=None):
+        """扫本层岩体，按贪心算出最值得放炸弹的锚点（覆盖最多岩体的空格）。
+        返回 (排序候选列表, 本层岩体数)；候选 [(count, -曼哈顿距离, ax, ay)] 按 count 降序。
+        用 blast_tiles 真实爆炸形状判覆盖（樱桃十字/黑方块/超级方块形状不同）。
+        2026-09-06 恒：从 bomb_plan MCP 壳下沉，壳留守 nagi_mcp_server；top=None 返回全部、否则取前 top。"""
+        rocks, occupied, center = self.scan_rocks(radius)
+        if not rocks:
+            return [], 0
+        blast = set(self.blast_tiles(0, 0))   # 以 (0,0) 算形状偏移
+        cx, cy = center
+        cands = []
+        for ax in range(cx - radius, cx + radius + 1):
+            for ay in range(cy - radius, cy + radius + 1):
+                if (ax, ay) in occupied:
+                    continue
+                count = sum(1 for x, y, n in rocks if (x - ax, y - ay) in blast)
+                if count >= min_covered:
+                    cands.append((count, -(abs(ax - cx) + abs(ay - cy)), ax, ay))
+        cands.sort(reverse=True)
+        if top:
+            cands = cands[:top]
+        return cands, len(rocks)
+
     # ═══════════ 底层 API ═══════════
 
     def _get(self, ep, params=None, host=False):
