@@ -442,8 +442,17 @@ class MineBot(WeaponMixin):
         return False
 
     def is_worth_mining(self, rock_name):
-        """判断值不值得敲（跳过晶球矿/神秘石等）"""
-        return rock_name not in SKIP_ROCKS
+        """判断值不值得敲——**只认真能敲碎的矿**（名字含 Stone/Node 或 ORE_NODE_IDS）。
+        ⚠️ 2026-09-06 空敲根因：find_rocks 把掉落/采集物(Coal/Sea Urchin/蘑菇…)当"矿"返回，
+        mine_rock 敲不动→每个掉落就空挥3次。真矿名都带 Stone/Node（1.6 矿节点 Name 报 Stone 靠 objId
+        在 _rock_name 里已解析成真名）；掉落/采集名不带，直接排除。"""
+        if rock_name in SKIP_ROCKS:
+            return False
+        if "Stone" in (rock_name or "") or "Node" in (rock_name or ""):
+            return True
+        if rock_name in ORE_NODE_IDS.values():
+            return True
+        return False
 
     # ── 周围扫描 ──
 
@@ -652,18 +661,32 @@ class MineBot(WeaponMixin):
         return monsters
 
     def find_adjacent_tile(self, tx, ty, radius=3):
-        """找目标旁边的可站位（优先右边 → 上面 → 下面 → 左边）"""
+        """找目标旁边的可站位，**挑离自己最近的可站边**（2026-09-06 恒：原"优先右边"会绕路跑到右侧朝左敲，改就近省走位+别傻绕）。
+        返回 (nx, ny, dx, dy)：dx/dy=目标→站位的偏移，用于决定面向。"""
         data = self.surroundings(radius)
         blocked = set()
         for t in data.get("tiles", []):
             if not t.get("passable", True):
                 blocked.add((t["x"], t["y"]))
-        # 优先右边！这样朝左敲有动画
-        for dx, dy in [(1, 0), (0, -1), (0, 1), (-1, 0)]:
+        # 玩家当前坐标（就近排序用；读不到就退固定序）
+        px = py = -1
+        try:
+            p = self.state().get("player", {})
+            px = int(p.get("x", 0) or 0)
+            py = int(p.get("y", 0) or 0)
+        except Exception:
+            pass
+        # 候选：目标 4 邻位可站格，按到玩家曼哈顿距离排序（就近；等距按上下右左定序）
+        cand = []
+        for dx, dy in [(0, -1), (1, 0), (-1, 0), (0, 1)]:
             nx, ny = tx + dx, ty + dy
             if (nx, ny) not in blocked:
-                return nx, ny, dx, dy  # 返回偏移方向
-        # 再试试对角线
+                cand.append((abs(nx - px) + abs(ny - py), nx, ny, dx, dy))
+        if cand:
+            cand.sort()
+            _, nx, ny, dx, dy = cand[0]
+            return nx, ny, dx, dy
+        # 兜底：对角线
         for dx, dy in [(1, -1), (1, 1), (-1, -1), (-1, 1)]:
             nx, ny = tx + dx, ty + dy
             if (nx, ny) not in blocked:
@@ -774,11 +797,13 @@ class MineBot(WeaponMixin):
             self.use_tool("Pickaxe")
             time.sleep(0.4)
 
-            # 检查石头还在不在:目标那格还顶着 object 才算没碎
-            # (不对名字 —— 宝石/放射矿 objId 隐藏名,object 报 'Stone',比名字会误判)
+            # 检查石头还在不在:目标那格还顶着**可敲的矿**(Stone/Node 之类)才算没碎——
+            # ⚠️ 2026-09-06 空敲根因：原来只判"有 object"(掉落物 Coal/矿石也是 object)，
+            #    rock 敲碎后掉落物还在那格 → 误判"没碎" → 空挥循环。改按 _rock_name 判是不是真矿。
             r = self.surroundings(3)
             still_there = any(
-                t["x"] == x and t["y"] == y and t.get("object")
+                t["x"] == x and t["y"] == y
+                and self.is_worth_mining(self._rock_name(t))
                 for t in r.get("tiles", [])
             )
             if not still_there:
