@@ -9035,6 +9035,13 @@ public class ModEntry : Mod
                 object? ccInfo = null;
                 object? numberSelect = null;   // 🔢 NumberSelectionMenu 数量框（50g换1星星币兑换台/转盘押注）
                 bool giftMenu = false;   // 🎁 ItemGrabMenu+reverseGrab/behaviorFunction（送礼菜单，点物品=送出不是拿起）
+                // 📋 2026-09-07 恒：ItemListMenu(丢失的物品) + ShippingMenu(过夜结算) 序列化字段
+                string? menuTitle = null;
+                int listTotal = 0, listPage = 0, listPageSize = 0;
+                object? shipping = null;
+                int shippingTotal = 0, shippingCurrentTab = -1;
+                object? shippingCategories = null;
+                int shippingCurrentPage = -1;   // 🧾 ShippingMenu 当前展开类目（-1=收拢看五大项小计）
 
                 if (menu is DialogueBox db)
                 {
@@ -9779,6 +9786,73 @@ public class ModEntry : Mod
                     numberSelect = new { text = box?.Text, min, max, price };
                 }
 
+                else if (menu is StardewValley.Menus.ItemListMenu ilm)
+                {
+                    // 📋 2026-09-07 恒：ItemListMenu（"丢失的物品"等）——反射读 title/itemsToList/totalValueOfItems/currentTab。
+                    //    itemsToList 末尾有构造函数 Add(null) 塞的 null 哨兵（draw 到那格画"总价值"行）→ 过滤 null 再列真物品。
+                    var bFlags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
+                        | System.Reflection.BindingFlags.Instance;
+                    try { menuTitle = ilm.GetType().GetField("title", bFlags)?.GetValue(ilm) as string; } catch { }
+                    try { listTotal = (int)(ilm.GetType().GetField("totalValueOfItems", bFlags)?.GetValue(ilm) ?? 0); } catch { }
+                    try { listPage = (int)(ilm.GetType().GetField("currentTab", bFlags)?.GetValue(ilm) ?? 0); } catch { }
+                    listPageSize = ilm.itemsPerCategoryPage > 0 ? ilm.itemsPerCategoryPage : 8;
+                    var listField = ilm.GetType().GetField("itemsToList", bFlags);
+                    if (listField?.GetValue(ilm) is List<Item> lItems)
+                    {
+                        var gl = new List<object>();
+                        int idx = 0;
+                        foreach (var it in lItems)
+                        {
+                            if (it == null) continue;   // 过滤 null 哨兵
+                            gl.Add(new { index = idx++, name = it.DisplayName ?? it.Name, id = it.QualifiedItemId, stack = it.Stack, quality = (it as StardewValley.Object)?.Quality ?? 0 });
+                        }
+                        if (gl.Count > 0) grabItems = gl;
+                    }
+                }
+                else if (menu is StardewValley.Menus.ShippingMenu smShip)
+                {
+                    // 🧾 2026-09-07 恒：ShippingMenu（过夜结算复盘窗口）——反射读 categoryItems/categoryTotals/itemValues/currentTab。
+                    //    categoryTotals[c]=该类目小计（权威）；itemValues[item]=该件价值。AI 才能看"卖了啥、各多少金"。
+                    var bFlags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
+                        | System.Reflection.BindingFlags.Instance;
+                    shippingCurrentPage = smShip.currentPage;   // public：当前展开类目(-1=收拢看五大项小计)
+                    try { shippingCurrentTab = smShip.currentTab; } catch { }
+                    var catItems = smShip.GetType().GetField("categoryItems", bFlags)?.GetValue(smShip) as List<List<Item>>;
+                    var catTotals = smShip.GetType().GetField("categoryTotals", bFlags)?.GetValue(smShip) as List<int>;
+                    var valDict = smShip.GetType().GetField("itemValues", bFlags)?.GetValue(smShip) as Dictionary<Item, int>;
+                    if (catItems != null)
+                    {
+                        var cats = new List<object>();
+                        for (int c = 0; c < catItems.Count; c++)
+                        {
+                            int subtotal = (catTotals != null && c < catTotals.Count) ? catTotals[c] : 0;
+                            var its = new List<object>();
+                            if (catItems[c] != null)
+                                foreach (var it in catItems[c])
+                                {
+                                    if (it == null) continue;
+                                    int v = 0;
+                                    if (valDict != null && valDict.TryGetValue(it, out v)) { }
+                                    its.Add(new { name = it.DisplayName ?? it.Name, count = it.Stack, value = v, quality = (it as StardewValley.Object)?.Quality ?? 0 });
+                                    if (catTotals == null || c >= catTotals.Count) subtotal += v;   // catTotals 缺才退化累加
+                                }
+                            cats.Add(new { index = c, subtotal, items = its });
+                        }
+                        shipping = cats;
+                        // 📑 类目 tab（点 = 钻进该类看明细）：categories[i] 是 ClickableTextureComponent，hoverText=类目名，bounds 可点
+                        var catTabs = new List<object>();
+                        for (int i = 0; i < smShip.categories.Count; i++)
+                        {
+                            var ct = smShip.categories[i];
+                            if (ct == null || !ct.visible) continue;
+                            catTabs.Add(new { index = i, name = ct.hoverText ?? ct.name, x = ct.bounds.Center.X, y = ct.bounds.Center.Y });
+                        }
+                        if (catTabs.Count > 0) shippingCategories = catTabs;
+                        shippingTotal = (catTotals != null && catTotals.Count > 5) ? catTotals[5]
+                                        : (catTotals != null ? catTotals.Sum() : 0);
+                    }
+                }
+
                 // Collect named buttons via reflection（已从选效果菜单拿到选项则跳过，别覆盖）
                 if (buttons == null)
                 {
@@ -9886,7 +9960,12 @@ public class ModEntry : Mod
                     letterTitle, letterBody, letterFrom,
                     characterCust = ccInfo,
                     numberSelect,
-                    gift = giftMenu
+                    gift = giftMenu,
+                    // 📋 2026-09-07 恒：ItemListMenu(丢失的物品) + ShippingMenu(过夜结算) 明细
+                    menuTitle,
+                    listTotal, listPage, listPageSize,
+                    shipping, shippingTotal, shippingCurrentTab,
+                    shippingCategories, shippingCurrentPage
                 });
             }
             catch (Exception ex)
@@ -10123,6 +10202,7 @@ public class ModEntry : Mod
         var quantity = GetParamOr(p, "quantity", 1);  // 批量：买 N 个 / 拆堆叠取 N 个
         var action = GetParamOr(p, "action", "");    // split=背包拆/ discard=丢弃 / claim=领取
         var slotIdx = GetParamOr(p, "slot", -1);     // 按背包槽位 index 直点（不依赖坐标，恒 2026-08-10）
+        var category = GetParamOr(p, "category", -1);  // 🗂️ ShippingMenu 按类目 index 钻入（不依赖坐标/分辨率）
         var real = GetParamOr(p, "real", false);     // real=true: 对话选项走真实 receiveLeftClick 响应（createQuestionDialogue 用，如跳舞邀请；跳过 event.answerDialogueQuestion）
 
         var tcs = new TaskCompletionSource<object>();
@@ -10660,6 +10740,24 @@ public class ModEntry : Mod
                             }
                         }
                     }
+                }
+
+                // 🗂️ 2026-09-07 恒：ShippingMenu 按类目 index 钻入（不依赖坐标/分辨率）。
+                //    类目 tab 是 categories[category]（ClickableComponent），C# 实时算 center 去点 → 分辨率无关。
+                if (category >= 0 && menu is StardewValley.Menus.ShippingMenu smCat && category < smCat.categories.Count)
+                {
+                    var cc = smCat.categories[category];
+                    if (cc != null && cc.visible)
+                    {
+                        menu.receiveLeftClick(cc.bounds.Center.X, cc.bounds.Center.Y);
+                        tcs.SetResult(new { ok = true, clicked = "category", category,
+                            x = cc.bounds.Center.X, y = cc.bounds.Center.Y });
+                    }
+                    else
+                    {
+                        tcs.SetResult(new { ok = false, error = $"类目 {category} 不可见/超范围" });
+                    }
+                    return;
                 }
 
                 if (button != "")

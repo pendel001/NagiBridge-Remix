@@ -312,7 +312,7 @@ def menu():
     return _get("/menu")
 
 
-def menu_click(option=None, button=None, x=None, y=None, item=None, right=None, quantity=1, action=None, real=False, slot=None):
+def menu_click(option=None, button=None, x=None, y=None, item=None, right=None, quantity=1, action=None, real=False, slot=None, category=None):
     data = {}
     if option is not None: data["option"] = option
     if button is not None: data["button"] = button
@@ -324,6 +324,7 @@ def menu_click(option=None, button=None, x=None, y=None, item=None, right=None, 
     if action: data["action"] = action
     if real: data["real"] = True
     if slot is not None: data["slot"] = slot
+    if category is not None: data["category"] = category
     return _post("/menu/click", data)
 
 

@@ -1500,6 +1500,11 @@ class BombMiner(WeaponMixin):
                 sx, sy = cx, cy
             self.position(sx, sy)
             time.sleep(0.3)
+            # 🔥 2026-09-07 恒：/interact 按"玩家**面向**的格子"触发，不面向目标=开不了箱（actionTriggered false）。
+            #    find_stand_tile 只给站位不面向——position 后必须 face_toward(宝箱) 再 interact
+            #    （城镇真机40层踩坑：stand(10,9)朝(11,9)却要开(9,9)宝箱→interact 没触发、菜单没弹）。
+            self.face_toward(cx, cy)
+            time.sleep(0.2)
             try:
                 self._post("/interact", {"x": cx, "y": cy})
                 time.sleep(1.0)

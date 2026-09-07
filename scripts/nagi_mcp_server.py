@@ -484,13 +484,18 @@ def _safe_fname(s: str) -> str:
 
 def _menu_advice(menu_type: str, active_menu: dict, active_event: dict = None) -> str:
     """🧭 按菜单/对话类型提示可用工具（2026-08-15 恒：只细化对话+菜单，一行，不报位置工具）。
-    覆盖常见卡点（AI 看见菜单但不知调哪个工具）；ShippingMenu 已有专门处理，这里跳过。
+    覆盖常见卡点（AI 看见菜单但不知调哪个工具）；ShippingMenu 的聊天横幅走状态注入专门处理，这里给**操作枚举引导**。
     active_event=当前事件 → createQuestionDialogue 场景问句（事件激活时普通 option 点不中真回调）区分用（2026-08-23 恒）。"""
     m = (menu_type or "").lower()
     if m == "shippingmenu":
-        return ""
+        # 🧾 2026-09-07 恒：过夜结算 enum 操作引导——summary(五大项+第一名物品+总价)靠 menu read；
+        #    钻某类明细用 category=N（按类目序号、跟分辨率无关，比坐标稳）；确认走 ok/daily settle。
+        return ("🧾 过夜结算：汇总 menu read · 明细 menu click(category=N)(0农作/1采集/2钓鱼/3矿山/4其它) · 确认 button=ok 进下一天")
+    if m == "itemlistmenu":
+        # 📋 2026-09-07 恒：丢失物品(ItemListMenu) enum 引导——ok 只确认失去并关闭，**不回收物品**，别让 AI 误以为能领回。
+        return "📋 物品清单(丢失的物品)：menu read 看物品+总价 → menu click(button=ok) 确认关闭（ok 只确认失去，**不会领回**）"
     if m == "charactercustomization":
-        return "🎭 捏人弹窗：menu customize(看状态/填名字喜好) + settings appearance(捏脸) + **settings ops=confirm_look 核对**(请host参谋+screenshot 满意) → menu click button=ok 确认(ok后基相定型，想再改需解锁幻觉神龛；捏脸只在菜单内可用)"
+        return "🎭 捏人弹窗：menu customize(状态/名字) + settings appearance(捏脸) + settings confirm_look 核对 → 谨慎决定(可问问host) menu click button=ok 确认（ok后定型不可逆，后期只能靠幻觉神龛解锁）"
     if m == "shopmenu":
         return "🏪 商店：menu shop 逛店（自动走到柜台）/ menu read 看货 / menu click 买 / menu sell 卖"
     if m == "letterviewermenu":
@@ -501,7 +506,7 @@ def _menu_advice(menu_type: str, active_menu: dict, active_event: dict = None) -
         # 🎁 带动作的 ItemGrabMenu（送礼/加料/领取）：点物品=触发 behaviorFunction（送出/加汤/领走），不是拿起！
         # 2026-08-21 百乐汤实测：冬星节送礼的通用机制 menu click(item=物品名) 复用，无需反编译。
         if active_menu.get("gift"):
-            return "🎁 带动作菜单(送礼/加料/领取)：menu click(item=物品名) 点物品触发（别点okButton/收起——点了物品就送出/加汤/领走，没handle/ok按钮）"
+            return "🎁 带动作菜单(送礼/加料/领取)：menu click(item=物品名) 点物品即触发(送出/加汤/领走)——没ok/确认按钮，别点收起"
         return "📦 领取/箱子：menu click 取件/领奖励"
     if m == "dialoguebox":
         if active_menu.get("responses"):
@@ -520,7 +525,7 @@ def _menu_advice(menu_type: str, active_menu: dict, active_event: dict = None) -
     if m == "choosefromiconsmenu":
         return "🎨 选效果菜单：menu click 选图标"
     if m == "specialordersboard":
-        return "📋 任务板：menu read 看任务卡（名称/目标/奖励/期限/可接）→ menu click(button=acceptLeftQuestButton/acceptRightQuestButton) 点 accept 按钮接取（可靠UI路径，子目标会初始化；特殊订单同时只能接一个，别贪多）"
+        return "📋 任务板：menu read 看任务卡(名称/目标/奖励/期限/可接) → 接取 menu click(button=acceptLeftQuestButton/acceptRightQuestButton)（左右二选一）"
     if m == "levelupmenu":
         # 🧬 2026-08-30 恒：LevelUpMenu（升级/职业选择）。普通升级 auto-confirm 自会点OK；职业选择须 AI 决策。
         lu = active_menu.get("levelUp") or {}
@@ -528,7 +533,7 @@ def _menu_advice(menu_type: str, active_menu: dict, active_event: dict = None) -
             off = lu.get("offered") or []
             nm = " / ".join(f"{o.get('name')}({o.get('id')})" for o in off)
             return (f"🔀 升级选职业(Skill {lu.get('skillName')} Lv{lu.get('level')})：{nm}。"
-                    f"→ 先 /profile 想清楚走哪条线，再 **menu ops=levelup_choose side=left/right**(或 profession=职业id) 定夺")
+                    f"→ **menu ops=levelup_choose side=left/right**(或 profession=职业id) 定夺")
         return f"🎉 升级到 {lu.get('skillName') or '?'} Lv{lu.get('level')}——普通升级已自动点OK"
     return ""
 
@@ -3623,6 +3628,9 @@ _AUTO_MINECART_ROUTES = {
     # 农场（车到巴士站再走回农场）
     "农场": ("BusStop", "Farm"), "farm": ("BusStop", "Farm"),
 }
+# ⚠️ 2026-09-06 恒：特定地点矿车表(_AUTO_MINECART_ROUTES)只在"从农场/农场建筑出发"时成立
+#   （农场离巴士站近，走巴士站坐车省全图）；非农场起点完全无此语义，落穿到下方就近段数比较。
+_FARM_STARTS = {"Farm", "FarmHouse", "Cabin", "Greenhouse", "FarmCave"}
 _FACE_DELTA = [(0, -1), (1, 0), (0, 1), (-1, 0)]   # 0上/1右/2下/3左
 
 
@@ -3708,30 +3716,39 @@ def _obelisk_go(building, landing: str, label: str) -> tuple:
         return False, f"🗼 {label} 失败({e})"
 
 
-def _minecart_plan(dest: str, cur: str):
-    """玩家在矿车站图 + dest 在矿车网络 → 返回 (站名, 站数据, 目的站名)；否则 None。"""
-    ds = MINE_CART_TO.get(dest)
-    if not ds:
-        return None
-    for sname, stn in locations.MINE_CART_STATIONS.items():
-        if stn.get("map") != cur:
-            continue
-        for opt in (stn.get("menu") or {}).values():
-            if opt == ds:
-                return (sname, stn, ds)
-    return None
+def _cart_closer_than_walk(pos, stn, direct):
+    """段数打平时比"首段地图内距离"：同图车站是否真的比直接走首段近。
+    pos=(x,y) 玩家坐标；stn 车站数据(interact=((sx,sy),face))；direct=纯走 BFS 路径(首段 link 的 tile=出口瓦片)。
+    近→坐车(True)，远→走路(False)。"""
+    try:
+        st = stn["interact"][0]
+        st_d = abs(pos[0] - st[0]) + abs(pos[1] - st[1])          # 玩家→车站格
+        f = (direct[0][2] or {}).get("tile") if direct else None   # 直接走首段出口瓦片
+        if not f:
+            return st_d <= 1                                       # 出口无瓦片(门类)→ 仅紧邻车站才坐
+        return st_d < (abs(pos[0] - f[0]) + abs(pos[1] - f[1]))    # 玩家→直接走出口
+    except Exception:
+        return False
 
 
-def _minecart_walk_plan(cart_target: str, cur: str):
+def _minecart_walk_plan(cart_target: str, cur: str, final: str = "", strict: bool = True,
+                        pos: tuple = None):
     """矿车直达规划：从 cur 走到"菜单能直达 cart_target"的最近可达站 → 坐车到 cart_target。
     ⚠️ 2026-09-06 恒：_AUTO_MINECART_ROUTES 用——先走到站再坐车（原来 _minecart_plan 只在"已站上"才坐）。
-    返回 (walk_path, 站名, 站数据, 目的站名) 或 None；walk_path 空=cur 即该站（直接坐）。"""
+    final：最终目的地（POI 名/地图名，可空）；strict=True 时矿车总段数必须**严格少于**纯走段数才坐；
+      False=只比较"走站 vs 走全程"（供农场表 curated 落门口，容忍平段）。pos=(x,y) 给平局比首段距离用。
+    返回 (walk_path, 站名, 站数据, 目的站名) 或 None；walk_path 空=cur 即该站（直接坐）。
+    ⚠️ 2026-09-07 恒：矿车总段数=走站+1坐车+落点续走，严格少于纯走段数才坐（否则 Mtn门口→Mine 会被误判
+      "矿车省路"去采石场绕）。段数打平时比"首段地图内距离"（矿洞口走路近 vs 采石场_上车近——两者都1段但
+      地图内差70格）。final 是 POI 名先落到地图；no 早退(原 len<=1 return None 会永久挡掉"站在车站要下矿")。"""
     ds = MINE_CART_TO.get(cart_target)
     if not ds:
         return None                          # cart_target 不在矿车网络
-    direct = _map_bfs(cur, cart_target)      # 纯走到 cart_target 的段数（None=走不到）
-    if direct is not None and len(direct) <= 1:
-        return None                          # 已紧邻/就在 → 不绕矿车
+    if final and final in locations.POI:
+        final = locations.POI[final].get("map", final)   # POI → 地图，段数对照才准
+    final = final or cart_target             # 段数对照基准（默认即车直达目标）
+    direct = _map_bfs(cur, final)            # 纯走到 final 的段数（None=走不到）
+    walk_seg = len(direct) if direct is not None else 10 ** 9
     best = None
     for sname, stn in locations.MINE_CART_STATIONS.items():
         if not any(opt == ds for opt in (stn.get("menu") or {}).values()):
@@ -3739,8 +3756,19 @@ def _minecart_walk_plan(cart_target: str, cur: str):
         mc_steps = [] if cur == stn["map"] else _map_bfs(cur, stn["map"])
         if mc_steps is None:
             continue                          # 到不了此站 → 跳过
-        if direct is not None and len(mc_steps) >= len(direct):
-            continue                          # 走站 ≥ 走全程 → 矿车不省路
+        # 矿车总段数 = 走到站 + 1(坐车) + 落点(cart_target)续走到 final（同图 0，跨图 BFS）
+        aft = 0 if final == cart_target or final == stn["map"] else len(_map_bfs(cart_target, final) or [])
+        cart_total = len(mc_steps) + 1 + aft
+        if strict:
+            if cart_total > walk_seg:
+                continue                      # 矿车段数更多 → 不省路
+            if cart_total == walk_seg:
+                # 打平 → 比首段地图内距离：仅当车站在当前图且更近才坐（否则走路）
+                if not (pos and cur == stn["map"] and _cart_closer_than_walk(pos, stn, direct)):
+                    continue
+        else:
+            if direct is not None and len(mc_steps) >= walk_seg:
+                continue                      # 走站 ≥ 走全程 → 矿车不省路
         if best is None or len(mc_steps) < len(best[0]):
             best = (mc_steps, sname, stn, ds)
     return best
@@ -3847,8 +3875,10 @@ def _interior_to_farm(cur: str) -> bool:
 
 
 def _try_transport(dest: str, cur: str):
-    """图腾柱 > 矿车：优先用交通节点（玩家在对应位置才有）。
-    成功 → (新当前地点名, 日志)；无可用/失败 → (None, "")."""
+    """图腾柱（仅农场/姜岛农场，最高优先级）：玩家在对应位置才有。
+    成功 → (新当前地点名, 日志)；无可用/失败 → (None, "").
+    ⚠️ 2026-09-07 恒：矿车不再在这"有车坐矿车"(cur 是车站图就无脑坐)——改由 map_go 的
+      就近段数比较(_minecart_walk_plan)决定，避免 Mtn门口→Mine 还被领去采石场绕。"""
     tp = _obelisk_plan(dest, cur)
     if tp:
         b, landing, label = tp
@@ -3859,13 +3889,6 @@ def _try_transport(dest: str, cur: str):
             except Exception:
                 nxt = landing
             return nxt, log
-        # 图腾柱失败 → 试矿车（不报错，静默落回走路）
-    mc = _minecart_plan(dest, cur)
-    if mc:
-        sname, stn, ds = mc
-        ok, log = _minecart_go(sname, stn, ds, dest)
-        if ok:
-            return dest, log
     return None, ""
 
 
@@ -4151,18 +4174,28 @@ def map_go(destination: str = "", npc: str = "") -> str:
                 return _with_state(f"🏡 已离开室内回到农场（{cur} {api.state().get('player',{}).get('x')},{api.state().get('player',{}).get('y')}）")
             if not xlog:
                 return _with_state("⚠️ 走出室内到农场失败（可能被挡/在菜单里）")
+        # 玩家坐标（就近段数比较平局时比"第一段地图内距离"用）
+        _pos = None
+        try:
+            _pp = api.state().get("player", {})
+            _pos = (int(_pp.get("x", -1)), int(_pp.get("y", -1)))
+        except Exception:
+            _pos = None
         # 2.45 ⚠️ 2026-09-06 恒：特定 destination（矿车"直达/近"，见 _AUTO_MINECART_ROUTES）
-        #   → 走到最近站坐矿车直达，**压过图腾柱**。其余目的地仍走下方"图腾柱 > 矿车(已站上) > 走路"。
-        _mroute = _AUTO_MINECART_ROUTES.get(destination) \
-            or _AUTO_MINECART_ROUTES.get(str(destination).lower()) \
-            or _AUTO_MINECART_ROUTES.get(str(dest).lower())
+        #   **仅起点=农场/农场建筑**才成立（农场离巴士站近，车到镇东南 POI 落门口）。
+        #   非农场起点无此语义，落穿到下方就近段数比较。strict=False：农场表 curated，容忍平段落门口。
+        _mroute = None
+        if cur in _FARM_STARTS:
+            _mroute = _AUTO_MINECART_ROUTES.get(destination) \
+                or _AUTO_MINECART_ROUTES.get(str(destination).lower()) \
+                or _AUTO_MINECART_ROUTES.get(str(dest).lower())
         if _mroute:
             _cart_target, _final = _mroute
-            _mc = _minecart_walk_plan(_cart_target, cur)
+            _mc = _minecart_walk_plan(_cart_target, cur, final=_final, strict=False, pos=_pos)
             if _mc:
                 return _minecart_route_go(_mc[0], _mc[1], _mc[2], _mc[3], _cart_target, _final,
                                           destination, _npc_target, _npc0, mine_hint=_mine_hint)
-        # 2.5 ⚠️ 2026-08-16 恒：图腾柱 > 矿车 > 走路（动态交通节点，玩家在对应位置才有）
+        # 2.5 ⚠️ 2026-08-16 恒：图腾柱（仅农场/姜岛，最高；矿车已挪到下方就近比较）
         land, tlog = _try_transport(dest, cur)
         if land:
             if land == dest:
@@ -4180,6 +4213,14 @@ def map_go(destination: str = "", npc: str = "") -> str:
             if not path:
                 return _with_state(f"{tlog}，但从 {cur} 到 {dest} 缺地图链接（先手动到 {cur} 再走）")
             return _map_go_walk(path, destination, dest, lead_log=tlog, npc_target=_npc_target, npc0=_npc0, mine_hint=_mine_hint)
+        # 2.5b ⚠️ 2026-09-07 恒：矿车"就近段数比较"（任何起点，含非农场）。替代原"有车坐矿车"：
+        #   dest 在矿车网络时，矿车总段数严格少于纯走才坐；打平比"首段地图内距离"。
+        if dest in MINE_CART_TO:
+            _mc = _minecart_walk_plan(dest, cur, final=dest, strict=True, pos=_pos)
+            if _mc:
+                _final = destination if destination in locations.POI else ""
+                return _minecart_route_go(_mc[0], _mc[1], _mc[2], _mc[3], dest, _final,
+                                          destination, _npc_target, _npc0, mine_hint=_mine_hint)
         # 3. BFS 路径
         path = _map_bfs(cur, dest)
         if not path:
@@ -6032,9 +6073,10 @@ def harvest_crops(radius: int = 15) -> str:
 
 @mcp.tool()
 def collect_machines(machine_type: str = "", location: str = "") -> str:
-    """⚙️ 批量收集机器产物（全农场一次收完，不走路）
+    """⚙️ 一键收机器产物（=只收不放，全农场一遍瞬收，不走路）
     遍历所有机器，把已完成的产品直接收进背包（返回带当前品质，Cask 用）。
     只收 readyForHarvest 的机器，陈化中的 Cask 不取。
+    ⚠️ vs building：这是原子瞬收（不走路/不拟人）；要进屋逐台拟人收放(收+放料)走 building。
 
     Args:
         machine_type: 机器类型（Keg / Cask / Preserves Jar…，留空全收）
@@ -6087,10 +6129,11 @@ def load_machines(item: str, machine_type: str = "", location: str = "") -> str:
 
 @mcp.tool()
 def work_building(location: str, item: str = "", machine_type: str = "") -> str:
-    """🏠 一整间屋子收放一轮（进门→收→放，逐台严格交互，拟人走法）
+    """🏠 拟人收放一轮（进屋⇒收⇒放，逐台严格交互，真走位）
     走到建筑门口开门进去 → 收完该屋所有机器产物 → 把背包原料放进该屋空机器。
     走的是 4 邻+斜对角 8 方向真 checkAction（不是直加作弊）。站过道格一趟处理一圈。
     一屋一轮（单地点），AI 决定去哪些屋子、按什么顺序。
+    ⚠️ vs collect：这是拟人走位(逐台真交互)；要全农场一遍瞬收(只收不放)用 collect。
 
     Args:
         location: 屋子/地点名（Big Shed / Cabin / Cellar / Farm…）
@@ -7919,7 +7962,7 @@ def bundle_kb(query: str = "") -> str:
 
 @mcp.tool()
 def farm(ops: str = "", kw: dict | None = None) -> str:
-    """🌾 农活域（农场/温室/姜岛）。till 锄地 / plant 种 / water 浇地 / harvest 收 / fertilize 施化肥 / clear 清杂草石头树桩 / collect 收机器 / chop 砍树。动物：animals 摸+收 / 喂水 宠物碗 / milk 挤奶剪毛。全 ops → help(farm)。⚠️带尺寸 op(till/plant/clear/fertilize)必须传 rows×length（缺省只做 1 格）；动物水用 喂水，water=浇地。"""
+    """🌾 农活域（农场/温室/姜岛）。till 锄地 / plant 种 / water 浇地 / harvest 收 / fertilize 施化肥 / clear 清杂草石头树桩 / collect 收机器(一键只收,不走路) / building 一屋收放(拟人走) / chop 砍树。动物：animals 摸+收 / 喂水 宠物碗 / milk 挤奶剪毛。全 ops → help(farm)。⚠️带尺寸 op(till/plant/clear/fertilize)必须传 rows×length（缺省只做 1 格）；动物水用 喂水，water=浇地。"""
     op_list = [o for o in re.split(r"[\s,，]+", (ops or "").strip()) if o]
     if not op_list:
         return _with_state("❌ ops 为空（如 farm(ops=\"till plant water\")）")
@@ -11718,7 +11761,7 @@ _SETTINGS_DISPATCH = {
 # 📖 详细域指引（2026-08-22：docstring 精简后，深度/坑靠 help 查，不丢细节）
 _DOMAIN_GUIDES = {
 "check": "查询域，what=...：status(完整状态) backpack(逐格价值/星级) worn(穿戴) machines(全场机器清单) mine(下矿进度) silo(干草) mastery(精通) buildings(木匠建筑) quest(开任务日志) chests(当前图箱) storage(箱子网络) look(环视周围)。⚠️查概览用 status，查逐格用 backpack，别都调浪费 token。",
-"farm": "农活域(🌱必走，别手动挥工具组合，用域 ops)：till(蓄力锄) plant(种,跳过已种) water(浇,自动跳雨+水壶没水先装满) harvest(收) scythe(镰刀收蒜/花/茶) fertilize(化肥) clear(清杂草石树桩) plot(连通域规划) till_plant(锄+种一条龙) tillfield(蓄力锄矩) hoe(布局锄) plantlayout(按布局种) chop(砍树) clearground(清单格) collect(收机器) load(放原料) building(一屋收放) break(拆/敲同scene,镐子敲可破物/翻已耕地) place(放置/播种同scene) pond/pond_add/pond_feed/pond_collect/pond_fish(鱼塘)。⚠️漏格DLL自动补；高级工具蓄力用 tool_area(别用/tool)。只在 Farm/温室/姜岛。带参 op(plant 的 seed_name、till/clear 的 x/y/rows、fertilize 的 fertilizer_name、place 的 name、building 的 location、collect 的 machine_type、pond_add 的 item)→ kw={'参数名':值}。🐄动物(2026-09-02 care域并入farm): animals(摸+收) 喂水/碗(宠物水) milk(挤奶剪毛) buy(买动物,豁免建议) doors(关门) hay(干草) pet(猫狗) petwalk(拟人摸) 畜舍/这间(这间屋动物) statue(祈福)——⚠️farm water=浇地,动物水用 喂水; farm building=机器收放,这屋动物用 畜舍。💡大田洒水器布局(可选,纯自动化建议,可用可不用)：要按洒水器留格/留走道(种2留1,AI能进田浇收)就 plan(方形规划算格)→hoe(布局锄)→plantlayout(按布局种)三件套；只管种直接 till+plant 也成。",
+"farm": "农活域(🌱必走，别手动挥工具组合，用域 ops)：till(蓄力锄) plant(种,跳过已种) water(浇,自动跳雨+水壶没水先装满) harvest(收) scythe(镰刀收蒜/花/茶) fertilize(化肥) clear(清杂草石树桩) plot(连通域规划) till_plant(锄+种一条龙) tillfield(蓄力锄矩) hoe(布局锄) plantlayout(按布局种) chop(砍树) clearground(清单格) collect(一键收机器:只收不放,全农场瞬收不走路) load(放原料) building(一屋收放:拟人走进去收+放料,item留空=只收不放) break(拆/敲同scene,镐子敲可破物/翻已耕地) place(放置/播种同scene) pond/pond_add/pond_feed/pond_collect/pond_fish(鱼塘)。⚠️漏格DLL自动补；高级工具蓄力用 tool_area(别用/tool)。只在 Farm/温室/姜岛。带参 op(plant 的 seed_name、till/clear 的 x/y/rows、fertilize 的 fertilizer_name、place 的 name、building 的 location、collect 的 machine_type、pond_add 的 item)→ kw={'参数名':值}。🐄动物(2026-09-02 care域并入farm): animals(摸+收) 喂水/碗(宠物水) milk(挤奶剪毛) buy(买动物,豁免建议) doors(关门) hay(干草) pet(猫狗) petwalk(拟人摸) 畜舍/这间(这间屋动物) statue(祈福)——⚠️farm water=浇地,动物水用 喂水; farm building=机器收放,这屋动物用 畜舍。💡大田洒水器布局(可选,纯自动化建议,可用可不用)：要按洒水器留格/留走道(种2留1,AI能进田浇收)就 plan(方形规划算格)→hoe(布局锄)→plantlayout(按布局种)三件套；只管种直接 till+plant 也成。",
 "mine": "下矿域(⚒️ 矿井/头骨/火山)：go(去挖矿:mode=rush冲层/farm刷矿,start起始层,target目标层,ore,cycles圈数) progress(进度) bomb_status/plan/place/collect/ladder/retreat(单步炸) bomb_mine(自动) bomb_volcano(火山) organize(整理背包)。🔁**刷矿=mode=go(mode=farm)**：定点刷指定矿→ore=Copper铜(21层)/Iron铁(41层)/Gold金(71层)；**煤靠 farm 铁层(41)顺手清尘埃精灵/蝙蝠掉**（不是 ore 选项，跑 auto 内部刷）。🏃下矿=mode=go(mode=rush,start可选≤电梯上限+5倍数,target默认120)。⚠️无镐/血低硬拦；梯子 /ladder+confirm。⚠️bomb_mine 没炸弹+host在同矿井→自动转【内部】协同(跟随host+帮忙敲矿/打怪)不撤退出矿(bomb_escort 不对外暴露、AI 不主动启用)；bomb_retreat 结束协同+停脚本+脱离矿井回门口。⚠️接「深处的危险」重置电梯→起始层动态从1起(内置脚本自动读，不暴露工具)；刷矿目标层不可直达会上报，需先冲层带回或改浅层。💡出发前占位物(恒2026-08-23)：提前放1个可堆叠物(铱矿/铱锭/五彩碎片)在包，满包时同种战利品自动堆叠吸附、少触发满包停；别拿银河之魂这类带死亡会丢的稀有物当占位。",
 "cabin": "小屋引导域(🏠 FarmHouse/Cabin/岛屋；不传=扫屋)：enum(扫**本屋**查待收) collect(收机器) statue(雕像) furniture(扫家具) interact(点家具,tile_x/tile_y) pickup(拿起家具,tile_x/tile_y) cook(做饭,recipe_name) sleep(睡觉,who=谁床：不传/房主名=睡房主床一起睡,传自己名=睡自己床)。带参 op→ kw={'参数名':值}。",
 "social": "社交域：chat(搭话,name=NPC名) gift(送礼,npc_name/item_name) give(送玩家物品,player_name/item_name) send(发消息,message) emote(表情,name) friendship(查好感,npc_name) movie(影院,npc)。带参 op→ kw={'参数名':值}。",
@@ -13154,6 +13197,62 @@ def read_menu() -> str:
             lines.append("  💡 放够后点 button=ok 结算（不点不完成）；收起=button=ok；左上X=upperRightCloseButton")
             lines.append("  💡 交付完成后去任务日志 rewardBox 领钱，板旁领奖箱(60,93)领兑奖券")
             return _with_state("\n".join(lines))
+        # 📋 2026-09-07 恒：ItemListMenu（"丢失的物品"等）——读真物品+总价值+ok 确认引导。
+        #    ⚠️ 丢失物品的 ok 只是 exitThisMenu（确认失去并关闭，**不回收物品**），别让 AI 误以为能领回。
+        if t == "ItemListMenu":
+            _QM = {0: "", 1: "[银]", 2: "[金]", 3: "[铱]"}
+            items = m.get("items") or []
+            lines.append(f"  📋 {m.get('menuTitle') or '物品列表'}")
+            if items:
+                for it in items:
+                    name = it.get("name") or "?"
+                    stk = int(it.get("stack") or 0)
+                    q = _QM.get(it.get("quality", 0), "")
+                    lines.append(f"    · {q}{name}" + (f" x{stk}" if stk > 1 else ""))
+            else:
+                lines.append("    （无物品）")
+            if m.get("listTotal"):
+                lines.append(f"    💰 总价值 {m['listTotal']} 金")
+            if len(items) > (m.get("listPageSize") or 8):
+                lines.append("  🧭 翻页: menu click(button=forward/back)")
+            lines.append("  🧭 操作: 确认并关闭（这些是丢失的物品，ok 只确认失去）= menu click(button=ok)")
+        # 🧾 2026-09-07 恒：ShippingMenu（过夜结算复盘窗口）——五大项小计+第一名物品+总价；点类目 tab 钻进去看该类明细。
+        if t == "ShippingMenu":
+            _CAT = {0: "🌾农作物", 1: "🍄采集", 2: "🐟钓鱼", 3: "⛏️矿山", 4: "📦其他", 5: "🧾总计"}
+            _QM = {0: "", 1: "[银]", 2: "[金]", 3: "[铱]"}
+            sh = m.get("shipping") or []
+            cur = m.get("shippingCurrentPage", -1)
+            lines.append("  🧾 过夜结算:")
+            # 五大项小计 + 类别第一个物品名（类目 tab 就是显示第一个物品的图标）
+            for c in sh:
+                if c.get("index") == 5:
+                    continue
+                ci = c.get("index")
+                nm = _CAT.get(ci, f"类{ci}")
+                its = c.get("items") or []
+                fn = ""
+                if its:
+                    f0 = its[0]
+                    fn = f" {_QM.get(f0.get('quality', 0), '')}{f0.get('name', '')}"
+                lines.append(f"    {nm} {c.get('subtotal', 0)}g{fn}")
+            if m.get("shippingTotal") is not None:
+                lines.append(f"    🧾 总计: {m['shippingTotal']}g")
+            # 已钻到某类 → 列该类明细；未钻到 → 给类目 tab 让 AI 点进去
+            if cur in (0, 1, 2, 3, 4):
+                cat = next((c for c in sh if c.get("index") == cur), None)
+                if cat:
+                    lines.append(f"  📄【{_CAT.get(cur, cur)}】明细:")
+                    for it in (cat.get("items") or []):
+                        q = _QM.get(it.get("quality", 0), "")
+                        lines.append(f"      · {q}{it.get('name')} x{it.get('count', 0)} = {it.get('value', 0)}g")
+                lines.append("  🧭 返回五大项: menu click(button=back)；确认: menu click(button=ok)")
+            else:
+                cats = m.get("shippingCategories") or []
+                if cats:
+                    lines.append("  📑 想看某类明细 → 点该类目(按序号，稳、跟分辨率无关):")
+                    for cc in cats:
+                        lines.append(f"      · {cc.get('name')} = menu click(category={cc.get('index')})")
+                lines.append("  🧭 点某类目看该类明细 → menu click(category=N)；确认: menu click(button=ok)")
         if m.get("responses"):
             lines.append("  选项:")
             for r in m["responses"]:
@@ -13499,7 +13598,7 @@ def _maybe_egg_run_auto(data) -> str:
         return ""
 
 
-def menu_click(option: int = -1, button: str = "", x: int = -1, y: int = -1, item: str = "", right: bool = False, quantity: int = 1, action: str = "", real: bool = False, slot: int = -1) -> str:
+def menu_click(option: int = -1, button: str = "", x: int = -1, y: int = -1, item: str = "", right: bool = False, quantity: int = 1, action: str = "", real: bool = False, slot: int = -1, category: int = -1) -> str:
     """🖱️ 自适应点击当前菜单（商店/背包/奖励）
     按菜单类型自动适配：
     - 商店菜单：item 买 N 个（quantity）· 免翻页
@@ -13519,6 +13618,7 @@ def menu_click(option: int = -1, button: str = "", x: int = -1, y: int = -1, ite
         quantity: 批量数量（默认1；商店买 N 个 / 背包拆 N 个）
         action: 背包专用——split=拆堆叠取 N / discard=拿起后丢垃圾桶；奖励菜单=claim 领取
         slot: 领/点指定槽位序号（ItemGrabMenu 的 read items 下标，不想要1想要4就 slot=4；比坐标稳、不挪OS光标）
+        category: 🗂️ ShippingMenu 按类目序号钻入（0农作/1采集/2钓鱼/3矿/4其他；比坐标稳、跟分辨率无关）
     """
     global _look_verified   # 🔒 捏人确认门禁：本函数会读+重置它（2026-08-22 恒）
     try:
@@ -13541,6 +13641,7 @@ def menu_click(option: int = -1, button: str = "", x: int = -1, y: int = -1, ite
         if action: data["action"] = action
         if real: data["real"] = True
         if slot >= 0: data["slot"] = slot
+        if category >= 0: data["category"] = category
         r = api.menu_click(**data)
         if r.get("ok"):
             # 捏人窗 ok 提交成功（窗口消失=角色已确认）→ 自动退役捏脸/捏人工具（真拦截）
@@ -14228,6 +14329,7 @@ def _bg_activity_line() -> str:
     return (f"⏰ 异步唤醒时间——脚本「{job.name}」后台运行中（{elapsed}s，job {job.job_id}）\n"
             f"   ✅ 可做（不打断脚本）: 整理背包(⚠️摸完立刻关，别留菜单挡脚本吃东西/动作) / 查状态看事项 / 跟{_host}聊天 / 发表情 / 截图观察\n"
             f"   ⛔ 别做（会和脚本打架）: 走位 / 挥工具 / 开商店等强菜单（查邮箱要走去信箱=走位，也算）\n"
+            f"   → 做完事(没事了)就 script(ops=\"continue\") 继续睡，等下次唤醒或脚本收工\n"
             f"   → 要控制权: script(ops=\"stop\")")
 
 

@@ -42,7 +42,8 @@ import math
 import requests
 
 # ⚔️ 2026-09-06 复用 bomb 的武器系统（WeaponMixin：选武器/类别/挥速自适应/锤子重砸）
-from bomb_common import WeaponMixin
+# 🎁 2026-09-07 复用 bomb 的开箱（BombMiner.open_treasure_chests，真机验证城镇 40 层能开）
+from bomb_common import WeaponMixin, BombMiner, ManualChestFull
 
 # ── 常量 ──
 
@@ -1202,6 +1203,16 @@ class MineBot(WeaponMixin):
             log(f"  🍄 采集 {fname}")
         return picked
 
+    def open_treasure_chests(self):
+        """城镇矿井宝箱层开箱（复用 bomb_common.BombMiner 开箱逻辑，2026-09-07 真机验证 40 层能开）。
+        城镇宝箱只在**整10层**、一次性领完即止（沙漠/火山会刷）；扫不到 Chest 即 no-op 不卡。
+        开箱满包 → 抛 ManualChestFull（交 AI 手动处理，不自动丢物）。"""
+        m = BombMiner(port=self.port)
+        n = m.open_treasure_chests()
+        if n:
+            log(f"  🎁 本层开宝箱 ×{n}")
+        return n
+
     # ═══════════════════════════════════════════════════════════════
     #  模式 A：冲层
     # ═══════════════════════════════════════════════════════════════
@@ -1284,6 +1295,18 @@ class MineBot(WeaponMixin):
             level = self.mine_level
             loc_name = f"UndergroundMine{level}"
             log(f"\n--- ⬇️ 第 {level} 层 ---")
+
+            # ⭐ 宝箱层开箱（城镇只在整10层有宝箱、一次性领完即止；沙漠/火山会刷——2026-09-07 恒）
+            #    放最前面：宝箱层下楼梯子常贴入口，先进房开箱再走，别让 AI 直接跳过。
+            if level < 121 and level % 10 == 0:
+                try:
+                    self.open_treasure_chests()
+                except ManualChestFull as e:
+                    log(f"  ⭐ 宝箱满包领不走（{e}）→ 停挖矿交AI手动: menu read 看待领取 → "
+                        f"menu_claim_swap(替换物)领取 或 menu_click(ok)放弃；处理完重开 mine go 原地续层")
+                    return
+                except Exception as e:
+                    log(f"  ⚠️ 开宝箱失败: {e}")
 
             # ── 安全检查 ──
             if not self.is_safe(hp_threshold, sta_threshold):
