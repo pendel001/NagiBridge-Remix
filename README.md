@@ -1,5 +1,9 @@
-# NagiBridge
+# 【SDV1.6 × AI】NagiBridge二改版
 
+> ⚠️ 本仓库是 **NagiBridge 的二次修改版**（SDV 1.6 × AI 整合，经原作授权开源分享），**并非原作官方版本**。原作版权归原作者 [anqinou-art](https://github.com/anqinou-art)，本版基于其源码与授权修改，改动与 AI 整合由恒 · Deepseek 完成。
+>
+> 📄 **协议**：本仓库采用 [PolyForm Noncommercial License 1.0.0](LICENSE)（源码可用 · 非商用 · 允许署名二改）。
+>
 > ⭐ **在星露谷里，有个 AI 伙伴跟你一起玩。**
 > 🎮 游戏里按 **`**（键盘左上角波浪号）打开聊天面板，一个 **会记住你们的 AI 伙伴** 就住在农场里——陪你聊天、陪你过日子、陪你经营农场。它**会记得你们聊过什么、一起经历过什么**；结束游戏后，这份记忆还能带走、同步到别处接着聊。
 
@@ -245,7 +249,7 @@ python scripts/nagi_mcp_server.py
 ```
 NagiBridge MCP Server | HTTP: http://0.0.0.0:8000
 📱 手机/Claude Code 连（同一网络）: http://192.168.1.240:8000/mcp
-  26 tools registered | schema 估算 ~xxxxx 字符
+  20 tools registered | schema 估算 ~xxxxx 字符
 ✅ 角色映射: AI(xxx)=7843 | host(xxx)=7842
 ```
 
@@ -342,7 +346,7 @@ curl -i -X POST http://localhost:8000/mcp \
 | `java... 报错 / 404` | URL 少了 `/mcp`，或客户端用了 SSE | 补上 `/mcp`；传输改成 Streamable HTTP |
 | `Connection refused` | 服务器没起 / 游戏没开 / 端口被占 | 确认 4.2 启动日志；换 `NAGI_MCP_PORT` |
 | 手机 `timeout` | 不同网 / 防火墙拦 / DHCP 客户端隔离 | 确认同一 Wi-Fi；放行 8000；关掉路由器「AP隔离」 |
-| 能连但报「没有工具 / 工具不全」 | 服务器是**域工具模式**（默认只留 26 个） | 用本仓库 `.mcp.json` 或加 `--full` 回退全量 |
+| 能连但报「没有工具 / 工具不全」 | 服务器是**域工具模式**（恒开，只留 20 个） | 确认用本仓库 `.mcp.json`（域模式恒开，无 `--full` 回退） |
 | 改了 tools/引导**不生效** | `calendar_data.py` 等是启动时 import 的 | **重启 MCP 服务器** |
 | 桌面 Claude Code 连不上 | `.mcp.json` 用 `localhost`，只适用于同机 | 同机 `localhost:8000/mcp` 即可；跨机才用 IP |
 

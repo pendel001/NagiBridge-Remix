@@ -8,7 +8,7 @@
 
 1. **游戏层**：Stardew Valley 1.6 + NagiBridge C# mod（SMAPI）
 2. **桥接层**：`ModEntry.cs` — HTTP API（~120 端点）+ Harmony 补丁（IsActive/表情/聊天/节日提示/10048端口修复/拾取检测）
-3. **智能层**：`scripts/nagi_mcp_server.py` — MCP 服务器（streamable-http :8000，153 工具/15 域）+ 状态注入（`_with_state`）+ 心跳 + 节日/导航/脚本编排
+3. **智能层**：`scripts/nagi_mcp_server.py` — MCP 服务器（streamable-http :8000，20 工具/15 域入口）+ 状态注入（`_with_state`）+ 心跳 + 节日/导航/脚本编排
 
 外加 `scripts/` 下大量**自动化脚本**（矿洞/炸矿/钓鱼/农夫），Python 直接调 HTTP API。
 
@@ -16,8 +16,8 @@
 
 | 端口 | 是谁 | 用途 |
 |---|---|---|
-| **7842** | 房主（恒） | 检测 / 广播走这个（`/chat/push` → host_chat） |
-| **7843** | AI 角色（轮回/farmhand） | ***所有操作***打这个（工具/走位/交互） |
+| **7842** | 人（host） | 检测 / 广播走这个（`/chat/push` → host_chat） |
+| **7843** | AI（farmhand） | ***所有操作***打这个（工具/走位/交互） |
 | **8000** | MCP 服务器 | 外部 AI 连 `http://<IP>:8000/mcp`，传输 **Streamable HTTP**（不是 SSE） |
 
 - 规律：**操作打 7843，检测/广播打 7842**。角色由"谁先开游戏"动态分配，不写死。
@@ -27,8 +27,8 @@
 
 AI **不需要**重新学这套端点怎么用——直接调 MCP 域工具：
 
-- 默认只露 **26 个**；`--full` / `NAGI_FULL_TOOLS=1` 回退全量 153
-- 15 域：`check/ farm/ mine/ care/ cabin/ social/ scene/ menu/ quest/ storage/ daily/ map/ festival/ fish/ settings`
+- 域模式恒开，只露 **20 个**（15 域入口 + 5 独立）；`--full` / `NAGI_FULL_TOOLS` 已退役
+- 15 域入口：`check/ farm/ mine/ cabin/ social/ scene/ menu/ storage/ daily/ map/ festival/ fish/ settings + script/ session`（care→farm、quest→menu 已并 09-02）
 - 11 独立：`which_role/ screenshot/ async_config/ script_*/ session_*/ run_script/ help`
 - 域调用 = `域名(ops, kw={...})`，子参数进 `kw`。例：`daily(ops="wear", name="铁头靴")`
 - ⚠️ **原始端点 `/state /interact /click /position /menu` 不是 AI 能直调的 MCP 工具**，只是坐标/动作提示——AI 一律走域工具。

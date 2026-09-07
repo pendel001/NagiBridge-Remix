@@ -8,13 +8,13 @@
 
 ```
 [ 游戏层 ]  Stardew Valley 1.6 + NagiBridge C# mod（SMAPI）
-                │  HTTP API :7842（房主恒）/ :7843（AI 轮回）
+                │  HTTP API :7842（人/host）/ :7843（AI·farmhand）
                 ▼
 [ 桥接层 ]  ModEntry.cs —— 所有 /xxx 端点 + Harmony 补丁
                 │
           ┌─────┴─────┐
           ▼           ▼
-[ 智能层 ]  scripts/nagi_mcp_server.py（MCP :8000，153 工具/15 域，默认只露 26）
+[ 智能层 ]  scripts/nagi_mcp_server.py（MCP :8000，20 工具/15 域入口，域模式恒开只露这套）
               + 状态注入 + 心跳 + 节日/导航/脚本编排
                 │
                 ▼
@@ -27,8 +27,8 @@
 
 | 端口 | 是谁 | 用途 |
 |---|---|---|
-| **7842** | 房主（恒） | 检测 / 广播用（host_chat） |
-| **7843** | AI 角色（轮回/farmhand） | 所有"操作"打这个 |
+| **7842** | 人（host） | 检测 / 广播用（host_chat） |
+| **7843** | AI（farmhand） | 所有"操作"打这个 |
 | **8000** | MCP 服务器 | 外部 AI 连：`http://<IP>:8000/mcp` |
 
 规律：**操作打 7843，检测/广播打 7842**。角色由"谁先开游戏"动态分配，不写死。

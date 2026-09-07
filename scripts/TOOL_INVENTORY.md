@@ -1,6 +1,6 @@
-# NagiBridge MCP 域工具速查手册（2026-08-22 重写 · keep-set 20 个 · 09-02 合并 script/session 域）
+# NagiBridge MCP 域工具速查手册（2026-08-22 重写 · keep-set 20 个 · 09-02 合并 script/session 域 · 09-06 `--full` 退役）
 
-> 给恒的速查手册：AI 现在**默认只看到 20 个工具**（13 域入口 + script/session 2 域 + 5 独立工具），
+> 域工具速查手册：AI 现在**默认只看到 20 个工具**（13 域入口 + script/session 2 域 + 5 独立工具），
 > 其余旧独立工具**全部收进域入口**（函数还在，只是 AI 不再直调）。
 > 记住一句话：**"想做 X → 调对应域的 ops"**。旧工具名大多能在域里找到等价物（见文末对照表）。
 > 🔍 **想查某域详细 ops/坑 → `help(域名)`**（如 help(farm)；docstring 已精简，深度靠这个查）。
@@ -9,7 +9,7 @@
 
 ## 🧭 一、总纲（先读这段）
 
-- **域模式默认开启**（`--full` / `NAGI_FULL_TOOLS=1` 可回退全量 151 个工具，调试/手机前端用）。
+- **域模式恒开**（`--full` / `NAGI_FULL_TOOLS` 已退役 2026-09-06，没有"全量回退"了；AI 就只见下面这套 20 个）。
 - **每个"域"就是一把瑞士军刀**：`farm(ops="till plant water")` 一次做多件事，ops 空格/逗号分隔。
 - **AI 调用 = 域名 + ops**，不是工具名。例：想点一个格子 → `scene(ops="at", tile_x=8, tile_y=24)`；想推进剧情 → `menu(ops="advance")`。
 - **✦ 域工具的子参数会收进 `kw`**：FastMCP 对带 `**kw` 的域工具生成 `{ops, kw}` 结构。Claude Code 自动处理（实际是 `farm(ops="till", kw={…})`），你**只需理解、不用手动拼**；但用脚本直调时子参数要放进 `kw`（如 `fish(ops="go", kw={"location":"Beach"})`），否则报 `kw Field required`。
@@ -89,8 +89,8 @@
 | `journal` | 开任务日志→`menu read` 读 QuestLog 卡（含每子目标 current/max）|
 | `know`(名) | 查特别订单详情（知识库；`menu know 岛屿食材`。原 quest 域 09-02 并入 menu）|
 
-### `script(ops)` — 脚本/异步（09-02 五合一：run_script/start/status/stop/async_config）
-`status`(查进度) `stop`(停) `async`(自动异步白名单 show/add/remove/enable) `run`(短任务 name,args) `start`(主动后台兜底 name,args)。⚠️长任务便利工具**自动后台**，别手动 start；参数放 `kw` 别拼 ops。
+### `script(ops)` — 脚本/异步（09-02 五合一：run_script/start/status/stop/async_config；09-05 删 status——收工自动播报）
+`continue`(确认脚本继续阻塞/AI 做完事回待命) `stop`(停) `async`(自动异步白名单 show/add/remove/enable)。⚠️长任务便利工具**自动后台**，别手动后台；进度自动播报(含总时长)无需查；参数放 `kw` 别拼 ops。
 
 ### `session(ops)` — 会话缓冲（多数不用）
 `status`(看条数/设置) `set`(改 setting,value) `export`(手动导出记忆)
@@ -99,7 +99,7 @@
 `scan`(扫箱) `store`(存进箱) `take`(取) `smart`(智能堆叠) `layout`(箱子网络) `default`/`cleardefault`/`tag`(设默认箱/清/标记)
 
 ### `daily(ops)` — 过日子
-`sleep`(睡觉) `settle`(确认过夜结算) `eat`(吃食物) `wear`(穿/脱衣物 name/slot/hand) `lie_bed`(躺床不过夜) `heartbeat`(心跳间隔) `pause`(后台不暂停) `peek`(看恒在干嘛) `whiteboard`/`wb_read`/`wb_pin`/`wb_clear`(白板笔记) `appearance`(捏脸)
+`sleep`(睡觉) `settle`(确认过夜结算) `eat`(吃食物) `wear`(穿/脱衣物 name/slot/hand) `lie_bed`(躺床不过夜) `heartbeat`(心跳间隔) `pause`(后台不暂停) `peek`(看host在干嘛) `whiteboard`/`wb_read`/`wb_pin`/`wb_clear`(白板笔记) `appearance`(捏脸)
 
 ### `map(ops)` — 导航 **跨图唯一走这个**
 `lookup`(查地点功能+出口) `query`(功能反查) `go`(走到目标,自动多段寻路/交通) `walk`(走到指定POI) `movetile`(同图精确走位) `npc`(找NPC) `warp_safe`(紧急逃脱)
@@ -158,7 +158,7 @@
 | 查献祭还缺啥 | `menu(ops="bundle_kb", query="工艺室")`（知识库）/ `menu(ops="bundle")` 实地看 |
 | 捏脸 / 起名 | `settings(ops="appearance", …)` / `menu(ops="customize")` |
 | 关掉卡住的弹窗 | `menu(ops="cancel")` |
-| 后台跑长脚本 | `script(ops="status")`/`script(ops="stop")`（长任务便利工具自动后台；短任务 `script(ops="run", kw={name,args})`）|
+| 后台跑长脚本 | 长任务便利工具自动后台（AI 想确认/续跑 `script(ops="continue")`；停 `script(ops="stop")`）|
 | 截图看自己 | `screenshot()` |
 
 ---
@@ -174,7 +174,7 @@
 | `go_sleep` / `confirm_settlement` / `eat_item` / `set_appearance` / `wear` / `lie_bed` | `daily(ops="sleep"/"settle"/"eat"/"appearance"/"wear"/"lie_bed")` |
 | `scan_chests` / `chest_store` / `chest_take` | `storage(ops="scan"/"store"/"take")` |
 | ~~`list_quests` / `quest_progress`~~（2026-09-01 已退役：任务/进度改 `menu(ops="journal"/"read")` 读 QuestLog 卡，卡上含每子目标 current/max；`menu(ops="know")` 查详情，原 quest 域 09-02 并入 menu） | 接单走板上 `menu click(button=accept…)`（accept_quest 已退役） |
-| `run_script` / `script_start` / `script_status` / `script_stop` / `async_config`（09-02 五合一） | `script(ops="run"/"start"/"status"/"stop"/"async", kw={name,args/job_id})` |
+| `run_script` / `script_start` / `script_status` / `script_stop` / `async_config`（09-02 五合一；09-05 删 status、09-06 continue 取代 run/start） | `script(ops="continue"/"stop"/"async")` |
 | `session_status` / `session_set` / `session_export`（09-02 三合一） | `session(ops="status"/"set"/"export", kw={setting,value})` |
 | `chat_npc` / `gift_npc` / `give_item` / `send_chat` / `emote` / `check_friendship` | `social(ops="chat"/"gift"/"give"/"send"/"emote"/"friendship")` |
 | `moss_run` / `berry_run` / `spot_run` / `pickup_scene` | `scene(ops="moss"/"berry"/"spot"/"pickup_scene")` |

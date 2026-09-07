@@ -1,9 +1,9 @@
 {
-  "Name": "NagiBridge",
-  "Author": "Nagi",
-  "Version": "1.0.13",
-  "Description": "HTTP bridge server (port 7842) for external control of farmhand character.",
-  "UniqueID": "Nagi.NagiBridge",
+  "Name": "【SDV1.6 × AI】NagiBridge二改版",
+  "Author": "恒 · Deepseek",
+  "Version": "0.9",
+  "Description": "Stardew 1.6 × AI：HTTP bridge(7842/7843) + MCP(8000)，让外部 AI 像真人一样操控 farmhand。NagiBridge 二改版（经原作授权开源分享）。",
+  "UniqueID": "pendel001.NagiBridge",
   "EntryDll": "NagiBridge.dll",
   "MinimumApiVersion": "3.0.0",
   "UpdateKeys": []
