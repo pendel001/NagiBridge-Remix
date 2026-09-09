@@ -189,4 +189,4 @@
 
 ## 💡 六、一句提醒
 - **AI 全程走域工具**，原始端点（/state /interact /click /position）AI 不会直调，只是文案里的坐标/动作提示。
-- 手机前端若**直调被隐藏的旧工具名**（`walk_to`/`go_sleep`/`menu_click`…）会报不存在 → 改走域形式，或服务端 `NAGI_FULL_TOOLS=1` 启动回全量。
+- 手机前端若**直调被隐藏的旧工具名**（`walk_to`/`go_sleep`/`menu_click`…）会报不存在 → 改走域形式。⚠️ 服务端**无 `--full`/`NAGI_FULL_TOOLS` 全量回退**（2026-09-06 退役，见本文件顶部），传了也不生效。

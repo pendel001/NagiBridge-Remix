@@ -22,6 +22,8 @@ scripts/mine_progress.json
 scripts/bomb_progress.json
 scripts/bomb_organize.json
 scripts/mine_entry_reminder.json
+# SMAPI mod 配置（含 API key/聊天设置——per-install 运行时态，别提交泄漏 key）
+config.json
 # mcp_cli.py 的 streamable-http session 缓存（运行时态）
 scripts/._mcp_session
 *.log
