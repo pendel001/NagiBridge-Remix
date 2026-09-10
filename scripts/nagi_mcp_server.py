@@ -5212,17 +5212,21 @@ def apply_fertilizer(fertilizer_name: str, x: int = -1, y: int = -1,
 
     撒前扫描目标区：**已有同种化肥的格跳过**（不浪费），不同种才覆盖，
     没锄的格跳过并提醒。撒完 position 检测兜底，数落格报结果。
-    ⚠️ 尺寸默认 1×1 不擅自扩；缺坐标→玩家面向格（2026-09-03 恒）。
+    ⚠️ 尺寸默认 1×1 不擅自扩；**x/y 必填**（2026-09-10 恒：缺坐标不再兜底成"玩家面向格"）。
 
     Args:
         fertilizer_name: 化肥名（Basic Fertilizer / Quality Fertilizer / Speed-Gro /
             Deluxe Speed-Gro / Deluxe Fertilizer / Hyper Speed-Gro / 保留土壤类）
-        x: 起始 X 坐标（缺→玩家面向格）
-        y: 起始 Y 坐标（缺→玩家面向格）
+        x: 起始 X 坐标（必填）
+        y: 起始 Y 坐标（必填）
         rows: 撒几行（默认 1）
         length: 每行多长（默认 1 格）
         direction: horizontal=横着 / vertical=竖着（默认 horizontal）
     """
+    xy, err = _farm_require_xy(x, y)   # ⚠️ 坐标必填——先拦，别为一次报错白跑回农场
+    if err: return err
+    x, y = xy
+
     warp_log = _warp_home_if_needed("Farm")
 
     # 1. 化肥 ID 解析（用于同种/异种检测；未知 ID 退化成"有化肥就跳过"）
@@ -5235,7 +5239,6 @@ def apply_fertilizer(fertilizer_name: str, x: int = -1, y: int = -1,
         return _with_state(f"{warp_log}❌ 背包里没有「{fertilizer_name}」")
 
     # 3. 算目标格
-    x, y = _farm_default_xy(x, y)   # 缺坐标→玩家面向格
     dx, dy = (1, 0) if direction == "horizontal" else (0, 1)
     rdx, rdy = (0, 1) if direction == "horizontal" else (1, 0)
     target_tiles = []
@@ -5346,18 +5349,20 @@ def till_and_plant(
 
     Args:
         seed_name: 种子名称（如 Blueberry Seeds、Parsnip Seeds、Hops Starter）
-        x: 起始 X 坐标（默认 60）
-        y: 起始 Y 坐标（默认 10）
-        rows: 耕几行（默认 5）
-        length: 每行多长（默认 5 格）
+        x: 起始 X 坐标（必填）
+        y: 起始 Y 坐标（必填）
+        rows: 耕几行（默认 1，不擅自扩）
+        length: 每行多长（默认 1 格，不擅自扩）
         direction: horizontal=横着耕 / vertical=竖着耕（默认 horizontal）
         trellis: True=爬架作物留走道（默认 False，种子名含 Starter 自动识别）
     """
     # 爬架种子自动识别（Bean Starter / Hops Starter / Grape Starter）
     if seed_name.strip().lower().endswith("starter"):
         trellis = True
+    xy, err = _farm_require_xy(x, y)   # ⚠️ 坐标必填——先拦，别为一次报错白跑回农场
+    if err: return err
+    x, y = xy
     warp_log = _warp_home_if_needed("Farm")
-    x, y = _farm_default_xy(x, y)   # 2026-09-03 恒：缺坐标→玩家面向格（旧常量 (60,10) 会锄播到别处）
 
     # 计算目标地格
     dx, dy = (1, 0) if direction == "horizontal" else (0, 1)
@@ -8016,19 +8021,36 @@ def _domains_here(cur: str) -> list:
     return [d for d in DOMAIN_HOME if _is_domain_applicable(d, cur)]
 
 
-def _farm_default_xy(x: int, y: int):
-    """x/y 传 -1（或默认哨兵）→ 解析成玩家面向格当田块起点（2026-09-03 恒）。
-    旧默认 (60,10) 是祖传硬编码：AI 锄完田再 plant 不给坐标，会播到八竿子打不着的 (60,10)，
-    冒烟实测"一直移到奇怪起点/种子没消耗"。改成玩家当前位置当起点，犁种都挨着人选。
-    面向 0上/1右/2下/3左：默认取面向格（面前 1 格）当田左上角，走位方向 horizontal 右延。
-    玩家在田上方站着往下锄的惯例 → 面向下时起点=(px, py+1)。其它朝向按面前 1 格。"""
+def _farm_require_xy(x: int, y: int):
+    """x/y **必填**（2026-09-10 恒拍板：删掉「缺坐标→玩家面向格」的兜底）。
+    返回 ((x, y), None)；缺坐标返回 (None, 错误提示串)。
+
+    「为什么删」——旧兜底（2026-09-03~09-10）的来历与病根：
+      来历：AI 锄完田再 plant 不给坐标 → 落到祖传硬编码 (60,10)（离田八竿子远、种子不消耗）。
+            当时的修法是「缺坐标就取玩家面向格当田块起点」。
+      病根：`_farm_rect` 的横纵生长方向是**固定**的（一律向右 + 向下长），
+            于是朝向一旦是**上(0) 或 左(3)**，起点=面向格、矩形就**长回玩家自己脚下**：
+              朝上 → 田=(px,py-1)..(px+L-1, py+R-2)，含 (px,py)
+              朝左 → 田=(px-1,py)..(px+L-2, py+R-1)，含 (px,py)
+            AI 站着不动锄一块朝上的田，蓄力覆盖正好把自己站的那格犁了（恒：「耕脚下格」）。
+            朝下/朝右没事 ⇒ 这毛病**只在某些朝向**冒出来，从行为反推特别难查。
+      附带好处：坐标必填 ⇒ 绝不会把 -1 传进 /tool_area ⇒ C# 的 ±25 自动检测分支
+            （曾致补漏狂挥 DoFunction、5×1 锄地烧 366 体力）永远碰不到。
+    """
     if x >= 0 and y >= 0:
-        return x, y
-    st = api.state()
-    px, py = st["player"]["x"], st["player"]["y"]
-    fd = st.get("player", {}).get("facingDirection", 2)
-    front = {0: (px, py - 1), 1: (px + 1, py), 2: (px, py + 1), 3: (px - 1, py)}
-    return front.get(fd, (px, py + 1))
+        return (x, y), None
+    here = ""
+    try:
+        p = api.state().get("player") or {}
+        here = f"你(轮回)现在在 ({p.get('x')},{p.get('y')})，"
+    except Exception:
+        pass
+    return None, (
+        f"❌ 必须传 x/y（缺坐标不再兜底）。{here}"
+        "旧的「缺坐标→玩家面向格」兜底已删：矩形一律向右下长，朝上/朝左时会**长回你自己脚下**、"
+        "连站位那格一起犁（耕脚下格）。请明确说要动哪几格——先传 x/y（想先看地块就先调 farm plot 拿矩形），"
+        "再用 rows/length/direction 说尺寸。"
+    )
 
 
 def _farm_rect(x: int, y: int, rows: int, length: int, direction: str):
@@ -8057,10 +8079,13 @@ def _farm_till(x: int = -1, y: int = -1, rows: int = 1, length: int = 1,
                direction: str = "horizontal", **extra) -> str:
     """纯锄地（不开播种）。⚠️ 2026-09-03 恒：**尺寸默认 1×1，不擅自扩**——AI 说种多少就锄多少，
     想锄多宽自己传 rows/length（旧默认 5×5 会把"就锄一下"扩成 25 格大田=意外耗体力）。
-    缺坐标→玩家面向格；缺尺寸→只锄面前 1 格。"""
+    ⚠️ 2026-09-10 恒：**x/y 必填**——缺坐标不再兜底成"玩家面向格"（那会朝上/朝左时长回自己脚下、
+    连站位格一起犁）。尺寸缺省仍是 1×1。"""
     length, err = _farm_kw_norm(x, y, rows, length, direction, extra)
     if err: return err
-    x, y = _farm_default_xy(x, y)   # 2026-09-03 恒：缺坐标→玩家面向格（旧常量 (60,10) 会锄飞到别处）
+    xy, err = _farm_require_xy(x, y)
+    if err: return err
+    x, y = xy
     x1, y1, x2, y2 = _farm_rect(x, y, rows, length, direction)
     return _till_rect(x1, y1, x2, y2)
 
@@ -8068,11 +8093,14 @@ def _farm_till(x: int = -1, y: int = -1, rows: int = 1, length: int = 1,
 def _farm_plant_only(seed_name: str, x: int = -1, y: int = -1, rows: int = 1,
                      length: int = 1, direction: str = "horizontal", **extra) -> str:
     """🌱 独立播种（在已锄好地上种，不锄不浇）——2026-08-15 恒：单独播种工具。
-    走 farm_row --plant-only（每格走位+select种子+种）。缺坐标→玩家面向格（2026-09-03 恒）。
+    走 farm_row --plant-only（每格走位+select种子+种）。
+    ⚠️ 2026-09-10 恒：**x/y 必填**（缺坐标不再兜底成"玩家面向格"）。
     ⚠️ 尺寸默认 1×1 不擅自扩——AI 报多少格就种多少格。"""
     length, err = _farm_kw_norm(x, y, rows, length, direction, extra)
     if err: return err
-    x, y = _farm_default_xy(x, y)
+    xy, err = _farm_require_xy(x, y)
+    if err: return err
+    x, y = xy
     try:
         dir_map = {"horizontal": "right", "vertical": "down"}
         farm_dir = dir_map.get(direction, "right")
@@ -8087,10 +8115,13 @@ def _farm_plant_only(seed_name: str, x: int = -1, y: int = -1, rows: int = 1,
 
 def _farm_clear(x: int = -1, y: int = -1, rows: int = 1, length: int = 1,
                 direction: str = "horizontal", **extra) -> str:
-    """清杂草/石头（按 x,y,rows,length 或 x1,y1,x2,y2 都行）。缺坐标→玩家面向格；尺寸默认 1×1 不擅扩。"""
+    """清杂草/石头（按 x,y,rows,length 或 x1,y1,x2,y2 都行）。
+    ⚠️ 2026-09-10 恒：**x/y 必填**（缺坐标不再兜底成"玩家面向格"）；尺寸默认 1×1 不擅扩。"""
     length, err = _farm_kw_norm(x, y, rows, length, direction, extra)
     if err: return err
-    x, y = _farm_default_xy(x, y)
+    xy, err = _farm_require_xy(x, y)
+    if err: return err
+    x, y = xy
     x1, y1, x2, y2 = _farm_rect(x, y, rows, length, direction)
     return clear_area(x1, y1, x2, y2)
 
@@ -8194,7 +8225,7 @@ def bundle_kb(query: str = "") -> str:
 
 @mcp.tool()
 def farm(ops: str = "", kw: dict | None = None) -> str:
-    """🌾 农活域（农场/温室/姜岛）。till 锄地 / plant 种 / water 浇地 / harvest 收 / fertilize 施化肥 / clear 清杂草石头树桩 / collect 收机器(一键只收,不走路) / building 一屋收放(拟人走) / chop 砍树。动物：animals 摸+收 / 喂水 宠物碗 / milk 挤奶剪毛。全 ops → help(farm)。⚠️带尺寸 op(till/plant/clear/fertilize)必须传 rows×length（缺省只做 1 格）；动物水用 喂水，water=浇地。"""
+    """🌾 农活域（农场/温室/姜岛）。till 锄地 / plant 种 / water 浇地 / harvest 收 / fertilize 施化肥 / clear 清杂草石头树桩 / collect 收机器(一键只收,不走路) / building 一屋收放(拟人走) / chop 砍树。动物：animals 摸+收 / 喂水 宠物碗 / milk 挤奶剪毛。全 ops → help(farm)。⚠️带尺寸 op(till/plant/clear/fertilize)：**x/y 必填**（不传直接报错，不再兜底成"玩家面向格"）；rows×length 缺省只做 1 格，要多大自己传。动物水用 喂水，water=浇地。"""
     op_list = [o for o in re.split(r"[\s,，]+", (ops or "").strip()) if o]
     if not op_list:
         return _with_state("❌ ops 为空（如 farm(ops=\"till plant water\")）")

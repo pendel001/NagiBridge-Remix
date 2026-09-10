@@ -134,9 +134,9 @@
 |---|---|
 | 起床看今天/天气/运势 | `check(what="status")` |
 | 环视四周有啥 | `check(what="look")` |
-| 锄地种一片 | `farm(ops="till plant")` |
+| 锄地种一片 | `farm(ops="till plant", x=40, y=20, rows=3, length=5)` ⚠️**x/y 必填**（不传报错，不再兜底） |
 | 浇水 / 收菜 | `farm(ops="water")` / `farm(ops="harvest")` |
-| 砍树 / 清地 | `farm(ops="chop")` / `farm(ops="clear")` |
+| 砍树 / 清地 | `farm(ops="chop")` / `farm(ops="clear", x=40, y=20, rows=2, length=4)` |
 | 摸动物 / 挤奶 | `farm(ops="animals milk")` |
 | 穿/脱穿戴物（衣/裤/帽/鞋/戒指/饰品）| `daily(ops="wear", name="铁头靴")` / `daily(ops="wear", slot="boots")` |
 | 去挖矿 / 看进度 | `mine(ops="go")` / `mine(ops="progress")` |

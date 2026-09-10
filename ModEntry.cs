@@ -287,7 +287,7 @@ internal static class LidgrenServerPortPatch
 public class ModEntry : Mod
 {
     /// <summary>构建标记（防倒退：/status 报这个，部署/重启后核对，旧 DLL/原作者版会不同）。</summary>
-    public const string BuildStamp = "2026-09-04-anchor-remainder";
+    public const string BuildStamp = "2026-09-10-anim-wait+tillblock";   // 挥击动画等收尾 + 可耕判定补第二道门(IsTileBlockedBy)
 
     /// <summary>当前 ModEntry 实例（Harmony 补丁等静态代码需要调实例方法时用）。</summary>
     internal static ModEntry? Instance;
@@ -335,6 +335,9 @@ public class ModEntry : Mod
     private bool _isChargingTool;
     private int _chargePower;   // power level to use when charge completes
     private string? _chargeOp;  // "till" or "water"
+    /// <summary>🎬 蓄力释放后等挥击动画播完的剩余 tick（2026-09-10 恒）。
+    /// 结束信号 = 动画收尾帧的 `Farmer.canMoveNow` 把 `UsingTool` 置 false；到 0 强制放行防卡死。</summary>
+    private int _toolAnimWait;
     private bool _walkAllowWater;  // 🪙 淘金/蟹笼走位: 允许落水格(站水上淘)+回调原位; 普通走位保持排水面
 
     // Tool area 蓄力补漏（取余补站位，2026-08-15）：主流程后自检漏格 → 聚矩形再蓄力补。
@@ -1781,14 +1784,22 @@ public class ModEntry : Mod
                             int py = (int)facingTile.Y * 64 + 32;
                             // 🔍 2026-09-03 恒（调体力）：蓄力释放每挥记一次——站在哪、朝哪、power
                             ModEntry.Instance?.Monitor.Log($"[charge-release] op={_chargeOp} stand=({ft.X},{ft.Y}) target=({facingTile.X},{facingTile.Y}) power={_chargePower} 本锚点释放 1 次 (stamina BEFORE={farmer.Stamina:0})", LogLevel.Info);
-                            // ⚠️ 2026-09-04 恒（退回能落地+修体力）：动画顺序版卡住蓄力落地且 BeginUsingTool 无 EndUsingTool
-                            //    配对，蓄力姿势残留累计 → 最后一锚点按蓄满放大横扫 32 格烧 226 体力。
-                            //    ✅ 正解：DoFunction 立即落地（可靠），随后**一定 EndUsingTool** 关闭蓄力姿势，开关对称。
+                            // 🎬 2026-09-10 恒（"到点位再举锹→打下去同时改变 3×6 地格模拟蓄力"）——**动画和落地都得要**：
+                            //    「动画那一侧」`EndUsingTool()` → `Tool.endUsing` → 朝下走 `animateOnce(160,…)` → FarmerSprite 行为帧表
+                            //    （反编译 case 160）：frame66 举锹150ms → frame67 挥过+刀光40ms → **frame68 `Farmer.useTool`**
+                            //      → frame69 停顿 `(170 + toolPower×30)`ms【原生"蓄力越久停越久"】→ frame70 `canMoveNow`。
+                            //    「可 frame68 靠不住」：它读到 `who.toolPower.Value` 时**已被清零**（唯一清零点 `Game1.pressUseToolButton`），
+                            //      power 0 ⇒ `tilesAffected` 只吐 **1 格**。⚠️ 09-10 沙滩 11×11 抓到的过锄格**正是单格**——
+                            //      这就是"交给动画落地"会退化成每挥只锄 1 格的铁证，所以**落地必须我们自己来**（此刻 toolPower 还是 4）。
+                            //    ✅ 正解 = 两条腿：①自己 DoFunction 落地（3×6，位置=锚点面向格，可靠）；
+                            //                    ②再放动画给游戏播，并**等它播完才放行下一条命令**（见 _toolAnimWait）。
+                            //    ❌ 以前的错在"没等"：`move` 立刻跟上，frame68 被拖到半路、按错位的 GetToolLocation() 提交 ⇒ 单格过锄。
                             if (_chargeOp == "till" && tool is Hoe hoe2)
                                 hoe2.DoFunction(farmer.currentLocation, px, py, _chargePower, farmer);
                             else if (_chargeOp == "water" && tool is WateringCan wc2)
                                 wc2.DoFunction(farmer.currentLocation, px, py, _chargePower, farmer);
                             farmer.EndUsingTool();   // ⚠️ 必须有——否则蓄力姿势不关，累计放大力
+                            _toolAnimWait = 150;     // 🎬 ≈36 tick 动画 + 余量；到 0 强制放行（防"动画卡住不动"）
                             var sft = farmer.TilePoint;
                             var stiles = GetToolAffectedTiles(sft.X, sft.Y, farmer.FacingDirection, _chargePower);
                             _commandResults.Add(new
@@ -1815,6 +1826,21 @@ public class ModEntry : Mod
         // Process command queue
         if (_commandQueue != null && _commandQueue.Count > 0 && Context.IsWorldReady)
         {
+            // 🎬 挥击动画没播完，绝不放行下一条命令（2026-09-10 恒）——详见释放段长注释：
+            //    不等的话 `move` 会把还在挥的那个小人拖走，动画 frame68 `Farmer.useTool` 便按
+            //    **错位的** `GetToolLocation()` 提交 ⇒ 过锄/耕脚下格（沙滩 11×11 实测：单格、落在移动路径第 2 格）。
+            //    结束信号 = 收尾帧 frame70 的 `Farmer.canMoveNow` 把 `UsingTool` 置 false；
+            //    超时（150 tick ≈2.5s）强制放行，绝不让动画问题卡死整条队列。
+            if (_toolAnimWait > 0)
+            {
+                if (Game1.player != null && Game1.player.UsingTool && --_toolAnimWait > 0)
+                    return;
+                // 🔍 诊断（2026-09-10）：动画收尾时的状态——①确认"确实等到了收尾帧(canMoveNow)"；
+                //    ②记录 frame68 那一刻 `toolPower` 到底剩多少（若为 0 = 证实"落地不能交给动画"）。
+                ModEntry.Instance?.Monitor.Log($"[tool-anim] 动画收尾 放行下一条 UsingTool={Game1.player?.UsingTool} toolPower={Game1.player?.toolPower.Value} left={_toolAnimWait}", LogLevel.Info);
+                _toolAnimWait = 0;
+            }
+
             // Wait for delay between commands
             if (_commandDelay > 0)
             {
@@ -14266,11 +14292,20 @@ public class ModEntry : Mod
                 {
                     // ⚠️ 2026-08-13：矩形路径加 Diggable 校验——只锄可耕地，路径/建筑/水不碰（恒：栅栏外凭空造土块=bug）
                     // ⚠️ 2026-09-03 恒：再加物件校验——箱子/洒水器等占了格就整格跳过，否则锄到箱子上（AI 冒烟实测打卡）
+                    // ⚠️ 2026-09-10 恒（"加强认定"）：补上**第二道门** `IsTileBlockedBy`——与游戏 `makeHoeDirt` 逐字对齐
+                    //    （同 4768 那条 08-15 给 plot_plan 的修正；`/surroundings` 的 diggable 早就是两道门，只有这里漏了）。
+                    //    病根：只查 Diggable 会把"**可耕但被建筑/物件挡住**"的格当目标 → 游戏 `DoFunction` 的
+                    //    `makeHoeDirt` 按第二道门**拒绝**它 → 它变成"漏格" → 再被 `PatchMissingOnMain` **强行写土**
+                    //    ⇒ 土长到建筑/小屋贴图上（恒 09-10 沙滩抓到）。补漏绝不该比游戏自己更敢种土。
                     for (int x = Math.Min(x1, x2); x <= Math.Max(x1, x2); x++)
                         for (int y = Math.Min(y1, y2); y <= Math.Max(y1, y2); y++)
+                        {
+                            var vec = new Vector2(x, y);
                             if (loc.doesTileHaveProperty(x, y, "Diggable", "Back") != null
-                                && !loc.objects.ContainsKey(new Vector2(x, y)))
+                                && !loc.objects.ContainsKey(vec)
+                                && !loc.IsTileBlockedBy(vec, ~(StardewValley.CollisionMask.Characters | StardewValley.CollisionMask.Farmers)))
                                 targetTiles.Add((x, y));
+                        }
                 }
                 else
                 {
@@ -14287,8 +14322,10 @@ public class ModEntry : Mod
                             }
                             else
                             {
+                                // ⚠️ 2026-09-10 恒："加强认定"——自动检测分支同样补第二道门（理由见矩形分支）
                                 if (!loc.terrainFeatures.ContainsKey(vec) && !loc.objects.ContainsKey(vec)
-                                    && loc.doesTileHaveProperty(cx, cy, "Diggable", "Back") != null)
+                                    && loc.doesTileHaveProperty(cx, cy, "Diggable", "Back") != null
+                                    && !loc.IsTileBlockedBy(vec, ~(StardewValley.CollisionMask.Characters | StardewValley.CollisionMask.Farmers)))
                                     targetTiles.Add((cx, cy));
                             }
                         }
@@ -14532,9 +14569,14 @@ public class ModEntry : Mod
                 if (operation == "till")
                 {
                     // 目标格 Diggable 且无 object 才放（与 rect 校验一致，别在水/箱子/设备上造耕土）
+                    // 🚨 2026-09-10 恒（"加强认定"）：**必须补第二道门**——这里是全项目**唯一绕过游戏自己造土**的地方。
+                    //    少了 `IsTileBlockedBy` 就等于比游戏还敢种：游戏 `makeHoeDirt` 会拒绝的格子（可耕但被建筑/物件挡住），
+                    //    补漏照样 `terrainFeatures[vec] = new HoeDirt()` 硬写 ⇒ 土长到建筑/小屋贴图上。
+                    //    补漏的定位是"把游戏该种却没种上的补上"，**不是"种游戏不认的"**。
                     if (loc.doesTileHaveProperty(tx, ty, "Diggable", "Back") != null
                         && !loc.objects.ContainsKey(vec)
-                        && !loc.terrainFeatures.ContainsKey(vec))
+                        && !loc.terrainFeatures.ContainsKey(vec)
+                        && !loc.IsTileBlockedBy(vec, ~(StardewValley.CollisionMask.Characters | StardewValley.CollisionMask.Farmers)))
                     {
                         loc.terrainFeatures[vec] = new HoeDirt();   // 与人/132xxx 同款无参构造
                         patched = true;
