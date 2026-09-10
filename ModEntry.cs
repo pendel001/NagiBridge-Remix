@@ -3647,6 +3647,9 @@ public class ModEntry : Mod
                 currentItem = farmer.CurrentItem?.Name,   // 📚 手持物品名（书是Object非Tool，CurrentTool会null；2026-08-16恒测读书）
                 currentToolUpgrade = (farmer.CurrentTool as Tool)?.UpgradeLevel ?? -1,
                 facingDirection = farmer.FacingDirection,
+                isMale = farmer.IsMale,   // 🚻 角色性别（2026-09-10 恒：浴场男女更衣室门禁要按性别选门——
+                                          //    选错门会改变后面整条路线（女更衣室→泳池走 (2,27)、男走 (15,27)），
+                                          //    所以**规划前**就得知道，没法"被拒了再换一扇"。原来是完全没暴露，路由只能瞎猜）
                 mineHardMode = Game1.player.team?.mineShrineActivated?.Value ?? false,  // 困难矿井（神庙激活），整理频率用
                 dailyLuck = Game1.player.DailyLuck,
                 maxItems = farmer.MaxItems,
@@ -11707,6 +11710,7 @@ public class ModEntry : Mod
                     me = new
                     {
                         name = p.Name,
+                        isMale = p.IsMale,   // 🚻 浴场性别门禁：路由要按它选女门 (2,3)/男门 (7,3)（2026-09-10 恒）
                         location = here.Name,
                         x = p.TilePoint.X,
                         y = p.TilePoint.Y,

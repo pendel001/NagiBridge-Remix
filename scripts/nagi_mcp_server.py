@@ -2229,23 +2229,30 @@ def _via_step(frm: str, vx: int, vy: int) -> bool:
     用途：`MAP_LINKS` 的 `via` 途经点——浴场换装格是 Back 层 `TouchAction`，
     **只认"真踩上那一格"**，差一格就是白走（恒 2026-09-10「只要能保证换衣服」）。
 
-    ⚠️ **绝对不能先 `/walk_to` 目标格**（我第一版就是这么写的，踩了）：
-       `/walk_to` 的落点判定 `_wait_arrival` 带 ±2 容差，实测浴场更衣室追 `(2,17)` 会停在**墙格 `(3,17)`**
-       （x=2 是 1 格宽走廊，两侧 `(1,17)/(3,17)` 都不可走）。
-       **人一旦站在不可走的格上就废了**——`/move` 的路径是 `FindPath(farmer.TilePoint, …)`，
-       起点非法 ⇒ 之后无论怎么 `/walk_to`/`/move` 都带不动（实测两边路线全卡死）。
+    🕐 **历史（已修的坑，留档）**：走位落点精度修好**之前**（2026-09-10 白天），
+       `/walk_to` 的 X 会随机 ±1，实测浴场更衣室追 `(2,17)` 会停在**墙格 `(3,17)`**
+       （x=2 是 1 格宽走廊，两侧都不可走）；**人一旦站在不可走的格上就废了**——
+       `/move` 的路径是 `FindPath(farmer.TilePoint, …)`，起点非法 ⇒ 之后怎么走都带不动。
+       当时只能"先站邻格 → `/move` 走最后一格"。**那两个坑都已随落点精度修复消失**。
 
-    ✅ 正确顺序：**先 `/walk_to` 到目标格的邻格站定，再用 `/move` 走最后一格**
-       （`/move` 逐格走、收在目标格上，CHANGELOG 记着它稳定命中 TouchAction）。
-       邻格**8 向挨个试、自验证**（落点一致才算站上），**不预判 passable**——
-       `/passable` 和 `/dump_tile` 两个端点的 passable 历史上就不一致，别拿它们当裁判。
-
-    ⚠️ `/move` 是**排队异步**的（实测要好几秒才落地）：必须轮询位置到真站上，
-       别 `sleep` 死等——等短了后面的"走向出口"会把这一步顶掉（2026-09-10 真机踩过）。
+    ✅ **现在的顺序**：
+       ① **直接 `/walk_to` 目标格**——落点已经准了，一步到位（恒："去换衣服应该不用来回蹭一下换衣间了吧"）；
+       ② 只在 ① 落偏时才退回老办法：8 向邻格挨个试 → `/move` 走最后一格
+          （邻格**自验证**，落点一致才算站上；**不预判 passable**——`/passable` 和 `/dump_tile`
+          两个端点的 passable 历史上就不一致，别拿它们当裁判）。
+          ⚠️ `/move` 是**排队异步**的：必须轮询到真站上，别 `sleep` 死等，
+          等短了后面的"走向出口"会把这一步顶掉（2026-09-10 真机踩过）。
     """
     if _ai_pos() == (vx, vy):
         return True
-    # ① 邻格 → /move 走最后一格（最稳，优先）
+    # ① **直接 walk_to**（2026-09-10 恒："现在精准了，去换衣服应该不用来回蹭一下换衣间了吧"）。
+    #    走位落点精度修好之后（见 CHANGELOG「走位落点精度」），`/walk_to` 已经能**精确收在目标格**，
+    #    一步到位即可 —— 不用再"先站邻格再 /move 走最后一格"那套来回蹭。
+    api._post("/walk_to", {"location": frm, "x": vx, "y": vy})
+    _wait_arrival(frm, vx, vy, timeout=25)
+    if _ai_pos() == (vx, vy):
+        return True
+    # ② 兜底（老办法，只在 ① 落偏时才用）：邻格 → /move 走最后一格
     for ax, ay in ((vx, vy + 1), (vx, vy - 1), (vx + 1, vy), (vx - 1, vy),
                    (vx + 1, vy + 1), (vx - 1, vy - 1), (vx + 1, vy - 1), (vx - 1, vy + 1)):
         if _ai_pos() == (vx, vy):
@@ -3297,6 +3304,38 @@ def _walk_trigger_warp(frm: str, nxt: str, ex: int, ey: int, wx: int, wy: int, e
     return False
 
 
+def _player_is_male():
+    """角色性别（True/False）；旧 DLL 没这字段 → None。
+    来源：`/state` 的 `player.isMale`（2026-09-10 恒：浴场性别门禁要按性别选门）。"""
+    try:
+        v = (api.state().get("player") or {}).get("isMale")
+        return None if v is None else bool(v)
+    except Exception:
+        return None
+
+
+def _link_allowed(link: dict) -> bool:
+    """🚻 按角色性别过滤 MAP_LINKS 的边（2026-09-10 恒）。
+
+    病根：浴场大厅有**两扇外观一样的性别门**——女 `(2,3)→BathHouse_WomensLocker`、
+    男 `(7,3)→BathHouse_MensLocker`。BFS 谁排在前面就走谁（女门在前），**male 角色会被带去女门**
+    然后被门禁拒（真机：雪落被拦在 "这是女更衣室……你不能进去！"）。
+
+    ⚠️ **必须在规划阶段就滤掉，不能"被拒了再换一扇"**：进错更衣室会改变后面**整条路线**
+    （女更衣室→泳池走 `(2,27)`、男更衣室走 `(15,27)`，落点图都不一样）。
+
+    link 里 `gender` 缺省 ⇒ 谁都能走（行为与以前完全一致）；
+    读不到玩家性别（旧 DLL）也放行，不误伤。
+    """
+    g = link.get("gender")
+    if not g:
+        return True
+    m = _player_is_male()
+    if m is None:
+        return True
+    return (g == "male") == m
+
+
 def _map_bfs(from_loc: str, to_loc: str):
     """在 MAP_LINKS 图上 BFS 找最短路径。返回 [(起点, 目标, link), ...] 或 None。
     ⚠️ 2026-08-30 恒：from==to 时直接返回 []（空路径=原地不动）——不然 BFS 会找
@@ -3306,6 +3345,8 @@ def _map_bfs(from_loc: str, to_loc: str):
     graph = {}
     for src, links in locations.MAP_LINKS.items():
         for l in links:
+            if not _link_allowed(l):      # 🚻 性别门禁：滤掉不对的那扇门（见 _link_allowed）
+                continue
             graph.setdefault(src, []).append(l)
     visited = {from_loc}
     queue = [(from_loc, [])]
@@ -3741,7 +3782,12 @@ ISLAND_MAPS = {
 }
 # 落点图近处建筑（也走图腾柱，落点续走 1 段；只收落点近邻，别收 Town 这类远走的）
 OBELISK_NEARBY = {
-    "Earth Obelisk":  {"Mine", "AdventureGuild", "ScienceHouse", "Tent"},   # 落点 Mountain
+    # ⚠️ 2026-09-10 恒：浴场也加进来——原来漏了，农场去泡澡白白走 Farm→Backwoods→Mountain 三段腿；
+    #    走山岭图腾柱直达 Mountain 再续走 Railroad→浴场，近得多。（落点非 dest 由 map_go 续走 BFS）
+    #    ⚠️ 要比对的是 **_try_transport 传进来的最终目的地**（如 `BathHouse_Pool`），
+    #      不是中间站——只加 `BathHouse_Entry` 没用（第一次就踩了，route 照走 Backwoods）。
+    "Earth Obelisk":  {"Mine", "AdventureGuild", "ScienceHouse", "Tent",
+                       "BathHouse_Entry", "BathHouse_Pool"},   # 落点 Mountain
     "Water Obelisk":  {"FishShop"},                                          # 落点 Beach
     "Desert Obelisk": {"SkullCave", "SandyHouse", "Club"},                    # 落点 Desert；2026-08-23 恒：去赌场(Club)也走柱（沙漠区，经 SandyHouse 门进），别坐巴士
 }

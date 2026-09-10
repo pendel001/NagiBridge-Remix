@@ -726,8 +726,8 @@ MAP_LINKS = {
               {"tile": (3, 18), "target": "BugLand", "kind": "door", "note": "下水道→变异虫穴(15,53)，变异鲤鱼钓点（/warps实测）"}],
     "BugLand": [{"tile": None, "target": "Sewer", "kind": "warp", "note": "变异虫穴→下水道"}],
     "BathHouse_Entry": [{"tile": (5, 9), "target": "Railroad", "kind": "warp", "arrive": (10, 57), "note": "浴场→铁路(10,57)：⚠️真出口 (5,10) 在**图外**（大厅图只有 10×10, y0~9）→ 站图内最后一格 (5,9) 再 /warp 模拟（2026-09-10 实测：旧写法整段导航失败）"},
-                        {"tile": (2, 3), "target": "BathHouse_WomensLocker", "kind": "door", "note": "♀ 女更衣室门：大厅(2,4)面0 interact(2,3)→WomensLocker(13,27)（2026-09-10 实测换图）"},
-                        {"tile": (7, 3), "target": "BathHouse_MensLocker", "kind": "door", "note": "♂ 男更衣室门：大厅(7,4)面0 interact(7,3)→MensLocker(15,27)（2026-09-10 恒带路）"}],
+                        {"tile": (2, 3), "target": "BathHouse_WomensLocker", "kind": "door", "gender": "female", "note": "♀ 女更衣室门：大厅(2,4)面0 interact(2,3)→WomensLocker(13,27)（2026-09-10 实测换图）"},
+                        {"tile": (7, 3), "target": "BathHouse_MensLocker", "kind": "door", "gender": "male", "note": "♂ 男更衣室门：大厅(7,4)面0 interact(7,3)→MensLocker(15,27)（2026-09-10 恒带路）"}],
     # ♨️ 更衣室出口全是**图外格**（图18×28, y只到27，真出口在 y=28）——
     #    walk_to 的入口校验遇越界直接 ok:false ⇒ 旧写法根本走不出去（2026-09-10 抓到的病根）。
     #    改 LeoTreeHouse/Tunnel 同款：**tile 标图内最后一格**（站得住的实格）+ arrive 标落地格 → /warp 模拟。
@@ -741,8 +741,10 @@ MAP_LINKS = {
                         {"tile": (2, 27), "target": "BathHouse_Pool", "kind": "warp", "arrive": (6, 0), "via": [(2, 17)], "note": "♀ 女更衣室→泳池(6,0)：真出口(2,28)图外 → 站(2,27) 再 /warp；途经(2,17)穿泳装"}],
     "BathHouse_MensLocker": [{"tile": (3, 27), "target": "BathHouse_Entry", "kind": "warp", "arrive": (7, 4), "via": [(15, 18)], "note": "男更衣室→大厅(7,4)：真出口(3,28)图外 → 站(3,27) 再 /warp；途经(15,18)脱泳装"},
                         {"tile": (15, 27), "target": "BathHouse_Pool", "kind": "warp", "arrive": (21, 0), "via": [(15, 19)], "note": "♂ 男更衣室→泳池(21,0)：真出口(15,28)图外 → 站(15,27) 再 /warp；途经(15,19)穿泳装"}],
-    "BathHouse_Pool": [{"tile": (6, -1), "target": "BathHouse_WomensLocker", "kind": "warp", "note": "泳池→女更衣室(2,27)"},
-                        {"tile": (21, -1), "target": "BathHouse_MensLocker", "kind": "warp", "note": "泳池→男更衣室(15,27)"}],
+    # ⚠️ 回程这两条**也要标 gender**（2026-09-10 恒抓的"勇闯女更衣室"）：只标了前门 (Entry→更衣室) 没标后门，
+    #    BFS 按列表顺序挑了女门 ⇒ 男角色从泳池出来被塞进女更衣室。出口/入口**两边都要标**。
+    "BathHouse_Pool": [{"tile": (6, -1), "target": "BathHouse_WomensLocker", "kind": "warp", "gender": "female", "note": "泳池→女更衣室(2,27)"},
+                        {"tile": (21, -1), "target": "BathHouse_MensLocker", "kind": "warp", "gender": "male", "note": "泳池→男更衣室(15,27)"}],
     "Tunnel": [{"tile": (39, 9), "target": "Backwoods", "kind": "warp", "arrive": (23, 30), "note": "隧道出口站格(39,9)→/warp 深山(23,30)；原出口(40,9) x=40 在宽度40边界外；齐先生电池箱 TunnelSafe(17,6) 在里头"},{"tile": None, "target": "Backwoods", "kind": "warp", "note": "隧道→深山(兜底)"}],
     "Tent": [{"tile": None, "target": "Mountain", "kind": "warp", "note": "帐篷→山"}],
     "LeoTreeHouse": [{"tile": (3, 8), "target": "Mountain", "kind": "warp", "arrive": (16, 8), "note": "🌳 雷欧树屋出口→山(16,8)：树屋仅7x9(0..6,0..8)，/warps报(3,9)越界，站(3,8)边格warp（2026-09-06实测；门单向，进=interact<16,7> 出=warp站边格）"}],
