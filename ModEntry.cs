@@ -2130,6 +2130,7 @@ public class ModEntry : Mod
                 "/appearance_info" => HandleAppearanceInfo(),
                 "/appearance_ref" => HandleAppearanceRef(),
                 "/appearance_creation" => HandleAppearanceCreation(),
+                "/hair_ref" => HandleHairRef(),
                 "/character_customize" => HandleCharacterCustomize(ctx),
                 "/color_pick" => HandleColorPick(ctx),
                 "/stop" => HandleStop(),
@@ -5067,6 +5068,66 @@ public class ModEntry : Mod
         {
             return new { ok = false, error = ex.Message };
         }
+    }
+
+    /// <summary>
+    /// GET /hair_ref
+    /// 捏人(创建/幻觉神龛)菜单能选的发型全集，来自游戏真实枚举 Farmer.GetAllHairstyleIndices()——
+    /// 顺序 = 菜单左/右箭头循环顺序；**显示编号 = 在列表中的位置+1**，内部 farmer.hair / changeHairStyle 存的是列表值。
+    /// 1.6 里 = 基础发型 hairstyles.png(0~55) + Data/HairData 追加的 100~117，共 74 款（56~99 是空号）。
+    /// 供 MCP 把 list_hair_ref / set_appearance 的发型编号对齐到"捏人页能选的内容"（同 /appearance_creation 的上衣路子）。
+    /// </summary>
+    private object HandleHairRef()
+    {
+        if (!Context.IsWorldReady)
+            return new { ok = false, error = "World not ready" };
+
+        try
+        {
+            var hairIndices = Farmer.GetAllHairstyleIndices();
+
+            // 每款发型附一点点元数据（isBald/贴图，不含"描述"，2026-09-08 恒删掉乱写的英文名）。
+            // HairStyleMetadata 是 Farmer 内嵌类型 → 反射读字段，避开编译期类型依赖（同 CanChooseDuringCharacterCustomization 那套）。
+            var metaFlags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic |
+                            System.Reflection.BindingFlags.Static;
+            var getMeta = typeof(Farmer).GetMethod("GetHairStyleMetadata", metaFlags);
+            var hair = new List<object>();
+            foreach (var hid in hairIndices)
+            {
+                object? meta = null;
+                try { meta = getMeta?.Invoke(null, new object[] { (int)hid }); } catch { }
+                hair.Add(new { index = (int)hid, isBald = meta != null ? ReadMetaBool(meta, "isBaldStyle") : (object?)null, texture = meta != null ? ReadMetaText(meta, "texture") : null });
+            }
+
+            return new { ok = true, count = hairIndices.Count, hairIndices, hair };
+        }
+        catch (Exception ex)
+        {
+            return new { ok = false, error = ex.Message };
+        }
+    }
+
+    /// <summary>反射读 HairStyleMetadata 的 bool 字段（isBaldStyle 等）。</summary>
+    private object? ReadMetaBool(object meta, string name)
+    {
+        try
+        {
+            var f = meta.GetType().GetField(name, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            return f?.GetValue(meta);
+        }
+        catch { return null; }
+    }
+
+    /// <summary>反射读 HairStyleMetadata 的 Texture2D 字段（转资源名，方便人/AI 脑补）。</summary>
+    private object? ReadMetaText(object meta, string name)
+    {
+        try
+        {
+            var f = meta.GetType().GetField(name, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var v = f?.GetValue(meta);
+            return v?.ToString();
+        }
+        catch { return null; }
     }
 
     /// <summary>

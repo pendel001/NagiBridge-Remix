@@ -1,0 +1,451 @@
+{
+  "count": 74,
+  "hairIndices": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    48,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    100,
+    101,
+    102,
+    103,
+    104,
+    105,
+    106,
+    107,
+    108,
+    109,
+    110,
+    111,
+    112,
+    113,
+    114,
+    115,
+    116,
+    117
+  ],
+  "hair": [
+    {
+      "index": 0,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 1,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 2,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 3,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 4,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 5,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 6,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 7,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 8,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 9,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 10,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 11,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 12,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 13,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 14,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 15,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 16,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 17,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 18,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 19,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 20,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 21,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 22,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 23,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 24,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 25,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 26,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 27,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 28,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 29,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 30,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 31,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 32,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 33,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 34,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 35,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 36,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 37,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 38,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 39,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 40,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 41,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 42,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 43,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 44,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 45,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 46,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 47,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 48,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 49,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 50,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 51,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 52,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 53,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 54,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 55,
+      "isBald": null,
+      "texture": null
+    },
+    {
+      "index": 100,
+      "isBald": false,
+      "texture": "Characters/Farmer/hairstyles2"
+    },
+    {
+      "index": 101,
+      "isBald": false,
+      "texture": "Characters/Farmer/hairstyles2"
+    },
+    {
+      "index": 102,
+      "isBald": false,
+      "texture": "Characters/Farmer/hairstyles2"
+    },
+    {
+      "index": 103,
+      "isBald": false,
+      "texture": "Characters/Farmer/hairstyles2"
+    },
+    {
+      "index": 104,
+      "isBald": false,
+      "texture": "Characters/Farmer/hairstyles2"
+    },
+    {
+      "index": 105,
+      "isBald": false,
+      "texture": "Characters/Farmer/hairstyles2"
+    },
+    {
+      "index": 106,
+      "isBald": false,
+      "texture": "Characters/Farmer/hairstyles2"
+    },
+    {
+      "index": 107,
+      "isBald": false,
+      "texture": "Characters/Farmer/hairstyles2"
+    },
+    {
+      "index": 108,
+      "isBald": false,
+      "texture": "Characters/Farmer/hairstyles2"
+    },
+    {
+      "index": 109,
+      "isBald": false,
+      "texture": "Characters/Farmer/hairstyles2"
+    },
+    {
+      "index": 110,
+      "isBald": false,
+      "texture": "Characters/Farmer/hairstyles2"
+    },
+    {
+      "index": 111,
+      "isBald": false,
+      "texture": "Characters/Farmer/hairstyles2"
+    },
+    {
+      "index": 112,
+      "isBald": false,
+      "texture": "Characters/Farmer/hairstyles2"
+    },
+    {
+      "index": 113,
+      "isBald": false,
+      "texture": "Characters/Farmer/hairstyles2"
+    },
+    {
+      "index": 114,
+      "isBald": false,
+      "texture": "Characters/Farmer/hairstyles2"
+    },
+    {
+      "index": 115,
+      "isBald": false,
+      "texture": "Characters/Farmer/hairstyles2"
+    },
+    {
+      "index": 116,
+      "isBald": false,
+      "texture": "Characters/Farmer/hairstyles2"
+    },
+    {
+      "index": 117,
+      "isBald": false,
+      "texture": "Characters/Farmer/hairstyles2"
+    }
+  ]
+}

@@ -1048,7 +1048,7 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
         _st_pct = _st_n / max(_st_m, 1)
         if _hp_pct < 0.15 or _st_pct < 0.10:
             lines.append("🚨 血量/体力危险（血{:.0f}% 体{:.0f}%）！禁作弊别硬闯——"
-                         "吃食物(eat_item) / 泡温泉(BathHouse) / 躺床上(go_sleep 不确认，in_Bed 恢复) 直到健康"
+                         "吃食物(eat_item) / 泡温泉(map_go 温泉→大厅(2,4)或(7,4)面0推更衣室门→更衣室走到底行往下蹭进泳池，站水里泡回体力) / 躺床上(go_sleep 不确认，in_Bed 恢复) 直到健康"
                          .format(_hp_pct * 100, _st_pct * 100))
     except Exception:
         pass
@@ -2330,7 +2330,11 @@ def walk_to(poi_name: str) -> str:
             summary = [l for l in lines if l.strip() and "log" not in l.lower()]
             short = "\n".join(summary[-5:]) if summary else "已到达"
             face_log = _apply_poi_stand_face(poi_name)
-            return _with_state(f"🚶 已导航到「{poi_name}」{face_log}\n{short[:500]}")
+            # 🔑 一键开门：同图走到 POI→若落点是建筑门瓦片则推门进屋（跨图已由上面 map_go 分支自带）
+            door_log = ""
+            if poi_name in locations.POI:
+                door_log = _step_into_building(poi_map, locations.POI[poi_name].get("pos"))
+            return _with_state(f"🚶 已导航到「{poi_name}」{face_log}{door_log}\n{short[:500]}")
         else:
             _NAV_FAILED["v"] = True
             return _with_state(f"❌ 导航失败: {err or out[:300] or '无响应'}")
@@ -2762,6 +2766,10 @@ SCENE_NAME_ALIAS = {
     "玛妮": "AnimalShop", "牧场": "AnimalShop",
     "桑迪": "SandyHouse", "绿洲": "SandyHouse",
     "赌场": "Club",
+    # 居民房（2026-09-10 恒校准补：海莉&艾米丽家 / 乔迪家）
+    "海莉": "HaleyHouse", "海莉家": "HaleyHouse", "艾米丽": "HaleyHouse", "艾米丽家": "HaleyHouse",
+    "乔迪": "SamHouse", "乔迪家": "SamHouse", "山姆": "SamHouse", "山姆家": "SamHouse",
+    "文森特": "SamHouse", "文森特家": "SamHouse", "肯特": "SamHouse", "肯特家": "SamHouse",
     # 魔法/女巫区
     "法师塔": "WizardHouse", "巫师塔": "WizardHouse", "法师家": "WizardHouse",
     "法师地下室": "WizardHouseBasement", "幻觉神龛地下室": "WizardHouseBasement",
@@ -2769,6 +2777,7 @@ SCENE_NAME_ALIAS = {
     "女巫小屋": "WitchHut", "巫师小屋": "WitchHut",
     "魔女沼泽洞穴": "WitchWarpCave", "黑暗护身符洞穴": "WitchWarpCave",
     "温泉": "BathHouse_Entry", "浴场": "BathHouse_Entry",
+    "温泉池": "BathHouse_Pool", "泳池": "BathHouse_Pool",  # ♨️ 泡澡的池子（室内最里；入口→大厅→更衣室→泳池，见 POI 温泉(更衣室女/男)）
     "莱纳斯帐篷": "Tent", "帐篷": "Tent",  # ⛺ 莱纳斯住帐篷室内（2026-09-06 恒：map_go 进帐篷，warp 瓦片自动传）
     "雷欧树屋": "LeoTreeHouse", "树屋": "LeoTreeHouse",  # 🌳 雷欧住树屋（星露谷树屋，雷欧6心搬来/常在），门交互进
     # 姜岛
@@ -2923,6 +2932,50 @@ def _enter_building_door(loc: str) -> bool:
         return api.state().get("location", {}).get("name", "") == loc
     except Exception:
         return False
+
+
+# ── 门反查表：门口瓦片 → 建筑（2026-09-10 恒拍板"map_go/walk_to 一键开门"）──
+#   **门**专指"交互推门进屋"的建筑门（哈维医院/皮埃尔店/铁匠铺…：进入靠 interact 打开室内门）。
+#   ⚠️ 三类**不是门**，不进反查表：
+#   ① 出货箱/筒仓/马厩/传送阵/金钟——在 _resolve_place，站外面用，非门。
+#   ② 走上去就 warp 的"入口"（矿井/头骨矿洞/农场洞穴/帐篷/秘密森林/隧道/赌场）——进入靠的是 warp 瓦片
+#      不是推门，别当一键开门（_enter_building_door 的 interact 对它们无意义；2026-09-10 恒：矿井入口是 warp 不是门）。
+#   作用：walk_to / map_go 落脚恰站在**真门**瓦片上时，补一次 interact 推门进屋，站在室内门口。
+_REVERSE_DOORS = {}
+_DOOR_WARP_ENTRANCES = {"Mine", "SkullCave", "FarmCave", "Tent", "Woods", "Tunnel", "Club"}
+for _b, (_om, (_dx, _dy)) in locations.BUILDING_DOORS.items():
+    if _b in _DOOR_WARP_ENTRANCES:
+        continue
+    _REVERSE_DOORS[(_om, (_dx, _dy))] = _b
+
+
+def _step_into_building(arrive_map: str, arrive_pos) -> str:
+    """落点在建筑**门瓦片**上 → 推门进屋（复用 _enter_building_door）。
+    返回"…推门进屋"日志；非门瓦片 / 已在屋内 / 进屋失败 → 返回空串（不卡导航）。
+    ⚠️ 不无脑进：只在 (arrive_map, 瓦片) 命中 _REVERSE_DOORS 且玩家仍在门外时触发。"""
+    try:
+        px, py = int(arrive_pos[0]), int(arrive_pos[1])
+        b = _REVERSE_DOORS.get((arrive_map, (px, py)))
+        if not b:
+            return ""
+        cur = (api.state().get("location") or {}).get("name", "")
+        if cur != arrive_map:          # 已进门/不在门外 → 不重复进
+            return ""
+        if _enter_building_door(b):
+            return f"，推门进屋已站在{b}室内门口"
+    except Exception:
+        return ""
+    # 没进屋：大概率门锁着（未到营业时间/未解锁）→ interact 会弹个"上锁了"DialogueBox，
+    # 顺手关掉别留菜单给 AI，并明确回报（2026-09-10 恒：医院07:00门没开、弹了菜单）。
+    try:
+        m = api._get("/menu")
+        if m.get("open") and m.get("type") == "DialogueBox":
+            api._post("/key", {"key": "ok"})
+            api._post("/menu_close")
+            return "（~这扇门没开，未到营业时间/未解锁~）"
+    except Exception:
+        pass
+    return ""
 
 
 # ═══════════════════════════════════════════
@@ -4005,7 +4058,8 @@ def _map_go_walk(path, destination: str, dest: str, lead_log: str = "", npc_targ
             _wait_arrival(dest, poi["pos"][0], poi["pos"][1], timeout=20)
             # 2026-08-16 恒：POI 结构化站位+朝向（宠物水碗朝右/柜台朝上；幂等，walk_to 双调无害）
             face_log = _apply_poi_stand_face(destination)
-            final_txt = f"\n✅ 到达 {destination}（{poi['pos']}）{face_log}"
+            door_log = _step_into_building(dest, poi["pos"])   # 🔑 一键开门：落点是建筑门瓦片→推门进屋
+            final_txt = f"\n✅ 到达 {destination}（{poi['pos']}）{face_log}{door_log}"
     final_txt += mine_hint + _mine_entry_reminder(dest)
     return _with_state("\n".join(log) + final_txt)
 
@@ -4154,7 +4208,8 @@ def map_go(destination: str = "", npc: str = "") -> str:
                 #    walk_to 有 ±2 容差可能停偏1格、且不设 face，interact 会打到错误瓦片。
                 #    与另两条 POI 终止路径(transport/BFS)一致：position 瞬移到 stand + 设朝向。
                 face_log = _apply_poi_stand_face(destination)
-                return _with_state(f"🗺️ 已在 {dest}，走到 {destination}（{poi['pos']}）{face_log}")
+                door_log = _step_into_building(dest, poi["pos"])   # 🔑 一键开门：落点=门瓦片→推门进屋
+                return _with_state(f"🗺️ 已在 {dest}，走到 {destination}（{poi['pos']}）{face_log}{door_log}")
             return _with_state(f"🗺️ 已经在 {cur} 了" + _mine_hint + _mine_entry_reminder(cur))
         # 🎪 2026-08-29 恒：节日临时图(Temp/Forest-IceFestival)不在 MAP_LINKS，map_go 到逻辑场地
         #   (Town/Forest/Beach)会误报"没路径"——玩家其实已被游戏自动送到节日场地。只在临时图且目标是
@@ -4205,7 +4260,8 @@ def map_go(destination: str = "", npc: str = "") -> str:
                     api._post("/walk_to", {"location": dest, "x": poi["pos"][0], "y": poi["pos"][1]})
                     _wait_arrival(dest, poi["pos"][0], poi["pos"][1], timeout=20)
                     face_log = _apply_poi_stand_face(destination)
-                    return _with_state(f"{tlog} → 到达 {destination}（{poi['pos']}）{face_log}" + _mine_entry_reminder(dest))
+                    door_log = _step_into_building(dest, poi["pos"])   # 🔑 一键开门：落点=门瓦片→推门进屋
+                    return _with_state(f"{tlog} → 到达 {destination}（{poi['pos']}）{face_log}{door_log}" + _mine_entry_reminder(dest))
                 return _with_state(f"{tlog} → 到达 {dest}" + _mine_entry_reminder(dest))
             # 落点≠dest（岛柱落岛南等）：从落点续走 BFS
             cur = land
@@ -11295,45 +11351,26 @@ ACC_NAMES = {
 }
 
 
-# ── 发型名称索引 ──
-# ⚠️ 2026-08-16 恒实测：这些是【显示编号】（捏人页/内部0=显示1号）。
-#   set_appearance(hair=N) 会自动转内部 ID（N-1）传给 changeHairStyle。
-HAIR_NAMES = {
-    1: "Side-Swept Bangs", 2: "Messy Center Part", 3: "Side-Parted Swoop Bangs",
-    4: "Full Afro", 5: "Short Spiky Fluff", 6: "Center-Stripe Mohawk",
-    7: "Long Straight Hair", 8: "Short Swept-Back Cut", 9: "Wild Spikes (Leo)",
-    10: "Puffy Mushroom Bob", 11: "Swept-Up Spikes", 12: "Short Rounded Cut",
-    13: "Low Ponytail", 14: "Shaggy Spikes", 15: "Fluffy Flip",
-    16: "Middle-Part Bowl Cut", 17: "High Ponytail", 18: "Twin Side Braids",
-    19: "Asymmetrical Fluffy Sweep", 20: "Triple High Buns",
-    21: "Flat Heavy Fringe", 24: "Short Jagged Spikes",
-    43: "Upright Spiky Crew", 44: "Fluffy Side-Swept Fringe",
-    45: "Tidy Boyish Fringe", 46: "Elegant Side-Swept Bangs",
-    47: "Puffy Ice Cream Scoop", 48: "Long Middle-Part Fringe",
-    49: "Relaxed Flowy Long Cut", 50: "Classic True Mohawk",
-    51: "Balding Crown Long Sides", 52: "Receding Hairline",
-    53: "Clean Shaven Bald", 54: "Buzz Widow's Peak",
-    55: "Messy Tousled Buzz", 56: "Standard Buzz Cut",
-    65: "Short Layered Crop", 68: "Tousled Bird's Nest",
-    69: "Extreme Fluffy Spikes", 70: "Shaggy Mid-Length Sweep",
-    73: "Heavy Fringe Shag", 74: "Fluffy Parted Shag",
-}
+# ── 发型编号索引（2026-09-08 反编译定论，替代旧的"男发型描述"）──
+# 真相（Farmer.GetAllHairstyleIndices() + hairstyles.xnb 128×672 + Data/HairData）：
+#   捏人页能选的全集 = [0,1,...,55] + [100,101,...,117] = 56 个基础发型 + 18 个 1.6 新增，共 74 款。
+#   菜单左/右箭头循环的就是这 74 个；**显示编号 = 索引位置+1**，内部 farmer.hair / changeHairStyle 存的是列表值。
+#   ⚠️ 不能按"显示-1"算内部——显示 57~74 对应内部 100~117（中间 56~99 是空号，实际不存在）。
+#   set_appearance(hair=N) 的 N 是显示编号 → 内部 = HAIR_REF[N-1]。
+HAIR_REF = list(range(0, 56)) + list(range(100, 118))
 
 
 @mcp.tool()
 def list_hair_ref() -> str:
-    """💇 发型编号参考 (ID 0~73)
-    列出部分已知名称的发型。
-    0 ~ 73 共 74 种，未知名称的只有编号。
-    女头居多没有标注，建议直接试编号看效果。
+    """💇 发型编号参考（捏人页显示编号 → 内部样式）
+    捏人页能选的 74 款发型，按菜单循环顺序列给你（显示第几号 ↔ 内部 farmer.hair 存的值）。
+    ‼️ 显示编号 57~74 对应内部 100~117——**内部 ≠ 显示-1**（56~99 是空号，实际不存在）。
+    set_appearance(hair=N) 会自动换算（给显示编号即可），这里只是让你脑内有个数。
+    看中哪号 → set_appearance(hair=<显示编号>)（每次改完附小人截图，挑到满意为止）。
     """
-    lines = ["💇 发型编号参考:\n"]
-    for hid in range(0, 74):
-        name = HAIR_NAMES.get(hid, "")
-        if name:
-            lines.append(f"  {hid:2d}: {name}")
-        else:
-            lines.append(f"  {hid:2d}: (未命名)")
+    lines = ["💇 发型编号参考（显示编号 → 内部样式）:\n"]
+    for i, hid in enumerate(HAIR_REF, 1):
+        lines.append(f"  {i:2d}. 内部{hid:3d}")
     return _with_state("\n".join(lines))
 COLOR_PRESETS = {
     "金色": "FFE6A0",
@@ -11403,10 +11440,10 @@ def set_appearance(
     上衣编号: 1000~1999（共301件，用 list_shirt_ref() 查中文名+描述；q=关键词 或 start/end 筛选）
     裤子编号: 0~999（共18条，用 list_pants_ref() 查中文名+描述）
     帽子编号: 0~93（用 list_hats_ref() 查看列表）
-    发型: 1~74 显示编号（内部 0~73，内部 = 显示-1；2026-08-16 恒实测：内部0=显示1号）
+    发型: 1~74 显示编号（捏人页菜单顺序；内部 farmer.hair 存的是 HAIR_REF[显示-1]，显示 57~74 对应内部 100~117 ≠ 显示-1；2026-09-08 反编译定论）
 
     Args:
-        hair: 发型显示编号 1~74（HAIR_NAMES/list_hair_ref 同编号）
+        hair: 发型显示编号 1~74（list_hair_ref 同编号；57~74 对应内部 100~117）
         hair_color: 发色 hex 或预设名
         skin: 肤色编号 0~23
         shirt: 上衣编号 1000~1999（list_shirt_ref 查名/描述）
@@ -11440,10 +11477,13 @@ def set_appearance(
             return a
 
         if hair is not None:
-            # ⚠️ 2026-08-16 恒实测：HAIR_NAMES/捏人页显示编号 = 内部 farmer.hair + 1
-            #   （内部0=显示1号，内部12=低马尾[显示13]，内部13=男头[显示14]）
-            #   set_appearance 收到的 hair 是显示编号 → 减1 转内部 ID 再传给 /appearance（changeHairStyle）
-            kwargs["hair"] = int(hair) - 1
+            # ⚠️ 2026-09-08 反编译定论：hair 是"捏人页显示编号"(1~74) → 用 HAIR_REF 转内部 farmer.hair。
+            #   不能再"显示-1"当内部——显示 57~74 对应内部 100~117（56~99 是空号）。
+            hidx = int(hair)
+            if 1 <= hidx <= len(HAIR_REF):
+                kwargs["hair"] = HAIR_REF[hidx - 1]
+            else:
+                return _with_state(f"❌ 发型显示编号必须 1~{len(HAIR_REF)}（共{len(HAIR_REF)}款），收到 {hidx}。用 list_hair_ref() 看编号。")
         if hair_color is not None: kwargs["hairColor"] = resolve_color(hair_color)
         if skin is not None: kwargs["skin"] = skin
         if shirt is not None: kwargs["shirt"] = shirt
@@ -11521,7 +11561,8 @@ def confirm_look() -> str:
         d = api._ai_get("/appearance_info")
     except Exception:
         return _with_state("❌ 读不到当前外观（确认游戏/世界已就绪）")
-    hair = (d.get("hair") or {}).get("index", "?")
+    internal_hair = (d.get("hair") or {}).get("index", "?")
+    display_hair = (HAIR_REF.index(internal_hair) + 1) if isinstance(internal_hair, int) and internal_hair in HAIR_REF else "?"
     eye = (d.get("newEyeColor") or {}).get("hex", "?")
     skin = (d.get("skin") or {}).get("index", "?")
     acc = (d.get("accessory") or {}).get("index", "?")
@@ -11531,7 +11572,7 @@ def confirm_look() -> str:
     return _with_state(
         "🔍 捏人形象核对（满意再 ok）：\n"
         f"  🧑 名字: {d.get('name')!r} | 喜爱: {d.get('favoriteThing')!r}\n"
-        f"  💇 发型: {hair} | 瞳色: {eye} | 肤色: {skin} | 配饰: {acc}\n"
+        f"  💇 发型: 内部{internal_hair}(=显示第{display_hair}号) | 瞳色: {eye} | 肤色: {skin} | 配饰: {acc}\n"
         f"  👕 上衣: {shirt} | 裤子: {pants}\n"
         "⚠️ 核对重点：发型/瞳色/配饰最容易出错。\n"
         f"流程：①请{_host_name()}帮忙参谋这个形象 → ②screenshot 截图自己确认满意 → ③满意后再 menu_click(button='ok')。\n"
