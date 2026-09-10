@@ -183,6 +183,15 @@ LOCATION_LABELS = {
     "railroad": "铁路", "backwoods": "边远森林", "sewers": "下水道",
     "greenhouse": "温室", "shed": "小屋", "barn": "畜棚", "coop": "鸡舍",
 }
+# ⚠️ 没有 "cabin" 条目是**故意的**：`_loc_label` 先查 SHOP_NAMES，而那里已有
+#    "cabin": "联机小屋"（先于本表命中）⇒ 在这加是死代码。查不到中文名的地点由
+#    🪑 坐着彩蛋的"泛称兜底"处理（见 describe_activity 第 2.5 级）。
+
+# ⛪ 由巴教堂（恒 2026-09-11 带图圈的）：**皮埃尔商店(SeedShop)里祭坛正下方那间**，
+#    3 格宽 × 5 格高 = 15 格。祭坛是 Buildings 层 (36,17)(37,17)(38,17) 的 `Action: Yoba`；
+#    其下 5 行：y=18 站位 / y=19 坐垫 / y=20 站位 / y=21 坐垫 / y=22 站位（坐垫=mapSeat stool）。
+#    触发：人在这 15 格内 + **面朝上(0)**（站或坐都算；坐着时朝向就是坐姿朝向）。
+YOBA_CHAPEL = {"location": "seedshop", "xs": (36, 37, 38), "ys": (18, 19, 20, 21, 22)}
 
 
 def _loc_label(loc_lower: str, loc_name: str) -> str:
@@ -193,9 +202,15 @@ def _loc_label(loc_lower: str, loc_name: str) -> str:
     for key, d in SHOP_NAMES.items():
         if key in loc_lower:
             return d
+    # ⚠️ 取**最长**匹配 key：按 dict 顺序匹配时 "farm" 会先于 "farmhouse" 命中，
+    #    把 FarmHouse 叫成"农场"（🪑 坐着彩蛋真机当场暴露："乖巧地坐在农场里"，人在屋里）。
+    #    最长匹配才够具体。
+    best_key, best_label = "", None
     for key, d in LOCATION_LABELS.items():
-        if key in loc_lower:
-            return d
+        if key in loc_lower and len(key) > len(best_key):
+            best_key, best_label = key, d
+    if best_label:
+        return best_label
     return loc_name
 
 
@@ -460,6 +475,43 @@ def describe_activity(state_data: dict) -> str:
     # 骑马（/state riding 字段，或老DLL用"马NPC与玩家同格"兜底）
     if _is_riding(state_data):
         return f"🐴 **{name}** 正骑马在{_loc_label(loc_lower, loc_name)}飞驰"
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    #  第 2.5 级：彩蛋（由巴教堂祷告 / 温泉泡澡 / 坐着歇脚）
+    #    恒 2026-09-11：今天做的坐椅子 + 浴室泡澡"都可以记进心跳作为彩蛋"。
+    #    数据：教堂=位置+朝向（/state 自带）；sitting/swimming 由 _gather_user_state 从
+    #    host 端口的 /sittable、/pool 取（只在心跳注入时读，默认 5 分钟一次，开销可忽略）。
+    #    优先级：教堂 > 泡澡 > 坐着（恒："在教堂坐着会顶掉上一条 sitting 的判断"）。
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    # ⛪ 由巴教堂：SeedShop 祭坛下那 15 格，站或坐 + 面朝上 ⇒ 祷告（**顶掉下面的 sitting 判断**）
+    if (loc_lower == YOBA_CHAPEL["location"] and px in YOBA_CHAPEL["xs"]
+            and py in YOBA_CHAPEL["ys"] and p.get("facingDirection") == 0 and not is_moving):
+        return random.choice([
+            f"🙏 **{name}** 在教堂对由巴虔诚地祷告。",
+            f"🕯️ **{name}** 正在由巴教堂聆听神谕与火苗声。",
+        ])
+
+    # ♨️ 泡澡（/pool 的 swimming；泳池"游没游泳"的唯一权威是它，跟水格无关）
+    if state_data.get("swimming"):
+        return random.choice([
+            f"♨️ **{name}** 正在温泉享受泡澡时光。",
+            f"♨️ **{name}** 正在温泉静养。",
+            f"🛁 **{name}** 在浴室玩水。暖烘烘！",
+        ])
+
+    # 🪑 坐着（/sittable 的 me.sitting）
+    if state_data.get("sitting"):
+        _where = _loc_label(loc_lower, loc_name)
+        _generic = not any("一" <= c <= "鿿" for c in _where)
+        if _generic:
+            _where = "这里"           # 查不到中文名（小屋实例名等）→ 泛称，别把英文塞进中文句子
+        _where_in = _where if _generic else f"{_where}里"   # "这里"+"里" 会变"这里里"
+        return random.choice([
+            f"🪑 **{name}** 正在{_where}歇脚。",
+            f"🪑 **{name}** 乖巧地坐在{_where_in}。",
+            f"🪑 **{name}** 坐在{_where}，安静感受时光在星露谷淌过的痕迹。",
+        ])
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     #  第 3 级：非矿井 → 杂草/播种检测

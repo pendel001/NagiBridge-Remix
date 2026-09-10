@@ -201,6 +201,22 @@ def furniture_scan():
     return _get("/furniture")
 
 
+def sittable(radius=7):
+    """🪑 扫玩家附近**能坐的**东西（椅子/长凳/沙发/钢琴 + 地图座椅）。
+
+    反编译定论（2026-09-10）：能坐的只有两类，都经 checkAction → BeginSitting：
+      ① 家具 Furniture.GetSeatCapacity() > 0（furniture_type 0=chair/1=bench/2=couch/3=armchair
+         + 直立/黑钢琴）；
+      ② loc.mapSeats 里的 MapSeat（Buildings 层瓦片经 Data/ChairTiles 匹配生成）——
+         **萨隆的凳子/桌椅走这条，不在 /furniture 里**（/furniture 在 Saloon 回 count=0）。
+    ⚠️ 落座硬约束：玩家须距座位 96px(1.5 格)内，否则游戏静默不落座 ⇒ 要先就位再坐。
+
+    返回 {ok, location, me:{x,y,sitting,seatX,seatY}, radius, count,
+          seats:[{kind,name,x,y,seatX,seatY,capacity,free,blocked,dist}]}
+    （x,y = 要 /interact 的座位格；kind = "furniture" | "map"）"""
+    return _get("/sittable", {"radius": radius})
+
+
 def chat(message):
     return _post("/chat", {"message": message})
 
@@ -238,6 +254,24 @@ def host_state():
     心跳检测"用户在干嘛"用——给 AI 看的玩家动态必须描述用户(房主)，
     而不是 AI 自己的角色。"""
     r = requests.get(f"{HOST_URL}/state", timeout=10)
+    return r.json()
+
+
+def host_sittable(radius=7):
+    """🪑 在 host 进程(7842)读"房主是否坐着"——心跳坐着彩蛋用。
+
+    理由同 host_state：给 AI 看的玩家动态描述的是**用户/房主**，不是 AI 自己。
+    返回 {ok, location, me:{x,y,sitting,seatX,seatY}, seats:[...]}。"""
+    r = requests.get(f"{HOST_URL}/sittable", params={"radius": radius}, timeout=10)
+    return r.json()
+
+
+def host_pool():
+    """♨️ 在 host 进程(7842)读"房主是否在水里"——心跳泡澡彩蛋用。
+
+    `/pool` 的 `me` 段有 swimming / bathingClothes（泳池"游没游泳"的唯一权威是
+    `Character.swimming` 这个 NetBool，跟水格无关）。"""
+    r = requests.get(f"{HOST_URL}/pool", timeout=10)
     return r.json()
 
 

@@ -2182,6 +2182,7 @@ public class ModEntry : Mod
                 "/interact" => HandleInteract(ctx),
                 "/furniture_pickup" => HandleFurniturePickup(ctx),
                 "/furniture" => HandleFurniture(ctx),
+                "/sittable" => HandleSittable(ctx),   // 🪑 诊断：附近可坐物(家具椅子+地图座椅 MapSeat)
                 "/passable" => HandlePassable(ctx),
                 "/passable_rect" => HandlePassableRect(ctx),
                 "/chat" => HandleChat(ctx),
@@ -2987,6 +2988,142 @@ public class ModEntry : Mod
                     isTV = f is StardewValley.Objects.TV
                 }).ToList();
                 tcs.SetResult(new { ok = true, location = loc.Name, count = list.Count, furniture = list });
+            }
+            catch (Exception ex)
+            {
+                tcs.SetResult(new { ok = false, error = ex.Message });
+            }
+        });
+        return tcs.Task.GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// GET /sittable?radius=7  — 扫玩家附近**能坐的**东西（椅子/长凳/沙发/钢琴 + 地图座椅）。
+    /// 反编译定论（2026-09-10）：能坐 = 两类，都经 GameLocation.checkAction → who.BeginSitting：
+    ///   ① 家具 Furniture.GetSeatCapacity() > 0 —— furniture_type 0=chair/1=bench/2=couch/3=armchair，
+    ///      外加直立钢琴/黑钢琴特判 1（Furniture.cs:656）。判定就这一条，没有隐藏条件。
+    ///   ② loc.mapSeats 里的 MapSeat —— Buildings 层瓦片经 Data/ChairTiles 匹配生成（GameLocation.cs:1852）。
+    ///      ⚠️ 萨隆的凳子/桌椅走这条，**不在 loc.furniture 里**（实测 /furniture 在 Saloon 回 count=0），
+    ///      所以没有这个端点就完全发现不了。
+    /// ⚠️ 落座硬约束：AddSittingFarmer 里 `float num = 96f` —— 玩家须距座位位置 ≤96px(1.5格)，
+    ///    否则返回 null、BeginSitting 静默不落座。⇒ AI 必须先走到旁边再坐（Python 的 scene sit 负责就位）。
+    /// x,y = 要交互的座位格（喂 /interact 用）；kind 区分两类以便诊断；me.sitting 供 Python
+    /// 决定该注入 "sit" 还是 "起身"（坐着时任意交互即起身，见 checkAction 开头的 IsSitting 分支）。
+    /// </summary>
+    private object HandleSittable(HttpListenerContext ctx)
+    {
+        if (!Context.IsWorldReady)
+            throw new InvalidOperationException("World not ready");
+
+        var qs = ctx.Request.QueryString;
+        double radius = 7;                       // 默认 = 超级炸弹半径（恒：体感半径，不用精准）
+        var rs = qs["radius"];
+        if (!string.IsNullOrEmpty(rs) && (!double.TryParse(rs, out radius) || radius < 0 || radius > 40))
+            return new { ok = false, error = $"radius 非法: 「{rs}」（要 0~40 的数字；不传=7）" };
+
+        var tcs = new TaskCompletionSource<object>();
+        EnqueueMainThread(() =>
+        {
+            try
+            {
+                var farmer = Game1.player;
+                var loc = farmer.currentLocation;
+                int px = farmer.TilePoint.X, py = farmer.TilePoint.Y;
+                var seats = new List<object>();
+
+                // ── ① 家具座椅 ──
+                foreach (var f in loc.furniture)
+                {
+                    if (f == null) continue;
+                    int cap = f.GetSeatCapacity();
+                    if (cap <= 0) continue;                     // 0 = 不是座位（桌子/地毯/装饰…）
+                    int taken = f.GetSittingFarmerCount();
+                    var fbb = f.GetBoundingBox();
+                    foreach (var sp in f.GetSeatPositions())
+                    {
+                        // 座位点可能带小数（couch 的 (j+0.5,0)）→ 取整得交互格；若格心不落在家具 bbox 内
+                        // （钢琴 (1.5,0) 这类偏移）就退回家具左上角格——两者格心都在 bbox 内，和
+                        // TryFurnitureInteract 的命中判据（f.GetBoundingBox().Contains(tx*64+32, ty*64+32)）一致。
+                        int sx = (int)sp.X, sy = (int)sp.Y;
+                        if (!fbb.Contains(sx * 64 + 32, sy * 64 + 32))
+                        {
+                            sx = (int)f.TileLocation.X; sy = (int)f.TileLocation.Y;
+                        }
+                        double d = Math.Sqrt((double)(sx - px) * (sx - px) + (double)(sy - py) * (sy - py));
+                        if (d > radius) continue;
+                        seats.Add(new
+                        {
+                            kind = "furniture",
+                            name = SafeDisplayName(f),
+                            x = sx, y = sy,
+                            seatX = Math.Round((double)sp.X, 2), seatY = Math.Round((double)sp.Y, 2),
+                            capacity = cap,
+                            free = Math.Max(0, cap - taken),
+                            blocked = false,
+                            dist = Math.Round(d, 2)
+                        });
+                    }
+                }
+
+                // ── ② 地图座椅 ──
+                foreach (var ms in loc.mapSeats)
+                {
+                    if (ms == null) continue;
+                    if (ms.IsBlocked(loc)) continue;            // NPC 占位/挡着 → checkAction 也正是这么拒的
+                    var poses = ms.GetSeatPositions();
+                    if (poses.Count == 0) continue;
+                    int cap = poses.Count;
+                    int taken = ms.GetSittingFarmerCount();
+                    var sb = ms.GetSeatBounds();
+                    foreach (var sp in poses)
+                    {
+                        // ⚠️ 地图座椅的座位点带方向偏移（swings -0.5 / bench +0.25 / tall -0.3…）→
+                        //    取整可能落到座位范围外，而 checkAction 只认 OccupiesTile(=GetSeatBounds 内的格)。
+                        //    落到界外就夹回范围内，保证报出去的格真能触发落座。
+                        int sx = (int)sp.X, sy = (int)sp.Y;
+                        if (!sb.Contains(sx, sy))
+                        {
+                            sx = Math.Max(sb.Left, Math.Min(sx, sb.Right - 1));
+                            sy = Math.Max(sb.Top, Math.Min(sy, sb.Bottom - 1));
+                        }
+                        double d = Math.Sqrt((double)(sx - px) * (sx - px) + (double)(sy - py) * (sy - py));
+                        if (d > radius) continue;
+                        seats.Add(new
+                        {
+                            kind = "map",
+                            name = ms.seatType.Value,
+                            x = sx, y = sy,
+                            seatX = Math.Round((double)sp.X, 2), seatY = Math.Round((double)sp.Y, 2),
+                            capacity = cap,
+                            free = Math.Max(0, cap - taken),
+                            blocked = false,
+                            dist = Math.Round(d, 2)
+                        });
+                    }
+                }
+
+                // ── 我的坐姿 ──
+                bool sitting = farmer.IsSitting();
+                object? mySeatX = null, mySeatY = null;
+                if (sitting && farmer.sittingFurniture != null)
+                {
+                    var myPos = farmer.sittingFurniture.GetSittingPosition(farmer, ignore_offsets: true);
+                    if (myPos.HasValue)
+                    {
+                        mySeatX = (int)myPos.Value.X;
+                        mySeatY = (int)myPos.Value.Y;
+                    }
+                }
+
+                tcs.SetResult(new
+                {
+                    ok = true,
+                    location = loc.Name,
+                    me = new { x = px, y = py, sitting, seatX = mySeatX, seatY = mySeatY },
+                    radius,
+                    count = seats.Count,
+                    seats
+                });
             }
             catch (Exception ex)
             {
