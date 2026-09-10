@@ -264,17 +264,38 @@ POI = {
 
     # ── 深山 ──
     "温泉(门口)":        {"map": "Railroad",    "pos": (10, 57),"note": "♨️ 浴场入口在Railroad(10,57)，推门进 BathHouse_Entry(5,9)（一键开门）"},
-    "温泉(大厅)":        {"map": "BathHouse_Entry","pos": (5, 9), "note": "♨️ 进浴场后的门口大厅格（⚠️不是更衣室！2026-09-10 恒修正：旧记录误标'更衣室'）。大厅=y4~8×x1~8 横条。往**更衣室**（性别门禁：男进男/女进女）——女=大厅(2,4)面0 interact门格(2,3)→BathHouse_WomensLocker(13,27)；男=大厅(7,4)面0→门格(7,3)→BathHouse_MensLocker(3,27)。（更衣室→泳池见「温泉(更衣室女/男)」POI）"},
+    #   ♨️ 大厅两扇性别门真身（2026-09-10 反编译 + `/tile_props` 实证）：Buildings 层
+    #   `Action: WarpWomensLocker 13 27 BathHouse_WomensLocker` / `WarpMensLocker 3 27 BathHouse_MensLocker`
+    #   —— **不是推门、不在 interiorDoors**。`if (who.IsMale) { 弹「WomensLocker_WrongGender」; return; }`，
+    #   否则立即 warpFarmer 传送进去。轮回=Female（存档 `<Gender>Female</Gender>` 实证）→ 走女门畅通。
+    #   ⚠️ 泳池图 (5,2)(6,2)(7,2)=TouchAction WomensLocker / (20,2)(21,2)(22,2)=MensLocker：
+    #      性别不符**踩上去就被推回+弹窗**（那条"门禁拒绝"路径以前一直没样本）。
+    "温泉(大厅)":        {"map": "BathHouse_Entry","pos": (5, 9), "note": "♨️ 进浴场后的门口大厅格（⚠️不是更衣室！2026-09-10 恒修正：旧记录误标'更衣室'）。大厅=y4~8×x1~8 横条。往**更衣室**（性别门禁：男进男/女进女）——女=大厅(2,4)面0 interact门格(2,3)→BathHouse_WomensLocker(13,27)；男=大厅(7,4)面0→门格(7,3)→BathHouse_MensLocker(3,27)。（更衣室→泳池见「温泉(更衣室女/男)」POI；门格机制见上方注释）"},
     "温泉(更衣室女)":    {"map": "BathHouse_WomensLocker","pos": (13, 27),"note": "♨️ **女更衣室**（图18×28，y只到27）——只有女角色能进，男角色撞门会弹 DialogueBox『这里是女更衣室，你不能进』。**进门落点(13,27)**。出门两条路都走 map_go 关系网（已修 2026-09-10）：回大厅=站 (13,27) → warp BathHouse_Entry(2,4)；去泳池=站 (2,27) → warp Pool(6,0)。⚠️ 真出口 (13,28)/(2,28) 在**图外**，别再物理蹭边缘（恒：会把游戏搞不稳）"},
     "温泉(更衣室男)":    {"map": "BathHouse_MensLocker","pos": (3, 27), "note": "♨️ **男更衣室**（图同18×28）——只有男角色能进，女角色撞门会弹 DialogueBox『这里是男更衣室，你不能进』。**进门落点(3,27)**。出门同女更衣室：回大厅=站 (3,27) → warp BathHouse_Entry(7,4)；去泳池=站 (15,27) → warp Pool(21,0)。真出口 (3,28)/(15,28) 在图外，别蹭边缘"},
+    # ── 🩳 换装格（2026-09-10 反编译 + 真机验证；Back 层 TouchAction）──
+    #   恒原话"走过淋浴廊会变慢、出来是泳衣"的真身：**不是地形减速，是换泳装后引擎强制 canOnlyWalk（只能走不能跑）**。
+    #   触发：踩到该格的下一个 tick 自动触发（唯一闸门 Game1.eventUp；不用按键）。
+    #   两格紧挨着，靠行走方向天然分先后 → 下去先"脱"(y小)再"穿"(y大)，回来先"穿"(空操作)再"脱" ⇒ 恒说的"原路返回才换回"。
+    "温泉(女更衣室·穿泳装)": {"map": "BathHouse_WomensLocker","pos": (2, 17),"note": "🩳 `TouchAction: ChangeIntoSwimsuit` → bathingClothes=true + **canOnlyWalk=true**（变慢的真身）。✅2026-09-10 真机验证：走到这格 → /pool 报 bathingClothes:True canOnlyWalk:True"},
+    "温泉(女更衣室·脱泳装)": {"map": "BathHouse_WomensLocker","pos": (2, 16),"note": "🩳 `TouchAction: ChangeOutOfSwimsuit` → bathingClothes=false + canOnlyWalk=false。✅真机验证过。⚠️ 在 (2,17) 正上方一格，**只是路过也会触发**（回来时正好靠它换回便装）"},
+    "温泉(男更衣室·穿泳装)": {"map": "BathHouse_MensLocker","pos": (15, 19),"note": "🩳 `TouchAction: ChangeIntoSwimsuit`（男侧，同女侧镜像）"},
+    "温泉(男更衣室·脱泳装)": {"map": "BathHouse_MensLocker","pos": (15, 18),"note": "🩳 `TouchAction: ChangeOutOfSwimsuit`（男侧）"},
     # ── ♨️ 泳池 BathHouse_Pool（28×34）（2026-09-10 恒带路校准）──
     #   地形：甲板 y3~7 × x1~26（干区）→ 两个「凹型凸起」水槽 x5~7 / x20~22（y8~11）
     #   → 水区 y≈9~18 × x5~22 → 池底通道 (13,19)/(14,19) 往南。
     #   ⚠️ `isWater` 在浴场泳池**恒 false**（/dump_tile 认不出水）→ 判水只能按坐标区间，别信 isWater。
+    #   🎯 2026-09-10 反编译定论：泳池那汪水**引擎压根不认**——`isWaterTile` 查 Back 层 "Water" 属性（泳池格全无），
+    #      且 `GameLocation.waterTiles` 只在 (isOutdoors ‖ 地图属性 indoorWater ‖ Sewer ‖ Submarine) 且非 Desert 才建 ⇒ 室内泳池恒 null。
+    #      游泳的唯一权威 = `Character.swimming` 这个 NetBool，**跟水格无关**。下水/上岸全靠踩 `TouchAction: PoolEntrance` 格：
+    #        在岸踩 → swimming=true（落水动画+yVelocity）；在水里踩 → swimming=false（jump 跳上岸）。
+    #      ✅ 真机验证：站 (6,0)→/move (6,9) 踩上 → swimming:True；再 /move (6,9) → swimming:False。
     "温泉(泳池·甲板)":   {"map": "BathHouse_Pool","pos": (6, 7), "note": "♨️ **泳池甲板**（干区）y3~7 横条，x1~26。从左右水口下水"},
-    "温泉(上水口左)":    {"map": "BathHouse_Pool","pos": (6, 9), "note": "♨️ **左上下水口**——(6,8)/(6,9) 的**格边界**，实际是一级**半格在岸、半格在水下的楼梯**（恒 2026-09-10 校准）。从甲板 (6,7) 沿 x=6 往下走 (6,8)→(6,9) 就下水。⚠️ 上下水口就取这一带，别抠到底是 8 还是 9"},
-    "温泉(上水口右)":    {"map": "BathHouse_Pool","pos": (21, 9), "note": "♨️ **右上下水口**——(21,8)/(21,9) 的格边界（镜像），同上。沿 x=21 往下下水"},
-    "温泉(泳池水面)":    {"map": "BathHouse_Pool","pos": (13, 14),"note": "🏊 **泳池水区** ≈ y9~18 × x5~22（凹型 + 下面那片连通区）。泡澡/游泳站位就落这片；上岸走左右水口 (6,9)/(21,9)"},
+    "温泉(上水口左)":    {"map": "BathHouse_Pool","pos": (6, 9), "note": "♨️ **左上下水口** ★恒 2026-09-10 目测校准 (6,9)，随后 `/tile_props` 扫图**实证分毫不差**：Back 层 `TouchAction: PoolEntrance`。下水/上岸同一格——在岸踩=下水、在水里踩=跳上岸。从甲板 (6,7) 沿 x=6 往下走即触发"},
+    "温泉(上水口右)":    {"map": "BathHouse_Pool","pos": (21, 9), "note": "♨️ **右上下水口**——`TouchAction: PoolEntrance`（男侧镜像，同样实证）。沿 x=21 往下下水"},
+    "温泉(池底水口左)":  {"map": "BathHouse_Pool","pos": (7, 27), "note": "♨️ 池底那两处 `TouchAction: PoolEntrance`（y=27，x=7/x=20）——2026-09-10 扫图发现，恒带路时未知。同样是在岸下水/水里上岸。⚠️ 尚未真机走过这一段"},
+    "温泉(池底水口右)":  {"map": "BathHouse_Pool","pos": (20, 27),"note": "♨️ 池底 `PoolEntrance`（右）"},
+    "温泉(泳池水面)":    {"map": "BathHouse_Pool","pos": (13, 14),"note": "🏊 **泳池水区** ≈ y9~18 × x5~22（凹型 + 下面那片连通区）。泡澡/游泳站位就落这片；上岸走左右水口 (6,9)/(21,9)。⚠️ 水区里 `isWater` 恒 false、走位照常可寻路（就是普通可走地面），别按 isWater 判"},
     "木匠商店(门外)":    {"map": "Mountain",    "pos": (12, 26),"note": "罗宾木匠店门口"},
     "莱纳斯帐篷(外)":    {"map": "Mountain",    "pos": (29, 7), "note": "莱纳斯帐篷外，篝火旁，warp(29,6)→Tent"},
     "莱纳斯帐篷(内)":    {"map": "Tent",        "pos": (2, 5),  "note": "帐篷内部"},
@@ -390,6 +411,65 @@ POI = {
     "高级鸡舍(门内)":     {"map": "Deluxe Coop", "pos": (2, 9),  "note": "高级鸡舍内部入口(23x10)，进门位置"},
     "高级畜棚(门内)":     {"map": "Deluxe Barn", "pos": (11, 14),"note": "高级畜棚内部入口(25x15)，进门位置"},
 }
+
+# ═══════════════════════════════════════════════════════════════
+#  ♨️ 浴场专用常量（2026-09-10 浴室专题②：反编译 + `/tile_props` 扫图实证）
+#
+#  换装/游泳**全是 Back 层瓦片属性 `TouchAction`**（踩到新格的下一个 tick 自动触发，不用按键；
+#  唯一闸门 Game1.eventUp）——**不是地形、不是脚本区、也不是 interact 推门**。
+#  ⚠️ 泳池那汪水**引擎压根不认**：`isWaterTile` 查 Back 层 "Water" 属性（泳池格全无），
+#     且 `waterTiles` 数组只在 (isOutdoors‖地图属性 indoorWater‖Sewer‖Submarine) 且非 Desert 才建
+#     ⇒ 室内泳池恒 null。**"在水里"的唯一权威 = Character.swimming 这个 NetBool。**
+# ═══════════════════════════════════════════════════════════════
+
+# 🩳 换泳装/换回便装：更衣室里**紧挨着的两格**，靠行走方向天然分先后
+#    （下去先 "out"(y小) 再 "into"(y大)；回来先 "into"(空操作) 再 "out"）⇒ 恒说的"原路返回才换回"。
+#    效果 = bathingClothes + **canOnlyWalk**（"变慢"的真身：换完只能走不能跑）。
+BATH_CHANGE_TILES = {
+    "BathHouse_WomensLocker": {"into": (2, 17), "out": (2, 16)},    # 女（轮回是 Female，走这条）
+    "BathHouse_MensLocker":   {"into": (15, 19), "out": (15, 18)},  # 男
+}
+
+# 🏊 `TouchAction: PoolEntrance`：**在岸踩=下水(swimming=true)，在水里踩=上岸(swimming=false)**，同一格两用。
+#    ⚠️ swimming **不限制走位**（全代码只有切换/禁交互/晕倒/视觉四处引用）⇒ 逛上甲板不会自动退水，
+#       **必须再踩一次 PoolEntrance 才算上岸**，否则一直挂着"在水里"的状态且不能交互。
+BATH_POOL_ENTRANCES = [(6, 9), (21, 9), (7, 27), (20, 27)]
+
+# 🏊 泳池地形（BathHouse_Pool 28×34，恒 2026-09-10 带路校准；水区靠坐标，别信 isWater）
+BATH_POOL_DECK_Y = (3, 7)                       # 甲板/干区：y3~7 × x1~26
+BATH_POOL_WATER_X = (5, 22)                     # 水区 x5~22
+BATH_POOL_WATER_Y = (9, 18)                     # 水区 y9~18（凹型水槽 x5~7 / x20~22 自 y8 起）
+BATH_POOL_SOAK_SPOT = (13, 14)                  # 🛁 推荐的"发呆泡澡"落点（水区正中，对应 POI 温泉(泳池水面)）
+
+
+def bath_guide_lines(loc_name: str) -> list:
+    """♨️ 浴场场景引导（每日进入一次性）——供 nagi_mcp_server 的状态注入调用。
+
+    2026-09-10 恒：「注入场景引导（每日进入一次性提醒）：上下水口坐标、可以在泳池里 walk_to 游泳、
+    静止下来泡温泉以恢复体力。」三条都由**游戏代码实证**：
+      · 上下水口 = BATH_POOL_ENTRANCES（`/tile_props` 扫图，扫出来的和恒目测分毫不差）
+      · 水里可 walk_to = 水格就是普通可走地面（swimming 不限走位）
+      · 回体力 = `Farmer.Update` 的 swimming 分支：**静止不动**时每 100ms `Stamina++` 且 `health++`
+    """
+    if not loc_name or not loc_name.startswith("BathHouse_"):
+        return []
+    ent = "、".join(f"({x},{y})" for x, y in BATH_POOL_ENTRANCES)
+    wx0, wx1 = BATH_POOL_WATER_X
+    wy0, wy1 = BATH_POOL_WATER_Y
+    sx, sy = BATH_POOL_SOAK_SPOT
+    chg = BATH_CHANGE_TILES.get(loc_name, BATH_CHANGE_TILES["BathHouse_WomensLocker"])
+    def _p(t):
+        return f"({t[0]},{t[1]})"
+    return [
+        "♨️ **温泉池**（今日首次提醒）：",
+        f"  🩳 换泳装=更衣室踩 **{_p(chg['into'])}**（换完『只能走不能跑』是正常的，别当卡了）；"
+        f"换回便装=踩 {_p(chg['out'])}",
+        f"  🏊 **水口 {ent}**——在岸踩=下水、在水里踩=上岸（同一格两用）；水区 ≈ y{wy0}~{wy1} × x{wx0}~{wx1}，"
+        f"**可以直接 walk_to 在水里游**（水格=普通可走地面）",
+        f"  🛁 **原地静止**才回体力/血（每 0.1 秒 +1/+1）——泡澡就 walk_to 到 **({sx},{sy})** 发呆，别乱走",
+        "  ⚠️ 引擎不认这汪水（isWater 恒 false），『在水里』只看 swimming 标记；它**不限制走位**，"
+        "逛上甲板不会自动退水，**必须再踩一次水口才算上岸**",
+    ]
 
 # ═══════════════════════════════════════════════════════════════
 #  🎯 POI 结构化站位+朝向（2026-08-16 恒：map walk 到 POI 后自动朝向，交互交给 AI）
@@ -652,10 +732,15 @@ MAP_LINKS = {
     #    walk_to 的入口校验遇越界直接 ok:false ⇒ 旧写法根本走不出去（2026-09-10 抓到的病根）。
     #    改 LeoTreeHouse/Tunnel 同款：**tile 标图内最后一格**（站得住的实格）+ arrive 标落地格 → /warp 模拟。
     #    ⚠️ 恒 2026-09-10 拍板：**别物理蹭地图边缘**（会把游戏搞不稳），一律记坐标走关系网模拟 warp。
-    "BathHouse_WomensLocker": [{"tile": (13, 27), "target": "BathHouse_Entry", "kind": "warp", "arrive": (2, 4), "note": "女更衣室→大厅(2,4)：真出口(13,28)图外 → 站图内最后一格(13,27) 再 /warp"},
-                        {"tile": (2, 27), "target": "BathHouse_Pool", "kind": "warp", "arrive": (6, 0), "note": "♀ 女更衣室→泳池(6,0)：真出口(2,28)图外 → 站(2,27) 再 /warp"}],
-    "BathHouse_MensLocker": [{"tile": (3, 27), "target": "BathHouse_Entry", "kind": "warp", "arrive": (7, 4), "note": "男更衣室→大厅(7,4)：真出口(3,28)图外 → 站(3,27) 再 /warp"},
-                        {"tile": (15, 27), "target": "BathHouse_Pool", "kind": "warp", "arrive": (21, 0), "note": "♂ 男更衣室→泳池(21,0)：真出口(15,28)图外 → 站(15,27) 再 /warp"}],
+    # ⚠️ **浴场两条链都挂了 `via` 途经点**（恒 2026-09-10「只要能保证换衣服」）：
+    #    进门落点 (13,27)/(3,27) 和 warp 格 (2,27)/(15,27) **同在 y=27 一条线上**，
+    #    顺线走根本不经过换装格 ⇒ AI 会穿着便装直接跳进泳池、泡完又穿着泳装走回村里。
+    #    `via` 会被 nagi_mcp_server 的 warp 分支**先精确踩一遍**（`/move` 兜底，见那里的注释）。
+    #    穿/脱是相邻两格：去泳池踩「穿」那格，回大厅踩「脱」那格，方向天然分先后（路过会连着触发、净效果对）。
+    "BathHouse_WomensLocker": [{"tile": (13, 27), "target": "BathHouse_Entry", "kind": "warp", "arrive": (2, 4), "via": [(2, 16)], "note": "女更衣室→大厅(2,4)：真出口(13,28)图外 → 站图内最后一格(13,27) 再 /warp；途经(2,16)脱泳装"},
+                        {"tile": (2, 27), "target": "BathHouse_Pool", "kind": "warp", "arrive": (6, 0), "via": [(2, 17)], "note": "♀ 女更衣室→泳池(6,0)：真出口(2,28)图外 → 站(2,27) 再 /warp；途经(2,17)穿泳装"}],
+    "BathHouse_MensLocker": [{"tile": (3, 27), "target": "BathHouse_Entry", "kind": "warp", "arrive": (7, 4), "via": [(15, 18)], "note": "男更衣室→大厅(7,4)：真出口(3,28)图外 → 站(3,27) 再 /warp；途经(15,18)脱泳装"},
+                        {"tile": (15, 27), "target": "BathHouse_Pool", "kind": "warp", "arrive": (21, 0), "via": [(15, 19)], "note": "♂ 男更衣室→泳池(21,0)：真出口(15,28)图外 → 站(15,27) 再 /warp；途经(15,19)穿泳装"}],
     "BathHouse_Pool": [{"tile": (6, -1), "target": "BathHouse_WomensLocker", "kind": "warp", "note": "泳池→女更衣室(2,27)"},
                         {"tile": (21, -1), "target": "BathHouse_MensLocker", "kind": "warp", "note": "泳池→男更衣室(15,27)"}],
     "Tunnel": [{"tile": (39, 9), "target": "Backwoods", "kind": "warp", "arrive": (23, 30), "note": "隧道出口站格(39,9)→/warp 深山(23,30)；原出口(40,9) x=40 在宽度40边界外；齐先生电池箱 TunnelSafe(17,6) 在里头"},{"tile": None, "target": "Backwoods", "kind": "warp", "note": "隧道→深山(兜底)"}],

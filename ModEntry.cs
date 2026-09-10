@@ -1400,6 +1400,9 @@ public class ModEntry : Mod
         //    被门禁 DialogueBox 挡着时走位块可能根本不执行，塞里面 = 门禁永远判不出来（真机教训）。
         try { CheckPendingDoorPush(); } catch { }
 
+        // ♨️ 温泉"同泡"彩蛋（2026-09-10 恒）：**同场景就双端粉色字广播**，跟爬床彩蛋同款。
+        try { CheckBathTogether(); } catch { }
+
         // Drain main-thread action queue
         lock (_queueLock)
         {
@@ -1699,7 +1702,17 @@ public class ModEntry : Mod
                 return;
             }
 
-            var target = new Vector2(next.X * 64 + 32, next.Y * 64 + 32);
+            // ⚠️ 2026-09-10（恒「踩到瓦片中间」+ 反编译）定案：**X 不能 +32**，否则落点骑在瓦片边界上，
+            //    TilePoint 会在 x / x+1 之间随机跳。依据：
+            //      `Farmer.GetBoundingBox()` = (Position.X+8, Position.Y+getHeight()-32, 48, 32)，帧高 32
+            //        ⇒ bbox 中心 = (Position.X + 32, Position.Y + 16)
+            //      `Character.Tile` = **StandingPixel / 64**（StandingPixel = bbox.Center）——**不是 Position/64**
+            //    代入旧值 target.X = x*64+32 ⇒ (x*64 + 64 ± 6) / 64 = **x+1 ± 0.09**：
+            //      6f 停位容差正好跨在 x / x+1 的分界上 ⇒ **同一格时对时错**（真机实测：走廊里 +1、开阔地 −1）。
+            //      恒看到的"小人半卡在墙里"＝bbox 横跨两格，同一个病。
+            //    游戏自己的 `PathFindController` 用的是 `endPoint.X * 64`（X 不加半格），照抄它。
+            //    ⚠️ **Y 保持 y*64+32 别动**：中心 = y*64+48 ⇒ y+0.75，离边界远、恒稳，且农场几何是按它标定的。
+            var target = new Vector2(next.X * 64, next.Y * 64 + 32);
             var diff = target - farmer.Position;
 
             if (diff.Length() < 6f)
@@ -1815,10 +1828,13 @@ public class ModEntry : Mod
                 if (_pathQueue != null && _pathQueue.Count > 0)
                     return; // still walking
                 _waitingForMove = false;
-                // 🎯 2026-09-04 恒：到位后精确对齐到目标格中心——walk 落偏(FindPath 对被判不可走的锚点退到邻居)
-                //    会被拉正，保证挥锄几何=锚点计算值，不再 +1 偏移(补余漏格/过锄的根因)。
+                // 🎯 2026-09-04 恒：到位后精确对齐目标格——walk 落偏(FindPath 对被判不可走的锚点退到邻居)
+                //    会被拉正，保证挥锄几何=锚点计算值（补余漏格/过锄的根因）。
+                // ⚠️ 2026-09-10 修正：X **不能加 tileSize/2**。旧注释写"对齐到格中心、不再 +1 偏移"是**反的**——
+                //    `Tile` 由 bbox 中心算((Position.X+32)/64)，X 加半格恰好把落点推到瓦片边界、TilePoint 变 x+1。
+                //    详见走位器 target 那段注释；Y 保持 +tileSize/2（中心 y+0.75，恒稳）。
                 if (_moveDest is Point md)
-                    Game1.player.Position = new Vector2(md.X * Game1.tileSize + Game1.tileSize / 2f, md.Y * Game1.tileSize + Game1.tileSize / 2f);
+                    Game1.player.Position = new Vector2(md.X * Game1.tileSize, md.Y * Game1.tileSize + Game1.tileSize / 2f);
                 // ⚠️ 2026-08-16 恒：浇水到锚点后多停一拍（基础壶逐格，别接着就挥）
                 _commandDelay = _toolAreaOperation == "water" ? 10 : 5; // small gap after arriving
                 return;
@@ -1867,9 +1883,10 @@ public class ModEntry : Mod
                         var path = FindPath(farmer.currentLocation, farmer.TilePoint, new Point(x, y));
                         if (path == null || path.Count == 0)
                         {
-                            // BFS 失败 → 瞬移保底（2026-09-04 恒：对齐到格中心，别用左上角——否则 TilePoint 可能偏 1）
+                            // BFS 失败 → 瞬移保底（2026-09-04 恒加；⚠️ 2026-09-10 修正 X 的 +tileSize/2 —— 见走位器 target 注释，
+                            //    X 加半格反而让 TilePoint 偏 +1；现在 X=x*64、Y=y*64+半格）
                             ClearMovementState();
-                            farmer.Position = new Vector2(x * Game1.tileSize + Game1.tileSize / 2f, y * Game1.tileSize + Game1.tileSize / 2f);
+                            farmer.Position = new Vector2(x * Game1.tileSize, y * Game1.tileSize + Game1.tileSize / 2f);
                             CenterViewportOnFarmer(farmer);
                             _waitingForMove = false;
                             _commandResults.Add(new { ok = true, action = "move", x, y, teleported = true });
@@ -2218,6 +2235,8 @@ public class ModEntry : Mod
                 "/open_questlog" => HandleOpenQuestLog(),   // 📜 程序化开任务日志(QuestLog)：绕开按键/焦点，AI 自主看日志领奖（2026-08-29 恒）
                 "/forge_set" => HandleForgeSet(ctx),
                 "/dump_tile" => HandleDumpTile(ctx),
+                "/pool" => HandlePool(ctx),            // ♨️ 浴场泡水/换装状态：swimming/bathingClothes/canOnlyWalk（2026-09-10 浴室专题②）
+                "/tile_props" => HandleTileProps(ctx), // 🗺️ 地图瓦片属性：单格全属性 / 全图扫某属性值（Action/TouchAction/Water…）
                 "/mine_rock" => HandleMineRock(),   // 🧱 矮人商店堵路石（(BC)78 在 Mine(27,8)）是否还在=未炸（cross-map 读，2026-08-23 恒）
                 "/water" => HandleWater(ctx),
                 "/crab_pots" => HandleCrabPots(ctx),      // 🦀 蟹笼诊断：列当前/指定图所有蟹笼真实状态(2026-08-30)
@@ -3072,6 +3091,8 @@ public class ModEntry : Mod
     /// <summary>
     /// POST /chat  { "message": "Hello!" }
     /// Sends a chat message visible to all players.
+    /// 🔔 { "message": "...", "color": "hotpink", "notice": true } = 跨进程告知模式：
+    ///    只显示 + 记 recent_events（AI 的"耳朵"），**不**回声广播。同泡彩蛋 host→AI 方向靠它（2026-09-10）。
     /// </summary>
     private object HandleChat(HttpListenerContext ctx)
     {
@@ -3086,6 +3107,11 @@ public class ModEntry : Mod
             "green" => Color.Green,
             _ => Color.White
         };
+        // 🔔 notice=true：**跨进程"告知"模式**（2026-09-10 恒：同泡彩蛋要双端推送）。
+        //   只"显示 + 记进 recent_events"，**不再 setText 回声广播**——否则收方会以自己名义把消息再广播一遍，
+        //   发起方就会看到一条莫名其妙的 "<对方> : <自己刚说的话>" 回声。
+        //   recent_events 是 AI 真正"听到"消息的通道（MCP 端渲染成小新闻进上下文），所以注入必须记这一笔。
+        var notice = GetParamOr(p, "notice", false);
 
         if (!Context.IsWorldReady)
             throw new InvalidOperationException("World not ready");
@@ -3093,6 +3119,11 @@ public class ModEntry : Mod
         EnqueueMainThread(() =>
         {
             Game1.chatBox?.addMessage(message, color);
+            if (notice)
+            {
+                AddRecentEvent("chat", message, Game1.ticks);
+                return;
+            }
             // ⚠️ 2026-08-15 恒：setText+RecieveCommandInput('\r')（模拟发送广播）只在 farmhand(AI)进程用——
             // 广播出去 author=AI 角色。host(恒)进程只 addMessage 本地显示即可：
             //   否则会顶掉恒正在输入的内容（"反复清空聊天框"根因），且会以恒的名义广播。
@@ -3116,10 +3147,49 @@ public class ModEntry : Mod
         return new { ok = true, sender, message };
     }
 
+    /// <summary>
+    /// GET /chat/history — 读**游戏聊天框**里当前还挂着的消息（倒序，最多 10 条，游戏 600 tick≈10 秒就过期）。
+    /// 2026-09-10（浴室同泡彩蛋排查）补真实现：原先是恒返回空的空壳，害得只能靠截图猜——emoji 排查同理。
+    /// ⚠️ 只读 `Game1.chatBox.messages`（本进程可见的），**跨进程广播要看另一端的这个端点**才算数。
+    /// </summary>
     private object HandleChatHistory()
     {
-        // Returns empty if chatHud not initialized - safe fallback
-        return new { ok = true, messages = Array.Empty<object>() };
+        if (!Context.IsWorldReady)
+            throw new InvalidOperationException("World not ready");
+
+        var tcs = new TaskCompletionSource<object>();
+        EnqueueMainThread(() =>
+        {
+            try
+            {
+                var box = Game1.chatBox;
+                var list = new List<object>();
+                if (box?.messages != null)
+                {
+                    foreach (var m in box.messages)
+                    {
+                        if (m?.message == null) continue;
+                        // message 是 ChatSnippet 列表：有文字的取 message，纯表情的记 [emoji:N]。
+                        var text = string.Concat(m.message.Select(s => s == null
+                            ? ""
+                            : (s.message ?? (s.emojiIndex >= 0 ? $"[emoji:{s.emojiIndex}]" : ""))));
+                        list.Add(new
+                        {
+                            text,
+                            color = m.color.ToString(),
+                            html = m.color.R.ToString("X2") + m.color.G.ToString("X2") + m.color.B.ToString("X2"),
+                            ticksLeft = m.timeLeftToDisplay
+                        });
+                    }
+                }
+                tcs.SetResult(new { ok = true, count = list.Count, messages = list });
+            }
+            catch (Exception ex)
+            {
+                tcs.SetResult(new { ok = false, error = ex.Message });
+            }
+        });
+        return tcs.Task.GetAwaiter().GetResult();
     }
 
     /// <summary>
@@ -6406,36 +6476,110 @@ public class ModEntry : Mod
 
     /// <summary>
     /// 多人广播提示：走聊天通道同步到所有玩家（房主小恒也能看到），否则只有本进程可见。
-    /// farmhand 进程还要额外推送到 host 进程(7842)/chat——Game1.chatBox.addMessage 只在调用进程本地显示，
-    /// 跨进程同步不可靠，必须让 host 进程自己也 addMessage 一次，小恒窗口才看得到。
+    /// Game1.chatBox.addMessage 只在调用进程本地显示，**跨进程同步不可靠**，必须显式推给另一端。
+    ///
+    /// ⚠️ 2026-09-10 浴室同泡彩蛋实测修正：**游戏原生的聊天广播同步在双开场景下不通**——
+    ///    真机验了两次，host 进程 Broadcast 出去的字，farmhand 那边聊天框**一片空白**（粉色像素探测器 110s 零命中），
+    ///    `recent_events` 里也没记上，AI 压根"听不见"。所以两个方向都改成**显式 HTTP 推**：
+    ///      farmhand(7843) → host(7842)：`/chat`（原样保留，2026-08-15 起就在用，已验证）
+    ///      host(7842) → farmhand(7843)：`/chat` + `notice:true`（新增；notice 防止 AI 拿这条再回声广播一遍）
     /// </summary>
     private void Broadcast(string msg)
     {
         Game1.chatBox?.addMessage(msg, Color.HotPink);
-        if (Context.IsMultiplayer)
+        // ⚠️ 与 HandleChat 同规矩（2026-08-15 恒拍板）：setText 模拟发送**只在 farmhand 进程**做——
+        //    host 做会顶掉恒正在输入的内容，且把消息以恒的名义广播出去。
+        //    跨进程可见性已改走下面的显式 HTTP 推，不依赖这个原生发送。
+        if (Context.IsMultiplayer && Game1.player != null && !Game1.player.IsMainPlayer)
         {
             Game1.chatBox?.setText(msg);
             Game1.chatBox?.chatBox.RecieveCommandInput('\r');
         }
         _chatHud?.AddMessage("Nagi", msg);
 
-        // farmhand 进程 → 推送 host 进程 /chat，确保小恒窗口可见（后台线程，不阻塞主线程）。
-        if (Game1.player != null && !Game1.player.IsMainPlayer)
+        // 显式推送另一端（后台线程，不阻塞主线程）。
+        if (Game1.player != null)
         {
+            bool iAmHost = Game1.player.IsMainPlayer;
+            int targetPort = PeerPort();
+            var payload = iAmHost
+                ? (object)new { message = msg, color = "hotpink", notice = true }   // host→AI：告知模式，别回声
+                : (object)new { message = msg, color = "hotpink" };                 // AI→host：原样（已验证）
             System.Threading.Tasks.Task.Run(() =>
             {
                 try
                 {
-                    var json = System.Text.Json.JsonSerializer.Serialize(new { message = msg, color = "hotpink" });
+                    var json = System.Text.Json.JsonSerializer.Serialize(payload);
                     using var client = new System.Net.Http.HttpClient();
-                    client.PostAsync("http://localhost:7842/chat",
+                    client.PostAsync($"http://localhost:{targetPort}/chat",
                         new System.Net.Http.StringContent(json, System.Text.Encoding.UTF8, "application/json")).Wait();
                 }
                 catch
                 {
-                    // 广播推送到 host 失败不阻塞游戏流程
+                    // 广播推送到对端失败不阻塞游戏流程
                 }
             });
+        }
+    }
+
+    /// <summary>
+    /// 🔌 对端进程的 HTTP 端口 = 不是自己的那一个。
+    /// ⚠️ **别写死 7842/7843**（恒 2026-09-10 提醒"端口好像反了"）：端口是**启动顺序抢的**——
+    ///    见 HTTP 服务启动处的 `for (_port = 7842; _port &lt; 7850; _port++)`，**谁先启动谁拿 7842**。
+    ///    恒先开→host=7842/AI=7843；AI 先开→就整个翻过来。硬编码换一次启动次序就推空了。
+    ///    两个实例固定占 7842/7843，取"另一个"天然跟着翻转走；谁是 host/AI 由 payload 各自判（IsMainPlayer）。
+    /// </summary>
+    private int PeerPort() => _port == 7842 ? 7843 : 7842;
+
+    /// <summary>🏊 同泡彩蛋只认这张图（恒 2026-09-10：进泳池才检测，更衣室/大厅不管）。</summary>
+    private const string POOL_LOC = "BathHouse_Pool";
+
+    /// <summary>上一帧我所在的**泳池**图（""=不在泳池）。只用来判"我这帧是不是刚进泳池"。</summary>
+    private string _bathLastLoc = "";
+
+    /// <summary>
+    /// ♨️ 温泉"同泡"彩蛋（2026-09-10 恒：进浴场碰到一起就播报）。
+    ///
+    /// 恒原话：「7842在，7843进来，或是7843在，7842进来，**同场景**就双端推送，跟爬床彩蛋一样粉色字广播」；
+    /// 文案：「**后到的那位** 来跟你共浴了！」（恒 2026-09-10 拍板：主语=共浴动作的执行者=后进来的）。
+    ///
+    /// 💡 **判据（恒 2026-09-10 精简，比早先的跨帧配对版干净得多）**：
+    ///    每个进程只管**自己**——「我这一帧刚踏进浴场」+「同一张图里已经有人」⇒ **我就是后到者** ⇒ 播**自己的名字**。
+    ///    **天然不会双播**：只有后到者的进程会满足"我刚进浴场"，先到那位的进程这帧没有位置变化，压根不触发。
+    ///    所以不需要 `IsMainPlayer` 闸门、也不需要记"谁先进谁后进"——撤销了早先那版跨帧配对记忆。
+    ///
+    /// ⚠️ 跨进程可见性（2026-09-10 真机定案）：原生聊天同步**不通**，两个方向全靠 `Broadcast()` 里的显式 HTTP 推。
+    ///    方向「轮回后到」（farmhand 播）→ 推 7842 ✓ 真机过；方向「恒后到」（host 播）→ 推 7843 + notice ✓。
+    ///
+    /// 🏊 **只在泳池判定**（恒 2026-09-10 追加）：「进入浴池之后才检测这个彩蛋，更衣室和大厅不管」——
+    ///    换装/走路经过 `BathHouse_Entry`/`BathHouse_*Locker` **都不算**，得真站进 `BathHouse_Pool` 这汪水。
+    ///    语义上也更对：换衣服那会儿还没"共浴"呢。
+    ///
+    /// 🎨 **文案不带 emoji**（恒 2026-09-10 实测"emoji 显示不出来"）：SDV 聊天字体只认 `[数字]` 表情精灵和
+    ///    `[颜色名]`，任意 Unicode emoji（♨️）没有字形 ⇒ 画成空白。爬床彩蛋用纯中文就是这个原因，跟它保持一致。
+    ///    真想要表情得用游戏内置的 `[编号]`（`EmojiMenu.totalEmojis` 之内），别塞 Unicode。
+    /// </summary>
+    private void CheckBathTogether()
+    {
+        var me = Game1.player;
+        if (me?.currentLocation == null) return;
+
+        var myLoc = me.currentLocation.Name ?? "";
+        bool inBath = myLoc.Contains(POOL_LOC);   // 🏊 只看泳池，更衣室/大厅不算（恒 2026-09-10）
+
+        // "我刚进泳池" = 上一帧不在泳池（或不在同一张图），这一帧在。⚠️ 先判后写，顺序别倒。
+        bool iJustEntered = inBath && _bathLastLoc != myLoc;
+        _bathLastLoc = inBath ? myLoc : "";
+        if (!iJustEntered) return;
+
+        // 已经有人在同一张图里 → 我是后到的 → 播我自己的名字（共浴动作的执行者）
+        foreach (var f in Game1.otherFarmers.Values)
+        {
+            if (f?.currentLocation == null) continue;
+            if (f.UniqueMultiplayerID == me.UniqueMultiplayerID) continue;   // otherFarmers 会含自己，排掉
+            if (f.currentLocation.Name != myLoc) continue;                    // 必须**同场景**（同图）
+            Broadcast($"{me.Name} 来跟你共浴了！");
+            return;
         }
     }
 
@@ -11496,6 +11640,228 @@ public class ModEntry : Mod
                     };
                 }
                 tcs.SetResult(new { ok = true, location = loc.Name, x, y, tile = result });
+            }
+            catch (Exception ex)
+            {
+                tcs.SetResult(new { ok = false, error = ex.Message });
+            }
+        });
+        return tcs.Task.GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// GET /pool —— ♨️ 浴场泡水 / 换装状态（2026-09-10 恒·浴室专题②，反编译 Stardew Valley.dll 摸清）。
+    ///
+    /// ⚠️ 核心结论：**浴场那汪水在引擎眼里根本不是水**，别指望任何"水格检测"。
+    ///   • `isWaterTile(x,y)` = Back 层有没有 "Water" 属性；泳池格全无此属性。
+    ///   • `GameLocation.waterTiles` 数组只在 (isOutdoors ‖ 地图属性 indoorWater ‖ Sewer ‖ Submarine)
+    ///     且非 Desert 时才构建 —— BathHouse_Pool 是室内 ⇒ waterTiles 恒 null。
+    ///   • 所以"游没游泳"的权威来源只有 Character 上的 `swimming` 这个 NetBool，跟地图水格无关。
+    ///
+    /// 游泳/换装全由三个 **TouchAction**（Back 层属性）驱动，踩到新格的下一个 tick 自动触发
+    /// （唯一闸门 `IgnoreTouchActions()` == `Game1.eventUp`）：
+    ///   • `ChangeIntoSwimsuit`  → farmer.changeIntoSwimsuit()：bathingClothes=true + canOnlyWalk=true
+    ///                             （← 恒说的"走过淋浴廊变慢、不能跑"就是这么来的）
+    ///   • `ChangeOutOfSwimsuit` → farmer.changeOutOfSwimSuit()
+    ///   • `PoolEntrance`        → 切换 farmer.swimming（在岸→下水；在水里→跳上岸）
+    /// 想找这些格子具体在哪 → 用 `/tile_props?scan=TouchAction`。
+    /// </summary>
+    private object HandlePool(HttpListenerContext ctx)
+    {
+        if (!Context.IsWorldReady)
+            throw new InvalidOperationException("World not ready");
+
+        var wantLoc = ctx.Request.QueryString["location"];
+
+        var tcs = new TaskCompletionSource<object>();
+        EnqueueMainThread(() =>
+        {
+            try
+            {
+                var p = Game1.player;
+                var here = p.currentLocation;
+                var loc = string.IsNullOrEmpty(wantLoc) ? here : (Game1.getLocationFromName(wantLoc) ?? here);
+                int w = 0, h = 0;
+                try { w = loc.Map.Layers[0].LayerWidth; h = loc.Map.Layers[0].LayerHeight; } catch { }
+
+                // 🛁 同泡彩蛋：多人在线时能看到对方（恒 7842 的房主）是不是也泡着
+                // ⚠️ 2026-09-10 实测：`Game1.otherFarmers` 会**把自己也列进去**（/state 的 otherPlayers
+                //    里"轮回"出现了两遍）→ 必须按 UniqueMultiplayerID 过滤掉自己，否则彩蛋会误报
+                //    "有人陪你泡"（其实是自己）。isHost 一并给出，方便直接认出恒。
+                var others = Game1.otherFarmers.Values
+                    .Where(f => f?.currentLocation != null && f.UniqueMultiplayerID != p.UniqueMultiplayerID)
+                    .Select(f => new
+                    {
+                        name = f.Name,
+                        location = f.currentLocation.Name,
+                        x = f.TilePoint.X,
+                        y = f.TilePoint.Y,
+                        swimming = f.swimming.Value,
+                        bathingClothes = f.bathingClothes.Value,
+                        isHost = f.UniqueMultiplayerID == Game1.serverHost.Value.UniqueMultiplayerID
+                    }).ToList();
+
+                tcs.SetResult(new
+                {
+                    ok = true,
+                    me = new
+                    {
+                        name = p.Name,
+                        location = here.Name,
+                        x = p.TilePoint.X,
+                        y = p.TilePoint.Y,
+                        swimming = p.swimming.Value,
+                        bathingClothes = p.bathingClothes.Value,
+                        canOnlyWalk = p.canOnlyWalk,      // true = 泳装态，只能走不能跑
+                        swimTimer = p.swimTimer,
+                        touchActionHere = TileProp(here, "Back", p.TilePoint.X, p.TilePoint.Y, "TouchAction"),
+                        actionHere = TileProp(here, "Back", p.TilePoint.X, p.TilePoint.Y, "Action"),
+                    },
+                    inspected = new
+                    {
+                        name = loc.Name,
+                        w,
+                        h,
+                        isBathHouse = loc.Name.Contains("BathHouse"),
+                        waterTilesBuilt = loc.waterTiles != null,   // 浴室恒 false
+                        indoorWaterProp = loc.HasMapPropertyWithValue("indoorWater"),
+                    },
+                    others,
+                    note = "游没游泳只看 me.swimming；浴场水格 isWaterTile 恒 false（引擎不认），别按水格判"
+                });
+            }
+            catch (Exception ex)
+            {
+                tcs.SetResult(new { ok = false, error = ex.Message });
+            }
+        });
+        return tcs.Task.GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// 读某格某层的单个地图属性（= 游戏内 doesTileHaveProperty 的同款语义：先看格子自身 Properties，
+    /// 再看瓦片图集 TileIndexProperties）。越界/该层不存在一律返回 null。
+    /// </summary>
+    private static string? TileProp(GameLocation loc, string layerName, int x, int y, string prop)
+    {
+        try
+        {
+            var layer = loc.Map?.GetLayer(layerName);
+            if (layer == null || x < 0 || y < 0 || x >= layer.LayerWidth || y >= layer.LayerHeight) return null;
+            var t = layer.Tiles[x, y];
+            if (t == null) return null;
+            if (t.Properties != null && t.Properties.TryGetValue(prop, out var v)) return v?.ToString();
+            if (t.TileIndexProperties != null && t.TileIndexProperties.TryGetValue(prop, out var v2)) return v2?.ToString();
+        }
+        catch { }
+        return null;
+    }
+
+    /// <summary>
+    /// GET /tile_props —— 🗺️ 直接读地图瓦片属性（2026-09-10 浴室专题②）。
+    ///
+    /// 两种用法：
+    ///   • 单格：`?x=6&amp;y=9[&amp;location=BathHouse_Pool]` → 该格**所有层**的全部属性 + 地图级属性。
+    ///   • 全图扫：`?scan=TouchAction[&amp;value=PoolEntrance][&amp;layer=Back]` → 列出地图上所有带该属性的格。
+    ///
+    /// 为什么需要它：SDV 的 `Action` / `TouchAction` / `Water` 等全是 **Back 层瓦片属性**，
+    /// 现有 `/dump_tile` 只看 objects/terrain/passable，看不到这些 —— 浴场"哪格会换泳装、
+    /// 哪格是上下水口"以前只能靠人肉带路猜；有了这个端点直接问游戏要。
+    ///   · `scan=TouchAction` → 一眼看到 ChangeIntoSwimsuit / PoolEntrance 到底铺在哪几格
+    ///   · `scan=Water`       → 真水格（蟹笼/钓点那种）
+    /// </summary>
+    private object HandleTileProps(HttpListenerContext ctx)
+    {
+        if (!Context.IsWorldReady)
+            throw new InvalidOperationException("World not ready");
+
+        var qs = ctx.Request.QueryString;
+        var scan = qs["scan"];
+        var scanValue = qs["value"];
+        var onlyLayer = qs["layer"];
+        int? px = int.TryParse(qs["x"], out var xx) ? xx : null;
+        int? py = int.TryParse(qs["y"], out var yy) ? yy : null;
+
+        if (string.IsNullOrEmpty(scan) && (px == null || py == null))
+            return new { ok = false, error = "用法：单格 ?x=&y=[&location=]；全图扫 ?scan=<属性名>[&value=<值>][&layer=Back]" };
+
+        var locName = qs["location"];
+        var layerNames = new[] { "Back", "Buildings", "Front", "Paths", "AlwaysFront" };
+        int ix = px ?? 0, iy = py ?? 0;   // 提到 lambda 外，免掉 CS8629 可空告警
+
+        var tcs = new TaskCompletionSource<object>();
+        EnqueueMainThread(() =>
+        {
+            try
+            {
+                var loc = string.IsNullOrEmpty(locName) ? Game1.player.currentLocation : Game1.getLocationFromName(locName);
+                if (loc?.Map == null)
+                {
+                    tcs.SetResult(new { ok = false, error = $"location/map not found: {locName ?? "(当前图)"}" });
+                    return;
+                }
+
+                // ── 模式一：全图扫某个属性 ──
+                if (!string.IsNullOrEmpty(scan))
+                {
+                    var hits = new List<object>();
+                    foreach (var ln in layerNames)
+                    {
+                        if (!string.IsNullOrEmpty(onlyLayer) && ln != onlyLayer) continue;
+                        var layer = loc.Map.GetLayer(ln);
+                        if (layer == null) continue;
+                        for (int x = 0; x < layer.LayerWidth; x++)
+                            for (int y = 0; y < layer.LayerHeight; y++)
+                            {
+                                var v = TileProp(loc, ln, x, y, scan);
+                                if (v == null) continue;
+                                if (!string.IsNullOrEmpty(scanValue) && v != scanValue) continue;
+                                hits.Add(new { layer = ln, x, y, value = v });
+                            }
+                    }
+                    tcs.SetResult(new { ok = true, location = loc.Name, scan, matchValue = scanValue, count = hits.Count, hits });
+                    return;
+                }
+
+                // ── 模式二：单格全属性 ──
+                var tiles = new Dictionary<string, object?>();
+                foreach (var ln in layerNames)
+                {
+                    var props = new Dictionary<string, string>();
+                    var idxProps = new Dictionary<string, string>();
+                    var layer = loc.Map.GetLayer(ln);
+                    if (layer != null && ix >= 0 && iy >= 0
+                        && ix < layer.LayerWidth && iy < layer.LayerHeight)
+                    {
+                        var t = layer.Tiles[ix, iy];
+                        if (t != null)
+                        {
+                            if (t.Properties != null)
+                                foreach (var kv in t.Properties) props[kv.Key] = kv.Value?.ToString() ?? "";
+                            if (t.TileIndexProperties != null)
+                                foreach (var kv in t.TileIndexProperties) idxProps[kv.Key] = kv.Value?.ToString() ?? "";
+                        }
+                    }
+                    if (props.Count > 0 || idxProps.Count > 0)
+                        tiles[ln] = new { props, tileIndexProps = idxProps };
+                }
+
+                var mapProps = new Dictionary<string, string>();
+                if (loc.Map.Properties != null)
+                    foreach (var kv in loc.Map.Properties) mapProps[kv.Key] = kv.Value?.ToString() ?? "";
+
+                int mw = 0, mh = 0;
+                try { mw = loc.Map.Layers[0].LayerWidth; mh = loc.Map.Layers[0].LayerHeight; } catch { }
+
+                tcs.SetResult(new
+                {
+                    ok = true,
+                    location = loc.Name,
+                    x = px, y = py,
+                    w = mw, h = mh,
+                    tiles,                 // 只有真有属性的层才会出现
+                    mapProperties = mapProps,
+                });
             }
             catch (Exception ex)
             {

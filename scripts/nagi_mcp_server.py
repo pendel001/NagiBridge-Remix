@@ -694,6 +694,10 @@ _STATE_DELTA = {"day_key": None, "health": None, "stamina": None, "money": None,
                 "loc": None, "health_n": None, "qi": None, "walnut": None}
 _MONSTER_WARN = {"ts": 0.0}   # ⚔️ 农场掉血=有怪提醒，30s 节流防刷屏
 
+# ♨️ 浴场场景引导（2026-09-10 恒："注入场景引导（每日进入一次性提醒）：上下水口坐标、
+#    可以在泳池里 walk_to 游泳、静止下来泡温泉以恢复体力"）——每天首次进浴场图报一次，之后不自刷省 token。
+_BATH_GUIDE_KEY = {"day": None, "shown": False}
+
 
 def _delta_show(key, val):
     """状态条真增量判定：val 与上次注入不同 → 更新快照并返回 True；相同 → False(不重复报)。"""
@@ -829,6 +833,20 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
             _total = len(_festival_pois_here(loc_name))
             _suffix = f" 等{_total}项（细节→festival poi）" if _total > len(_fps) else ""
             lines.append(f"  🎪 可: {_names}{_suffix}")
+    except Exception:
+        pass
+
+    # ♨️ 浴场场景引导（2026-09-10 恒：每日进入一次性——上下水口 / 可 walk_to 游泳 / 静止回体力）
+    #    文案与坐标都来自 locations.bath_guide_lines()（坐标是反编译 + /tile_props 扫图实证的）。
+    try:
+        if isinstance(loc_name, str) and loc_name.startswith("BathHouse_"):
+            _bdk = api.day_key()
+            if _BATH_GUIDE_KEY["day"] != _bdk:
+                _BATH_GUIDE_KEY["day"] = _bdk
+                _BATH_GUIDE_KEY["shown"] = False
+            if not _BATH_GUIDE_KEY["shown"]:
+                _BATH_GUIDE_KEY["shown"] = True
+                lines.extend(locations.bath_guide_lines(loc_name))
     except Exception:
         pass
 
@@ -2197,6 +2215,55 @@ def _tile_passable(loc_name: str, x: int, y: int) -> bool:
         return bool(d.get("tile", {}).get("passable", True))
     except Exception:
         return True
+
+
+def _ai_pos():
+    """AI 当前所在格 (x,y)。"""
+    p = api.state().get("player") or {}
+    return (p.get("x"), p.get("y"))
+
+
+def _via_step(frm: str, vx: int, vy: int) -> bool:
+    """把角色**精确**弄到 (vx,vy) 这一格上，返回是否落格成功。
+
+    用途：`MAP_LINKS` 的 `via` 途经点——浴场换装格是 Back 层 `TouchAction`，
+    **只认"真踩上那一格"**，差一格就是白走（恒 2026-09-10「只要能保证换衣服」）。
+
+    ⚠️ **绝对不能先 `/walk_to` 目标格**（我第一版就是这么写的，踩了）：
+       `/walk_to` 的落点判定 `_wait_arrival` 带 ±2 容差，实测浴场更衣室追 `(2,17)` 会停在**墙格 `(3,17)`**
+       （x=2 是 1 格宽走廊，两侧 `(1,17)/(3,17)` 都不可走）。
+       **人一旦站在不可走的格上就废了**——`/move` 的路径是 `FindPath(farmer.TilePoint, …)`，
+       起点非法 ⇒ 之后无论怎么 `/walk_to`/`/move` 都带不动（实测两边路线全卡死）。
+
+    ✅ 正确顺序：**先 `/walk_to` 到目标格的邻格站定，再用 `/move` 走最后一格**
+       （`/move` 逐格走、收在目标格上，CHANGELOG 记着它稳定命中 TouchAction）。
+       邻格**8 向挨个试、自验证**（落点一致才算站上），**不预判 passable**——
+       `/passable` 和 `/dump_tile` 两个端点的 passable 历史上就不一致，别拿它们当裁判。
+
+    ⚠️ `/move` 是**排队异步**的（实测要好几秒才落地）：必须轮询位置到真站上，
+       别 `sleep` 死等——等短了后面的"走向出口"会把这一步顶掉（2026-09-10 真机踩过）。
+    """
+    if _ai_pos() == (vx, vy):
+        return True
+    # ① 邻格 → /move 走最后一格（最稳，优先）
+    for ax, ay in ((vx, vy + 1), (vx, vy - 1), (vx + 1, vy), (vx - 1, vy),
+                   (vx + 1, vy + 1), (vx - 1, vy - 1), (vx + 1, vy - 1), (vx - 1, vy + 1)):
+        if _ai_pos() == (vx, vy):
+            return True
+        if _ai_pos() != (ax, ay):
+            api._post("/walk_to", {"location": frm, "x": ax, "y": ay})
+            _wait_arrival(frm, ax, ay, timeout=20)
+        if _ai_pos() != (ax, ay):
+            continue                      # 这个邻格站不上去，换下一个
+        for _ in range(4):                # 最多纠偏 4 次
+            api._post("/move", {"x": vx, "y": vy})
+            for _ in range(8):            # /move 异步：轮询到站定（≈4.8s）
+                time.sleep(0.6)
+                if _ai_pos() == (vx, vy):
+                    return True
+            if _ai_pos() != (ax, ay):
+                break                     # 已走歪，别空转
+    return _ai_pos() == (vx, vy)
 
 
 def _track_move() -> None:
@@ -4023,6 +4090,25 @@ def _map_go_walk(path, destination: str, dest: str, lead_log: str = "", npc_targ
                     return _with_state("\n".join(log) + f"\n❌ /warps 没找到 {frm}→{nxt} 的出口")
                 ex, ey, wx, wy = warps[0]
                 use_exact = False
+            # 🩳 **途经点**（恒 2026-09-10「只要能保证换衣服」）：`link['via']` 里的格子先去站一遍，再去出口。
+            #    病根：浴场更衣室→泳池那一跳，进门落点 (13,27) 和 warp 格 (2,27) **同在 y=27**，
+            #    顺线走根本不经过换装格 (2,17) ⇒ AI 会**穿着便装直接跳进泳池**。
+            #    换装是 Back 层 TouchAction——**必须真踩上那一格**才触发，所以这里要精确落格：
+            #      ⚠️ **`/walk_to` 落点不保证精确**：`_wait_arrival` 带 ±2 容差，实测浴场更衣室追 (2,17)
+            #         会停在墙格 (3,17)（x=2 是一条 1 格宽走廊，两侧 (1,17)/(3,17) 都不可走）——差一格 = 白走。
+            #      ⇒ 用 **`/move`（逐格走、收在目标格上）**纠偏。恒：`/move` 一格一格走稳定命中 TouchAction。
+            #      ⚠️⚠️ **`/move` 是排队异步的，必须轮询到真站上那一格才能往下走**——
+            #         2026-09-10 真机踩到：原先只 `sleep(1.2)`，人还没走完就继续走出口格 (2,27)，
+            #         这一步被顶掉 → 日志明明报了「途经(2,17)」，到泳池 `/pool` 却 `bathingClothes=False`（裸泳）。
+            for _vx, _vy in (link.get("via") or []):
+                try:
+                    if _via_step(frm, _vx, _vy):
+                        log[-1] += f"（🩳 途经({_vx},{_vy})）"
+                    else:
+                        _p = _ai_pos()
+                        log[-1] += f"（⚠️ 途经({_vx},{_vy}) 没踩到，停在{_p}）"
+                except Exception as _ve:
+                    log[-1] += f"（⚠️ 途经({_vx},{_vy}) 失败: {_ve}）"
             # 恒 2026-08-13 可靠版：走到出口可站位 → 确认人到 → /warp 下一图入口
             arrived = _walk_trigger_warp(frm, nxt, ex, ey, wx, wy, exact=use_exact)
             if not arrived:
