@@ -2949,6 +2949,19 @@ for _b, (_om, (_dx, _dy)) in locations.BUILDING_DOORS.items():
     _REVERSE_DOORS[(_om, (_dx, _dy))] = _b
 
 
+def _locked_door_dialogue():
+    """推门没推开时读一眼菜单：门禁/营业时间/性别拦下会弹 DialogueBox（且门没开）。
+    返回对话文本(str，可能空串)；没有弹窗 → None（=不是"门锁着"，是真·导航失败）。
+    2026-09-10：用来把「门锁着」和「路走不到」分开——前者不该触发兜底 warp 硬闯。"""
+    try:
+        m = api._get("/menu")
+        if m.get("open") and m.get("type") == "DialogueBox":
+            return (m.get("dialogue") or "").strip()
+    except Exception:
+        pass
+    return None
+
+
 def _step_into_building(arrive_map: str, arrive_pos) -> str:
     """落点在建筑**门瓦片**上 → 推门进屋（复用 _enter_building_door）。
     返回"…推门进屋"日志；非门瓦片 / 已在屋内 / 进屋失败 → 返回空串（不卡导航）。
@@ -4005,7 +4018,19 @@ def _map_go_walk(path, destination: str, dest: str, lead_log: str = "", npc_targ
         elif kind == "door":
             ok = _enter_building_door(nxt)
             if not ok:
-                # 兜底：直接传送到建筑入口 ARRIVE
+                # 🔒 门锁着（未到营业时间/未解锁/好感不够/性别不符）→ 推门会弹 DialogueBox。
+                #    停下、**不算导航失败、不兜底 warp 硬闯**——瞬移进去 = 穿墙作弊，
+                #    恒 2026-09-10 真机抓到：8:10 皮埃尔店锁着，旧兜底 api.warp 把人塞进了 SeedShop(6,29)。
+                lock_txt = _locked_door_dialogue()
+                if lock_txt is not None:
+                    try:
+                        api._post("/menu_close")
+                    except Exception:
+                        pass
+                    return _with_state("\n".join(log) +
+                        f"\n🔒 {nxt} 门锁着，没进去：{lock_txt or '未到营业时间/未解锁/好感不够'}"
+                        f"\n   停在这里——这是门的条件没满足，不是路走不到；等开门时间/好感够了再来，别硬闯")
+                # 兜底：直接传送到建筑入口 ARRIVE（只对"门没锁但没推成功"这类真·导航失败生效）
                 ar = locations.ARRIVE.get(nxt)
                 if ar:
                     api.warp(nxt, ar[0], ar[1])

@@ -310,6 +310,13 @@ public class ModEntry : Mod
     private Queue<Point>? _pathQueue;
     private int _pathTickCooldown;
 
+    // 🚪 门感知走位状态（2026-09-10）：正在尝试推开的那扇门格 + 推了多久。
+    //    ⚠️ 门禁弹的 DialogueBox 是**下一帧**才挂到 Game1.activeClickableMenu（延迟队列），
+    //    所以推门那帧判不出结果，必须记挂起、后续 tick 复查（真机教训）。
+    private Point? _doorPushPending;
+    private string? _doorPushLoc;
+    private int _doorPushTicks;
+
     // Command queue state
     private Queue<Dictionary<string, object?>>? _commandQueue;
     private readonly List<object> _commandResults = new();
@@ -1389,6 +1396,10 @@ public class ModEntry : Mod
     {
         _chatHud?.Update();
 
+        // 🚪 门感知走位·跨帧复查（2026-09-10）：**必须在这里每帧无条件跑**，不能塞进下面的走位块——
+        //    被门禁 DialogueBox 挡着时走位块可能根本不执行，塞里面 = 门禁永远判不出来（真机教训）。
+        try { CheckPendingDoorPush(); } catch { }
+
         // Drain main-thread action queue
         lock (_queueLock)
         {
@@ -1668,6 +1679,26 @@ public class ModEntry : Mod
 
             var next = _pathQueue.Peek();
             var farmer = Game1.player;
+
+            // 🚪 门感知走位（2026-09-10）：路径下一格是关着的室内隔间门 → 先推门再走。
+            //    checkAction 由游戏自己管门禁（够好感静默开、不够弹「还不是朋友」），这里只探测结果。
+            //    ⚠️ **必须跨帧复查**：门禁弹的 DialogueBox 走延迟队列，推门那帧
+            //       `Game1.activeClickableMenu is DialogueBox` 恒为 false —— 同帧判会被门禁整个漏掉，
+            //       弹窗挂在屏幕上、AI 卡死在门前不动（2026-09-10 真机在浴场更衣室门抓到）。
+            if (IsInteriorDoor(farmer.currentLocation, next) && !IsInteriorDoorOpen(farmer.currentLocation, next))
+            {
+                // 首次遇到这扇关着的门 → 推它一下，本 tick 先不动。
+                // ⚠️ 结果**不在这里判**（同帧判不出，见 CheckPendingDoorPush 注释），交给每帧复查。
+                if (_doorPushPending != next || _doorPushLoc != farmer.currentLocation.NameOrUniqueName)
+                {
+                    _doorPushPending = next;
+                    _doorPushLoc = farmer.currentLocation.NameOrUniqueName;
+                    _doorPushTicks = 0;
+                    farmer.currentLocation.checkAction(new Location(next.X, next.Y), Game1.viewport, farmer);
+                }
+                return;
+            }
+
             var target = new Vector2(next.X * 64 + 32, next.Y * 64 + 32);
             var diff = target - farmer.Position;
 
@@ -2116,6 +2147,7 @@ public class ModEntry : Mod
                 "/surroundings" => HandleSurroundings(ctx),
                 "/warps" => HandleWarps(),
                 "/farm_buildings" => HandleFarmBuildings(),
+                "/doors" => HandleDoors(ctx),      // 🚪 诊断：当前/指定地图的室内门全表(interiorDoors 真容)
                 "/fish_pond" => HandleFishPond(ctx),
                 "/rod" => HandleRod(ctx),
                 "/find_npc" => HandleFindNpc(ctx),
@@ -3658,6 +3690,49 @@ public class ModEntry : Mod
     /// Returns all locations' warp/exit tiles (full cross-map warp graph).
     /// 用于动态校准 locations.py 的 POI 出入口坐标，不用一张张地图走过去标。
     /// </summary>
+    /// <summary>
+    /// GET /doors[?location=Name] — 🚪 诊断：当前(或指定)地图的室内门真容。
+    /// 返 `interiorDoors`（1.6 地图属性 "Doors" 解析出的同图隔间门：门格 + 开态）——
+    /// 走位 BFS 的「门可跨越」判定只看这张表（`IsInteriorDoor`），门能不能被走到全看它在不在里面。
+    /// 2026-09-10：排查"浴场更衣室门走不过去"时加的，省得每次靠行为反推。
+    /// </summary>
+    private object HandleDoors(HttpListenerContext ctx)
+    {
+        if (!Context.IsWorldReady)
+            throw new InvalidOperationException("World not ready");
+
+        var name = ctx.Request.QueryString["location"];
+        var loc = string.IsNullOrEmpty(name) ? Game1.player?.currentLocation : Game1.getLocationFromName(name);
+        if (loc == null) return new { ok = false, error = $"location not found: {name}" };
+
+        var doors = new List<object>();
+        var note = "";
+        try
+        {
+            if (loc.interiorDoors == null)
+            {
+                note = "interiorDoors 为 null（本图没有 Doors 属性？）";
+            }
+            else
+            {
+                // ⚠️ 不 foreach 字典（InteriorDoorDictionary 的枚举接口类型没保证）——
+                //    按地图尺寸逐格 ContainsKey 探，稳。
+                int w = 0, h = 0;
+                try { w = loc.Map.Layers[0].LayerWidth; h = loc.Map.Layers[0].LayerHeight; } catch { }
+                for (int x = 0; x < w; x++)
+                    for (int y = 0; y < h; y++)
+                    {
+                        var pt = new Point(x, y);
+                        if (loc.interiorDoors.ContainsKey(pt))
+                            doors.Add(new { x, y, open = loc.interiorDoors[pt] });
+                    }
+            }
+        }
+        catch (Exception ex) { note = $"读 interiorDoors 出错: {ex.Message}"; }
+
+        return new { ok = true, location = loc.Name, count = doors.Count, interiorDoors = doors, note };
+    }
+
     private object HandleWarps()
     {
         if (!Context.IsWorldReady)
@@ -17165,7 +17240,8 @@ public class ModEntry : Mod
                 var next = new Point(pos.X + dx[i], pos.Y + dy[i]);
 
                 if (visited.Contains(next)) continue;
-                if (!IsTilePassable(location, next)) continue;
+                // 🚪 门格（关着也 passable=false）当作「可跨越」放行——走位循环会在踩上它时先推门。
+                if (!IsTilePassable(location, next) && !IsInteriorDoor(location, next)) continue;
 
                 visited.Add(next);
                 var newPath = new List<Point>(path) { next };
@@ -17281,6 +17357,76 @@ public class ModEntry : Mod
     }
 
     private static string cellKey(Point p) => p.X + "," + p.Y;
+
+    /// <summary>
+    /// 🚪 1.6 室内隔间门识别：该格是不是「同图隔间门」（非 warp，interact 开门、门格 passable false→true）。
+    /// 数据源 = GameLocation.interiorDoors（InteriorDoorDictionary，进图时由地图属性 "Doors" 解析填好）。
+    /// </summary>
+    private static bool IsInteriorDoor(GameLocation loc, Point p)
+    {
+        try { return loc.interiorDoors != null && loc.interiorDoors.ContainsKey(p); }
+        catch { return false; }
+    }
+
+    /// <summary>门当前开没开（interiorDoors 直接给出 bool 开态）。</summary>
+    private static bool IsInteriorDoorOpen(GameLocation loc, Point p)
+    {
+        try { return loc.interiorDoors != null && loc.interiorDoors.TryGetValue(p, out bool open) && open; }
+        catch { return false; }
+    }
+
+    /// <summary>
+    /// 🚪 门感知走位·跨帧复查（2026-09-10 真机抓出的坑）。
+    /// checkAction 推门后**不能同帧判结果**：门禁弹的 DialogueBox 走延迟队列，
+    /// 要下一帧才进 Game1.activeClickableMenu，同帧 `is DialogueBox` 恒 false
+    /// → 门禁被整个漏掉：弹窗挂在屏幕上、AI 卡死在门前、既不报错也不停走（浴场男更衣室门实测）。
+    /// 所以推门只记挂起，结果在这里每帧复查；本方法挂在 OnUpdateTicked 顶部、
+    /// **菜单守卫之外**——被弹窗挡着时走位块可能不执行，只有这里还能跑。
+    /// </summary>
+    private void CheckPendingDoorPush()
+    {
+        if (!_doorPushPending.HasValue || !Context.IsWorldReady) return;
+        var farmer = Game1.player;
+        var loc = farmer?.currentLocation;
+        if (loc == null) { _doorPushPending = null; return; }
+        if (loc.NameOrUniqueName != _doorPushLoc) { _doorPushPending = null; return; }   // 已换图 → 挂起作废
+        var tile = _doorPushPending.Value;
+
+        if (IsInteriorDoorOpen(loc, tile)) { _doorPushPending = null; return; }          // 门开了 → 清挂起，走位继续
+
+        _doorPushTicks++;
+        if (Game1.activeClickableMenu is StardewValley.Menus.DialogueBox lockedBox)
+        {
+            // 门禁拦下（好感不够 / 性别不符 / 未到营业时间）→ 关弹窗、停走、报，别硬闯穿墙
+            var reason = "";
+            try { reason = lockedBox.getCurrentString() ?? ""; } catch { }
+            try { lockedBox.exitThisMenu(); } catch { }
+            Game1.activeClickableMenu = null;
+            Game1.dialogueUp = false;
+            StopWalkForDoor(tile, loc.NameOrUniqueName, reason);
+            return;
+        }
+        if (_doorPushTicks > 90)
+        {
+            // 推了 1.5s，门没开也没弹窗 → 推不动（这扇门不靠 checkAction 开），别在门前耗死
+            StopWalkForDoor(tile, loc.NameOrUniqueName, null);
+        }
+    }
+
+    /// <summary>推门被拦/推不开 → 清走位 + 报警。reason 非空=门禁原话，空=无提示的推不开。</summary>
+    private void StopWalkForDoor(Point tile, string locName, string? reason)
+    {
+        _doorPushPending = null;
+        _pathQueue = null;
+        _walkRoute = null;
+        _walkSegIdx = 0;
+        _walkSegmentStarted = false;
+        var why = string.IsNullOrEmpty(reason)
+            ? "推不开（无门禁提示）"
+            : $"锁着「{reason}」";
+        EnqueueAlert("walk_door_locked",
+            $"🚪 门{why}（{locName} ({tile.X},{tile.Y})）→ 停在门前，没硬闯", "warning", "walk");
+    }
 
     private bool IsTilePassable(GameLocation location, Point tile, bool allowWater = false)
     {
