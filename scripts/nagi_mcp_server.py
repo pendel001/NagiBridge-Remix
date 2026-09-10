@@ -3163,6 +3163,19 @@ def _walk_trigger_warp(frm: str, nxt: str, ex: int, ey: int, wx: int, wy: int, e
     mh = locinfo.get("mapHeight", 65)
     if exact:
         bx, by = ex, ey
+        # 🛡️ 2026-09-10 恒：exact 标来的瓦片**可能是图外格**——SDV 常把出口画在边界外一格
+        #    （浴场大厅 (5,10) 图只有 10×10；更衣室 (13,28)/(2,28) 图只有 18×28）。
+        #    直接交给 /walk_to 会"越界 ok:false" → **整段导航直接失败**（大厅走不出去就是这么来的）。
+        #    统一夹回图内（下缘→mh-1、上缘→0、右缘→mw-1、左缘→0），站住再 /warp 模拟。
+        try:
+            _mw, _mh = int(mw or 0), int(mh or 0)
+            if _mw > 0 and _mh > 0:
+                _cx = min(max(int(bx), 0), _mw - 1)
+                _cy = min(max(int(by), 0), _mh - 1)
+                if (_cx, _cy) != (bx, by):
+                    bx, by = _cx, _cy
+        except Exception:
+            pass
     else:
         # 出口"前一格" = 沿边缘法线往地图内退 1 格（保证可达 + 非 warp 瓦片）
         if ey >= mh - 2:
@@ -4017,6 +4030,10 @@ def _map_go_walk(path, destination: str, dest: str, lead_log: str = "", npc_targ
                 return _with_state("\n".join(log) + f"\n⚠️ 到 {nxt} 失败")
         elif kind == "door":
             ok = _enter_building_door(nxt)
+            # 🔎 2026-09-10 恒：**推门成功**和**兜底 warp 硬进**结局一样（都落在目标图里），
+            #    日志也一模一样 → 恒看不出到底推门了没（"我都没见小人正对过门"）。分开标出来。
+            if ok:
+                log[-1] += "（🚪推门进屋）"
             if not ok:
                 # 🔒 门锁着（未到营业时间/未解锁/好感不够/性别不符）→ 推门会弹 DialogueBox。
                 #    停下、**不算导航失败、不兜底 warp 硬闯**——瞬移进去 = 穿墙作弊，
@@ -4036,6 +4053,8 @@ def _map_go_walk(path, destination: str, dest: str, lead_log: str = "", npc_targ
                     api.warp(nxt, ar[0], ar[1])
                     time.sleep(1.5)
                     ok = api.state().get("location", {}).get("name", "") == nxt
+                    if ok:
+                        log[-1] += "（⚠️推门没成 → 兜底warp 硬进）"
             if not ok:
                 _NAV_FAILED["v"] = True
                 return _with_state("\n".join(log) + f"\n⚠️ 进 {nxt} 失败")

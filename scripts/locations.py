@@ -265,8 +265,16 @@ POI = {
     # ── 深山 ──
     "温泉(门口)":        {"map": "Railroad",    "pos": (10, 57),"note": "♨️ 浴场入口在Railroad(10,57)，推门进 BathHouse_Entry(5,9)（一键开门）"},
     "温泉(大厅)":        {"map": "BathHouse_Entry","pos": (5, 9), "note": "♨️ 进浴场后的门口大厅格（⚠️不是更衣室！2026-09-10 恒修正：旧记录误标'更衣室'）。大厅=y4~8×x1~8 横条。往**更衣室**（性别门禁：男进男/女进女）——女=大厅(2,4)面0 interact门格(2,3)→BathHouse_WomensLocker(13,27)；男=大厅(7,4)面0→门格(7,3)→BathHouse_MensLocker(3,27)。（更衣室→泳池见「温泉(更衣室女/男)」POI）"},
-    "温泉(更衣室女)":    {"map": "BathHouse_WomensLocker","pos": (13, 27),"note": "♨️ **女更衣室**（图18×28，y只到27）——只有女角色能进，男角色撞门会弹 DialogueBox『这里是女更衣室，你不能进』。**进门落点(13,27)**（贴回大厅 warp(13,28)→BathHouse_Entry(2,4)）；**去泳池**=用 /move 走到 (2,27)面下 蹭出下缘 warp(2,28)→Pool(6,0)（⚠️**必须 /move**！walk_to/position/interact 都不触发）"},
-    "温泉(更衣室男)":    {"map": "BathHouse_MensLocker","pos": (3, 27), "note": "♨️ **男更衣室**（图同18×28）——只有男角色能进，女角色撞门会弹 DialogueBox『这里是男更衣室，你不能进』。**进门落点(3,27)**（贴回大厅 warp(3,28)→BathHouse_Entry(7,4)）；**去泳池**=用 /move 走到 (15,27)面下 蹭出下缘 warp(15,28)→Pool(21,0)（必须 /move）"},
+    "温泉(更衣室女)":    {"map": "BathHouse_WomensLocker","pos": (13, 27),"note": "♨️ **女更衣室**（图18×28，y只到27）——只有女角色能进，男角色撞门会弹 DialogueBox『这里是女更衣室，你不能进』。**进门落点(13,27)**。出门两条路都走 map_go 关系网（已修 2026-09-10）：回大厅=站 (13,27) → warp BathHouse_Entry(2,4)；去泳池=站 (2,27) → warp Pool(6,0)。⚠️ 真出口 (13,28)/(2,28) 在**图外**，别再物理蹭边缘（恒：会把游戏搞不稳）"},
+    "温泉(更衣室男)":    {"map": "BathHouse_MensLocker","pos": (3, 27), "note": "♨️ **男更衣室**（图同18×28）——只有男角色能进，女角色撞门会弹 DialogueBox『这里是男更衣室，你不能进』。**进门落点(3,27)**。出门同女更衣室：回大厅=站 (3,27) → warp BathHouse_Entry(7,4)；去泳池=站 (15,27) → warp Pool(21,0)。真出口 (3,28)/(15,28) 在图外，别蹭边缘"},
+    # ── ♨️ 泳池 BathHouse_Pool（28×34）（2026-09-10 恒带路校准）──
+    #   地形：甲板 y3~7 × x1~26（干区）→ 两个「凹型凸起」水槽 x5~7 / x20~22（y8~11）
+    #   → 水区 y≈9~18 × x5~22 → 池底通道 (13,19)/(14,19) 往南。
+    #   ⚠️ `isWater` 在浴场泳池**恒 false**（/dump_tile 认不出水）→ 判水只能按坐标区间，别信 isWater。
+    "温泉(泳池·甲板)":   {"map": "BathHouse_Pool","pos": (6, 7), "note": "♨️ **泳池甲板**（干区）y3~7 横条，x1~26。从左右水口下水"},
+    "温泉(上水口左)":    {"map": "BathHouse_Pool","pos": (6, 9), "note": "♨️ **左上下水口**——(6,8)/(6,9) 的**格边界**，实际是一级**半格在岸、半格在水下的楼梯**（恒 2026-09-10 校准）。从甲板 (6,7) 沿 x=6 往下走 (6,8)→(6,9) 就下水。⚠️ 上下水口就取这一带，别抠到底是 8 还是 9"},
+    "温泉(上水口右)":    {"map": "BathHouse_Pool","pos": (21, 9), "note": "♨️ **右上下水口**——(21,8)/(21,9) 的格边界（镜像），同上。沿 x=21 往下下水"},
+    "温泉(泳池水面)":    {"map": "BathHouse_Pool","pos": (13, 14),"note": "🏊 **泳池水区** ≈ y9~18 × x5~22（凹型 + 下面那片连通区）。泡澡/游泳站位就落这片；上岸走左右水口 (6,9)/(21,9)"},
     "木匠商店(门外)":    {"map": "Mountain",    "pos": (12, 26),"note": "罗宾木匠店门口"},
     "莱纳斯帐篷(外)":    {"map": "Mountain",    "pos": (29, 7), "note": "莱纳斯帐篷外，篝火旁，warp(29,6)→Tent"},
     "莱纳斯帐篷(内)":    {"map": "Tent",        "pos": (2, 5),  "note": "帐篷内部"},
@@ -637,13 +645,17 @@ MAP_LINKS = {
               {"tile": None, "target": "Town", "kind": "door", "note": "下水道镇内井盖(35,97)（恒2026-08-15：镇内口也在；交互/兜底warp回镇）"},
               {"tile": (3, 18), "target": "BugLand", "kind": "door", "note": "下水道→变异虫穴(15,53)，变异鲤鱼钓点（/warps实测）"}],
     "BugLand": [{"tile": None, "target": "Sewer", "kind": "warp", "note": "变异虫穴→下水道"}],
-    "BathHouse_Entry": [{"tile": (5, 10), "target": "Railroad", "kind": "warp", "note": "浴场→铁路(10,57)"},
+    "BathHouse_Entry": [{"tile": (5, 9), "target": "Railroad", "kind": "warp", "arrive": (10, 57), "note": "浴场→铁路(10,57)：⚠️真出口 (5,10) 在**图外**（大厅图只有 10×10, y0~9）→ 站图内最后一格 (5,9) 再 /warp 模拟（2026-09-10 实测：旧写法整段导航失败）"},
                         {"tile": (2, 3), "target": "BathHouse_WomensLocker", "kind": "door", "note": "♀ 女更衣室门：大厅(2,4)面0 interact(2,3)→WomensLocker(13,27)（2026-09-10 实测换图）"},
                         {"tile": (7, 3), "target": "BathHouse_MensLocker", "kind": "door", "note": "♂ 男更衣室门：大厅(7,4)面0 interact(7,3)→MensLocker(15,27)（2026-09-10 恒带路）"}],
-    "BathHouse_WomensLocker": [{"tile": (13, 28), "target": "BathHouse_Entry", "kind": "warp", "note": "女更衣室→大厅(2,4)"},
-                        {"tile": (2, 28), "target": "BathHouse_Pool", "kind": "warp", "note": "♀ 女更衣室→泳池(6,0)：⚠️(2,28)是**下缘越界格**（图18×28, y只到27），要走到底行自然蹭出去，position瞬移不触发（2026-09-10 实测）"}],
-    "BathHouse_MensLocker": [{"tile": (3, 28), "target": "BathHouse_Entry", "kind": "warp", "note": "男更衣室→大厅(7,4)"},
-                        {"tile": (15, 28), "target": "BathHouse_Pool", "kind": "warp", "note": "♂ 男更衣室→泳池(21,0)：下缘越界格(15,28)，同女更衣室走法"}],
+    # ♨️ 更衣室出口全是**图外格**（图18×28, y只到27，真出口在 y=28）——
+    #    walk_to 的入口校验遇越界直接 ok:false ⇒ 旧写法根本走不出去（2026-09-10 抓到的病根）。
+    #    改 LeoTreeHouse/Tunnel 同款：**tile 标图内最后一格**（站得住的实格）+ arrive 标落地格 → /warp 模拟。
+    #    ⚠️ 恒 2026-09-10 拍板：**别物理蹭地图边缘**（会把游戏搞不稳），一律记坐标走关系网模拟 warp。
+    "BathHouse_WomensLocker": [{"tile": (13, 27), "target": "BathHouse_Entry", "kind": "warp", "arrive": (2, 4), "note": "女更衣室→大厅(2,4)：真出口(13,28)图外 → 站图内最后一格(13,27) 再 /warp"},
+                        {"tile": (2, 27), "target": "BathHouse_Pool", "kind": "warp", "arrive": (6, 0), "note": "♀ 女更衣室→泳池(6,0)：真出口(2,28)图外 → 站(2,27) 再 /warp"}],
+    "BathHouse_MensLocker": [{"tile": (3, 27), "target": "BathHouse_Entry", "kind": "warp", "arrive": (7, 4), "note": "男更衣室→大厅(7,4)：真出口(3,28)图外 → 站(3,27) 再 /warp"},
+                        {"tile": (15, 27), "target": "BathHouse_Pool", "kind": "warp", "arrive": (21, 0), "note": "♂ 男更衣室→泳池(21,0)：真出口(15,28)图外 → 站(15,27) 再 /warp"}],
     "BathHouse_Pool": [{"tile": (6, -1), "target": "BathHouse_WomensLocker", "kind": "warp", "note": "泳池→女更衣室(2,27)"},
                         {"tile": (21, -1), "target": "BathHouse_MensLocker", "kind": "warp", "note": "泳池→男更衣室(15,27)"}],
     "Tunnel": [{"tile": (39, 9), "target": "Backwoods", "kind": "warp", "arrive": (23, 30), "note": "隧道出口站格(39,9)→/warp 深山(23,30)；原出口(40,9) x=40 在宽度40边界外；齐先生电池箱 TunnelSafe(17,6) 在里头"},{"tile": None, "target": "Backwoods", "kind": "warp", "note": "隧道→深山(兜底)"}],
@@ -845,6 +857,11 @@ BUILDING_DOORS = {
     "FarmCave":        ("Farm",     (34, 7)),
     "Sewer":           ("Town",     (35, 97)),
     "BathHouse_Entry": ("Railroad", (10, 57)),
+    # ♨️ 更衣室两扇**性别门禁门**（2026-09-10 补）：同图隔间门，非 warp。不进这张表的话
+    #    _enter_building_door 拿不到门格 → 直接放弃 → 走兜底 warp 瞬移进屋（真机日志「⚠️推门没成」抓到的）。
+    #    门格：女 (2,3) / 男 (7,3)，都是站大厅 y=4 面朝上(0) 推。性别不符→checkAction 弹 DialogueBox → 报"门锁着"不硬闯。
+    "BathHouse_WomensLocker": ("BathHouse_Entry", (2, 3)),
+    "BathHouse_MensLocker":   ("BathHouse_Entry", (7, 3)),
     "Tunnel":          ("Backwoods",(22, 31)),
     "MermaidHouse":    ("BeachNightMarket", (58, 32)),   # 🎇 美人鱼船门（节日限定冬15-17）
     "Submarine":       ("BeachNightMarket", (5, 35)),    # 🎇 钓鱼潜艇门（节日限定冬15-17）
@@ -893,6 +910,10 @@ ARRIVE = {
     "Sewer": (16, 11),
     "BugLand": (15, 53),
     "BathHouse_Entry": (5, 9),
+    # ♨️ 更衣室/泳池的「入口落点」= 图内最后一格（真出口在图外 y=28，见 MAP_LINKS 注释）
+    "BathHouse_WomensLocker": (13, 27),
+    "BathHouse_MensLocker": (3, 27),
+    "BathHouse_Pool": (6, 0),       # 🏊 左上下水口正上方（女侧）；男侧落地是 (21,0)
     "Tunnel": (34, 9),
     "Tent": (2, 5),
     "IslandSouth": (21, 43),
