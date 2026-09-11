@@ -3820,25 +3820,24 @@ public class ModEntry : Mod
             {
                 try { dialogueText = db.getCurrentString() ?? ""; } catch { }
             }
-            // 对话框当前说话人（NPC 名，供"在和xx搭话"）
+            // 对话框当前说话人（NPC 显示名，供"在和xx搭话"+剧情台词署名）
+            // 🔧 2026-09-11 恒（"现在的对话没有把名字给 AI，不知道是谁在说话"）：
+            //   原版读 `DialogueBox.character` —— **SDV 1.6 里根本没有这个字段**
+            //   （全量反编译 DialogueBox.cs：除了 `characterDialogue` 再无 character*），
+            //   外面套着 try/catch 把失败吞了 ⇒ **静默恒 null**，字段白白存在但永远为空。
+            //   改读正解链：`DialogueBox.characterDialogue`(public 字段) → `Dialogue.speaker`(public NPC，Dialogue.cs:211)。
+            //   两条路都反编译实证会赋值：
+            //     · NPC 搭话 —— `Game1.drawDialogue(NPC)`(Game1.cs:9539) → `new DialogueBox(Dialogue)` 构造器；
+            //     · 剧情事件 —— `speak <NPC> "…"` 处理器(Event.cs:13510) 也是 `new Dialogue(actorByName,…)` + drawDialogue。
+            //   ⚠️ **故意不用 `Game1.currentSpeaker` 兜底**：`drawObjectDialogue`/`drawDialogueNoTyping`
+            //     （纯文本 message/信件/提示，Event.cs:1035）走的是 **string 构造器、压根不清 currentSpeaker**
+            //     ⇒ 拿它兜底会把**旁白认成上一个搭过话的 NPC**（认错人，比没有更糟）。
+            //   `characterDialogue` 为空 = 真没说话人（旁白/信件/提示框）⇒ 就报 null，**不猜**。
+            //   用 getName()（displayName 优先 ⇒ 中文"罗宾"）而不是 .Name（内部英文名"Robin"）。
             var dialogueSpeaker = "";
             if (Game1.activeClickableMenu is StardewValley.Menus.DialogueBox dbSpeaker)
             {
-                try
-                {
-                    var chField = typeof(DialogueBox).GetField("character",
-                        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic |
-                        System.Reflection.BindingFlags.Instance);
-                    var ch = chField?.GetValue(dbSpeaker) as NPC;
-                    if (ch == null)
-                    {
-                        var chProp = typeof(DialogueBox).GetProperty("character",
-                            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic |
-                            System.Reflection.BindingFlags.Instance);
-                        ch = chProp?.GetValue(dbSpeaker) as NPC;
-                    }
-                    if (ch != null) dialogueSpeaker = ch.Name;
-                }
+                try { dialogueSpeaker = dbSpeaker.characterDialogue?.speaker?.getName() ?? ""; }
                 catch { }
             }
             // GameMenu 当前子页（背包/合成/社交…），供"视窗口内容而定"

@@ -1198,7 +1198,7 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
             # 🧾 30s 轮询/超时兜底由统一 _chat_phase_line 处理（见菜单段之后）。
             #   🚫 原"计划模式白板+计划一起弹出"段已随计划模式退役移除（见 _plan_* 存档）。
         if dialog:
-            lines.append(f"💬 「{dialog}」")
+            lines.append(f"💬 {_attributed(dialog, _speaker_of(active_menu))}")
         # 对话选项主动呈现给 AI，让它自己选（不自动跳过剧情/选项）
         responses = active_menu.get("responses")
         if responses:
@@ -1212,7 +1212,7 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
         if ev_msg:
             # 剧情演出中：显示当前台词，可跳过则提示（AI 可按跳过键加速）
             skip_hint = "（可跳过）" if active_event.get("skippable") else ""
-            lines.append(f"🎬 演出中: 「{ev_msg}」{skip_hint}")
+            lines.append(f"🎬 演出中: {_attributed(ev_msg, _speaker_of(active_menu))}{skip_hint}")
         elif ev_id not in (None, "-1"):
             lines.append(f"🎬 事件中: id={ev_id}")
 
@@ -1291,8 +1291,11 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
 
     # ── 🎬 剧情台词（纯文本对话自动推进累积；到选项/结束停下，一次性报给 AI） ──
     if _story_buffer:
-        joined = " ".join(f"「{l}」" for l in _story_buffer[-6:])
-        lines.append(f"🎬 剧情: {joined}{'…' if len(_story_buffer) > 6 else ''}")
+        # ⚠️ 台词进缓冲时已由 `_attributed` 署好名**且自带「」** ⇒ 这里别再包一层，
+        #    否则出 `「罗宾「…」」`（2026-09-11 真机当场看到的）
+        joined = " ".join(_story_buffer[-6:])
+        # 2026-09-11：advance_story 收进 menu 域后，状态条得自己把入口点出来（否则 AI 只看到台词不知道调啥）
+        lines.append(f"🎬 剧情: {joined}{'…' if len(_story_buffer) > 6 else ''}（台词未完 → menu advance 继续）")
     # 剧情完全结束（没有菜单也没有事件）→ 清空缓冲
     if _story_buffer and not active_menu and not active_event:
         _story_buffer.clear()
@@ -1691,6 +1694,30 @@ def _progress_line(kind: str) -> str:
 _story_buffer: list = []
 
 
+def _speaker_of(active_menu) -> str:
+    """说话人显示名（"罗宾"），取不到返空串——**不猜、不兜底**。
+    2026-09-11 恒："现在的对话没有把名字给 AI，不知道是谁在说话。"
+    源头是 C# 那侧读错了字段（`DialogueBox.character` 在 1.6 不存在），已修成
+    `characterDialogue.speaker.getName()`；本函数只是把它取出来。
+    ⚠️ 旁白 / 信件 / 纯提示框（string 构造器的 DialogueBox）**本来就没有说话人** ⇒ 返空串，
+    渲染时不署名——宁可不署名，也不要认错人。"""
+    try:
+        return ((active_menu or {}).get("speaker") or "").strip()
+    except Exception:
+        return ""
+
+
+def _attributed(text: str, speaker: str) -> str:
+    """把台词署上说话人：有名 → `罗宾「台词」`，无名 → `「台词」`。
+    ⚠️ 游戏的 `getCurrentString()` 在**关闭头像显示**时会自己加 `名字: ` 前缀
+    （DialogueBox.cs:719 `if (!Game1.options.showPortraits)`）⇒ 先判重，别拼成 `罗宾：罗宾：…`。"""
+    if not speaker:
+        return f"「{text}」"
+    if text.startswith(speaker) or text.startswith(f"{speaker}:"):
+        return f"「{text}」"
+    return f"{speaker}「{text}」"
+
+
 def _advance_story(active_menu, active_event) -> bool:
     """剧情自动走：事件/纯文本对话自动推进并缓存台词，到选项/结束停下。
     - activeEvent 在播 → 对话阶段优先进程内 key confirm（不碰 OS 鼠标），连续 2 轮没推进再退 /click；
@@ -1723,8 +1750,13 @@ def _advance_story(active_menu, active_event) -> bool:
             no_prog = 0
             for _ in range(15):
                 line = (active_event.get("message") or "").strip()
-                if line and (not _story_buffer or _story_buffer[-1] != line):
-                    _story_buffer.append(line)
+                # 💬 署名：说话人挂在 activeMenu 上（两者同一次 /state 刷新，同帧一致）
+                # ⚠️ **先去重再署名**（比 entry 不是比 line）：缓冲里存的是"署好名的"，
+                #    拿原始 line 去比 `_story_buffer[-1]` 永远不相等 ⇒ 同一句会被追加两遍
+                #    （2026-09-11 真机当场看到的「罗宾「…」」重复两遍）
+                entry = _attributed(line, _speaker_of(active_menu))
+                if line and (not _story_buffer or _story_buffer[-1] != entry):
+                    _story_buffer.append(entry)
                 # 非事件对话菜单（商店/背包等）或出现选项 → 停，让 AI 处理
                 if active_menu and active_menu.get("type") != "DialogueBox":
                     break
@@ -1775,7 +1807,9 @@ def _advance_story(active_menu, active_event) -> bool:
 
 @mcp.tool()
 def advance_story() -> str:
-    """🎬 推进剧情/对话。卡剧情/不知道按啥时先调这个：检测事件还在 → 自动走完当前段 → 返回台词+状态。事件对话自动 /click，选项出现停下让 AI 选。"""
+    """🎬 推进剧情/对话（menu ops="advance" 的子函数，2026-09-11 起不再占顶层工具槽）。
+    卡剧情/不知道按啥时调 `menu advance`：检测事件还在 → 自动走完当前段 → 返回台词+状态。
+    事件对话自动 /click，选项出现停下让 AI 选。"""
     try:
         st = api.state(light=True)
         ev = st.get("activeEvent") or {}
@@ -1791,11 +1825,11 @@ def advance_story() -> str:
         ev2 = st2.get("activeEvent") or {}
         m2 = st2.get("activeMenu") or {}
         if ev2.get("id"):
-            lines.append(f"  ⏳ 事件仍在播（id={ev2['id']}），再调 advance_story 继续推进")
+            lines.append(f"  ⏳ 事件仍在播（id={ev2['id']}），再调 menu advance 继续推进")
         elif m2.get("type") == "DialogueBox" and m2.get("responses"):
-            lines.append(f"  💬 出现选项: {m2.get('responses')} → menu_click(option=N) 选择")
+            lines.append(f"  💬 出现选项: {m2.get('responses')} → menu click(option=N) 选择")
         elif m2.get("type") == "DialogueBox":
-            lines.append("  💬 对话继续，再调 advance_story")
+            lines.append("  💬 对话继续，再调 menu advance")
         else:
             lines.append("  ✅ 剧情结束")
         return _with_state("\n".join(lines))
@@ -1819,8 +1853,10 @@ def _dismiss_dialogue(active_menu=None) -> bool:
     try:
         for _ in range(10):
             line = (active_menu.get("dialogue") or "").strip()
-            if line and (not _story_buffer or _story_buffer[-1] != line):
-                _story_buffer.append(line)
+            # ⚠️ 去重比 entry（同 _advance_story）：缓冲存的是署名后的，别拿原始 line 比
+            entry = _attributed(line, _speaker_of(active_menu))
+            if line and (not _story_buffer or _story_buffer[-1] != entry):
+                _story_buffer.append(entry)
             api.key("confirm")
             time.sleep(0.2)
             active_menu = api.state().get("activeMenu")
@@ -7922,10 +7958,10 @@ def settings(setting: str = "", value: str = "", ops: str = "", kw: dict | None 
 # ═══════════════════════════════════════════
 @mcp.tool()
 def check(what: str) -> str:
-    """🔍 查询域（what=...）。status 全状态 / backpack 背包明细(逐格价值/星级) / worn 穿戴 / machines 机器 / look 环视周围 / quest 开任务日志。完整 what 清单 → help(check)。
+    """🔍 查询域（what=...）——"查我自己 + 查我的世界"。status 全状态 / backpack 背包明细(逐格价值/星级) / worn 穿戴 / machines 机器 / look 环视周围 / quest 开任务日志 / profile 我的技能+职业分支(如是否 Luremaster 蟹笼免饵) / role 端口↔角色确认(AI=谁/host=谁)。完整 what 清单 → help(check)。
 
     Args:
-        what: 查什么（status/backpack/worn/…见 help(check)）
+        what: 查什么（status/backpack/worn/profile/role/…见 help(check)）
     """
     w = (what or "").strip().lower()
     dispatcher = {
@@ -7941,10 +7977,14 @@ def check(what: str) -> str:
         "chests": scan_chests, "箱子": scan_chests,
         "storage": storage_layout, "存储": storage_layout,
         "look": look_around, "周围": look_around, "环视": look_around,
+        # 🧬🔌 2026-09-11 恒：profile/which_role 从顶层工具收进 check 域（都是"查我自己"，
+        #   顶层 20→17）。两者定义在本函数之后，调用时才查全局名，故可用。
+        "profile": profile, "技能": profile, "职业": profile, "职业分支": profile,
+        "role": which_role, "角色": which_role, "端口": which_role, "我是谁": which_role,
     }
     fn = dispatcher.get(w)
     if fn is None:
-        return _with_state(f"❌ 未知查询「{what}」（status/backpack/worn/machines/mine/silo/mastery/buildings/quest/chests）")
+        return _with_state(f"❌ 未知查询「{what}」（status/backpack/worn/machines/mine/silo/mastery/buildings/quest/chests/look/profile/role）")
     return fn()
 
 
@@ -9368,7 +9408,7 @@ def open_questlog() -> str:
 
 @mcp.tool()
 def menu(ops: str = "", kw: dict | None = None) -> str:
-    """📋 界面/菜单域（菜单开着时用）。全 ops + 关键坑 → help(menu)。
+    """📋 界面/菜单域（菜单开着时用）：read 看菜单 / advance **推进剧情·对话**(卡剧情就调这个) / click 点选项 / key 按键 / cancel 关弹窗 / shop 逛店。全 ops + 关键坑 → help(menu)。
 
     """
     dispatch = {
@@ -9978,8 +10018,10 @@ def _collect_dialogue(max_steps: int = 15) -> tuple:
         ev = st.get("activeEvent") or {}
         if m.get("type") == "DialogueBox":
             d = (m.get("dialogue") or "").strip()
-            if d and (not collected or collected[-1] != d):
-                collected.append(d)
+            # ⚠️ 去重比 entry（同上）：collected 存的是署名后的
+            entry = _attributed(d, _speaker_of(m))
+            if d and (not collected or collected[-1] != entry):
+                collected.append(entry)
             if m.get("responses"):
                 break                      # 出现选项 → 停，让 AI 选
             api.key("confirm")
@@ -12394,7 +12436,7 @@ _SETTINGS_DISPATCH = {
 
 # 📖 详细域指引（2026-08-22：docstring 精简后，深度/坑靠 help 查，不丢细节）
 _DOMAIN_GUIDES = {
-"check": "查询域，what=...：status(完整状态) backpack(逐格价值/星级) worn(穿戴) machines(全场机器清单) mine(下矿进度) silo(干草) mastery(精通) buildings(木匠建筑) quest(开任务日志) chests(当前图箱) storage(箱子网络) look(环视周围)。⚠️查概览用 status，查逐格用 backpack，别都调浪费 token。",
+"check": "查询域，what=...：status(完整状态) backpack(逐格价值/星级) worn(穿戴) machines(全场机器清单) mine(下矿进度) silo(干草) mastery(精通) buildings(木匠建筑) quest(开任务日志) chests(当前图箱) storage(箱子网络) look(环视周围) profile(我的技能等级+职业分支,如是否 Luremaster 蟹笼免饵) role(端口↔角色确认:我是谁/恒是谁)。⚠️查概览用 status，查逐格用 backpack，别都调浪费 token。📌profile/role 2026-09-11 从顶层工具收编进来（原来直接叫 profile()/which_role()，现在一律走 check）。",
 "farm": "农活域(🌱必走，别手动挥工具组合，用域 ops)：till(蓄力锄) plant(种,跳过已种) water(浇,自动跳雨+水壶没水先装满) harvest(收) scythe(镰刀收蒜/花/茶) fertilize(化肥) clear(清杂草石树桩) plot(连通域规划) till_plant(锄+种一条龙) tillfield(蓄力锄矩) hoe(布局锄) plantlayout(按布局种) chop(砍树) clearground(清单格) collect(一键收机器:只收不放,全农场瞬收不走路) load(放原料) building(一屋收放:拟人走进去收+放料,item留空=只收不放) break(拆/敲同scene,镐子敲可破物/翻已耕地) place(放置/播种同scene) pond/pond_add/pond_feed/pond_collect/pond_fish(鱼塘)。⚠️漏格DLL自动补；高级工具蓄力用 tool_area(别用/tool)。只在 Farm/温室/姜岛。带参 op(plant 的 seed_name、till/clear 的 x/y/rows、fertilize 的 fertilizer_name、place 的 name、building 的 location、collect 的 machine_type、pond_add 的 item)→ kw={'参数名':值}。🐄动物(2026-09-02 care域并入farm): animals(摸+收) 喂水/碗(宠物水) milk(挤奶剪毛) buy(买动物,豁免建议) doors(关门) hay(干草) pet(猫狗) petwalk(拟人摸) 畜舍/这间(这间屋动物) statue(祈福)——⚠️farm water=浇地,动物水用 喂水; farm building=机器收放,这屋动物用 畜舍。💡大田洒水器布局(可选,纯自动化建议,可用可不用)：要按洒水器留格/留走道(种2留1,AI能进田浇收)就 plan(方形规划算格)→hoe(布局锄)→plantlayout(按布局种)三件套；只管种直接 till+plant 也成。",
 "mine": "下矿域(⚒️ 矿井/头骨/火山)：go(去挖矿:mode=rush冲层/farm刷矿,start起始层,target目标层,ore,cycles圈数) progress(进度) bomb_status/plan/place/collect/ladder/retreat(单步炸) bomb_mine(自动) bomb_volcano(火山) organize(整理背包)。🔁**刷矿=mode=go(mode=farm)**：定点刷指定矿→ore=Copper铜(21层)/Iron铁(41层)/Gold金(71层)；**煤靠 farm 铁层(41)顺手清尘埃精灵/蝙蝠掉**（不是 ore 选项，跑 auto 内部刷）。🏃下矿=mode=go(mode=rush,start可选≤电梯上限+5倍数,target默认120)。⚠️无镐/血低硬拦；梯子 /ladder+confirm。⚠️bomb_mine 没炸弹+host在同矿井→自动转【内部】协同(跟随host+帮忙敲矿/打怪)不撤退出矿(bomb_escort 不对外暴露、AI 不主动启用)；bomb_retreat 结束协同+停脚本+脱离矿井回门口。⚠️接「深处的危险」重置电梯→起始层动态从1起(内置脚本自动读，不暴露工具)；刷矿目标层不可直达会上报，需先冲层带回或改浅层。💡出发前占位物(恒2026-08-23)：提前放1个可堆叠物(铱矿/铱锭/五彩碎片)在包，满包时同种战利品自动堆叠吸附、少触发满包停；别拿银河之魂这类带死亡会丢的稀有物当占位。",
 "cabin": "小屋引导域(🏠 FarmHouse/Cabin/岛屋；不传=扫屋)：enum(扫**本屋**查待收) collect(收机器) statue(雕像) furniture(扫家具) interact(点家具,tile_x/tile_y) pickup(拿起家具,tile_x/tile_y) cook(做饭,recipe_name) sleep(睡觉,who=谁床：不传/房主名=睡房主床一起睡,传自己名=睡自己床)。带参 op→ kw={'参数名':值}。",
@@ -12402,10 +12444,10 @@ _DOMAIN_GUIDES = {
 "scene": "场景交互域(点东西/工具/转身/捡/坐)：at(tile_x,tile_y)(点指定格/柜台) interact(点面前) use(挥工具) face(转向0上1右2下3左) select(拿手上) sit(x,y[,face])(**坐椅子**:自动走到座位旁再坐,上不了会明确报错;状态条「🪑 可交互：sit(x,y)」给坐标;可选 face=坐下朝向0上1右2下3左,**只对 stool 类座位/长椅生效**——反编译:这类座位的朝向就是「坐下那刻的面朝方向」,其它座位写死) seats(radius=12)(扫附近能坐的椅子/长凳/沙发) pickup(拿起家具) pickup_scene(捡当前场景物) berry(摇浆果) spot(挖蚯蚓点) moss(绿雨搜苔藓) rock(室外镐击:敲当前图可破物,采石场/挖掘场/蚌矿场跳普通石,dig/dry,battle-free) garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物) furniture(扫家具) place(放置/播种:name=物品名,x/y=目标格→箱子/树种/蟹笼落地或种下,只放可放置物) break(拆/敲:x,y=目标格,steps=挥击次,radius=方圆→镐子敲石头/翻已耕地,跳过箱子/容器格) maze(迷宫视图r半径,gx/gy目标格→ASCII棋盘#墙.可走P自己G目标) maze_seg(走法链gx,gy目标→拆直走廊列表+拼「左/右上/下走到(x,y)」多段链,AI按段walk_to) maze_walk(走迷宫 waypoints=「x,y x,y…」依次walk_to) pan(淘金/淘盘:本图水下闪光点→岸边走位面水→铜锅淘金收掉落) front/rummage(分别是interact/garbage的别名)。📌**坐着想起来：随便 at 任意一格**（游戏把坐着时的任意交互都当起身），别找别的 op。带参 op(at 的 tile_x/tile_y、sit 的 x/y、break 的 x/y、place 的 name、maze_seg 的 gx/gy)→ kw={'参数名':值}。",
 "menu": "菜单/界面域(开→看→点)：read(看菜单) advance(推进剧情/对话) click(option/item/button/xy 点;action=claim领/action=discard丢桶腾格;slot=序号领指定格) key(ok/esc/数字按键) cancel(关弹窗/撤就绪) shop(逛店) sell(卖商店) bin(投出货箱) craft(合成) recipes(菜谱) craftables(配方) forge(锻造) geode/geodes(砸晶球) customize(捏人) bundle(献祭板) bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读消耗品:书/秘密纸条/日记残页,统一走右键读 name=物品名) levelup_choose(技能升级职业选择 5/10级:不带参读左右选项,side=left/right 或 profession=职业id 定分支;普通升级自会确认OK) number(数量输入:展览会兑换台/转盘押注 NumberSelectionMenu) minigame(赌场小游戏点按钮 action=hit/stand/bet10/…) minigame_state(读牌面/转盘) display_fill(农展台放满 items='钻石,山羊奶酪') display_takeback(收好) journal(开任务日志→menu read 读卡,翻页=click(button=forward/back),领奖励=click(button=rewardBox)) know(查特别订单详情/知识库SPECIAL_ORDERS,如menu know 岛屿食材;2026-09-02 task域退役并入menu)。🚫满包接鱼/领箱:原 claim_swap(替换领取)已退役→**click action=discard 丢桶腾格(回收返金)+action=claim 领取(或用 slot 领指定格;不想要直接 button=ok 关掉)**。🧾关闭菜单一律 click(button=upperRightCloseButton)（ItemGrabMenu/交付容器用 button=ok 确认才关）；订单交付容器(QuestContainerMenu)=点背包对应物品格(见slots的坐标)→放进→点 button=ok 结算；任务日志领钱=点击已完成的有钱任务卡后 click(button=rewardBox)；兑奖机兑换=click(button=mainButton)；特别订单领奖链=日志领钱(上面)→社区板旁领奖箱(60,93)拿兑奖券→刘易斯家兑奖机(mainButton)兑换。",
 "storage": "箱子域：view(看箱,box=N看单箱全清单) store(存:what/items限定存哪些,名可带xN数量只存那N份,留空=归位只存已有同类堆,target指定箱/all=True全存腾空间) take(取:x,y+name单箱 或 items批量) find(模糊查哪箱有某物) default(设/清默认箱 clear=清) tag(改名,可带color改色)。🤖存取统一走位：store/take都会先走到相关箱旁(批量只走到第一个),不区分拟人/原子,别靠编号逐箱翻。⭐每个箱子前自动带【类目标签】(内容过半归类):矿/古物/鱼/种子/作物/农产/建材/料理/装备——AI按标签定位箱,找东西用find。⚠️改色别染纯#000000(=默认木纹,识别成未染色);要黑箱用暗灰#303030。",
-"daily": "过日子域：sleep(睡觉) eat(吃食物回血体力,name/item_name) wear(穿/脱衣物,name/slot/hand) lie_bed(躺床不过夜) settle(确认过夜结算) heartbeat(心跳间隔,minutes) pause(后台不暂停,out_of_focus) peek(看恒干嘛) whiteboard(写白板,content)。带参 op→ kw={'参数名':值}。📌sleep/lie_bed 的 who：不传或传房主名=睡房主床(一起睡+🌹彩蛋)；传自己名字=睡自己床。lie_bed 只躺不睡，想离开随时 walk_to 走离床格即可。",
+"daily": "过日子域：sleep(睡觉) eat(吃食物回血体力,name/item_name) wear(穿/脱衣物,name/slot/hand) lie_bed(躺床不过夜) settle(确认过夜结算) heartbeat(心跳间隔,minutes) pause(后台不暂停,out_of_focus) peek(看恒干嘛) whiteboard(写白板,content)。带参 op→ kw={'参数名':值}。📌sleep/lie_bed 的 who：不传或传房主名=睡房主床(一起睡+🌹彩蛋)；传自己名字=睡自己床。lie_bed 只躺不睡，想离开随时 walk_to 走离床格即可。⚠️睡别人床/协作前先 check(what=\"role\") 确认端口↔角色（端口按启动顺序分配，重启可能翻转，认错角色=挪了恒的人）。",
 "map": "导航域(🗺️跨图唯一入口)：lookup(查地点功能+出口) query(功能反查) go(走到目标/多段寻路+交通) walk(走到POI) movetile(同图精确走位) npc(找NPC) warp_safe(紧急逃脱)。⚠️出口走出口前一格；交通图腾柱>矿车>走路。⚠️参数全放kw对象(别拼进ops串)：go kw={destination:地点名/POI} walk kw={poi_name:POI} movetile kw={x:int,y:int}。",
 "festival": "节日域(🎪)：today(今天节日) next(下一个) go(去) info(实况) interact(互动) answer(应答) shop(节日商店) eggs(找蛋) egg_note(纸条) egg_run(捡蛋) dance(跳舞邀请) strength(力量测试 delay=毫秒) ice_fish(冰雪节冰钓自动化) help(玩法) prep(备战) poi(限定点) maze(迷宫坐标奇偶年) maze_walk(走迷宫 waypoints=「x,y x,y…」依次walk_to)。",
-"fish": "钓鱼域(🎣 2026-08-22修复)：go(去钓 location=) info(查某地鱼) spots(钓点) bobber(浮漂样式) rod(鱼竿:看/上饵钓具 item=名) crab(蟹笼总览) crab_water(找水) crab_place(放笼) crab_bait(放饵) crab_collect(收笼) crab_diag(诊断笼/定位挂饵) crab_retract(回收笼/清搁浅 location=可选)。⚠️鱼塘在 farm 域不在 fish。带参 op(go 的 location、rod 的 item、crab 的 count)→ kw={'参数名':值}。",
+"fish": "钓鱼域(🎣 2026-08-22修复)：go(去钓 location=) info(查某地鱼) spots(钓点) bobber(浮漂样式) rod(鱼竿:看/上饵钓具 item=名) crab(蟹笼总览) crab_water(找水) crab_place(放笼) crab_bait(放饵) crab_collect(收笼) crab_diag(诊断笼/定位挂饵) crab_retract(回收笼/清搁浅 location=可选)。⚠️鱼塘在 farm 域不在 fish。带参 op(go 的 location、rod 的 item、crab 的 count)→ kw={'参数名':值}。🧬**挂饵前先 check(what=\"profile\")**：若是 Luremaster(职业11) 蟹笼免饵，crab_bait/crab_place 挂饵是空操作，别浪费。",
 "settings": "系统/设置域(⚙️ 合并捏脸进来)：status(看所有设置+退役工具) retire(退役工具) reactivate(召回) appearance(捏脸) customize(捏人) **confirm_look(核对捏人形象,ok前必做)** color(颜色条) hair/shirt/pants/hat/colorpreset(外观参考)。⚠️捏脸=创建定型:ok后set_appearance/捏人自动退役(不可逆);旧配置 settings(setting='async', value='on') 仍可。",
 "session": "会话域(🧠 上下文缓冲，多数情况不用)：status(看缓冲条数/设置) set(改设置 setting,value) export(手动导出记忆)。",
 "scripts": "脚本/异步域(🚀被动异步优先)：continue(继续阻塞:确认脚本在跑/续跑,不新建不碰层数) stop(停任务,job_id空=停最近在跑) async(自动异步白名单 show/add/remove/enable=on|off)。进度自动播报(运行中+收工含总时长)，无需查。⚠️跑脚本用对应便利工具域 op——短任务(耕/浇/收/砍/清/摸动物)走 farm/scene 域 op(同步)、长任务(钓鱼/挖矿/炸矿/机器收放)走 mine/fish/farm 域便利工具(白名单自动后台)；start/run 已砍(改 continue 确认继续阻塞)；跑脚本时别用走动/挥工具同步工具，但聊天/看状态/开背包/整理背包没问题；一次只跑一个脚本。⚠️参数放kw别拼ops(如 script(ops=\"continue\", kw={job_id})。",
@@ -15934,11 +15976,12 @@ _PROF_NAMES = {
 
 @mcp.tool()
 def profile() -> str:
-    """🧬 看当前角色技能等级 + 职业分支(professions)——比如是不是 Luremaster(蟹笼免饵)。"""
+    """🧬 看当前角色技能等级 + 职业分支(professions)——比如是不是 Luremaster(蟹笼免饵)。
+    2026-09-11 起收进 check 域：`check(what="profile")`（不再占顶层工具槽）。"""
     try:
         r = api._get("/profile")
         if not r.get("ok"):
-            return f"❌ {r.get('error', '读取失败')}"
+            return _with_state(f"❌ {r.get('error', '读取失败')}")
         name = r.get("name") or "?"
         sk = r.get("skills") or {}
         lines = [
@@ -15955,9 +15998,9 @@ def profile() -> str:
                 lines.append("💡 你是 Mariner —— 蟹笼不出垃圾(全是鱼)。")
         else:
             lines.append("  🎓 职业分支: 无(还在升级/Mastery?)")
-        return "\n".join(lines)
+        return _with_state("\n".join(lines))
     except Exception as e:
-        return f"❌ profile: {e}"
+        return _with_state(f"❌ profile: {e}")
 
 
 # ═══════════════════════════════════════════
@@ -15979,11 +16022,15 @@ _KEEP_TOOLS = {
     # 无任何域 op 等价物的必需独立工具（系统/控制/感知/单点）
     #   buy_item 已退役（2026-08-16 直购作弊，买走真实商店 shop_visit/menu click）；sprinklers 本无此工具
     #   2026-08-22 收编: wear/lie_bed→daily ops, bundle_kb/donate/read_book→menu ops（域内可调，不再占顶层槽位）
-    # 2026-08-28：advance_story 加入——`menu advance` 对事件对话只报"调 advance_story"，不真推进；
-    #  而 advance_story 是推进剧情/事件对话(含节日 monologue)的必要独立入口，隐藏=AI 推不动 + 触不了 hook。故暴露。
-    "advance_story", "which_role",
     "screenshot", "help",
-    "profile",  # 🧬 2026-08-30 恒：看自己技能等级+职业分支(尤其蟹笼 Luremaster)——独立感知工具，一直可见
+    # 🗜️ 2026-09-11 恒拍板 20→17：三个"能用域路到达"的顶层工具收编（省 schema + 去掉重复路）——
+    #   advance_story → menu ops="advance"（menu 的 dispatch 本就直指同一函数，留着=两条路做同一件事）；
+    #   profile      → check(what="profile")、"which_role" → check(what="role")（都是"查我自己"，归查询域）。
+    #   ⚠️ 三者函数照旧注册、只是不给 AI 直调；**收编时必须同步改引导文案**，否则 AI 照旧文案调隐藏名=当场卡死：
+    #     · advance_story 自己返回的"再调 advance_story"→"menu advance"（含 menu_click→menu click）
+    #     · 状态条 🎬 剧情行尾补"→ menu advance 继续"、menu 域 docstring 点名 advance
+    #     · check 域 docstring/help 点名 profile/role；fish 域 guide 点名 crab 前先 check profile
+    #   domain_selftest 的"无断档"检查会兜住（三个都能被域 op 到达，无需进 _KNOWN_SUBSUMED）。
 }
 
 

@@ -7,9 +7,9 @@
 ╚══════════════════════════════════════════════════════════════════════════╝
 
 一句话：SMAPI C# mod（HTTP API，端口 7842/7843）+ Python MCP 服务器
-（20 个工具，streamable-http 8000）让 AI 像真人一样操控星露谷——拟人走位、
-受限动作、自主决策。域工具模式恒开，只露这一套 20 个（15 域入口 + 5 独立工具），
-`--full` 已退役（2026-09-06）。
+（17 个工具，streamable-http 8000）让 AI 像真人一样操控星露谷——拟人走位、
+受限动作、自主决策。域工具模式恒开，只露这一套 17 个（15 域入口 + 2 独立工具），
+`--full` 已退役（2026-09-06）；`advance_story`/`profile`/`which_role` 已收编进 menu/check 域（2026-09-11）。
 
 角色映射（由端口决定，不写死）：
   · 7842 = 人（host）   —— 检测/广播走这个端口
@@ -29,7 +29,7 @@ PROJECT_OVERVIEW = """
 分三层：
   [游戏层]  Stardew Valley 1.6.15（SMAPI 4.5.2）+ NagiBridge C# mod
   [桥接层]  ModEntry.cs —— HTTP API（每个玩家一个端口 7842/7843）+ Harmony 补丁
-  [智能层]  scripts/nagi_mcp_server.py —— MCP 服务器（20 工具/15 域入口）+ 状态注入 + 心跳）
+  [智能层]  scripts/nagi_mcp_server.py —— MCP 服务器（17 工具/15 域入口）+ 状态注入 + 心跳）
 
 AI 每次调工具，返回都自动附带"状态速报"（眼睛）：位置/时间/天气/背包/体力/
 待办/节日/新闻。状态条分层：每天第一次全量，之后精简，省 token。
@@ -47,7 +47,7 @@ FILE_STRUCTURE = {
     "ChatHud.cs / LlmClient.cs / server.ts / index.ts": "⚠️ 原作者遗留，已 .claudeignore 忽略，勿改",
 
     # ── Python MCP 服务器（核心智能层）──
-    "scripts/nagi_mcp_server.py": "MCP 服务器（streamable-http:8000 或 --stdio）：20 个工具 + 状态注入(_with_state) + 心跳 + 节日/导航/脚本编排。15 域入口(check/farm/mine/cabin/social/scene/menu/storage/daily/map/festival/fish/settings + script/session；care→farm、quest→menu 已于 09-02 合并)，域模式恒开只露这套。wear→daily ops，bundle_kb/donate/read_book→menu ops(2026-08-22 收编)",
+    "scripts/nagi_mcp_server.py": "MCP 服务器（streamable-http:8000 或 --stdio）：17 个工具 + 状态注入(_with_state) + 心跳 + 节日/导航/脚本编排。15 域入口(check/farm/mine/cabin/social/scene/menu/storage/daily/map/festival/fish/settings + script/session；care→farm、quest→menu 已于 09-02 合并)，域模式恒开只露这套。wear→daily ops，bundle_kb/donate/read_book→menu ops(2026-08-22 收编)；advance_story→menu ops、profile/which_role→check ops(2026-09-11 收编，20→17)",
     "scripts/stardew_api.py": "HTTP API 封装层：Python 侧调 7842/7843 的 /xxx 端点，port↔角色自动检测",
     "scripts/player_activity.py": "行为检测 + 心跳：发呆检测/同场景玩家检测/窗口判定，描述房主活动给 AI 看",
     "scripts/locations.py": "地图知识库：MAP_LINKS(门/出口瓦片) + MAP_FEATURES(地点功能) + POI(兴趣点) + POI_FACE(结构化站位朝向) + SHOP_HOURS",
@@ -267,13 +267,14 @@ Python 侧：
 设计原则：连通域分析把设施/杂草/树纳入地块；蓄力用 tool_area；浇水失败根因=use_item 无释放，只用 /tool_area。
 """,
 
-    "域工具收敛（2026-08-22，15 域入口 + 5 独立；域模式恒开）": """
-所有工具收敛成 15 个域入口 + 5 独立工具（域模式恒开，只露这 20 个；--full 已退役）：
+    "域工具收敛（2026-08-22，15 域入口 + 2 独立；域模式恒开）": """
+所有工具收敛成 15 个域入口 + 2 独立工具（域模式恒开，只露这 17 个；--full 已退役）：
 · 15 域 = check/farm/mine/cabin/social/scene/menu/storage/daily/map/festival/fish/settings + script/session
 · care→farm、quest→menu 已于 09-02 合并（不再单列）
 · 改名/合并：settings 域合并「捏脸」(appearance)+外观参考进来(不再拆)；scene 因 interact 占用改名；fish 域曾缺注册不可达(2026-08-22 修复)
 · 退役：plan(计划模式)/accept_quest/buy_item 已下线；bomb_escort 不再对外暴露(内建进 bomb_mine 自动转内部)；festival bot 体系全删
 · 收编：wear/lie_bed → daily ops；bundle_kb/donate/read_book → menu ops；rock/挖石 → scene ops(2026-08-29 室外镐击)
+· 🗜️ 2026-09-11 再收编（20→17）：advance_story → menu ops(menu 的 dispatch 本就直指同一函数，留着=两条路做同一件事)；profile/which_role → check(what="profile"/"role")(都是"查我自己"归查询域)。⚠️改 keep-set 必须同步改引导文案(状态条/menu/check/fish/daily 的 help)，否则 AI 照旧文案调隐藏名=当场卡死
 """,
 
     "长脚本便利（防坑）": """

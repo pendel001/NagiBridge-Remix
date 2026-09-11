@@ -346,7 +346,7 @@ curl -i -X POST http://localhost:8000/mcp \
 | `java... 报错 / 404` | URL 少了 `/mcp`，或客户端用了 SSE | 补上 `/mcp`；传输改成 Streamable HTTP |
 | `Connection refused` | 服务器没起 / 游戏没开 / 端口被占 | 确认 4.2 启动日志；换 `NAGI_MCP_PORT` |
 | 手机 `timeout` | 不同网 / 防火墙拦 / DHCP 客户端隔离 | 确认同一 Wi-Fi；放行 8000；关掉路由器「AP隔离」 |
-| 能连但报「没有工具 / 工具不全」 | 服务器是**域工具模式**（恒开，只留 20 个） | 确认用本仓库 `.mcp.json`（域模式恒开，无 `--full` 回退） |
+| 能连但报「没有工具 / 工具不全」 | 服务器是**域工具模式**（恒开，只留 17 个） | 确认用本仓库 `.mcp.json`（域模式恒开，无 `--full` 回退） |
 | 改了 tools/引导**不生效** | `calendar_data.py` 等是启动时 import 的 | **重启 MCP 服务器** |
 | 桌面 Claude Code 连不上 | `.mcp.json` 用 `localhost`，只适用于同机 | 同机 `localhost:8000/mcp` 即可；跨机才用 IP |
 

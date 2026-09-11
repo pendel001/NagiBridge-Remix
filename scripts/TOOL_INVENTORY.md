@@ -1,6 +1,6 @@
-# NagiBridge MCP 域工具速查手册（2026-08-22 重写 · keep-set 20 个 · 09-02 合并 script/session 域 · 09-06 `--full` 退役）
+# NagiBridge MCP 域工具速查手册（2026-08-22 重写 · keep-set **17** 个 · 09-02 合并 script/session 域 · 09-06 `--full` 退役 · 09-11 收编 advance_story/which_role/profile）
 
-> 域工具速查手册：AI 现在**默认只看到 20 个工具**（13 域入口 + script/session 2 域 + 5 独立工具），
+> 域工具速查手册：AI 现在**默认只看到 17 个工具**（15 域入口 + 2 独立工具 screenshot/help），
 > 其余旧独立工具**全部收进域入口**（函数还在，只是 AI 不再直调）。
 > 记住一句话：**"想做 X → 调对应域的 ops"**。旧工具名大多能在域里找到等价物（见文末对照表）。
 > 🔍 **想查某域详细 ops/坑 → `help(域名)`**（如 help(farm)；docstring 已精简，深度靠这个查）。
@@ -31,6 +31,8 @@
 | `quest` | 任务列表 |
 | `chests` / `storage` | 当前图箱子 / 箱子网络视图 |
 | `look` | 环视周围（NPC/怪物/物品/地形）|
+| `profile` / `技能` | 我的技能等级 + 职业分支（如是否 Luremaster 蟹笼免饵）｜🆕09-11 原顶层 `profile()` |
+| `role` / `角色` / `端口` | 确认端口↔角色（AI=谁 / host=恒）——睡觉/协作前先查｜🆕09-11 原顶层 `which_role()` |
 
 ### `farm(ops)` — 农活（锄/种/水/收/机器）*AI 必走* **只能在 Farm/温室/姜岛**
 | ops | 干嘛的 |
@@ -116,15 +118,17 @@
 
 ---
 
-## 🛠️ 三、5 个独立工具（无域等价物，直接调）
+## 🛠️ 三、2 个独立工具（无域等价物，直接调）
 
 | 工具 | 干嘛的 |
 |---|---|
-| `which_role` | 确认端口↔角色（AI/房主）|
 | `screenshot` | 截图看画面（AI 的"眼睛"）|
-| `advance_story` | 推进剧情/对话（事件对话专用，`menu advance` 只提示它）|
 | `help` | 查某域详细 ops/坑（docstring 精简后的细节兜底；不传=列话题）|
-| `profile` | 看自己技能等级+职业分支 |
+
+> 🗜️ **2026-09-11 收编**：原顶层 `which_role` / `advance_story` / `profile` 已全部进域（20→17）——
+> **`advance_story` → `menu(ops="advance")`**（menu 的 dispatch 本就直指同一函数，留着=两条路做同一件事）；
+> **`profile` → `check(what="profile")`**、**`which_role` → `check(what="role")`**（都是"查我自己"，归查询域）。
+> ⚠️ 三个函数照旧注册、只是不再给 AI 直调；引导文案已同步（状态条 🎬 剧情行、menu/check/fish/daily 域 help）。
 
 ---
 
@@ -134,6 +138,8 @@
 |---|---|
 | 起床看今天/天气/运势 | `check(what="status")` |
 | 环视四周有啥 | `check(what="look")` |
+| 查我的技能/职业（是否 Luremaster）| `check(what="profile")` |
+| 确认我是谁 / 恒是谁（睡别人床前）| `check(what="role")` |
 | 锄地种一片 | `farm(ops="till plant", x=40, y=20, rows=3, length=5)` ⚠️**x/y 必填**（不传报错，不再兜底） |
 | 浇水 / 收菜 | `farm(ops="water")` / `farm(ops="harvest")` |
 | 砍树 / 清地 | `farm(ops="chop")` / `farm(ops="clear", x=40, y=20, rows=2, length=4)` |
@@ -172,6 +178,8 @@
 | `walk_to` / `go_to` / `move_to_tile` / `find_npc` | `map(ops="walk")` / `map(ops="go")` / `map(ops="movetile")` / `map(ops="npc")` |
 | `interact_at` / `interact` / `use_tool` / `face` / `select_item` | `scene(ops="at")` / `scene(ops="interact")` / `scene(ops="use")` / `scene(ops="face")` / `scene(ops="select")` |
 | `read_menu` / `menu_click` / `press_key` / `advance_story` / `cancel` / `shop_visit` / `sell_to_shop` / `forge` / `process_geode` | `menu(ops="read"/"click"/"key"/"advance"/"cancel"/"shop"/"sell"/"forge"/"geode")` |
+| `which_role`（确认端口↔角色）| `check(what="role")`（🆕09-11 从顶层收编）|
+| `profile`（技能等级+职业分支）| `check(what="profile")`（🆕09-11 从顶层收编）|
 | `go_sleep` / `confirm_settlement` / `eat_item` / `set_appearance` / `wear` / `lie_bed` | `daily(ops="sleep"/"settle"/"eat"/"appearance"/"wear"/"lie_bed")` |
 | `scan_chests` / `chest_store` / `chest_take` | `storage(ops="scan"/"store"/"take")` |
 | ~~`list_quests` / `quest_progress`~~（2026-09-01 已退役：任务/进度改 `menu(ops="journal"/"read")` 读 QuestLog 卡，卡上含每子目标 current/max；`menu(ops="know")` 查详情，原 quest 域 09-02 并入 menu） | 接单走板上 `menu click(button=accept…)`（accept_quest 已退役） |
