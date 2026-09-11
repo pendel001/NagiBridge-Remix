@@ -53,7 +53,7 @@
 `enum`(扫屋待收) `collect`(收机器) `statue`(雕像) `furniture`(扫家具) `interact`(点家具) `pickup`(拿起家具) `sleep`(睡觉)
 
 ### `social(ops)` — 社交
-`chat`(跟NPC搭话) `gift`(送礼物) `give`(给物品玩家) `send`(发聊天消息) `emote`(表情) `friendship`(查好感) `movie`/`snack`(电影院知识)
+`chat`(跟NPC搭话) `gift`(送礼物) `give`(给物品玩家·手持右键正式赠予) `hand`(递给玩家·走过去丢他脚边·磁吸自动收·可整叠) `send`(发聊天消息) `emote`(表情) `friendship`(查好感) `movie`/`snack`(电影院知识)
 
 ### `scene(ops)` — 场景交互（点东西/工具/转身/捡）
 | ops | 干嘛的 |
@@ -144,6 +144,7 @@
 | 去钓鱼 | `fish(ops="go", location="Beach")` |
 | 找某 NPC / 跟他聊天 | `map(ops="npc", name="艾米丽")` → `social(ops="chat")` |
 | 送礼提好感 | `social(ops="gift", npc_name=…, item_name=…)` |
+| 递东西给恒（一次一大把） | `social(ops="hand", player_name="恒", item_name=…)`（走过去丢他脚边，磁吸自动收） |
 | 点面前的东西 | `scene(ops="interact")` |
 | 点指定格（柜台/炉子）| `scene(ops="at", tile_x=…, tile_y=…)` |
 | 开商店买东西 | `menu(ops="shop", place="皮埃尔商店")` |
@@ -176,7 +177,7 @@
 | ~~`list_quests` / `quest_progress`~~（2026-09-01 已退役：任务/进度改 `menu(ops="journal"/"read")` 读 QuestLog 卡，卡上含每子目标 current/max；`menu(ops="know")` 查详情，原 quest 域 09-02 并入 menu） | 接单走板上 `menu click(button=accept…)`（accept_quest 已退役） |
 | `run_script` / `script_start` / `script_status` / `script_stop` / `async_config`（09-02 五合一；09-05 删 status、09-06 continue 取代 run/start） | `script(ops="continue"/"stop"/"async")` |
 | `session_status` / `session_set` / `session_export`（09-02 三合一） | `session(ops="status"/"set"/"export", kw={setting,value})` |
-| `chat_npc` / `gift_npc` / `give_item` / `send_chat` / `emote` / `check_friendship` | `social(ops="chat"/"gift"/"give"/"send"/"emote"/"friendship")` |
+| `chat_npc` / `gift_npc` / `give_item` / `hand_item` / `send_chat` / `emote` / `check_friendship` | `social(ops="chat"/"gift"/"give"/"hand"/"send"/"emote"/"friendship")` |
 | `moss_run` / `berry_run` / `spot_run` / `pickup_scene` | `scene(ops="moss"/"berry"/"spot"/"pickup_scene")` |
 | `rock_run`（室外镐击） | `scene(ops="rock")`（08-29 新增） |
 | `go_mining` / `bomb_*` | `mine(ops="go"/"bomb_mine"…)` |

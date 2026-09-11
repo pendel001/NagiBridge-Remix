@@ -9223,11 +9223,12 @@ def fish(ops: str = "", kw: dict | None = None) -> str:
 
 @mcp.tool()
 def social(ops: str = "", kw: dict | None = None) -> str:
-    """💬 社交域。chat 搭话 / gift 送礼 / friendship 查好感 / send 发消息 / emote 表情。全 ops+参数 → help(social)。"""
+    """💬 社交域。chat 搭话 / gift 送礼 / give 送玩家 / hand 递玩家 / friendship 查好感 / send 发消息 / emote 表情。全 ops+参数 → help(social)。"""
     dispatch = {
         "chat": chat_npc, "搭话": chat_npc,
         "gift": gift_npc, "送礼": gift_npc,
         "give": give_item, "给": give_item,
+        "hand": hand_item, "递给": hand_item,
         "send": send_chat, "发": send_chat,
         "emote": emote,
         "friendship": check_friendship, "好感": check_friendship,
@@ -12397,7 +12398,7 @@ _DOMAIN_GUIDES = {
 "farm": "农活域(🌱必走，别手动挥工具组合，用域 ops)：till(蓄力锄) plant(种,跳过已种) water(浇,自动跳雨+水壶没水先装满) harvest(收) scythe(镰刀收蒜/花/茶) fertilize(化肥) clear(清杂草石树桩) plot(连通域规划) till_plant(锄+种一条龙) tillfield(蓄力锄矩) hoe(布局锄) plantlayout(按布局种) chop(砍树) clearground(清单格) collect(一键收机器:只收不放,全农场瞬收不走路) load(放原料) building(一屋收放:拟人走进去收+放料,item留空=只收不放) break(拆/敲同scene,镐子敲可破物/翻已耕地) place(放置/播种同scene) pond/pond_add/pond_feed/pond_collect/pond_fish(鱼塘)。⚠️漏格DLL自动补；高级工具蓄力用 tool_area(别用/tool)。只在 Farm/温室/姜岛。带参 op(plant 的 seed_name、till/clear 的 x/y/rows、fertilize 的 fertilizer_name、place 的 name、building 的 location、collect 的 machine_type、pond_add 的 item)→ kw={'参数名':值}。🐄动物(2026-09-02 care域并入farm): animals(摸+收) 喂水/碗(宠物水) milk(挤奶剪毛) buy(买动物,豁免建议) doors(关门) hay(干草) pet(猫狗) petwalk(拟人摸) 畜舍/这间(这间屋动物) statue(祈福)——⚠️farm water=浇地,动物水用 喂水; farm building=机器收放,这屋动物用 畜舍。💡大田洒水器布局(可选,纯自动化建议,可用可不用)：要按洒水器留格/留走道(种2留1,AI能进田浇收)就 plan(方形规划算格)→hoe(布局锄)→plantlayout(按布局种)三件套；只管种直接 till+plant 也成。",
 "mine": "下矿域(⚒️ 矿井/头骨/火山)：go(去挖矿:mode=rush冲层/farm刷矿,start起始层,target目标层,ore,cycles圈数) progress(进度) bomb_status/plan/place/collect/ladder/retreat(单步炸) bomb_mine(自动) bomb_volcano(火山) organize(整理背包)。🔁**刷矿=mode=go(mode=farm)**：定点刷指定矿→ore=Copper铜(21层)/Iron铁(41层)/Gold金(71层)；**煤靠 farm 铁层(41)顺手清尘埃精灵/蝙蝠掉**（不是 ore 选项，跑 auto 内部刷）。🏃下矿=mode=go(mode=rush,start可选≤电梯上限+5倍数,target默认120)。⚠️无镐/血低硬拦；梯子 /ladder+confirm。⚠️bomb_mine 没炸弹+host在同矿井→自动转【内部】协同(跟随host+帮忙敲矿/打怪)不撤退出矿(bomb_escort 不对外暴露、AI 不主动启用)；bomb_retreat 结束协同+停脚本+脱离矿井回门口。⚠️接「深处的危险」重置电梯→起始层动态从1起(内置脚本自动读，不暴露工具)；刷矿目标层不可直达会上报，需先冲层带回或改浅层。💡出发前占位物(恒2026-08-23)：提前放1个可堆叠物(铱矿/铱锭/五彩碎片)在包，满包时同种战利品自动堆叠吸附、少触发满包停；别拿银河之魂这类带死亡会丢的稀有物当占位。",
 "cabin": "小屋引导域(🏠 FarmHouse/Cabin/岛屋；不传=扫屋)：enum(扫**本屋**查待收) collect(收机器) statue(雕像) furniture(扫家具) interact(点家具,tile_x/tile_y) pickup(拿起家具,tile_x/tile_y) cook(做饭,recipe_name) sleep(睡觉,who=谁床：不传/房主名=睡房主床一起睡,传自己名=睡自己床)。带参 op→ kw={'参数名':值}。",
-"social": "社交域：chat(搭话,name=NPC名) gift(送礼,npc_name/item_name) give(送玩家物品,player_name/item_name) send(发消息,message) emote(表情,name) friendship(查好感,npc_name) movie(影院,npc)。带参 op→ kw={'参数名':值}。",
+"social": "社交域：chat(搭话,name=NPC名) gift(送礼,npc_name/item_name) give(送玩家物品,手持右键正式赠予,一次一个要等同意) hand(递给玩家,走过去丢他脚边,磁吸自动收,可整叠) send(发消息,message) emote(表情,name) friendship(查好感,npc_name) movie(影院,npc)。带参 op→ kw={'参数名':值}。",
 "scene": "场景交互域(点东西/工具/转身/捡/坐)：at(tile_x,tile_y)(点指定格/柜台) interact(点面前) use(挥工具) face(转向0上1右2下3左) select(拿手上) sit(x,y[,face])(**坐椅子**:自动走到座位旁再坐,上不了会明确报错;状态条「🪑 可交互：sit(x,y)」给坐标;可选 face=坐下朝向0上1右2下3左,**只对 stool 类座位/长椅生效**——反编译:这类座位的朝向就是「坐下那刻的面朝方向」,其它座位写死) seats(radius=12)(扫附近能坐的椅子/长凳/沙发) pickup(拿起家具) pickup_scene(捡当前场景物) berry(摇浆果) spot(挖蚯蚓点) moss(绿雨搜苔藓) rock(室外镐击:敲当前图可破物,采石场/挖掘场/蚌矿场跳普通石,dig/dry,battle-free) garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物) furniture(扫家具) place(放置/播种:name=物品名,x/y=目标格→箱子/树种/蟹笼落地或种下,只放可放置物) break(拆/敲:x,y=目标格,steps=挥击次,radius=方圆→镐子敲石头/翻已耕地,跳过箱子/容器格) maze(迷宫视图r半径,gx/gy目标格→ASCII棋盘#墙.可走P自己G目标) maze_seg(走法链gx,gy目标→拆直走廊列表+拼「左/右上/下走到(x,y)」多段链,AI按段walk_to) maze_walk(走迷宫 waypoints=「x,y x,y…」依次walk_to) pan(淘金/淘盘:本图水下闪光点→岸边走位面水→铜锅淘金收掉落) front/rummage(分别是interact/garbage的别名)。📌**坐着想起来：随便 at 任意一格**（游戏把坐着时的任意交互都当起身），别找别的 op。带参 op(at 的 tile_x/tile_y、sit 的 x/y、break 的 x/y、place 的 name、maze_seg 的 gx/gy)→ kw={'参数名':值}。",
 "menu": "菜单/界面域(开→看→点)：read(看菜单) advance(推进剧情/对话) click(option/item/button/xy 点;action=claim领/action=discard丢桶腾格;slot=序号领指定格) key(ok/esc/数字按键) cancel(关弹窗/撤就绪) shop(逛店) sell(卖商店) bin(投出货箱) craft(合成) recipes(菜谱) craftables(配方) forge(锻造) geode/geodes(砸晶球) customize(捏人) bundle(献祭板) bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读消耗品:书/秘密纸条/日记残页,统一走右键读 name=物品名) levelup_choose(技能升级职业选择 5/10级:不带参读左右选项,side=left/right 或 profession=职业id 定分支;普通升级自会确认OK) number(数量输入:展览会兑换台/转盘押注 NumberSelectionMenu) minigame(赌场小游戏点按钮 action=hit/stand/bet10/…) minigame_state(读牌面/转盘) display_fill(农展台放满 items='钻石,山羊奶酪') display_takeback(收好) journal(开任务日志→menu read 读卡,翻页=click(button=forward/back),领奖励=click(button=rewardBox)) know(查特别订单详情/知识库SPECIAL_ORDERS,如menu know 岛屿食材;2026-09-02 task域退役并入menu)。🚫满包接鱼/领箱:原 claim_swap(替换领取)已退役→**click action=discard 丢桶腾格(回收返金)+action=claim 领取(或用 slot 领指定格;不想要直接 button=ok 关掉)**。🧾关闭菜单一律 click(button=upperRightCloseButton)（ItemGrabMenu/交付容器用 button=ok 确认才关）；订单交付容器(QuestContainerMenu)=点背包对应物品格(见slots的坐标)→放进→点 button=ok 结算；任务日志领钱=点击已完成的有钱任务卡后 click(button=rewardBox)；兑奖机兑换=click(button=mainButton)；特别订单领奖链=日志领钱(上面)→社区板旁领奖箱(60,93)拿兑奖券→刘易斯家兑奖机(mainButton)兑换。",
 "storage": "箱子域：view(看箱,box=N看单箱全清单) store(存:what/items限定存哪些,名可带xN数量只存那N份,留空=归位只存已有同类堆,target指定箱/all=True全存腾空间) take(取:x,y+name单箱 或 items批量) find(模糊查哪箱有某物) default(设/清默认箱 clear=清) tag(改名,可带color改色)。🤖存取统一走位：store/take都会先走到相关箱旁(批量只走到第一个),不区分拟人/原子,别靠编号逐箱翻。⭐每个箱子前自动带【类目标签】(内容过半归类):矿/古物/鱼/种子/作物/农产/建材/料理/装备——AI按标签定位箱,找东西用find。⚠️改色别染纯#000000(=默认木纹,识别成未染色);要黑箱用暗灰#303030。",
@@ -13227,6 +13228,144 @@ def give_item(player_name: str, item_name: str) -> str:
         return f"已送 {r.get('item')} 给 {r.get('target')} 🎁"
     except Exception as e:
         return f"赠送失败: {e}"
+
+
+def _inv_entries(st: dict, item_name: str) -> list:
+    """背包里匹配某物品的条目（中文显示名 / 英文内部名都认）。"""
+    low = (item_name or "").lower()
+    return [i for i in (st.get("inventory") or [])
+            if i.get("name") and low in ((i.get("name") or "").lower(), (i.get("displayName") or "").lower())]
+
+
+def _count_in_inventory(st: dict, item_name: str) -> int:
+    """背包里某物品的总数。"""
+    return sum(int(i.get("stack") or 0) for i in _inv_entries(st, item_name))
+
+
+def _stand_tile_near(tx: int, ty: int, mx: int, my: int):
+    """在 (tx,ty) 的 8 邻域里挑一个**离我最近**的可站格（跳过他自己站的那格）。
+    挑不到返回 None（那就原地丢，让调用方如实报距离）。"""
+    cand = sorted(
+        ((tx + dx, ty + dy) for dy in (-1, 0, 1) for dx in (-1, 0, 1) if (dx or dy)),
+        key=lambda c: abs(c[0] - mx) + abs(c[1] - my))
+    for (x, y) in cand:
+        try:
+            # ⚠️ 必须是 _post：`/passable` 读的是 **body**（`ReadJson`），用 `_get` 传查询串的话
+            #    x/y 全是默认 0 ⇒ 永远 false ⇒ 一个可站格都挑不出来（2026-09-11 真机踩过）。
+            if api._post("/passable", {"x": x, "y": y}).get("passable"):
+                return (x, y)
+        except Exception:
+            continue
+    return None
+
+
+@mcp.tool()
+def hand_item(player_name: str, item_name: str, count: int = 0) -> str:
+    """🤲 走到对方身边，把物品**丢在他脚边**——磁吸会自动进他背包，可以整叠，不用等他点同意。
+    和 give 的分工：give 是正式赠予（手持右键，一次一个、要等对方点同意）；hand 是"递过去"，
+    适合一次给一大批。会先走近再丢，丢完停一下确认对方真收下了（没接住会如实说明，不谎报）。
+
+    Args:
+        player_name: 目标玩家名（用 /state 的 otherPlayers）
+        item_name: 背包里的物品名（中文显示名或英文内部名都认）
+        count: 丢几个（默认 0 = 整叠）
+    """
+    try:
+        st = api.state()
+        me = st.get("player") or {}
+        my_name = me.get("name") or ""
+        loc = st.get("location") or {}
+        my_loc = loc.get("name") if isinstance(loc, dict) else str(loc)
+        others = [o for o in (st.get("otherPlayers") or []) if (o.get("name") or "") != my_name]
+        tgt = next((o for o in others if (o.get("name") or "") == player_name), None)
+        if tgt is None:
+            who = "、".join((o.get("name") or "?") for o in others) or "没别人"
+            return f"❌ 没看到 {player_name}（在场的是：{who}）"
+        if (tgt.get("location") or "") != my_loc:
+            return (f"❌ {player_name} 不在同一张图（他在 {tgt.get('location')}，我在 {my_loc}）"
+                    f"——先 map_go 过去再递")
+        before = _count_in_inventory(st, item_name)
+        if before <= 0:
+            return f"❌ 背包里没有 {item_name}"
+        # 🚫 工具不能丢（恒 2026-09-11："工具是禁止扔出背包的"）。C# 端才是权威（canBeDropped/canBeTrashed），
+        #    这里先用 catNum=-99 快速挡一下，省得白走一趟再报错。
+        if any(i.get("catNum") == -99 for i in _inv_entries(st, item_name)):
+            return f"❌ {item_name} 是工具，不能丢出背包"
+    except Exception as e:
+        return f"递给失败: {e}"
+
+    # 磁吸要够近才吸得上（基准 ~2 格）。⚠️ 位置**不能只读一次**（恒 2026-09-11："玩家跑了呢"）：
+    # 走过去那几秒他会动，所以走完必须**回头复查**，够不着就再走一轮（最多 3 轮）——
+    # 否则东西会丢在**出发时那个旧位置**上。
+    tx, ty = int(tgt.get("x", 0)), int(tgt.get("y", 0))
+    note, close_enough = "", False
+    for _round in range(3):
+        st2 = api.state()
+        me2 = st2.get("player") or {}
+        t2 = next((o for o in (st2.get("otherPlayers") or [])
+                   if (o.get("name") or "") == player_name), None)
+        if t2 is None:
+            return f"❌ 递的过程中跟丢了 {player_name}"
+        if (t2.get("location") or "") != my_loc:
+            return f"❌ {player_name} 跑到 {t2.get('location')} 去了——跨图不递，先 map_go 过去"
+        tx, ty = int(t2.get("x", 0)), int(t2.get("y", 0))
+        mx, my = int(me2.get("x", 0)), int(me2.get("y", 0))
+        if max(abs(tx - mx), abs(ty - my)) <= 2:
+            close_enough = True
+            break
+        stand = _stand_tile_near(tx, ty, mx, my)
+        if not stand:
+            break
+        try:
+            api._post("/walk_to", {"location": my_loc, "x": stand[0], "y": stand[1]})
+            note = f"（先走到 ({stand[0]},{stand[1]}) 他身边）"
+            # ⚠️ 必须**等它真走到**（`/walk_to` 只是下发路径，立刻返回）：不等的话 3 轮会在同一瞬间
+            #    全打完，每次复查都还在原地 ⇒ 白白跌进闪现兜底（2026-09-11 真机踩过）。
+            _wait_arrival(my_loc, stand[0], stand[1], timeout=10)
+        except Exception:
+            break
+    if not close_enough:
+        # 恒 2026-09-11 拍板：「重走失败才 position 兜底」—— 保证"递给"这个动作总能完成，
+        # 但闪现只在这种罕见情况出现（先例：chop_trees 的 `_ensure_at` 也是走不动才 /position）。
+        stand = _stand_tile_near(tx, ty, mx, my)
+        if not stand:
+            return f"⚠️ 走不到 {player_name} 身边，也找不到能站的格——**没递**"
+        try:
+            api._post("/position", {"x": stand[0], "y": stand[1]})
+            note = f"（走不过去，闪现到 ({stand[0]},{stand[1]})）"
+        except Exception as e:
+            return f"⚠️ 走不到 {player_name} 身边，闪现也失败了（{e}）——**没递**"
+
+    # 丢之前最后确认一次距离：闪现可能没落对，或者他又走开了（免得把东西丢在够不着的地方）
+    st3 = api.state()
+    me3 = st3.get("player") or {}
+    t3 = next((o for o in (st3.get("otherPlayers") or []) if (o.get("name") or "") == player_name), None)
+    if t3:
+        far = max(abs(int(t3.get("x", 0)) - int(me3.get("x", 0))),
+                  abs(int(t3.get("y", 0)) - int(me3.get("y", 0))))
+        if far > 3:
+            return f"⚠️ 现在离 {player_name} 还有 {far} 格，磁吸够不上——**没递**（他可能又走开了）"
+
+    r = api._post("/drop_item", {"item": item_name, "count": count})
+    if not r.get("ok"):
+        return f"❌ 递给失败：{r.get('error', r)}"
+    n, disp = int(r.get("count") or 0), r.get("item")
+
+    # ⚠️ 丢完必须**停一下**：对方没接住时，1.2s 排除期（timeBeforeReturnToDroppingPlayer）一过我
+    #    自己的磁吸就会把它吸回来——等这一下正好让"滑回我包里"发生完，再据实回报（不谎报成功）。
+    time.sleep(2.5)
+    try:
+        left = [d for d in (api._get("/debris").get("debris") or [])
+                if d.get("droppedByName") == my_name and d.get("itemName") == r.get("name")]
+        back = _count_in_inventory(api.state(), item_name)
+    except Exception:
+        left, back = [], before - n
+    if not left and back <= before - n:
+        return f"🤲 {disp}×{n} 递给了 {player_name}{note}，他收下了 🎁"
+    if not left and back >= before:
+        return (f"⚠️ {player_name} 没接住，{disp}×{n} 又滑回我包里了（他可能刚走开/背包满了）"
+                f"——原封不动，没有损失")
+    return f"⚠️ 放在 {player_name} 脚边了（({tx},{ty}) 附近），但他还没吸走——可能背包满了"
 
 
 @mcp.tool()

@@ -2449,6 +2449,7 @@ public class ModEntry : Mod
                 "/museum_remove" => HandleMuseumRemove(ctx),
                 "/clear_ground" => HandleClearGround(ctx),
                 "/debris" => HandleDebris(),
+                "/drop_item" => HandleDropItem(ctx),
                 "/machines" => HandleMachines(),
                 "/farm_report" => HandleFarmReport(),
                 "/machine_collect" => HandleMachineCollect(ctx),
@@ -14237,6 +14238,102 @@ public class ModEntry : Mod
         }
         catch { }
         return $"#{id}";
+    }
+
+    /// <summary>
+    /// POST /drop_item  { item: "名字或ID", count?: N(默认整叠) }
+    /// 🤲 "递给"的底座（2026-09-11）：把背包物品像**玩家手动丢**那样扔在脚下。
+    ///   命门是补上 `DroppedByPlayerID = 自己的 UniqueMultiplayerID` —— 与游戏那两处手动丢
+    ///   （`InventoryPage.receiveLeftClick` 拖出背包外 / `Toolbar.receiveRightClick` Shift+右键）**逐字一致**。
+    ///   对方磁吸捡走时，他那边的 `DebrisCollectPatch` 才认得出"这是轮回丢给我的"，播 🎁。
+    ///   ⚠️ 光调 `createItemDebris` 不给标记 = 在对方眼里和砍树掉的无主 debris 没区别，彩蛋不会响。
+    /// </summary>
+    private object HandleDropItem(HttpListenerContext ctx)
+    {
+        var p = ReadJson(ctx);
+        var itemName = GetParam<string>(p, "item");
+        int wantCount = GetParamOr(p, "count", 0);          // 0 = 整叠
+
+        if (!Context.IsWorldReady)
+            throw new InvalidOperationException("World not ready");
+
+        var tcs = new TaskCompletionSource<object>();
+        EnqueueMainThread(() =>
+        {
+            try
+            {
+                var farmer = Game1.player;
+                // 找背包物品（英文内部名 → 中文显示名 → QualifiedItemId，同 HandleGift）
+                int idx = -1;
+                Item? item = null;
+                for (int i = 0; i < farmer.Items.Count; i++)
+                {
+                    var it = farmer.Items[i];
+                    if (it == null) continue;
+                    if (it.Name.Equals(itemName, StringComparison.OrdinalIgnoreCase)
+                        || (it.DisplayName ?? "").Equals(itemName, StringComparison.OrdinalIgnoreCase)
+                        || (it.QualifiedItemId ?? "").Equals(itemName, StringComparison.OrdinalIgnoreCase))
+                    { idx = i; item = it; break; }
+                }
+                if (item == null)
+                {
+                    tcs.SetResult(new { ok = false, error = $"背包里没有 {itemName}" });
+                    return;
+                }
+
+                // ⚠️ 游戏自己的规矩，必须补（恒 2026-09-11 提醒"工具是禁止扔出背包的"）：
+                //   `/drop_item` **绕过了 UI**，不自己拦就会让 AI 把斧头镐子丢地上。
+                //   `canBeDropped()` 拦工具（`StardewValley.Tool` 覆写成 false，正是 Toolbar 那条路的判据）；
+                //   `canBeTrashed()` 再拦任务物品/镰刀（InventoryPage 那条路的判据）。两道取交集最保守。
+                if (!item.canBeDropped() || !item.canBeTrashed())
+                {
+                    tcs.SetResult(new { ok = false, error = $"{SafeDisplayName(item)} 不能丢出背包（工具/任务物品/镰刀——游戏本身就拦）" });
+                    return;
+                }
+
+                int dropCount = (wantCount <= 0 || wantCount > item.Stack) ? item.Stack : wantCount;
+                Item thrown;
+                if (dropCount >= item.Stack)
+                {
+                    thrown = item;                          // 整叠：直接挪出去（同游戏 takeHeldItem 的做法）
+                    farmer.Items[idx] = null;
+                }
+                else
+                {
+                    thrown = item.getOne();
+                    thrown.Stack = dropCount;
+                    item.Stack -= dropCount;
+                }
+
+                // ⚠️ 名字要在 createItemDebris **之前**读：Debris 构造器会对同一实例调 item.resetState()
+                string display = SafeDisplayName(thrown);
+                string internalName = thrown.Name ?? "";
+
+                var debris = Game1.createItemDebris(thrown, farmer.getStandingPosition(), farmer.FacingDirection);
+                if (debris == null)
+                {
+                    tcs.SetResult(new { ok = false, error = "createItemDebris 没返回 debris（物品已取出背包，注意别丢）" });
+                    return;
+                }
+                debris.DroppedByPlayerID.Value = farmer.UniqueMultiplayerID;   // 👈 全彩蛋的命门
+
+                tcs.SetResult(new
+                {
+                    ok = true,
+                    item = display,
+                    name = internalName,
+                    count = dropCount,
+                    x = farmer.TilePoint.X,
+                    y = farmer.TilePoint.Y,
+                    droppedBy = farmer.Name
+                });
+            }
+            catch (Exception ex)
+            {
+                tcs.SetResult(new { ok = false, error = ex.Message });
+            }
+        });
+        return tcs.Task.GetAwaiter().GetResult();
     }
 
     /// <summary>
