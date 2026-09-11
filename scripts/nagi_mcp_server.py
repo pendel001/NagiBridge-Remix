@@ -13261,7 +13261,7 @@ def _stand_tile_near(tx: int, ty: int, mx: int, my: int):
 
 @mcp.tool()
 def hand_item(player_name: str, item_name: str, count: int = 0) -> str:
-    """🤲 走到对方身边，把物品**丢在他脚边**——磁吸会自动进他背包，可以整叠，不用等他点同意。
+    """🤲 走到对方身边，把物品**丢在对方脚边**——磁吸会自动进对方背包，可以整叠，不用等对方点同意。
     和 give 的分工：give 是正式赠予（手持右键，一次一个、要等对方点同意）；hand 是"递过去"，
     适合一次给一大批。会先走近再丢，丢完停一下确认对方真收下了（没接住会如实说明，不谎报）。
 
@@ -13278,11 +13278,21 @@ def hand_item(player_name: str, item_name: str, count: int = 0) -> str:
         my_loc = loc.get("name") if isinstance(loc, dict) else str(loc)
         others = [o for o in (st.get("otherPlayers") or []) if (o.get("name") or "") != my_name]
         tgt = next((o for o in others if (o.get("name") or "") == player_name), None)
+        # 🙋 代词按性别（恒 2026-09-11："你的'他'要不要按性别匹配一下"）。
+        #    ⚠️ 对方的 isMale 只能从 **host 的 /state** 读（`otherPlayers` 没带性别字段）；
+        #    对不上名（多玩家/拿不到）就退回中性"他"。要更通用得在 C# 的 otherPlayers 里补 isMale。
+        he = "他"
+        try:
+            hp = (api.host_state() or {}).get("player") or {}
+            if hp.get("name") == player_name and hp.get("isMale") is False:
+                he = "她"
+        except Exception:
+            pass
         if tgt is None:
             who = "、".join((o.get("name") or "?") for o in others) or "没别人"
             return f"❌ 没看到 {player_name}（在场的是：{who}）"
         if (tgt.get("location") or "") != my_loc:
-            return (f"❌ {player_name} 不在同一张图（他在 {tgt.get('location')}，我在 {my_loc}）"
+            return (f"❌ {player_name} 不在同一张图（{he}在 {tgt.get('location')}，我在 {my_loc}）"
                     f"——先 map_go 过去再递")
         before = _count_in_inventory(st, item_name)
         if before <= 0:
@@ -13320,13 +13330,13 @@ def hand_item(player_name: str, item_name: str, count: int = 0) -> str:
         try:
             if rnd < 3:
                 api._post("/walk_to", {"location": my_loc, "x": stand[0], "y": stand[1]})
-                note = f"（先走到 ({stand[0]},{stand[1]}) 他身边）"
+                note = f"（先走到 ({stand[0]},{stand[1]}) {he}身边）"
                 # ⚠️ 必须**等它真走到**（`/walk_to` 只是下发路径就返回）；⚠️ 超时还得**按距离缩放**——
                 #    写死 10s 对 24 格的长走位根本不够，会白跌进闪现兜底（2026-09-11 真机踩过）。
                 _wait_arrival(my_loc, stand[0], stand[1], timeout=min(45, 8 + gap * 2))
             else:
                 api._post("/position", {"x": stand[0], "y": stand[1]})
-                note = f"（他一直在走/路挡着，闪现到 ({stand[0]},{stand[1]})）"
+                note = f"（{he}一直在走/路挡着，闪现到 ({stand[0]},{stand[1]})）"
                 time.sleep(0.5)
         except Exception:
             break
@@ -13339,7 +13349,7 @@ def hand_item(player_name: str, item_name: str, count: int = 0) -> str:
     far = max(abs(int(t3.get("x", 0)) - int(mine.get("x", 0))),
               abs(int(t3.get("y", 0)) - int(mine.get("y", 0))))
     if far > 3:
-        return f"⚠️ 没追上 {player_name}（差 {far} 格）——**没递**，让他停下来说一声我再来"
+        return f"⚠️ 没追上 {player_name}（差 {far} 格）——**没递**，让{he}停下来说一声我再来"
 
     r = api._post("/drop_item", {"item": item_name, "count": count})
     if not r.get("ok"):
@@ -13356,11 +13366,11 @@ def hand_item(player_name: str, item_name: str, count: int = 0) -> str:
     except Exception:
         left, back = [], before - n
     if not left and back <= before - n:
-        return f"🤲 {disp}×{n} 递给了 {player_name}{note}，他收下了 🎁"
+        return f"🤲 {disp}×{n} 递给了 {player_name}{note}，{he}收下了 🎁"
     if not left and back >= before:
-        return (f"⚠️ {player_name} 没接住，{disp}×{n} 又滑回我包里了（他可能刚走开/背包满了）"
+        return (f"⚠️ {player_name} 没接住，{disp}×{n} 又滑回我包里了（{he}可能刚走开/背包满了）"
                 f"——原封不动，没有损失")
-    return f"⚠️ 放在 {player_name} 脚边了（({tx},{ty}) 附近），但他还没吸走——可能背包满了"
+    return f"⚠️ 放在 {player_name} 脚边了（({tx},{ty}) 附近），但{he}还没吸走——可能背包满了"
 
 
 @mcp.tool()
