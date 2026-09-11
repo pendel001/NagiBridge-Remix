@@ -6615,7 +6615,8 @@ def go_mining(
     附近有怪物自动切剑砍（贴脸/近身主动反击，不是站桩被磨死）。
     背包有食物会自动吃（按需求：血低优先吃回血的，别再拿纯体力咖啡保命）。
 
-    调用前请用 check_status / peek_player 确认带了镐子和剑、有食物、背包留 ≥10 格（满先用 chest_store 存箱子）。
+    调用前请用 check(what="status") / daily(ops="peek") 确认带了镐子和剑、有食物、背包留 ≥10 格（满先用 storage(ops="store") 存箱子）。
+    （2026-09-11：原来这里写的是 check_status / peek_player / chest_store 三个**隐藏工具名**——op docstring 不进 AI 上下文所以没造成卡死，但会带偏后来改代码的人，已改写成域形式。）
     （进矿时的跑前叮咛——工具/雕像/清包/占位物——统一在第一次到矿井入口层弹出的那 4 句话里，不重复。）
 
     Args:

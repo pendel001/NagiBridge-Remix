@@ -35,6 +35,14 @@ _KNOWN_SUBSUMED = {
     "dance_invite",  # → festival ops="dance"（_festival_dance）
     "bomb_escort",   # 🚫 2026-08-22 恒：不对外暴露（协同内建进 bomb_mine 没炸弹自动转内部），AI 不主动启用
     "menu_claim_swap", # 🚫 2026-08-28 恒：claim_swap(替换领取)退役——改 menu click action=discard 丢桶 + action=claim/slot 领；不判断档
+    # 🔍 2026-09-11 恒：下面三个 storage 老工具**不是误报**（自检说"没人调用"是对的），
+    #   但**功能都由 storage 域 op 覆盖** ⇒ 对 AI 不存在断档，按本集合的定义（"隐藏安全"）收编。
+    #   ⚠️ 它们的覆盖方式**不一样**，别混为一谈（写清楚免得后人又当成误报跳过）：
+    "chest_take",           # ✅ **真·被子函数调用**：`storage_take` 内部 `return chest_take(x,y,name,count)`
+    "chest_store",          # ⚠️ **不是被调用，是被"重新实现"**：`storage_store` 走 `api.store_all(what/target/all)`
+                            #    （原工具=存进指定格 (x,y) 的箱子；该能力现由 storage store 的 target 参数给）
+                            #    ⇒ 此函数**已无调用者**，是死包装，**留着只为兼容、可删**
+    "storage_default_clear",# ⚠️ 同上：清默认箱的能力现由 `storage_default(clear=True)` 给 ⇒ **死包装，可删**
 }
 
 PROBLEMS = []
