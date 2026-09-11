@@ -87,13 +87,14 @@ check("座位集合变了 → 重新报", h3.count("sit(") == 2, f"→ {h3!r}")
 h = run([seat(20, 10), seat(24, 10), seat(20, 15), seat(24, 15)])
 check("最多报3处（4簇截断）", h.count("sit(") == 3, f"→ {h}")
 
-# ── ⑦ 坐着 → 只留"scene at 起身"这一行指引 ──
+# ── ⑦ 坐着 → 只留"起身"这一行指引 ──
 #    2026-09-11 恒拍板：坐着时其余 enum 引导（可用域/地图/节日/可采集）全收掉，
 #    这行成了**唯一指引** ⇒ 必须每次都报，不能按"变化才报"（否则坐久了只剩个光标题）。
+#    ⚠️ 同日稍后：起身从"scene at 任意格"改成正门 `scene stand`（POST /stand）。
 h = run([], sitting=True)
-check("坐着报起身提示", "坐着" in h and "scene at" in h, f"→ {h!r}")
-check("起身文案留了「没起来就再点一次」后手", "再点一次" in h, f"→ {h!r}")
-check("坐着这行每次都报（不按变化才报）", "scene at" in M._sit_hint(), "→ 被吞了")
+check("坐着报起身提示", "坐着" in h and "scene stand" in h, f"→ {h!r}")
+check("不再教 AI 拿 at 猜格子", "scene at" not in h, f"→ {h!r}")
+check("坐着这行每次都报（不按变化才报）", "scene stand" in M._sit_hint(), "→ 被吞了")
 check("坐姿签名写进去 = 站起来会重新枚举座位",
       M._SIT_HINT_KEY["sig"] is not None and M._SIT_HINT_KEY["sig"][0] == "sit",
       f"→ {M._SIT_HINT_KEY['sig']}")
@@ -210,6 +211,139 @@ M.api.interact_at = lambda x, y: {"ok": True, "actionTriggered": False}
 _o = sit_case([seat(20, 10)], (20, 10))
 check("交互没落座 → 明确报错(不谎报)", "没坐上" in _o, f"→ {_o!r}")
 M.api.interact_at = _orig
+
+# ═══════════════════════════════════════════
+#  2026-09-11 追加：seat["face"] / scene stand / 断档纪律 / 心跳座位名
+# ═══════════════════════════════════════════
+print()
+print("── seat.face（这椅子吃不吃 sit(face=…)）──")
+
+
+def _seat_obj(**kw):
+    d = {"kind": "map", "name": "stool", "x": 20, "y": 10, "seatX": 20.0, "seatY": 10.0,
+         "capacity": 1, "free": 1, "blocked": False, "dist": 2.0, "face": False, "direction": 2}
+    d.update(kw)
+    return d
+
+
+def sit_face_case(seat_obj, face):
+    global _ALL, ME
+    _ALL, ME = [seat_obj], (20, 12)
+    _POS["p"] = (20, 12)
+    _STATE["sitting"] = False
+    M._SIT_CACHE.update({"t": 0.0, "radius": None, "data": None})
+    return M.sit(seat_obj["x"], seat_obj["y"], face=face)
+
+
+# ⑫ 🐛 回归（当天勘查出来的**真 bug**）：吃 face 的判据原先在 Python 里"拿名字猜"——
+#    判 `name.lower().startswith("stool")`，而家具的 `name` 是 **本地化 DisplayName**
+#    （中文环境="凳子"）⇒ 永远不匹配、**必误报**；且游戏用的是 `Name.Contains("Stool")`，Contains≠StartsWith。
+#    现在判据收回 C#（照抄 Furniture.cs:712 / MapSeat.cs:317-334），Python 只读 `seat["face"]`。
+_o = sit_face_case(_seat_obj(kind="furniture", name="凳子", face=True), 1)
+check("中文家具「凳子」face=True → 不误报（旧代码必误报）", "不生效" not in _o, f"→ {_o!r}")
+# ⚠️ 只断言"没有朝向黄牌"——回报里还挂着状态条，**游戏没开时状态条自己会写
+#    "⚠️ 状态获取超时/失败"**，那是 strip 的、不是 face 的，别把两个 ⚠️ 混为一谈。
+check("  face=True 时不该有朝向黄牌", "⚠️「" not in _o, f"→ {_o!r}")
+
+_o = sit_face_case(_seat_obj(kind="map", name="bench", face=False, direction=2), 1)
+check("地图长椅 face=False → 点名说 face 不生效", "不生效" in _o, f"→ {_o!r}")
+
+_o = sit_face_case(_seat_obj(kind="map", name="bench", face=True, direction=-2), 1)
+check("direction=-2（opposite）→ face=True 不报警", "不生效" not in _o, f"→ {_o!r}")
+
+_old = _seat_obj(kind="furniture", name="凳子"); _old.pop("face")
+_o = sit_face_case(_old, 1)
+check("老 DLL 没 face 字段 → 仍旧报警（不假装生效）", "不生效" in _o, f"→ {_o!r}")
+
+_o = sit_face_case(_seat_obj(kind="map", name="bench", face=False), None)
+check("不传 face → 不冒朝向警告", "不生效" not in _o, f"→ {_o!r}")
+
+# ⑬ seats op 把"能吃 face"的座位标出来（数据来自端点，不重算）
+_ALL = [_seat_obj(kind="furniture", name="凳子", face=True),
+        _seat_obj(x=25, y=15, kind="map", name="bench", face=False, dist=5)]
+_out = M.seats(12)
+check("seats 标出 ✋ 可改朝向", "✋" in _out, f"→ {_out!r}")
+check("  ✋ 只标在 face=True 那条上", _out.count("✋") == 1, f"→ {_out!r}")
+
+print()
+print("── scene stand（起身）──")
+
+_CALLS = []
+
+
+def _fake_stand():
+    _CALLS.append("stand")
+    _STATE["sitting"] = False          # 模拟 StopSitting 真的解除了坐姿（游戏下一帧才清）
+    return {"ok": True}
+
+
+_orig_stand = M.api.stand
+M.api.stand = _fake_stand
+M._SIT_CACHE.update({"t": 0.0, "radius": None, "data": None})
+
+_STATE["sitting"] = False
+_CALLS.clear()
+_o = M.scene(ops="stand")
+check("没坐着 → 明确报错（不假装成功）", "没在坐着" in _o, f"→ {_o!r}")
+check("  且压根不该打 /stand", _CALLS == [], f"→ {_CALLS}")
+
+_STATE["sitting"] = True
+_CALLS.clear()
+M._SIT_CACHE.update({"t": 0.0, "radius": None, "data": None})
+_o = M.scene(ops="stand")
+check("坐着 → 起身并轮询确认后回话", "站起来" in _o, f"→ {_o!r}")
+check("  真的打了 /stand", _CALLS == ["stand"], f"→ {_CALLS}")
+
+_STATE["sitting"] = True
+M._SIT_CACHE.update({"t": 0.0, "radius": None, "data": None})
+check("中文别名「起身」也路由到 stand", "站起来" in M.scene(ops="起身"), "→ 别名没接上")
+
+# 老 DLL 没 /stand 端点 → 明确报错，不能静默当成功
+M.api.stand = lambda: {"ok": False, "error": "Not Found"}
+_STATE["sitting"] = True
+M._SIT_CACHE.update({"t": 0.0, "radius": None, "data": None})
+check("老 DLL 没 /stand → 明确报错", "起身失败" in M.scene(ops="stand"), "→ 静默了")
+M.api.stand = _orig_stand
+
+print()
+print("── 断档纪律（引导文案不许再教旧姿势）──")
+_here = os.path.dirname(os.path.abspath(__file__))
+_src = open(os.path.join(_here, "nagi_mcp_server.py"), encoding="utf-8").read()
+check("全库不再教「scene at…任意一格」起身",
+      "scene at 任意格" not in _src and "任意一格" not in _src,
+      "→ 有残留 ⇒ AI 照旧调 at，新 op 等于白做")
+check("scene docstring 提了 stand", "stand(起身)" in _src, "→ 域描述没提")
+check("help(scene) 提了 stand", "stand(**起身**" in _src, "→ _DOMAIN_GUIDES 没提")
+check("动态枚举文案已换成 stand", "起身 = scene stand" in _src, "→ 状态条那行没改")
+# ⚠️ 别直接 grep `startswith("stool")`——我自己的**解释性注释**里就引用了那句旧代码（讲清改了什么）。
+#    要查的是"判据还在不在代码路径上"：否定旧写法 + 肯定新写法。
+check("sit() 不再拿名字猜 stool", 'not name.lower().startswith' not in _src, "→ 猜测逻辑没删干净")
+check("sit() 改用端点回的 face 字段", 'not tgt.get("face")' in _src, "→ 新判据没接上")
+
+print()
+print("── 心跳坐着文案（座位名）──")
+import player_activity as PA
+
+
+def _egg(seat):
+    d = {"player": {"name": "恒"}, "location": {"name": "FarmHouse"},
+         "time": {}, "inventory": [], "sitting": True, "seat": seat}
+    return PA.describe_activity(d)
+
+
+check("家具 → 点名椅子（红色餐椅）", "红色餐椅" in _egg({"kind": "furniture", "name": "红色餐椅"}),
+      f"→ {_egg({'kind': 'furniture', 'name': '红色餐椅'})!r}")
+check("地图座椅 → 不把英文 token 塞进中文句", "bench" not in _egg({"kind": "map", "name": "bench"}),
+      f"→ {_egg({'kind': 'map', 'name': 'bench'})!r}")
+check("名字是 '?' → 退回泛称", "?" not in _egg({"kind": "furniture", "name": "?"}),
+      f"→ {_egg({'kind': 'furniture', 'name': '?'})!r}")
+# ⚠️ 坐着文案是 `random.choice` 出的——**每次调用都可能换一句**。
+#    所以这里必须先取一次存下来再断言；拿 `any(k in _egg() for k in ...)` 会**每次重新采样**，
+#    三条谓词各撞各的随机结果，天然会假红（我自己第一版就是这么写错的）。
+_gen = _egg(None)
+check("老 DLL 没 seat → 退回泛称", "🪑" in _gen, f"→ {_gen!r}")
+check("泛称模板仍在（三句之一）",
+      any(k in _gen for k in ("歇脚", "乖巧地坐在", "感受时光")), f"→ {_gen!r}")
 
 print()
 if fails:

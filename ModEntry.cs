@@ -368,8 +368,30 @@ internal static class LidgrenServerPortPatch
 
 public class ModEntry : Mod
 {
-    /// <summary>构建标记（防倒退：/status 报这个，部署/重启后核对，旧 DLL/原作者版会不同）。</summary>
-    public const string BuildStamp = "2026-09-10-anim-wait+tillblock";   // 挥击动画等收尾 + 可耕判定补第二道门(IsTileBlockedBy)
+    /// <summary>构建标记（防倒退：/status 报这个，部署/重启后核对，旧 DLL/原作者版会不同）。
+    /// 🔧 2026-09-11 恒：原先是**手写死的 const**——改代码忘了改它就等于没有。改成由 csproj 的
+    ///   `&lt;InformationalVersion&gt;` 注入（每次 `dotnet build` 求值 = 那次编译的时刻）。
+    ///   ⚠️ **为什么不用"读自己 DLL 的 mtime"**：mtime 随文件走，C 盘/F 盘两次拷贝会得到两个值，
+    ///   而这里报的是**烤进 DLL 内部**的常量 ⇒ 同一个二进制到哪都报同一个值，才是"防倒退"该有的样子。
+    ///   取不到 = 不是 MSBuild 编的 ⇒ 如实报出来，**不假装**（宁报错别兜底）。</summary>
+    public static readonly string BuildStamp = FormatBuildStamp(
+        typeof(ModEntry).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion);
+
+    /// <summary>把 SDK 生成的 InformationalVersion 整理成人看的短标：
+    ///   `2026-09-11 18:16:22+05b01e6e32e6…（40位）` → `2026-09-11 18:16:22 @05b01e6`。
+    /// ⚠️ 原计划（恒选方案时）以为"要拼 git 哈希就得加几行 Exec 调 git"——**实测 SDK 白送**：
+    ///   .NET SDK 默认 `IncludeSourceRevisionInInformationalVersion=true`，仓库里有 .git 就自动加 `+完整哈希`。
+    ///   ⇒ 既然不要钱就留着（"哪份 DLL 在跑"能一路查到提交）。无 git/仓库外构建时就**没有** `+` 那截，
+    ///   按原样报，**不编**哈希。</summary>
+    private static string FormatBuildStamp(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return "未生成(非 MSBuild 构建)";
+        int plus = raw!.IndexOf('+');
+        if (plus < 0 || plus == raw.Length - 1) return raw;
+        var hash = raw.Substring(plus + 1);
+        if (hash.Length > 7) hash = hash.Substring(0, 7);
+        return $"{raw.Substring(0, plus)} @{hash}";
+    }
 
     /// <summary>当前 ModEntry 实例（Harmony 补丁等静态代码需要调实例方法时用）。</summary>
     internal static ModEntry? Instance;
@@ -2365,6 +2387,7 @@ public class ModEntry : Mod
                 "/character_customize" => HandleCharacterCustomize(ctx),
                 "/color_pick" => HandleColorPick(ctx),
                 "/stop" => HandleStop(),
+                "/stand" => HandleStand(),   // 🪑 主动起身（坐着时 StopSitting；没坐=明确报错）
                 "/map" => HandleMap(),
                 "/buy" => HandleBuy(ctx),
                 "/face" => HandleFace(ctx),
@@ -3164,7 +3187,15 @@ public class ModEntry : Mod
     /// ⚠️ 落座硬约束：AddSittingFarmer 里 `float num = 96f` —— 玩家须距座位位置 ≤96px(1.5格)，
     ///    否则返回 null、BeginSitting 静默不落座。⇒ AI 必须先走到旁边再坐（Python 的 scene sit 负责就位）。
     /// x,y = 要交互的座位格（喂 /interact 用）；kind 区分两类以便诊断；me.sitting 供 Python
-    /// 决定该注入 "sit" 还是 "起身"（坐着时任意交互即起身，见 checkAction 开头的 IsSitting 分支）。
+    /// 决定该注入 "sit" 还是 "起身"（坐着时起身走 POST /stand，或任意交互，见 checkAction 的 IsSitting 分支）。
+    ///
+    /// 🆕 2026-09-11 恒（`seat.direction` + `me.seatName` 那批）：
+    ///   每座位加 `face`(bool) = **坐下去时朝向能不能由玩家当时面朝决定**（= `sit(face=…)` 生不生效），
+    ///     判据直接照抄游戏（家具 `Furniture.cs:712` / 地图 `MapSeat.cs:317-334`），**不再让 Python 猜名字**。
+    ///     原先 Python 拿 DisplayName 判 `startswith("stool")`，中文环境（"凳子"）**必误报**——判据收回 C#。
+    ///   另加 `direction`(int?) = MapSeat 原始朝向（-2=opposite）；**家具恒 null**（家具朝向是 currentRotation，不同概念）。
+    ///   `me` 加 `seatKind`("furniture"/"map") + `seatName`（家具=本地化 DisplayName；地图=**内部英文 seatType**）
+    ///     —— ⚠️ 名字性质不同，Python 只该拿 furniture 的名字进中文句子（见 player_activity 坐着文案）。
     /// </summary>
     private object HandleSittable(HttpListenerContext ctx)
     {
@@ -3216,7 +3247,15 @@ public class ModEntry : Mod
                             capacity = cap,
                             free = Math.Max(0, cap - taken),
                             blocked = false,
-                            dist = Math.Round(d, 2)
+                            dist = Math.Round(d, 2),
+                            // ✋ 吃 face 吗？判据**照抄** Furniture.GetSittingDirection()（Furniture.cs:712）：
+                            //    `Name.Contains("Stool")` → 照抄玩家面朝；其余按 currentRotation 写死。
+                            //    ⚠️ 是**内部英文名** `Name`（"Stool"），**不是**上面那个 DisplayName（中文"凳子"）
+                            //      —— 2026-09-11 之前 Python 就是拿 DisplayName 判 startswith("stool")，
+                            //      中文环境必误报。现在把判据收回 C#（唯一真相源），Python 只读结果。
+                            face = (f.Name ?? "").Contains("Stool"),
+                            // 家具的朝向来自 currentRotation，和 MapSeat.direction 不是一回事 ⇒ 不填，别混。
+                            direction = (int?)null
                         });
                     }
                 }
@@ -3253,7 +3292,14 @@ public class ModEntry : Mod
                             capacity = cap,
                             free = Math.Max(0, cap - taken),
                             blocked = false,
-                            dist = Math.Round(d, 2)
+                            dist = Math.Round(d, 2),
+                            // ✋ 吃 face 吗？判据**照抄** MapSeat.AddSittingFarmer()（MapSeat.cs:317-334）：
+                            //    `seatType` 以 "stool" 开头 → 照抄玩家面朝；
+                            //    `direction == -2`（数据里写 "opposite"，见 MapSeat.FromData:78）→ 取玩家面朝的反向。
+                            //    这两种都靠"坐下那一刻的 FacingDirection"，所以 Python 能在 interact 前设好。
+                            face = (ms.seatType.Value ?? "").StartsWith("stool") || ms.direction.Value == -2,
+                            // 原始 direction（-2=opposite / 0上1右2下3左），诊断用；已并进上面的 face 判定。
+                            direction = ms.direction.Value
                         });
                     }
                 }
@@ -3261,6 +3307,7 @@ public class ModEntry : Mod
                 // ── 我的坐姿 ──
                 bool sitting = farmer.IsSitting();
                 object? mySeatX = null, mySeatY = null;
+                string? mySeatKind = null, mySeatName = null;
                 if (sitting && farmer.sittingFurniture != null)
                 {
                     var myPos = farmer.sittingFurniture.GetSittingPosition(farmer, ignore_offsets: true);
@@ -3269,13 +3316,36 @@ public class ModEntry : Mod
                         mySeatX = (int)myPos.Value.X;
                         mySeatY = (int)myPos.Value.Y;
                     }
+                    // 🪑 我坐的是哪件（心跳文案要用）。`sittingFurniture` 是 ISittable，
+                    //    Furniture 与 MapSeat 在 BeginSitting 里**都会**被赋值（Farmer.cs:4541）⇒ 没有盲区。
+                    //    ⚠️ 两类的"名字"性质完全不同，**别混着用**（2026-09-11）：
+                    //      Furniture → SafeDisplayName 是**本地化** DisplayName（"红色餐椅"）⇒ 能直接进中文句子；
+                    //      MapSeat   → seatType 是**内部英文 token**（"bench"/"stool"/"bathchair"），
+                    //                  游戏里**根本没有**对应的本地化名 ⇒ 硬塞会出"正坐在 bench 上"。
+                    //    ⇒ Python 侧只用 furniture 的名字，map 退回泛称（见 player_activity 坐着文案）。
+                    if (farmer.sittingFurniture is StardewValley.Objects.Furniture sf)
+                    {
+                        mySeatKind = "furniture";
+                        mySeatName = SafeDisplayName(sf);
+                    }
+                    else if (farmer.sittingFurniture is MapSeat sms)
+                    {
+                        mySeatKind = "map";
+                        mySeatName = sms.seatType.Value;
+                    }
                 }
 
                 tcs.SetResult(new
                 {
                     ok = true,
                     location = loc.Name,
-                    me = new { x = px, y = py, sitting, seatX = mySeatX, seatY = mySeatY },
+                    me = new
+                    {
+                        x = px, y = py, sitting,
+                        seatX = mySeatX, seatY = mySeatY,
+                        seatKind = mySeatKind,   // "furniture" | "map"；没坐=null
+                        seatName = mySeatName    // furniture→本地化名 / map→内部英文 token；没坐=null
+                    },
                     radius,
                     count = seats.Count,
                     seats
@@ -8037,6 +8107,46 @@ public class ModEntry : Mod
                 x = farmer.TilePoint.X,
                 y = farmer.TilePoint.Y
             });
+        });
+        return tcs.Task.GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// POST /stand  — 主动起身（🆕 2026-09-11 恒；原来只能靠"scene at 任意格"这个副作用，
+    /// AI 得自己挑一个够得着的格子，挑不到就静静失败）。
+    /// 调的就是游戏自家那条：GameLocation.checkAction 里 `who.StopSitting()`（GameLocation.cs:7654）。
+    ///   - `animate` 走默认 true ⇒ 播起身动画+音效，跟玩家自己点起身一模一样（不搞瞬移那种怪相）。
+    ///   - ⚠️ **返回那一刻 `IsSitting()` 仍是 true**：animate 版只是置 `isStopSitting=true`，
+    ///     真正的清空在下次 update 的 lerp 收尾（Farmer.cs:7626）⇒ **调用方要轮询确认**，别信这个返回。
+    ///   - 没坐着就**明确报错**（延续"宁报错别兜底"），别假装成功。
+    /// </summary>
+    private object HandleStand()
+    {
+        var tcs = new TaskCompletionSource<object>();
+        EnqueueMainThread(() =>
+        {
+            try
+            {
+                var farmer = Game1.player;
+                if (!farmer.IsSitting())
+                {
+                    tcs.SetResult(new { ok = false, error = "没在坐着，无需起身" });
+                    return;
+                }
+                farmer.StopSitting();     // animate 默认 true = 游戏原味（checkAction 也是这么调的）
+                tcs.SetResult(new
+                {
+                    ok = true,
+                    wasSitting = true,
+                    location = farmer.currentLocation.Name,
+                    x = farmer.TilePoint.X,
+                    y = farmer.TilePoint.Y
+                });
+            }
+            catch (Exception ex)
+            {
+                tcs.SetResult(new { ok = false, error = ex.Message });
+            }
         });
         return tcs.Task.GetAwaiter().GetResult();
     }

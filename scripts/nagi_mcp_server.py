@@ -375,9 +375,15 @@ def _gather_user_state() -> dict:
     #    `/state` 里没有这两项，各自打一次 host 端口的小端点——**心跳才注入（默认 5 分钟一次）**，
     #    开销可忽略。拿不到就当 False（老 DLL 没 /sittable 也不炸，只是没彩蛋）。
     try:
-        data["sitting"] = bool((api.host_sittable(7).get("me") or {}).get("sitting"))
+        _me_sit = api.host_sittable(7).get("me") or {}
+        data["sitting"] = bool(_me_sit.get("sitting"))
+        # 🪑 坐的是哪件（2026-09-11 新字段）——**只有家具的名字能进中文句子**：
+        #    家具 = 本地化 DisplayName（"红色餐椅"）；地图座椅 = 内部英文 token（"bench"），没本地化名。
+        #    ⇒ 打包成 {kind,name} 给 player_activity 判，别在那重打一次 HTTP。
+        data["seat"] = {"kind": _me_sit.get("seatKind"), "name": _me_sit.get("seatName")}
     except Exception:
         data["sitting"] = False
+        data["seat"] = None
     try:
         data["swimming"] = bool((api.host_pool().get("me") or {}).get("swimming"))
     except Exception:
@@ -852,7 +858,7 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
     # 🪑 坐着时收窄引导（恒 2026-09-11）：玩家坐着时游戏**把世界动作全锁了**——
     #    `Farmer.MovePosition` 判 `IsSitting()` 直接 return（人走不动）、`Game1` 里 `IsSitting()` 时
     #    也不给用工具、`checkAction` 一进去就 `StopSitting()`。⇒ 这时再枚举"本图能干啥/哪能去"
-    #    是纯噪音，**只留一行"起身"**（`scene at` 任意格）。站起来后下一帧自动恢复完整引导。
+    #    是纯噪音，**只留一行"起身"**（`scene stand`）。站起来后下一帧自动恢复完整引导。
     #    ⚠️ 数据走 `_sittable_cached`（2s TTL，与 _sit_hint 共用缓存，不多打 HTTP）；
     #    旧 DLL 没 /sittable 时静默 False（退回老行为，不炸）。
     try:
@@ -1157,7 +1163,7 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
     if forage:
         lines.append(forage)
 
-    # ── 🪑 附近可坐物（恒 2026-09-10；7 格内有椅子才出，变化才报；坐/起身都走 scene sit） ──
+    # ── 🪑 附近可坐物（恒 2026-09-10；7 格内有椅子才出，变化才报；坐=scene sit / 起身=scene stand） ──
     try:
         _sh = _sit_hint()
         if _sh:
@@ -9366,13 +9372,14 @@ def _maze_seg_view(gx=None, gy=None, radius=15) -> str:
 
 @mcp.tool()
 def scene(ops: str = "", kw: dict | None = None) -> str:
-    """🖱️ 场景交互域：at(点格) / interact(点面前) / sit(坐椅子,可选face=朝向) / seats(扫可坐物) / use(挥工具) / pickup_scene(捡采集物) / berry(摇浆果) / spot(挖蚯蚓) / moss(苔藓) / place(放置播种) / break(拆敲) / maze。全 ops+坑 → help(scene)。
+    """🖱️ 场景交互域：at(点格) / interact(点面前) / sit(坐椅子,可选face=朝向) / stand(起身) / seats(扫可坐物) / use(挥工具) / pickup_scene(捡采集物) / berry(摇浆果) / spot(挖蚯蚓) / moss(苔藓) / place(放置播种) / break(拆敲) / maze。全 ops+坑 → help(scene)。
 
     """
     dispatch = {
         "at": interact_at, "点": interact_at,
         "front": interact, "面前": interact, "interact": interact,
         "sit": sit, "坐": sit, "坐下": sit, "seats": seats, "座位": seats, "可坐": seats,
+        "stand": stand, "起身": stand, "站起": stand, "站起来": stand,
         "use": use_tool, "挥": use_tool,
         "face": face, "转身": face,
         "select": select_item, "拿": select_item,
@@ -11695,7 +11702,8 @@ def interact_at(tile_x: int, tile_y: int) -> str:
 #    · AddSittingFarmer 里 `float num = 96f` —— 玩家须距座位位置 ≤96px(1.5 格)，
 #      否则返回 null、BeginSitting **静默不落座**（不报错、不弹窗）。
 #    · 坐着时 GameLocation.checkAction 开头即 `if (who.IsSitting()) { StopSitting(); return true; }`
-#      ⇒ **任意 interact 都是起身**，天然就是"站起来"的原语。
+#      ⇒ **任意 interact 都是起身**（副产物）。🆕 2026-09-11 起有了正门 `scene stand`（POST /stand，
+#      调的同一句 StopSitting）——**别再让 AI 猜"点哪一格够得着"**，那是个会静静失败的路子。
 
 _SIT_HINT_KEY = {"sig": None}
 _SIT_CACHE = {"t": 0.0, "radius": None, "data": None}
@@ -11712,6 +11720,8 @@ def _sit_cache_clear():
     ⚠️ **交互/落座/起身后必须清**（2026-09-11 实测踩到）：`_sittable_cached` 有 2s TTL，
     而 `/interact` 恰恰是能**翻转 `sitting`** 的操作（坐着→任意交互=起身；旁边→落座）。
     不清的话：刚站起来那一次调用，状态条还会写"坐着"、还把 enum 引导收着（滞后 ≤2s）。
+    🆕 同理 `scene stand`（POST /stand）也翻转 sitting，且它**靠轮询**确认起身 ⇒ 每轮都要清，
+    否则 2s 内每轮读到的都是同一个旧值、轮询直接失效。
     """
     _SIT_CACHE.update({"t": 0.0, "radius": None, "data": None})
 
@@ -11767,7 +11777,7 @@ def _sit_hint() -> str:
     """🪑 状态条：附近可坐物提示（恒 2026-09-10）。
 
     · 未坐 + 7 格（超级炸弹半径，体感）内有座位 → 「🪑 可交互：sit(x,y)」（最多 3 处）
-    · 坐着 → 「🪑 正坐着(x,y)…起身」
+    · 坐着 → 「🪑 坐着「名字」(x,y)｜起身 = scene stand」
     · **一排椅子只报一个坐标**：对座位格做 8 邻接聚类，每组只取离玩家最近的那一格
       （同一条长凳/沙发/一排吧台凳自然并成一个坐标）。
     · **变化才报**：签名（位置+聚类后坐标+sitting）不变就返回空串，不重复刷屏省 token。
@@ -11785,8 +11795,13 @@ def _sit_hint() -> str:
             #    这行就是**唯一指引**——按变化才报会让"坐久了只剩个光标题"，AI 不知道该干嘛。
             #    它很短，每次都报。仍更新签名：站起来时 key 变化 → 座位枚举会重新出现。
             _SIT_HINT_KEY["sig"] = ("sit", loc, me.get("seatX"), me.get("seatY"))
-            return (f"🪑 坐着({me.get('seatX')},{me.get('seatY')})"
-                    f"｜起身 = scene at 任意格（没起来就再点一次）")
+            # 名字直接带上（2026-09-11）：家具是"红色餐椅"，地图座椅是 seatType 原文（"bench"）。
+            # 后者是**内部英文 token**——这里给 AI 看不碍事（跟 scene seats 报的名字一致），
+            # 但**不能进心跳的中文句子**（那边只认 furniture，见 player_activity 坐着文案）。
+            _sn = (me.get("seatName") or "").strip()
+            _bit = f"「{_sn}」" if _sn else ""
+            return (f"🪑 坐着{_bit}({me.get('seatX')},{me.get('seatY')})"
+                    f"｜起身 = scene stand")
         tiles = {}
         for s in (d.get("seats") or []):
             if s.get("blocked") or int(s.get("free", 0)) <= 0:
@@ -11832,15 +11847,17 @@ def sit(x: int, y: int, face: Optional[int] = None) -> str:
     **自动就位**：游戏要求玩家站座位 1.5 格内才落座（否则静默失败），所以本 op 会
     自己先走到座位旁 → 面朝 → interact → 回读确认，坐不上就明确报错、不谎报成功。
     坐标从状态条的「🪑 可交互：sit(x,y)」或 scene seats 拿。
-    想起来：随便 scene at 一格即可（坐着时游戏把任意交互都当起身）。
+    想起来：**scene stand**（2026-09-11 新增的主动起身）。
 
     Args:
         x, y: 座位格（就是状态条里 sit(x,y) 的坐标）
         face: 坐下后的**朝向**（0上/1右/2下/3左）；不传=面朝座位（默认）。
-            ⚠️ 反编译 `MapSeat.AddSittingFarmer`：**只有 `stool` 类座位**（名字以 stool 开头）
-            和 `direction=="opposite"` 的座位（如长椅）的朝向**来自"坐下那一刻的面朝方向"**
-            ⇒ 传 face 才有用；其它地图座椅的朝向由座位数据写死、普通家具椅由家具
-            `currentRotation` 决定（`GetSittingDirection`）——这两类传了也不生效，会回报提示。
+            ⚠️ **不是所有座位都吃 face**——只有朝向"来自坐下那一刻面朝方向"的才吃：
+            反编译 `MapSeat.AddSittingFarmer`(MapSeat.cs:317-334) 的 `stool` 类 / `direction==-2`
+            （数据里的 "opposite"，如长椅）；家具里 `Name` 含 "Stool" 的也是（Furniture.cs:712）。
+            其它座位朝向写死，传了不生效。
+            ✅ **吃不吃由 /sittable 的 `seat["face"]` 直接告诉我们**（判据在 C# 里照抄游戏），
+            本 op 不再自己猜名字——不生效时会在回报里点名说明。
     """
     _face = None
     if face is not None:
@@ -11857,7 +11874,7 @@ def sit(x: int, y: int, face: Optional[int] = None) -> str:
         me = d.get("me") or {}
         if me.get("sitting"):
             return _with_state(f"⚠️ 已经坐在 ({me.get('seatX')},{me.get('seatY')}) 上了"
-                               f"——要走动就 scene at 任意格起身")
+                               f"——要走动先 scene stand 起身")
         tgt = next((s for s in (d.get("seats") or [])
                     if int(s["x"]) == int(x) and int(s["y"]) == int(y)), None)
         if tgt is None:
@@ -11872,11 +11889,17 @@ def sit(x: int, y: int, face: Optional[int] = None) -> str:
         name = tgt.get("name") or "座位"
         walked = ""
 
-        # 🪑 坐下前的朝向：传了 face 就用它（stool/opposite 类座位会照抄），否则面朝座位。
+        # 🪑 坐下前的朝向：传了 face 就用它（吃 face 的座位会照抄），否则面朝座位。
         # ⚠️ 必须**紧挨着 interact** 设，游戏是在 `AddSittingFarmer` 里读"此刻的 FacingDirection"。
+        # ⚠️ 2026-09-11：吃不吃 face 由 **C# 端点算好回给我们**（`seat["face"]`，判据照抄游戏：
+        #    Furniture.cs:712 的 `Name.Contains("Stool")` / MapSeat.cs:317-334 的 stool 与 opposite）。
+        #    **别再自己拿名字猜**——原先判 `name.lower().startswith("stool")`，可家具的 `name` 是
+        #    **本地化 DisplayName**（中文环境=「凳子」）⇒ 永远不匹配、必误报；而且 Contains≠StartsWith。
+        #    老 DLL 没这个字段 → None → 照样警告（不假装生效，方向是安全的）。
         _face_note = ""
-        if _face is not None and not name.lower().startswith("stool"):
-            _face_note = f"（⚠️「{name}」不是 stool 类，朝向多半由座位数据写死，face 可能不生效）"
+        if _face is not None and not tgt.get("face"):
+            _k = "地图座椅" if tgt.get("kind") == "map" else "家具"
+            _face_note = f"（⚠️「{name}」是{_k}，朝向写死，face 不生效）"
 
         def _face_before_sit():
             if _face is not None:
@@ -11910,7 +11933,7 @@ def sit(x: int, y: int, face: Optional[int] = None) -> str:
         time.sleep(0.4)
         if (_sittable(30).get("me") or {}).get("sitting"):
             return _with_state(f"🪑 坐上「{name}」({x},{y}){walked}{_face_note}"
-                               f"——要走动 scene at 任意格起身")
+                               f"——要走动 scene stand 起身")
         # 🔁 没坐上一击 → 重贴到余量最大的站格再试一次。
         #    门槛 96px 对带偏移的座位余量极小，落位方式差 16px 就够不着（见 _best_stand_tile），
         #    而游戏是**静默不落座**——不重试的话 AI 只会看到一句"没坐上"却不知所以。
@@ -11926,7 +11949,7 @@ def sit(x: int, y: int, face: Optional[int] = None) -> str:
             time.sleep(0.4)
             if (_sittable(30).get("me") or {}).get("sitting"):
                 return _with_state(f"🪑 坐上「{name}」({x},{y})（重贴到 {best} 才够着）{_face_note}"
-                                   f"——要走动 scene at 任意格起身")
+                                   f"——要走动 scene stand 起身")
         return _with_state(f"❌ 没坐上（actionTriggered={r.get('actionTriggered')}）"
                            f"——({x},{y}) 可能不是座位/被挡住/离太远")
     except Exception as e:
@@ -11961,13 +11984,45 @@ def seats(radius: int = 12) -> str:
         for s in ss[:12]:
             who = "🪑" if s.get("kind") == "furniture" else "🪑🗺️"
             occ = "【占】" if (s.get("blocked") or int(s.get("free", 0)) <= 0) else ""
+            # ✋ 吃 sit(face=…) 的座位标出来（C# 算好的 seat["face"]，别在这重算）
+            fx = " ✋可改朝向" if s.get("face") else ""
             lines.append(f"{who} {s.get('name')} 坐({s.get('x')},{s.get('y')}) "
-                         f"空{s.get('free')}/{s.get('capacity')}{occ} 距{s.get('dist')}")
+                         f"空{s.get('free')}/{s.get('capacity')}{occ} 距{s.get('dist')}{fx}")
         if len(ss) > 12:
             lines.append(f"… 另 {len(ss) - 12} 个（缩 radius 或就近坐）")
         return _with_state("\n".join(lines))
     except Exception as e:
         return _with_state(f"❌ 扫可坐物出错: {e}")
+
+
+@mcp.tool()
+def stand() -> str:
+    """🪑 从椅子上站起来（scene 域；别名 起身）
+
+    坐着的时候才能用；**没坐着会明确报错**，不假装成功。
+    调的是游戏自家那条起身路径（`StopSitting()`，带动画+音效，跟玩家自己点起身一样）。
+
+    ⚠️ 起身**不是瞬时的**：游戏要等起身动画的 lerp 收尾才真的解除坐姿（约 0.3~0.5s），
+    所以本 op 会轮询确认后再回话，确认不了就**如实说**（别当失败硬重试）。
+    """
+    try:
+        if not ((_sittable(7).get("me") or {}).get("sitting")):
+            return _with_state("⚠️ 没在坐着，无需起身")
+        r = api.stand()
+        if not r.get("ok"):
+            return _with_state(f"❌ 起身失败: {r.get('error', '')}")
+        _sit_cache_clear()
+        # 🔁 轮询确认（StopSitting(animate:true) 只置 isStopSitting，下一帧 lerp 收尾才清 isSitting）。
+        #    ⚠️ 用前先 `_sit_cache_clear()`：`_sittable_cached` 有 2s TTL，不清就会 2 秒里读同一个旧值。
+        for _ in range(8):
+            time.sleep(0.1)
+            _sit_cache_clear()
+            if not ((_sittable_cached(7).get("me") or {}).get("sitting")):
+                p = _ai_pos()
+                return _with_state(f"🪑 站起来了（现在 ({p[0]},{p[1]})）")
+        return _with_state("⚠️ 已发起身指令但 0.8s 内仍读到坐着——动画没放完？再调一次 scene stand")
+    except Exception as e:
+        return _with_state(f"❌ 起身出错: {e}")
 
 
 # ── 配饰描述索引 ──
@@ -12442,7 +12497,7 @@ _DOMAIN_GUIDES = {
 "mine": "下矿域(⚒️ 矿井/头骨/火山)：go(去挖矿:mode=rush冲层/farm刷矿,start起始层,target目标层,ore,cycles圈数) progress(进度) bomb_status/plan/place/collect/ladder/retreat(单步炸) bomb_mine(自动) bomb_volcano(火山) organize(整理背包)。🔁**刷矿=mode=go(mode=farm)**：定点刷指定矿→ore=Copper铜(21层)/Iron铁(41层)/Gold金(71层)；**煤靠 farm 铁层(41)顺手清尘埃精灵/蝙蝠掉**（不是 ore 选项，跑 auto 内部刷）。🏃下矿=mode=go(mode=rush,start可选≤电梯上限+5倍数,target默认120)。⚠️无镐/血低硬拦；梯子 /ladder+confirm。⚠️bomb_mine 没炸弹+host在同矿井→自动转【内部】协同(跟随host+帮忙敲矿/打怪)不撤退出矿(bomb_escort 不对外暴露、AI 不主动启用)；bomb_retreat 结束协同+停脚本+脱离矿井回门口。⚠️接「深处的危险」重置电梯→起始层动态从1起(内置脚本自动读，不暴露工具)；刷矿目标层不可直达会上报，需先冲层带回或改浅层。💡出发前占位物(恒2026-08-23)：提前放1个可堆叠物(铱矿/铱锭/五彩碎片)在包，满包时同种战利品自动堆叠吸附、少触发满包停；别拿银河之魂这类带死亡会丢的稀有物当占位。",
 "cabin": "小屋引导域(🏠 FarmHouse/Cabin/岛屋；不传=扫屋)：enum(扫**本屋**查待收) collect(收机器) statue(雕像) furniture(扫家具) interact(点家具,tile_x/tile_y) pickup(拿起家具,tile_x/tile_y) cook(做饭,recipe_name) sleep(睡觉,who=谁床：不传/房主名=睡房主床一起睡,传自己名=睡自己床)。带参 op→ kw={'参数名':值}。",
 "social": "社交域：chat(搭话,name=NPC名) gift(送礼,npc_name/item_name) give(送玩家物品,手持右键正式赠予,一次一个要等同意) hand(递给玩家,走过去丢他脚边,磁吸自动收,可整叠) send(发消息,message) emote(表情,name) friendship(查好感,npc_name) movie(影院,npc)。带参 op→ kw={'参数名':值}。",
-"scene": "场景交互域(点东西/工具/转身/捡/坐)：at(tile_x,tile_y)(点指定格/柜台) interact(点面前) use(挥工具) face(转向0上1右2下3左) select(拿手上) sit(x,y[,face])(**坐椅子**:自动走到座位旁再坐,上不了会明确报错;状态条「🪑 可交互：sit(x,y)」给坐标;可选 face=坐下朝向0上1右2下3左,**只对 stool 类座位/长椅生效**——反编译:这类座位的朝向就是「坐下那刻的面朝方向」,其它座位写死) seats(radius=12)(扫附近能坐的椅子/长凳/沙发) pickup(拿起家具) pickup_scene(捡当前场景物) berry(摇浆果) spot(挖蚯蚓点) moss(绿雨搜苔藓) rock(室外镐击:敲当前图可破物,采石场/挖掘场/蚌矿场跳普通石,dig/dry,battle-free) garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物) furniture(扫家具) place(放置/播种:name=物品名,x/y=目标格→箱子/树种/蟹笼落地或种下,只放可放置物) break(拆/敲:x,y=目标格,steps=挥击次,radius=方圆→镐子敲石头/翻已耕地,跳过箱子/容器格) maze(迷宫视图r半径,gx/gy目标格→ASCII棋盘#墙.可走P自己G目标) maze_seg(走法链gx,gy目标→拆直走廊列表+拼「左/右上/下走到(x,y)」多段链,AI按段walk_to) maze_walk(走迷宫 waypoints=「x,y x,y…」依次walk_to) pan(淘金/淘盘:本图水下闪光点→岸边走位面水→铜锅淘金收掉落) front/rummage(分别是interact/garbage的别名)。📌**坐着想起来：随便 at 任意一格**（游戏把坐着时的任意交互都当起身），别找别的 op。带参 op(at 的 tile_x/tile_y、sit 的 x/y、break 的 x/y、place 的 name、maze_seg 的 gx/gy)→ kw={'参数名':值}。",
+"scene": "场景交互域(点东西/工具/转身/捡/坐)：at(tile_x,tile_y)(点指定格/柜台) interact(点面前) use(挥工具) face(转向0上1右2下3左) select(拿手上) sit(x,y[,face])(**坐椅子**:自动走到座位旁再坐,上不了会明确报错;状态条「🪑 可交互：sit(x,y)」给坐标;可选 face=坐下朝向0上1右2下3左,**只对「朝向来自坐下那刻面朝方向」的座位生效**(反编译:stool 类/opposite 长椅/名字带Stool的家具),其它写死——吃不吃由端点回的 face 字段说了算,不生效会在回报里点名) stand(**起身**:坐着时用,没坐着明确报错,带动画+轮询确认) seats(radius=12)(扫附近能坐的椅子/长凳/沙发,✋=可改朝向) pickup(拿起家具) pickup_scene(捡当前场景物) berry(摇浆果) spot(挖蚯蚓点) moss(绿雨搜苔藓) rock(室外镐击:敲当前图可破物,采石场/挖掘场/蚌矿场跳普通石,dig/dry,battle-free) garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物) furniture(扫家具) place(放置/播种:name=物品名,x/y=目标格→箱子/树种/蟹笼落地或种下,只放可放置物) break(拆/敲:x,y=目标格,steps=挥击次,radius=方圆→镐子敲石头/翻已耕地,跳过箱子/容器格) maze(迷宫视图r半径,gx/gy目标格→ASCII棋盘#墙.可走P自己G目标) maze_seg(走法链gx,gy目标→拆直走廊列表+拼「左/右上/下走到(x,y)」多段链,AI按段walk_to) maze_walk(走迷宫 waypoints=「x,y x,y…」依次walk_to) pan(淘金/淘盘:本图水下闪光点→岸边走位面水→铜锅淘金收掉落) front/rummage(分别是interact/garbage的别名)。📌**坐着想起来：scene stand**（2026-09-11 起有正门，别再拿 at 猜一个够得着的格子——那条路会静静失败）。带参 op(at 的 tile_x/tile_y、sit 的 x/y、break 的 x/y、place 的 name、maze_seg 的 gx/gy)→ kw={'参数名':值}。",
 "menu": "菜单/界面域(开→看→点)：read(看菜单) advance(推进剧情/对话) click(option/item/button/xy 点;action=claim领/action=discard丢桶腾格;slot=序号领指定格) key(ok/esc/数字按键) cancel(关弹窗/撤就绪) shop(逛店) sell(卖商店) bin(投出货箱) craft(合成) recipes(菜谱) craftables(配方) forge(锻造) geode/geodes(砸晶球) customize(捏人) bundle(献祭板) bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读消耗品:书/秘密纸条/日记残页,统一走右键读 name=物品名) levelup_choose(技能升级职业选择 5/10级:不带参读左右选项,side=left/right 或 profession=职业id 定分支;普通升级自会确认OK) number(数量输入:展览会兑换台/转盘押注 NumberSelectionMenu) minigame(赌场小游戏点按钮 action=hit/stand/bet10/…) minigame_state(读牌面/转盘) display_fill(农展台放满 items='钻石,山羊奶酪') display_takeback(收好) journal(开任务日志→menu read 读卡,翻页=click(button=forward/back),领奖励=click(button=rewardBox)) know(查特别订单详情/知识库SPECIAL_ORDERS,如menu know 岛屿食材;2026-09-02 task域退役并入menu)。🚫满包接鱼/领箱:原 claim_swap(替换领取)已退役→**click action=discard 丢桶腾格(回收返金)+action=claim 领取(或用 slot 领指定格;不想要直接 button=ok 关掉)**。🧾关闭菜单一律 click(button=upperRightCloseButton)（ItemGrabMenu/交付容器用 button=ok 确认才关）；订单交付容器(QuestContainerMenu)=点背包对应物品格(见slots的坐标)→放进→点 button=ok 结算；任务日志领钱=点击已完成的有钱任务卡后 click(button=rewardBox)；兑奖机兑换=click(button=mainButton)；特别订单领奖链=日志领钱(上面)→社区板旁领奖箱(60,93)拿兑奖券→刘易斯家兑奖机(mainButton)兑换。",
 "storage": "箱子域：view(看箱,box=N看单箱全清单) store(存:what/items限定存哪些,名可带xN数量只存那N份,留空=归位只存已有同类堆,target指定箱/all=True全存腾空间) take(取:x,y+name单箱 或 items批量) find(模糊查哪箱有某物) default(设/清默认箱 clear=清) tag(改名,可带color改色)。🤖存取统一走位：store/take都会先走到相关箱旁(批量只走到第一个),不区分拟人/原子,别靠编号逐箱翻。⭐每个箱子前自动带【类目标签】(内容过半归类):矿/古物/鱼/种子/作物/农产/建材/料理/装备——AI按标签定位箱,找东西用find。⚠️改色别染纯#000000(=默认木纹,识别成未染色);要黑箱用暗灰#303030。",
 "daily": "过日子域：sleep(睡觉) eat(吃食物回血体力,name/item_name) wear(穿/脱衣物,name/slot/hand) lie_bed(躺床不过夜) settle(确认过夜结算) heartbeat(心跳间隔,minutes) pause(后台不暂停,out_of_focus) peek(看恒干嘛) whiteboard(写白板,content)。带参 op→ kw={'参数名':值}。📌sleep/lie_bed 的 who：不传或传房主名=睡房主床(一起睡+🌹彩蛋)；传自己名字=睡自己床。lie_bed 只躺不睡，想离开随时 walk_to 走离床格即可。⚠️睡别人床/协作前先 check(what=\"role\") 确认端口↔角色（端口按启动顺序分配，重启可能翻转，认错角色=挪了恒的人）。",

@@ -98,6 +98,19 @@ def stop():
     return _post("/stop")
 
 
+def stand():
+    """🪑 主动起身（POST /stand，2026-09-11 新增）。
+
+    调的就是游戏自家那条：`GameLocation.checkAction` → `who.StopSitting()`（animate=true，
+    播起身动画+音效，跟玩家自己点起身一模一样）。没坐着时明确报错
+    `{ok:False, error:"没在坐着，无需起身"}`。
+
+    ⚠️ **返回 ok 不等于已经站起来**：animate 版只是置 `isStopSitting=true`，真正的清空发生在
+    下一次 update 的 lerp 收尾（Farmer.cs:7626）⇒ 调用方必须轮询 /sittable 的 me.sitting 确认。
+    """
+    return _post("/stand")
+
+
 def set_pause(out_of_focus=True):
     """设置"失焦暂停"选项（POST /set_pause）。
     AI 自动化进程设 False → 该窗口后台也能走位，不用抢前台焦点（不打扰 user/房主）。
@@ -211,9 +224,16 @@ def sittable(radius=7):
          **萨隆的凳子/桌椅走这条，不在 /furniture 里**（/furniture 在 Saloon 回 count=0）。
     ⚠️ 落座硬约束：玩家须距座位 96px(1.5 格)内，否则游戏静默不落座 ⇒ 要先就位再坐。
 
-    返回 {ok, location, me:{x,y,sitting,seatX,seatY}, radius, count,
-          seats:[{kind,name,x,y,seatX,seatY,capacity,free,blocked,dist}]}
-    （x,y = 要 /interact 的座位格；kind = "furniture" | "map"）"""
+    返回 {ok, location,
+          me:{x,y,sitting,seatX,seatY,seatKind,seatName}, radius, count,
+          seats:[{kind,name,x,y,seatX,seatY,capacity,free,blocked,dist,face,direction}]}
+    （x,y = 要 /interact 的座位格；kind = "furniture" | "map"）
+
+    🆕 2026-09-11：`face`(bool) = 该座位**吃不吃 `sit(face=…)`**（判据在 C# 里照抄游戏，
+      见 Furniture.cs:712 / MapSeat.cs:317-334）；`direction` = MapSeat 原始朝向
+      （-2=opposite，家具恒 null）。
+    `me.seatKind`("furniture"/"map") + `me.seatName`：家具是本地化 DisplayName（"红色餐椅"），
+      地图座椅是**内部英文 seatType**（"bench"）——没本地化名，别硬塞进中文句子。"""
     return _get("/sittable", {"radius": radius})
 
 
@@ -261,7 +281,10 @@ def host_sittable(radius=7):
     """🪑 在 host 进程(7842)读"房主是否坐着"——心跳坐着彩蛋用。
 
     理由同 host_state：给 AI 看的玩家动态描述的是**用户/房主**，不是 AI 自己。
-    返回 {ok, location, me:{x,y,sitting,seatX,seatY}, seats:[...]}。"""
+    返回 {ok, location, me:{x,y,sitting,seatX,seatY,seatKind,seatName}, seats:[...]}。
+
+    ⚠️ `seatName` 两类性质不同（2026-09-11）：家具=本地化 DisplayName（"红色餐椅"），
+    地图座椅=内部英文 seatType（"bench"）⇒ **只有 seatKind=="furniture" 的名字能进中文句子**。"""
     r = requests.get(f"{HOST_URL}/sittable", params={"radius": radius}, timeout=10)
     return r.json()
 

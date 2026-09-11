@@ -500,13 +500,26 @@ def describe_activity(state_data: dict) -> str:
             f"🛁 **{name}** 在浴室玩水。暖烘烘！",
         ])
 
-    # 🪑 坐着（/sittable 的 me.sitting）
+    # 🪑 坐着（/sittable 的 me.sitting；座位名 2026-09-11 加）
     if state_data.get("sitting"):
         _where = _loc_label(loc_lower, loc_name)
         _generic = not any("一" <= c <= "鿿" for c in _where)
         if _generic:
             _where = "这里"           # 查不到中文名（小屋实例名等）→ 泛称，别把英文塞进中文句子
         _where_in = _where if _generic else f"{_where}里"   # "这里"+"里" 会变"这里里"
+        # 🪑 点名坐的是什么——**只认家具**（`me.seatName` 两类性质不同，见 stardew_api.host_sittable）：
+        #    家具 = 本地化 DisplayName（"红色餐椅"）⇒ 能进中文句子；
+        #    地图座椅 = 内部英文 token（"bench"/"stool"）⇒ 硬塞会出"正坐在 bench 上"，
+        #    而游戏里**没有**这些 seatType 的本地化名可查（MapSeat 压根没这字段）
+        #    ⇒ 拿不到中文名就不编，退回泛称（延续"宁报错别兜底"）。取不到 seat（老 DLL）同样退泛称。
+        _seat = state_data.get("seat") or {}
+        _sname = (_seat.get("name") or "").strip()
+        if _seat.get("kind") == "furniture" and _sname and _sname != "?":
+            return random.choice([
+                f"🪑 **{name}** 正坐在**{_sname}**上，安静感受时光在星露谷淌过的痕迹。",
+                f"🪑 **{name}** 窝在{_where}的**{_sname}**里，惬意得很。",
+                f"🪑 **{name}** 坐在{_where}的**{_sname}**上歇脚。",
+            ])
         return random.choice([
             f"🪑 **{name}** 正在{_where}歇脚。",
             f"🪑 **{name}** 乖巧地坐在{_where_in}。",
