@@ -13294,57 +13294,52 @@ def hand_item(player_name: str, item_name: str, count: int = 0) -> str:
     except Exception as e:
         return f"递给失败: {e}"
 
-    # 磁吸要够近才吸得上（基准 ~2 格）。⚠️ 位置**不能只读一次**（恒 2026-09-11："玩家跑了呢"）：
-    # 走过去那几秒他会动，所以走完必须**回头复查**，够不着就再走一轮（最多 3 轮）——
-    # 否则东西会丢在**出发时那个旧位置**上。
-    tx, ty = int(tgt.get("x", 0)), int(tgt.get("y", 0))
-    note, close_enough = "", False
-    for _round in range(3):
-        st2 = api.state()
-        me2 = st2.get("player") or {}
-        t2 = next((o for o in (st2.get("otherPlayers") or [])
-                   if (o.get("name") or "") == player_name), None)
+    # 磁吸要够近才吸得上（基准 ~2 格）。⚠️ 位置**每轮都重读**（恒 2026-09-11："我会一直移动"）——
+    # 只读一次的话，走过去那几秒他动了，东西就丢在**出发时的旧位置**上。
+    # 3 轮自然走位（每轮等它真到）→ 第 4 轮才闪现兜底（恒拍板"重走失败才 position"）。
+    def _live_target():
+        s = api.state()
+        return (s.get("player") or {},
+                next((o for o in (s.get("otherPlayers") or []) if (o.get("name") or "") == player_name), None))
+
+    note, tx, ty = "", 0, 0
+    for rnd in range(4):
+        mine, t2 = _live_target()
         if t2 is None:
             return f"❌ 递的过程中跟丢了 {player_name}"
         if (t2.get("location") or "") != my_loc:
             return f"❌ {player_name} 跑到 {t2.get('location')} 去了——跨图不递，先 map_go 过去"
         tx, ty = int(t2.get("x", 0)), int(t2.get("y", 0))
-        mx, my = int(me2.get("x", 0)), int(me2.get("y", 0))
-        if max(abs(tx - mx), abs(ty - my)) <= 2:
-            close_enough = True
+        mx, my = int(mine.get("x", 0)), int(mine.get("y", 0))
+        gap = max(abs(tx - mx), abs(ty - my))
+        if gap <= 2:
             break
         stand = _stand_tile_near(tx, ty, mx, my)
         if not stand:
             break
         try:
-            api._post("/walk_to", {"location": my_loc, "x": stand[0], "y": stand[1]})
-            note = f"（先走到 ({stand[0]},{stand[1]}) 他身边）"
-            # ⚠️ 必须**等它真走到**（`/walk_to` 只是下发路径，立刻返回）：不等的话 3 轮会在同一瞬间
-            #    全打完，每次复查都还在原地 ⇒ 白白跌进闪现兜底（2026-09-11 真机踩过）。
-            _wait_arrival(my_loc, stand[0], stand[1], timeout=10)
+            if rnd < 3:
+                api._post("/walk_to", {"location": my_loc, "x": stand[0], "y": stand[1]})
+                note = f"（先走到 ({stand[0]},{stand[1]}) 他身边）"
+                # ⚠️ 必须**等它真走到**（`/walk_to` 只是下发路径就返回）；⚠️ 超时还得**按距离缩放**——
+                #    写死 10s 对 24 格的长走位根本不够，会白跌进闪现兜底（2026-09-11 真机踩过）。
+                _wait_arrival(my_loc, stand[0], stand[1], timeout=min(45, 8 + gap * 2))
+            else:
+                api._post("/position", {"x": stand[0], "y": stand[1]})
+                note = f"（他一直在走/路挡着，闪现到 ({stand[0]},{stand[1]})）"
+                time.sleep(0.5)
         except Exception:
             break
-    if not close_enough:
-        # 恒 2026-09-11 拍板：「重走失败才 position 兜底」—— 保证"递给"这个动作总能完成，
-        # 但闪现只在这种罕见情况出现（先例：chop_trees 的 `_ensure_at` 也是走不动才 /position）。
-        stand = _stand_tile_near(tx, ty, mx, my)
-        if not stand:
-            return f"⚠️ 走不到 {player_name} 身边，也找不到能站的格——**没递**"
-        try:
-            api._post("/position", {"x": stand[0], "y": stand[1]})
-            note = f"（走不过去，闪现到 ({stand[0]},{stand[1]})）"
-        except Exception as e:
-            return f"⚠️ 走不到 {player_name} 身边，闪现也失败了（{e}）——**没递**"
 
-    # 丢之前最后确认一次距离：闪现可能没落对，或者他又走开了（免得把东西丢在够不着的地方）
-    st3 = api.state()
-    me3 = st3.get("player") or {}
-    t3 = next((o for o in (st3.get("otherPlayers") or []) if (o.get("name") or "") == player_name), None)
-    if t3:
-        far = max(abs(int(t3.get("x", 0)) - int(me3.get("x", 0))),
-                  abs(int(t3.get("y", 0)) - int(me3.get("y", 0))))
-        if far > 3:
-            return f"⚠️ 现在离 {player_name} 还有 {far} 格，磁吸够不上——**没递**（他可能又走开了）"
+    # 丢之前**最后确认一次**距离（他会动；闪现也可能没落对）：太远就**不递**，
+    # 绝不把东西丢在够不着的地方（恒 2026-09-11 拍板）。
+    mine, t3 = _live_target()
+    if t3 is None:
+        return f"⚠️ 最后关头跟丢了 {player_name}——**没递**"
+    far = max(abs(int(t3.get("x", 0)) - int(mine.get("x", 0))),
+              abs(int(t3.get("y", 0)) - int(mine.get("y", 0))))
+    if far > 3:
+        return f"⚠️ 没追上 {player_name}（差 {far} 格）——**没递**，让他停下来说一声我再来"
 
     r = api._post("/drop_item", {"item": item_name, "count": count})
     if not r.get("ok"):
