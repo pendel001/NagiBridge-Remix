@@ -5,7 +5,8 @@ SMAPI mod（C# HTTP API）+ Python MCP 服务器（130 工具）让 AI 像真人
 
 ## 结构
 - ModEntry.cs — SMAPI mod：HTTP API/控制/聊天/导航
-- scripts/nagi_mcp_server.py — MCP 服务器(streamable-http:8000)+状态注入+心跳
+- scripts/nagi_mcp_server.py — MCP 服务器(streamable-http:8000)+状态注入+心跳(工具壳/域在这里)
+- scripts/navigation.py — 导航(走位/跨图BFS/交通/门/买票/回家)；宿主服务由 server 末尾 `navigation.bind(...)` 注入
 - stardew_api.py·player_activity.py·locations.py·calendar_data.py — API封装/行为检测/地图/日历
 - mine_run/bomb_*/fish_run/farm_row 等 — 自动化脚本
 - scripts/mcp_cli.py — 一键调 MCP 工具(调试/临时动作用,不进游戏逻辑)：`python mcp_cli.py <tool> '<json>'`(详见其 docstring 的 kw 对象坑)
