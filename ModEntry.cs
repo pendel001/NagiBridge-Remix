@@ -4225,6 +4225,11 @@ public class ModEntry : Mod
             location = new
             {
                 name = loc.Name,
+                // ⚠️ **同名地点会撞车**：农场上多间小屋的 `.Name` 全是 "Cabin"，按它过滤必错。
+                //    唯一身份在这里（= 反编译 `GameLocation.NameOrUniqueName`，即 `uniqueName ?? name`；
+                //    小屋的 uniqueName 形如 `FarmHouse<guid>`，见 Cabin.cs:61）。
+                //    按地点过滤的功能（cabin collect/enum…）请用它，别用 name。2026-09-11 真机踩到。
+                uniqueName = loc.NameOrUniqueName,
                 mapWidth = loc.Map.DisplayWidth / 64,
                 mapHeight = loc.Map.DisplayHeight / 64
             },
@@ -15513,6 +15518,11 @@ public class ModEntry : Mod
                 ["type"] = obj.Name,
                 ["name"] = obj.Name,
                 ["location"] = locationKey,
+                // ⚠️ 同名建筑（多间 Cabin）光靠 location 名字**区分不开**——唯一名才是身份
+                //    （`FarmHouse&lt;guid&gt;`，反编译 NameOrUniqueName）。下面 building 坐标是
+                //    2026-08 的老绕法，两个都留：**坐标给"进门/精确走位"用，唯一名给"按地点过滤"用**
+                //    （cabin collect / enum 就是踩了只按 name 过滤，四间小屋的机器被加在一起）。
+                ["location_unique"] = loc.NameOrUniqueName,
                 ["x"] = (int)pair.Key.X,
                 ["y"] = (int)pair.Key.Y,
                 ["status"] = status,
@@ -15888,14 +15898,53 @@ public class ModEntry : Mod
         return list;
     }
 
+    /// <summary>
+    /// 按名字找地点。⚠️ **同名地点会撞车**——最典型的是农场上的**多间小屋**：它们的
+    /// <c>.Name</c> 全是 "Cabin"，唯一身份在 <c>uniqueName</c>（`FarmHouse&lt;guid&gt;`）里
+    /// （反编译 Cabin.cs:61 `farmer.homeLocation.Value = base.NameOrUniqueName`）。
+    ///
+    /// 2026-09-11 真机踩到：`cabin collect` 按 "Cabin" 查到了**别间小屋**，只收到 1 件
+    /// （玩家真所在那间有 377 件等着收，第二次收果然 0 件而真屋一台没动）；
+    /// `cabin enum` 的"396 台"也是**四间小屋相加**（377+18+1）。
+    ///
+    /// ⇒ 查找顺序改成：**① 玩家当前所在 → ② 唯一名 → ③ 退回按显示名扫**。
+    /// ① 是游戏自己的语义（`Game1.getLocationFromName` 就是先认 currentLocation，
+    /// 见 Game1.cs:10240-10247），我们原来的实现把这层丢了、一律先按 Name 扫。
+    /// </summary>
     private static GameLocation? FindLocationByName(string name)
     {
+        // ① 玩家脚下这间——同名时它最没有歧义
+        var cur = Game1.currentLocation;
+        if (cur != null
+            && (cur.Name.Equals(name, StringComparison.OrdinalIgnoreCase)
+                || cur.NameOrUniqueName.Equals(name, StringComparison.OrdinalIgnoreCase)))
+            return cur;
+
+        var farm = Game1.getFarm();
+
+        // ② 唯一名（`FarmHouse<guid>` 这种）——同名地点只有它能区分
+        foreach (var loc in Game1.locations)
+        {
+            if (loc.NameOrUniqueName.Equals(name, StringComparison.OrdinalIgnoreCase))
+                return loc;
+        }
+        if (farm != null)
+        {
+            foreach (var b in farm.buildings)
+            {
+                if (b.indoors?.Value is GameLocation indoor
+                    && indoor.NameOrUniqueName.Equals(name, StringComparison.OrdinalIgnoreCase))
+                    return indoor;
+            }
+        }
+
+        // ③ 退回按显示名扫（老行为，保持兼容）。⚠️ 同名地点只会命中**第一个**——
+        //    调用方按地点过滤时请优先传唯一名，别依赖这一步的运气。
         foreach (var loc in Game1.locations)
         {
             if (loc.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
                 return loc;
         }
-        var farm = Game1.getFarm();
         if (farm != null)
         {
             foreach (var b in farm.buildings)

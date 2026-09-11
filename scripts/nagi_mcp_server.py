@@ -933,7 +933,15 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
     # 🎲 运势数值 + (年X)：只在每天第一次(full=True)显示；精简版(后续调用)不重复，省 token（2026-08-22）
     luck_str = f" | 🎲 {luck:+.3f}" if (full and luck is not None) else ""
     year_str = f" (年{year})" if full else ""
-    lines.append(f"📍 {loc_name} ({x},{y}) | ⏰ {time_str} | {weather_text} · {s_icon}{season.title()} | {day_label}{year_str}{luck_str}")
+    # 🔴 单进程折叠（AI 与 host 是同一个进程 ⇒ 所有"AI 操作"都打在这一个角色身上）——
+    #    挂在 📍 行尾当警标（不另起一行省 token）。详细解释在启动横幅和 stardew_api.detect_roles。
+    _solo_tag = ""
+    try:
+        if api.roles_solo():
+            _solo_tag = " | 🔴单进程折叠(AI=host,操作都打它)"
+    except Exception:
+        pass
+    lines.append(f"📍 {loc_name} ({x},{y}) | ⏰ {time_str} | {weather_text} · {s_icon}{season.title()} | {day_label}{year_str}{luck_str}{_solo_tag}")
 
     # 🗺️ map enum（#11，2026-08-13）：注入"本图可用"——商店/设施等有功能的地点报前3项，农场/家/路上不报省 token
     # ⚠️ 2026-08-16：单条长提示（节日 Temp 图）不截断到第一个括号——保留 map_go 误报等关键指引
@@ -1970,6 +1978,16 @@ def _with_state(result: str, force_full: bool = False) -> str:
     # 非文本结果（如 bobber_style("see") 返回的菜单图）原样返回，不附状态条
     if not isinstance(result, str):
         return result
+
+    # 🔌 **热路径重探端口↔角色**（`ensure_roles` 有 30s TTL，且 `_probe_role` 先做 TCP 0.3s 快检，
+    #    所以代价很小）。放这里是为了让错误映射能**自愈**：2026-09-11 之前只有 go_sleep /
+    #    which_role / 计划任务会重探 ⇒ 启动时若撞上"房主已进世界、farmhand 还没加入"的窗口，
+    #    折叠成单进程的错误映射会**挂一整个会话**（所有 AI 操作静默打房主，`cabin statue`
+    #    当天就是这么把恒的角色走掉的）。放在 `_gather_state` 之前，纠正后本次就用新绑定。
+    try:
+        api.ensure_roles()
+    except Exception:
+        pass
 
     # 状态条策略：
     # - 每天第一次工具调用 → full=True（节日/日历全显示）
@@ -6767,28 +6785,48 @@ def mine(ops: str = "", kw: dict | None = None) -> str:
 HOME_MAPS = {"FarmHouse", "Cabin", "IslandFarmHouse"}
 
 
-def _cabin_collect() -> str:
-    """收当前屋的待收机器（限定当前地点，不全农场乱跑）。"""
+def _cur_loc_unique() -> str:
+    """当前地点的**唯一名**（`/state.location.uniqueName`，如小屋的 `FarmHouse<guid>`）。
+    ⚠️ **别再退回 `.name`（显示名）**：农场上多间小屋的 `.Name` 全是 "Cabin"，按名过滤会指错
+    ——2026-09-11 真机踩到，`cabin collect` 收到别间小屋去了。读不到就返回 ""（调用方明说读不到，不猜）。"""
     try:
-        cur = api.state().get("location", {}).get("name", "")
+        return (api.state().get("location") or {}).get("uniqueName") or ""
     except Exception:
-        cur = ""
+        return ""
+
+
+def _cabin_collect() -> str:
+    """收**当前屋**的待收机器（限定当前地点，不全农场乱跑）。
+    ⚠️ 传**唯一名**而不是显示名——理由见 `_cur_loc_unique`。C# `FindLocationByName` 也相应改成
+    「先认玩家当前所在 → 再认唯一名 → 最后才退回按名字扫」（对齐游戏自己的 getLocationFromName）。"""
+    cur = _cur_loc_unique()
+    if not cur:
+        return "❌ 读不到当前屋的唯一名（Mod DLL 太旧，要更新 Mod）——按名字过滤会收到别间小屋去，所以不猜。"
     return collect_machines(location=cur)
 
 
 def _cabin_enum() -> str:
     """扫当前屋：待收机器/雕像/家具清单 + 引导。只在屋内（FarmHouse/Cabin/岛屋）有意义。"""
     try:
-        cur = api.state().get("location", {}).get("name", "")
+        _loc = api.state().get("location") or {}
+        cur, cur_u = _loc.get("name", ""), _loc.get("uniqueName") or ""
         lines = [f"🏠 当前: {cur}"]
         if cur not in HOME_MAPS:
             lines.append(f"⚠️ 小屋域只在屋内用（FarmHouse/Cabin/岛屋）——现在在{cur}，可先 map go 回家")
+            return "\n".join(lines)
+        if not cur_u:
+            # 旧 DLL 没有 `/state.location.uniqueName`。**别退回按显示名过滤**——同名小屋会把几间
+            # 的机器加一起报个假数（2026-09-11 的「396 台」= 377+18+1 就是这么来的）。宁可明说。
+            lines.append("❌ 读不到当前屋的唯一名（Mod DLL 太旧，要更新 Mod）——同名小屋没法区分，不猜。")
             return "\n".join(lines)
         # 1) 待收机器（farm_report 按当前屋过滤）
         try:
             fr = _fetch_farm_report()
             ml = (fr.get("machines") or {}).get("machines") or []
-            ready = [m for m in ml if m.get("status") == "ready" and m.get("location") == cur]
+            # ⚠️ 按 **location_unique** 过滤，不是 `location`（显示名）：农场上多间小屋 `.Name`
+            #    都是 "Cabin"，按名过滤会把四间的机器**加在一起**（2026-09-11 真机 396 台）。
+            ready = [m for m in ml
+                     if m.get("status") == "ready" and m.get("location_unique") == cur_u]
             if ready:
                 names = ", ".join(dict.fromkeys(MACHINE_CN.get(m.get("type", "?"), m.get("type", "?")) for m in ready))
                 lines.append(f"⚙️ 待收机器 {len(ready)} 台：{names}（cabin collect 收）")
@@ -6796,13 +6834,16 @@ def _cabin_enum() -> str:
                 lines.append("⚙️ 屋里没有待收机器")
         except Exception:
             pass
-        # 2) 雕像（家具里找 Statue/雕像）
+        # 2) 雕像 —— ⚠️ **必须扫 object 层**（和 blessing_statue.py 同源；那只认能给增益的那种）。
+        #    原来扫 /furniture，会把**装饰雕像**（家具层 (F)xxxx，如「莉亚做的雕像」）也算进来，
+        #    然后引导 AI 去 `cabin statue` —— 那边扫的是 object 层，必然报"没找到"。
+        #    2026-09-11 真机：enum 报「雕像 1 座」/ statue 报「没找到雕像」，两边打架。
         try:
-            fu = api._get("/furniture")
-            fl = fu.get("furniture") or []
-            stats = [f for f in fl if "Statue" in (f.get("name") or "") or "雕像" in (f.get("name") or "")]
+            su = api._get("/surroundings", {"radius": 30})   # 端点 radius 上限就是 30，够盖住小屋
+            stats = [t for t in (su.get("tiles") or []) if "Statue" in (t.get("object") or "")]
             if stats:
-                lines.append(f"🗿 雕像 {len(stats)} 座：{', '.join(f['name'] for f in stats)}（cabin statue 摸）")
+                names = ", ".join(dict.fromkeys(t.get("object") for t in stats))
+                lines.append(f"🗿 雕像 {len(stats)} 座：{names}（cabin statue 摸）")
             else:
                 lines.append("🗿 屋里没有雕像")
         except Exception:
@@ -10834,7 +10875,7 @@ _DOMAIN_GUIDES = {
 "check": "查询域，what=...：status(完整状态) backpack(逐格价值/星级) worn(穿戴) machines(全场机器清单) mine(下矿进度) silo(干草) mastery(精通) buildings(木匠建筑) quest(开任务日志) chests(当前图箱) storage(箱子网络) look(环视周围) profile(我的技能等级+职业分支,如是否 Luremaster 蟹笼免饵) role(端口↔角色确认:我是谁/恒是谁)。⚠️查概览用 status，查逐格用 backpack，别都调浪费 token。📌profile/role 2026-09-11 从顶层工具收编进来（原来直接叫 profile()/which_role()，现在一律走 check）。📐这个域的参数叫 **what**，**不是 ops**。带参的只有两个: chests(chest=N 看第N个箱) / look(radius=10 环视半径)；其余(status/backpack/worn/machines/mine/silo/mastery/buildings/quest/storage/profile/role)**全无参**。⚠️查概览用 status、查逐格用 backpack，别都调一遍浪费 token。",
 "farm": "农活域(🌱必走，别手动挥工具组合，用域 ops)：till(蓄力锄) plant(种,跳过已种) water(浇,自动跳雨+水壶没水先装满) harvest(收) scythe(镰刀收蒜/花/茶) fertilize(化肥) clear(清杂草石树桩) plot(连通域规划) till_plant(锄+种一条龙) tillfield(蓄力锄矩) plan(方形规划,纯算格) hoe(布局锄) plantlayout(按布局种) chop(砍树) clearground(清单格) collect(一键收机器:只收不放,全农场瞬收不走路) load(放原料) building(一屋收放:拟人走进去收+放料,item留空=只收不放) break(拆/敲同scene,镐子敲可破物/翻已耕地) place(放置/播种同scene) pond/pond_add/pond_feed/pond_collect/pond_fish(鱼塘)。⚠️漏格DLL自动补；高级工具蓄力用 tool_area(别用/tool)。只在 Farm/温室/姜岛。带参 op(plant 的 seed_name、till/clear 的 x/y/rows、fertilize 的 fertilizer_name、place 的 name、building 的 location、collect 的 machine_type、pond_add 的 item)→ kw={'参数名':值}。🐄动物(2026-09-02 care域并入farm): animals(摸+收) 喂水/碗(宠物水) milk(挤奶剪毛) buy(买动物,豁免建议) doors(关门) hay(干草) pet(猫狗) petwalk(拟人摸) 畜舍/这间(这间屋动物) statue(祈福)——⚠️farm water=浇地,动物水用 喂水; farm building=机器收放,这屋动物用 畜舍。📐参数键名: till/clear/plant/fertilize 都是 x,y(**必填**),rows,length,direction；till_plant 另有 seed_name,trellis；harvest/scythe=radius；plot=x,y,radius,all_plots；chop=area；collect=machine_type,location；load=item,machine_type,location；building=location,item,machine_type；place=name,x,y；break=x,y,steps,radius；pond_add=item+x,y（pond_feed/collect/fish 只要 x,y）；buy=animal_type,name,building；petwalk=include_petted；hay=dry_run。⚠️direction 只认 horizontal(默认)/vertical 两个值,别写'横'/'竖'。💡大田洒水器布局(可选,纯自动化建议)：要按洒水器留格/留走道就 plan→hoe→plantlayout 三件套——plan(x1,y1,x2,y2,layout=0,hoe_level=-1,trellis=False) **纯算格不动机器**先看要锄/种哪些; hoe(x1,y1,x2,y2,layout=0) 按布局锄; plantlayout(x1,y1,x2,y2,layout,seed,direct=False,trellis=False) 按布局种(direct=True 瞬移快/默认走位拟人)。**layout 四档**: 0=标准整块(不预留洒水器,锄法蛇形逐格走位,任何锄头等级都行) 1=初级(十字稀疏,每台覆盖上下左右4格;锄法=精确锄每台4格,**与锄头等级无关**) 2=高级(优质,田宽高先裁成**3的倍数**,每3×3中心1台覆盖8格,整块蓄力锄) 3=铱(裁成**5的倍数**,每5×5中心1台覆盖24格;⚠️爬架作物不适用)。hoe_level: 0→1格 1→3线 2→5线 3→3×3 4→6×3,-1=自动读手持。trellis=True=爬架作物(啤酒花/青豆/葡萄,不可通过格)⇒自动**种2留1**留走道让AI能进田浇收。只管种不摆洒水器就直接 till_plant,不用三件套。⚠️已知限制: layout 0/2/3 碰上金/铱锄(hoe_level>=3)会报**0处锄地站位**并自打一行'落点未实测校准,暂不规划蓄力站位'——**那是刻意不猜不是出错**; layout 1 不吃蓄力站位不受影响。",
 "mine": "下矿域(⚒️ 矿井/头骨/火山)：go(去挖矿:mode=rush冲层/farm刷矿,start起始层,target目标层,ore,cycles圈数) progress(进度) bomb_status/bomb_plan/bomb_place/bomb_collect/bomb_ladder/bomb_retreat(单步炸,**都要 bomb_ 前缀**) bomb_mine(自动) bomb_volcano(火山) organize(整理背包)。🔁**刷矿=mode=go(mode=farm)**：定点刷指定矿→ore=Copper铜(21层)/Iron铁(41层)/Gold金(71层)；**煤靠 farm 铁层(41)顺手清尘埃精灵/蝙蝠掉**（不是 ore 选项，跑 auto 内部刷）。🏃下矿=mode=go(mode=rush,start可选≤电梯上限+5倍数,target默认120)。⚠️无镐/血低硬拦；梯子 /ladder+confirm。⚠️bomb_mine 没炸弹+host在同矿井→自动转【内部】协同(跟随host+帮忙敲矿/打怪)不撤退出矿(bomb_escort 不对外暴露、AI 不主动启用)；bomb_retreat 结束协同+停脚本+脱离矿井回门口。⚠️接「深处的危险」重置电梯→起始层动态从1起(内置脚本自动读，不暴露工具)；刷矿目标层不可直达会上报，需先冲层带回或改浅层。📐带参速查: go(mode=rush冲层/farm刷矿, start起始层, target目标层, ore=Copper铜/Iron铁/Gold金, cycles圈数, hp_threshold, food_sta, food_hp, resume) bomb_plan(radius,min_covered,top) bomb_place(x,y **必填**) bomb_collect(max_items) bomb_mine(target,bomb,min_covered,follow_host,lead,autodrop,one_floor) bomb_volcano(bomb,min_covered,hp_threshold,max_minutes,poll) organize(disable,reset)。💣bomb 三个取值 'Cherry Bomb'樱桃/'Bomb'黑/'Mega Bomb'超级——**点名的包里没有就按 黑>超级>樱桃 自动换成有的**(不会误报没炸弹)；范围 樱桃=边长7十字 / 黑=11x11方块 / 超级=15x15方块，⚠️黑和超级**会炸伤自己**(实测黑掉3血)。⚠️bomb_volcano **要求 host 已在矿/火山里**才放行(火山瓦片没法程序化换层)。⚠️bomb_mine one_floor=True=逐层模式(同步,只跑一层出摘要,不撤退)；**默认冲层模式=异步后台跑,推荐**。💡出发前占位物(恒2026-08-23)：提前放1个可堆叠物(铱矿/铱锭/五彩碎片)在包，满包时同种战利品自动堆叠吸附、少触发满包停；别拿银河之魂这类带死亡会丢的稀有物当占位。",
-"cabin": "小屋引导域(🏠 FarmHouse/Cabin/岛屋；不传=扫屋)：enum(扫**本屋**查待收) collect(收机器) statue(雕像) furniture(扫家具) interact(点家具,tile_x/tile_y) pickup(拿起家具,tile_x/tile_y) cook(做饭,recipe_name) sleep(睡觉,who=谁床：不传/房主名=睡房主床一起睡,传自己名=睡自己床) cook(做饭,recipe_name,count) place/break(同scene)。📐参数键名: interact/pickup=**tile_x,tile_y(不是x,y)** cook=recipe_name,count sleep=who place=name,x,y break=x,y,steps,radius；enum/collect/statue/furniture 无参。kw={'参数名':值}。",
+"cabin": "小屋引导域(🏠 FarmHouse/Cabin/岛屋；不传=扫屋)：enum(扫**本屋**查待收) collect(收**本屋**机器;要全农场→farm collect) statue(雕像) furniture(扫家具) interact(点家具,tile_x/tile_y) pickup(拿起家具,tile_x/tile_y) cook(做饭,recipe_name) sleep(睡觉,who=谁床：不传/房主名=睡房主床一起睡,传自己名=睡自己床) cook(做饭,recipe_name,count) place/break(同scene)。📐参数键名: interact/pickup=**tile_x,tile_y(不是x,y)** cook=recipe_name,count sleep=who place=name,x,y break=x,y,steps,radius；enum/collect/statue/furniture 无参。kw={'参数名':值}。",
 "social": "社交域：chat(搭话,name=NPC名) gift(送礼,npc_name/item_name) give(送玩家物品,手持右键正式赠予,一次一个要等同意) hand(递给玩家,走过去丢他脚边,磁吸自动收,可整叠) send(发消息,message) emote(表情,name) friendship(查好感,npc_name) movie(影院,npc)。📐参数键名: chat=name / gift=npc_name+item_name / give=player_name+item_name / hand=player_name+item_name+count(0=整叠) / send=message / emote=name(默认爱心) / friendship=name / movie=npc。⚠️**give vs hand**：give=面对面正式赠予(手持右键,一次一个,要等同意)；hand=走过去丢他脚边(磁吸自动收,**可整叠**)——想整叠给/对方不在手边就用 hand。kw={'参数名':值}。",
 "scene": "场景交互域(点东西/工具/转身/捡/坐)：at(tile_x,tile_y)(点指定格/柜台) interact(点面前) use(挥工具) face(转向0上1右2下3左) select(拿手上) sit(x,y[,face])(**坐椅子**:自动走到座位旁再坐,上不了会明确报错;状态条「🪑 可交互：sit(x,y)」给坐标;可选 face=坐下朝向0上1右2下3左,**只对「朝向来自坐下那刻面朝方向」的座位生效**(反编译:stool 类/opposite 长椅/名字带Stool的家具),其它写死——吃不吃由端点回的 face 字段说了算,不生效会在回报里点名) stand(**起身**:坐着时用,没坐着明确报错,带动画+轮询确认) seats(radius=12)(扫附近能坐的椅子/长凳/沙发,✋=可改朝向) pickup(拿起家具) pickup_scene(捡当前场景物) berry(摇浆果) spot(挖蚯蚓点) moss(绿雨搜苔藓) rock(室外镐击:敲当前图可破物,采石场/挖掘场/蚌矿场跳普通石,dig/dry,battle-free) garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物) furniture(扫家具) place(放置/播种:name=物品名,x/y=目标格→箱子/树种/蟹笼落地或种下,只放可放置物) break(拆/敲:x,y=目标格,steps=挥击次,radius=方圆→镐子敲石头/翻已耕地,跳过箱子/容器格) maze(迷宫视图r半径,gx/gy目标格→ASCII棋盘#墙.可走P自己G目标) maze_seg(走法链gx,gy目标→拆直走廊列表+拼「左/右上/下走到(x,y)」多段链,AI按段walk_to) maze_walk(走迷宫 waypoints=「x,y x,y…」依次walk_to) pan(淘金/淘盘:本图水下闪光点→岸边走位面水→铜锅淘金收掉落) front/rummage(分别是interact/garbage的别名)。📌**坐着想起来：scene stand**（2026-09-11 起有正门，别再拿 at 猜一个够得着的格子——那条路会静静失败）。📐带参速查(键名必须=下面这些,**写错会被静默丢掉、不报错**): at(tile_x,tile_y) **⚠️是 tile_x/tile_y 不是 x/y** / pickup(tile_x,tile_y **同 at 用 tile_**) / use(name) / face(direction 0上1右2下3左) / select(name) / sit(x,y,face) / seats(radius=12) / pickup_scene(max_items=30) / moss(radius,target_max,rounds,dry_run) / rock(dig,radius,max_break,break_stone) / garbage(loc,pos,wait,dry_run) / pan(dry_run,radius,timeout) / drop(name,count) / place(name,x,y) / break(x,y,steps,radius) / maze(radius,gx,gy) / maze_seg(gx,gy,radius) / maze_walk(waypoints,location,max_wait,max_seg)。kw={'参数名':值}。",
 "menu": "菜单/界面域(开→看→点)：read(看菜单) advance(推进剧情/对话) click(option/item/button/xy 点;action=claim领/action=discard丢桶腾格;slot=序号领指定格) key(ok/esc/数字按键) cancel(关弹窗/撤就绪) shop(逛店) sell(卖商店) bin(投出货箱) craft(合成) recipes(菜谱) craftables(配方) forge(锻造) geode/geodes(砸晶球) customize(捏人) bundle(献祭缺口·**只读存档不走路**) bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读消耗品:书/秘密纸条/日记残页,统一走右键读 name=物品名) levelup_choose(技能升级职业选择 5/10级:不带参读左右选项,side=left/right 或 profession=职业id 定分支;普通升级自会确认OK) number(数量输入:展览会兑换台/转盘押注 NumberSelectionMenu) minigame(赌场小游戏点按钮 action=hit/stand/bet10/…) minigame_state(读牌面/转盘) display_fill(农展台放满 items='钻石,山羊奶酪') display_takeback(收好) journal(开任务日志→menu read 读卡,翻页=click(button=forward/back),领奖励=click(button=rewardBox)) know(查特别订单详情/知识库SPECIAL_ORDERS,如menu know 岛屿食材;2026-09-02 task域退役并入menu)。📐参数键名: click=option,button,x,y,item,right,quantity,action,real,slot,category(**action=claim领 / discard丢桶腾格**;button 用按钮名 ok/upperRightCloseButton/forward/back/rewardBox/mainButton) / key=key,count,hold / number=value,confirm / shop=place,want / sell=name,count(-1=全卖) / bin=name,sell_all / craft=item_name,count / forge=item1,item2,mode,target / geodes=count / customize=name,farmname,favorite / bundle=area / bundle_kb=query / read_book=name / levelup_choose=side,profession(**不带参=只读当前左右选项**,供配 check(what=profile) 分析后再决定) / minigame=action,x,y / display_fill=items。⚠️cook(做饭)**不在 menu 在 cabin**。🚫满包接鱼/领箱:原 claim_swap(替换领取)已退役→**click action=discard 丢桶腾格(回收返金)+action=claim 领取(或用 slot 领指定格;不想要直接 button=ok 关掉)**。🧾关闭菜单一律 click(button=upperRightCloseButton)（ItemGrabMenu/交付容器用 button=ok 确认才关）；订单交付容器(QuestContainerMenu)=点背包对应物品格(见slots的坐标)→放进→点 button=ok 结算；任务日志领钱=点击已完成的有钱任务卡后 click(button=rewardBox)；兑奖机兑换=click(button=mainButton)；特别订单领奖链=日志领钱(上面)→社区板旁领奖箱(60,93)拿兑奖券→刘易斯家兑奖机(mainButton)兑换。",
@@ -14494,12 +14535,26 @@ if __name__ == "__main__":
         print(f"  {_tool_count} tools registered | schema 估算 ~{_schema_estimate()} 字符")
         print(f"  会话日志: {_SESSION_LOG_PATH}")
         # ⚠️ 2026-08-14：端口↔角色按"谁先开游戏谁占7842"分配，启动即探测打印映射。
-        #    游戏未开会注明，运行时会随 go_sleep/which_role 自动检测对齐。
+        #    游戏未开会注明，运行时会自动检测对齐（见 _build_state_strip 的热路径重探）。
+        # 🔴 2026-09-11：**solo（折叠成单进程）必须大声报**，不能混在正常行里 ——
+        #    那天就是在"房主已进世界、farmhand 还没加入"的窗口重启了服务，两个端口都落 7842，
+        #    `cabin statue` 于是把恒的角色走掉了、还摸了他雕像。单单一行 `AI(恒)=7842 | host(恒)=7842`
+        #    我没看出来（名字重复就是征兆）。
         try:
             _roles = api.ensure_roles()
             if _roles.get("ok"):
                 _a, _h = _roles["ai"], _roles["host"]
                 print(f"  ✅ 角色映射: AI({_a.get('name','?')})={_a['port']} | host({_h.get('name','?')})={_h['port']}")
+                if _roles.get("solo"):
+                    print()
+                    print("  " + "!" * 64)
+                    print(f"  ⚠️⚠️  单进程折叠：AI 和 host 都指向 {_a['port']}（{_a.get('name','?')}）")
+                    print("  ⚠️⚠️  这意味着**所有『AI 操作』都会打到这一个角色身上**！")
+                    print("  ⚠️⚠️  若这是多人世界（房主 + farmhand 两个进程）：多半是 farmhand")
+                    print("       还没进世界就重启了本服务。**等它进世界后重启本服务**即可。")
+                    print("        （热路径每 30s 会重探一次，两进程都在时会自动纠正）")
+                    print("  " + "!" * 64)
+                    print()
             else:
                 print(f"  ⏳ 游戏进程未就绪（{_roles.get('error','?')}），运行时会自动检测")
         except Exception:

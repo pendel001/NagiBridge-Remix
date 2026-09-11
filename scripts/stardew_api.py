@@ -802,23 +802,38 @@ def _set_roles(ai_port: int, host_port: int):
 
 
 def detect_roles(ports=(7842, 7843)) -> dict:
-    """探测端口↔角色映射。返回 {ok, ai:{port,name}, host:{port,name}, probes}。
-    单进程（单人测试）→ AI=host=该端口。都没响应 → ok:False（保持现状）。"""
+    """探测端口↔角色映射。返回 {ok, ai:{port,name}, host:{port,name}, solo, probes}。
+    单进程（单人测试）→ AI=host=该端口，且 `solo=True`。都没响应 → ok:False（保持现状）。
+
+    ⚠️ **`solo=True` 是个危险状态**（2026-09-11 真机踩到）：多人世界（房主 + farmhand 两个进程）
+    里若在"房主已进世界、farmhand 还没加入"的窗口重启 MCP 服务，就只会探到一个进程、被折叠成
+    solo ⇒ **AI 和 host 都指向房主** ⇒ 所有"AI 操作"（含 `_run_script` 起的脚本）静默打在房主身上。
+    当天 `cabin statue` 就是这么把恒的角色走掉、还摸了他雕像的。
+    ⇒ 调用方**必须**把 solo 当警告处理（启动横幅要印醒目、状态条要标），别当成正常单人模式。
+    """
     probes = [_probe_role(p) for p in ports]
     live = [p for p in probes if p.get("role")]
     ai = next((p for p in live if p["role"] == "ai"), None)
     host = next((p for p in live if p["role"] == "host"), None)
+    solo = None
     if live and len(live) == 1 and (ai is None or host is None):
         solo = live[0]  # 单人：唯一进程既是 host 也当 AI
         host = host or solo
         ai = ai or solo
     if not ai or not host:
-        return {"ok": False, "ai": ai, "host": host, "probes": probes,
+        return {"ok": False, "ai": ai, "host": host, "solo": False, "probes": probes,
                 "error": f"探测不完整（{len(live)} 个响应）：需同时有 host+AI 进程"}
     _set_roles(ai["port"], host["port"])
     global _ROLES_CACHE
-    _ROLES_CACHE = {"ts": time.time(), "map": {"ai": ai, "host": host}}
-    return {"ok": True, "ai": ai, "host": host, "probes": probes}
+    _ROLES_CACHE = {"ts": time.time(), "map": {"ai": ai, "host": host, "solo": solo is not None}}
+    return {"ok": True, "ai": ai, "host": host, "solo": solo is not None, "probes": probes}
+
+
+def roles_solo() -> bool:
+    """当前映射是不是"单进程折叠"（AI 与 host 都指同一个进程）。
+    ⚠️ 是的话**所有 AI 操作都会打在那一个角色身上**——多人世界里通常意味着
+    "重启 MCP 服务时 farmhand 还没进世界"。读不到缓存 → False（还没探过，不瞎报）。"""
+    return bool((_ROLES_CACHE.get("map") or {}).get("solo"))
 
 
 def ensure_roles(ttl=30) -> dict:
@@ -833,9 +848,9 @@ def which_role() -> dict:
     """确认当前角色映射（MCP which_role 工具用）。"""
     r = detect_roles()
     if not r.get("ok"):
-        return {"ok": False, "ai": None, "host": None, "error": r.get("error"),
+        return {"ok": False, "ai": None, "host": None, "solo": False, "error": r.get("error"),
                 "note": f"游戏进程未全部就绪。AI_BASE_URL={AI_BASE_URL}"}
-    return {"ok": True,
+    return {"ok": True, "solo": bool(r.get("solo")),
             "ai": {"port": r["ai"]["port"], "name": r["ai"].get("name")},
             "host": {"port": r["host"]["port"], "name": r["host"].get("name")}}
 
