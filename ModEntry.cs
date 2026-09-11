@@ -214,6 +214,88 @@ internal static class AchievementToastPatch
     }
 }
 
+/// <summary>
+/// 🎁 地上赠送彩蛋（2026-09-11 反编译 + 真机验）：**谁丢的**由 `Debris.DroppedByPlayerID` 权威给出。
+/// 全量反编译（35 万行）里只有两处给它赋值，都是**玩家手动丢**（都赋的是 `Game1.player.UniqueMultiplayerID`）：
+///   `InventoryPage.receiveLeftClick`  把物品**拖出背包格子外**松手
+///   `Toolbar.receiveRightClick`       **Shift/Ctrl + 右键点快捷栏格**（⚠️ 压根不开背包）
+/// 砍树/挖矿/钓鱼/机器产出的 debris 恒为 0 ⇒ 天然不会误报。
+///
+/// `collect` 是所有 debris 入包的**唯一漏斗**（`debris.RemoveWhere(d => d.updateChunks(...))` 内部调它，
+/// 另 3 处 isEssentialItem 自动收也走它）。磁吸本身就是 CA 设计的"送人"机制：
+/// `findBestPlayer` 让**非丢弃者优先**（丢的人更近也不抢）+ 起手 1200ms（`timeBeforeReturnToDroppingPlayer`）直接排除丢弃者。
+///
+/// ⚠️ **别再往 `OnInventoryChanged` 上挂**（2026-09-11 真机踩过）：SMAPI 的 `Player.InventoryChanged`
+///   **不是同步触发**的 —— 反编译 StardewModdingAPI.dll 可见它在 `OnGameUpdating` 里做"**下一帧**背包
+///   快照比对"（`currentPlayer.Inventory.IsChanged`）才 Raise。而 `collect` 返回时那一帧还没到 ⇒
+///   "prefix 亮标记、小新闻读到"这条链**永远接不上**（标记在 postfix 就清了，事件下一帧才来）。
+///   另：`IsEquipItem` 会把饰品/衣服过滤掉 ⇒ 蹭小新闻的话"丢个鹦鹉蛋给你"压根不会报。
+///   ⇒ 改成**直接从 collect 记账**：这里物品引用、整叠数量、`__result`（真进包没有）全是现成的。
+/// </summary>
+[HarmonyPatch(typeof(Debris), nameof(Debris.collect))]
+internal static class DebrisCollectPatch
+{
+    private static int _probeCount;          // 🩺 无主 debris 只打前 5 次（防炸矿刷屏）
+    private static Item? _capturedItem;      // 🎁 本次抓到的物品（collect 成功时会把 __instance.item 置 null，得提前抓）
+    private static int _capturedCount = 1;   // 🎁 整叠数量——**必须 prefix 里就读**：addItemToInventoryBool 合并进已有堆时会改这个 Stack
+    private static string? _capturedFrom;    // 🎁 丢弃者名
+
+    internal static void Prefix(Debris __instance, Farmer farmer)
+    {
+        _capturedItem = null;
+        _capturedFrom = null;
+        _capturedCount = 1;
+        try
+        {
+            long dropId = 0;
+            try { dropId = __instance.DroppedByPlayerID.Value; } catch { }
+            bool isLocal = false;
+            try { isLocal = farmer != null && farmer.IsLocalPlayer; } catch { }
+            string itemId = "";
+            try { itemId = __instance.itemId?.Value ?? ""; } catch { }
+
+            if (dropId == 0)
+            {
+                // 🩺 无主 = 机器产出/自己砍的。只打前 5 次，用来证明"补丁确实在代码路径上"
+                if (_probeCount++ < 5)
+                    ModEntry.Instance?.Monitor.Log($"[gift] collect(无主·跳过) 本进程={Game1.player?.Name} farmer={farmer?.Name ?? "null"} isLocal={isLocal} item={itemId}", LogLevel.Info);
+                return;
+            }
+            if (ModEntry.Instance == null || farmer == null || !isLocal) return;   // 带标记但不是"我"在捡 → 不归本进程管
+
+            _capturedFrom = ModEntry.DropNameOf(dropId);
+            try { _capturedItem = __instance.item; } catch { }
+            try { if (_capturedItem != null) _capturedCount = Math.Max(1, _capturedItem.Stack); } catch { }
+            if (_capturedItem == null && !string.IsNullOrEmpty(itemId))
+            {
+                // 兜底：1.6 里少数 debris 只有 itemId（丢叠数，只能记 1）
+                try { _capturedItem = ItemRegistry.Create(itemId, 1); } catch { }
+            }
+            ModEntry.Instance.Monitor.Log($"[gift] ⬅ 有主 丢弃者={_capturedFrom} item={itemId} ×{_capturedCount}（本进程={Game1.player?.Name}）", LogLevel.Info);
+        }
+        catch { }
+    }
+
+    /// <summary>⚠️ 只在 `__result == true`（真进包了）时记账：背包满被拒 = 没给成，不报。</summary>
+    internal static void Postfix(bool __result)
+    {
+        try
+        {
+            if (__result && _capturedFrom != null && _capturedItem != null)
+            {
+                ModEntry.Instance?.RecordGift(_capturedFrom, _capturedItem, _capturedCount);
+                ModEntry.Instance?.Monitor.Log($"[gift] 🎁 记账 {_capturedFrom} → {_capturedItem.DisplayName}×{_capturedCount}", LogLevel.Info);
+            }
+        }
+        catch { }
+        finally
+        {
+            _capturedItem = null;
+            _capturedFrom = null;
+        }
+    }
+}
+
 /// <summary>⚠️ 10048 端口冲突修复（2026-08-19）：双开（host 7842 + farmhand 7843）同机时，
 /// farmhand 的 LidgrenServer.initialize() 硬绑端口 24642（被 host 占用）→ SocketException 10048
 /// → farmhand 的 GameServer 起不来（网络层不完整，Proposal 应答传不回 host）。
@@ -396,6 +478,12 @@ public class ModEntry : Mod
     private readonly Dictionary<string, PickupInfo> _pendingPickups = new();
     private readonly object _pickupLock = new();
     private int _lastPickupTick = -1;
+    // 🎁 礼物缓冲：与普通拾取共用"停顿后落新闻"的节拍，但**独立队列**（来源不同、抬头不同）
+    private readonly Dictionary<string, PickupInfo> _pendingGifts = new();
+    // 🎁 已记账的礼物 (ItemKey, 数量, tick)。⚠️ 用途只有一个：让普通拾取那条把礼物的份额剔掉。
+    //    因为 SMAPI 的 Player.InventoryChanged 是**下一帧快照比对**才 Raise 的（比 collect 晚一拍），
+    //    同一叠东西会同时被"礼物通道"和"普通拾取通道"看到 → 不剔就报两遍。
+    private readonly List<(string Key, int Count, int Tick)> _recentGifts = new();
     private const int PICKUP_FLUSH_TICKS = 45;      // ~0.75s 无新拾取则落新闻
     // 物品数量快照（区分"新获得"与"挪位/换位"），初始化于世界就绪时
     private readonly Dictionary<string, int> _invCounts = new();
@@ -417,6 +505,7 @@ public class ModEntry : Mod
         public string Stats = "";
         public string Description = "";
         public int Count;
+        public string? GiftFrom;      // 🎁 非空 = 这叠是"某人丢给你的"（值=丢弃者名）
     }
 
     // 过夜结算（ShippingMenu）：AI 和恒的聊天窗口（游戏时间暂停）——复盘今天、商量明天，
@@ -604,6 +693,22 @@ public class ModEntry : Mod
                 else
                 {
                     Monitor.Log("Harmony: 找不到 Game1.addHUDMessage，成就 toast 播报未生效", LogLevel.Error);
+                }
+
+                // 🎁 地上赠送彩蛋（2026-09-11）：patch Debris.collect，读 DroppedByPlayerID 认"这一叠是谁丢的"
+                var collectMethod = AccessTools.Method(typeof(Debris), nameof(Debris.collect));
+                if (collectMethod != null)
+                {
+                    var giftPrefix = AccessTools.Method(typeof(DebrisCollectPatch), nameof(DebrisCollectPatch.Prefix));
+                    var giftPostfix = AccessTools.Method(typeof(DebrisCollectPatch), nameof(DebrisCollectPatch.Postfix));
+                    harmony.Patch(collectMethod,
+                        prefix: new HarmonyMethod(giftPrefix),
+                        postfix: new HarmonyMethod(giftPostfix));
+                    Monitor.Log("Harmony: Debris.collect 补丁已应用（地上赠送彩蛋）", LogLevel.Info);
+                }
+                else
+                {
+                    Monitor.Log("Harmony: 找不到 Debris.collect，地上赠送彩蛋未生效", LogLevel.Error);
                 }
             }
         }
@@ -1079,7 +1184,11 @@ public class ModEntry : Mod
 
             // 3. 新获得物品入缓冲（停顿后再落新闻，凑成一批）
             foreach (var (item, delta) in gained)
+            {
+                // 🎁 礼物走 Debris.collect 那条独立通道（见 RecordGift）：这里把它的份额剔掉，别同一叠报两遍
+                if (ConsumeGiftRecord(ItemKey(item), delta)) continue;
                 AddPendingPickup(item, delta);
+            }
         }
         catch (Exception ex)
         {
@@ -1087,56 +1196,102 @@ public class ModEntry : Mod
         }
     }
 
+    /// <summary>🎁 由 DebrisCollectPatch 在 collect 成功（__result=true）时调用：这一叠确认到手了。</summary>
+    internal void RecordGift(string from, Item item, int count)
+    {
+        lock (_pickupLock)
+        {
+            string key = $"{ItemKey(item)}|gift|{from}";
+            if (_pendingGifts.TryGetValue(key, out var info)) info.Count += count;
+            else _pendingGifts[key] = MakePickupInfo(item, count, from);
+            _recentGifts.Add((ItemKey(item), count, Game1.ticks));
+            if (_recentGifts.Count > 60) _recentGifts.RemoveRange(0, 20);
+            _lastPickupTick = Game1.ticks;      // 与普通拾取共用停顿计时
+        }
+    }
+
+    /// <summary>🎁 普通拾取端调用：这笔新获得是不是刚被礼物通道记过账？是 → 吃掉记录、别再报一遍。</summary>
+    private bool ConsumeGiftRecord(string key, int count)
+    {
+        lock (_pickupLock)
+        {
+            for (int i = _recentGifts.Count - 1; i >= 0; i--)
+            {
+                var g = _recentGifts[i];
+                if (Game1.ticks - g.Tick > 180) continue;        // 3 秒外的作废（防误吞此后别的拾取）
+                if (g.Key == key && g.Count == count) { _recentGifts.RemoveAt(i); return true; }
+            }
+        }
+        return false;
+    }
+
+    private PickupInfo MakePickupInfo(Item item, int count, string? giftFrom) => new PickupInfo
+    {
+        Key = ItemKey(item),
+        DisplayName = SafeDisplayName(item),
+        Quality = (item as StardewValley.Object)?.Quality ?? 0,
+        Value = SafeSellPrice(item),
+        Stats = DescribeItemStats(item),
+        Description = ShortDescription(item),
+        Count = count,
+        GiftFrom = giftFrom
+    };
+
     private void AddPendingPickup(Item item, int delta)
     {
         lock (_pickupLock)
         {
-            if (_pendingPickups.TryGetValue(ItemKey(item), out var info))
-            {
-                info.Count += delta;
-            }
-            else
-            {
-                _pendingPickups[ItemKey(item)] = new PickupInfo
-                {
-                    Key = ItemKey(item),
-                    DisplayName = SafeDisplayName(item),
-                    Quality = (item as StardewValley.Object)?.Quality ?? 0,
-                    Value = SafeSellPrice(item),
-                    Stats = DescribeItemStats(item),
-                    Description = ShortDescription(item),
-                    Count = delta
-                };
-            }
+            if (_pendingPickups.TryGetValue(ItemKey(item), out var info)) info.Count += delta;
+            else _pendingPickups[ItemKey(item)] = MakePickupInfo(item, delta, null);
             _lastPickupTick = Game1.ticks;
         }
     }
 
     private void FlushPickupNews()
     {
-        List<PickupInfo> items;
+        List<PickupInfo> items, gifts;
         lock (_pickupLock)
         {
-            if (_pendingPickups.Count == 0) return;
+            if (_pendingPickups.Count == 0 && _pendingGifts.Count == 0) return;
             items = _pendingPickups.Values.ToList();
+            gifts = _pendingGifts.Values.ToList();
             _pendingPickups.Clear();
+            _pendingGifts.Clear();
         }
 
-        var lines = new List<string>();
         var descQualities = new HashSet<int>();      // 同批内多个同星级物品只插一次文字描述
-        foreach (var info in items)
+
+        // 排版：礼物/普通拾取**共用同一套**（星级/名字/×N/(价)/属性 + 📖 描述）——礼物只是换了抬头，信息不缩水
+        List<string> BuildLines(IEnumerable<PickupInfo> src)
         {
-            string q = info.Quality switch { 1 => "[银]", 2 => "[金]", 3 => "[铱]", _ => "" };
-            var bits = new List<string> { $"{q}{info.DisplayName}" };
-            if (info.Count > 1) bits.Add($"×{info.Count}");
-            if (info.Value > 0) bits.Add($"({info.Value}g)");
-            if (!string.IsNullOrEmpty(info.Stats)) bits.Add(info.Stats);
-            lines.Add("· " + string.Join(" ", bits));   // 不加"获得:"（也没统计失去），省 token
-            // 描述：同批同星级一次 + 当天内同(物品|星级)第一次（跨批不重复）
-            if (!string.IsNullOrEmpty(info.Description) && descQualities.Add(info.Quality) && _descShownToday.Add(info.Key))
-                lines.Add($"  📖 {info.Description}");
+            var lines = new List<string>();
+            foreach (var info in src)
+            {
+                string q = info.Quality switch { 1 => "[银]", 2 => "[金]", 3 => "[铱]", _ => "" };
+                var bits = new List<string> { $"{q}{info.DisplayName}" };
+                if (info.Count > 1) bits.Add($"×{info.Count}");
+                if (info.Value > 0) bits.Add($"({info.Value}g)");
+                if (!string.IsNullOrEmpty(info.Stats)) bits.Add(info.Stats);
+                lines.Add("· " + string.Join(" ", bits));   // 不加"获得:"（也没统计失去），省 token
+                // 描述：同批同星级一次 + 当天内同(物品|星级)第一次（跨批不重复）
+                if (!string.IsNullOrEmpty(info.Description) && descQualities.Add(info.Quality) && _descShownToday.Add(info.Key))
+                    lines.Add($"  📖 {info.Description}");
+            }
+            return lines;
         }
-        AddRecentEvent("pickup", string.Join("\n", lines), Game1.ticks);
+
+        // 普通拾取（自己砍/挖/钓/收来的）
+        if (items.Count > 0)
+            AddRecentEvent("pickup", string.Join("\n", BuildLines(items)), Game1.ticks);
+
+        // 🎁 别人丢给你的（2026-09-11）：独立队列，**从不进普通拾取行**（不报两遍）。
+        //    给 AI 的（recent_events）+ 给恒的粉色 ack（双端可见，让恒知道 AI 真收下了）各一条。
+        //    措辞第三方视角 ⇒ 哪天反向（AI 丢给恒）也照样读得通。
+        foreach (var g in gifts.GroupBy(i => i.GiftFrom!))
+        {
+            AddRecentEvent("gift", $"🎁 {g.Key} 丢给你\n{string.Join("\n", BuildLines(g))}", Game1.ticks);
+            Broadcast($"🎁 {Game1.player?.Name} 收下了 {g.Key} 丢的 {string.Join("、", g.Select(i => $"{i.DisplayName}×{i.Count}"))}");
+        }
     }
 
     // ── 穿戴单件新闻：每 15 tick 比对签名，只报变化的槽位 ──
@@ -14024,10 +14179,14 @@ public class ModEntry : Mod
                     if (d != null && d.Chunks.Count > 0)
                     {
                         string name = "?";
+                        int stack = 1;
                         try
                         {
                             if (d.item != null)
+                            {
                                 name = d.item.Name ?? "";
+                                stack = d.item.Stack;
+                            }
                             else if (!string.IsNullOrEmpty(d.itemId?.Value))
                             {
                                 // SDV 1.6: d.item 常为 null（炸矿/敲碎的 debris），用 itemId 兜底取名字
@@ -14036,11 +14195,22 @@ public class ModEntry : Mod
                             }
                         }
                         catch { }
+                        // 🎁 丢弃者标记（2026-09-11 反编译实锤）：只有**玩家手动丢**才非 0——
+                        //    全量反编译里只有两处赋值，都在 `Game1.player` 上：
+                        //      InventoryPage.receiveLeftClick  拖出背包格子外松手（256191）
+                        //      Toolbar.receiveRightClick        Shift/Ctrl + 右键点快捷栏格（283154，不开背包）
+                        //    砍树/挖矿/钓鱼/机器产出的 debris 恒为 0 ⇒ 这是"谁丢给你的"唯一权威来源。
+                        //    NetLong 字段、随 NetFields 同步 ⇒ 对端进程理论上也读得到（本次探测就是在验这条）。
+                        long dropId = 0;
+                        try { dropId = d.DroppedByPlayerID.Value; } catch { }
                         debrisList.Add(new
                         {
                             x = (int)(d.Chunks[0].position.X / 64f),
                             y = (int)(d.Chunks[0].position.Y / 64f),
-                            itemName = name
+                            itemName = name,
+                            stack = stack,
+                            droppedBy = dropId,
+                            droppedByName = DropNameOf(dropId)
                         });
                     }
                 }
@@ -14052,6 +14222,21 @@ public class ModEntry : Mod
             }
         });
         return tcs.Task.GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// 🎁 UniqueMultiplayerID → 玩家名（丢弃标记解码用）。0/查不到 → ""；查得到 ID 但对不上人 → "#id"。
+    /// </summary>
+    internal static string DropNameOf(long id)
+    {
+        if (id == 0) return "";
+        try
+        {
+            foreach (var f in Game1.getAllFarmers())
+                if (f != null && f.UniqueMultiplayerID == id) return f.Name;
+        }
+        catch { }
+        return $"#{id}";
     }
 
     /// <summary>

@@ -342,7 +342,9 @@ def _gather_state() -> dict:
                 items = {}
                 for d in r.get("debris", []):
                     n = d.get("itemName", "") or "?"
-                    items[n] = items.get(n, 0) + 1
+                    # 2026-09-11：按**实际叠数**计——一叠 53 个是一个 debris（C# 端新出 stack 字段），
+                    # 原来 +1 会把它显示成"1 个"。缺字段的老 DLL 兜底 1。
+                    items[n] = items.get(n, 0) + (d.get("stack") or 1)
                 if items:
                     data["debris"] = items
     except:
