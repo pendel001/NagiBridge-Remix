@@ -2503,6 +2503,7 @@ public class ModEntry : Mod
                 "/chat/push" => HandleChatPush(ctx),
                 "/chat/history" => HandleChatHistory(),
                 "/mail" => HandleMail(),   // 📬 读邮箱未读邮件（2026-08-15恒：AI要看信）
+                "/bundles" => HandleBundles(),   // 🎁 献祭**存档状态**（只读，不走路——2026-09-11恒拍板重编）
                 "/hud" => HandleHud(ctx),   // 💬 HUD通知（Game1.addHUDMessage）——⚠️ 2026-08-15恒：不再用于推送给user（过夜复盘看不到），统一走/chat
                 "/buy_animal" => HandleBuyAnimal(ctx),
                 "/sprinklers" => HandleSprinklers(),
@@ -3635,6 +3636,143 @@ public class ModEntry : Mod
                     }
                 }
                 tcs.SetResult(new { ok = true, has_mail = unread.Count > 0, unread, received });
+            }
+            catch (Exception ex)
+            {
+                tcs.SetResult(new { ok = false, error = ex.Message });
+            }
+        });
+        return tcs.Task.GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// GET /bundles — 🎁 社区中心献祭**存档状态**（2026-09-11 恒拍板：重编 DLL 做只读版）。
+    ///
+    /// **为什么要有它**：原来只能靠 `bundle_status` 走过去开菜单读板。恒真机踩到——本存档献祭早已全做完，
+    /// 函数照样跨 3 张图把 AI 从 Farm 走到 CommunityCenter（55 秒），对 4 块板挨个 interact 全打不开菜单，
+    /// 最后**把角色撂在锅炉房板前**。可"这个存档做完没"**根本不用走过去**：
+    /// `CommunityCenter.areasComplete` 和 `Game1.netWorldState.Value.Bundles` 都是**共享世界状态**，
+    /// 站着不动就能读全。
+    ///
+    /// 判据全部来自反编译（别自己编）：
+    ///   · `bundlesDict()`         = bundleIndex → bool[]（CommunityCenter.cs:338）——**本端点的地基**，
+    ///                               见下面「为什么不信 areasComplete」
+    ///   · `Bundle.complete`       = 该包材料齐没（Bundle.cs:129-137，就是 JunimoNoteMenu 判本区做完用的字段）
+    ///   · `getAreaNameFromNumber` / `getAreaDisplayNameFromNumber`（CommunityCenter.cs:1238 / 1258）
+    ///
+    /// ⚠️⚠️ **为什么不信 `areasComplete`（2026-09-11 真机当场打脸，务必看完再改）**：
+    ///   同一个游戏进程里，房主端口(7842)读 `areasComplete` = **6/6**，AI 端口(7843)读 = **0/6**。
+    ///   不是读错对象——`areasComplete` 是**地图(GameLocation)上的 net 字段**，而
+    ///   `markAreaAsComplete` 写着 `if (Game1.currentLocation == this) areasComplete[area] = true;`
+    ///   （CommunityCenter.cs:846）⇒ farmhand 端**没进过这张图就不会同步到**，拿到的只是构造默认值。
+    ///   轮回这次开局在 Cabin、没进过社区中心，所以他那份是 0/6；恒是房主直读存档，才是真的 6/6。
+    ///   而 `bundles` 走的是 `Game1.netWorldState.Value.Bundles`（NetWorldState.cs:290）——**世界状态，
+    ///   无条件同步给所有客户端**，实测两边 30/30 逐包完全一致 ⇒ **它才是可信的那个**。
+    ///   `numberOfStarsOnPlaque` 同理不可信：CommunityCenter.cs:550 是**进图时本地重算**的，恒人在
+    ///   FarmHouse 所以连房主都读成 0（而 areasComplete 明明是 6/6）——自相矛盾本身就说明它没意义。
+    ///
+    /// ✅ **所以「本间做完」由收集包反推**，这不是兜底、是**游戏自己的定义**：
+    ///   `JunimoNoteMenu.cs:386-395` 就是「本区还有包没完成 → 不算完；否则 markAreaAsComplete」。
+    ///   `areasComplete` 原值仍以 `area_complete_flag` 字段返回**只作诊断**，两边打架时能一眼看见。
+    ///   星数同理自己数（数出来的就是 `resetLocalState` 那段重算逻辑做的事）。
+    ///
+    /// ⚠️ **房间号映射（本文件里独一无二的权威，项目其他地方的写法早互相打架了）**：
+    ///   0=Pantry 茶水间 / 1=Crafts Room 工艺室 / 2=Fish Tank 鱼缸 /
+    ///   3=Boiler Room 锅炉房 / 4=Vault 金库 / 5=Bulletin Board 布告栏 / **6=Abandoned Joja Mart**
+    /// ⚠️ **area 6 是第 7 间，根本不属于社区中心**——那是废弃 Joja 超市里的「遗失的收集包」（影院）。
+    ///    **恒 2026-09-11 亲口纠正过我**："影院是独立的献祭，和那五个不一样"，而且走 Joja 路线不做献祭
+    ///    照样有影院 ⇒ 拿 `ccMovieTheater` 当"献祭做完了"的判据是错的。这里靠 `a &lt; areasComplete.Count`
+    ///    （恒为 6）天然把它挡在外面，别改成 `getAreaNameFromNumber` 的 0..6。
+    ///
+    /// 🔑 房间中文名**不硬编码**，直接取游戏本地化串（`getAreaDisplayNameFromNumber`）——
+    ///    项目里 `locations.py` / `bundles.py` / `calendar_data.py` 对这几间的名字已经对不上号了，
+    ///    再抄一遍只会多一个错处。
+    /// </summary>
+    private object HandleBundles()
+    {
+        if (!Context.IsWorldReady)
+            throw new InvalidOperationException("World not ready");
+        var tcs = new TaskCompletionSource<object>();
+        EnqueueMainThread(() =>
+        {
+            try
+            {
+                var cc = Game1.RequireLocation<CommunityCenter>("CommunityCenter");
+                var bundleData = Game1.netWorldState.Value.BundleData;
+                var done = cc.bundlesDict();
+                var areas = new List<object>();
+                int doneAreas = 0;   // 由收集包反推的"完成间数"，见 XML 注释里「为什么不信 areasComplete」
+                for (int a = 0; a < cc.areasComplete.Count; a++)   // ⚠️ Count=6，天然排除 area 6(Joja影院)
+                {
+                    string en = CommunityCenter.getAreaNameFromNumber(a);
+                    if (string.IsNullOrEmpty(en)) continue;
+                    string disp = en;
+                    try { disp = CommunityCenter.getAreaDisplayNameFromNumber(a); } catch { }
+                    var list = new List<object>();
+                    bool allBundles = true;   // 「本间做完」= 本间每个包都做完（JunimoNoteMenu.cs:386-395 同款判法）
+                    foreach (var kv in bundleData)
+                    {
+                        // 和 JunimoNoteMenu.setUpMenu 同一条筛选逻辑（CommunityCenter.cs 也是这么找自己那几间的）
+                        if (!kv.Key.Contains(en)) continue;
+                        int idx;
+                        try { idx = Convert.ToInt32(kv.Key.Split('/')[1]); } catch { continue; }
+                        var raw = kv.Value.Split('/');
+                        // 材料数从**原始数据**数出来（每材料占 3 个空格分隔字段），再按这个尺寸自建标志数组。
+                        // ✅ 2026-09-11 反编译定论：`Bundle` 构造里是 `completedIngredientsList[i / 3]`，
+                        //    i 每步 +3 ⇒ 那位数组**就是"每材料一个"**（长度 = SplitBySpace(...).Length / 3）。
+                        //    原来此处注释写"两种布局读起来对不上"，现已一锤定音，不必再犹豫。
+                        int need = 0;
+                        try { need = ArgUtility.SplitBySpace(raw[Bundle.IngredientsIndex]).Length / 3; } catch { }
+                        var flags = new bool[need];
+                        if (done.TryGetValue(idx, out var f) && f != null)
+                            for (int i = 0; i < need && i < f.Length; i++) flags[i] = f[i];
+                        var b = new Bundle(idx, kv.Value, flags,
+                                           Microsoft.Xna.Framework.Point.Zero, "LooseSprites\\JunimoNote", null);
+                        var ings = new List<object>();
+                        foreach (var ing in b.ingredients)
+                        {
+                            // ⚠️ BundleIngredientDescription **没有** GetDisplayName()（反编译实锤），
+                            //    别照抄菜单那段反射代码——那里 `GetMethod` 每次都返回 null、一直在走兜底。
+                            //    id=null 表示这是**分类**（负数，如 -5=蛋类），走 Object.GetCategoryDisplayName。
+                            string ingName;
+                            if (ing.id != null)
+                                ingName = ItemRegistry.Create(ing.id)?.DisplayName ?? ing.id;
+                            else if (ing.category.HasValue)
+                                ingName = StardewValley.Object.GetCategoryDisplayName(ing.category.Value);
+                            else
+                                ingName = "?";
+                            ings.Add(new { id = ing.id, category = ing.category, name = ingName,
+                                           count = ing.stack, quality = ing.quality, completed = ing.completed });
+                        }
+                        if (!b.complete) allBundles = false;
+                        // ⚠️ `b.name` 是 Data/Bundles 的**内部名（英文，如 "Spring Crops"）**；
+                        //    `b.label` 才是**本地化显示名**——构造里 `label = array[6]`（Bundle.cs:104），
+                        //    菜单显示的也是 label（JunimoNoteMenu.cs:1384-1393 用 `currentPageBundle.label`）。
+                        //    array[6] 由 `NetWorldState.UpdateBundleDisplayNames()`(NetWorldState.cs:702)
+                        //    用**本机** `DataLoader.Bundles(Game1.content)` 填，getter 每次 dirty 都补
+                        //    ⇒ 每个客户端拿到的是自己语言的名字。**别退回 b.name**（AI 读的是中文）。
+                        list.Add(new { index = idx, name = b.label ?? b.name, name_internal = b.name,
+                                       complete = b.complete, ingredients = ings });
+                    }
+                    // 一个包都没找到 ⇒ 是"没读到"，不是"做完了"——别让空集合凑出个 vacuous true。
+                    if (list.Count == 0) allBundles = false;
+                    if (allBundles) doneAreas++;
+                    areas.Add(new { area = a, name = disp, name_en = en,
+                                    complete = allBundles,
+                                    // ⚠️ 诊断字段，**别拿去用**：farmhand 端没进过图就是 false（见上方 XML 注释）。
+                                    area_complete_flag = cc.areasComplete[a],
+                                    bundles = list });
+                }
+                tcs.SetResult(new
+                {
+                    ok = true,
+                    stars = doneAreas,            // 自数——`numberOfStarsOnPlaque` 是进图时本地重算的，站着读没意义
+                    areas_complete = doneAreas,
+                    areas_total = cc.areasComplete.Count,
+                    areas_flag_raw = Enumerable.Range(0, cc.areasComplete.Count)
+                                               .Select(i => cc.areasComplete[i]).ToArray(),
+                    areas,
+                });
             }
             catch (Exception ex)
             {

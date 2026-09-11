@@ -1,9 +1,8 @@
 """
 🌱 bundles.py — 社区中心「收集包 / 献祭」静态知识库（2026-08-22，据中文维基整理）
 
-与 bundle_status（实地读板，需走到社区中心读当前开的板）互补：
-本表让 AI **不用跑去社区中心** 就查「某个收集包要什么、去哪弄、奖励是啥」，
-方便规划去皮埃尔买献祭相关作物、提前备货。
+与 bundle_status（**只读存档看本档缺口，不走路**，2026-09-11 起）互补：
+本表是**静态知识**（这个包要什么、去哪弄、完成后解锁啥），存档状态去问 bundle_status。
 
 用法:
   from bundles import search_bundles, BUNDLE_ROOMS
@@ -16,11 +15,20 @@
 略有出入（青豆=绿豆/番茄=西红柿/西瓜=甜瓜 等），AI 看到时可自行对应。
 """
 
-# 每 room: room(名) / unlock(完成后的奖励简述) / reward(房间总奖励) / bundles[] 每个含 name/items/reward
+# 每 room: room(中文名) / area(游戏 area 号) / unlock(完成后的奖励简述) / reward(房间总奖励)
+#          / bundles[] 每个含 name/items/reward
 # item: {"n": 数量文本(1省略), "note": 来源（采集/季节/获取方式）}
+#
+# ⚠️ **本表是本项目里"收集包房间"的唯一来源**（2026-09-11 定）。`area` 号来自游戏权威
+#    `CommunityCenter.getAreaNumberFromName`(CommunityCenter.cs:205)：
+#      0=茶水间 Pantry / 1=工艺室 Crafts Room / 2=鱼缸 / 3=锅炉房 / 4=Vault(**本表叫"地下室"**) /
+#      5=布告栏 / 6=废弃Joja超市(遗失的收集包)
+#    ⚠️ 注意 **0 是茶水间不是工艺室**（曾一度写反）；`area` 用于 `room_by_area()` 反查，
+#    `bundle_status` 拿存档的 area 号来显示「完成后解锁什么」。别在别的文件里再抄一份房名表。
 BUNDLE_ROOMS = [
     {
         "room": "工艺室",
+        "area": 1,
         "aliases": ["工艺室", "Craft", "觅食", "春季觅食", "夏季觅食", "秋季觅食", "冬季觅食"],
         "unlock": "修复矿井东侧木桥 → 进采石场（此后矿车才能到采石场）",
         "reward": "桥梁维修",
@@ -70,6 +78,7 @@ BUNDLE_ROOMS = [
     },
     {
         "room": "茶水间",
+        "area": 0,
         "aliases": ["茶水间", "Pantry", "作物", "农作物", "品质作物", "工匠", "动物制品"],
         "unlock": "修复温室（一年四季可种、不随季节枯死）→ 艾芙琳赠花盆配方",
         "reward": "温室",
@@ -125,6 +134,7 @@ BUNDLE_ROOMS = [
     },
     {
         "room": "鱼缸",
+        "area": 2,
         "aliases": ["鱼缸", "Fish", "钓鱼", "鱼", "河鱼", "湖鱼", "海鱼", "蟹笼", "夜间垂钓"],
         "unlock": "移除矿井入口巨型卵石 + 威利送淘盘",
         "reward": "移除巨型卵石",
@@ -175,6 +185,7 @@ BUNDLE_ROOMS = [
     },
     {
         "room": "锅炉房",
+        "area": 3,
         "aliases": ["锅炉房", "Boiler", "矿车", "铁匠", "地质", "冒险者", "矿石", "锭"],
         "unlock": "修复矿车（可快速抵达鹈鹕镇几个地点；未完成工艺室前矿车无法到采石场）",
         "reward": "维修矿车",
@@ -200,6 +211,7 @@ BUNDLE_ROOMS = [
     },
     {
         "room": "布告栏",
+        "area": 5,
         "aliases": ["布告栏", "Bulletin", "友谊", "厨师", "染料", "地质研究", "饲料", "魔法师"],
         "unlock": "镇上每个非单身村民好感 +2 心",
         "reward": "友谊",
@@ -241,6 +253,7 @@ BUNDLE_ROOMS = [
     },
     {
         "room": "地下室",
+        "area": 4,   # ⚠️ 本表沿用了"地下室"这个叫法，游戏本地化名字是**金库 Vault**——是同一间
         "aliases": ["地下室", "金库", "Vault", "钱", "巴士", "沙漠", "公交", "车票"],
         "unlock": "修路 → 公交可到卡利科沙漠（共需 42,500g）",
         "reward": "修理汽车",
@@ -253,6 +266,7 @@ BUNDLE_ROOMS = [
     },
     {
         "room": "遗失的收集包",
+        "area": 6,   # ⚠️ 第 7 间，**不属于社区中心六间**——废弃Joja超市里的独立收集包（恒 2026-09-11 纠正）
         "aliases": ["遗失", "Missing", "Joja超市", "废弃超市", "电影院", "joja", "超市"],
         "unlock": "完成社区中心+剧情后，废弃的Joja超市→改造成电影院",
         "reward": "电影院",
@@ -324,3 +338,16 @@ def search_bundles(query: str = "", room_index=None) -> str:
         return "🎁 匹配到：\n" + "\n".join(hits)
 
     return f"❓ 没查到「{q}」。可试房间名（工艺室/茶水间/鱼缸/锅炉房/布告栏/地下室/遗失）或物品名。"
+
+
+# area 号 → room 条目。给 bundle_status 用：它拿存档里游戏自己的 area 号，反查这间的奖励。
+# ⚠️ 别按 `room` 中文名去查——本表把 area 4 叫"地下室"，而游戏本地化叫"金库"，按名查会撞空。
+ROOMS_BY_AREA = {r["area"]: r for r in BUNDLE_ROOMS}
+
+
+def room_by_area(area) -> dict:
+    """按游戏 area 号取房间条目（含 reward/unlock）；查不到返回 None，**不兜底**。"""
+    try:
+        return ROOMS_BY_AREA.get(int(area))
+    except (TypeError, ValueError):
+        return None

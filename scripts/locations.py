@@ -103,7 +103,12 @@ POI = {
     #   · 建筑(温室/出货箱/图腾柱/宠物水碗/畜棚鸡舍…) = /farm_buildings（抗搬家）
     #   · 箱子/小桶区 = 玩家自己放的位置，本就无固定
     #   只保留**地图固有几何**（出入口 warp 瓦片、洞穴门），这些才是静态的。
-    "爷爷的神龛":        {"map": "Farm",      "pos": (8, 8),  "note": "爷爷神龛（农场西南角固定），放钻石评估/拿铱猫"},
+    # ⛩️ 爷爷神龛：**坐标随农场类型变**（每种农场一整张独立地图 Farm.xnb / Farm_Fishing.xnb / …），
+    #    所以这里存的 (8,8) **只是占位**，真实坐标由 navigation._grandpa_shrine_gate() 在导航前
+    #    动态扫 Farm 图的 `Action: Message "…"` 瓦片刷新（跨类型通用；定位不到会明确报错，不会用这个占位值）。
+    #    (8,8) = 7 种农场的站位（标准/河畔/森林/山地/荒野/四角/海滩）；**草地是 (14,10)**（差 6 格）。
+    #    ⚠️ 旧注释写"农场西南角"是错的——(8,8) 是**西北角**（2026-09-11 实测纠正）。
+    "爷爷的神龛":        {"map": "Farm",      "pos": (8, 8),  "note": "爷爷神龛（农场西北角；放钻石评估/拿铱猫）。坐标随农场类型变，导航时动态定位"},
     "农场上口(→深山)":  {"map": "Farm",      "pos": (41, 0), "note": "Farm上口(warp瓦片固定)，warp到Backwoods"},
     "农场下口(→森林)":  {"map": "Farm",      "pos": (40, 64),"note": "Farm下口(warp瓦片固定)，warp到Forest(68,1)"},
     "农场洞穴(外)":      {"map": "Farm",      "pos": (34, 7), "note": "农场洞穴门口(地图固定)，蘑菇/果蝠洞"},
@@ -548,19 +553,36 @@ POI_FACE = {
 }
 
 # ═══════════════════════════════════════════════════════════════
-#  🎪 社区中心献祭板（2026-08-16 实测 + 反编译 CommunityCenter.getNotePosition）
-#  板瓦片 = CommunityCenter 地图 Buildings/Front 层的 JunimoNote 位置。
-#  本档实测：工艺室/茶水间/鱼缸/锅炉房 开（scene at 能出 JunimoNoteMenu），布告栏/金库 未开。
-#  交互：走到板附近 → scene at(板瓦片) → read_menu 读 {whichArea, areaName, bundles[{complete, ingredients}]}
-#  （areaNextButton/areaBackButton 切房间，purchaseButton 购买）。done 的 bundle 里 complete=true。
+#  🎪 社区中心献祭板（板瓦片 = 反编译 `CommunityCenter.getNotePosition`，CommunityCenter.cs:233）
+#
+#  ⚠️ **本表只为「捐物品」留着**：要往板上放东西时得走到板瓦片前 → scene at(板瓦片) → menu。
+#     **查"做完没"别用这张表**，用 `bundle_status`（读 C# `/bundles`，站着不动）。
+#     （本表目前**没有 Python 代码消费者**——旧 bundle_status 是唯一那个，已改读 `/bundles`；
+#      留着的理由是捐物品时 AI 要照它走位。别再往表里加"实测快照"型字段，见下。）
+#
+#  ✅ **房名 ↔ area 号 2026-09-11 已用 `/bundles` 实测定死**（该端点返回游戏本地化的
+#     `name` + `name_en`，拿它俩一对照即可——不用去解 LZ4 压缩的 `Locations.zh-CN.xnb`）：
+#       0=茶水间 Pantry   1=工艺室 Crafts Room   2=鱼缸 Fish Tank
+#       3=锅炉房 Boiler Room   4=金库 Vault   5=布告栏 Bulletin Board
+#     ⚠️ **0 是茶水间、1 才是工艺室；4 是金库、5 才是布告栏**。本表原先这两对**写反了**
+#        （0/1 互换、4/5 互换），2026-09-11 一并修正 —— 别照原样改回去。
+#        反编译侧的英文权威 = `getAreaNameFromNumber`(:1238) 与 `getAreaNumberFromName`(:205)，
+#        两边逐条对得上；`tile` 照 `getNotePosition`(:233) 抄，本来就按 area 号索引，一直是对的。
+#     📌 6=Abandoned Joja Mart（废弃Joja超市的「遗失的收集包」）是**第 7 间、不属社区中心**，
+#        恒 2026-09-11 亲口纠正过（影院那套是独立的），本表不收它。
+#  🗑️ **`open` 字段已删**（2026-09-11）：它是 2026-08-16 本档一次性实测的快照，本存档献祭全做完后
+#     仍是老样子 ⇒ 早烂了；而旧 `bundle_status` 正是信了它，每次调用都把 AI 跨 3 张图走过去把那
+#     四块板挨个 interact（55 秒，最后撂在锅炉房板前）。**别再往这张表加"实测快照"型字段**（存档一变就骗人）。
+#  交互：走到板附近 → scene at(板瓦片) → menu 读/点（areaNextButton/areaBackButton 切房间，
+#        purchaseButton 购买）。
 # ═══════════════════════════════════════════════════════════════
 COMMUNITY_CENTER_BOARDS = {
-    "工艺室": {"area": 0, "tile": (14, 5), "open": True},
-    "茶水间": {"area": 1, "tile": (14, 23), "open": True},
-    "鱼缸": {"area": 2, "tile": (40, 10), "open": True},
-    "锅炉房": {"area": 3, "tile": (63, 14), "open": True},
-    "布告栏": {"area": 4, "tile": (55, 6), "open": False},
-    "金库": {"area": 5, "tile": (46, 11), "open": False},
+    "茶水间": {"area": 0, "tile": (14, 5)},
+    "工艺室": {"area": 1, "tile": (14, 23)},
+    "鱼缸":   {"area": 2, "tile": (40, 10)},
+    "锅炉房": {"area": 3, "tile": (63, 14)},
+    "金库":   {"area": 4, "tile": (55, 6)},
+    "布告栏": {"area": 5, "tile": (46, 11)},
 }
 
 # ═══════════════════════════════════════════════════════════════
