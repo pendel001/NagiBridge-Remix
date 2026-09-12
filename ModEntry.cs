@@ -18,6 +18,7 @@ using StardewValley.Locations;
 using StardewValley.TerrainFeatures;
 using StardewValley.Tools;
 using StardewValley.Characters;
+using StardewValley.Inventories;   // 🧊 IInventory（冰箱/小冰柜当材料源，见 KitchenMaterialContainers）
 using Microsoft.Xna.Framework.Input;
 using StardewValley.Menus;
 using System.Runtime.InteropServices;
@@ -239,12 +240,14 @@ internal static class DebrisCollectPatch
     private static Item? _capturedItem;      // 🎁 本次抓到的物品（collect 成功时会把 __instance.item 置 null，得提前抓）
     private static int _capturedCount = 1;   // 🎁 整叠数量——**必须 prefix 里就读**：addItemToInventoryBool 合并进已有堆时会改这个 Stack
     private static string? _capturedFrom;    // 🎁 丢弃者名
+    private static bool _capturedSelf;       // 🎁 这叠是"我自己丢的、又被我自己吸回来"（自捡）
 
     internal static void Prefix(Debris __instance, Farmer farmer)
     {
         _capturedItem = null;
         _capturedFrom = null;
         _capturedCount = 1;
+        _capturedSelf = false;
         try
         {
             long dropId = 0;
@@ -264,6 +267,10 @@ internal static class DebrisCollectPatch
             if (ModEntry.Instance == null || farmer == null || !isLocal) return;   // 带标记但不是"我"在捡 → 不归本进程管
 
             _capturedFrom = ModEntry.DropNameOf(dropId);
+            // 🎁 自捡（2026-09-12 恒："自己收下了自己的某物"）：自己丢的又自己吸回来。
+            //    广播出去纯属噪音（"轮回收下了轮回丢的"），但它**确实**该知道自己这一手没送成
+            //    —— 否则 AI 以为东西已经给恒了。⇒ 不广播给恒，只给 AI 一条"又被吸回背包了"。
+            try { _capturedSelf = (dropId == farmer.UniqueMultiplayerID); } catch { _capturedSelf = false; }
             try { _capturedItem = __instance.item; } catch { }
             try { if (_capturedItem != null) _capturedCount = Math.Max(1, _capturedItem.Stack); } catch { }
             if (_capturedItem == null && !string.IsNullOrEmpty(itemId))
@@ -283,7 +290,7 @@ internal static class DebrisCollectPatch
         {
             if (__result && _capturedFrom != null && _capturedItem != null)
             {
-                ModEntry.Instance?.RecordGift(_capturedFrom, _capturedItem, _capturedCount);
+                ModEntry.Instance?.RecordGift(_capturedFrom, _capturedItem, _capturedCount, _capturedSelf);
                 ModEntry.Instance?.Monitor.Log($"[gift] 🎁 记账 {_capturedFrom} → {_capturedItem.DisplayName}×{_capturedCount}", LogLevel.Info);
             }
         }
@@ -528,6 +535,7 @@ public class ModEntry : Mod
         public string Description = "";
         public int Count;
         public string? GiftFrom;      // 🎁 非空 = 这叠是"某人丢给你的"（值=丢弃者名）
+        public bool GiftSelf;         // 🎁 且是"我自己丢的"（自捡）→ 不广播，只提醒 AI 没送成
     }
 
     // 过夜结算（ShippingMenu）：AI 和恒的聊天窗口（游戏时间暂停）——复盘今天、商量明天，
@@ -1219,13 +1227,13 @@ public class ModEntry : Mod
     }
 
     /// <summary>🎁 由 DebrisCollectPatch 在 collect 成功（__result=true）时调用：这一叠确认到手了。</summary>
-    internal void RecordGift(string from, Item item, int count)
+    internal void RecordGift(string from, Item item, int count, bool self = false)
     {
         lock (_pickupLock)
         {
             string key = $"{ItemKey(item)}|gift|{from}";
             if (_pendingGifts.TryGetValue(key, out var info)) info.Count += count;
-            else _pendingGifts[key] = MakePickupInfo(item, count, from);
+            else _pendingGifts[key] = MakePickupInfo(item, count, from, self);
             _recentGifts.Add((ItemKey(item), count, Game1.ticks));
             if (_recentGifts.Count > 60) _recentGifts.RemoveRange(0, 20);
             _lastPickupTick = Game1.ticks;      // 与普通拾取共用停顿计时
@@ -1247,7 +1255,7 @@ public class ModEntry : Mod
         return false;
     }
 
-    private PickupInfo MakePickupInfo(Item item, int count, string? giftFrom) => new PickupInfo
+    private PickupInfo MakePickupInfo(Item item, int count, string? giftFrom, bool giftSelf = false) => new PickupInfo
     {
         Key = ItemKey(item),
         DisplayName = SafeDisplayName(item),
@@ -1256,7 +1264,8 @@ public class ModEntry : Mod
         Stats = DescribeItemStats(item),
         Description = ShortDescription(item),
         Count = count,
-        GiftFrom = giftFrom
+        GiftFrom = giftFrom,
+        GiftSelf = giftSelf
     };
 
     private void AddPendingPickup(Item item, int delta)
@@ -1309,10 +1318,20 @@ public class ModEntry : Mod
         // 🎁 别人丢给你的（2026-09-11）：独立队列，**从不进普通拾取行**（不报两遍）。
         //    给 AI 的（recent_events）+ 给恒的粉色 ack（双端可见，让恒知道 AI 真收下了）各一条。
         //    措辞第三方视角 ⇒ 哪天反向（AI 丢给恒）也照样读得通。
-        foreach (var g in gifts.GroupBy(i => i.GiftFrom!))
+        foreach (var g in gifts.GroupBy(i => (From: i.GiftFrom!, Self: i.GiftSelf)))
         {
-            AddRecentEvent("gift", $"🎁 {g.Key} 丢给你\n{string.Join("\n", BuildLines(g))}", Game1.ticks);
-            Broadcast($"🎁 {Game1.player?.Name} 收下了 {g.Key} 丢的 {string.Join("、", g.Select(i => $"{i.DisplayName}×{i.Count}"))}");
+            // 🎁 自捡（2026-09-12 恒）：自己丢的又自己吸回来 —— 以前会广播成"轮回收下了轮回丢的"，
+            //    纯噪音。改成：**不广播给恒**，只给 AI 一条如实的话（它得知道自己这一手没送成，
+            //    否则会以为东西已经交到恒手上了）。
+            if (g.Key.Self)
+            {
+                AddRecentEvent("gift",
+                    $"⚠️ 你丢出去的 {string.Join("、", g.Select(i => $"{i.DisplayName}×{i.Count}"))} 又被自己吸回背包了（没送成）",
+                    Game1.ticks);
+                continue;
+            }
+            AddRecentEvent("gift", $"🎁 {g.Key.From} 丢给你\n{string.Join("\n", BuildLines(g))}", Game1.ticks);
+            Broadcast($"🎁 {Game1.player?.Name} 收下了 {g.Key.From} 丢的 {string.Join("、", g.Select(i => $"{i.DisplayName}×{i.Count}"))}");
         }
     }
 
@@ -2163,6 +2182,13 @@ public class ModEntry : Mod
                             var facingTile = GetFacingTile(farmer);
                             int px = (int)facingTile.X * 64;
                             int py = (int)facingTile.Y * 64;
+                            // 🚫 同 HandleUse：物品级门，免得脚本队列把普通物件永久摆在地上（2026-09-11）
+                            if (!CanPlaceOnGround(obj))
+                            {
+                                _commandResults.Add(new { ok = false, action = "use",
+                                    error = $"'{item.Name}' 不是可放置物" });
+                                break;
+                            }
                             bool placed = obj.placementAction(farmer.currentLocation, px, py, farmer);
                             if (placed)
                             {
@@ -5911,6 +5937,138 @@ public class ModEntry : Mod
     }
 
     /// <summary>
+    /// 🚫 这个物品**本来就该能放地上吗** —— 放置动作前的「物品级」门（2026-09-11）。
+    ///
+    /// 反编译实证（Object.placementAction 末段）：基类对普通物件会直接
+    /// `location.objects.Add(vector, getOne())` 然后 **return true**。
+    /// 旧注释「基类 placementAction 对不可放置小物件返回 false(不消耗、不丢地)」**是错的**：
+    /// 真机把一颗钻石摆在了地上，落点 passable=false、走不上去、checkAction 也不响应 ⇒ 游戏内拿不回来
+    /// （正常流程不会到这个状态，是 `force` 绕出来的）。
+    ///
+    /// 判据照抄游戏自己：`Utility.playerCanPlaceItemHere` 末尾就是 `return item.isPlaceable();`
+    /// （Game1.cs:11486 幽灵光标同款），这里再补 Category -74 种子 / isSapling 防漏网。
+    /// bigCraftable 额外放行——箱子/小桶/蟹笼/洒水器/熔炉/火把都靠它，防其 ContextTags 未带 placeable。
+    /// ⚠️ `force` 只管「位置」不管「物品」：位置可以放宽（蟹笼/淘金要跨格指定水面），物品不能。
+    /// </summary>
+    private static bool CanPlaceOnGround(StardewValley.Object obj)
+    {
+        if (obj == null) return false;
+        if (obj.bigCraftable.Value) return true;   // 箱子/小桶/蟹笼/洒水器/熔炉/火把…
+        if (obj.isPlaceable()) return true;        // 游戏判据：地板/栅栏/树苗/种子(-74)…
+        if (obj.isSapling()) return true;
+        if (obj.Category == -74) return true;      // 种子（防 isPlaceable 里 edibility 分支漏网）
+        return false;
+    }
+
+    /// <summary>
+    /// 🧊 攒「这间厨房能用的**额外材料源**」—— **照抄游戏自己的 `ActivateKitchen`**
+    /// （`GameLocation.cs:8184-8201`）：①地图自带冰箱 `GetFridge()`（房子升级过才有）
+    /// ②`objects` 里所有 `fridge.Value` 的小冰柜。
+    ///
+    /// 真实烹饪菜单就是把这些容器的 `.Items` 当 `List&lt;IInventory&gt;` 喂给 `CraftingPage`
+    /// （`GameLocation.cs:8197` `list2.Add(fridge.Items)`），**菜单里"冰箱里的也算材料"**。
+    /// 我们不做菜单交互，但**材料范围照抄它** —— 否则"冰箱里有、背包里没有"会被误报成缺料。
+    ///
+    /// ⚠️ `Cabin : FarmHouse`（Cabin.cs:14）⇒ 小屋同样吃得到；`GetFridge` 内部就是判 `is FarmHouse`。
+    /// ⚠️ 只找**当前图**：站在农场时 `GetFridge()` 返回 null —— 和游戏一致，不是我们偷懒。
+    /// </summary>
+    private static List<IInventory> KitchenMaterialContainers(GameLocation loc)
+    {
+        var extra = new List<IInventory>();
+        if (loc == null) return extra;
+        try { var f = loc.GetFridge(); if (f?.Items != null) extra.Add(f.Items); } catch { }
+        try
+        {
+            foreach (var o in loc.objects.Values)
+                if (o is Chest c && c.bigCraftable.Value && c.fridge.Value && c.Items != null)
+                    extra.Add(c.Items);
+        }
+        catch { }
+        return extra;
+    }
+
+    /// <summary>
+    /// 把若干容器**摊平成物品列表** —— 游戏自己的 `getItemCountInList` /
+    /// `doesFarmerHaveIngredientsInInventory` 收的是 `IList&lt;Item&gt;` 而不是容器（Farmer.cs:3256）。
+    /// </summary>
+    private static List<Item> FlattenItems(List<IInventory> containers)
+    {
+        var items = new List<Item>();
+        foreach (var inv in containers)
+        {
+            if (inv == null) continue;
+            for (int i = 0; i < inv.Count; i++)
+                if (inv[i] != null) items.Add(inv[i]);
+        }
+        return items;
+    }
+
+    /// <summary>
+    /// 🏷️ 配方材料 id → 给 AI 看的名字（2026-09-11）。
+    ///
+    /// 配方里的 key **可能是「分类」而不是物品 id**（负数，如 -5=蛋类、-6=奶类）。
+    /// 旧写法 `new StardewValley.Object("-5", 1).DisplayName` 会造出一个 **"错误物品"**
+    /// 且构造器**不抛异常**（所以那个 `catch` 根本兜不住）⇒ 报「缺少材料: 错误物品 (-5)缺1」，
+    /// AI 完全学不到"缺的是蛋"。真机：`cabin cook(煎鸡蛋)` 撞的。
+    ///
+    /// 负数 → `Object.GetCategoryDisplayName()`（走 `LoadString`，**本地化**，中文游戏出中文）；
+    /// 其余 → ItemRegistry 再退 old Object。同文件 3743 行早就有这条先例，只是没用到 craft/cook。
+    /// </summary>
+    private static string IngredientLabel(string id)
+    {
+        if (int.TryParse(id, out var n) && n < 0)
+        {
+            try { return StardewValley.Object.GetCategoryDisplayName(n); } catch { }
+            return $"分类{n}";
+        }
+        try { return ItemRegistry.Create(id, 1).DisplayName; } catch { }
+        try { return new StardewValley.Object(id, 1).DisplayName; } catch { }
+        return id;
+    }
+
+    /// <summary>
+    /// 🍳 找当前图的**厨房灶台格**（2026-09-11 恒：cook 要走到厨房才能做）。
+    ///
+    /// 判据照抄游戏：灶台格挂瓦片属性 `Action: Kitchen`，
+    /// `GameLocation.checkAction` 里 `case "Kitchen": ActivateKitchen()`（GameLocation.cs:8980 → 8185）
+    /// —— 游戏本来就只允许站在灶台旁才能开烹饪菜单。我们直造 `CraftingRecipe` 把这道门绕过去了，
+    /// 这里补回来。⚠️ **必须扫地图，不能硬编码坐标**：农舍/小屋/岛屋的厨房布局各不相同。
+    ///
+    /// ⚠️ 2026-09-11 真机纠正（差点上线就炸）：**`Action: Kitchen` 不在 Back 层，在 `Buildings` 层**——
+    ///    恒家/小屋实测 `Buildings 19-23,23`（值是小写 `kitchen`；同图的 `Action: Yoba` 也在 Buildings）。
+    ///    原先只扫 `GetLayer("Back")` ⇒ **任何图都判"没有厨房"**，连恒家真厨房都被拦（真机复现：
+    ///    Python + C# 两侧都报「这张图没有厨房（Cabin）」，而该小屋明明有厨房）。
+    ///    改走 `TileProp`（与 `/tile_props` **同一个**属性读取函数）扫**全部图层**，判据不再两处各写一份。
+    ///
+    /// ⚠️ 用 `Split(' ')[0]` 比 —— 瓦片 Action 可能带参数（"Kitchen 5 5" 这种）；
+    /// 大小写不敏感（游戏自己 `case "kitchen":` 和 `case "Kitchen":` 都收）。
+    /// ⚠️ 返回**离 (fromX,fromY) 最近**的那格：灶台常是一整排（恒家 19-23 共 5 格），
+    /// 只认第一格会让站在另一头的玩家被判"不在厨房"。
+    /// </summary>
+    private static bool FindKitchenTile(GameLocation loc, int fromX, int fromY, out int kx, out int ky)
+    {
+        kx = ky = 0;
+        if (loc?.Map == null) return false;
+        int best = int.MaxValue;
+        bool found = false;
+        foreach (var ln in new[] { "Back", "Buildings", "Front", "Paths", "AlwaysFront" })
+        {
+            var layer = loc.Map.GetLayer(ln);
+            if (layer == null) continue;
+            for (int x = 0; x < layer.LayerWidth; x++)
+                for (int y = 0; y < layer.LayerHeight; y++)
+                {
+                    var act = TileProp(loc, ln, x, y, "Action");
+                    if (string.IsNullOrEmpty(act)) continue;
+                    if (!act.Split(' ')[0].Equals("Kitchen", StringComparison.OrdinalIgnoreCase)) continue;
+                    int d = Math.Abs(x - fromX) + Math.Abs(y - fromY);
+                    if (d < best) { best = d; kx = x; ky = y; found = true; }
+                }
+        }
+        return found;
+    }
+
+    /// <summary>
     /// POST /use  { "force": false }
     /// Uses the currently held item with pre-validation.
     /// Tools: checks if facing tile is appropriate (hoe→diggable empty, wateringcan→HoeDirt, axe→tree/stump, pickaxe→stone).
@@ -5995,8 +6153,16 @@ public class ModEntry : Mod
                 //    以前只靠"玩家面前格"(ftx,fty)，放蟹笼常因面前格不是可放水面而 Cannot place 试错。
                 //    现在：请求带 x,y → 直接对那格 placementAction(站格/面朝无关)，淘金/蟹笼挑准水格一次放成；
                 //    没带 x,y → 退回面前格(旧逻辑，向后兼容)。
-                // 🪧 2026-08-31 恒：基类 placementAction 对**不可放置小物件**返回 false(不消耗、不丢地)→ HandleUse 已能安全报错。
-                //    所以 open `place`/`/use` 只需 AI 自备可放置/可种物(箱子/种子/机器)；无需 C# 锁(IsPlaceable 编译不过，也无必要)。
+                // 🪧 2026-08-31 恒：open `place`/`/use` 只需 AI 自备可放置/可种物(箱子/种子/机器)。
+                // ❌ 2026-09-11 更正：原注释「基类 placementAction 对不可放置小物件返回 false」**是错的** ——
+                //    普通物件会被直接塞进 location.objects 并 return true（真机把钻石摆在了地上、拿不回来）。
+                //    ⇒ 这里补物品级门 CanPlaceOnGround；**force 只管位置不管物品**，所以这道门不受 force 影响。
+                if (!CanPlaceOnGround(obj))
+                {
+                    tcs.SetResult(new { ok = false, error = $"'{item.Name}' 不是可放置物（只能放箱子/机器/种子/树苗/地板等）",
+                        item = item.Name, tile = new { x = ftx, y = fty } });
+                    return;
+                }
                 int placeX = ftx, placeY = fty;
                 var ppx = GetParamOr(p, "x", -1);
                 var ppy = GetParamOr(p, "y", -1);
@@ -7611,12 +7777,43 @@ public class ModEntry : Mod
         return null;
     }
 
-    /// <summary>同步 warp：直接设 currentLocation + 位置（建筑内部只能引用直切）。</summary>
+    /// <summary>
+    /// 同步切地点（含建筑内部；不淡出、不等帧）。
+    ///
+    /// 🔴 2026-09-12 大修 —— 以前这里**只有两行**（`farmer.currentLocation` + `Position`），
+    /// 那两行只管"**这个人逻辑上在哪**"，**渲染管线一步都没跟**。真机表现（恒亲眼看到的）：
+    /// farmhand 自己的 7843 窗口还渲染着**旧图**、小人被画在**旧位置**上（"在家里，墙外"），
+    /// 而房主那边看它在鱼店 —— 两边读的东西不一样。⚠️ 更坑的是**整条工具链看不出这个错位**：
+    /// `/state` 读的也是 `farmer.currentLocation`，所以所有工具都高高兴兴报"FishShop"。
+    ///
+    /// 现在补齐**游戏自己 warp 收尾时会做的那几步**（反编译对照：
+    ///   `Game1.cs` 6282-6296 的 IsClient 收尾分支 + `LocationRequest.cs` 的 `Warped()` 29-36）：
+    ///   · `Game1.currentLocation = 目标`   ← **主凶**：决定**渲染哪张图**，不切就一直画旧图
+    ///   · `resetForPlayerEntry()`          ← 进图初始化（光照/音乐/季节贴图等）
+    ///   · `forceSnapOnNextViewportUpdate`  ← 视角立刻吸附到人身上，不飘在半路
+    ///
+    /// 📌 `LocationRequest.Warped()` 里还有一行 `player.ClearCachedPosition()` —— 这里**故意没抄**：
+    ///    反编译确认（`Character.cs` 347-388）那三个位置缓存是**自失效**的（`position` 一变，
+    ///    下次取 `StandingPixel`/`Tile`/`TilePoint` 就自动重算），而上面刚改过 `Position` ⇒ 必然重算。
+    ///    ⚠️ 唯一漏网情形：**换图但 pixel 坐标恰好没变**（同格坐标切图），那时缓存不刷新。
+    ///    真遇上再补 —— 该方法是 `internal`，要用得走反射，不值当为它先加。
+    ///
+    /// ⚠️ 仍是**同步直切**（机器收放那批调用方要的就是"马上到位"），因此**没走淡出、没跑
+    ///    `LocationRequest.OnWarp` 回调**——那两步只有真 warp 才有。需要它们的地方请走 `/warp`
+    ///    （它调 `Game1.warpFarmer`，是异步的）。
+    /// </summary>
     private static void WarpDirect(GameLocation targetLoc, int x, int y)
     {
         var farmer = Game1.player;
         farmer.currentLocation = targetLoc;
         farmer.Position = new Vector2(x, y) * Game1.tileSize;
+        // ↓ 2026-09-12 补：让**本地客户端真把这张图渲染出来**（上面两行只管"逻辑上在哪"）
+        if (!ReferenceEquals(Game1.currentLocation, targetLoc))
+        {
+            Game1.currentLocation = targetLoc;
+            targetLoc.resetForPlayerEntry();
+        }
+        Game1.forceSnapOnNextViewportUpdate = true;    // 视角立刻吸附，不飘
     }
 
     /// <summary>
@@ -8863,7 +9060,11 @@ public class ModEntry : Mod
                 {
                     var item = farmer.Items[i];
                     if (item == null) continue;
+                    // ⚠️ 2026-09-11：原来只认 Name/QualifiedItemId ⇒ AI 拿 `check backpack` 里的**中文显示名**
+                    //    调 `scene drop` 一个都匹配不上，却仍回 `{ok:true, removed:0}`（静默空操作）。
+                    //    对齐 `/select` 的口径：**Name 或 DisplayName**（中文可用）；QualifiedItemId 照旧留着。
                     if (!item.Name.Equals(name, StringComparison.OrdinalIgnoreCase)
+                        && !(item.DisplayName ?? "").Equals(name, StringComparison.OrdinalIgnoreCase)
                         && !(item.QualifiedItemId ?? "").Equals(name, StringComparison.OrdinalIgnoreCase))
                         continue;
 
@@ -12129,9 +12330,26 @@ public class ModEntry : Mod
                     v?.Invoke(forge, null);
                 }
                 catch { }
+                // 📖 2026-09-12 恒：「两个料放进去的时候会显示需要消耗的火山晶石」——
+                //    对，游戏自己就有 GetForgeCost(左,右)（public，按槽里**实际**两件料算，
+                //    强化按等级走 GetForgeCostAtLevel=10+5*level ⇒ 10/15/20；换色/龙牙/合成各不同）。
+                //    原来工具不读它 ⇒ 缺料时只能看到"没结果"，报一句「合成结果没进背包」，
+                //    **不说是缺晶石**，AI 无从下手（真机现场：恒一眼看出"火山晶石不够，要20"）。
+                //    所以把真数报给 Python 侧，让它能前置/事后说清原因。
+                int shardCost = 0, shardsHave = 0;
+                try
+                {
+                    var li2 = forge.leftIngredientSpot.item;
+                    var ri2 = forge.rightIngredientSpot.item;
+                    if (li2 != null && ri2 != null)
+                        shardCost = forge.GetForgeCost(li2, ri2);
+                    shardsHave = Game1.player.Items.CountId("(O)848");
+                }
+                catch { }
                 tcs.SetResult(new { ok = true,
                     left = forge.leftIngredientSpot.item?.Name,
-                    right = forge.rightIngredientSpot.item?.Name });
+                    right = forge.rightIngredientSpot.item?.Name,
+                    shardCost, shardsHave });
             }
             catch (Exception ex)
             {
@@ -12369,7 +12587,11 @@ public class ModEntry : Mod
         {
             try
             {
-                var loc = string.IsNullOrEmpty(locName) ? Game1.player.currentLocation : Game1.getLocationFromName(locName);
+                // ⚠️ 2026-09-11：原来直接 `Game1.getLocationFromName`，它走 locations 列表时**只认 `Name`**
+                //    不认 uniqueName（Game1.cs:10277）⇒ 探不了小屋（农场上 `.Name` 全是 "Cabin"、
+                //    唯一名是 `FarmHouse<guid>`）。改走 FindLocationByName（当前图 → 唯一名 → 退回按名扫），
+                //    这样 `?location=FarmHouse<guid>` 能定位到具体哪间小屋——"哪家有厨房"的提醒要靠它。
+                var loc = string.IsNullOrEmpty(locName) ? Game1.player.currentLocation : FindLocationByName(locName);
                 if (loc?.Map == null)
                 {
                     tcs.SetResult(new { ok = false, error = $"location/map not found: {locName ?? "(当前图)"}" });
@@ -12727,14 +12949,35 @@ public class ModEntry : Mod
                 farmer.Items[i] = null;
             }
         }
+        // ✅ 2026-09-12 改成"整摞一次加"（恒："这是把全宇宙的蟹笼都收回来了" 那次弹窗噪音的根治）。
+        //  为什么值得改：原来这里**逐个** addItemToInventoryBool，而 SDV 的 HUD 会把同类型消息的
+        //    数字**累加**（反编译 `Game1.cs:11012 addHUDMessage`：`hudMessages[i].number += message.number`
+        //    ⇒ 每条"+1 蟹笼"都并进同一条弹窗）。再叠加 Python 侧**每只笼调一次** `/crab_retract`
+        //    （每次都会把背包当时的笼全摘掉重加）⇒ 5+6+…+36 = **656** 次，显示成一条"蟹笼 656"。
+        //  ⚠️⚠️ **第一次改这里是错的，丢过东西，所以这次把依据写全**：
+        //    ❌ 错版：`addItemToInventoryBool(toAdd); reAdded = crabTotal - toAdd.Stack;`
+        //       —— 我以为"塞不下的会留在 item.Stack 里"。文档注释确实是这么写的，**但漏了一条路径**：
+        //          背包有空槽时它是**整个 item 对象搬进槽位**（`Items[position] = item; return null;`），
+        //          **Stack 一个字没改** ⇒ 我算出 reAdded=0 ⇒ 又把**那个已经躺在背包里的对象**交给
+        //          `addItemByMenuIfNecessary` ⇒ **栈被清零**。真机：`total=6, reAdded=0`，
+        //          6 只笼变成一格 `Crab Pot x0`（靠"不存档重启"回到存档状态才救回）。
+        //    ✅ 正确依据：`addItemToInventoryBool` **只返回 bool，把余量信息丢了**；要拿余量必须用
+        //       `addItemToInventory`，它的**文档化契约**（反编译 `Farmer.cs:4264` 上方注释）：
+        //         「全部进包 → 返回 null；否则返回**入参 item 本身**，其 Stack = **没塞下**的数量」
+        //       三条出口逐条核对过：`return null`（空槽直放 / 全并进堆）、`return item`（有余量）。
+        //       ⚠️ 再次提醒：**别从 `item.Stack` 反推**，一定要用那个返回值。
+        //    另：`GetItemReceiveBehavior("(O)710")` 走 default ⇒ needsInventorySpace=true，真会入包
+        //       （排除掉"只弹提示不入包"那条分支）。
+        //  ⚠️ 这次改动的验证方法（可证伪）：调一次 `normalize`，**背包蟹笼总数必须一分不差**。
         int reAdded = 0;
-        for (int k = 0; k < crabTotal; k++)
+        if (crabTotal > 0)
         {
-            if (farmer.addItemToInventoryBool(ItemRegistry.Create("(O)710")))
-                reAdded++;
+            var toAdd = ItemRegistry.Create("(O)710", crabTotal);
+            var left = farmer.addItemToInventory(toAdd);        // null=全进去了
+            reAdded = crabTotal - Math.Max(0, left?.Stack ?? 0);
+            if (left != null && left.Stack > 0)
+                farmer.addItemByMenuIfNecessary(left);          // 真·塞不下的走菜单领，仍然不丢物
         }
-        if (reAdded < crabTotal)
-            farmer.addItemByMenuIfNecessary(ItemRegistry.Create("(O)710", Math.Max(1, crabTotal - reAdded)));
         return (crabTotal, reAdded);
     }
 
@@ -12949,9 +13192,8 @@ public class ModEntry : Mod
                             }
                             if (have < needed)
                             {
-                                var ingredientName = ingredientId;
-                                try { ingredientName = new StardewValley.Object(ingredientId, 1).DisplayName; } catch { }
-                                missing[ingredientName] = needed - have;
+                                // 🏷️ 材料 key 可能是**分类号**（-5=蛋类）—— 别拿它当物品 id 造出"错误物品"
+                                missing[IngredientLabel(ingredientId)] = needed - have;
                             }
                         }
                         break;
@@ -13043,42 +13285,91 @@ public class ModEntry : Mod
                     return;
                 }
 
+                // 🍳 位置门（2026-09-11 恒）：做菜要**站在灶台旁**——游戏自己就是这么管的
+                //    （灶台瓦片 `Action: Kitchen` → checkAction → ActivateKitchen），
+                //    直造 CraftingRecipe 把这道门绕过去了，这里补回来。
+                var _pt = farmer.TilePoint;
+                if (!FindKitchenTile(farmer.currentLocation, _pt.X, _pt.Y, out var kx, out var ky))
+                {
+                    tcs.SetResult(new { ok = false,
+                        error = $"这张图没有厨房（{farmer.currentLocation?.Name}）——升级房屋、或借别人家的厨房再试试吧" });
+                    return;
+                }
+                if (Math.Abs(_pt.X - kx) > 1 || Math.Abs(_pt.Y - ky) > 1)
+                {
+                    tcs.SetResult(new { ok = false,
+                        error = $"不在厨房：灶台在 ({kx},{ky})，你在 ({_pt.X},{_pt.Y})——先走过去再 cook",
+                        kitchen = new { x = kx, y = ky }, player = new { x = _pt.X, y = _pt.Y } });
+                    return;
+                }
+
+                // 🧊 厨房材料源（地图冰箱 + 小冰柜）—— 照抄游戏 ActivateKitchen，**不是**兜底：
+                //    真实烹饪菜单就是把这些容器喂给 CraftingPage，所以"冰箱里的也算材料"是游戏语义。
+                var _kitchenExtra = KitchenMaterialContainers(farmer.currentLocation);
+                var _extraItems = FlattenItems(_kitchenExtra);
+
                 var recipe = new CraftingRecipe(rname, true);
                 int crafted = 0;
                 var missing = new Dictionary<string, int>();
 
                 for (int i = 0; i < count; i++)
                 {
-                    if (!recipe.doesFarmerHaveIngredientsInInventory())
+                    // 🧊⚠️ 闸门**必须把冰箱喂进去**（2026-09-11 真机抓到的半吊子改动）：
+                    //   原来只把下面"列缺料"的循环改成了背包+冰箱，**这道闸门还是无参版**
+                    //   （无参 = 只数背包，CraftingRecipe.cs:159 `extraToCheck = null`）
+                    //   ⇒ 冰箱里的蛋**数得到、却永远做不成**，只回一句光秃秃的 `Missing materials`
+                    //   （missing 还是空字典，因为数下来一条都不缺，看着更像见了鬼）。
+                    //   原型本来就收额外容器：`doesFarmerHaveIngredientsInInventory(IList<Item> extraToCheck = null)`，
+                    //   内部同样是 `getItemCount` + `getItemCountInList(extraToCheck, …)`
+                    //   —— 下面那个循环只是它的**复述**（为了列出缺什么），别再让两者不同步。
+                    //   ⚠️ `getItemCount` 被标记过时，但**必须用它**：过时说明写着它"能收分类号、
+                    //   858 齐钻、73 金核桃、-777 当季野种"—— 正是配方材料键的语义（`Items.CountId` 替不了），
+                    //   而且内部走 `ItemMatchesForCrafting`（:358，含特殊食材规则），比手写的三连比更准。
+                    if (!recipe.doesFarmerHaveIngredientsInInventory(_extraItems))
                     {
                         foreach (var kvp in recipe.recipeList)
                         {
                             var ingredientId = kvp.Key;
                             var needed = kvp.Value;
-                            var have = 0;
-                            foreach (var item in farmer.Items)
-                            {
-                                if (item != null && (item.QualifiedItemId == ingredientId
-                                    || item.Category.ToString() == ingredientId
-                                    || item.ParentSheetIndex.ToString() == ingredientId))
-                                    have += item.Stack;
-                            }
+                            // 与闸门同源的复述（上面那个方法内部就是这么数的），只为生成"缺什么"清单
+                            var have = farmer.getItemCount(ingredientId);
+                            if (_extraItems.Count > 0) have += farmer.getItemCountInList(_extraItems, ingredientId);
                             if (have < needed)
                             {
-                                var ingredientName = ingredientId;
-                                try { ingredientName = ItemRegistry.Create(ingredientId, 1).DisplayName; } catch { try { ingredientName = new StardewValley.Object(ingredientId, 1).DisplayName; } catch { } }
-                                missing[ingredientName] = needed - have;
+                                // 🏷️ 同上：分类号（-5=蛋类/-6=奶类）走 GetCategoryDisplayName，别造"错误物品"
+                                missing[IngredientLabel(ingredientId)] = needed - have;
                             }
                         }
                         break;
                     }
-                    recipe.consumeIngredients(null);
+                    // 🚫 满包**前置**闸（2026-09-11 恒：满包做好的菜蹦到地上"很好笑"）。
+                    //    `recipe.createItem()` 能**预览产物且不消耗**，先问背包收不收得下。
+                    //    ⚠️ 顺序是关键：必须在 `consumeIngredients` **之前** —— 材料一旦吃掉就没法回滚；
+                    //    原来是在吃料之后才 addItemToInventoryBool，失败只剩 createItemDebris 一条路。
+                    //    ⚠️ 用 `couldInventoryAcceptThisItem` 而不是"数空格"：它会算**可堆叠合堆**
+                    //    （已有 3 个煎蛋再做 1 个不需要新格）。
+                    var preview = recipe.createItem();
+                    if (!farmer.couldInventoryAcceptThisItem(preview))
+                    {
+                        if (crafted == 0)
+                            tcs.SetResult(new { ok = false,
+                                error = $"背包满，收不下做好的「{preview.DisplayName}」——先 storage(ops=\"store\") 腾格再做",
+                                blocking = preview.DisplayName });
+                        else
+                            tcs.SetResult(new { ok = true, crafted, requested = count,
+                                warning = $"背包满，后面 {count - crafted} 个没做" });
+                        return;
+                    }
+                    // 消耗也走游戏自己的方法：给了 additionalMaterials 它才**先吃背包、不够再吃冰箱**
+                    // （CraftingRecipe.cs:273-320）—— 和真实菜单逐字同一个调用。
+                    recipe.consumeIngredients(_kitchenExtra);
                     var product = recipe.createItem();
                     if (!farmer.addItemToInventoryBool(product))
                     {
+                        // 前置闸过了还收不下 = 真异常；**不静默吞掉**，掉地上并大声报（宁可吵也别丢东西）
                         Game1.createItemDebris(product, farmer.getStandingPosition(), farmer.FacingDirection);
                         tcs.SetResult(new { ok = true, crafted = crafted + 1,
-                            warning = "Inventory full, item dropped" });
+                            warning = $"⚠️ 收不下，{product.DisplayName} 掉在脚下了（前置检查没拦住，请报给恒）" });
                         return;
                     }
                     crafted++;
@@ -13113,6 +13404,11 @@ public class ModEntry : Mod
         {
             var farmer = Game1.player;
             var recipesList = new List<object>();
+            // 🧊 材料源含厨房冰箱+小冰柜（照抄 ActivateKitchen），判据用游戏自己的
+            //    getItemCount / getItemCountInList(=ItemMatchesForCrafting)。
+            //    ⚠️ 只在**当前图**算：站在农场时 GetFridge() 是 null ⇒ 报的"能做什么"会和
+            //    站在厨房里不同 —— 这是**游戏的语义**，不是 bug。
+            var _extraItems = FlattenItems(KitchenMaterialContainers(farmer.currentLocation));
 
             foreach (var kvp in CraftingRecipe.cookingRecipes)
             {
@@ -13129,18 +13425,14 @@ public class ModEntry : Mod
                 {
                     var ingId = ing.Key;
                     var needed = ing.Value;
-                    var have = 0;
-                    foreach (var item in farmer.Items)
-                    {
-                        if (item != null && (item.QualifiedItemId == ingId
-                            || item.Category.ToString() == ingId
-                            || item.ParentSheetIndex.ToString() == ingId))
-                            have += item.Stack;
-                    }
-                    string ingName = ingId;
-                    try { ingName = ItemRegistry.Create(ingId, 1).DisplayName; } catch { try { ingName = new StardewValley.Object(ingId, 1).DisplayName; } catch { } }
-
-                    ingredients.Add(new { name = ingName, id = ingId, needed, have });
+                    // 数材料走游戏自己的方法（背包 + 冰箱）；手写的三连比被 ItemMatchesForCrafting 取代
+                    var have = farmer.getItemCount(ingId);
+                    if (_extraItems.Count > 0) have += farmer.getItemCountInList(_extraItems, ingId);
+                    // ⚠️ 2026-09-11：本来这里、`/craft`、`/cook` 三处各抄了一份同样的
+                    //    `ItemRegistry.Create(id).DisplayName`，都漏了**负数 id = 分类**这条
+                    //    （`new Object("-5",1)` 不抛异常、只给你个「错误物品 (-5)」，于是 catch 白写）。
+                    //    统一走 IngredientLabel（负数 → GetCategoryDisplayName）。
+                    ingredients.Add(new { name = IngredientLabel(ingId), id = ingId, needed, have });
                     if (have < needed) allHave = false;
                 }
 
@@ -13198,9 +13490,8 @@ public class ModEntry : Mod
                             || item.ParentSheetIndex.ToString() == ingId))
                             have += item.Stack;
                     }
-                    string ingName = ingId;
-                    try { ingName = ItemRegistry.Create(ingId, 1).DisplayName; } catch { try { ingName = new StardewValley.Object(ingId, 1).DisplayName; } catch { } }
-                    ingredients.Add(new { name = ingName, id = ingId, needed, have });
+                    // ⚠️ 同 HandleRecipes：走 IngredientLabel（负数 id = 分类，见其注释）
+                    ingredients.Add(new { name = IngredientLabel(ingId), id = ingId, needed, have });
                     if (have < needed) allHave = false;
                 }
 
@@ -15343,8 +15634,17 @@ public class ModEntry : Mod
 		                            var spot = libMuseum.getFreeDonationSpot();
 		                            if (spot == default || (spot.X == 0 && spot.Y == 0) || displaySlots.Contains(((int)spot.X, (int)spot.Y)))
 		                                break;
-		                            displaySlots.Add(((int)spot.X, (int)spot.Y));
+		                            // ⛔ 2026-09-12 恒：**这道闸不能省**。游戏原版 getFreeDonationSpot() 在
+		                            //   **找不到任何空位时返回硬编码坐标 (26,5)**（反编译 LibraryMuseum.cs:555 末尾
+		                            //    `return new Vector2(26f, 5f);`），而本循环的终止条件只认 (0,0) ⇒
+		                            //    "博物馆已满"时它会往 (26,5) 写 _diag_ 占位符、**覆盖掉那儿的真展品**，
+		                            //    随后 cleanup 见值是 _diag_ 就 Remove ⇒ **真展品被删掉**。
+		                            //    真机实测：满馆调一次 donate ⇒ 展品 95 → 94，且 (26,5) 变空。
+		                            //    闸门=占位符**只许写在空位上**；返回的坐标已经有东西 ⇒ 那是"没空位"的哨兵，停手。
 		                            var vKey = new Vector2(spot.X, spot.Y);
+		                            if (Game1.netWorldState.Value.MuseumPieces.ContainsKey(vKey))
+		                                break;
+		                            displaySlots.Add(((int)spot.X, (int)spot.Y));
 		                            Game1.netWorldState.Value.MuseumPieces[vKey] = "_diag_";
 		                        }
 		                        foreach (var (sx, sy) in displaySlots)
@@ -15394,30 +15694,36 @@ public class ModEntry : Mod
                 {
                     if (farmer.Items[i] is StardewValley.Object obj)
                     {
-                        // 用 LibraryMuseum.isItemSuitableForDonation 判断（比 category 过滤准）
-                        bool suitable = false;
+                        // 判据=游戏自己的 LibraryMuseum.isItemSuitableForDonation
+                        //   （not_museum_donatable 标签 / 已捐过 / 既非矿物又非古物 → 它都挡）。
+                        // ⛔ 2026-09-12 恒：**删掉了原来的 category 兜底**。它把"判据说不行"和"判据没拿到"
+                        //    混成了同一种情况，真机实测后果（博物馆本来就 95/95 全齐）：
+                        //      · 已捐过的方解石(-12)/铁铅矿(-12) 被重新塞进第二个展位
+                        //        ⇒ museumPieces 变成 97 条 / 95 个 id（多出 2 条幻影展品）
+                        //      · 羊奶酪(工匠品) 被当成"宝石"捐掉、从背包消失
+                        //    两个根因：① 常量认错 —— -26 是 artisanGoods(工匠品)、-23 是
+                        //    sellAtFishShop(鱼店可售)，真正的宝石是 -2；② "已经捐过"也走这条兜底，
+                        //    所以全齐的博物馆照样能被再塞一遍。
+                        //    按《宁报错别兜底》：判据拿不到就**明确报错**，不许拿一张猜的类别表放行。
+                        bool suitable;
                         try
                         {
                             var libMuseum = museum as StardewValley.Locations.LibraryMuseum;
-                            if (libMuseum != null)
-                                suitable = libMuseum.isItemSuitableForDonation(obj);
-                        }
-                        catch { }
-                        if (!suitable)
-                        {
-                            // 兜底：按 category 过滤（矿物 -12 古物 -23 宝石 -26）
-                            if (obj.Category != -12 && obj.Category != -23 && obj.Category != -26)
+                            if (libMuseum == null)
                             {
-                                // 再加特例：矮人小工具等 cat=0 的可捐物品
-                                string rawId = obj.ItemId ?? "";
-                                string rawQid = obj.QualifiedItemId ?? "";
-                                string rawBare = rawId.Contains(")") ? rawId.Split(')')[1] : rawId;
-                                if (string.IsNullOrEmpty(rawBare)) rawBare = rawQid.Contains(")") ? rawQid.Split(')')[1] : rawQid;
-                                // Dwarf Gadget
-                                if (rawBare != "326" && rawBare != "(O)326")
-                                    continue;
+                                tcs.SetResult(new { ok = false,
+                                    error = "ArchaeologyHouse 不是 LibraryMuseum，拿不到可捐性判据 —— 拒绝捐（宁可报错也不猜）" });
+                                return;
                             }
+                            suitable = libMuseum.isItemSuitableForDonation(obj);
                         }
+                        catch (Exception ex)
+                        {
+                            tcs.SetResult(new { ok = false,
+                                error = $"可捐性判据调用失败：{ex.Message} —— 拒绝捐（宁可报错也不猜）" });
+                            return;
+                        }
+                        if (!suitable) continue;   // 游戏说不行就是不行（含"已捐过"），别再兜底
 
                         // 兼容多种 ID 格式：ItemId / QualifiedItemId / 裸 ID
                         string id = obj.ItemId ?? "";
@@ -17950,6 +18256,19 @@ public class ModEntry : Mod
                     ["townKey"] = new { unlocked = Has("HasTownKey"), how = "完成小镇钥匙任务（任意时段进居民家）" },
                     ["forestMagic"] = new { unlocked = Has("Lewis_cc_Begin") || Has("ccIntro"), how = "森林魔法（献祭功能解锁）" },
                     ["parrotExpress"] = new { unlocked = parrotExpress, how = "喂金核桃给岛上鹦鹉解锁快捷（姜岛→农场图腾/岛内传送）" },
+                    // 🌋 火山近路（2026-09-12 恒：「第一次闯关到10层之后来这里踩机关，之后才可以从入口层直接到火山顶」）
+                    //   反编译定论（decomp/full/StardewValley.Locations/Caldera.cs:106 + DwarfGate.cs:121）：
+                    //     ① 首次到过 Caldera（`visited`）⇒ 次日 `DayUpdate` 自动补发 `volcanoShortcutUnlocked`
+                    //     ② 或者在**入口层 VolcanoDungeon0 的矮人门**踩机关（开关 (40,51)、门 (40,48)）⇒ 当场发
+                    //   两条路写的是**同一个 flag**。持有它 ⇒ `VolcanoDungeon.GenerateContents` 里
+                    //   `dwarfGates` 全部 `opened=true` 且开关全置真（VolcanoDungeon.cs:817-829）。
+                    //   ⚠️ 这个 flag 是唯一的可读判据 —— 门/机关本身是运行时 `DwarfGate` 对象，
+                    //      改的是**动态地图层**，`/dump_tile` 读那三格全是空（terrain null、可走）。
+                    ["volcanoShortcut"] = new { unlocked = Has("volcanoShortcutUnlocked"),
+                        how = "首次到火山顶(Caldera)后次日自动；或在入口层(VolcanoDungeon0)踩矮人门机关(40,51)当场开。开了才能从入口层直通山顶" },
+                    ["reachedCaldera"] = new { unlocked = Has("reachedCaldera"), how = "首次抵达火山顶 Caldera（火山第10层）" },
+                    ["volcanoShortcutOut"] = new { unlocked = Has("Island_VolcanoShortcutOut"),
+                        how = "姜岛鹦鹉升级(第5层)：火山内开捷径直接出到岛北(56,17)" },
                     ["parrotUpgradesRaw"] = parrotUpgradesRaw.ToArray(),
                     ["parrotDiag"] = parrotDiag,
                     ["parrotMembers"] = parrotMembers.ToArray(),
@@ -18572,14 +18891,28 @@ public class ModEntry : Mod
         //    放行 → 选址能贴近闪光点(藏水中岸偏远)"站水上淘"，淘完回原位(见 _pan_run/_crab_place)。
         //    ⚠️ /walk_to 内部走 FindPath/BfsTo/落点验证，全都调本函数——靠 _walkAllowWater(HandleWalkTo 读请求设置)
         //    一次放行整条走位链，不用改 FindPath 签名。
-        // 🔧 2026-08-30 恒：**必须认桥/可走过水面**。河流农场等地图把"跨水木桥"标成 isWaterTile=True 但
-        //    isTilePassable=True（玩家可站立走过），此前水排除把它们一刀切判不可走 → BFS 断在桥前、瞬移，
-        //    整个模组越不了河。修：**SDV 判可走的水格（mapPassable/isTilePassable=True）= 桥/浅滩，放行；
-        //    只有 SDV 都不让站的水（isTilePassable=False）= 真水，才排除**（此时上层 isTilePassable 已挡，
-        //    isWaterTile 只是双保险，不再误伤桥）。
-        if (!allowWater && !_walkAllowWater
-            && location.isWaterTile(tile.X, tile.Y)
-            && !location.isTilePassable(tileVec)) return false;
+        // 🔴 2026-09-12：上面那条"水格排除"**从来没生效过** —— 反编译实锤：
+        //    `GameLocation.isTilePassable(Vector2)`（GameLocation.cs:2898）**只查两样** ——
+        //    Back 层有没有 `Passable` 属性、Buildings 层有没有实心块 —— **一个字都没提水**。
+        //    所以**开阔海面也返回 true** ⇒ `!isTilePassable` 恒 false ⇒ 整个条件永远不成立 ⇒ 水格一路放行。
+        //    真机后果：AI 走上海滩开阔水面（恒 2026-09-12 截图：泡在海里、栈道在头顶）。
+        //    ⚠️ **不止那一格** —— 海/河/湖的开阔水面全都能走。2026-08-30 那条
+        //    "SDV 判可走的水格 = 桥/浅滩"的假设是**错的**（SDV 的通行判定里根本没有水这回事）。
+        // ✅ 正确判据（**不依赖魔数**）：**开阔水 = 水格 且 Buildings 层是空的**（上面没铺任何东西）。
+        //    实测（2026-09-12 真机扫图）：
+        //      · 码头面 (52,25)：水格 + Buildings 层有瓦片（`Passable:T` 的桥面）⇒ **可站** ✅
+        //      · 开阔海 (35,38)：水格 + Buildings 层**空** ⇒ **不可站** ❌（恒就是在这泡的水）
+        //    为什么不用 SDV 自带的 `isOpenWater()`（GameLocation.cs:13229）：它靠**硬编码瓦片编号**
+        //    (628/629/734/759) 认码头，而我没有端点能读到瓦片编号、**无法验证海滩码头是否真用这几个号**；
+        //    赌错了就会把码头一并堵死（比原 bug 更糟）。这里用的判据当场实测过，且不依赖任何编号。
+        //    ⚠️ 安全性：上面那道 `isTilePassable` 已经先挡掉"Buildings 层有实心块"的格子，
+        //       所以走到这里的"水格 + 有 Buildings 瓦片"必然是**可走的桥/码头面** —— 不误伤过河的路
+        //       （2026-08-30 想解决的问题依然被妥善处理，只是这次判据是对的）。
+        var bLayer = location.Map?.GetLayer("Buildings");
+        bool hasDeck = bLayer != null && tile.X < bLayer.LayerWidth && tile.Y < bLayer.LayerHeight
+                       && bLayer.Tiles[tile.X, tile.Y] != null;
+        if (!allowWater && !_walkAllowWater && location.isWaterTile(tile.X, tile.Y) && !hasDeck)
+            return false;
 
         // 🐄 2026-08-26 恒：牲畜是实心的，BFS 以前不认它 → 规划出踩到牛身上的路，
         //    人顶在动物上不动、walk_to 干等 20 秒超时，最后退化成满屋 position 乱传
