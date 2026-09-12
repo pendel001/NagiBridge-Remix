@@ -9274,10 +9274,18 @@ def _egg_score() -> int:
         return -1
 
 
-def _wait_walk(x, y, timeout: float = 7.0) -> bool:
-    """轮询等 AI 走到 (x,y)（walk_to 异步，需等待）。到达/停稳返回 True。"""
+def _wait_walk(x, y, timeout: float = 7.0, abort=None) -> bool:
+    """轮询等 AI 走到 (x,y)（walk_to 异步，需等待）。到达/停稳返回 True。
+
+    🥚 `abort`：可选的"立刻别走了"判据（返回 True 就中断这次等待并回 False）。
+    **2026-09-13 恒**："**吹哨时脚本停止不动应该就好了**" —— 原来只在**每颗蛋的间隙**查一次，
+    而走路最长要等 12s，**哨响在那 12s 里没人听** ⇒ 人还在走、7843 还在渲染，
+    刘易斯已经开始讲话了。把查哨塞进这个等待循环，**哨响即断**。
+    """
     deadline = time.time() + timeout
     while time.time() < deadline:
+        if abort is not None and abort():
+            return False
         time.sleep(0.4)
         try:
             pl = api._ai_get("/state").get("player") or {}
@@ -9302,7 +9310,7 @@ def _halt_move():
         pass
 
 
-def _walk_to_egg(x, y) -> bool:
+def _walk_to_egg(x, y, abort=None) -> bool:
     """走到蛋格：先自然走（walk_to，**放宽等待让走完**），真走不到（栅栏/装饰挡）才 **/position 兜底**。
     ⚠️ 2026-08-17 两次实测修：
       ① _wait_walk 6s 太短→打断慢自然走→position 抢走→交互漏蛋 → 放宽 12s
@@ -9311,10 +9319,13 @@ def _walk_to_egg(x, y) -> bool:
     _halt_move()
     try:
         api.walk_to_coord("Temp", x, y)
-        if _wait_walk(x, y, timeout=12):
+        if _wait_walk(x, y, timeout=12, abort=abort):
             return True
     except Exception:
         pass
+    # 🥚 哨响 → 别再用 /position 补位（那等于"哨响后还瞬移去捡"，比走路更难看）
+    if abort is not None and abort():
+        return False
     # 真走不到（栅栏挡）→ position 到蛋的**邻格**（恒拍板：不钻栅栏，补位到旁边再交互蛋格）
     _halt_move()
     for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
@@ -9391,14 +9402,20 @@ def _festival_egg_run(route: str = "") -> str:
             return "⚠️ 寻宝已结束/未开始（festivalTimer=0）——没在捡蛋，收手"
         try:
             for i, (x, y) in enumerate(points, 1):
-                # 寻宝倒计时归零/出现对话（宣布结果）→ 收手（先停住残留走动）
-                if _festival_timer() == 0 or _dialogue_now():
+                # 🔔 哨响（festivalTimer 归零）/出现对话（宣布结果）→ 收手（先停住残留走动）
+                if _egg_hunt_over() or _dialogue_now():
                     _halt_move()
-                    lines.append("💬 寻宝结束/宣布结果，收手")
+                    lines.append("🔔 听到结束哨（或已宣布结果），收手" if _egg_hunt_over()
+                                 else "💬 寻宝结束/宣布结果，收手")
                     break
                 before = _egg_score()
                 # 自然走（栅栏挡着走不到就直接跳过，不钻栅栏）
-                if not _walk_to_egg(x, y):
+                # 🔔 abort=_egg_hunt_over：**走路那 12 秒里哨响就立刻断**，不走到蛋跟前
+                if not _walk_to_egg(x, y, abort=_egg_hunt_over):
+                    if _egg_hunt_over():
+                        _halt_move()
+                        lines.append("🔔 走到一半听到结束哨，收手（没交互）")
+                        break
                     lines.append(f"  ⚠️ ({x},{y}) 走不到/没到，跳过")
                     continue
                 time.sleep(0.3)
@@ -9412,6 +9429,11 @@ def _festival_egg_run(route: str = "") -> str:
                     time.sleep(0.2)
                 except Exception:
                     pass
+                # 🔔 转朝向那 0.5s 里哨响了 → 别交互了（哨响后还伸手去拿，最难看的就这一下）
+                if _egg_hunt_over():
+                    _halt_move()
+                    lines.append("🔔 举手前听到结束哨，收手（没交互）")
+                    break
                 try:
                     api._ai_post("/interact", {"x": x, "y": y})
                 except Exception as e:
@@ -9439,6 +9461,35 @@ def _festival_timer() -> int:
         return int((api.festival_status() or {}).get("festivalTimer") or -1)
     except Exception:
         return -1
+
+
+def _egg_hunt_over() -> bool:
+    """🔔 寻宝**结束哨**响了没 —— `festivalTimer <= 0` 就是那一刻。
+
+    2026-09-13 恒："**能不能检测到结束的吹哨呢？吹哨时脚本停止不动应该就好了。**"
+    **判据本来就有，缺的是粒度**（原来只在每颗蛋的间隙查一次，走路那最长 12s 没人听）。
+    游戏侧的实锤（`Event.cs:11171`）：`festivalTimer <= 0` 时游戏自己
+    `Game1.player.Halt()` + `EndPlayerControlSequence()` + 接 `afterEggHunt`（刘易斯讲话）
+    ⇒ **零就是权威信号，不用另找音效**。
+
+    ⚠️ 两条别搞错：
+      · **用便宜的 `/event_state`**（docstring 原话"便宜、可低频轮询"）；`/festival` 会遍历全部
+        actor（蛋蛋节 33 个 NPC），**别拿它进轮询**——原来 `_festival_timer()` 就是那个贵的。
+      · **`-1` 一律当"没结束"（绝不误停）** —— `ModEntry.cs:17777` 写死 `int festivalTimer = -1;`
+        当**哨兵值**（没有事件 / 反射读不到都给 -1）。而真实倒计时**归零后是小负数**
+        （`Event.cs:11106` 只在 `>0` 时递减，最后一帧会减过头，然后一直保持那个负值）
+        ⇒ **`-1` 和 `-11` 语义相反**，不能一刀切 `<=0`。
+        ⚠️ 已知窄缝：真倒计时**恰好**落在 -1 时会被当"没结束"（那时靠 `_dialogue_now()` 兜底收手）。
+        概率极低、且后果只是"多等一次检查"，接受。
+      · **开跑前提**本来就是"timer>0"（`_festival_egg_run` 开头那道闸）⇒ 跑动中读到 `<=0` 才结算。
+    """
+    try:
+        t = (api.event_state() or {}).get("festivalTimer")
+        if t is None or int(t) == -1:      # -1 = C# 哨兵：没事件/读不到 → 绝不误停
+            return False
+        return int(t) <= 0
+    except Exception:
+        return False
 
 
 _TRAVEL_CART_KEY = {"last": None}  # 🐷 旅行猪车提醒去重（2026-08-20 恒：周五/周日一天一条）
