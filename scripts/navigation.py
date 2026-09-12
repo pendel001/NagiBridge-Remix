@@ -385,9 +385,68 @@ def _nav_resolve(name):
     return None
 
 
+def _walk_to_coord(x: int, y: int) -> str:
+    """🎯 同图坐标走位 —— 底座就是 `/walk_to`（**和 POI 那条路同一个寻路器**，不是另开一条）。
+
+    ⚠️ 2026-09-11 恒：这是 `movetile` 的替代品。老的 `movetile` 走 `/move`+BFS，
+       而 CLAUDE.md 关键坑#1 早就写着「**别用 /move+BFS**」—— 它是仅存的一个绕过口子。
+       实测 `/walk_to` 对**能站的格**落点 **8/8 精确**（那 3 次"落偏"的目标格本身
+       `passable=false`，它**正确地**落在最近的能站格上）⇒ 坐标走位根本不需要另开 BFS。
+       ⚠️ 老 `move_to_tile` 还有个谎报：C# 回 `No path` 时它照样印 `✅ 已移动到 (x,y)`
+       （因为它不看返回、只靠"玩家没在动"猜——而没开始走的人显然"没在动"）。这里改判返回。
+
+    ⚠️ 传送核对：`/walk_to` 走到**门/出口瓦片**上会触发 warp 换图。这**不能一刀切禁掉**
+       （`map_go` 的出口**就是**靠踩上去触发的），所以改成**走完核对一次图变没变**，
+       变了就如实报，并提示该用 `map go`。📌 这正是 2026-09-11 真机踩的：用旧 movetile
+       从 Farm(55,12) 走一格到 (55,11)（小屋门）→ 静默 warp 进屋，落在主厅之外。
+    """
+    if x is None or y is None:
+        return _with_state("❌ 坐标走位要**同时**给 x 和 y（缺一个我不猜，见恒 2026-09-10「宁报错别兜底」）")
+    try:
+        st = api.state()
+        loc_before = (st.get("location") or {}).get("name", "")
+    except Exception as e:
+        return _with_state(f"❌ 读不到当前状态: {e}")
+    try:
+        r = api.walk_to_coord(loc_before, x, y)
+    except Exception as e:
+        return _with_state(f"❌ 走位请求失败: {e}")
+    if isinstance(r, dict) and r.get("ok") is False:
+        return _with_state(f"❌ 走不过去 ({x},{y})：{r.get('error') or r}")
+    arrived = _wait_arrival(loc_before, x, y, timeout=30)
+    # ⚠️ 踩上去型的传送点（地图上 `TouchAction: Warp …`，例如小屋地下室楼梯 (19,35)）是
+    #    **踩上去的下一 tick** 才换图 —— 刚落到格子上就立刻读，会读到"还没换图" ⇒ **漏判**。
+    #    2026-09-11 真机就是这么漏的：走 Cabin(19,35) 返回「🚶 已到 (19,35)」，
+    #    而**同一次调用**末尾拼的状态条已经写着 `📍 Cellar2 (3,2)`。
+    #    所以核对前**等一拍**再读（只在这条坐标路上花这 0.6s；POI 那条路不受影响）。
+    time.sleep(0.6)
+    try:
+        st2 = api.state()
+    except Exception:
+        st2 = {}
+    loc_after = (st2.get("location") or {}).get("name", "")
+    px = (st2.get("player") or {}).get("x")
+    py = (st2.get("player") or {}).get("y")
+    if loc_after != loc_before:
+        return _with_state(
+            f"⚠️ ({x},{y}) 那格是**传送点** —— 已经离开「{loc_before}」、到了「{loc_after}」。"
+            f"跨图该用 `map ops=go`（走门/出口/交通由它负责）；坐标走位只管同图。")
+    if not arrived:
+        return _with_state(f"⚠️ 没走到 ({x},{y})，停在 ({px},{py})")
+    if (px, py) != (x, y):
+        return _with_state(f"🚶 已到 ({x},{y}) 附近，实际站在 ({px},{py})（目标格可能站不了人）")
+    return _with_state(f"🚶 已到 ({x},{y})")
+
+
 @_stuck_track
-def walk_to(poi_name: str) -> str:
-    """🚶 导航到指定地点（POI 落点）
+def walk_to(poi_name: str = "", x: int = None, y: int = None) -> str:
+    """🚶 导航到指定地点（POI 落点）—— **也可直接给坐标 x/y**（同图精确走位）
+
+    两种用法（二选一）：
+      • `walk_to(poi_name="皮埃尔商店")` —— POI 名，见 locations.py 数据库
+      • `walk_to(x=33, y=24)`           —— 同图坐标，底座同样是 `/walk_to`
+    ⚠️ 两个都不给 → 明确报错（不猜、不兜底）。
+
     ⚠️ 2026-08-16 恒：**跨场景不瞬移**——POI 在别的图 → 自动走 map_go 真实路径（出口瓦片/门）；
     只有 POI 在当前图内才走过去。日常跨场景切换首选 map_go（walk_to 走出口瓦片不可靠）。
     ⚠️ 到 POI 后自动应用结构化站位+朝向（locations.POI_FACE，如水碗朝右、柜台朝上）——
@@ -404,7 +463,12 @@ def walk_to(poi_name: str) -> str:
 
     Args:
         poi_name: POI 名称（见 locations.py 数据库）
+        x, y: 同图目标坐标（与 poi_name 二选一；两个都不给 → 报错）
     """
+    if x is not None or y is not None:
+        return _walk_to_coord(x, y)
+    if not (poi_name or "").strip():
+        return _with_state("❌ walk 要**么给 poi_name、么给 x+y** —— 两个都不给我不知道该走哪（不猜）")
     _nr = _nav_resolve(poi_name)
     if _nr:
         _NAV_LAST.update(_nr)
@@ -435,11 +499,40 @@ def walk_to(poi_name: str) -> str:
                 # map_go 自带状态条 → 取正文，face_log 接后，最后统一 _with_state
                 base = go.split(_STATE_SEP)[0] if _STATE_SEP in go else go
                 return _with_state(base + face_log)
+        # 🏠 动态别名（回家 / 自己小屋 / 我的小屋）→ 走**同进程**的 go_to()，别丢给子进程。
+        #    go_to() 认得这些别名（回家=`_go_home()` 全流程进屋到床边；裸"小屋"=`_nav_home_door()` 只到门口），
+        #    而且它用 `api`（= AI 端口 7843）—— 子进程那条路默认打 7842 房主，见下面 ⚠️。
+        if any(k in poi_name for k in ("回家", "自己小屋", "我的小屋")):
+            return go_to(poi_name)
         # 同图 → go_to.py 走过去
+        # ⚠️⚠️ 2026-09-12 真机抓到两个**会打到恒身上**的坑，都在这一段：
+        #  ① **没传 --port**：go_to.py 的 `--port` 默认 `NAGI_PORT`、再默认 **7842=房主**，
+        #     而 `_set_roles` 只写了 NAGI_URL/NAGI_AI_URL、**漏了 NAGI_PORT** ⇒ 子进程全程在
+        #     **操作恒的角色**。这正是 CLAUDE.md 坑#5「自动注入 --port 防挪恒角色」漏掉的一条路。
+        #     ⇒ 显式传 AI 端口；**拿不到端口就明确报错**，绝不退回 7842（宁报错别兜底）。
+        #  ② `returncode == 0` **不等于走到了**：go_to.py 的 `go()` 返回 False 时 main 也 exit 0
+        #     （离线实测 `go_to.py "自己小屋(床)"` → 打 `[FAIL] game not ready` 而 `exit=0`）；
+        #     更糟的是原先 stdout 为空时 `short` 兜底成**字面量 "已到达"** ⇒ 报「已导航到「x」已到达」
+        #     而 AI 纹丝没动（真机见过）。**没有输出 = 没有证据**，现在报错，不报"到达"。
+        _port = (getattr(api, "BASE_URL", "") or "").rsplit(":", 1)[-1].strip("/")
+        if not _port.isdigit():
+            _NAV_FAILED["v"] = True
+            return _with_state(f"❌ 不敢跑导航子进程：拿不到 AI 端口（api.BASE_URL={getattr(api, 'BASE_URL', None)!r}）"
+                               f"—— go_to.py 没端口会默认打到 7842 房主身上，宁可这一趟不走。")
         result = subprocess.run(
-            [sys.executable, os.path.join(SCRIPT_DIR, "go_to.py"), poi_name],
+            [sys.executable, os.path.join(SCRIPT_DIR, "go_to.py"), poi_name, "--port", _port],
             capture_output=True, text=True, timeout=45,
             cwd=SCRIPT_DIR,
+            # ⚠️⚠️ **必须显式 utf-8**（2026-09-12 破案）：子进程继承 `PYTHONIOENCODING=utf-8`，
+            #    stdout 是 UTF-8；而 `text=True` 默认按**本地编码(GBK)** 解 → 解不动时
+            #    `subprocess` 的**读取线程直接抛 UnicodeDecodeError 死掉**，`result.stdout` 变成 **None**
+            #    （**不向调用方抛异常、`returncode` 照样 0**，静默得离谱）⇒ 下游 `(stdout or "")` 拿到空串
+            #    ⇒ 老代码 `... if summary else "已到达"` 兜底成**字面量"已到达"**。
+            #    **这就是"报了已到达、AI 纹丝没动"的真凶**（真机 + 离线双复现：
+            #    `UnicodeDecodeError: 'gbk' codec can't decode byte 0xb9 in position 57`）。
+            #    📌教训：`text=True` **不是**"帮我解码"的同义词，它按本地编码解；
+            #    子进程是 UTF-8 时一定要 `encoding="utf-8"`，否则失败方式极其隐蔽（None 而非异常）。
+            encoding="utf-8", errors="replace",
         )
         out = (result.stdout or "")[-1000:]
         err = (result.stderr or "")[-500:]
@@ -449,7 +542,12 @@ def walk_to(poi_name: str) -> str:
             lines = out.strip().split("\n")
             # 只保留最后几行非空信息
             summary = [l for l in lines if l.strip() and "log" not in l.lower()]
-            short = "\n".join(summary[-5:]) if summary else "已到达"
+            # 🚫 没输出 / go_to.py 自己报了 [FAIL] ⇒ 都是"没走到"，别硬说到达
+            if not summary or any("[FAIL]" in l for l in summary):
+                _NAV_FAILED["v"] = True
+                why = "; ".join(summary[-2:])[:200] if summary else (err.strip()[:200] or "一句话都没输出")
+                return _with_state(f"❌ 「{poi_name}」没走到：{why}")
+            short = "\n".join(summary[-5:])
             face_log = _apply_poi_stand_face(poi_name)
             # 🔑 一键开门：同图走到 POI→若落点是建筑门瓦片则推门进屋（跨图已由上面 map_go 分支自带）
             door_log = ""
@@ -683,6 +781,11 @@ def go_to(place: str) -> str:
             return _go_home()          # 明确"回家"→进屋到床边
         if any(k in _pl for k in ("小屋", "cabin")) \
                 and not any(k in _pl for k in _excl):
+            # ⚠️ 2026-09-12：**点名要床的**（walk 的 POI 表里就叫「自己小屋(床)」）走全流程进屋到床边
+            #    —— 原来一律 `_nav_home_door()` 只到门口，却回「已导航到「自己小屋(床)」已到达」，
+            #    名字写"床"、人站在门外 = 货不对板（恒 09-12 抓的）。裸"小屋/cabin"仍只到门口（原设计）。
+            if "床" in _pl:
+                return _go_home()
             return _nav_home_door()    # "进小屋/cabin"→只导航到门口（进屋交给 AI interact_at）
 
         target = _resolve_place(place)
@@ -1308,6 +1411,22 @@ def _is_mine_loc(loc) -> bool:
     if loc in ("Mine", "SkullCave", "Caldera"):
         return True
     return loc.startswith("UndergroundMine") or loc.startswith("Volcano")
+
+
+def _is_volcano_interior(map_name: str) -> bool:
+    """是不是「火山内部层」（VolcanoDungeon1~9）—— **只有这些层**需要 host 陪同。
+
+    2026-09-12 恒修正规则：「入口层其实应该放行的，顶层也放行。只是火山内部9层需要陪同」。
+    命名（`/warps` 实测）：入口层 = `VolcanoDungeon0`，往下一层 `VolcanoDungeon1` … 第 10 层 = `VolcanoDungeon9`，
+    再往上是山顶 `Caldera`。入口层只是"进洞第一屏"、山顶也不是层，**都没有换层难题**。
+    ⚠️ 原来门禁用 `dest.startswith("Volcano")` 一把梭，把**入口层和火山口也一起拦了** ——
+       结果连"从山顶挪回入口层"这种正当动作都被挡（2026-09-12 真机撞到）。改判层号。
+    ⚠️ 不引 `re`（本文件没导入过），手工解析尾号。"""
+    s = map_name or ""
+    if not s.startswith("VolcanoDungeon"):
+        return False
+    tail = s[len("VolcanoDungeon"):]
+    return tail.isdigit() and int(tail) >= 1
 
 
 # ⛏️ 每日第一次到【矿井入口层】的叮咛（2026-09-06 恒）：工具/雕像/清包/占位物 4 件事。
@@ -1990,8 +2109,12 @@ def map_go(destination: str = "", npc: str = "") -> str:
         _lock = _map_go_unlock_check(dest)
         if _lock:
             return _with_state(_lock)
-        # ⚠️ 火山门禁（2026-08-16 恒）：host 不在矿井/火山 → 禁入火山（特殊瓦片无法换层）
-        if dest.startswith("Volcano") or dest == "Caldera":
+        # ⚠️ 火山门禁（2026-08-16 恒定；**2026-09-12 恒缩小范围**）：
+        #    只拦「火山内部 1~9 层」（那些层换层走特殊瓦片、程序做不了，卡住只能人去救）。
+        #    入口层 VolcanoDungeon0 / 火山口 VolcanoEntrance / 山顶 Caldera **一律放行**
+        #    —— 恒：「入口层其实应该放行的，顶层也放行。只是火山内部9层需要陪同」。
+        #    （原来 `startswith("Volcano")` 一刀切，连"从山顶挪回入口层"都拦。）
+        if _is_volcano_interior(dest):
             _vg = _volcano_gate()
             if _vg:
                 return _with_state(_vg)

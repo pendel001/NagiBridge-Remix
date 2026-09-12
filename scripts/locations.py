@@ -247,10 +247,17 @@ POI = {
     "海滩钓鱼点(码头)":  {"map": "Beach",      "pos": (52, 25),"note": "码头钓鱼，有海鱼/章鱼/红鲷鱼 ✅"},
     "海滩断桥":          {"map": "Beach",      "pos": (58, 13),"note": "300木头修复→右侧沙滩/潮池，可拾珊瑚/海胆/贝壳"},
     "海滩潮池钓点":      {"map": "Beach",      "pos": (85, 10),"note": "右侧潮池钓点（海鱼/蟹）"},
-    "海滩鱼店码头钓点":  {"map": "Beach",      "pos": (35, 38),"note": "鱼店旁码头钓点（海鱼）"},
+    # 🔴 2026-09-12 恒：原 pos (35,38) 是**凭空猜的坐标** —— 那一格是**开阔海面**
+    #    （Back 层 Water、Buildings 层空的，没有任何桥面），走上去就是泡在海里；而且鱼店旁边
+    #    x28~41 / y≥37 **一整套全是水、根本没有码头**（恒截图："跑进水里了"）。
+    #    恒指定改用 (35,35)：陆地、可走，站岸上往南抛向 (35,37) 水面。
+    "海滩鱼店码头钓点":  {"map": "Beach",      "pos": (35, 35),"note": "鱼店旁岸上钓点（面朝下抛向海面）⚠️09-12 从 (35,38) 水格改正"},
     "海滩左侧钓点":      {"map": "Beach",      "pos": (11, 26),"note": "海滩左侧礁石区钓点（海鱼）"},
     "海滩中部钓点":      {"map": "Beach",      "pos": (44, 35),"note": "海滩中部码头旁钓点（海鱼）"},
-    "海滩钓鱼点(右边)":  {"map": "Beach",      "pos": (82, 28),"note": "右侧沙滩（待校准）"},
+    # 🔴 2026-09-12：原 pos (82,28) 是**开阔水面**（Back=Water、Buildings 空）。扫图发现
+    #    右侧确实有码头：y=25 的 x=78~85 全是桥面瓦片、y=26 的 x=85 也是，y≥27 才是水。
+    #    ⇒ 把钓点落在**码头面上** (82,25)（同 x 往北 3 格），面朝下抛向 y≥27 的水。
+    "海滩钓鱼点(右边)":  {"map": "Beach",      "pos": (82, 25),"note": "右侧码头钓点（面朝下）✅09-12 从水格 (82,28) 校正到码头面"},
     "艾利欧特家(门口)":  {"map": "Beach",      "pos": (49, 11),"note": "艾利欧特小屋门口"},
     "鱼店(门口)":        {"map": "Beach",      "pos": (30, 34),"note": "威利鱼店门口"},
     "鱼店(门内)":        {"map": "FishShop",   "pos": (5, 9),  "note": "鱼店入口处"},
@@ -353,7 +360,17 @@ POI = {
     # ⚠️ Caldera 几乎全是岩浆，只有边缘一圈可走 + 锻造台平台 + 出口。
     # 落点必须用已验证的走格：user实测站 (22,22)（锻造台正南）、AI 交互从 (22,23)。
     "火山锻造台":        {"map": "Caldera",     "pos": (22, 21),"note": "🔥 锻造台（2026-08-11 实测）：武器附魔/合成戒指/龙牙附魔。人站(22,22)朝北交互，AI从(22,23)对角scene at(22,21)"},
-    "火山顶出口":        {"map": "Caldera",     "pos": (5, 5),  "note": "Caldera 出口/传送（待校准）"},
+    "火山顶出口":        {"map": "Caldera",     "pos": (11, 36), "note": "🌋 Caldera→入口层捷径的**站格**(11,36)（2026-09-12 按 /warps 落盘；旧值 (5,5) 是占位、已废弃）。⚠️ 真传送瓦片在 (11,37)，**站不上人** —— 走到 (11,36) 后换图靠 /warp（见 MAP_LINKS['Caldera']）"},
+
+    # ── 火山第5层（VolcanoDungeon5）──
+    # 反编译依据：`VolcanoDungeon.cs` 的 `GenerateContents` 尾部有 `if (level.Value != 5) return;`
+    # ⇒ 下面这几样是**第5层专属**，别的层没有。✅ 2026-09-12 两样都真机验通了。
+    # 第5层"村口"地形（`/passable_rect` 实测 x24~41/y26~38）：
+    #   · 一条南北竖井走廊在 **x=32**（y26 直到 y37）—— 上下层就靠它
+    #   · 井(水格) `(27~30,29~32)` ／ 矮人商店柜台 `(36,30)`（**不可走**，站旁边 interact）
+    #   · 撤退出口 `(29,34)`（**不可走**，恒：站不上人）；站格 = 正西的 `(28,34)`
+    "火山矮人商店":      {"map": "VolcanoDungeon5", "pos": (36, 30), "note": "🧔 火山矮人商店（`checkAction` case 77 @(36,30) → `OpenShopMenu(VolcanoShop)`）。✅ **2026-09-12 真机验过**：站 (36,31) 面朝北 `/interact {x:36,y:30}` → 开出 `ShopMenu`。顺带证实**轮回懂矮人语** —— 反编译里 `canUnderstandDwarves` 为假只会 `doEmote(8)` 冒个表情、**不开菜单**，它开了。(36,30) 本身**不可走**（柜台格），站旁边那排 interact 即可"},
+    "火山第五层出口":    {"map": "VolcanoDungeon5", "pos": (29, 34), "note": "🦜 第5层撤退出口 ✅ **2026-09-12 真机全通**：**站 (28,34)、面朝东(facingDirection=1)、`/interact {x:29,y:34}`** → 弹「**要走捷径离开火山吗？**」是/否 → `menu click(option=0)` 答「是」→ **落 IslandNorth (56,17)**（与反编译 `warpFarmer(IslandNorth,56,17,1)` 一字不差）。⚠️ **不是踩上去就传的 warp，是一格要 interact 再答对话的瓦片**（现有 warp/door/portal 三种 kind 都盖不住，所以**没进 MAP_LINKS**；恒拍板「像竖井一样自己撤」）。(29,34) 本身**不可走**。前置=mail flag `Island_VolcanoShortcutOut`（恒档已有，用 `map ops=unlocks` 查）"},
 
     # ── 森林 ──
     "玛妮牧场(门外)":    {"map": "Forest",      "pos": (90, 16),"note": "玛妮牧场门口（森林侧）"},
@@ -707,6 +724,27 @@ MAP_LINKS = {
         {"tile": None, "target": "IslandNorth", "kind": "warp", "note": "火山入口出来→火山入口区(39,20)"},
         {"tile": None, "target": "VolcanoDungeon0", "kind": "door", "note": "火山地牢入口→火山矿井(37,4)（下矿/炸矿用）"},
     ],
+    # ── 🌋 火山顶 Caldera（2026-09-12 恒：**先落盘，不实地走**）──
+    # 来源：`/warps`（读游戏自己的 warp 表）+ 2026-09-12 恒实地走通一次。
+    #   Caldera (11,37) → VolcanoDungeon0   ← **山顶直通入口层的捷径**（不用爬 9 层）
+    #     ⚠️ **有前置**：必须在 `volcanoShortcutUnlocked` 这个 mail flag 下才通
+    #        （首次到过 Caldera 次日自动补发 / 或在入口层矮人门机关踩下）。没解锁时这条是关的。
+    #     ⚠️ 真实落点 = (44,51)（恒 2026-09-12 走出来实测），**不是** `/warps` 报的 targetX/Y (20,30)
+    #        —— **warp 定义里的落点 ≠ 真实落地**，本表以实地为准。这是个新坑，见 CHANGELOG 09-12⑨。
+    #   Caldera (21,40) → VolcanoDungeon9 (-1,-1)   ← 逐层往下（落点由游戏自选）
+    # ⚠️ 关键：`(11,37)` 是**传送瓦片，站不上人** —— `/passable` 两轮独立探皆为 false，
+    #    迷宫视图看是"只朝北开口的单格凹槽"。硬把 Position 放上去也**不触发** warp
+    #    （真机实测：静置无反应；隔壁 (21,40) 是在位置发生变化那一帧才触发的）。
+    #    按 2026-08-30 恒定的惯例 —— **"AI 不用原生 warp 触发(不稳定)"** —— 所以 `tile` 标
+    #    **边界内可达格 (11,36)**（真机 walk_to 到过），站定后由 navigation 用 `/warp` 换图。
+    # ⚠️ 回程走这条路时 `map_go` 会撞 `_volcano_gate()`（navigation.py:2097 判 `dest.startswith("Volcano")`）
+    #    ⇒ **仍需 host(恒) 在矿井/火山里陪同才放行**。这是恒定的安全规矩，不是 bug，别顺手拆。
+    "Caldera": [
+        {"tile": (11, 36), "target": "VolcanoDungeon0", "kind": "warp", "arrive": (44, 50),
+         "note": "🌋 山顶→入口层**捷径**（不用爬 9 层）。真出口瓦片=(11,37)（站不上人），站格取(11,36)。⚠️ **前置=mail flag `volcanoShortcutUnlocked`**，没解锁时这条不通（用 `map ops=unlocks` 查）。✅ **落点 2026-09-12 真机走通** = VolcanoDungeon0 **(44,50)**（`map ops=go` 实测；恒步行走出来时报 (44,51) —— 差 1 格，游戏 `warpFarmer` 落点取整所致，两格都 `passable:true` 无物体，不影响导航）。⚠️ `arrive` 就按实测 **44,50** 写；`/warps` 里这条报的是 targetX/Y=(20,30)，**与实际不符 —— warp 定义值 ≠ 真实落地，别信那个**。出洞后走 (37,4)→VolcanoEntrance→IslandNorth"},
+        {"tile": (21, 40), "target": "VolcanoDungeon9", "kind": "warp",
+         "note": "🌋 山顶→第9层（逐层下山用）。真出口瓦片=(21,40)，落点=(-1,-1) 游戏自选。⏳ tile 未校准（放上去过、静置不触发），用前先探站不站得住"},
+    ],
     "IslandFarmCave": [{"tile": None, "target": "IslandWest", "kind": "warp", "note": "农场洞穴口→姜岛农场(96,33)"}],
     "IslandShrine": [{"tile": None, "target": "IslandEast", "kind": "warp", "note": "神殿门口→丛林(33,30)"}],
     # ── 室内 → 室外（恒 2026-08-13：室内对室外没有"门"，统一"站瓦片上 warp"→ kind=warp）──
@@ -775,7 +813,27 @@ MAP_LINKS = {
     "IslandFieldOffice": [{"tile": None, "target": "IslandNorth", "kind": "warp", "note": "办事处门口→火山入口区（2026-08-15补）"}],
     "IslandHut": [{"tile": None, "target": "IslandEast", "kind": "warp", "note": "雷欧小屋门口→丛林（2026-08-15补）"}],
     "IslandNorthCave1": [{"tile": None, "target": "IslandNorth", "kind": "warp", "note": "蘑菇洞口→火山入口区（2026-08-15补）"}],
-    "VolcanoDungeon0": [{"tile": None, "target": "IslandNorth", "kind": "warp", "note": "火山矿井口→火山入口区（2026-08-15补）"}],
+    "VolcanoDungeon0": [
+        {"tile": None, "target": "IslandNorth", "kind": "warp", "note": "火山矿井口→火山入口区（2026-08-15补）"},
+        # 🌋 入口层→山顶（捷径，2026-09-12 恒实地走通一次 + 反编译定位）
+        #    反编译 `VolcanoDungeon.cs:833`：`warps.Add(new Warp(44, 48, "Caldera", 11, 36))` ⇒ **站格 (44,48)**。
+        #    ⚠️ 别被紧邻的第 832 行 `CreateExit(new Point(44, 50))` 骗了 —— `CreateExit`（实现见同文件 971 行）
+        #       **只画楼梯贴图、不加 warp**（通篇只有 removeTile/SetTile）。楼梯可视范围 x43~45 × y46~50，
+        #       warp 落在楼梯中段 (44,48)。旧值写 (44,50) = 把"楼梯起点"当成了传送瓦片。
+        #    ⚠️ 也别说"没 flag 出口就不存在" —— 832/833 两行都在 817~831 那个 if **外面**，**无条件生成**。
+        #       那个 if 只管**把矮人门推开**。flag 锁的是**能不能走到**，不是出口有没有：
+        #       门 = `DwarfGate` 建在 (40,48)（第 810 行 CreateDwarfGate），机关 = (40,51)（第 809 行
+        #       AddPossibleSwitchLocation）⇒ 恒实测「站机关上、前面是门」= 机关 (40,51) + 门 (40,48) 正好对上。
+        #    恒实测从山顶出来落在 (44,51) = 楼梯最下一格，往北 3 格即 (44,48) 传送。
+        #    ✅ 2026-09-12 真机走通（`map ops=go VolcanoDungeon0→Caldera`）：一条 1 段导航，落 Caldera (11,36)。
+        #    入口层地形（/passable_rect 实测，一张图说明白"门"和"楼梯"是两处）：
+        #      x=40 一条竖走廊 y44~50 ← **矮人门 (40,48) 就卡在这条走廊上**（现显示可走=门已开）
+        #      x=44 一条竖梯 y48~50 ← **(44,48) 是传送格**；上下两头都在底部房间 (x39~45,y50~53) 会合
+        #      ⇒ 没解锁时走不到楼梯：门把 x=40 那条走廊掐断，绕不过去（x=41~43 全是墙）。
+        #    ⚠️ **进没进过的地牢层：`/warp` 行、`/warp_into` 不行** —— 见 CHANGELOG 09-12⑩⑦。
+        {"tile": (44, 48), "target": "Caldera", "kind": "warp", "arrive": (11, 36),
+         "note": "🌋 入口层→山顶（**捷径**）。真 warp 瓦片=(44,48)（反编译 833 行）；arrive=(11,36) ✅ **2026-09-12 真机实测**（不是定义值猜的了）。⚠️ 前置=mail flag `volcanoShortcutUnlocked`（用 `map ops=unlocks` 查）：首次到过 Caldera 次日自动补发（Caldera.cs:106），或在入口层矮人门机关 (40,51) 踩下当场发（DwarfGate.cs:121）。**它锁的是 (40,48) 那道矮人门，不是出口本身** —— 没解锁时人会被门挡在楼梯外"},
+    ],
     "MasteryCave": [{"tile": None, "target": "Forest", "kind": "warp", "note": "精通山洞门口→森林（2026-08-15补）"}],
     "Summit": [{"tile": None, "target": "Railroad", "kind": "warp", "note": "山顶下山→铁路（2026-08-15补）"}],
     "WitchWarpCave": [{"tile": (4, 9), "target": "Railroad", "kind": "warp", "arrive": (54, 34), "note": "魔女沼泽洞穴→铁路(54,34)；原出口(4,10) y=10 在高度10边界外（/warps实测，2026-08-30）"},

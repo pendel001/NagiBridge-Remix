@@ -24,6 +24,7 @@ import time
 import base64
 import io
 import inspect
+import functools
 import re
 import random
 from typing import Any, Optional
@@ -95,8 +96,7 @@ from storage_common import (_parse_store_spec, _resolve_storage_target, _hex_to_
 #       M._wait_arrival / M._ai_pos —— 名字得留在 server 命名空间里。
 import navigation
 from navigation import (_wait_arrival, _ai_pos, _buildings, _locked_maps, _wallet_flag_present,
-                        _dwarf_rock_blocked, _go_home, _mine_entry_reminder, _volcano_gate,
-                        move_to_tile)
+                        _dwarf_rock_blocked, _go_home, _mine_entry_reminder, _volcano_gate)
 
 # ═══════════════════════════════════════════
 #  🧠 会话上下文缓冲（2026-08-13 #7：A2 长期记忆层）
@@ -199,6 +199,142 @@ mcp = FastMCP(
     host=MCP_HOST,
     port=MCP_PORT,
 )
+
+
+# ═══════════════════════════════════════════
+#  🚧 菜单闸门（2026-09-12 恒拍板）—— 菜单开着时禁掉"会乱动"的操作
+# ═══════════════════════════════════════════
+# 起因：恒「**你看不到当前菜单吗？我很担心这个问题影响实际游戏流程。要不发现开着菜单就
+#       禁用所有菜单和发送信息之外的操作？**」
+#       —— 当晚测结算菜单时菜单明明开着、操作照发、返回码还全是 ok，菜单却纹丝不动
+#       （真实原因是我钻类目后没按 back；但"菜单开着还照发操作"这个隐患是真的）。
+# 恒拍板的边界（**宁报错别兜底** —— 明确拒绝，别让它瞎跑）：
+#   ✅ 放行：menu 域全部 / social（沟通）/ check·help·screenshot（只读）/
+#          收尾与逃生（daily sleep·settle·lie_bed·cancel、script stop、map warp_safe）
+#   🚫 拒绝：其余一切，并告诉它**两条正路**（用 menu 处理 / 先关掉）
+# ⚠️ 实现=**猴补 `mcp.tool`**，位置必须在**所有 `@mcp.tool()` 之前** ——
+#    这样每个工具注册时自动包一层，不用去动上百处装饰器。
+_MENU_GATE_TOOLS_OK = {"menu", "social", "check", "help", "screenshot",
+                       "which_role", "role", "profile", "cancel"}
+_MENU_GATE_OPS_OK = {
+    "daily": {"sleep", "睡", "睡觉", "settle", "结算", "lie_bed", "躺", "躺床",
+              "cancel", "取消", "peek", "看恒",
+              "whiteboard", "写白板", "wb_read", "看白板", "wb_pin", "钉白板",
+              "wb_clear", "清白板"},
+    "script": {"stop", "停"},
+    "map": {"warp_safe", "逃脱"},
+    "session": {"status", "看"},
+}
+_MENU_GATE_CACHE = {"ts": 0.0, "menu": None}
+_MENU_GATE_TTL = 1.5     # 秒：短缓存，别让每个工具都多打一次 /state
+# 🔓 安全阀（2026-09-12 恒：「闸门能不能拒绝三次之后就放行，我怕出意外 —— 正常 AI 被提醒
+#    一次就知道去处理菜单了吧，除非真的是菜单和事件检测一直异常持续。不过是动画演出也说不定？」）
+#    ⇒ 同一工具 + 同一菜单最多拒 3 次，第 4 次**放行并明说**。防止"动画演出/检测异常"把 AI 卡死。
+_MENU_GATE_DENY_MAX = 3
+_MENU_GATE_DENY = {}     # {(工具名, 菜单类型): 已拒次数}
+
+
+def _menu_gate_now():
+    """当前开着的菜单类型（短 TTL 缓存）。读不到 → None（**不误拦**）。"""
+    now = time.time()
+    if now - _MENU_GATE_CACHE["ts"] < _MENU_GATE_TTL:
+        return _MENU_GATE_CACHE["menu"]
+    m = None
+    try:
+        m = ((api.state() or {}).get("activeMenu") or {}).get("type") or None
+    except Exception:
+        m = None
+    _MENU_GATE_CACHE.update(ts=now, menu=m)
+    return m
+
+
+def _menu_gate(name, kwargs, args=(), fn=None):
+    """菜单开着时挡掉"会乱动"的工具。
+
+    返回 `(是否拦截, 文案)`：
+      · (True, 拒绝文案)     → 拦下
+      · (False, "")          → 放行
+      · (False, 放行说明)    → **放行，但把这句话带回给 AI**（安全阀触发时用）
+    """
+    try:
+        menu = _menu_gate_now()
+        if not menu:
+            return False, ""
+        if name in _MENU_GATE_TOOLS_OK:
+            return False, ""
+        _reason = ""
+        _ok_ops = _MENU_GATE_OPS_OK.get(name)
+        if _ok_ops is not None:
+            ops = kwargs.get("ops")
+            if ops is None:
+                ops = kwargs.get("what")
+            if ops is None and args:
+                # 位置参兜底：签名里第一个形参若叫 ops/what，就拿第一个位置参当 ops
+                try:
+                    _p = list(inspect.signature(fn).parameters) if fn else []
+                    if _p and _p[0] in ("ops", "what"):
+                        ops = args[0]
+                except Exception:
+                    pass
+            ops = str(ops or "").strip()
+            if ops in _ok_ops:
+                return False, ""
+            _reason = (f"🚧 现在开着「{menu}」菜单，`{name} {ops}` 这种先别做 —— "
+                       f"菜单态下操作不会按预期生效。\n"
+                       f"   本域此刻能用的：{'、'.join(sorted(_ok_ops))}\n"
+                       f"   处理完菜单再继续：menu read 看内容 → menu click 点按钮/选项 → "
+                       f"menu click(button=upperRightCloseButton) 关掉。")
+        else:
+            _reason = (f"🚧 现在开着「{menu}」菜单，`{name}` 先别做 —— "
+                       f"菜单态下走位/干活/跑脚本都不会按预期生效。\n"
+                       f"   能用：menu(全部) / social 发消息 / check·help / "
+                       f"daily sleep·settle·cancel / script stop / map warp_safe\n"
+                       f"   先把菜单处理掉：menu read 看内容 → menu click 点按钮/选项 → "
+                       f"menu click(button=upperRightCloseButton) 关掉。")
+        # 🔓 安全阀：同一工具 + 同一菜单拒够 3 次 → 第 4 次放行（防"动画演出/检测异常"把 AI 卡死）
+        _key = (name, menu)
+        _n = _MENU_GATE_DENY.get(_key, 0)
+        if _n >= _MENU_GATE_DENY_MAX:
+            _MENU_GATE_DENY[_key] = 0        # 放行后清零，避免从此一路放行
+            return False, (f"⚠️ 这条已在「{menu}」下被拒 {_MENU_GATE_DENY_MAX} 次，**这次放行** —— "
+                           f"但菜单还开着，做之前请确认你真知道在干嘛。")
+        _MENU_GATE_DENY[_key] = _n + 1
+        return True, _reason
+    except Exception:
+        return False, ""     # 闸门自己出错 → 放行（绝不因为闸门把正常工具卡死）
+
+
+_orig_mcp_tool = mcp.tool
+# ⚠️ 重入计数：**域工具内部是直接调那些隐藏工具的**（`menu(ops=read)` → `read_menu()`），
+#    而隐藏工具也被本猴补包了一层 ⇒ 不挡的话会**双层判定**：外层放行、内层照样拦
+#    （实测：`menu ops=read` 被 `read_menu` 那一层拦下）。**只有最外层调用才判闸门。**
+_MENU_GATE_DEPTH = {"n": 0}
+
+
+def _gated_tool(*dargs, **dkwargs):
+    _deco = _orig_mcp_tool(*dargs, **dkwargs)
+
+    def _wrap(fn):
+        @functools.wraps(fn)          # ← 保住 __name__/__doc__/__wrapped__（FastMCP 靠它读签名）
+        def _inner(*a, **kw):
+            if _MENU_GATE_DEPTH["n"] > 0:      # 内层：已经在外层工具的执行里，不再判
+                return fn(*a, **kw)
+            _blocked, _note = _menu_gate(getattr(fn, "__name__", ""), kw, a, fn)
+            if _blocked:
+                return _with_state(_note)
+            _MENU_GATE_DEPTH["n"] += 1
+            try:
+                _out = fn(*a, **kw)
+            finally:
+                _MENU_GATE_DEPTH["n"] -= 1
+            return (_note + "\n" + _out) if _note else _out
+
+        return _deco(_inner)
+
+    return _wrap
+
+
+mcp.tool = _gated_tool
 
 
 # ═══════════════════════════════════════════
@@ -665,9 +801,14 @@ _CHAT_PHASE = {
     "timeout_n": 0,         # 超时兜底已发次数（按 3 分钟步进加码，不刷屏）
     "entered": 0.0,         # 进入该环节的时间（诊断用）
     "just_entered": True,   # 刚进环节 → 发一次引导横幅
+    "msg_sig": None,        # 上次已提醒过的"用户最新一条消息"签名（用于"有新消息立刻催"）
 }
 _CHAT_POLL_INTERVAL = 30      # 轮询间隔：30s 一次（恒拍板 2026-08-17）
-_CHAT_TIMEOUT_STEP = 180      # 超时兜底步进：每 3 分钟没新消息发一次
+_CHAT_TIMEOUT_STEP = 180      # 超时兜底步进（等睡期）：每 3 分钟没新消息发一次
+# 🧾 结算期**单独缩短**（2026-09-12 恒：「过夜菜单也180s吗，太久了。过夜菜单应该算聊天环节，
+#    专门缩短一下比较好。一分钟比较合适」）—— 结算本身就是聊天环节，而且是**卡着新一天开始**的
+#    （游戏时间暂停），干等 3 分钟纯浪费。
+_CHAT_TIMEOUT_STEP_BY_PHASE = {"settlement": 60, "wait_sleep": _CHAT_TIMEOUT_STEP}
 
 
 def _chat_phase_banner(phase) -> str:
@@ -684,6 +825,19 @@ def _chat_phase_poll(phase) -> str:
     if phase == "settlement":
         return f"🧾 结算中（30s轮询）：看看{h}有没有新消息/复盘是否完成——聊完 daily settle 进下一天"
     return f"🧾 等{h}入睡中（30s轮询）：有新消息就回应，没有就继续等"
+
+
+def _chat_phase_newmsg(phase) -> str:
+    """🔔 用户刚发来新消息 → **立刻**催一句回话（恒 2026-09-12：「或者 hook 轮询看有新信息就即时回，
+    超时只考虑确认结算用」）。
+
+    以前新消息只做"重置超时计时"，AI 要**等到下一个 30s 轮询**才被提醒 —— 恒说句话后最多愣 30 秒。
+    现在消息一到就注入这一行（**消息内容本身由小新闻块显示**，这里只给"该回话了"这个动作，不重复抄一遍）。
+    """
+    h = _host_name()
+    if phase == "settlement":
+        return f"🔔 {h} 刚发消息了——**先回一句**再谈别的；聊完 daily settle 进下一天"
+    return f"🔔 {h} 刚发消息了——先回一句，再接着等一起睡"
 
 
 def _chat_phase_timeout(phase, secs) -> str:
@@ -717,27 +871,50 @@ def _chat_phase_line(data, menu_type, tod, loc_name) -> str:
         # 环节切换 → 复位计时
         if phase != _CHAT_PHASE["phase"]:
             _CHAT_PHASE = {"phase": phase, "poll_ts": 0.0, "last_msg_ts": time.time(),
-                           "timeout_n": 0, "entered": time.time(), "just_entered": True}
+                           "timeout_n": 0, "entered": time.time(), "just_entered": True,
+                           "msg_sig": None}
         if not phase:
             return ""
         now = time.time()
-        # 有新用户消息（chat/emote → recent_events）→ 重置超时计时（消息内容本身由小新闻块显示）
+        # 🔔 取用户**最新一条**消息（chat/emote）：既重置超时计时，也用来判"这条还没提醒过"。
+        #    ⚠️ 唯一要排掉的是**自然聊天同步回流的自己那条**（格式 `💬 轮回: …` / `💬 轮回 发了…`）
+        #    —— 排它是**防御性**的：实测 2026-09-12 `social send` 走 `host_chat`（打 7842 恒的
+        #    进程），轮回自己进程的 recent_events **压根收不到**自己的话（0 条），所以正常情况下
+        #    这条分支不会命中。
+        #    ✅ **裸文本（无前缀）要算新消息**：那是 host→AI 的 HTTP 推送（`/chat` 带 notice，
+        #    见 ModEntry.cs:3540），是**真·别人发给我的**，别误杀。
+        _msg_sig = None
         try:
-            for ev in (data.get("raw") or {}).get("recent_events") or []:
-                if (ev or {}).get("type") in ("chat", "emote"):
-                    _CHAT_PHASE["last_msg_ts"] = now
-                    break
+            _me = p.get("name") or ""
+            for ev in reversed((data.get("raw") or {}).get("recent_events") or []):
+                if (ev or {}).get("type") not in ("chat", "emote"):
+                    continue
+                _t = ev.get("text") or ev.get("message") or ""
+                if _me and (_t.startswith(f"💬 {_me}:") or _t.startswith(f"💬 {_me} ")):
+                    continue                     # 自然同步回流的自己那条 → 跳过
+                _msg_sig = f"{ev.get('type')}|{_t}"
+                break
         except Exception:
-            pass
+            _msg_sig = None
+        _new_msg = _msg_sig is not None and _msg_sig != _CHAT_PHASE.get("msg_sig")
+        if _new_msg:
+            _CHAT_PHASE["msg_sig"] = _msg_sig
+            _CHAT_PHASE["last_msg_ts"] = now
+            _CHAT_PHASE["timeout_n"] = 0
         # ① 刚进入环节 → 引导横幅（一次性；结算的横幅由菜单段提供）
         if _CHAT_PHASE.get("just_entered"):
             _CHAT_PHASE["just_entered"] = False
             return _chat_phase_banner(phase)
-        # ② 超时兜底（每 _CHAT_TIMEOUT_STEP 秒没新消息加码一次）——比轮询更紧急，先判
-        if now - _CHAT_PHASE["last_msg_ts"] >= _CHAT_TIMEOUT_STEP * (_CHAT_PHASE["timeout_n"] + 1):
+        # ② 🔔 有新消息 → **立刻**催回话，不等 30s 轮询（恒 2026-09-12）
+        if _new_msg:
+            _CHAT_PHASE["poll_ts"] = now
+            return _chat_phase_newmsg(phase)
+        # ③ 超时兜底（结算 60s / 等睡 180s 步进加码，不刷屏）——比轮询更紧急，先判
+        _step = _CHAT_TIMEOUT_STEP_BY_PHASE.get(phase, _CHAT_TIMEOUT_STEP)
+        if now - _CHAT_PHASE["last_msg_ts"] >= _step * (_CHAT_PHASE["timeout_n"] + 1):
             _CHAT_PHASE["timeout_n"] += 1
             return _chat_phase_timeout(phase, int(now - _CHAT_PHASE["last_msg_ts"]))
-        # ③ 30s 轮询
+        # ④ 30s 轮询
         if now - _CHAT_PHASE["poll_ts"] >= _CHAT_POLL_INTERVAL:
             _CHAT_PHASE["poll_ts"] = now
             return _chat_phase_poll(phase)
@@ -2369,8 +2546,8 @@ def look_around(radius: int = 10) -> str:
 
 
 @mcp.tool()
-def walk_to(poi_name: str) -> str:
-    """🚶 导航到指定地点（POI 落点）
+def walk_to(poi_name: str = "", x: int = None, y: int = None) -> str:
+    """🚶 导航到指定地点（POI 落点）—— **也可直接给坐标 x/y**（同图精确走位）
     ⚠️ 2026-08-16 恒：**跨场景不瞬移**——POI 在别的图 → 自动走 map_go 真实路径（出口瓦片/门）；
     只有 POI 在当前图内才走过去。日常跨场景切换首选 map_go（walk_to 走出口瓦片不可靠）。
     ⚠️ 到 POI 后自动应用结构化站位+朝向（locations.POI_FACE，如水碗朝右、柜台朝上）——
@@ -2387,8 +2564,9 @@ def walk_to(poi_name: str) -> str:
 
     Args:
         poi_name: POI 名称（见 locations.py 数据库）
+        x, y:     同图目标坐标（与 poi_name 二选一）——原 `movetile` 的能力，2026-09-11 并入
     """
-    return navigation.walk_to(poi_name)
+    return navigation.walk_to(poi_name, x, y)
 
 
 def _mini_obelisk_pair() -> list:
@@ -5121,23 +5299,38 @@ def bobber_style(style: str = "dice") -> str:
       数字编号(0-37) = 选该样式
       "list" = 纯文字列编号
     注意：样式存到当前装备的鱼竿上，工具会先自动装备 Iridium Rod。
+    ⚠️ **必须本人站到样式机前**（FishShop(10,4)，站 (10,5) 面朝上）才调得动 ——
+       本工具**不替你走位、也不瞬移**；不在跟前会直接报错并告诉你怎么 map_go 过去。
     """
     try:
+        # 0. 🔴 先验"人在不在机器前"（2026-09-12 恒拍板：**走过去，工具不替你走、更不瞬移**）——
+        #    以前这里调 api.warp_into("FishShop",10,5) **瞬移**过去。它最终落 C# WarpDirect：
+        #    `farmer.currentLocation = targetLoc; farmer.Position = ...` —— **没调 Game1.warpFarmer、
+        #    没切 Game1.currentLocation**（决定渲染哪张图的字段），于是 farmhand 自己的客户端还在渲染旧图、
+        #    人却按新坐标画 ⇒ 真机看到"人在家里、墙外"，房主那边却看它在鱼店。
+        #    ⚠️ 更坑的是**整条工具链看不见这个错位**：/state 读的也是 farmer.currentLocation，
+        #    所以所有工具都高高兴兴报"FishShop"，没人发现得了。现在改成不在跟前就**明确报错叫人
+        #    map_go**（宁报错别兜底）——别拿瞬移把"人没真的过去"糊过去。
+        st = api.state()
+        loc = (st.get("location") or {}).get("name", "")
+        px = (st.get("player") or {}).get("x") or 0
+        py = (st.get("player") or {}).get("y") or 0
+        if loc != "FishShop" or max(abs(px - 10), abs(py - 5)) > 2:
+            return _with_state(
+                f"❌ 你不在威利的浮漂样式机前（现在 {loc or '?'} ({px},{py})）。\n"
+                f"   样式机在 FishShop(10,4)，要**站在 (10,5) 面朝上**才交互得到。\n"
+                f"   自己过去：先 map ops=go 到鱼店（沙滩上的威利鱼店），"
+                f"再用 map ops=walk kw={{'x':10,'y':5}} 走到机器正下方 → 再来调本工具。")
         # 1. 关掉可能开着的菜单
         api._post("/menu_close")
         time.sleep(0.3)
         # 2. 装备鱼竿（样式存当前鱼竿）
-        st = api.state()
         rods = [it for it in (st.get("inventory") or []) if "rod" in (it.get("name") or "").lower()]
         rod_name = rods[0]["name"] if rods else None
         if rod_name:
             api._post("/tool", {"name": rod_name})
             time.sleep(0.3)
-        # 3. 传到机器前（FishShop 10,5 面朝上 10,4 是机器）
-        r = api.warp_into("FishShop", 10, 5)
-        if not r.get("ok"):
-            return _with_state(f"❌ 进不了鱼店: {r.get('error', r)}")
-        time.sleep(0.8)
+        # 3. 面朝机器交互（人已在跟前 —— 见上面第 0 步校验，这里不再瞬移）
         api._post("/face", {"direction": 0})
         time.sleep(0.3)
         api._post("/interact", {"x": 10, "y": 4})
@@ -5436,6 +5629,10 @@ def bomb_volcano(bomb: str = "Bomb", min_covered: int = 3, hp_threshold: int = 3
     """🌋 火山骑行炸矿（跟 user 换层）——**火山适配，需 user 陪同**
     ⚠️ 火山特殊瓦片无法程序化换层 → 要求 user(host) 已在矿井/火山里才放行（否则拦下请先 ask user 陪同）。
     跟在 user 身边（warp 换层跟上），同层清矿簇（贪心炸弹）、帮打怪。
+    🏁 **到第5层 / 火山顶会自动收工**（2026-09-12 恒）：脚本停下后**人留在原地、不撤退**，
+       走或留自己判 —— 第5层可续可撤（矮人商店 (36,30) / 撤退出口 (29,34) 交互答「是」），
+       山顶没得选只能撤（走山顶出口 (11,36)）。想接着冲层**直接重调本工具**即可（骑行模式跟回 user
+       身边，不会从第1层重来）。
     （进矿跑前叮咛——工具/雕像/清包/占位物——统一在第一次到矿井入口层的 4 句话里，不重复。）
     Args:
         bomb: Bomb/Mega Bomb/Cherry Bomb（默认 Bomb；背包没有黑会按 黑>超级>樱桃 自动换有的用）
@@ -6373,6 +6570,29 @@ def _dropped_kw_note(op: str, dropped: list, sig) -> str:
             f"（此 op 可用参数: {avail}）——参数名写错不会报错，别以为它生效了")
 
 
+def _humanize_call_error(op: str, sig, e: TypeError) -> str:
+    """把 `fn(**kw)` 抛的 Python 原生 TypeError 翻成人话（2026-09-12 全工具测试⑨）。
+
+    起因：`settings ops=retire`（没给 tool_name）→ 报的是
+    `❌ op「retire」参数错: settings_retire() missing 1 required positional argument: 'tool_name'`
+    —— 中文壳里裹着 Python 原生文案，和当天修的 `box`（`'>=' not supported between ...`）同一类。
+    只翻译**已知的几种**，认不出的**原样返回**（宁可难看也别把信息吞掉，见 09-12 ①"宁报错别兜底"）。
+    """
+    msg = str(e)
+    avail = ", ".join(p.name for p in sig.parameters.values()) if sig else "?"
+    m = re.search(r"missing \d+ required positional arguments?: (.+)", msg)
+    if m:
+        names = m.group(1).replace("'", "").replace(" and ", ", ")
+        return f"❌ op「{op}」缺必需参数: {names}（此 op 可用参数: {avail}）"
+    m = re.search(r"unexpected keyword argument '([^']+)'", msg)
+    if m:
+        return f"❌ op「{op}」参数名不认识: {m.group(1)}（此 op 可用参数: {avail}）"
+    m = re.search(r"got multiple values for argument '([^']+)'", msg)
+    if m:
+        return f"❌ op「{op}」参数重复给了: {m.group(1)}（此 op 可用参数: {avail}）"
+    return f"❌ op「{op}」参数错: {msg}（此 op 可用参数: {avail}）"
+
+
 def _ops_run(ops_str: str, dispatch: dict, kw: dict) -> str:
     """组合式 ops 执行器：空格/逗号拆多 op 逐个执行，kw 按签名自动过滤。
     dispatch: {op: callable}。结果去内嵌状态条，由调用方最后统一 _with_state 附一次。"""
@@ -6423,8 +6643,8 @@ def _ops_run(ops_str: str, dispatch: dict, kw: dict) -> str:
                 results.append(_dropped_kw_note(op, _dropped, sig))
         except TypeError as e:
             # 2026-09-03 恒：参数名猜错（缺参）→ 直接列出可用参数名，别再让 AI 靠报错猜
-            avail = ", ".join(p.name for p in sig.parameters.values()) if sig else "?"
-            results.append(f"❌ op「{op}」参数错: {e}（此 op 可用参数: {avail}）")
+            # 2026-09-12：再往前一步，把 Python 原生文案翻成人话（_humanize_call_error）
+            results.append(_humanize_call_error(op, sig, e))
         except Exception as e:
             results.append(f"❌ op「{op}」: {e}")
     return "\n\n".join(r for r in results if r)
@@ -7064,24 +7284,33 @@ def _pond_fish(x: int = -1, y: int = -1) -> str:
 _CRAB_FACE = [(0, -1, 2), (0, 1, 0), (1, 0, 3), (-1, 0, 1)]  # 上/下/右/左 → 站在水邻居时的朝向
 
 
-def _crab_water_at(cx: int, cy: int, radius: int = 15) -> list:
-    """以指定瓦片为中心找水（/water 端点，需新 DLL；淘金/蟹笼共用）。"""
+def _crab_water_at(cx: int, cy: int, radius: int = 15):
+    """以指定瓦片为中心找水（/water 端点；淘金/蟹笼共用）。
+
+    ⚠️ 2026-09-12 恒："**别甩锅**" —— 现在**端点挂了返回 None、这儿真没水返回 []**。
+    原来两种都吞成 `[]`，于是 `_crab_water_report` 把"图里没水"报成"**需新 DLL**"，
+    害人去追一个根本不存在的 DLL 问题（真机：AI 在鱼店**屋里**调 crab_water，端点好得很，
+    只是屋里没水 —— 直打 `/water` 明明 200 返回 `{"count":0}`）。
+    """
     try:
         r = api._get("/water", {"x": cx, "y": cy, "radius": radius})
-        return (r.get("water") or []) if r.get("ok") else []
     except Exception:
-        return []
+        return None
+    if not r.get("ok"):
+        return None
+    return r.get("water") or []
 
 
-def _crab_water(radius: int = 15) -> list:
-    """找当前地点半径内的水瓦片（= _crab_water_at 以玩家为中心，2026-08-29 泛化）。"""
+def _crab_water(radius: int = 15):
+    """找当前地点半径内的水瓦片（= _crab_water_at 以玩家为中心，2026-08-29 泛化）。
+    **None=端点拿不到数据；[]=本图真没水**（两者含义不同，别混，见 _crab_water_at）。"""
     try:
         st = api.state()
         px = (st.get("player") or {}).get("x") or 0
         py = (st.get("player") or {}).get("y") or 0
-        return _crab_water_at(px, py, radius)
     except Exception:
-        return []
+        return None
+    return _crab_water_at(px, py, radius)
 
 
 def _crab_find_edges(radius: int = 15) -> list:
@@ -7090,6 +7319,8 @@ def _crab_find_edges(radius: int = 15) -> list:
     只在 **canCrabPot=true** 的水格旁放(/water 已预筛)——放进宽水域一次成功零试错；
     /use 传 x,y 精准远程放到水格(AI 站岸上即可)。放完就在这岸格，不去爬水。"""
     water = _crab_water(radius)
+    if water is None:
+        return None      # ⚠️ 端点拿不到数据 ≠ 没有水边（2026-09-12：别把两者混成一个空列表）
     if not water:
         return []
     # ✅ 只挑能放蟹笼的水格(宽水域：左右都是水或上下都是水，无建筑挡)——零试错关键
@@ -7147,14 +7378,19 @@ def _pan_stands(gx: int, gy: int, radius: int = 3) -> list:
 def _crab_water_report(radius: int = 15) -> str:
     """找附近水瓦片并汇报（河/湖位置）。"""
     water = _crab_water(radius)
+    if water is None:
+        return ("❌ 拿不到水格数据（/water 没响应）—— 先确认游戏进程在跑；"
+                "**这不是「这张图没水」**，别去怀疑 DLL。")
     if not water:
-        return "❌ 附近没找到水（/water 需新 DLL；鱼塘不算蟹笼水）"
+        return (f"❌ 当前图（{_crab_cur_loc()}）半径 {radius} 内没有水格。"
+                f"室内/城镇这类图本来就没水（鱼塘也不算蟹笼水）——**先走到有水的图**"
+                f"（海/河/湖/矿洞水池）再调本工具。")
     lines = [f"🌊 附近水瓦片 {len(water)} 个（半径 {radius}）:"]
     for w in water[:12]:
         lines.append(f"  ({w['x']},{w['y']})")
     if len(water) > 12:
         lines.append(f"  … 共 {len(water)} 个")
-    lines.append("放蟹笼→crab_pot place")
+    lines.append("放蟹笼→fish ops=crab_place")
     return "\n".join(lines)
 
 
@@ -7174,8 +7410,13 @@ def _crab_place(count: int = 5, radius: int = 15, bait: str = "Bait") -> str:
     if not api.has_item("Crab Pot"):
         return "❌ 没有蟹笼(背包没有 Crab Pot)！先去买/造蟹笼再来"
     edges = _crab_find_edges(radius)
+    if edges is None:
+        return ("❌ 拿不到水格数据（/water 没响应）—— 先确认游戏进程在跑；"
+                "**这不是「这图没水」**，别去怀疑 DLL。")
     if not edges:
-        return "❌ 附近没找到水边可站的地方（/water 报 0 水格？鱼塘不算蟹笼水）"
+        return (f"❌ 当前图（{loc}）半径 {radius} 内没有**可放蟹笼**的水边："
+                f"要宽水域（左右都是水或上下都是水）才放得下，零星水格/鱼塘都不算。"
+                f"**先走到海/河/湖再试**。")
     # 📍 选"最近"近水点：按距玩家最近的站格优先(不是明明很多水却选大老远)——2026-08-29 恒
     try:
         st = api.state()
@@ -7398,6 +7639,19 @@ def _crab_stand_for(wx: int, wy: int):
     return None
 
 
+# ⏱ 蟹笼批量 op 的**单次总耗时预算**（秒）——2026-09-12 真机踩到的：
+#   `crab_bait` 一次要处理**扫描到的每一个笼**（那天扫出 **22 个**），而每个笼的
+#   `_wait_arrival(timeout=15)` 最多啃 15s ⇒ **22 × 15s ≈ 5 分钟**，这 5 分钟里
+#   **整个 :8000 服务是不响应的**（恒当时看到的就是"又卡死了"；实测 CPU 不涨=阻塞、
+#   游戏端口 7842/7843 却 0.01s 正常 ⇒ 僵的是 MCP 侧）。⚠️ 这**不是死锁**（跟同一天
+#   `script.stop` 的 `_bg_lock` 自锁死是两回事）——服务在循环跑完后**自己会恢复**。
+#   ⇒ 现在给个预算：够了就停、并**如实报告还剩几个没轮到**（可再调一次接着做，
+#     已处理的不会白费）。**别做成静默截断**——那会让人以为"22 个都挂上了"。
+#   45s 是**刻意压在 MCP 客户端 60s 超时之下**的：到点要能**把话说完再返回**，
+#   否则客户端先超时，AI 收到的是"卡住"而不是"还剩 N 个没轮到"，等于白做这个预算。
+_CRAB_OP_BUDGET = 45
+
+
 def _crab_bait(bait: str = "Bait") -> str:
     """给已放置的蟹笼放饵（选 bait → 逐个交互）。
     ⚠️ 2026-08-16 实测：走位可能重置选中 → 每笼前重新 select bait。
@@ -7408,9 +7662,24 @@ def _crab_bait(bait: str = "Bait") -> str:
     pots = _crab_scan_placed()
     if not pots:
         return "❌ 附近没找到已放的蟹笼"
+    # ⚠️ 2026-09-12 真机踩到：**没有饵时本 op 会逐个空跑** —— `api.select(bait)` 静默失败，
+    #    后面 `/interact` 自然什么都不发生，于是 22 个笼全报 ✗、**连原因都是空的**，
+    #    还白占掉一次总预算（那天 47s 全在服务里堵着）。`_crab_place` 早有同类前置检查
+    #    （`has_item("Crab Pot")`），这里**漏了** ⇒ 照它的样子补上（宁报错别兜底）。
+    if not api.has_item(bait):
+        return (f"❌ 背包里没有「{bait}」—— 挂饵前先得有饵（威利鱼店买 **鱼饵/Bait**；"
+                f"也可用野钓饵/豪华鱼饵）。⚠️ 没饵时本 op 会逐个空跑 22 遍白占时间，所以这里直接拦。"
+                f"（免饵职业 Luremaster 名不虚传不用挂饵；先 check(what=\"profile\") 看职业分支）")
     baited = 0
-    log = [f"🦀 给 {len(pots)} 个蟹笼放饵:"]
+    done = 0
+    deadline = time.time() + _CRAB_OP_BUDGET
+    log = [f"🦀 给 {len(pots)} 个蟹笼放饵（单次上限 {_CRAB_OP_BUDGET}s，到点会停并告诉你剩几个）:"]
     for wx, wy in pots:
+        if time.time() > deadline:
+            log.append(f"⏱ 到 {_CRAB_OP_BUDGET}s 上限，还有 {len(pots) - done} 个没轮到 —— "
+                       f"**再调一次本 op 接着挂**（已挂上的不会白费）")
+            break
+        done += 1
         st = _crab_stand_for(wx, wy)
         if not st:
             log.append(f"  ✗ ({wx},{wy}) 找不到旁侧可站岸格")
@@ -7422,7 +7691,9 @@ def _crab_bait(bait: str = "Bait") -> str:
             # 走位尽力而为：超时/异常不中断，interact 按坐标仍能触发
             try:
                 api._post("/walk_to", {"location": loc, "x": sx, "y": sy})
-                _wait_arrival(loc, sx, sy, timeout=15)
+                # ⚠️ 2026-09-12：15s → 5s。这一段本来就是"尽力而为"（interact 是坐标定位、
+                #   距离无关），等满 15s 只是白占耗尽预算 —— 22 个笼时那 15s 就是压死服务的元凶。
+                _wait_arrival(loc, sx, sy, timeout=5)
                 api._post("/face", {"direction": face})
                 time.sleep(0.3)
             except Exception:
@@ -7434,7 +7705,8 @@ def _crab_bait(bait: str = "Bait") -> str:
         except Exception as e:
             log.append(f"  ✗ ({wx},{wy}) {e}")
         time.sleep(0.4)
-    log.append(f"🎣 成功挂饵 {baited}/{len(pots)}；过夜就出货(蟹/贝壳/垃圾)，早上 crab_pot collect 收")
+    log.append(f"🎣 本轮处理 {done}/{len(pots)} 个，成功挂饵 {baited}；"
+               f"过夜就出货(蟹/贝壳/垃圾)，早上 crab_collect 收")
     return "\n".join(log)
 
 
@@ -7446,8 +7718,15 @@ def _crab_collect() -> str:
     if not pots:
         return "❌ 附近没找到已放的蟹笼"
     got = 0
-    log = [f"🦀 收 {len(pots)} 个蟹笼:"]
+    done = 0
+    deadline = time.time() + _CRAB_OP_BUDGET
+    log = [f"🦀 收 {len(pots)} 个蟹笼（单次上限 {_CRAB_OP_BUDGET}s，到点会停并告诉你剩几个）:"]
     for wx, wy in pots:
+        if time.time() > deadline:
+            log.append(f"⏱ 到 {_CRAB_OP_BUDGET}s 上限，还有 {len(pots) - done} 个没轮到 —— "
+                       f"**再调一次接着收**（已收进背包的不会白费）")
+            break
+        done += 1
         st = _crab_stand_for(wx, wy)
         if not st:
             log.append(f"  ✗ ({wx},{wy}) 找不到旁侧可站岸格")
@@ -7457,7 +7736,7 @@ def _crab_collect() -> str:
             # 走位尽力而为；interact 坐标定位，不依赖完美站格
             try:
                 api._post("/walk_to", {"location": loc, "x": sx, "y": sy})
-                _wait_arrival(loc, sx, sy, timeout=15)
+                _wait_arrival(loc, sx, sy, timeout=5)   # ⚠️ 15→5，理由见 _CRAB_OP_BUDGET
                 api._post("/face", {"direction": face})
                 time.sleep(0.3)
             except Exception:
@@ -7467,7 +7746,7 @@ def _crab_collect() -> str:
         except Exception as e:
             log.append(f"  ✗ ({wx},{wy}) {e}")
         time.sleep(0.4)
-    log.append(f"📦 交互了 {got} 个（产出进背包；空笼要重新放饵）")
+    log.append(f"📦 本轮交互 {got}/{len(pots)} 个（产出进背包；空笼要重新放饵）")
     return "\n".join(log)
 
 
@@ -7488,14 +7767,18 @@ def _crab_status() -> str:
         return f"❌ {e}"
 
 
-def _crab_pots_scan(location: str = None) -> list:
-    """🦀 拉当前/指定图所有蟹笼的真实状态（/crab_pots 端点，需新 DLL）。"""
+def _crab_pots_scan(location: str = None):
+    """🦀 拉当前/指定图所有蟹笼的真实状态（/crab_pots 端点）。
+    **None=端点拿不到数据；[]=这张图真没笼**（2026-09-12 恒"别甩锅"：原来两种都是 `[]`，
+    于是"这图没笼"被报成"需新 DLL /crab_pots"，害人去追不存在的 DLL —— 端点明明 200 好着）。"""
     try:
         params = {"location": location} if location else {}
         r = api._get("/crab_pots", params)
-        return (r.get("pots") or []) if r.get("ok") else []
     except Exception:
-        return []
+        return None
+    if not r.get("ok"):
+        return None
+    return r.get("pots") or []
 
 
 def _crab_diag(location: str = None) -> str:
@@ -7867,17 +8150,64 @@ def daily(ops: str = "", kw: dict | None = None) -> str:
     return _with_state(_ops_run(ops, dispatch, kw))
 
 
+def map_unlocks() -> str:
+    """🔓 查存档解锁状态（矿洞/巴士/下水道/姜岛/精通/火山近路…）。
+
+    2026-09-12 恒问「**这里的门禁可以看到吗**」—— 火山那道路径的**闸门/机关本身看不到**
+    （是运行时 `DwarfGate` 对象改的**动态地图层**，`/dump_tile` 读那几格全是空），
+    但它的**结果标志**能看：mail flag `volcanoShortcutUnlocked`。这个 op 就是把 `/unlocks` 摊开。
+
+    ⚠️ 用途：**用一条捷径之前先查它开没开**。目前唯一会挡路的就是火山近路
+    （没解锁时 入口层 VolcanoDungeon0 ⇄ 山顶 Caldera 那条捷径是关的）。
+    """
+    try:
+        d = api._get("/unlocks")
+        if not d.get("ok"):
+            return _with_state(f"❌ 读解锁状态失败: {d.get('error')}")
+        u = d.get("unlocks") or {}
+        keep = ("mine", "bus", "sewer", "secretWoods", "skullCavern", "island",
+                "railroad", "casino", "summit", "mastery", "greenhouse",
+                "communityCenter", "cinema", "witchSwamp", "townKey", "forestMagic",
+                "parrotExpress", "volcanoShortcut", "reachedCaldera", "volcanoShortcutOut")
+        lines = []
+        for k in keep:
+            v = u.get(k)
+            if not isinstance(v, dict):
+                continue
+            mark = "✅" if v.get("unlocked") else "🔒"
+            lines.append(f"  {mark} {k}: {v.get('how', '')}")
+        tail = ""
+        if isinstance(u.get("volcanoShortcut"), dict) and not u["volcanoShortcut"].get("unlocked"):
+            tail = "\n  ⚠️ 火山近路**没解锁** ⇒ 入口层⇄山顶那条捷径不通，只能一层层爬。"
+        return _with_state("🔓 存档解锁状态：\n" + "\n".join(lines) + tail)
+    except Exception as e:
+        return _with_state(f"❌ 查解锁失败: {e}")
+
+
 @mcp.tool()
 def map(ops: str = "", kw: dict | None = None) -> str:
-    """🗺️ 导航域（跨图唯一入口）。go 走到目标 / walk 走到地点(POI) / movetile 精确走到坐标(x,y) / lookup 查地点功能 / query 功能反查("哪能买X") / npc 找NPC / warp_safe 紧急逃脱。⚠️参数放 kw 对象。全 ops → help(map)。"""
+    """🗺️ 导航域（跨图唯一入口）。go 走到目标 / walk 走到地点(POI)**或坐标(x,y)** / lookup 查地点功能 / query 功能反查("哪能买X") / npc 找NPC / warp_safe 紧急逃脱 / unlocks 查存档解锁(**走捷径前先查**)。⚠️参数放 kw 对象。全 ops → help(map)。"""
     dispatch = {
         "lookup": map_lookup, "查": map_lookup,
         "query": map_query, "反查": map_query,
         "go": map_go, "走": map_go,
+        # ⚠️ 2026-09-11 恒拍板：`movetile` **退役** —— 坐标走位并入 `walk`（walk=poi_name 或 x/y）。
+        #    理由：老 movetile 走 `/move`+BFS，而 CLAUDE.md 关键坑#1 就是「别用 /move+BFS」，
+        #    它是仅存的一个绕过口子；且实测两个缺陷（C# 回 No path 也印 ✅；踩到门格静默 warp 换图）。
+        #    地面走位现在**只剩一条路**（/walk_to），与 CLAUDE.md「地面/walk_to」一致。
+        #    ⚠️ `move_to_tile` 函数本体**留着**：navigation 内部与老脚本(clear_area/harvest)还在调，
+        #       只是不再给 AI 直调（同 advance_story/profile 的收编先例）。
         "walk": walk_to, "走到": walk_to,
-        "movetile": move_to_tile, "走格": move_to_tile,
+        # 🚶 2026-09-12 恒拍板：`_maze_walk` 原本只在 scene/festival 两面门牌下（各带"走迷宫"），
+        #    但它干的是**通用多段走位**（无节庆门禁），名字把用途埋了 —— 想"走这几个点"的 AI
+        #    不会去"走迷宫"底下找。⇒ **主门牌挪进 map**（走位是导航本职），起中性名 `walk_multi`/`闲逛`。
+        #    ⚠️ **一份实现，不做副本**；scene/festival 的 `maze_walk`/`走迷宫`/`迷宫走` **全部保留**
+        #       （万灵节引导与老习惯都还能用，不断档）。万灵节引导已改指新名。
+        "walk_multi": _maze_walk, "闲逛": _maze_walk, "多段走": _maze_walk,
         "npc": find_npc, "找人": find_npc,
         "warp_safe": warp_safe, "逃脱": warp_safe,
+        # 2026-09-12（恒问「这里的门禁可以看到吗」）：闸门本身读不到，但它的 mail flag 能读。
+        "unlocks": map_unlocks, "解锁": map_unlocks,
     }
     return _with_state(_ops_run(ops, dispatch, kw))
 
@@ -8908,7 +9238,7 @@ def _festival_maze() -> str:
     return (f"🎃 万灵节迷宫（{parity}年）——奇偶年布局不同但**坐标固定**：\n"
             f"  🎁 宝箱 {mz.get('chest')}（奖励 {mz.get('goal')}）\n"
             f"  🚂 矿车 {mz.get('minecart')}（交互回出口）\n"
-            f"  🧭 走法：`walk_to 宝箱坐标`（BFS 读实时迷宫墙自适配，含暗道/传送），想自己玩看棋盘用 scene maze/maze_seg，按段走 festival maze_walk。\n"
+            f"  🧭 走法：`walk_to 宝箱坐标`（BFS 读实时迷宫墙自适配，含暗道/传送），想自己玩看棋盘用 scene maze/maze_seg，按段走 `map walk_multi`（=闲逛；旧名 festival maze_walk 仍可用）。\n"
             f"  ⚠️ AI 踩不好传送瓦片，结束节日请人类帮忙。")
 
 
@@ -9603,9 +9933,16 @@ def _festival_prep() -> str:
 
 
 def _maze_walk(waypoints: str = "", location: str = None, max_wait: int = 18, max_seg: int = 200) -> str:
-    """🚶 走迷宫——依次 walk_to 多个中间点（"x,y x,y …"空格/分号分隔），每段等到达再走下一段。
-    万灵节迷宫（偶数/奇数年布局都变）通用：换了布局喂不同点位即可。参数：waypoints / location / max_wait。
-    段1: 右walk_to(21,54) 这种走法链可直接喂进来；也支持手挑中点。"""
+    """🚶 多段走位 / 闲逛 —— 喂一串坐标，依次走过去（"x,y x,y …"空格/分号分隔），每段等到了再走下一段。
+
+    🎪 **正事**：万灵节迷宫（奇数/偶数年布局都变）——换个布局喂不同点位即可；`scene maze_seg` 出的
+       走法链可以直接喂进来；也支持手挑中点。
+    🫧 **活人感**（2026-09-12 恒：这是"纯活人感娱乐工具"，AI 被允许**没目的**地动一动）：
+      · **闲逛** —— 在广场/院子里随手挑几个点遛一圈
+      · **示好** —— 绕着某人转圈（挑一圈围着他/她的点）
+      · **玩水** —— 在浴场泳池里绕圈游（泳池格不是"水格"，walk_to 照常寻路，实测可游）
+
+    参数：waypoints / location / max_wait（每段最多等几轮 × 0.7s）/ max_seg（最多几段）。"""
     pts = []
     for tok in str(waypoints or "").replace(";", " ").split():
         if "," in tok:
@@ -9625,7 +9962,7 @@ def _maze_walk(waypoints: str = "", location: str = None, max_wait: int = 18, ma
     except Exception as ex:
         return f"⚠️ 拿不到当前场景: {ex}"
     # ⚠️ 只回摘要不逐段刷屏（省token；AI 用 walk_to 每段基本都能到，失败才值得提）
-    got = 0; fails = []; total = len(pts)
+    got = 0; fails = []; near = []; total = len(pts)
     t0 = time.time()
     for i, (x, y) in enumerate(pts, 1):
         try:
@@ -9633,27 +9970,52 @@ def _maze_walk(waypoints: str = "", location: str = None, max_wait: int = 18, ma
         except Exception as ex:
             fails.append(f"段{i}({x},{y})发送失败:{ex}")
             continue
-        ok = False
+        # 🔴 2026-09-12 修：以前这里**只要 `isMoving == False` 就判"到达"** —— 而 walk_to 规划失败时
+        #    人**压根不动**，第一次轮询（0.7s）就 False ⇒ **当场谎报"到达✅"**。娱乐工具更要诚实，
+        #    不然"绕圈"看着成功、其实人没动。改成"真停下来了 **且** 坐标真的对上"。
+        #    容差 ±1 格：/walk_to 落 y*64-32、/position 落 y*64（差 16px），同一格读出来偶尔差一格
+        #    （CHANGELOG 2026-09-10「走位落点精度」）——卡死 ±0 会冤判。
+        arrived = False; seen_move = False; idle = 0
+        ax = ay = None
         for _ in range(int(max_wait)):
             time.sleep(0.7)
             try:
-                pp = (api._get("/state") or {}).get("player", {})
-                if not pp.get("isMoving"):
-                    ok = True
-                    break
+                pp = (api._get("/state") or {}).get("player", {}) or {}
             except Exception:
-                pass
-        if ok:
+                continue
+            if pp.get("isMoving"):
+                seen_move = True; idle = 0
+                continue
+            ax, ay = pp.get("x"), pp.get("y")
+            # ⚠️ 容差 ±1 格是给两件事留的：①落点精度（/walk_to 与 /position 差 16px）②walk_to 的
+            #    "目标不可走时退到最近可走邻居"兜底。但**兜底 ≠ 到达**，所以**得说出来**：
+            #    精确同格 = 到达；落在相邻格 = 🟡 单独点名（真机实测：喂墙格 (15,11) → 人停 (15,10)）。
+            if ax is not None and abs(ax - x) <= 1 and abs(ay - y) <= 1:
+                arrived = True
+                if ax != x or ay != y:
+                    near.append(f"段{i}({x},{y})→({ax},{ay})")
+                break
+            if seen_move:
+                break        # 动过又停了、人却不在目标格 ⇒ 卡住，别干耗满 max_wait
+            idle += 1
+            if idle >= 3:
+                break        # 一次都没起步（walk_to 没派活）⇒ 同样别干耗
+        if arrived:
             got += 1
         else:
-            fails.append(f"段{i}({x},{y})超时")
+            where = f"停在({ax},{ay})" if ax is not None else "读不到坐标"
+            fails.append(f"段{i}({x},{y})未到（{where}）")
     end = (api._get("/state") or {}).get("player", {})
     secs = int(time.time() - t0)
-    head = (f"🚶 迷宫走法 {total} 段, {got} 段到达✅, "
+    head = (f"🚶 多段走位 {total} 段, {got} 段到达✅, "
             f"起({start_pos[0]},{start_pos[1]})→末({end.get('x')},{end.get('y')}), ∫{secs}s")
+    tail = ""
+    if near:
+        tail += (f"\n🟡 {len(near)} 段落在**相邻格**（目标格可能本身不可站，walk_to 退到了最近可走格；"
+                 f"也可能只是落点精度）：" + "; ".join(near))
     if fails:
-        return head + "\n⚠️ 未到段: " + "; ".join(fails)
-    return head + "\n✅ 全程走通，无需逐段日志"
+        return head + tail + "\n⚠️ 未到段: " + "; ".join(fails)
+    return head + tail + ("\n✅ 全程走通，无需逐段日志" if not near else "\n🟡 全程走完（有相邻格落点，见上）")
 
 
 @mcp.tool()
@@ -9948,7 +10310,13 @@ def place_item(name: Optional[str] = None, x: Optional[int] = None, y: Optional[
     """
     try:
         if name:
-            api.select(name)
+            # ⚠️ 必须看 select 的返回（2026-09-11 抓到的谎报 + 真危害）：
+            #    select 失败不抛异常，以前这里直接往下走 `/use force` ⇒ 挥的是**手上原来那把**，
+            #    却回报「已放置」。在农场等于对目标格白挥一镐——写错名字可能毁掉那格作物/机器。
+            sr = api.select(name)
+            if not sr.get("ok"):
+                return _with_state(
+                    f"❌ 背包里没有「{name}」: {sr.get('error', '未找到')}（没放置、没挥工具、没消耗）")
             time.sleep(0.2)
         if x is not None and y is not None:
             r = api._post("/use", {"x": int(x), "y": int(y), "force": True})
@@ -10037,8 +10405,10 @@ def break_tile(x: int, y: int, steps: int = 1, radius: int = 0) -> str:
 @mcp.tool()
 def interact_at(tile_x: int, tile_y: int) -> str:
     """🎯 与指定瓦片交互（对角也行，不用贴脸）
-    与 NPC 对话 / 开机器 / 开箱子 / 触发机关 / 点家具（TV·日历·壁炉·目录都行）。
+    与 NPC 对话 / 开机器 / 触发机关 / 点家具（TV·日历·壁炉·目录都行）。
     SDV 1.6 家具交互已绕过右键标志直接 checkForAction，远程就能点 TV/日历。
+    ⚠️ **开不了宝箱**（2026-09-12 实测）：`Chest.checkForAction` 开头卡 `didPlayerJustRightClick`
+       ⇒ 宝箱请走 **`storage` 域**（view 看 / find 找 / take 取 / store 存），别用这个。
     拿家具要用 furniture_pickup，不是这个。
 
     Args:
@@ -10064,6 +10434,24 @@ def interact_at(tile_x: int, tile_y: int) -> str:
             _mark_festival_poi_tile(tile_x, tile_y)   # 命中节日 POI 瓦片 → 记入交互历史
             what = r.get("furniture") or r.get("object") or "目标"
             return _with_state(f"🎯 与 {what} 交互成功")
+        # ⚠️ `actionTriggered=false` **不等于"那儿空着"**（2026-09-12 实测）。
+        #    C# 会把该格上的物体名回在 `object` 里 —— **有名字就说明有东西，只是这条路开不了**。
+        #    典型=**宝箱**：`Chest.checkForAction` 开头就卡 `Game1.didPlayerJustRightClick()`
+        #    （反编译 `Chest.cs:758`），程序化调用永远 false ⇒ 必挂。家具/鱼塘/蟹笼 mod 都写了
+        #    专用兜底（TryFurnitureInteract/TryFishPondInteract/TryCrabPotInteract）绕开它，
+        #    **唯独宝箱没写**。⚠️ C# 侧待补：加一个 `TryChestInteract` 即可（照抄同款模式）。
+        _obj = r.get("object")
+        if _obj:
+            if "chest" in str(_obj).lower() or "宝箱" in str(_obj):
+                return _with_state(
+                    f"⚠️ ({tile_x},{tile_y}) 上是个**宝箱**，interact 开不了它 —— "
+                    f"`Chest.checkForAction` 卡在 didPlayerJustRightClick（程序化调用必 false）。"
+                    f"**改用 `storage` 域**：view 看有哪些 / find 找东西 / take 取 / store 存。"
+                )
+            return _with_state(
+                f"⚠️ ({tile_x},{tile_y}) 上有「{_obj}」，但 interact 没触发它（**不是那里空着**）。"
+                f"换条路：机器→cabin/farm 的 collect；家具→看类型走对应交互；NPC→social 域。"
+            )
         return _with_state(f"⚠️ 该位置没有可交互的东西（actionTriggered=false）")
     except Exception as e:
         return _with_state(f"❌ 交互失败: {e}")
@@ -10877,14 +11265,14 @@ _DOMAIN_GUIDES = {
 "mine": "下矿域(⚒️ 矿井/头骨/火山)：go(去挖矿:mode=rush冲层/farm刷矿,start起始层,target目标层,ore,cycles圈数) progress(进度) bomb_status/bomb_plan/bomb_place/bomb_collect/bomb_ladder/bomb_retreat(单步炸,**都要 bomb_ 前缀**) bomb_mine(自动) bomb_volcano(火山) organize(整理背包)。🔁**刷矿=mode=go(mode=farm)**：定点刷指定矿→ore=Copper铜(21层)/Iron铁(41层)/Gold金(71层)；**煤靠 farm 铁层(41)顺手清尘埃精灵/蝙蝠掉**（不是 ore 选项，跑 auto 内部刷）。🏃下矿=mode=go(mode=rush,start可选≤电梯上限+5倍数,target默认120)。⚠️无镐/血低硬拦；梯子 /ladder+confirm。⚠️bomb_mine 没炸弹+host在同矿井→自动转【内部】协同(跟随host+帮忙敲矿/打怪)不撤退出矿(bomb_escort 不对外暴露、AI 不主动启用)；bomb_retreat 结束协同+停脚本+脱离矿井回门口。⚠️接「深处的危险」重置电梯→起始层动态从1起(内置脚本自动读，不暴露工具)；刷矿目标层不可直达会上报，需先冲层带回或改浅层。📐带参速查: go(mode=rush冲层/farm刷矿, start起始层, target目标层, ore=Copper铜/Iron铁/Gold金, cycles圈数, hp_threshold, food_sta, food_hp, resume) bomb_plan(radius,min_covered,top) bomb_place(x,y **必填**) bomb_collect(max_items) bomb_mine(target,bomb,min_covered,follow_host,lead,autodrop,one_floor) bomb_volcano(bomb,min_covered,hp_threshold,max_minutes,poll) organize(disable,reset)。💣bomb 三个取值 'Cherry Bomb'樱桃/'Bomb'黑/'Mega Bomb'超级——**点名的包里没有就按 黑>超级>樱桃 自动换成有的**(不会误报没炸弹)；范围 樱桃=边长7十字 / 黑=11x11方块 / 超级=15x15方块，⚠️黑和超级**会炸伤自己**(实测黑掉3血)。⚠️bomb_volcano **要求 host 已在矿/火山里**才放行(火山瓦片没法程序化换层)。⚠️bomb_mine one_floor=True=逐层模式(同步,只跑一层出摘要,不撤退)；**默认冲层模式=异步后台跑,推荐**。💡出发前占位物(恒2026-08-23)：提前放1个可堆叠物(铱矿/铱锭/五彩碎片)在包，满包时同种战利品自动堆叠吸附、少触发满包停；别拿银河之魂这类带死亡会丢的稀有物当占位。",
 "cabin": "小屋引导域(🏠 FarmHouse/Cabin/岛屋；不传=扫屋)：enum(扫**本屋**查待收) collect(收**本屋**机器;要全农场→farm collect) statue(雕像) furniture(扫家具) interact(点家具,tile_x/tile_y) pickup(拿起家具,tile_x/tile_y) cook(做饭,recipe_name) sleep(睡觉,who=谁床：不传/房主名=睡房主床一起睡,传自己名=睡自己床) cook(做饭,recipe_name,count) place/break(同scene)。📐参数键名: interact/pickup=**tile_x,tile_y(不是x,y)** cook=recipe_name,count sleep=who place=name,x,y break=x,y,steps,radius；enum/collect/statue/furniture 无参。kw={'参数名':值}。",
 "social": "社交域：chat(搭话,name=NPC名) gift(送礼,npc_name/item_name) give(送玩家物品,手持右键正式赠予,一次一个要等同意) hand(递给玩家,走过去丢他脚边,磁吸自动收,可整叠) send(发消息,message) emote(表情,name) friendship(查好感,npc_name) movie(影院,npc)。📐参数键名: chat=name / gift=npc_name+item_name / give=player_name+item_name / hand=player_name+item_name+count(0=整叠) / send=message / emote=name(默认爱心) / friendship=name / movie=npc。⚠️**give vs hand**：give=面对面正式赠予(手持右键,一次一个,要等同意)；hand=走过去丢他脚边(磁吸自动收,**可整叠**)——想整叠给/对方不在手边就用 hand。kw={'参数名':值}。",
-"scene": "场景交互域(点东西/工具/转身/捡/坐)：at(tile_x,tile_y)(点指定格/柜台) interact(点面前) use(挥工具) face(转向0上1右2下3左) select(拿手上) sit(x,y[,face])(**坐椅子**:自动走到座位旁再坐,上不了会明确报错;状态条「🪑 可交互：sit(x,y)」给坐标;可选 face=坐下朝向0上1右2下3左,**只对「朝向来自坐下那刻面朝方向」的座位生效**(反编译:stool 类/opposite 长椅/名字带Stool的家具),其它写死——吃不吃由端点回的 face 字段说了算,不生效会在回报里点名) stand(**起身**:坐着时用,没坐着明确报错,带动画+轮询确认) seats(radius=12)(扫附近能坐的椅子/长凳/沙发,✋=可改朝向) pickup(拿起家具) pickup_scene(捡当前场景物) berry(摇浆果) spot(挖蚯蚓点) moss(绿雨搜苔藓) rock(室外镐击:敲当前图可破物,采石场/挖掘场/蚌矿场跳普通石,dig/dry,battle-free) garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物) furniture(扫家具) place(放置/播种:name=物品名,x/y=目标格→箱子/树种/蟹笼落地或种下,只放可放置物) break(拆/敲:x,y=目标格,steps=挥击次,radius=方圆→镐子敲石头/翻已耕地,跳过箱子/容器格) maze(迷宫视图r半径,gx/gy目标格→ASCII棋盘#墙.可走P自己G目标) maze_seg(走法链gx,gy目标→拆直走廊列表+拼「左/右上/下走到(x,y)」多段链,AI按段walk_to) maze_walk(走迷宫 waypoints=「x,y x,y…」依次walk_to) pan(淘金/淘盘:本图水下闪光点→岸边走位面水→铜锅淘金收掉落) front/rummage(分别是interact/garbage的别名)。📌**坐着想起来：scene stand**（2026-09-11 起有正门，别再拿 at 猜一个够得着的格子——那条路会静静失败）。📐带参速查(键名必须=下面这些,**写错会被静默丢掉、不报错**): at(tile_x,tile_y) **⚠️是 tile_x/tile_y 不是 x/y** / pickup(tile_x,tile_y **同 at 用 tile_**) / use(name) / face(direction 0上1右2下3左) / select(name) / sit(x,y,face) / seats(radius=12) / pickup_scene(max_items=30) / moss(radius,target_max,rounds,dry_run) / rock(dig,radius,max_break,break_stone) / garbage(loc,pos,wait,dry_run) / pan(dry_run,radius,timeout) / drop(name,count) / place(name,x,y) / break(x,y,steps,radius) / maze(radius,gx,gy) / maze_seg(gx,gy,radius) / maze_walk(waypoints,location,max_wait,max_seg)。kw={'参数名':值}。",
+"scene": "场景交互域(点东西/工具/转身/捡/坐)：at(tile_x,tile_y)(点指定格/柜台) interact(点面前) use(挥工具) face(转向0上1右2下3左) select(拿手上) sit(x,y[,face])(**坐椅子**:自动走到座位旁再坐,上不了会明确报错;状态条「🪑 可交互：sit(x,y)」给坐标;可选 face=坐下朝向0上1右2下3左,**只对「朝向来自坐下那刻面朝方向」的座位生效**(反编译:stool 类/opposite 长椅/名字带Stool的家具),其它写死——吃不吃由端点回的 face 字段说了算,不生效会在回报里点名) stand(**起身**:坐着时用,没坐着明确报错,带动画+轮询确认) seats(radius=12)(扫附近能坐的椅子/长凳/沙发,✋=可改朝向) pickup(拿起家具) pickup_scene(捡当前场景物) berry(摇浆果) spot(挖蚯蚓点) moss(绿雨搜苔藓) rock(室外镐击:敲当前图可破物,采石场/挖掘场/蚌矿场跳普通石,dig/dry,battle-free) garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物) furniture(扫家具) place(放置/播种:name=物品名,x/y=目标格→箱子/树种/蟹笼落地或种下,只放可放置物) break(拆/敲:x,y=目标格,steps=挥击次,radius=方圆→镐子敲石头/翻已耕地,跳过箱子/容器格) maze(迷宫视图r半径,gx/gy目标格→ASCII棋盘#墙.可走P自己G目标) maze_seg(走法链gx,gy目标→拆直走廊列表+拼「左/右上/下走到(x,y)」多段链,AI按段walk_to) maze_walk(走迷宫 waypoints=「x,y x,y…」依次walk_to;⚠️**它其实是通用多段走位,主门牌已挪到 `map walk_multi/闲逛`**(闲逛遛弯/绕人转圈/泳池绕圈游),此处保留旧名为兼容) pan(淘金/淘盘:本图水下闪光点→岸边走位面水→铜锅淘金收掉落) front/rummage(分别是interact/garbage的别名)。📌**坐着想起来：scene stand**（2026-09-11 起有正门，别再拿 at 猜一个够得着的格子——那条路会静静失败）。📐带参速查(键名必须=下面这些,**写错会被静默丢掉、不报错**): at(tile_x,tile_y) **⚠️是 tile_x/tile_y 不是 x/y** / pickup(tile_x,tile_y **同 at 用 tile_**) / use(name) / face(direction 0上1右2下3左) / select(name) / sit(x,y,face) / seats(radius=12) / pickup_scene(max_items=30) / moss(radius,target_max,rounds,dry_run) / rock(dig,radius,max_break,break_stone) / garbage(loc,pos,wait,dry_run) / pan(dry_run,radius,timeout) / drop(name,count) / place(name,x,y) / break(x,y,steps,radius) / maze(radius,gx,gy) / maze_seg(gx,gy,radius) / maze_walk(waypoints,location,max_wait,max_seg)。kw={'参数名':值}。",
 "menu": "菜单/界面域(开→看→点)：read(看菜单) advance(推进剧情/对话) click(option/item/button/xy 点;action=claim领/action=discard丢桶腾格;slot=序号领指定格) key(ok/esc/数字按键) cancel(关弹窗/撤就绪) shop(逛店) sell(卖商店) bin(投出货箱) craft(合成) recipes(菜谱) craftables(配方) forge(锻造) geode/geodes(砸晶球) customize(捏人) bundle(献祭缺口·**只读存档不走路**) bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读消耗品:书/秘密纸条/日记残页,统一走右键读 name=物品名) levelup_choose(技能升级职业选择 5/10级:不带参读左右选项,side=left/right 或 profession=职业id 定分支;普通升级自会确认OK) number(数量输入:展览会兑换台/转盘押注 NumberSelectionMenu) minigame(赌场小游戏点按钮 action=hit/stand/bet10/…) minigame_state(读牌面/转盘) display_fill(农展台放满 items='钻石,山羊奶酪') display_takeback(收好) journal(开任务日志→menu read 读卡,翻页=click(button=forward/back),领奖励=click(button=rewardBox)) know(查特别订单详情/知识库SPECIAL_ORDERS,如menu know 岛屿食材;2026-09-02 task域退役并入menu)。📐参数键名: click=option,button,x,y,item,right,quantity,action,real,slot,category(**action=claim领 / discard丢桶腾格**;button 用按钮名 ok/upperRightCloseButton/forward/back/rewardBox/mainButton) / key=key,count,hold / number=value,confirm / shop=place,want / sell=name,count(-1=全卖) / bin=name,sell_all / craft=item_name,count / forge=item1,item2,mode,target / geodes=count / customize=name,farmname,favorite / bundle=area / bundle_kb=query / read_book=name / levelup_choose=side,profession(**不带参=只读当前左右选项**,供配 check(what=profile) 分析后再决定) / minigame=action,x,y / display_fill=items。⚠️cook(做饭)**不在 menu 在 cabin**。🚫满包接鱼/领箱:原 claim_swap(替换领取)已退役→**click action=discard 丢桶腾格(回收返金)+action=claim 领取(或用 slot 领指定格;不想要直接 button=ok 关掉)**。🧾关闭菜单一律 click(button=upperRightCloseButton)（ItemGrabMenu/交付容器用 button=ok 确认才关）；订单交付容器(QuestContainerMenu)=点背包对应物品格(见slots的坐标)→放进→点 button=ok 结算；任务日志领钱=点击已完成的有钱任务卡后 click(button=rewardBox)；兑奖机兑换=click(button=mainButton)；特别订单领奖链=日志领钱(上面)→社区板旁领奖箱(60,93)拿兑奖券→刘易斯家兑奖机(mainButton)兑换。",
 "storage": "箱子域：view(看箱,box=N看单箱全清单) store(存:what/items限定存哪些,名可带xN数量只存那N份,留空=归位只存已有同类堆,target指定箱/all=True全存腾空间) take(取:x,y+name单箱 或 items批量) find(模糊查哪箱有某物) default(设/清默认箱 clear=清) tag(改名,可带color改色)。📐参数键名(view=box / store=what,items,target,keepTools默认True,all / take=items 或 x+y+name+count默认999 / find=name / default=x,y,clear / tag=tag,target**必填**,color)。🤖存取统一走位：store/take都会先走到相关箱旁(批量只走到第一个),不区分拟人/原子,别靠编号逐箱翻。⭐每个箱子前自动带【类目标签】(内容过半归类):矿/古物/鱼/种子/作物/农产/建材/料理/装备——AI按标签定位箱,找东西用find。⚠️改色别染纯#000000(=默认木纹,识别成未染色);要黑箱用暗灰#303030。",
 "daily": "过日子域：sleep(睡觉) eat(吃食物回血体力,name/item_name) wear(穿/脱衣物,name/slot/hand) lie_bed(躺床不过夜) settle(确认过夜结算) heartbeat(心跳间隔,minutes) pause(后台不暂停,out_of_focus) peek(看恒干嘛) whiteboard(写白板,content) wb_read/wb_pin/wb_clear。📐参数键名: sleep/lie_bed=who eat=name,item_name wear=name,slot,hand(**hand 仅戒指**:1/left 或 2/right,或传「要换掉的那枚戒指名」自动找手) heartbeat=minutes pause=out_of_focus whiteboard/wb_pin=content appearance=hair,hair_color,skin,shirt,pants,hat,acc,eye_color,pants_color；settle/peek/wb_read/wb_clear 无参。kw={'参数名':值}。📌sleep/lie_bed 的 who：不传或传房主名=睡房主床(一起睡+🌹彩蛋)；传自己名字=睡自己床。lie_bed 只躺不睡，想离开随时 walk_to 走离床格即可。⚠️睡别人床/协作前先 check(what=\"role\") 确认端口↔角色（端口按启动顺序分配，重启可能翻转，认错角色=挪了恒的人）。",
-"map": "导航域(🗺️跨图唯一入口)：lookup(查地点功能+出口) query(功能反查) go(走到目标/多段寻路+交通) walk(走到POI) movetile(同图精确走位) npc(找NPC) warp_safe(紧急逃脱)。⚠️出口走出口前一格；交通图腾柱>矿车>走路。📐参数全放kw对象(**别拼进ops串**,键名: go=destination地点名/POI 或 npc=NPC名(二选一)、walk=poi_name、movetile=x+y(必填,只走同图不跨场景)、npc=name、lookup=location、query=function、warp_safe 无参)。⚠️walk 到 POI 会**自动应用结构化站位+朝向**(水池朝右/柜台朝上),但交互仍要 AI 自己 scene at/interact 触发。",
-"festival": "节日域(🎪)：today(今天节日) next(下一个) go(去) info(实况) interact(互动) answer(应答) shop(节日商店) eggs(找蛋) egg_note(纸条) egg_run(捡蛋) dance(跳舞邀请) strength(力量测试 delay=毫秒) ice_fish(冰雪节冰钓自动化) help(玩法) prep(备战) poi(限定点) maze(迷宫坐标奇偶年) maze_walk(走迷宫 waypoints=「x,y x,y…」依次walk_to) strength(力量测试,delay=毫秒) display_fill/display_takeback(农展台放满/收好)。📐参数键名: interact=name answer=answer egg_run/egg_note=route dance=target strength=delay maze_walk=waypoints,location,max_wait,max_seg display_fill=items；today/next/go/info/shop/eggs/help/prep/poi/maze/ice_fish/display_takeback 无参。",
-"fish": "钓鱼域(🎣 2026-08-22修复)：go(去钓 location=) info(查某地鱼) spots(钓点) bobber(浮漂样式) rod(鱼竿:看/上饵钓具 item=名) crab(蟹笼总览) crab_water(找水) crab_place(放笼) crab_bait(放饵) crab_collect(收笼) crab_diag(诊断笼/定位挂饵) crab_retract(回收笼/清搁浅 location=可选)。📐参数键名: go=location(None=**就地钓**,须自己已站到水边;指定 Beach/Mountain/Forest/Town=先 map_go 走真实路径到校准钓点再钓,不是warp),max_casts(0=不限),no_sleep(True) / info=location / bobber=style(默认dice) / rod=action+item / crab_place=count+radius+bait / crab_bait=bait / crab_water=radius / crab_diag=location / crab_retract=x+y+location。⚠️鱼塘在 farm 域不在 fish。带参 op(go 的 location、rod 的 item、crab 的 count)→ kw={'参数名':值}。🧬**挂饵前先 check(what=\"profile\")**：若是 Luremaster(职业11) 蟹笼免饵，crab_bait/crab_place 挂饵是空操作，别浪费。",
-"settings": "系统/设置域(⚙️ 合并捏脸进来)：status(看所有设置+退役工具) retire(退役工具) reactivate(召回) appearance(捏脸) customize(捏人) **confirm_look(核对捏人形象,ok前必做)** color(颜色条) hair/shirt/pants/hat/colorpreset(外观参考)。⚠️捏脸=创建定型:ok后set_appearance/捏人自动退役(不可逆);旧配置 settings(setting='async', value='on') 仍可。📐参数键名: appearance/customize=同 daily 那套(appearance 是 hair,hair_color,skin,shirt,pants,hat,acc,eye_color,pants_color；customize 是 name,farmname,favorite)；color/hair/shirt/pants/hat/colorpreset/confirm_look/retire/reactivate 无参。",
+"map": "导航域(🗺️跨图唯一入口)：lookup(查地点功能+出口) query(功能反查) go(走到目标/多段寻路+交通) walk(走到POI **或给x,y走同图坐标**) walk_multi(多段走位:喂一串坐标依次走) npc(找NPC) warp_safe(紧急逃脱)。⚠️出口走出口前一格；交通图腾柱>矿车>走路。📐参数全放kw对象(**别拼进ops串**,键名: go=destination地点名/POI 或 npc=NPC名(二选一)、walk=poi_name 或 x+y(二选一,坐标=只走同图;跨图用go)、walk_multi=waypoints(\"x,y x,y …\"空格/分号分隔),location,max_wait,max_seg、npc=name、lookup=location、query=function、warp_safe 无参)。⚠️walk 到 POI 会**自动应用结构化站位+朝向**(水池朝右/柜台朝上),但交互仍要 AI 自己 scene at/interact 触发。🫧walk_multi 别名 **闲逛/多段走**（旧名 festival/scene 的 maze_walk/走迷宫 仍可用）：正事=万灵节迷宫按段走；**活人感**=闲逛遛弯·绕着人转圈示好·浴场泳池绕圈游。",
+"festival": "节日域(🎪)：today(今天节日) next(下一个) go(去) info(实况) interact(互动) answer(应答) shop(节日商店) eggs(找蛋) egg_note(纸条) egg_run(捡蛋) dance(跳舞邀请) strength(力量测试 delay=毫秒) ice_fish(冰雪节冰钓自动化) help(玩法) prep(备战) poi(限定点) maze(迷宫坐标奇偶年) maze_walk(走迷宫 waypoints=「x,y x,y…」依次walk_to;⚠️**通用多段走位已搬到 `map walk_multi/闲逛`**,此处保留旧名兼容) strength(力量测试,delay=毫秒) display_fill/display_takeback(农展台放满/收好)。📐参数键名: interact=name answer=answer egg_run/egg_note=route dance=target strength=delay maze_walk=waypoints,location,max_wait,max_seg display_fill=items；today/next/go/info/shop/eggs/help/prep/poi/maze/ice_fish/display_takeback 无参。",
+"fish": "钓鱼域(🎣 2026-08-22修复)：go(去钓 location=) info(查某地鱼) spots(钓点) bobber(浮漂样式) rod(鱼竿:看/上饵钓具 item=名) crab(蟹笼总览) crab_water(找水) crab_place(放笼) crab_bait(放饵) crab_collect(收笼) crab_diag(诊断笼/定位挂饵) crab_retract(回收笼/清搁浅 location=可选)。⚠️**crab_bait/crab_collect/crab_retract 不带坐标 = 处理「当前图**全部**」的笼**(不是附近几个;一天真机在海滩 32 只被一次收光)——只想动一只就传 x+y。📐参数键名: go=location(None=**就地钓**,须自己已站到水边;指定 Beach/Mountain/Forest/Town=先 map_go 走真实路径到校准钓点再钓,不是warp),max_casts(0=不限),no_sleep(True) / info=location / bobber=style(默认dice) / rod=action+item / crab_place=count+radius+bait / crab_bait=bait / crab_water=radius / crab_diag=location / crab_retract=x+y+location。⚠️鱼塘在 farm 域不在 fish。带参 op(go 的 location、rod 的 item、crab 的 count)→ kw={'参数名':值}。🧬**挂饵前先 check(what=\"profile\")**：若是 Luremaster(职业11) 蟹笼免饵，crab_bait/crab_place 挂饵是空操作，别浪费。",
+"settings": "系统/设置域(⚙️ 合并捏脸进来)：status(看所有设置+退役工具) retire(退役工具) reactivate(召回) appearance(捏脸) customize(捏人) **confirm_look(核对捏人形象,ok前必做)** color(颜色条) hair/shirt/pants/hat/colorpreset(外观参考)。⚠️捏脸=创建定型:ok后set_appearance/捏人自动退役(不可逆);旧配置 settings(setting='async', value='on') 仍可。📐参数键名: appearance/customize=同 daily 那套(appearance 是 hair,hair_color,skin,shirt,pants,hat,acc,eye_color,pants_color；customize 是 name,farmname,favorite)；color=hue/sat/val(0-100 滑块)或 hex；retire/reactivate=tool_name；hair/shirt/pants/hat/colorpreset/confirm_look 无参。",
 "session": "会话域(🧠 上下文缓冲，多数情况不用)：status(看缓冲条数/设置) set(改设置 setting,value) export(手动导出记忆)。📐参数键名: set=setting+value(**都是字符串**)，status/export 无参。",
 "script": "脚本/异步域(🚀被动异步优先)：continue(继续阻塞:确认脚本在跑/续跑,不新建不碰层数) stop(停任务,job_id空=停最近在跑) async(自动异步白名单 show/add/remove/enable=on|off)。进度自动播报(运行中+收工含总时长)，无需查。⚠️跑脚本用对应便利工具域 op——短任务(耕/浇/收/砍/清/摸动物)走 farm/scene 域 op(同步)、长任务(钓鱼/挖矿/炸矿/机器收放)走 mine/fish/farm 域便利工具(白名单自动后台)；start/run 已砍(改 continue 确认继续阻塞)；跑脚本时别用走动/挥工具同步工具，但聊天/看状态/开背包/整理背包没问题；📐参数键名: continue/stop=job_id(空=停最近在跑的那个) async=show,add,remove,enable。一次只跑一个脚本。⚠️参数放kw别拼ops(如 script(ops=\"continue\", kw={job_id})。",
 }
@@ -10954,8 +11342,12 @@ def select_item(name: str) -> str:
         name: 物品名称（如 Pickaxe、Axe、Blueberry Seeds、Copper Bar 等）
     """
     try:
-        api.select(name)
-        return _with_state(f"✅ 已选择: {name}")
+        r = api.select(name)
+        # ⚠️ 必须看返回：`/select` 找不到物品是回 `{ok:false}` 而**不抛异常**，
+        #    以前这里无条件报「✅ 已选择」⇒ 名字写错也谎报成功（2026-09-11 抓到）。
+        if not r.get("ok"):
+            return _with_state(f"❌ 背包里没有「{name}」: {r.get('error', '未找到')}")
+        return _with_state(f"✅ 已选择: {r.get('selected') or name}")
     except Exception as e:
         return _with_state(f"❌ 找不到「{name}」或选择失败: {e}")
 
@@ -11089,7 +11481,12 @@ def peek_player() -> str:
     想知道"TA现在在干嘛"时调用这个。
     """
     data = _gather_state()
-    activity = player_activity.detect_activity(data)
+    # ⚠️ 2026-09-11 修：原来喂 `_gather_state()`（= **AI 自己的 7843**）
+    #    ⇒ 输出「💭 **轮回** 似乎在发呆」（说 AI 自己），而引导写的是 `peek(看恒干吗)`。
+    #    `player_activity` 模块头也写明**主语是用户(房主)**、且要“从 host 进程取状态喂进来”。
+    #    改走 `_heartbeat_line(data)` —— 它内部 `_gather_user_state()`（host 7842）+ 重用同一套
+    #    “同在/附近”合并逻辑；拿不到 host 状态时它自带“退化为描述 AI 自己”的既有兜底。
+    activity = _heartbeat_line(data)
     player_activity.reset_heartbeat()  # 重置心跳计时，避免重复
     strip = _build_state_strip(data, full=False)
     return f"{activity}\n\n{strip}"
@@ -11211,13 +11608,37 @@ def _walk_to_chest(x, y):
 
 # ═══ 2026-09-04 恒：storage 域压缩 11→6（scan+layout→view / store+smart→store / take+takeall→take /
 #      default+cleardefault→default / tag+color→tag）。view=scan+layout 互补：layout 的⭐默认箱+剩余格 + scan 的单箱全页。 ═══
-def storage_view(box: int = -1) -> str:
+def storage_view(box=-1) -> str:
     """📦 看箱：box=-1 网络概览（⭐默认箱+剩余格+色名+【类目标签】，每箱一行）；
-    box=N 看第 N 箱完整清单（不截断，AI 装箱决策前看全）。
+    box=N 看第 N 箱完整清单（不截断，AI 装箱决策前看全）；
+    box="内置冰箱"/"红箱"/"#303030"/"30,23" 也行（和 store 的 target 同一套匹配）。
     = 原 storage_layout(-1) + scan_chests(N) 互补合一。"""
-    if box >= 0:
+    # ⚠️ 2026-09-12：box 以前**只吃序号** —— 传名字（如 "内置冰箱"）会漏出 Python 原生异常文案
+    #    `'>=' not supported between instances of 'str' and 'int'`（恒真机撞到）。
+    #    现在非数字一律走 `_resolve_storage_target`（= store 的 target 那套：色名/#hex/名字/标签/"x,y"），
+    #    认不出就**明确报错**，不再漏原生异常。⚠️ 判据是**坐标回查序号**，别按名字重排列表。
+    if isinstance(box, str):
+        s = box.strip()
+        if s.lstrip("-").isdigit():
+            box = int(s)
+        else:
+            tgt = _resolve_storage_target(s)
+            if isinstance(tgt, str):
+                return _with_state(tgt)
+            try:
+                chests = api._get("/scan_chests").get("chests") or []
+            except Exception as e:
+                return _with_state(f"❌ 查箱失败: {e}")
+            hit = next((i for i, c in enumerate(chests)
+                        if (c.get("x"), c.get("y")) == (tgt["x"], tgt["y"])), None)
+            if hit is None:
+                return _with_state(f"❌ 没找到「{s}」对应的箱子（当前场景 {len(chests)} 个）")
+            box = hit
+    if isinstance(box, int) and box >= 0:
         return scan_chests(box)
-    return storage_layout()
+    if isinstance(box, int):
+        return storage_layout()
+    return _with_state(f"❌ box 要序号或箱子名/色名/坐标，「{box}」看不懂")
 
 
 def _primary_chest_for_smart():
@@ -11340,7 +11761,7 @@ def storage_take(items: str = "", x: int = -1, y: int = -1, name: str = "", coun
     """📤 取物（统一走位：先走到箱子旁）。两类取法：
     x,y>0 且 name 给了 = 取指定箱的某物（拟人走到那箱）；否则按 items 智能找箱批量取，
     只走到**第一个**配到的箱旁（跨箱凑数仍全收，2026-09-04 恒：智能存取也走位，不区分拟人/原子）。
-    items: 逗号/空格分隔，每项可带数量如 "西瓜,铜矿石×30,木材"（不带数=取该类全量）。
+    items: 逗号/空格分隔，每项可带数量如 "西瓜,铜矿石×30,木材"（不带数=用顶层 count，count 也没给=全量）。
     精确匹配（中英文名/ID）；模糊查哪个箱先用 storage find。
     """
     try:
@@ -11348,6 +11769,11 @@ def storage_take(items: str = "", x: int = -1, y: int = -1, name: str = "", coun
         if name and x >= 0 and y >= 0:
             _walk_to_chest(x, y)
             return chest_take(x, y, name, count)
+        # ⚠️ 2026-09-12：`count` 以前**批量这条路完全不认**（只有上面单箱那条认）⇒
+        #    `take items="Large Egg" count=1` 把**整摞 x7 全取走**（恒真机撞到）。
+        #    现在：每项自带的 `×N` 优先，没带的用顶层 `count`。`count=999`(默认) 视作"不限" ——
+        #    SDV 单摞上限就是 999，且这样显示才是 `x7` 而不是 `7/999`。
+        _lim = count if (isinstance(count, int) and 0 < count < 999) else -1
         reqs = []
         for part in re.split(r"[,，;；]+", (items or "").strip()):
             part = part.strip()
@@ -11357,7 +11783,7 @@ def storage_take(items: str = "", x: int = -1, y: int = -1, name: str = "", coun
             if m:
                 reqs.append({"name": m.group(1).strip(), "count": int(m.group(2))})
             else:
-                reqs.append({"name": part, "count": -1})
+                reqs.append({"name": part, "count": _lim})
         if not reqs:
             return "❌ 要取什么（storage take items=\"西瓜,铜矿石×30\" 或 x,y+name）"
         # 🤖 2026-09-04：批量只走到第一个配到的箱旁（拟人），跨箱凑数仍全收
@@ -11624,10 +12050,15 @@ def drop_item(name: str, count: int = 1) -> str:
     try:
         r = api._post("/drop", {"name": name, "count": count})
         if not r.get("ok"):
-            return f"丢弃失败: {r.get('error', r)}"
-        return f"已丢弃 {name} x{r.get('removed', 0)}，背包剩 {r.get('inventoryLeft')} 格"
+            return f"❌ 丢弃失败: {r.get('error', r)}"
+        # ⚠️ 2026-09-11：`removed=0` 以前也照报「已丢弃 … x0」⇒ 名字对不上时 AI 以为丢掉了。
+        #    名字口径 = `check backpack` 里显示的（C# 侧已对齐 Name|DisplayName）。
+        n = r.get("removed", 0)
+        if not n:
+            return f"❌ 背包里没有「{name}」，一个都没丢（名字用 check backpack 里显示的）"
+        return f"🗑️ 已丢弃 {name} x{n}，背包剩 {r.get('inventoryLeft')} 格"
     except Exception as e:
-        return f"丢弃失败: {e}"
+        return f"❌ 丢弃失败: {e}"
 
 
 @mcp.tool()
@@ -11951,7 +12382,17 @@ def museum_donate() -> str:
                 lines.append(f"  . {it.get('item', it)} → 展位({it.get('tileX')},{it.get('tileY')})")
             return "\n".join(lines)
         else:
-            return f"❌ {r.get('error', '没有可捐的新物品或展位已满')}"
+            # ⚠️ C# 的 error 是**英文原文**（如 "No new items to donate or no empty slots"）——
+            # 直接透给 AI 就是"中文壳裹着英文话"，跟 09-12③ 修的 `box`/`retire` 同类。
+            # 已知的翻人话，认不出的**原样返回**（宁可难看也别吞信息，见 09-12①"宁报错别兜底"）。
+            _err = r.get("error", "") or "捐赠失败（C# 没给原因）"
+            _known = {
+                "No new items to donate or no empty slots":
+                    "没有可捐的了 —— 背包里没有「游戏判为可捐、且博物馆还没收」的东西"
+                    "（博物馆已收齐时这是正常回答，不是出错）",
+            }
+            _msg = _known.get(_err.strip(), _err)
+            return f"❌ {_msg}"
     except Exception as e:
         return f"❌ {e}"
 
@@ -13029,7 +13470,7 @@ def dance_invite(target: str = "") -> str:
         return _with_state(f"❌ 跳舞邀请失败: {e}")
 
 
-FORGE_GUIDE = """🔨 火山锻造台（Caldera 顶层，menu forge 一键操作）
+FORGE_GUIDE = """🔨 锻造台（优先用本图的迷你锻造台 Mini-Forge；本图没有才去火山顶层 Caldera。menu forge 一键操作）
 🪙 消耗：强化=宝石+火山晶石10/15/20（钻石只10，换随机多属性）；附魔=五彩碎片+20晶石；龙牙附魔=龙牙+10；无限武器=银河之魂×3（20晶石/次）；组合戒指/合并武器=20/10晶石
 ⚔️ 武器强化（宝石，最多3次）：紫水晶+1重量 / 海蓝宝石+4.6%暴击率 / 绿宝石+速度 / 翡翠+10%暴击力量 / 红宝石+10%攻 / 黄水晶+1防
 ✨ 附魔（五彩+20晶石，每件1个，覆盖旧的，记录最近2次不重复）：
@@ -13044,7 +13485,7 @@ FORGE_GUIDE = """🔨 火山锻造台（Caldera 顶层，menu forge 一键操作
 @mcp.tool()
 def forge(item1: str, item2: str = "", mode: str = "combine", target: int = 0) -> str:
     """🔨 锻造台一键操作（合成戒指 / 属性附魔 / 龙牙附魔 / 拆解）——2026-08-11 防呆重写
-    自动开台（没开就 warp 到 Caldera 锻造台 22,21）→ 放料用 /forge_set 直接设槽（不碰鼠标，
+    自动开台（**先找本图 Mini-Forge**，没有才 warp 到 Caldera 锻造台 22,21）→ 放料用 /forge_set 直接设槽（不碰鼠标，
     后台菜单点击放料不可靠：/state 背包陈旧会打错格）→ 锻造 → 领结果(放回背包) → 关菜单。
     默认操作 AI 自己的游戏（NAGI_URL）；target 指定端口可操作其他角色（如 7842 user/房主）。
 
@@ -13091,29 +13532,99 @@ def forge(item1: str, item2: str = "", mode: str = "combine", target: int = 0) -
         occ = set(it.get("slotIndex") for it in _inv())
         return next((i for i in range(36) if i not in occ), 36)
 
+    # 📌 材料够不够**不在开台前查**（2026-09-12 恒）：我第一版写死了一张
+    #    `{"combine":20,"random":20,"dragon":10,"attribute":10}` 的表，恒指出
+    #    「**两个料放进去的时候会显示需要消耗的火山晶石**」—— 游戏自己就有真数，
+    #    硬编码那张表必然抄歪（强化按等级是 10/15/20，各模式还不同）。
+    #    所以改成：放完料读 `/forge_set` 回的 `shardCost`/`shardsHave`（C# 侧取
+    #    `ForgeMenu.GetForgeCost(左,右)` + `Items.CountId("(O)848")`，都是游戏原值）。
+    #    检查点见下面 `fs` 之后。
+
+    # 🔙 回程（2026-09-12 恒：「我们没有录火山出口的路」）——
+    #    Caldera 那条路把 AI 送到火山顶层，而**火山出口的走法从没录进 locations.py**；
+    #    更硬的是 `/warp` **根本回不来**：它只认 `Game1.locations`，而小屋内景的 key 是**唯一名**
+    #    （`FarmHouse<guid>`），按 "Cabin" 查 → `Location 'Cabin' not found`（真机实证）。
+    #    `/warp_into` 走 `ResolveAnyLocation`（唯一名 / farm.buildings.indoors 都认），实测能精确送回。
+    #    所以：**挪过窝就把出发地记下来，收工原样送回**（出错路径也送）。
+    _origin = {"loc": None, "x": 0, "y": 0}
+
+    def _back():
+        """送回出发地（没挪过窝 = 空操作）。
+        ⚠️ 必须赶在拼状态条**之前**调 —— 否则条子还报着火山，AI 明明到家了却读到 Caldera。"""
+        if not _origin["loc"]:
+            return
+        try:
+            _req.post(f"{base}/warp_into",
+                      json={"location": _origin["loc"], "x": _origin["x"], "y": _origin["y"]},
+                      timeout=8)
+            time.sleep(0.8)
+        except Exception:
+            pass
+        _origin["loc"] = None
+
+    def _done(msg: str) -> str:
+        """收工：先送回出发地，再拼状态条（顺序不能反）。"""
+        _back()
+        return _with_state(msg)
+
     try:
-        # ── 开台：没有 ForgeMenu 就清残留 → warp 到锻造台 → 打开 ──
+        # ── 开台：没有 ForgeMenu 就找一台开 ──
+        #   ① **本图有 Mini-Forge 就地用**（2026-09-12 恒：「轮回家好像有迷你锻造台，跟火山的是一样的」）——
+        #      真机验过：Mini-Forge 点开的就是 `ForgeMenu`，按钮跟火山顶层那台一字不差
+        #      （leftIngredientSpot/rightIngredientSpot/startTailoringButton/unforgeButton 全在）。
+        #      没必要每次都往火山跑（还要求开了火山口+有传送手段）。
+        #   ② 本图没有 → 老路：warp 到 Caldera(22,23) 点 (22,21)。
         m, fb = _menu()
+        _where = None
         if not m.get("open") or m.get("type") != "ForgeMenu":
             _menu_close(base)
             time.sleep(0.5)
-            _req.post(f"{base}/warp", json={"location": "Caldera", "x": 22, "y": 23}, timeout=8)
-            for _ in range(20):
-                if _state().get("location", {}).get("name") == "Caldera":
+            # ① 本图找 Mini-Forge（`/machines` 只列**当前图**的机器）
+            _mf = None
+            try:
+                _mk = _req.get(f"{base}/machines", timeout=8).json()
+                _here = ((_state().get("location") or {}).get("uniqueName") or "")
+                # ⚠️ 按 `location_unique` 比，不按 `location` 名：同名小屋(Cabin)光看名字会串
+                for _x in (_mk.get("machines") or []):
+                    if _x.get("type") != "Mini-Forge":
+                        continue
+                    if _here and _x.get("location_unique") and _x["location_unique"] != _here:
+                        continue
+                    _mf = _x
                     break
-                time.sleep(0.3)
-            _req.post(f"{base}/interact", json={"x": 22, "y": 21}, timeout=8)
-            time.sleep(1.0)
+            except Exception:
+                _mf = None
+            if _mf is not None:
+                _where = f"Mini-Forge({_mf['x']},{_mf['y']})"
+                # 机器格站不了人 —— walk_to 会自己落到旁边那格（并在回执里说明实际站位）
+                navigation.walk_to(x=int(_mf["x"]), y=int(_mf["y"]))
+                _req.post(f"{base}/interact", json={"x": _mf["x"], "y": _mf["y"]}, timeout=8)
+                time.sleep(1.0)
+            else:
+                _where = "Caldera(22,21)"
+                # 出发地记下来（收工 `_done` 原样送回）—— 用**唯一名**，精确到"哪一间小屋"
+                _st0 = _state()
+                _l0 = (_st0.get("location") or {})
+                _origin["loc"] = _l0.get("uniqueName") or _l0.get("name")
+                _origin["x"] = int((_st0.get("player") or {}).get("x") or 0)
+                _origin["y"] = int((_st0.get("player") or {}).get("y") or 0)
+                _req.post(f"{base}/warp", json={"location": "Caldera", "x": 22, "y": 23}, timeout=8)
+                for _ in range(20):
+                    if _state().get("location", {}).get("name") == "Caldera":
+                        break
+                    time.sleep(0.3)
+                _req.post(f"{base}/interact", json={"x": 22, "y": 21}, timeout=8)
+                time.sleep(1.0)
         m, fb = _menu()
         if not m.get("open") or m.get("type") != "ForgeMenu":
-            return _with_state("❌ 锻造台没开（Caldera(22,21) interact_at 失败）")
+            return _done(f"❌ 锻造台没开（{_where or '已有菜单'} 交互失败）")
         left = fb.get("leftIngredientSpot")
         right = fb.get("rightIngredientSpot")
         fbtn = fb.get("startTailoringButton")
         result_btn = fb.get("craftResultDisplay")
         ubtn = fb.get("unforgeButton")
         if not (left and right and fbtn):
-            return _with_state("❌ 读不到锻造槽位，关掉重开菜单试试")
+            return _done("❌ 读不到锻造槽位，关掉重开菜单试试")
 
         # ── 放料：/forge_set 直接设槽（2026-08-11 后台菜单点击放料不可靠——
         #    /state 背包读取陈旧会打错格；改主线程直接设槽，不碰鼠标） ──
@@ -13122,17 +13633,34 @@ def forge(item1: str, item2: str = "", mode: str = "combine", target: int = 0) -
             set_data["right"] = item2
         fs = _req.post(f"{base}/forge_set", json=set_data, timeout=8).json()
         if not fs.get("ok"):
-            return _with_state(f"❌ 放料失败: {fs.get('error')}")
+            return _done(f"❌ 放料失败: {fs.get('error')}")
         time.sleep(0.8)
+
+        # ── 晶石够不够：用**游戏自己算的数**（2026-09-12 恒）──
+        # 起因：缺料时点「开始锻造」**什么都不会发生**，关菜单把料原样退回 ⇒ 工具只看到"没结果"，
+        # 老代码于是报一句「合成结果没进背包（检查背包）」—— **不说是缺晶石**，AI 无从下手。
+        # （真机现场：恒一眼看出「火山晶石不够，要20」，工具却把原因咽了。）
+        # 这正是《宁报错别兜底》与 09-12④「别甩锅」的同一个病：**报错必须指向真原因**。
+        # ⚠️ 只查晶石这一项（它是唯一"点了没反应"的硬门槛）；宝石/五彩碎片/龙牙/戒指配对
+        #    这些没查 —— 缺它们仍会走到老那句。别以为这条覆盖了全部前置条件。
+        _cost = int(fs.get("shardCost") or 0)
+        _have = int(fs.get("shardsHave") or 0)
+        if _cost > 0 and _have < _cost and mode != "unforge":
+            _menu_close(base)   # 关菜单会把槽里的料放回背包（别让料卡在台上）
+            return _done(
+                f"❌ 火山晶石不够：这个操作要 {_cost} 个，背包里只有 {_have} 个（还差 {_cost - _have} 个）。\n"
+                f"   去弄「火山晶石 Cinder Shard」：火山口(Caldera)敲矿 / 打怪掉落。\n"
+                f"   ℹ️ 缺料时点「开始锻造」**不会有任何反应**（料会退回来）——"
+                f"以前只报「合成结果没进背包」，就是这个原因。")
 
         # ── 拆解 ──
         if mode == "unforge":
             if not ubtn:
-                return _with_state("❌ 读不到 unforge 按钮（拆解）")
+                return _done("❌ 读不到 unforge 按钮（拆解）")
             _click(ubtn["x"], ubtn["y"])
             time.sleep(2.0)
             _menu_close(base)
-            return _with_state("💍 解除合成完成！组件已放回背包")
+            return _done("💍 解除合成完成！组件已放回背包")
 
         # ── 锻造 ──
         _click(fbtn["x"], fbtn["y"])
@@ -13150,16 +13678,16 @@ def forge(item1: str, item2: str = "", mode: str = "combine", target: int = 0) -
         names = [it.get("name", "") for it in _inv()]
         back = any(item1.lower() in n.lower() for n in names)
         if not back and mode != "combine":
-            return _with_state("⚠️ 结果可能没进背包（光标被关菜单处理了？检查背包）")
+            return _done("⚠️ 结果可能没进背包（光标被关菜单处理了？检查背包）")
         if mode == "combine" and not any("Combined" in n for n in names):
-            return _with_state("⚠️ 合成结果没进背包（检查背包）")
+            return _done("⚠️ 合成结果没进背包（检查背包）")
         tag = {"combine": "💍 合成戒指", "attribute": "⚔️ 属性附魔",
                "random": "🔮 随机附魔", "dragon": "🐉 龙牙附魔"}.get(mode, mode)
-        return _with_state(f"{tag}完成！结果已放回背包")
+        return _done(f"{tag}完成！结果已放回背包")
     except Exception as e:
         try: _menu_close(base)
         except Exception: pass
-        return _with_state(f"❌ 锻造失败: {e}")
+        return _done(f"❌ 锻造失败: {e}")
 
 
 @mcp.tool()
@@ -13235,7 +13763,114 @@ def sell_to_bin(name: str = "", sell_all: bool = False) -> str:
 #  烹饪系统
 # ═══════════════════════════════════════════
 
-@mcp.tool()
+def _find_kitchen_tiles(location: str = None):
+    """🍳 读某张图的**厨房灶台格**（瓦片属性 `Action: Kitchen`，任意图层）。
+
+    照抄游戏判据（`GameLocation.checkAction`: `case "kitchen": case "Kitchen": ActivateKitchen()`），
+    ⚠️ **必须扫地图不能硬编码**：农舍/小屋/岛屋厨房布局不同。`location=None` = 当前图。
+
+    ⚠️ 2026-09-11 真机纠正（**差点上线就炸**）：**不在 Back 层，在 `Buildings` 层**——
+       恒家/小屋实测 `Buildings 19-23,23`（同图的 `Action: Yoba` 也在 Buildings）。
+       原来写死 `layer="Back"` ⇒ **任何图都判"没厨房"**，连站在有厨房的小屋里都报
+       「这张图没有厨房」（真机复现过）。→ 干脆不传 layer，全图层扫；C# 侧同一个坑同批修。
+    返回 [(x, y), …]；空列表 = 这张图没厨房。
+    """
+    kw = {"scan": "Action"}
+    if location:
+        kw["location"] = location
+    try:
+        r = api._get("/tile_props", kw)
+    except Exception:
+        return []
+    return [(h["x"], h["y"]) for h in (r.get("hits") or [])
+            if str(h.get("value") or "").split(" ")[0].lower() == "kitchen"]
+
+
+_NL = chr(10)   # 拼多行提示用（写 f-string 里的 "\n" 老被工具链吃掉，见 _go_to_kitchen）
+
+
+def _kitchens_elsewhere() -> str:
+    """报错时的**提醒**：探一下别处哪几间真有厨房（只报探到的，不猜、也**不自动过去**）。
+
+    用的是**和"本场景有没有厨房"同一个判据**（扫 `Action: Kitchen` 瓦片）—— 不是猜、不是硬编码名单。
+    ⚠️ 小屋得按 `uniqueName` 探（`FarmHouse<guid>`，农场上 `.Name` 全是 "Cabin"）——已把 `/tile_props`
+       的定位改走 `FindLocationByName`，所以现在探得到。
+    冷路径（本场景没厨房才会调），慢一点无妨。
+    """
+    cands = [("恒的农舍", "FarmHouse"), ("岛屋", "IslandFarmHouse")]
+    try:
+        _home = (api.state().get("player") or {}).get("homeLocation") or ""
+    except Exception:
+        _home = ""
+    if _home:
+        cands.insert(0, ("自家小屋", _home))
+    found = []
+    for label, ln in cands:
+        if _find_kitchen_tiles(ln):
+            found.append(label)
+    if found:
+        return "、".join(found) + "（已探到有厨房）"
+    return "自家小屋 / 恒的农舍 / 岛屋（未逐一确认）"
+
+
+def _go_to_kitchen():
+    """先就位到灶台旁（够得着即可）。**已在厨房则什么都不做**。
+    返回 None = 可以继续做菜；返回字符串 = 走不过去的**明确报错**（含灶台坐标，AI 可自己再试）。
+
+    📌 恒 2026-09-11 拍板：**只管本场景** —— 本场景有厨房才 walk_to；
+       没厨房就停下报错 + 提醒哪能借，**借厨房的腿由 AI 自己迈**（我们不包办、也不擅自进别人的屋子）。
+    """
+    try:
+        st = api.state()
+    except Exception:
+        st = {}
+    try:
+        me = (st.get("player") or {})
+        px, py = int(me.get("x", -999)), int(me.get("y", -999))
+    except Exception:
+        px, py = -999, -999
+    tiles = _find_kitchen_tiles()
+    if not tiles:
+        loc = ((st.get("location") or {}).get("name")) or "?"
+        return _with_state(
+            f"❌ 这张图（{loc}）没有厨房，做不了菜 —— 升级房屋、或借他人小屋的厨房再试试吧。"
+            + _NL
+            + f"   有厨房的：{_kitchens_elsewhere()} —— map_go 过去、站到灶台旁再 cook。")
+    # 已就位：**任一**灶台格够得着就行 —— 灶台常是一整排（恒家 `19-23,23` 共 5 格），
+    # 只认第一格会让站在另一头的人被判"没走到"。
+    if any(abs(px - tx) <= 1 and abs(py - ty) <= 1 for tx, ty in tiles):
+        return None
+    # 灶台本身不可走 → 遍历灶台格，挑一个**离自己最近**的可站 8 邻格（`/passable` 读 body，必须 _post）
+    best = None
+    for kx, ky in tiles:
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                if dx == 0 and dy == 0:
+                    continue
+                cx, cy = kx + dx, ky + dy
+                try:
+                    if api._post("/passable", {"x": cx, "y": cy}).get("passable"):
+                        d = abs(px - cx) + abs(py - cy)
+                        if best is None or d < best[0]:
+                            best = (d, cx, cy)
+                except Exception:
+                    continue
+    if best is None:
+        kx, ky = tiles[0]
+        return _with_state(f"❌ 灶台 ({kx},{ky}) 周围没有可站的格——过不去")
+    _, tx, ty = best
+    # 底座用 `/walk_to`（= map walk 的坐标版）；老的 move_to_tile 走 /move+BFS，已退役
+    out = navigation.walk_to(x=tx, y=ty)
+    # ⚠️ 判据落在"人真的到那儿了吗"，别靠字符串找 "✅"（状态条里到处都是 ✅ / ⚠️）
+    try:
+        _me2 = (api.state().get("player") or {})
+        if (int(_me2.get("x", -9)), int(_me2.get("y", -9))) != (tx, ty):
+            return _with_state(f"❌ 没走到灶台旁 ({tx},{ty})：{out.splitlines()[0] if out else '无响应'}")
+    except Exception:
+        pass
+    return None
+
+
 def cook(recipe_name: str, count: int = 1) -> str:
     """🍳 烹饪 — 制作料理
     检查是否已学习该食谱、背包是否有所需食材，然后制作。
@@ -13255,6 +13890,12 @@ def cook(recipe_name: str, count: int = 1) -> str:
         count: 制作数量（默认 1）
     """
     try:
+        # 🍳 先走到厨房（2026-09-11 恒："我希望角色走到厨房才能 cook"）。
+        #    游戏本来就只允许站在灶台旁开烹饪菜单；C# `/cook` 侧已补权威位置门，
+        #    这里负责**走过去**（判据在 C#、走位在 Python —— 同门感知那套分层）。
+        walk = _go_to_kitchen()
+        if walk is not None:
+            return walk          # 走不过去 = 明确报错，别硬做
         r = api.cook(recipe_name, count)
         if r.get("ok"):
             crafted = r["crafted"]
@@ -13632,18 +14273,29 @@ def script_stop(job_id: str = "") -> str:
     Args:
         job_id: 便利工具/后台任务返回的任务ID
     """
+    # 🔴 2026-09-12：**绝不能在持 `_bg_lock` 时调 `_with_state`** ——
+    #    状态条会走 `_bg_activity_line()`，而那里也要 `with _bg_lock:`；
+    #    `_threading.Lock()` **不可重入** ⇒ 同一线程自己把自己锁死。
+    #    ⚠️ 死的**不是这一次调用**：锁再也放不掉，之后**每个**要拼状态条的工具都排队等它
+    #    ⇒ 整个 :8000 的事件循环僵住（连 `GET /` 都不回、CPU 2.6s 不涨 = 阻塞不是死循环）。
+    #    真机踩到：全工具测试批次A 打 `script ops=stop`（当时没有后台任务，走的就是这三个提前返回）。
+    #    所以：锁里只**准备话**，`_with_state` 一律挪到**出锁之后**。
+    early = ""
     with _bg_lock:
         if not _bg_jobs:
-            return _with_state("📭 没有后台脚本任务。")
-        if job_id:
+            early = "📭 没有后台脚本任务。"
+        elif job_id:
             job = _bg_jobs.get(job_id)
             if not job:
-                return _with_state(f"❌ 找不到任务 {job_id}。")
+                early = f"❌ 找不到任务 {job_id}。"
         else:
             running = [j for j in _bg_jobs.values() if j.running]
             if not running:
-                return _with_state("没有在跑的脚本（现有任务都结束了）。")
-            job = running[-1]
+                early = "没有在跑的脚本（现有任务都结束了）。"
+            else:
+                job = running[-1]
+    if early:
+        return _with_state(early)
     if not job.running:
         return _with_state(f"任务 {job.job_id} 已结束（返回码 {job.returncode}），无需停止。")
     is_fish = job.name in _FISHING_SCRIPTS
@@ -14546,13 +15198,19 @@ if __name__ == "__main__":
                 _a, _h = _roles["ai"], _roles["host"]
                 print(f"  ✅ 角色映射: AI({_a.get('name','?')})={_a['port']} | host({_h.get('name','?')})={_h['port']}")
                 if _roles.get("solo"):
+                    # 🔴 solo 的两种解读要分开讲（2026-09-12 恒：对着单人游玩的人喊"危险"是虚惊）——
+                    #    单人游玩时折叠本属正常；多人世界时才是"打错人"。提醒里必须把分叉讲清楚。
                     print()
                     print("  " + "!" * 64)
-                    print(f"  ⚠️⚠️  单进程折叠：AI 和 host 都指向 {_a['port']}（{_a.get('name','?')}）")
-                    print("  ⚠️⚠️  这意味着**所有『AI 操作』都会打到这一个角色身上**！")
-                    print("  ⚠️⚠️  若这是多人世界（房主 + farmhand 两个进程）：多半是 farmhand")
-                    print("       还没进世界就重启了本服务。**等它进世界后重启本服务**即可。")
-                    print("        （热路径每 30s 会重探一次，两进程都在时会自动纠正）")
+                    print("  ⚠️⚠️  特别提醒：单进程折叠（AI 与 host 是同一个进程）")
+                    print(f"       目前 AI 端口和 host 端口都指向 {_a['port']}（房主）。")
+                    print("       · 若本意就是 AI 单人游玩：世界上只有一个角色，这是正常状态，")
+                    print("         忽略本提醒即可（该角色同时充当房主与农场工）。")
+                    print("       · 若是多人世界（房主 + farmhand 两个进程）：这是危险状态 ⇒")
+                    print("         所有『AI 操作』都会静默打在房主身上（走位/用工具/丢东西全算）。")
+                    print("         多半是 farmhand 还没进世界就重启了本服务 ⇒")
+                    print("         **等它进世界后重启本服务**即可（热路径每 30s 重探，")
+                    print("         两进程都在时会自动纠正，但纠正前那 30s 仍可能打错人）。")
                     print("  " + "!" * 64)
                     print()
             else:

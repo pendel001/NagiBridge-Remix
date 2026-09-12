@@ -771,23 +771,41 @@ def _probe_role(port: int) -> dict:
         r = s.connect_ex(("localhost", port))
         s.close()
         if r != 0:
-            return {"port": port, "role": None, "error": f"port closed (connect_ex={r})"}
+            return {"port": port, "role": None, "tcp": False, "error": f"port closed (connect_ex={r})"}
     except Exception as e:
-        return {"port": port, "role": None, "error": str(e)}
+        return {"port": port, "role": None, "tcp": False, "error": str(e)}
+    sess = requests.Session()
+    sess.mount("http://", requests.adapters.HTTPAdapter(max_retries=0))
+    # ① 首选 `/crawl_bed locate`：直接给 `player`/`player2`，判角色最准（还能顺带拿 isMain/home）。
     try:
-        sess = requests.Session()
-        sess.mount("http://", requests.adapters.HTTPAdapter(max_retries=0))
         rr = sess.post(f"http://localhost:{port}/crawl_bed",
                        json={"action": "locate"}, timeout=3)
         data = rr.json()
-        if not data.get("ok"):
-            return {"port": port, "role": None, "error": data.get("error", "not ok")}
-        p2 = data.get("player2")
-        p1 = data.get("player", p2)
-        return {"port": port, "role": ("host" if p2 == p1 else "ai"),
-                "name": p2, "player2": p2, "player": p1}
+        if data.get("ok"):
+            p2 = data.get("player2")
+            p1 = data.get("player", p2)
+            return {"port": port, "role": ("host" if p2 == p1 else "ai"),
+                    "tcp": True, "name": p2, "player2": p2, "player": p1}
+        _crawl_err = data.get("error", "not ok")
     except Exception as e:
-        return {"port": port, "role": None, "error": str(e)}
+        _crawl_err = str(e)
+    # ② 兜底（2026-09-12 实锤）：`/crawl_bed` **会在"有人躺床 / 结算菜单开着"时返回空**
+    #    （当晚 7842 实测 HTTP 200 但 **0 字节**）。以前这一下就直接判"本端口没角色"，
+    #    进而把映射**折叠成 solo** —— 方向反了就是"所有 AI 操作静默打在房主身上"（09-11 事故）。
+    #    改用**只读、无副作用**的 `/state`：房主 `homeLocation` 恒为 "FarmHouse"，
+    #    farmhand 的是 `FarmHouse<guid>`（自家小屋）。
+    try:
+        d2 = sess.get(f"http://localhost:{port}/state", timeout=3).json()
+        pl = d2.get("player") or {}
+        home = str(pl.get("homeLocation") or "")
+        if pl.get("name"):
+            return {"port": port, "role": ("host" if home == "FarmHouse" else "ai"),
+                    "tcp": True, "name": pl.get("name"), "via": "state-fallback",
+                    "crawl_error": _crawl_err, "homeLocation": home}
+    except Exception:
+        pass
+    return {"port": port, "role": None, "tcp": True,
+            "error": f"crawl_bed 与 state 都没探到（crawl: {_crawl_err}）"}
 
 
 def _set_roles(ai_port: int, host_port: int):
@@ -799,6 +817,10 @@ def _set_roles(ai_port: int, host_port: int):
     os.environ["NAGI_URL"] = AI_BASE_URL
     os.environ["NAGI_AI_URL"] = AI_BASE_URL
     os.environ["NAGI_HOST_URL"] = HOST_URL
+    # ⚠️ 2026-09-12：**NAGI_PORT 以前漏设** ⇒ 凡是从 env 取端口的辅助脚本（`go_to.py` 的
+    #    `--port` 默认 `int(os.environ.get("NAGI_PORT","7842"))`）**静默默认打 7842=房主**，
+    #    于是"帮 AI 走个位"变成"挪恒的角色"。这里补上，和上面三个 URL 一起跟着 AI 端口走。
+    os.environ["NAGI_PORT"] = str(ai_port)
 
 
 def detect_roles(ports=(7842, 7843)) -> dict:
@@ -811,20 +833,42 @@ def detect_roles(ports=(7842, 7843)) -> dict:
     当天 `cabin statue` 就是这么把恒的角色走掉、还摸了他雕像的。
     ⇒ 调用方**必须**把 solo 当警告处理（启动横幅要印醒目、状态条要标），别当成正常单人模式。
     """
+    global _ROLES_CACHE
     probes = [_probe_role(p) for p in ports]
     live = [p for p in probes if p.get("role")]
     ai = next((p for p in live if p["role"] == "ai"), None)
     host = next((p for p in live if p["role"] == "host"), None)
     solo = None
     if live and len(live) == 1 and (ai is None or host is None):
-        solo = live[0]  # 单人：唯一进程既是 host 也当 AI
+        only = live[0]
+        # 🔴 2026-09-12 恒拍板：**别急着折叠**。以前只看"活口只剩一个"就塌成 solo，但
+        #    "另一个端口探不到"有两种截然不同的原因，后果天差地别：
+        #      (a) 进程真的不在（**TCP 都连不上**）→ 真·单人，折叠是对的；
+        #      (b) 进程在、TCP 通，只是探测端点没答上来（**游戏卡在菜单/睡觉流程里** ——
+        #          当晚实测：恒躺床 + 结算菜单开着时 `/crawl_bed` 回 HTTP 200 但 0 字节）
+        #          → **折叠是灾难**：AI/host 全指同一端口，方向反了就是
+        #          "**所有 AI 操作静默打在房主身上**"（2026-09-11 那次事故）。
+        #    ⇒ (b) 一律**沿用上次的正确映射**并报警：宁可不动，也不塌。
+        _other_alive = any(p.get("tcp") for p in probes if p["port"] != only["port"])
+        _prev = _ROLES_CACHE.get("map") or {}
+        if _other_alive:
+            if _prev.get("ai") and _prev.get("host"):
+                return {"ok": True, "ai": _prev["ai"], "host": _prev["host"], "solo": False,
+                        "probes": probes, "kept_previous": True,
+                        "warning": (f"⚠️ {only['port']} 探到了，但另一端口**只通不答**"
+                                    f"（多半卡在菜单/睡觉流程）—— **沿用上次映射，不折叠成 solo**")}
+            # 连可沿用的旧映射都没有（冷启动就撞上）→ **宁可保持现状**，也不塌成 solo
+            return {"ok": False, "ai": ai, "host": host, "solo": False, "probes": probes,
+                    "error": (f"{only['port']} 探到了，但另一端口**只通不答**"
+                              f"（多半卡在菜单/睡觉流程）且无可沿用的旧映射 —— "
+                              f"**保持现状，不折叠成 solo**")}
+        solo = only  # 单人：唯一进程既是 host 也当 AI
         host = host or solo
         ai = ai or solo
     if not ai or not host:
         return {"ok": False, "ai": ai, "host": host, "solo": False, "probes": probes,
                 "error": f"探测不完整（{len(live)} 个响应）：需同时有 host+AI 进程"}
     _set_roles(ai["port"], host["port"])
-    global _ROLES_CACHE
     _ROLES_CACHE = {"ts": time.time(), "map": {"ai": ai, "host": host, "solo": solo is not None}}
     return {"ok": True, "ai": ai, "host": host, "solo": solo is not None, "probes": probes}
 

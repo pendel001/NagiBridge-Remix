@@ -171,6 +171,30 @@ class VolcanoBot(BombMineBot):
             self.warp(*VOLCANO_EXIT)
         return True
 
+    # ═══════════ 🏁 到点交还控制权 ═══════════
+
+    def _handback_text(self, reason):
+        """到第5层 / 火山顶时给 AI 的话术。
+
+        ⚠️ 分工是恒 2026-09-12 定的：**脚本只负责"停"，走或留由 AI 自己判** ——
+        所以这里只把两条路摆清楚，不替它选，也不替它撤。
+        两处坐标来自反编译（`VolcanoDungeon.cs` 的 `checkAction` case 367 / case 77），
+        ⏳ 都还没实地走过（内部层要房主陪同）。"""
+        if reason == "l5":
+            return (
+                "🛏️ **到达第五层** —— 盘点背包、与房主沟通、休整、矮人商店交易，然后再决定走或留。\n"
+                "   · 矮人商店 = (36,30) 交互（⚠️要懂矮人语，不懂只会冒个表情）\n"
+                "   · **接着冲层** → 重新调 bomb_volcano（骑行模式直接跟回房主身边，**不会从第1层重来**）\n"
+                "   · **要走** → 第5层撤退出口 (29,34)：走到旁边 → interact → 对话选「是」→ IslandNorth (56,17)\n"
+                "   ⚠️ 脚本**故意没撤退**，人还在第5层原地。"
+            )
+        return (
+            "🏔️ **到达火山顶（Caldera）** —— 这里没有「再下一层」了，没事干就只能撤离。\n"
+            "   · 想先锻造也行：锻造台 (22,21)，人站 (22,22) 朝北交互\n"
+            "   · **撤离** → map_go（山顶出口 (11,36) → 入口层 (44,50) → IslandNorth (40,24)）\n"
+            "   ⚠️ 脚本**故意没撤退**，人还在山顶原地。"
+        )
+
     # ═══════════ 主循环 ═══════════
 
     def run(self, max_minutes=None, wait_host=True):
@@ -202,6 +226,12 @@ class VolcanoBot(BombMineBot):
         bombs_placed = 0
         follow_count = 0
         deepest = 0
+        # 🏁 自动停止点（2026-09-12 恒设计）：到第5层 / 火山顶就把控制权交还给 AI，
+        #    脚本**不替它决定**走或留（"AI 自己判"）。见 _handback_text。
+        stop_reason = None
+        # ⚠️ 只在"**本次运行中换层进来**"才算到达 —— 启动时人**已经**在第5层不算。
+        #    否则 AI 想"继续冲层"重开脚本时会立刻又被弹回来（死循环）。
+        prev_loc = self.my_location()
 
         while True:
             if deadline and time.time() > deadline:
@@ -224,6 +254,19 @@ class VolcanoBot(BombMineBot):
                     return False
             elif hp_pct < 60:
                 self.eat_recovery(hard=self.hp_threshold, target=60)
+
+            # ── 🏁 自动停止点：刚换层进来，且落点就是第5层/火山顶 → 收工交还控制权 ──
+            #    第5层是"还能往下"的分岔（可撤可续），火山顶是"没得选了"（恒：
+            #    「10层没事干了就只能撤离」）——两种话术不同，见 _handback_text。
+            if my_loc != prev_loc:
+                if my_loc == "VolcanoDungeon5":
+                    stop_reason = "l5"
+                elif my_loc == "Caldera":
+                    stop_reason = "top"
+                if stop_reason:
+                    log(f"  🏁 到达停止点（{my_loc}）→ 交还控制权，不撤退")
+                    break
+            prev_loc = my_loc
 
             # ── user在哪（一次 host state）──
             hs = self.host_state()
@@ -358,7 +401,11 @@ class VolcanoBot(BombMineBot):
         # ── 结束 ──
         s = self.state()
         p = s.get("player", {})
-        if self.is_volcano_loc(self.my_location()):
+        if stop_reason:
+            # 🏁 到点交还控制权：**不撤退** —— 人留在原地，等 AI 自己判走还是留。
+            #    ⚠️ 这儿要是照旧 retreat_volcano，人会被揣到火山口外，"走或留"就名存实亡了。
+            log("\n" + self._handback_text(stop_reason))
+        elif self.is_volcano_loc(self.my_location()):
             self.retreat_volcano("骑行结束")
         log("\n🏁 === 火山骑行结束 ===")
         log(f"  最深处: 火山第 {deepest} 层")
