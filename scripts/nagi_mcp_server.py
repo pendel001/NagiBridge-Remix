@@ -1767,13 +1767,16 @@ def _shipbin_hint(loc_name: str = "") -> str:
       · 想"走过去 interact 开它"**不行**：`Chest.cs:773` 的 `playerChest` 分支要
         `Game1.didPlayerJustRightClick()`（真鼠标右键），action 键直接 `return false`。
         本项目家具/鱼塘/蟹笼都栽过同一句，各有 bypass —— 但这里不用绕，直接写进箱子即可。
-      · **⚠️ 别把它当"单向卖掉"**（2026-09-12 恒纠正："你刚才说卖了，但其实 mini 出货箱不像出货箱
-        只能撤回最后一个，它放进去的 9 格都可以在过夜前重新拿出来"）—— 反编译对得上：
-        迷你出货箱开的是 `ItemGrabMenu(GetItemsForPlayer(), …, showReceivingMenu: true, …)`
-        （Chest.cs:925），**箱内 9 格本身作为可抓取的容器列出来** ⇒ 过夜前整袋可取回，
-        是个**临时溢出背包**；农场出货箱那边是 `ItemGrabMenu(null, reverseGrab: true,
-        showReceivingMenu: false, …)`（`ShippingBin.cs:267`，**源箱子传 null**）⇒ 看不到箱内容，
-        只有"撤回刚放进去那件"一条路。⇒ 提示里写明"过夜前可取回"，AI 才敢把好东西也塞进去。
+    ⚠️⚠️ **有一条事实故意不写进提示**（2026-09-12 恒，两句话要连起来读）：
+      · 事实（他先纠正我）："**mini 出货箱不像出货箱只能撤回最后一个，它放进去的 9 格都可以在过夜前
+        重新拿出来**"——反编译对得上：迷你出货箱开 `ItemGrabMenu(GetItemsForPlayer(), …,
+        showReceivingMenu: **true**, …)`（Chest.cs:925）⇒ **箱内 9 格作为可抓取容器列出来、整袋可取回**；
+        农场出货箱开 `ItemGrabMenu(**null**, …, showReceivingMenu: **false**, …)`（`ShippingBin.cs:267`，
+        源箱子传 null）⇒ 看不到箱内容、只有"撤回刚放进去那件"。
+      · 但**别拿它当卖点**（他紧跟着纠正我第二轮）："**感觉你这样说会引导 AI 当溢出背包用呢。最好还是不要，
+        怕忘在里面了。出货箱就是用来出货的，用 50 个木头搞个箱子放这儿又不麻烦。**"
+        ⇒ 这个能力**是真的，但用错方向**：靠"过夜前能取回"来清包，等于把"记得回来拿"押在 AI 的记忆上，
+        忘了就真出货了。**提示里只讲"出货"，要存货就指普通箱子**（50 木一个，本 mod 能建）。
     """
     if not loc_name:
         return ""
@@ -1789,8 +1792,8 @@ def _shipbin_hint(loc_name: str = "") -> str:
             cx, cy = c.get("x", 0), c.get("y", 0)
             bins.sort(key=lambda t: abs(t.get("x", 0) - cx) + abs(t.get("y", 0) - cy))
             b = bins[0]
-            line = (f"📦 本图有迷你出货箱 ({b['x']},{b['y']})｜9 格·当夜结算，过夜前可整袋取回：背包满了塞它 → "
-                    f"storage(ops=\"store\", target=\"{b['x']},{b['y']}\", all=True)")
+            line = (f"📦 本图迷你出货箱 ({b['x']},{b['y']})｜9 格·**当夜出货卖掉**，别当仓库"
+                    f"（要存货用普通箱子）→ storage(ops=\"store\", target=\"{b['x']},{b['y']}\", all=True)")
     except Exception:
         line = ""                           # 读不到就不报（不瞎猜坐标）
     _SHIPBIN_SEEN["line"] = line
