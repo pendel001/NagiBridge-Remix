@@ -14,7 +14,10 @@ chat_outbox.txt
 
 # ── 运行时状态（不进版本库）──
 # 📁 2026-09-12：会话相关文件全部挪进子目录（原来 238 个 session_*.jsonl 堆在 scripts/ 根）
-scripts/sessions/
+#   ⚠️ 用 `sessions/*` 而不是 `sessions/` —— git 无法 re-include「被排除目录」里的文件，
+#      写成 `sessions/` 的话下面的 `!` 例外根本不生效，空文件夹就不会被开源版带出去。
+scripts/sessions/*
+!scripts/sessions/.gitkeep
 scripts/whiteboard.json
 scripts/settings.json
 scripts/plan.json
