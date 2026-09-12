@@ -576,6 +576,22 @@ public class ModEntry : Mod
     private int _festReadyKicks;                     // 本轮框已踹几脚
     private bool _festReadyAlerted;                  // 踹过就播报一次，别每次刷屏
 
+    // 🎪 第二种卡法（2026-09-13 真机实测到的**那一**种，反而更常见）：
+    //   **握手全走完了**（房主侧 `readyStates {恒:Locked, 轮回:Locked}`、客户端 `isReady=true`），
+    //   房主已经进了 Temp，**frames 里那句 `if (IsReady) confirm()` 却不生效** —— 框一直画着
+    //   「正在等待其他玩家……（2/2）」，人永远留在 BusStop。
+    //   **怎么知道 update() 确实在跑**：`cancelButton.visible = isCancelable()` 只在**构造时**和
+    //   **update() 里**赋值；构造时状态是 Ready(可反悔)⇒按钮可见，而真机截图放大后**框上一个按钮都没有**
+    //   ⇒ 只有 update() 把状态刷成 Locked 才可能。**update() 在跑、IsReady 是 true、confirm() 却没结果。**
+    //   ⇒ 那就不指望它了，**我们代按一次**（`ConfirmationDialog.confirm()` 是 public）。
+    //   ⚠️ 边界同前：只认 `festivalStart`、只在**已放行**后按、`sleep` 一根手指不碰。
+    //   ⚠️ 先给游戏 800ms 自己走完，别抢；按过还不关就**一次性**把现场（含反射出的 `active`）打进日志，
+    //      不静默重试（恒：「别静默兜底」）。
+    private const double FestReadyGraceMs = 800;     // 已放行后再等这么久，给游戏自己 confirm 的机会
+    private double _festReadyReleasedMs;             // 什么时候发现"已放行"（0 = 还没）
+    private bool _festReadyConfirmed;                // 是否已代按过
+    private bool _festReadyFinishedLog;              // 代按无效的现场只打一次
+
 
     // ⚠️ 2026-08-14 撤除：host 自动触发 Sleep_Yes 方案已被证伪——
     //    会抢在 farmhand(7843) 同步前触发假过夜（秋17误报），制造假象，必须不用。
@@ -1706,7 +1722,8 @@ public class ModEntry : Mod
                 if (Game1.activeClickableMenu is StardewValley.Menus.ReadyCheckDialog _frc
                     && _frc.checkName == "festivalStart")
                 {
-                    try { FestReadyKickDuringStall(_frc.checkName); } catch { }
+                    try { FestReadyKickDuringStall(_frc.checkName); } catch { }      // 卡法一：齐了不放行
+                    try { FestReadyConfirmIfReleased(_frc); } catch { }              // 卡法二：放行了框不关
                 }
                 else
                 {
@@ -1715,6 +1732,9 @@ public class ModEntry : Mod
                     _festReadyPulseUntilMs = 0;
                     _festReadyKicks = 0;
                     _festReadyAlerted = false;
+                    _festReadyReleasedMs = 0;
+                    _festReadyConfirmed = false;
+                    _festReadyFinishedLog = false;
                 }
             }
             catch (Exception ex)
@@ -13274,6 +13294,53 @@ public class ModEntry : Mod
                 $"🎪 节日就绪卡住（{ready}/{required} 齐了但没放行），已自动踹第 {_festReadyKicks} 脚",
                 "warn", "festivalReady");
         }
+    }
+
+    /// <summary>
+    /// 节日入场就绪：**已放行、框却没关**时，代游戏按一次 `confirm()`。
+    /// 完整论证见 `_festReadyReleasedMs` 那段的常量注释（含"怎么证明 update() 确实在跑"）。
+    ///
+    /// 触发条件（**只认已放行**，人没齐时一次都不会碰）：
+    ///   `festivalStart` 框开着 + 本地 `IsReady(id)==true` + 持续超过 `FestReadyGraceMs`。
+    /// 只按一次；按过还不关就把现场（含反射读出的私有 `active`）打进日志，**不静默重试**。
+    /// </summary>
+    private void FestReadyConfirmIfReleased(StardewValley.Menus.ReadyCheckDialog d)
+    {
+        const string id = "festivalStart";
+        double now = Game1.currentGameTime.TotalGameTime.TotalMilliseconds;
+
+        if (!Game1.netReady.IsReady(id)) { _festReadyReleasedMs = 0; _festReadyConfirmed = false; return; }
+        if (_festReadyReleasedMs <= 0) { _festReadyReleasedMs = now; return; }
+        if (now - _festReadyReleasedMs < FestReadyGraceMs) return;   // 先给游戏自己 800ms
+
+        // 反射读 `ConfirmationDialog.active`（private）——它同时决定 confirm() 是否生效、draw() 是否画。
+        bool act = true;
+        try
+        {
+            var f = typeof(StardewValley.Menus.ConfirmationDialog)
+                .GetField("active", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            if (f?.GetValue(d) is bool b) act = b;
+        }
+        catch { }
+
+        if (_festReadyConfirmed)
+        {
+            // 代按过了、框还开着 ⇒ 现场打一次日志就收手（可能卡在 performWarpFarmer，另案）
+            if (!_festReadyFinishedLog && now - _festReadyReleasedMs > FestReadyGraceMs + 3000)
+            {
+                _festReadyFinishedLog = true;
+                Monitor.Log($"[festival-ready] ⚠️ 代按 confirm() 后 {id} 框仍未关（active={act}）—— "
+                          + "就绪已完成却进不去，需要另查 performWarpFarmer", LogLevel.Error);
+                EnqueueAlert("festival_ready_confirm_failed",
+                    "🎪 节日就绪已完成，但代按 confirm() 仍未进场（框还开着）", "warn", "festivalReady");
+            }
+            return;
+        }
+
+        _festReadyConfirmed = true;
+        Monitor.Log($"[festival-ready] {id} 已放行(isReady=true)但框还开着(active={act}) → 代游戏按 confirm()",
+            LogLevel.Warn);
+        d.confirm();   // ConfirmationDialog.confirm() 是 public ⇒ 直接走游戏自己的 onConfirm（含 warp）
     }
 
     /// <summary>职业 id → 本地化分支名（LevelUpMenu.getProfessionTitleFromNumber）；失败回退"分支#id"。</summary>
