@@ -1,6 +1,6 @@
 # 【SDV1.6 × AI】NagiBridge二改版
 
-> ⚠️ 本仓库是 **NagiBridge 的二次修改版**（SDV 1.6 × AI 整合，经原作授权开源分享），**并非原作官方版本**。原作版权归原作者 [anqinou-art](https://github.com/anqinou-art)，本版基于其源码与授权修改，改动与 AI 整合由恒 · Deepseek 完成。
+> ⚠️ 本仓库是 **NagiBridge 的二次修改版**（SDV 1.6 × AI 整合，经原作授权开源分享），**并非原作官方版本**。原作版权归原作者 **里奈**（小红书 @里奈 · GitHub [anqinou-art](https://github.com/anqinou-art)），本版基于其源码与授权修改，改动与 AI 整合由恒 · Deepseek 完成。
 >
 > 🐙 **本版作者**：[GitHub @pendel001](https://github.com/pendel001) ｜ 小红书 @高冷 腿长 偷感重　　**本版仓库**：[pendel001/-SDV1.6-AI-NagiBridge-](https://github.com/pendel001/-SDV1.6-AI-NagiBridge-)（仓库名是 GitHub 自动洗字符的结果；mod 显示名以 `manifest.json` 的 **【SDV1.6 × AI】NagiBridge二改版** 为准）
 >
