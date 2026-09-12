@@ -388,4 +388,4 @@ petall()                         → 作弊摸所有动物
 1. 开星露谷（确保 NagiBridge MOD 运行）
 2. MCP 服务器：`python scripts/nagi_mcp_server.py`（SSE 模式，手机连；**默认控制 AI 角色 DeepSeek=7843**）
    或通过 `.mcp.json` 由 Claude Code 自动加载（Stdio 模式，显式 `NAGI_URL=7842` 控制房主小恒）
-3. 手机客户端连 `http://192.168.1.190:8000/sse`
+3. 手机客户端连 `http://<你的局域网IP>:8000/sse`

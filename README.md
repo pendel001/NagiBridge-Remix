@@ -248,13 +248,13 @@ python scripts/nagi_mcp_server.py
 
 ```
 NagiBridge MCP Server | HTTP: http://0.0.0.0:8000
-📱 手机/Claude Code 连（同一网络）: http://192.168.1.240:8000/mcp
+📱 手机/Claude Code 连（同一网络）: http://<你的局域网IP>:8000/mcp
   20 tools registered | schema 估算 ~xxxxx 字符
 ✅ 角色映射: AI(xxx)=7843 | host(xxx)=7842
 ```
 
 - `0.0.0.0` 表示**本机 + 局域网都能连**（默认就是它）。
-- `192.168.1.240` 是你电脑的**局域网 IP**（手机要填这个，看 4.4）。
+- `<你的局域网IP>` 是你电脑的**局域网 IP**（手机要填这个，看 4.4）。
 - 默认控制 **AI 角色(7843)**；想控制房主(7842) 就用 `NAGI_URL=http://localhost:7842` 启动。
 
 ### 4.3 从手机连（最常见「java 报错」的出处）
@@ -263,8 +263,8 @@ NagiBridge MCP Server | HTTP: http://0.0.0.0:8000
 
 **① URL 要带 `/mcp` 路径**
 ```
-❌ http://192.168.1.240:8000          → 404
-✅ http://192.168.1.240:8000/mcp     → 正确
+❌ http://<你的局域网IP>:8000          → 404
+✅ http://<你的局域网IP>:8000/mcp     → 正确
 ```
 网址就填启动日志里那行「📱 手机/Claude Code 连」给的全称，**别自己凭 IP 拼**。
 
@@ -287,7 +287,7 @@ New-NetFirewallRule -DisplayName "NagiBridge MCP 8000" -Direction Inbound -Proto
 ### 4.4 手机/客户端填法（小抄）
 
 ```
-地址:  http://192.168.1.240:8000/mcp        （= 你电脑的局域网IP/端口/mcp）
+地址:  http://<你的局域网IP>:8000/mcp        （= 你电脑的局域网IP/端口/mcp）
 传输:  Streamable HTTP（不是 SSE）
 协议:  MCP（默认即可）
 端口: 8000
@@ -299,7 +299,7 @@ New-NetFirewallRule -DisplayName "NagiBridge MCP 8000" -Direction Inbound -Proto
 ```json
 { "url": "http://localhost:8000/mcp" }
 ```
-本机用 `localhost` 就行；**手机/别机**才用 `192.168.1.240`。
+本机用 `localhost` 就行；**手机/别机**才用 `<你的局域网IP>`。
 
 ### 4.6 你们的故事存在哪（AI 的记忆，可带到别的前端）
 
