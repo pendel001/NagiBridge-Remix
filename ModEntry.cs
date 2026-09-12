@@ -1664,6 +1664,26 @@ public class ModEntry : Mod
                     }
                     catch { }
                 }
+
+                // 🎪 节日入场：farmhand 主动上报就绪（2026-09-13 恒「试试吧」）
+                //   **现象**：节日当天 AI 走到节日地点 → 游戏弹 `ReadyCheckDialog("festivalStart")`
+                //     → **卡在 (2/2) 双双进不去**（恒 09-13 复现两次；恒："从你进不来这件事本来就是死锁了"）。
+                //   **推测的病因**（旧代码已不可考，见 CHANGELOG ㊴）：08-14「全撤，回到纯核心」时把
+                //     **通用**的"farmhand 自动确认/上报 ReadyCheckDialog"一起带走了 —— `docs/history` 的
+                //     08-18 快照还写着「farmhand 自动确认结算/ReadyCheckDialog」（**不分类型**）；
+                //     撤掉后只剩游戏 `ReadyCheckDialog.update()` 每帧那句 `SetLocalReady` 兜着，
+                //     farmhand 端一旦没跑到（或时序错过），**房主就永远等不到这一个就绪** → 握手死锁。
+                //     📌 而 mod 的 `Update()` **一直在跑**（`/state` 就是靠它应答的）⇒ 这句正好补上缺口。
+                //   ⚠️ **边界（严守上面 1625 那条 2am 过夜死锁的教训，别越线）**：
+                //     · **只 `SetLocalReady`、绝不 `confirm`** —— 该方法幂等、只在**状态变化**时才发包，
+                //       不会触发 `NewDay`，所以碰不到"抢先过夜"那个坑；
+                //     · **只认 `festivalStart`**，`sleep` 那条路一根手指都不碰；
+                //     · **只对 farmhand**（本块已是 `!IsMainPlayer`）—— host 是真人，框正常更新。
+                if (Game1.activeClickableMenu is StardewValley.Menus.ReadyCheckDialog _frc
+                    && _frc.checkName == "festivalStart")
+                {
+                    try { Game1.netReady.SetLocalReady("festivalStart", true); } catch { }
+                }
             }
             catch (Exception ex)
             {
