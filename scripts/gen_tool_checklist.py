@@ -33,7 +33,10 @@ import _kw_doc_check as K            # noqa: E402  复用它的文档解析器�
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 OUT_PATH = os.path.join(SCRIPT_DIR, "TOOL_TEST_CHECKLIST.md")
-LOG_PATH = os.path.join(SCRIPT_DIR, "session_log.jsonl")
+# 📁 2026-09-12：`session_log.jsonl` 挪进 `scripts/sessions/`（scripts/ 根目录被 238 个
+#    `session_*.jsonl` 堆脏了）。⚠️ 存档里旧报告写的 `session_log:NNN` 行号**依然有效**——
+#    文件只是换了目录，内容没动。
+LOG_PATH = os.path.join(SCRIPT_DIR, "sessions", "session_log.jsonl")
 
 # ── 分层（**建议层**，恒可随时改；改这里比改表格靠谱，重跑就刷新）──
 # T1 = 只读/幂等：不改游戏状态，可以无脑自动扫

@@ -42,8 +42,8 @@ AI **不需要**重新学这套端点怎么用——直接调 MCP 域工具：
 | 全端点清单 / 逐文件职责 / 核心范式 | `PROJECT_PANORAMA.py`（`python PROJECT_PANORAMA.py` 打印） |
 | 怎么装怎么连 / 连不上 | `README.md` 第 4、5 节 |
 | 当前工具 & 域结构 | 本文件 + `scripts/nagi_mcp_server.py` 的 `_KEEP_TOOLS` |
-| 工具调用日志（性能/回归） | `scripts/session_log.jsonl` |
-| 聊天记录（AI 记忆） | `scripts/session_<时间戳>.jsonl`（实时）/ `.md`（导出） |
+| 工具调用日志（性能/回归） | `scripts/sessions/session_log.jsonl` |
+| 聊天记录（AI 记忆） | `scripts/sessions/session_<时间戳>.jsonl`（实时）/ `.md`（导出） |
 
 ## 关键不变量（坑 · 改了几处会"没生效"）
 
@@ -70,7 +70,7 @@ AI **不需要**重新学这套端点怎么用——直接调 MCP 域工具：
 | **改的 tools/引导不生效** | **重启 MCP 服务器**（Python 启动时 import） |
 | **改了 mod 没效果** | 确认 DLL **C+F 两处**都复制了（游戏跑哪个盘？查记忆 `game-drive-c-2026-08`） |
 | **手机 java 报错 / 404** | URL 少了 `/mcp` 或客户端用了 SSE → 补 `/mcp` + 传输改 Streamable HTTP |
-| **AI 状态条慢 / token 大** | 看 `session_log.jsonl`（工具返回字节）；`settings ops=status` 看配置/退役 |
+| **AI 状态条慢 / token 大** | 看 `scripts/sessions/session_log.jsonl`（工具返回字节）；`settings ops=status` 看配置/退役 |
 | **双开 10048 端口冲突** | 确认两个窗口用不同端口（Harmony Lidgren 补丁已修常规竞态） |
 
 > 一句话：**先定位是"游戏 mod"还是"MCP 侧"的问题**——游戏 mod 问题要重编 DLL + 重启游戏；MCP 问题改完重启 MCP 即可。**改任何东西前先查 `CHANGELOG.md`。**

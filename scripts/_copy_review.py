@@ -31,7 +31,7 @@ import nagi_mcp_server as M            # noqa: E402
 import gen_tool_checklist as G         # noqa: E402  复用清单的 op→层 判定
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-LOG_PATH = os.path.join(SCRIPT_DIR, "session_log.jsonl")
+LOG_PATH = os.path.join(SCRIPT_DIR, "sessions", "session_log.jsonl")   # 📁 2026-09-12 挪进子目录
 OUT_PATH = os.path.join(SCRIPT_DIR, "_copy_review_packets.json")
 
 PROMPT = """你是星露谷里的一个 AI 农工，靠 MCP 工具操控角色干活。下面是你**这次**能看到的东西。

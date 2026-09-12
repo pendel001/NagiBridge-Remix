@@ -105,6 +105,15 @@ _session_context = []
 _session_file = None
 _session_ts = time.strftime("%Y%m%d_%H%M%S")
 
+# 📁 2026-09-12 恒：会话相关文件全部挪进 `scripts/sessions/` —— 原来 scripts/ 根目录被
+#    238 个 `session_*.jsonl` 堆脏了。⚠️ `session_log.jsonl`（工具调用流水）与
+#    `session_<时间戳>.jsonl`（聊天/剧情档案）**不是一回事**，见 README 4.6 的辨析。
+SESSION_DIR = os.path.join(SCRIPT_DIR, "sessions")
+try:
+    os.makedirs(SESSION_DIR, exist_ok=True)   # 三个写入点（档案 jsonl/md + 调用流水）共用
+except Exception:
+    pass
+
 # 会话缓冲设置（#6 设置类超级工具可改；这里先给默认）
 SESSION_CFG = {
     # 🧠 上下文记忆轮次（2026-08-17 恒：200→50）。只限内存 _session_context（FIFO 丢旧），
@@ -160,7 +169,7 @@ def _session_append(speaker, content, location=None, event_id=None):
     try:
         global _session_file
         if _session_file is None:
-            _session_file = os.path.join(SCRIPT_DIR, f"session_{_session_ts}.jsonl")
+            _session_file = os.path.join(SESSION_DIR, f"session_{_session_ts}.jsonl")
         with open(_session_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except Exception:
@@ -173,7 +182,7 @@ def _session_export():
         if not _session_context:
             return
         if SESSION_CFG["export_format"] in ("markdown", "both"):
-            md = os.path.join(SCRIPT_DIR, f"session_{_session_ts}.md")
+            md = os.path.join(SESSION_DIR, f"session_{_session_ts}.md")
             with open(md, "w", encoding="utf-8") as f:
                 f.write("# 会话记录\n\n")
                 for rec in _session_context:
@@ -346,7 +355,8 @@ mcp.tool = _gated_tool
 #       ③ **全工具测试的唯一 transcript**——2026-09-11 恒：原来只记 bytes，"调了哪个 op /
 #          传了什么参 / 回的是什么"全都看不见，测试没法打勾、文案好坏也没法复查。
 #          现在一次调用落一行全文，报告里每个 ✅ 都要能指到这里的某一行。
-_SESSION_LOG_PATH = os.path.join(SCRIPT_DIR, "session_log.jsonl")
+# 每次工具调用写一行到 scripts/sessions/session_log.jsonl（2026-09-12 起挪进子目录）：
+_SESSION_LOG_PATH = os.path.join(SESSION_DIR, "session_log.jsonl")
 
 
 def _result_text(result) -> str:
@@ -6133,7 +6143,7 @@ def session_status() -> str:
     看看这一局记了多少上下文，设了啥。
     """
     lines = [f"🧠 会话缓冲: {len(_session_context)} 条"]
-    lines.append(f"  📁 文件: {_session_file or f'session_{_session_ts}.jsonl'}")
+    lines.append(f"  📁 文件: sessions/{os.path.basename(_session_file) if _session_file else f'session_{_session_ts}.jsonl'}")
     lines.append(f"  ⚙️ 设置: max_turns={SESSION_CFG['max_turns']} | export={SESSION_CFG['export_format']} | auto={SESSION_CFG['auto_export']} | npc={SESSION_CFG['include_npc']}")
     if _session_context:
         lines.append("  最近 3 条:")

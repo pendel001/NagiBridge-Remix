@@ -28,7 +28,7 @@
 | `profile` | T1 自动 |  | ✅ | `session_log:625` |
 | `quest` ⇄`menu:journal` | T2 摆场 |  | ✅ | `session_log:250` |
 | `quests` ≡`quest` ⇄`menu:journal` | T2 摆场 |  | ✅ | ← 同 `menu:journal`〔open_questlog〕 |
-| `role` | T1 自动 |  | ✅ | `session_log:713` |
+| `role` | T1 自动 |  | ✅ | `session_log:721` |
 | `silo` ≡`hay` | T1 自动 |  | ✅ | `session_log:13` |
 | `status` | T1 自动 |  | ✅ | `session_log:705` |
 | `storage` | T1 自动 |  | ✅ | `session_log:623` |
@@ -423,7 +423,7 @@
 | `query` | T1 自动 | function | ✅ | `session_log:611` |
 | `unlocks` | T2 摆场 |  | ✅ | `session_log:582` |
 | `walk` | T2 摆场 | poi_name | ✅ | `session_log:651` |
-| `walk_multi` ⇄`scene:maze_walk` | T2 摆场 |  | ✅ | `session_log:720` |
+| `walk_multi` ⇄`scene:maze_walk` | T2 摆场 | location, max_seg, max_wait, waypoints | ✅ | `session_log:720` |
 | `warp_safe` | T2 摆场 |  | ✅ | `session_log:656` |
 | `反查` ≡`query` | T1 自动 |  | ✅ | ← 同 `map:query`〔map_query〕 |
 | `多段走` ≡`walk_multi` ⇄`scene:maze_walk` | T2 摆场 |  | ✅ | ← 同 `map:walk_multi`〔_maze_walk〕 |
