@@ -28,6 +28,7 @@
   - 只查**键名**，不查默认值/取值。`radius(10)` 写成 `radius(99)` 它不管。
 """
 import ast
+import hashlib
 import inspect
 import io
 import os
@@ -127,7 +128,13 @@ def _ops_of(domain: str) -> set:
 
 
 def _targets_of(domain: str) -> dict:
-    """op → 目标函数名（<非Name> 的值跳过）。settings 走模块级字典。"""
+    """op → 目标函数名。settings 走模块级字典。
+
+    ⚠️ 2026-09-12：原来只认裸 `ast.Name`，于是 `calendar_data.special_orders_available`
+       这种**属性调用**被整个跳过 ⇒ 那些 op 在清单里函数名是空的，跨域去重（⇄）也就漏了它们。
+       现在 `ast.Attribute` 也解析（用 `ast.unparse` 出全名），只有真正认不出的值才跳过。
+       判据是"**同一个后端动作**"，属性链的全名（`calendar_data.special_orders_available`）
+       比裸函数名还准 —— 它自带模块归属，不会跟别域的同名函数撞车。"""
     if domain == "settings":
         return {str(k): getattr(v, "__name__", "") for k, v in getattr(M, "_SETTINGS_DISPATCH", {}).items()}
     fn = getattr(M, domain, None)
@@ -139,8 +146,27 @@ def _targets_of(domain: str) -> dict:
     for n in ast.walk(tree):
         if isinstance(n, ast.Dict):
             for k, v in zip(n.keys, n.values):
-                if isinstance(k, ast.Constant) and isinstance(k.value, str) and isinstance(v, ast.Name):
+                if not (isinstance(k, ast.Constant) and isinstance(k.value, str)):
+                    continue
+                if isinstance(v, ast.Name):
                     out[k.value] = v.id
+                elif isinstance(v, ast.Attribute):
+                    try:
+                        out[k.value] = ast.unparse(v)   # 属性链全名，如 calendar_data.special_orders_available
+                    except Exception:
+                        pass
+                elif isinstance(v, ast.Lambda):
+                    # `"forge_help": lambda: _with_state(FORGE_GUIDE)` —— 匿名函数，没有名字可用。
+                    # ⚠️ 别拿 `ast.unparse(v)` 当身份：源码文本会**意外命中分层正则**
+                    #    （`_with_state(FORGE_GUIDE)` 里的 "forge" 撞上 T3_PAT ⇒ 一段静态攻略文本
+                    #      被误判成"有副作用"，T2→T3）。所以用**按域加盐的短哈希**当身份：
+                    #    稳定、同域同源必相同（`forge_help`/`锻造帮助` 两个 lambda 源码一样 ⇒ 合成一个）、
+                    #    且长得不像函数名 ⇒ 不会被 T1/T3 的正则捞到，回落 T2。
+                    try:
+                        h = hashlib.sha1(ast.unparse(v).encode("utf-8")).hexdigest()[:8]
+                        out[k.value] = f"_lambda_{domain}_{h}"
+                    except Exception:
+                        pass
     return out
 
 

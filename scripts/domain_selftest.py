@@ -103,6 +103,46 @@ def dom_reachable() -> set:
     return names
 
 
+def _scan_with_state_under_bg_lock():
+    """🔴 静态找「持 `_bg_lock` 时调 `_with_state`」——这类自锁死会僵住整个 MCP 服务。
+
+    ⚠️ 用 AST 而不是 grep：要判"调用点**在这个 with 块体内**"，纯文本按缩进猜会漏/会误报。
+    只认 `_with_state` 直接调用；间接调用（比如转手给别的函数再拼状态条）静态看不出来 ——
+    那种靠真机跑，别假装这个检查是完备的。
+    返回 [(函数名, with 行号, _with_state 行号)]，空列表=干净。
+    """
+    src = _fn_source(M)   # 模块源码；读不到就退化成"检查没跑"，不瞎报绿
+    if not src:
+        PROBLEMS.append("  读不到 nagi_mcp_server 源码 → 自锁死检查**没跑**（不是通过）")
+        return []
+    try:
+        tree = ast.parse(src)
+    except SyntaxError as e:
+        PROBLEMS.append(f"  自锁死检查：源码解析失败 {e}")
+        return []
+    hits, stack = [], []
+
+    class V(ast.NodeVisitor):
+        def visit_FunctionDef(self, n):
+            stack.append(n.name)
+            self.generic_visit(n)
+            stack.pop()
+
+        def visit_With(self, n):
+            locked = any(isinstance(i.context_expr, ast.Name)
+                         and i.context_expr.id == "_bg_lock" for i in n.items)
+            if locked:
+                for sub in ast.walk(n):
+                    if (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+                            and sub.func.id == "_with_state"):
+                        hits.append((stack[-1] if stack else "?", n.lineno, sub.lineno))
+            self.generic_visit(n)
+
+    V().visit(tree)
+    # 同一个 with 块里可能有多处 _with_state，按行号去重后返回
+    return sorted(set(hits))
+
+
 def main():
     registered = {t.name for t in M.mcp._tool_manager.list_tools()}
 
@@ -149,7 +189,21 @@ def main():
     if priv_stranded:
         NOTES.append(f"  下划线内部注册工具未被子域引用（容忍，仅无 AI 直调入口）: {', '.join(priv_stranded)}")
 
-    # 5. 汇总
+    # 5. 🔴 持 `_bg_lock` 时调 `_with_state` = 自锁死（2026-09-12 真机踩到）
+    #    机理：`_with_state` 要拼状态条 → 走 `_bg_activity_line()` → 那里也 `with _bg_lock:`，
+    #    而 `_threading.Lock()` **不可重入** ⇒ 同线程把自己锁死。⚠️ 死的不是这一次调用：
+    #    锁再也放不掉，之后**每个**要拼状态条的工具都排队等它 ⇒ 整个 :8000 事件循环僵住
+    #    （`GET /` 都不回、CPU 不涨 = 阻塞不是死循环），只能重启服务。
+    #    当天凶手 = `script_stop` 的三个提前返回；这个检查就是防它换个函数再长出来。
+    _dl = _scan_with_state_under_bg_lock()
+    if _dl:
+        for _fn, _wl, _cl in _dl:
+            PROBLEMS.append(f"  {_fn}() 在持 _bg_lock 时调 _with_state（L{_wl}/L{_cl}）"
+                            f" → 自锁死，会僵住整个 MCP 服务（把 _with_state 挪到出锁之后）")
+    else:
+        print("  ✅ 没有「持 _bg_lock 时调 _with_state」的自锁死")
+
+    # 6. 汇总
     print(f"  · 注册工具总数: {len(registered)}")
     print(f"  · keep-set 白名单: {len(M._KEEP_TOOLS)}（15 域 + {len(M._KEEP_TOOLS) - 15} 独立）")
 

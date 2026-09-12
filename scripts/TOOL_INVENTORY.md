@@ -174,9 +174,9 @@
 | `pickup` / `pickup_scene` | 拿起家具 / 捡当前场景可拾取物 |
 | `berry` / `spot` / `moss` | 摇浆果 / 挖斑点蚯蚓 / 绿雨搜刮苔藓 |
 | `rock` | 室外镐击（采石场/挖掘场/蚌矿场敲可破物：骨/黏土/蚌/矿点/宝石/煤/放射矿，只跳普通石；dig=false 只扫） |
-| `forge_help` | 火山锻造台附魔攻略 |
+| `forge_help` | 锻造台附魔攻略（台子：本图 Mini-Forge 优先，没有才去火山 Caldera） |
 | `drop` / `furniture` | 丢背包物品 / 扫家具 |
-| `pan`(:dry_run,radius=3,timeout=20) / `maze` / `maze_seg` / `maze_walk` | 淘金 / 迷宫视图 / 走法链 / 走迷宫 |
+| `pan`(:dry_run,radius=3,timeout=20) / `maze` / `maze_seg` / `maze_walk` | 淘金 / 迷宫视图 / 走法链 / 走迷宫（⚠️通用多段走位,主门牌= `map walk_multi`/`闲逛`）|
 
 **📐 `scene` 参数速查**
 
@@ -198,7 +198,7 @@
 | `place` | `name`,`x`,`y` | |
 | `break` | `x`,`y`（必填）`steps`(1) `radius`(0) | `radius>0`=方圆若干格 |
 | `maze` / `maze_seg` | `radius`(14/15) `gx` `gy` | 迷宫视图 / 走法链 |
-| `maze_walk` | `waypoints`（"x,y x,y …"）`location`(None) `max_wait`(18) `max_seg`(200) | |
+| `maze_walk` | `waypoints`（"x,y x,y …"）`location`(None) `max_wait`(18) `max_seg`(200) | ⚠️ **它其实是通用多段走位**，主门牌 2026-09-12 已挪到 **`map walk_multi`/`闲逛`**；此处保留旧名为兼容 |
 
 > ⚠️ **`at` 和 `pickup` 的参数名是 `tile_x`/`tile_y`**，其余走位类多是 `x`/`y` —— 这是本项目最容易写错、且**错了不报错只是没反应**的地方。
 
@@ -286,9 +286,9 @@
 
 | op | 参数（括号内=默认） | 说明 |
 |---|---|---|
-| `view` | `box`(-1) | 看箱子；`box=N` 看第 N 个箱子的全清单 |
+| `view` | `box`(-1) | 看箱子；`box=N` 看第 N 个箱子的全清单；`box` 也吃箱子名/色名/`#hex`/`"x,y"`（同 `store` 的 `target`，如 `"内置冰箱"`）|
 | `store` | `what`("") `items`("") `target`("") `keepTools`(True) `all`(False) | `what`/`items` = 限定只存哪些（名字可带 `xN` 只存那 N 份）；**留空 = 归位**（只把已有同类堆叠回去）；`target` = 指定箱（中文色名/`#hex`/箱子名/标记名/`"x,y"`）；`all=True` 全存腾空间 |
-| `take` | `items`("") `x`(-1) `y`(-1) `name`("") `count`(999) | 单箱取 = `x`,`y` + `name`；批量取 = `items` |
+| `take` | `items`("") `x`(-1) `y`(-1) `name`("") `count`(999) | 单箱取 = `x`,`y` + `name`；批量取 = `items`（`count` **两条路都认**；项内自带 `×N` 优先）。`count=999`(默认) = 不限 |
 | `find` | `name`("") | 模糊查哪个箱里有某物 |
 | `default` | `x`(-1) `y`(-1) `clear`(False) | 设默认箱；`clear=True` 清掉 |
 | `tag` | `tag`("") **`target`（必填）** `color`("") | 名字变「本名(标记)」；`tag` 留空 = 只清标记留本名；`color` = `#RRGGBB` 或色名 |
@@ -317,15 +317,15 @@
 > ⚠️ 饰品需**战斗精通**，未解锁会被权威拦截（报"未解锁战斗精通"）。
 
 ### `map(ops)` — 导航 **跨图唯一走这个**
-`lookup`(查地点功能+出口) `query`(功能反查) `go`(走到目标,自动多段寻路/交通) `walk`(走到指定POI) `movetile`(同图精确走位) `npc`(找NPC) `warp_safe`(紧急逃脱)
+`lookup`(查地点功能+出口) `query`(功能反查) `go`(走到目标,自动多段寻路/交通) `walk`(走到指定POI **或给x,y走同图坐标**) `walk_multi`(多段走位,=**闲逛**) `npc`(找NPC) `warp_safe`(紧急逃脱)
 
 **📐 `map` 参数速查**
 
 | op | 参数 | 说明 |
 |---|---|---|
 | `go` | `destination`(地点名/POI) `npc`(NPC名) | **跨场景切换的唯一入口**（走出口瓦片/门/买票的真实路径，**不瞬移**）。`destination` 与 `npc` 二选一 |
-| `walk` | `poi_name`(POI 名) | 走到 POI，**到点自动应用结构化站位+朝向**（如水池朝右、柜台朝上），交互仍要 AI 自己 `scene at/interact` |
-| `movetile` | `x`,`y`（必填） | **只走同图、不跨场景**（矿井楼层/精确站位用）。跨图请用 `go` |
+| `walk` | `poi_name`(POI 名) **或** `x`,`y`(同图坐标) | **二选一，两个都不给=报错**。给 POI 会**到点自动应用结构化站位+朝向**（如水池朝右、柜台朝上），交互仍要 AI 自己 `scene at/interact`；给坐标=同图精确走位（**只走同图**，跨图用 `go`）。⚠️ 底座都是 `/walk_to`（2026-09-11 起 `movetile` 退役并入这里的坐标模式） |
+| `walk_multi` | `waypoints`("x,y x,y …") `location`(None) `max_wait`(18) `max_seg`(200) | **多段走位**：喂一串坐标依次走，每段等到了再走下一段。别名 **`闲逛`**/`多段走`。🎪 正事=万灵节迷宫按段走；🫧 **活人感**=闲逛遛弯 / 绕着某人转圈示好 / 浴场泳池绕圈游。⚠️每段必须**精确落到目标格**才算到达；落在相邻格会标 🟡（目标格不可站时 walk_to 会退到最近可走格，**兜底 ≠ 到达**）。旧名 `festival`/`scene` 的 `maze_walk`/`走迷宫` 仍可用 |
 | `npc` | `name`（必填） | 找 NPC（跨图）|
 | `lookup` | `location`（必填） | 查某地点的功能+出口 |
 | `query` | `function`（必填） | 功能反查（"哪里能买到 X"）|
@@ -335,7 +335,7 @@
 > ⚠️ 参数**必须放 `kw` 对象**，别拼进 ops 串里。
 
 ### `festival(ops)` — 节日
-`today` `next` `go` `info` `interact` `answer` `shop` `eggs`(找蛋) `egg_note`(纸条) `egg_run`(捡蛋) `dance`(跳舞邀请) `help`(玩法) `prep`(备战) `poi`(限定点) `strength`(力量测试) `ice_fish`(冰雪节冰钓) `maze`(迷宫坐标) `maze_walk`(走迷宫) `display_fill`/`display_takeback`(农展台放满/收好)
+`today` `next` `go` `info` `interact` `answer` `shop` `eggs`(找蛋) `egg_note`(纸条) `egg_run`(捡蛋) `dance`(跳舞邀请) `help`(玩法) `prep`(备战) `poi`(限定点) `strength`(力量测试) `ice_fish`(冰雪节冰钓) `maze`(迷宫坐标) `maze_walk`(走迷宫;⚠️通用多段走位主门牌=`map walk_multi`/`闲逛`,此处旧名兼容) `display_fill`/`display_takeback`(农展台放满/收好)
 
 **📐 `festival` 参数速查**
 
@@ -346,7 +346,7 @@
 | `egg_run` / `egg_note` | `route`("") | 复活节捡蛋 / 记纸条路线 |
 | `dance` | `target`("") | 花舞节邀请跳舞（不传=默认对象）|
 | `strength` | `delay`(400) | 力量测试，`delay` = **毫秒** |
-| `maze_walk` | `waypoints`("") `location`(None) `max_wait`(18) `max_seg`(200) | 走迷宫（waypoints = "x,y x,y …"）|
+| `maze_walk` | `waypoints`("") `location`(None) `max_wait`(18) `max_seg`(200) | 走迷宫（waypoints = "x,y x,y …"）。⚠️ **通用多段走位的主门牌 2026-09-12 已挪到 `map walk_multi`/`闲逛`**，此处保留旧名兼容 |
 | `display_fill` | `items`("") | 农展台放满 |
 
 > 其余（`today`/`next`/`go`/`info`/`shop`/`eggs`/`help`/`prep`/`poi`/`maze`/`ice_fish`）**无参**。
@@ -447,7 +447,7 @@
 | 旧独立工具 | 现在这样调 |
 |---|---|
 | `check_status` / `check_backpack` / `look_around` / `silo_status` / `mastery_status` / `building_list` / `machine_report` | `check(what="status"/"backpack"/"look"/…)` |
-| `walk_to` / `go_to` / `move_to_tile` / `find_npc` | `map(ops="walk")` / `map(ops="go")` / `map(ops="movetile")` / `map(ops="npc")` |
+| `walk_to` / `go_to` / `find_npc` | `map(ops="walk")` / `map(ops="go")` / `map(ops="npc")` |
 | `interact_at` / `interact` / `use_tool` / `face` / `select_item` | `scene(ops="at")` / `scene(ops="interact")` / `scene(ops="use")` / `scene(ops="face")` / `scene(ops="select")` |
 | `read_menu` / `menu_click` / `press_key` / `advance_story` / `cancel` / `shop_visit` / `sell_to_shop` / `forge` / `process_geode` | `menu(ops="read"/"click"/"key"/"advance"/"cancel"/"shop"/"sell"/"forge"/"geode")` |
 | `which_role`（确认端口↔角色）| `check(what="role")`（🆕09-11 从顶层收编）|

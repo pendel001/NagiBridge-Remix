@@ -43,3 +43,10 @@ quests_test.json
 # 临时广播去重标记
 scripts/.fresh_pack_broadcast
 .newbie_hint_*
+
+# ── 测试脚手架跑出来的临时数据（2026-09-12）──
+#   `_stage.py`/`_wedge_hunt.py`/`_crab_diag_probe.py` 那些是**工具**，要提交；
+#   这几个 `_*.json` 是**跑出来的数据**（批次调用清单、文案审查包），随时可重跑，别进库。
+scripts/_batch_calls.json
+scripts/_batch_c_calls.json
+scripts/_copy_review_packets.json

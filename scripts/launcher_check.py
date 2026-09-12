@@ -38,10 +38,21 @@ def _ok(msg): return (True, msg)
 def _no(msg):  return (False, msg)
 
 
-def _wrap(*args):
-    """subprocess 跑命令, 返回 (returncode, stdout, stderr)。"""
+def _wrap(*args, encoding=None):
+    """subprocess 跑命令, 返回 (returncode, stdout, stderr)。
+
+    ⚠️ `encoding` **只给 python 子进程传 "utf-8"**，别一刀切（2026-09-12 恒拍板）：
+    - python 子进程（`pip`）继承启动器 .bat 的 `PYTHONIOENCODING=utf-8`，**吐 UTF-8**；
+      而 `text=True` 默认按**本地编码(GBK)** 解 —— 解不动时 `subprocess` 的**读取线程直接死掉**，
+      `r.stdout/stderr` 变成 **None**（**不抛异常、returncode 照样有效**，静默得离谱）。
+      给 pip 补上 encoding 后，失败时才能看到 pip 的报错原文。
+    - `ipconfig`/`netsh` 是**原生程序**，吐的是 **GBK**，`text=True` 默认解**正好对** ——
+      强上 utf-8 反而把它们搞成乱码，所以那几处**不传**。
+    注：`r.stdout or ""` 已经兜住了 None，所以调用方不会炸；最坏只是"输出是空的"。
+    """
     try:
-        r = subprocess.run(args, capture_output=True, text=True, timeout=60)
+        extra = {"encoding": encoding, "errors": "replace"} if encoding else {}
+        r = subprocess.run(args, capture_output=True, text=True, timeout=60, **extra)
         return r.returncode, r.stdout or "", r.stderr or ""
     except Exception as e:
         return -1, "", str(e)
@@ -77,7 +88,7 @@ def check_pip_pkgs():
         return _ok(msg)
     to_install = " ".join(missing)
     print(f"  缺依赖库: {missing} → 自动 pip 安装…")
-    code, out, err = _wrap(sys.executable, "-m", "pip", "install", "-U", *missing)
+    code, out, err = _wrap(sys.executable, "-m", "pip", "install", "-U", *missing, encoding="utf-8")
     if code == 0:
         return _ok(f"已装 {', '.join(missing)} ✓")
     return _no(f"pip 装 {missing} 失败:\n{err}\n请手动: pip install -U {' '.join(missing)}")
