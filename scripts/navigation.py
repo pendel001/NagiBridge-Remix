@@ -1498,11 +1498,23 @@ def _volcano_gate() -> str:
 # ═══════════════════════════════════════════
 # 农场图腾柱是动态建筑（/farm_buildings 实时定位，type/x/y/width/height）。
 # 类型 → 落点地图；岛柱落 IslandSouth 枢纽，全岛+火山由 map_go BFS 续走。
+#
+# 🎯 2026-09-12 恒：「7843 现在站到的这个点应该就是水之图腾柱交互后的到达点」—— **对**，
+#    而且四个落点游戏代码里全写着（**不用凭空猜**）：
+#    `Building.TryPerformObeliskWarp`（StardewValley.Buildings/Building.cs:1011）：
+#      "Desert Obelisk" → PerformObeliskWarp("Desert",      35, 43)
+#      "Water Obelisk"  → PerformObeliskWarp("Beach",       20,  4)  ← 轮回当时正站 Beach(20,4)，现场对上
+#      "Earth Obelisk"  → PerformObeliskWarp("Mountain",    31, 20)
+#      "Island Obelisk" → PerformObeliskWarp("IslandSouth", 11, 11)
+#    ⚠️ 落点**写死在游戏里**（跟柱子摆哪无关）⇒ 可以当常量用，**不必等柱子盖起来才能验**
+#      —— 这正是恒那句"7843 站在落点上"的价值：它的来源是游戏代码，现场只是**对上了**。
+#    用途：①路线日志写明"落在哪"（落点非 dest 时人/AI 一眼知道还要走多远）
+#          ②以后要判"坐柱值不值"（落点→目的地 距离 vs 纯走）就靠它。
 OBELISK_TARGETS = {
-    "Earth Obelisk":  {"dest": "Mountain",    "label": "山岭图腾柱(→山)"},
-    "Water Obelisk":  {"dest": "Beach",       "label": "海滩图腾柱(→海滩)"},
-    "Desert Obelisk": {"dest": "Desert",      "label": "沙漠图腾柱(→沙漠)"},
-    "Island Obelisk": {"dest": "IslandSouth", "label": "姜岛图腾柱(→岛)"},
+    "Earth Obelisk":  {"dest": "Mountain",    "label": "山岭图腾柱(→山)", "land": (31, 20)},
+    "Water Obelisk":  {"dest": "Beach",       "label": "海滩图腾柱(→海滩)", "land": (20, 4)},
+    "Desert Obelisk": {"dest": "Desert",      "label": "沙漠图腾柱(→沙漠)", "land": (35, 43)},
+    "Island Obelisk": {"dest": "IslandSouth", "label": "姜岛图腾柱(→岛)", "land": (11, 11)},
 }
 
 
@@ -1645,6 +1657,22 @@ def _obelisk_go(building, landing: str, label: str) -> tuple:
                 pass
         cur = api.state().get("location", {}).get("name", "") or landing
         ok = cur != "Farm"
+        # 🎯 落点自检（2026-09-12 恒给的锚点）：落点是**写死在游戏里**的（Building.cs:1011），
+        #    真落点对不上 ⇒ 要么游戏改了、要么这一跳根本不是那根柱子 —— 这种"悄悄不对"得自己冒出来，
+        #    别等人踩到才发现。差 >3 格才提（落点附近可能有碰撞微调/被顶开一格，别刷噪音）。
+        try:
+            exp = next((v["land"] for v in OBELISK_TARGETS.values()
+                        if v["dest"] == cur and v.get("land")), None)
+            if ok and exp:
+                p = api.state().get("player", {})
+                ax, ay = p.get("x"), p.get("y")
+                if isinstance(ax, int) and isinstance(ay, int):
+                    if abs(ax - exp[0]) + abs(ay - exp[1]) > 3:
+                        return ok, (f"🗼 {label} → {cur}（⚠️ 落在 ({ax},{ay})，游戏里写的落点是 {exp}"
+                                    f"——差得有点远，是游戏改了、还是走的不是这根？）")
+                    return ok, f"🗼 {label} → {cur} ({ax},{ay})"
+        except Exception:
+            pass
         return ok, f"🗼 {label} → {cur}"
     except Exception as e:
         return False, f"🗼 {label} 失败({e})"

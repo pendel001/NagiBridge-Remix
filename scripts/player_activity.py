@@ -314,10 +314,12 @@ def _check_poi_nearby(loc_name: str, px: int, py: int) -> list:
         return []
 
 
-def _describe_menu(active_menu: dict, name: str, loc_lower: str, is_moving: bool) -> str | None:
+def _describe_menu(active_menu: dict, name: str, loc_lower: str, is_moving: bool,
+                   in_bed: bool = False) -> str | None:
     """根据打开的菜单类型推断玩家在干嘛（"开了窗口"分支）。
 
     返回 None 表示不拦截（让后续判定继续，比如要带商店名的购物）。
+    `in_bed` 只用于把 ReadyCheckDialog 区分类别（见下面 readych 那支）。
     """
     mtype = (active_menu.get("type") or "").lower()
     if not mtype:
@@ -353,7 +355,13 @@ def _describe_menu(active_menu: dict, name: str, loc_lower: str, is_moving: bool
     if "shippingmenu" in mtype:
         return f"💰 **{name}** 正在结算今日的收获"
     if "readych" in mtype:
-        return f"💤 **{name}** 准备睡觉了"
+        # ⚠️ 2026-09-12 修：ReadyCheckDialog **不只有睡觉**（节日参加 `festivalStart`、其它"等所有人"
+        #    确认框都走它）——原先一律叫"准备睡觉"，真机把恒开着的**节日参加确认框**播成了
+        #    「💤 恒 准备睡觉了」，害 AI 以为该睡了。**分判据 = 人在不在床上**（`/state` 有 isInBed，
+        #    见 ModEntry.cs:4211）；不在床上就别说是睡觉。
+        if in_bed:
+            return f"💤 **{name}** 准备睡觉了"
+        return f"🙋 **{name}** 开着确认框（等人齐/等确认，不是睡觉）"
     if "forgemenu" in mtype:
         return f"🔨 **{name}** 正在锻造武器"
     if "questlog" in mtype:
@@ -449,7 +457,8 @@ def describe_activity(state_data: dict) -> str:
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     if menu_open:
-        msg = _describe_menu(active_menu, name, loc_lower, is_moving)
+        msg = _describe_menu(active_menu, name, loc_lower, is_moving,
+                             in_bed=bool(p.get("isInBed")))
         if msg:
             return msg
 

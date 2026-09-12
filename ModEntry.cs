@@ -2519,6 +2519,7 @@ public class ModEntry : Mod
                 "/mine_debug" => HandleMineDebug(),
                 "/mine/elevator" => HandleMineElevator(),   // 🪜 读鹈鹕镇矿井电梯当前可达楼层（动态起始层，2026-08-22）
                 "/festival" => HandleFestival(),
+                "/event_state" => HandleEventState(),   // 🎬 事件状态机（2026-09-12）：对话/演出/静默/卡住，便宜可轮询
                 "/festival_data" => HandleFestivalData(ctx),   // 📜 节日事件数据转储（反编译蛋蛋位置等，2026-08-17）
                 "/egg_tiles" => HandleEggTiles(ctx),           // 🥚 扫地图 Paths 图层 fest* 图块 = 蛋蛋坐标（2026-08-17）
                 "/festival/interact" => HandleFestivalInteract(ctx),
@@ -4282,6 +4283,18 @@ public class ModEntry : Mod
                 4 => "Wilderness(荒野)", 5 => "FourCorners(四角)", 6 => "Beach(沙滩)", 7 => "Meadowlands(草地)",
                 _ => $"Unknown({Game1.whichFarm})"
             },
+            // ⚔️ 2026-09-12 恒："农场有怪这个，我们应该可以检测荒野农场了。女巫雕像不知道能不能检测，
+            //    也能的话那触发条件会更加明确了（荒野农场或打开黑暗屏障）" ⇒ **两个都能**，而且是同一个开关。
+            //    反编译实锤 `Game1.spawnMonstersAtNight`（Game1.cs:1394）背后是 **`player.team.spawnMonstersAtNight`**
+            //    —— `FarmerTeam` 上的 **NetBool**（FarmerTeam.cs:218，:283 注册进 NetFields ⇒ **联网同步**，
+            //    farmhand 进程也读得到，不是那种"没进过图同步不到"的地图局部字段）。
+            //    两个来源：①荒野农场（建号 SpawnMonstersByDefault）②女巫小屋黑暗神龛
+            //    —— `GameLocation.cs:12139` evilShrineLeftActivate_Yes → true；`:12174` 右侧神龛 → false。
+            //    游戏真正刷怪的判据（Farm.cs:722）：
+            //      spawnMonstersAtNight && 无 farmEvent && timeOfDay >= 1900 && random < 0.25 − 平均幸运/2
+            //    ⇒ 消费侧（`_build_state_strip` 的 ⚔️ 掉血警告）据此把"农场+掉血 ⇒ **猜**有怪"改成**实锤**，
+            //      恒担心的"养史莱姆吓哭 AI"这类误报自然消失（史莱姆不刷怪、此 flag 为 false）。
+            farmMonsters = Game1.spawnMonstersAtNight,
             activeMenu = menuInfo,
             activeEvent = eventInfo,
             in_dialogue = Game1.activeClickableMenu is StardewValley.Menus.DialogueBox,
@@ -5289,10 +5302,19 @@ public class ModEntry : Mod
 
                 string? objName = null;
                 string? objId = null;
+                // 🌿 2026-09-12 恒拍板：「拾取白名单可以考虑加所有可拾取物品了」——**不加名单，直接问游戏**。
+                //    `Object.isForage()`（反编译 Object.cs:2806）就是官方的"能不能手捡"判据：
+                //    `Category ∈ {-79,-81,-80,-75,-23}` 或带 tag `forage_item`，**外加硬编码 `(O)430`=松露**
+                //    （游戏自己给松露开的特例 —— 跟 mod 当年被迫给它加名单是同一个形态，所以方向就是错的）。
+                //    覆盖野菜/浆果/水果/贝壳/海胆/珊瑚/松露全类，一份判据顶一张永远补不全的名单。
+                //    ⚠️ 只给**事实**（游戏怎么判），**不给策略**（捡不捡由 Python 的黑名单/规则定）——
+                //    同 09-11「判据别放消费侧猜」那条。消费侧：`if passable or forage`。
+                bool objForage = false;
                 if (loc.objects.TryGetValue(tileVec, out var obj))
                 {
                     objName = SafeObjectName(obj);
                     objId = obj.QualifiedItemId ?? obj.itemId?.Value;
+                    try { objForage = obj.isForage(); } catch { }   // 认不出就不报（别瞎猜 true）
                 }
 
                 string? terrainName = null;
@@ -5383,6 +5405,7 @@ public class ModEntry : Mod
                     if (diggable) tile["diggable"] = true;
                     if (objName != null) tile["object"] = objName;
                     if (objId != null) tile["objId"] = objId;
+                    if (objForage) tile["forage"] = true;   // 🌿 游戏判的"可手捡"（见上面 objForage 注释）
                     if (tileTerrain != null) tile["terrain"] = tileTerrain;
                     if (bushInBloom) tile["bushBloom"] = true;   // 🍓 灌木在花期=可摇树莓/黑莓
                     if (largeTerrainName != null && largeTerrainName != "Bush")
@@ -8666,6 +8689,20 @@ public class ModEntry : Mod
                 var tileOf = new Dictionary<StardewValley.Objects.Chest, Vector2>();
                 var labelOf = new Dictionary<StardewValley.Objects.Chest, string>();
                 foreach (var (c, t, lb) in chests) { tileOf[c] = t; labelOf[c] = lb; }
+
+                // 🆕 2026-09-12 恒：**显式点了坐标**才把迷你出货箱加进候选（见 FindMiniShippingBinAt 注释）。
+                //    归位/智能模式**绝不**加 —— 那等于把东西偷偷卖了。海滩上放一个就是为了就地清包，
+                //    以前 `chests.Count == 0` 会直接回"当前场景没有箱子"，连试都没得试。
+                if (targetMode && targetX >= 0 && targetY >= 0)
+                {
+                    var mini = FindMiniShippingBinAt(loc, targetX, targetY);
+                    if (mini != null)
+                    {
+                        chests.Add((mini, new Vector2(targetX, targetY), "迷你出货箱"));
+                        tileOf[mini] = new Vector2(targetX, targetY);
+                        labelOf[mini] = "迷你出货箱";
+                    }
+                }
 
                 // 显示名：已标记用 Name，内置冰箱用 label，其余用 ChestName
                 string DisplayName(StardewValley.Objects.Chest c) =>
@@ -13966,6 +14003,30 @@ public class ModEntry : Mod
         return true;
     }
 
+    /// <summary>🆕 2026-09-12 恒：「我在这里放有一个 mini 出货箱能看到吗。可能没有做农场出货箱之外的逻辑」
+    /// —— 确实没做，而且比"没做"更具体：`IsStorageChest` **显式排除** MiniShippingBin（上面那行），
+    /// 那是**对的**（`storage store` 的"智能归位"要是把东西归进出货箱 = **偷偷把它卖了**）。
+    /// 所以这里只给"**你显式点了坐标**"的那条路开一个口子，归位/智能模式照旧排除。
+    /// 机制（反编译实锤，不需要另写逻辑）：
+    ///   · 它本体就是个 `Chest`（`(BC)248` → `SpecialChestType.MiniShippingBin`，Chest.cs:555）
+    ///   · 容量 `GetActualCapacity()==9`（Chest.cs:895）—— 而我们的 `Free()` 正是用它（ModEntry.cs 的 store 段）
+    ///   · 写入走 `Chest.addItem()`，天然尊重容量
+    ///   · 当夜由**房主进程**遍历**所有地图**结算（Game1.cs:7981 `IsMasterGame` → ForEachLocation → clearNulls）
+    ///     ⇒ 海滩上这个也照样出货，不用把人赶回农场。</summary>
+    private static Chest? FindMiniShippingBinAt(GameLocation loc, int x, int y)
+    {
+        try
+        {
+            if (loc.objects.TryGetValue(new Vector2(x, y), out var o) && o is Chest c)
+            {
+                var prop = typeof(Chest).GetProperty("SpecialChestType");
+                if (prop?.GetValue(c)?.ToString() == "MiniShippingBin") return c;
+            }
+        }
+        catch { }
+        return null;
+    }
+
     /// <summary>收集当前场景的存储箱（宝箱/大箱子/石箱 + FarmHouse/Cabin 内置冰箱）。
     /// 返回 (箱, 瓦片, 显示名)：显示名 label 给内置冰箱合成"内置冰箱"（不改存档，供名字匹配/报告）。
     /// 内置冰箱是 FarmHouse.fridge 字段（Cabin : FarmHouse），不在 loc.objects，单独补上。</summary>
@@ -17728,6 +17789,76 @@ public class ModEntry : Mod
                     festivalTimer,     // 🥚 限时小游戏倒计时(ms)，>0=进行中（2026-08-17）
                     festivalScore,     // 🥚 当前玩家 festivalScore（捡蛋数）
                     actors
+                });
+            }
+            catch (Exception ex)
+            {
+                tcs.SetResult(new { ok = false, error = ex.Message });
+            }
+        });
+        return tcs.Task.GetAwaiter().GetResult();
+    }
+
+    /// <summary>🎬 事件状态机（2026-09-12 恒）—— 一次**便宜**读取，给 Python 侧判「对话 / 演出 / 静默动画 / 卡住」。
+    /// 只读 Game1 与 currentEvent 上的简单字段（**不枚举 NPC/背包**，所以可以低频轮询；
+    /// `/festival` 会遍历全部 actor，别拿它当轮询源）。
+    /// 判据（反编译实锤，Event.cs:3781/3788/3810/3914/3949）：
+    ///   · 有对话框                → 点 confirm（有 responseCount&gt;0 = 选项，必须停下让 AI 选）
+    ///   · 无对话 + skippable=true → 演出段（花舞/水母那种"看表演"），可 skip 跳过
+    ///   · 无对话 + 无跳过键 + currentCommand 在动 → **静默动画**（走路/表演），等着就行，别瞎按
+    ///   · 同条件但指针不动超阈值  → 卡住：按一次 confirm，再不动就该**出声报错**，别盲按 Escape
+    /// GET /event_state
+    /// </summary>
+    private object HandleEventState()
+    {
+        if (!Context.IsWorldReady)
+            throw new InvalidOperationException("World not ready");
+
+        var tcs = new TaskCompletionSource<object>();
+        EnqueueMainThread(() =>
+        {
+            try
+            {
+                var ev = Game1.currentLocation?.currentEvent;
+                var db = Game1.activeClickableMenu as StardewValley.Menus.DialogueBox;
+
+                string? msg = null;
+                if (db != null)
+                {
+                    try { msg = db.getCurrentString(); } catch { }
+                }
+
+                // 选项数（>0 = 该停下让 AI 选，别拿 confirm 点掉；同 /menu 的反射读法）
+                int respCount = 0;
+                try
+                {
+                    var rf = typeof(StardewValley.Menus.DialogueBox).GetField("responses",
+                        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic |
+                        System.Reflection.BindingFlags.Instance);
+                    if (rf?.GetValue(db!) is IEnumerable<Response> rs)
+                        respCount = rs.Count();
+                }
+                catch { }
+
+                tcs.SetResult(new
+                {
+                    ok = true,
+                    season = Game1.currentSeason,
+                    day = Game1.dayOfMonth,
+                    timeOfDay = Game1.timeOfDay,
+                    location = Game1.currentLocation?.Name,
+                    uniqueName = Game1.currentLocation?.NameOrUniqueName,
+                    eventUp = Game1.eventUp,
+                    eventId = ev?.id,                       // null = 没事件在播
+                    isFestival = ev?.isFestival ?? false,
+                    skippable = ev?.skippable ?? false,     // 跳过键（游戏按这个画，Event.cs:11438）
+                    currentCommand = ev?.CurrentCommand ?? -1,
+                    commandCount = ev?.eventCommands?.Length ?? -1,
+                    playerControlSequence = ev?.playerControlSequence ?? false,   // 玩家接管段（自由走动）
+                    festivalTimer = ev?.festivalTimer ?? -1,                      // >0 = 限时小游戏进行中
+                    hasDialogue = db != null,
+                    responseCount = respCount,
+                    message = msg
                 });
             }
             catch (Exception ex)

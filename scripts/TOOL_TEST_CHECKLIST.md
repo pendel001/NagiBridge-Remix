@@ -1,6 +1,6 @@
 # 🧪 全工具测试清单（2026-09-11 生成）
 
-> **505 行 = 190 个后端函数**（抄自各域 dispatch，非文档）｜✅ 299 行 / **113 函数** ｜❌ 0 ｜⏭ 没条件测 30 行 / 8 函数｜**待测 69 函数**｜T1 自动 100 ｜T2 摆场 203 ｜T3 副作用 161 ｜⏭ 当期不可用 41
+> **505 行 = 190 个后端函数**（抄自各域 dispatch，非文档）｜✅ 306 行 / **118 函数** ｜❌ 0 ｜⏭ 没条件测 28 行 / 8 函数｜**待测 64 函数**｜T1 自动 100 ｜T2 摆场 203 ｜T3 副作用 161 ｜⏭ 当期不可用 41
 
 > 用法：跑测试（任何渠道，只要走 :8000 的 MCP）→ `python gen_tool_checklist.py --from-log` 自动打勾。
 > 判定规则见脚本头部；**⚠️ op「」= 参数被静默丢掉，算 ❌ 不算 ✅**。
@@ -12,7 +12,7 @@
 
 | op | 层 | 参数 | 判定 | 证据 |
 |---|---|---|---|---|
-| `backpack` | T1 自动 |  | ✅ | `session_log:541` |
+| `backpack` | T1 自动 |  | ✅ | `session_log:762` |
 | `building` | T1 自动 |  | ✅ | `session_log:455` |
 | `building_list` ≡`building` | T1 自动 |  | ✅ | ← 同 `check:building`〔building_list〕 |
 | `buildings` ≡`building` | T1 自动 |  | ✅ | `session_log:15` |
@@ -25,12 +25,12 @@
 | `mastery` | T1 自动 |  | ✅ | `session_log:626` |
 | `mine` ⇄`mine:progress` | T1 自动 |  | ✅ | `session_log:461` |
 | `mining` ≡`mine` ⇄`mine:progress` | T1 自动 |  | ✅ | ← 同 `mine:progress`〔check_mine_progress〕 |
-| `profile` | T1 自动 |  | ✅ | `session_log:625` |
+| `profile` | T1 自动 |  | ✅ | `session_log:751` |
 | `quest` ⇄`menu:journal` | T2 摆场 |  | ✅ | `session_log:250` |
 | `quests` ≡`quest` ⇄`menu:journal` | T2 摆场 |  | ✅ | ← 同 `menu:journal`〔open_questlog〕 |
-| `role` | T1 自动 |  | ✅ | `session_log:721` |
+| `role` | T1 自动 |  | ✅ | `session_log:723` |
 | `silo` ≡`hay` | T1 自动 |  | ✅ | `session_log:13` |
-| `status` | T1 自动 |  | ✅ | `session_log:705` |
+| `status` | T1 自动 |  | ✅ | `session_log:725` |
 | `storage` | T1 自动 |  | ✅ | `session_log:623` |
 | `worn` | T1 自动 |  | ✅ | `session_log:466` |
 | `任务` ≡`quest` ⇄`menu:journal` | T2 摆场 |  | ✅ | ← 同 `menu:journal`〔open_questlog〕 |
@@ -282,12 +282,12 @@
 
 | op | 层 | 参数 | 判定 | 证据 |
 |---|---|---|---|---|
-| `advance` | T2 摆场 |  | ⏭ 没条件测 | `session_log:544` 要一段正在播的剧情/对话（跟 NPC 说话 / 进事件） |
+| `advance` | T2 摆场 |  | ✅ | `session_log:761` |
 | `bin` | T3 副作用 | sell_all | ✅ | `session_log:657` |
 | `bundle` | T1 自动 | area | ✅ | `session_log:602` |
 | `bundle_kb` | T1 自动 | query | ✅ | `session_log:603` |
 | `cancel` | T2 摆场 |  | ✅ | `session_log:707` |
-| `click` | T3 副作用 | action, button, category, option, quantity, real, right, slot | ✅ | `session_log:685` |
+| `click` | T3 副作用 | action, button, category, option, quantity, real, right, slot | ✅ | `session_log:771` |
 | `craft` | T3 副作用 | item_name | ✅ | `session_log:548` |
 | `craftables` | T1 自动 |  | ✅ | `session_log:606` |
 | `customize` ⇄`settings:customize` | T3 副作用 | farmname, favorite | ✅ | ← 同 `settings:customize`〔character_customize〕 |
@@ -304,7 +304,7 @@
 | `minigame` | T2 摆场 | action |  |  |
 | `minigame_state` | T2 摆场 |  | ⏭ 没条件测 | `session_log:545` 要赌场小游戏（CalicoJack/Slots，得先进沙漠赌场） |
 | `number` | T2 摆场 | confirm | ⏭ 没条件测 | `session_log:546` 要弹着数量框（节庆兑换台 / 转盘押注） |
-| `read` | T2 摆场 |  | ✅ | `session_log:697` |
+| `read` | T2 摆场 |  | ✅ | `session_log:763` |
 | `read_book` | T3 副作用 |  | ✅ | `session_log:549` |
 | `recipes` | T1 自动 |  | ✅ | `session_log:605` |
 | `sell` | T3 副作用 |  |  |  |
@@ -313,7 +313,7 @@
 | `关` ≡`cancel` | T2 摆场 |  | ✅ | ← 同 `menu:cancel`〔cancel〕 |
 | `出货` ≡`bin` | T3 副作用 |  | ✅ | ← 同 `menu:bin`〔sell_to_bin〕 |
 | `分支` ≡`levelup_choose` | T3 副作用 |  |  |  |
-| `剧情` ≡`advance` | T2 摆场 |  | ⏭ 没条件测 | ← 同 `menu:advance`〔advance_story〕 |
+| `剧情` ≡`advance` | T2 摆场 |  | ✅ | ← 同 `menu:advance`〔advance_story〕 |
 | `卖` ≡`sell` | T3 副作用 |  |  |  |
 | `取消` ≡`cancel` | T2 摆场 |  | ✅ | ← 同 `menu:cancel`〔cancel〕 |
 | `合成` ≡`craft` | T3 副作用 |  | ✅ | ← 同 `menu:craft`〔craft〕 |
@@ -325,7 +325,7 @@
 | `捏人` ≡`customize` ⇄`settings:customize` | T3 副作用 |  | ✅ | ← 同 `settings:customize`〔character_customize〕 |
 | `捐` ≡`donate` | T3 副作用 |  | ⏭ 没条件测 | ← 同 `menu:donate`〔museum_donate〕 |
 | `捐赠` ≡`donate` | T3 副作用 |  | ⏭ 没条件测 | ← 同 `menu:donate`〔museum_donate〕 |
-| `推进` ≡`advance` | T2 摆场 |  | ⏭ 没条件测 | ← 同 `menu:advance`〔advance_story〕 |
+| `推进` ≡`advance` | T2 摆场 |  | ✅ | ← 同 `menu:advance`〔advance_story〕 |
 | `收` ≡`display_takeback` ⇄`festival:display_takeback` | T3 副作用 |  |  |  |
 | `收好` ≡`display_takeback` ⇄`festival:display_takeback` | T3 副作用 |  |  |  |
 | `放满` ≡`display_fill` ⇄`festival:display_fill` | T3 副作用 |  |  |  |
@@ -418,11 +418,11 @@
 | op | 层 | 参数 | 判定 | 证据 |
 |---|---|---|---|---|
 | `go` | T2 摆场 | destination | ✅ | `session_log:710` |
-| `lookup` | T1 自动 | location | ✅ | `session_log:610` |
+| `lookup` | T1 自动 | location | ✅ | `session_log:728` |
 | `npc` | T2 摆场 |  | ✅ | `session_log:650` |
 | `query` | T1 自动 | function | ✅ | `session_log:611` |
 | `unlocks` | T2 摆场 |  | ✅ | `session_log:582` |
-| `walk` | T2 摆场 | poi_name | ✅ | `session_log:651` |
+| `walk` | T2 摆场 | poi_name | ✅ | `session_log:758` |
 | `walk_multi` ⇄`scene:maze_walk` | T2 摆场 | location, max_seg, max_wait, waypoints | ✅ | `session_log:720` |
 | `warp_safe` | T2 摆场 |  | ✅ | `session_log:656` |
 | `反查` ≡`query` | T1 自动 |  | ✅ | ← 同 `map:query`〔map_query〕 |
@@ -446,17 +446,17 @@
 | `egg_note` | ⏭ 当期不可用 | route |  |  |
 | `egg_run` | ⏭ 当期不可用 | route |  |  |
 | `eggs` | ⏭ 当期不可用 |  |  |  |
-| `go` | ⏭ 当期不可用 |  |  |  |
-| `help` | T1 自动 |  | ✅ | `session_log:618` |
-| `ice_fish` | ⏭ 当期不可用 |  |  |  |
-| `info` | T1 自动 |  | ✅ | `session_log:483` |
-| `interact` | ⏭ 当期不可用 |  |  |  |
+| `go` | ⏭ 当期不可用 |  | ✅ | `session_log:755` |
+| `help` | T1 自动 |  | ✅ | `session_log:736` |
+| `ice_fish` | ⏭ 当期不可用 |  | ✅ | 🎣 **真机过(2026-09-12 冬钓节复测)**：哨兵自动接管→钓 6 条**赢了**(赢线≥5)；新满级站位(69,36)一次到位。⚠️ 这次不经 MCP 调用(后台线程跑的)故无 session_log 行；证据=比赛 score=6 + 哨兵播报 + 背包收到首胜四件套(水手帽/精装旋式鱼饵/倒刺钩/磁铁) |
+| `info` | T1 自动 |  | ✅ | `session_log:730` |
+| `interact` | ⏭ 当期不可用 |  | ✅ | `session_log:757` |
 | `maze` | ⏭ 当期不可用 |  |  |  |
 | `maze_walk` ⇄`scene:maze_walk` | ⏭ 当期不可用 | location, max_seg, max_wait, waypoints |  |  |
 | `next` | T1 自动 |  | ✅ | `session_log:617` |
-| `poi` | ⏭ 当期不可用 |  |  |  |
-| `prep` | ⏭ 当期不可用 |  | ✅ | `session_log:619` |
-| `shop` | ⏭ 当期不可用 |  |  |  |
+| `poi` | ⏭ 当期不可用 |  | ✅ | `session_log:731` |
+| `prep` | ⏭ 当期不可用 |  | ✅ | `session_log:734` |
+| `shop` | ⏭ 当期不可用 |  | ✅ | `session_log:739` |
 | `strength` | ⏭ 当期不可用 | delay |  |  |
 | `today` | T1 自动 |  | ✅ | `session_log:615` |
 | `下一个` ≡`next` | T1 自动 |  | ✅ | ← 同 `festival:next`〔_festival_next〕 |

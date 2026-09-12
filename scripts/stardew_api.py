@@ -1197,6 +1197,20 @@ def festival_status():
     打 AI 进程(7843)。无节日时返回 {ok:false, error:"No active event"}。"""
     return _ai_get("/festival")
 
+def event_state():
+    """🎬 事件状态机（/event_state，2026-09-12）——**便宜、可低频轮询**：只读 Game1 + currentEvent
+    上的简单字段，**不枚举 NPC/背包**（对比 `/festival` 会遍历全部 actor，别拿那个轮询）。
+
+    关键字段：
+      eventId           事件 id（null=没事件在播；`festival_*` 前缀=节日事件）
+      hasDialogue/responseCount/message   对话框三件套（responseCount>0=**选项，必须停下让 AI 选**）
+      skippable         **跳过键**（游戏就按这个画，Event.cs:11438）
+      currentCommand / commandCount        事件脚本进度指针 —— **指针动不动 = 有没有在推进**
+      playerControlSequence                玩家接管段（自由走动）
+      festivalTimer    >0 = 限时小游戏进行中（冰钓/找蛋）= 玩家已接管，谁都别去推
+    """
+    return _ai_get("/event_state")
+
 def festival_interact(name=""):
     """🎪 节日互动：瞬移到节日 NPC 身边并触发 checkAction（/festival/interact）。
     name 不传则选第一个 actor。返回 {ok, target, targetTile, playerTile, triggered}。"""

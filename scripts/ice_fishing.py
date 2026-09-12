@@ -15,7 +15,9 @@
   festivalTimer 只判开始/结束，festivalScore 结尾校验。
 
 ⚠️ 站位(恒实测)：最上面的窟窿上钩率最高。满级(10/15级)站 (69,36) 朝上满力抛正好落洞 (69,30)。
-  低等级最大抛距更短要**往前挪**(朝洞口方向 y-1/-2)——脚本 `_calibrate` 自动微调±1-2格试。
+  **默认就该从满级位置(69,36)起抛**（恒 2026-09-12：玩到冬天基本钓鱼满级，从"0/3级距离"起抛不合常理——
+  上次轮回就是因为站太近、抛过头，得重抛才进）；抛不进（没咬钩）才**往前挪**(朝洞口 y-1/-2)，
+  最多挪到低钓技的最近点 (69,34)。见 `_POS_TRY` / `_calibrate`。
 ⚠️ 勿 Esc/dismount 中断比赛(会甩回农场)；让它自然钓完等结算发奖。
 
 用法:
@@ -36,7 +38,9 @@ SETTLE_WAIT = 15     # 进结算后等 awardFestivalPrize 发奖（endContest→
 POLL = 0.2           # 钓鱼状态轮询间隔（轻，只判"钓上没"）
 STALL = 6            # 停滞超时：鱼竿一直没咬钩/失败卡住 N 秒 → 强制补一竿（防失败卡死）
 CALIBRATE = 12       # 站位校准：fishbot 开后等 N 秒让**第一竿抛完+咬钩**，没咬到再挪位（别没抛完就撤）
-_POS_TRY = [(0, 0), (0, 1), (0, 2)]   # 从最近点(69,34)往"后"退 y+1/+2=远离洞；Lv≤4→34 Lv8→35 Lv15→36
+_POS_TRY = [(0, 0), (0, -1), (0, -2)]  # 恒 2026-09-12 翻方向：**从满级位(69,36)起**，抛不进才往前挪(y-1/-2)
+                                       # 走到低钓技最近点(69,34)为止。别反过来从 34 起——冬季基本满级，
+                                       # 从"短抛距"位起抛会抛过头，得重抛才进（上次真机就是这么浪费掉一竿的）
                                        # ⚠️ 恒 2026-08-28：低钓技抛竿短，只能站**最近点**且**往后退**；往前挪(靠洞)会越抛越远
 _REEL_KEYS = ("isCasting", "isFishing", "isNibbling", "isReeling")
 
@@ -57,7 +61,8 @@ class IceFish:
 
     def __init__(self, port=7843):
         self.base = f"http://localhost:{port}"
-        self._spot = (69, 34, 0)     # (x, y, face|0=上) 低钓技最近落洞点；高钓技 _calibrate 自动往后挪。可 --spot 覆盖
+        self._spot = (69, 36, 0)     # (x, y, face|0=上) **满级满力落洞点**（恒 2026-09-12：默认从满级位起）；
+                                     # 抛不进由 _calibrate 往前挪到 (69,34)。可 --spot 覆盖
 
     def _post(self, ep, data=None):
         import requests
@@ -163,7 +168,7 @@ class IceFish:
             return False
         log("  🏁 比赛开始，开钓！")
 
-        # ② 走位：站到最近落洞点 (69,34) 朝上（低钓技先试最近点；往后退 y+1/+2 匹配更高钓技）
+        # ② 走位：**先站满级落洞点 (69,36) 朝上**（玩到冬天基本满级）；抛不进由 _calibrate 往前挪 (69,35)/(69,34)
         #    ⚠️ 恒 2026-08-28：比赛限时 2min，走位是**必需的另一步**——开赛后 AI 被 warp 到洞口行，但未必是
         #        落洞点；此步把它带到位，咬钩确认后才进主循环，保证抛竿落洞。低钓技抛竿短只能站近点。
         if self._calibrate() is None:
@@ -199,7 +204,12 @@ class IceFish:
                 time.sleep(0.6)   # 轻节奏，等 fishbot 进下个 cast 周期
             elif time.time() - last_work > STALL:
                 # 兜底只在这两种情况下触发：鱼竿彻底没干活（fishbot 真停了/卡住）。绝不在等咬钩时触发（防掐慢咬钩）。
-                log(f"  ⚠️ 兜底：鱼竿空 {STALL}s 没动静 → re-kick 一竿")
+                # 🆕 2026-09-12：顺手把**当前菜单**打出来（`st` 这轮本来取好了，**零成本**）——恒怀疑
+                #    "Fishbot 补饵兜底会弹背包菜单"卡死钓竿（未坐实），这行就是下次真机的证据。
+                #    **只报不做**：真抓到菜单再写关闭护栏（别提前上兜底）。
+                _mt = ((st.get("activeMenu") or {}).get("type") or "")
+                _mtxt = ("⚠️当前开着菜单=" + _mt) if _mt else "无菜单"
+                log(f"  ⚠️ 兜底：鱼竿空 {STALL}s 没动静（{_mtxt}）→ re-kick 一竿")
                 self.fishbot("off")
                 self.fishbot("on")
                 last_work = time.time()
@@ -236,7 +246,7 @@ def main():
             pass
     parser = argparse.ArgumentParser(description="[festival] 冰雪节冰钓比赛自动化（钓上一条补一竿，钓满2分钟）")
     parser.add_argument("--port", type=int, default=None, help="AI 角色端口（默认7843）")
-    parser.add_argument("--spot", default="69,34", help="站位 (x,y)，默认 69,34（低钓技最近落洞点；高钓技自动往后挪）")
+    parser.add_argument("--spot", default="69,36", help="站位 (x,y)，默认 69,36（**满级满力落洞点**；抛不进自动往前挪到 69,34）")
     parser.add_argument("--face", type=int, default=0, help="抛竿朝向 0=上（默认）")
     parser.add_argument("--deadline", type=int, default=DEFAULT_DEADLINE, help="整段上限秒（默认175）")
     args = parser.parse_args()

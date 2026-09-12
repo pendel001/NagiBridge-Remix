@@ -7,10 +7,20 @@ import time
 parser = argparse.ArgumentParser()
 parser.add_argument("--count", type=int, default=10, help="Max trees to chop")
 parser.add_argument("--port", type=int, default=7842)
+# 🪓 放行名单（恒 2026-09-12 拍板）：默认**只砍橡/枫/松**，特殊树（蘑菇树/桃花心木/苔雨树/神秘树…）
+#    一律受保护。值由 settings 域的 `chop` 设置经服务器传进来；手工跑脚本时也可直接
+#    `--allow 蘑菇树,桃花心木`。⚠️ 放行值认不出来会**直接报错退出**，不静默当空（宁报错别兜底）。
+parser.add_argument("--allow", default="", help="放行的特殊树种（名字/树号，逗号分隔；none/all）")
 args = parser.parse_args()
 
 os.environ["NAGI_URL"] = f"http://localhost:{args.port}"
 import stardew_api as api
+import tree_types as tt
+
+_ALLOW, _ALLOW_ERR = tt.parse_allow(args.allow)
+if _ALLOW_ERR:
+    print(f"❌ --allow 参数错：{_ALLOW_ERR}")
+    raise SystemExit(2)
 
 # 固定类型（twig/stump/big_stump）直接用次数表，树类逐下检查
 _FIXED_HITS = {"twig": 1, "stump": 5, "big_stump": 15}
@@ -36,24 +46,37 @@ MAX_TREE_HITS = 20  # 树类最多敲20下防死循环
 
 
 def find_trees(radius=20):
-    """Find chopable targets: Tree:1~3 / twig / big_stump."""
+    """Find chopable targets: 橡/枫/松(Tree:1~3) / twig / big_stump。
+
+    ⚠️ 2026-09-12 恒拍板：**特殊树种默认不砍**（蘑菇树7/桃花心木8/苔雨树10~12/神秘树13/棕榈6·9），
+    要砍得 `--allow` 显式放行。**被挡下的不静默丢**——一并返回计数，由调用方报给 AI/人看见
+    （这条 docstring 以前写的就是"Tree:1~3"，但代码是 `startswith("Tree:")` 全收 —— 注释在说谎，
+    真机实测站蘑菇树堆旁最近的可砍目标就是 Tree:7）。
+
+    返回 `(targets, skipped)`；skipped = {树种id: 棵数}。
+    """
     data = api.surroundings(radius)
     px, py = data["center"]["x"], data["center"]["y"]
     targets = []
+    skipped = {}
     for t in data.get("tiles", []):
         terrain = t.get("terrain", "")
         obj = t.get("object", "")
         dist = abs(t["x"] - px) + abs(t["y"] - py)
 
         if terrain.startswith("Tree:"):
-            targets.append((t["x"], t["y"], terrain, dist))
+            ttype = tt.tree_type_of(terrain)
+            if tt.is_choppable(ttype, _ALLOW):
+                targets.append((t["x"], t["y"], terrain, dist))
+            else:
+                skipped[ttype] = skipped.get(ttype, 0) + 1
         elif obj == "Twig":
             targets.append((t["x"], t["y"], "twig", dist))
         elif obj in ("LargeStump", "LargeLog"):
             targets.append((t["x"], t["y"], "big_stump", dist))
 
     targets.sort(key=lambda t: t[3])
-    return targets
+    return targets, skipped
 
 
 def tile_has(tx, ty, check):
@@ -165,17 +188,26 @@ def run():
             break
     api.log(f"=== Chop Trees (max {args.count}) ===")
     api.log(f"Axe: {axe_name} | twig/stump/big=fixed | Tree: hit&check up to 20")
+    api.log(f"🌳 放行: {tt.allow_label(_ALLOW)}"
+            + ("" if _ALLOW else "（特殊树种受保护；要砍用 settings chop 蘑菇树,桃花心木 …）"))
 
     s = api.state()
     inv = s.get("inventory", [])
     wood_before = sum(i["stack"] for i in inv if i and i["name"] == "Wood")
     api.log(f"Wood before: {wood_before}")
 
+    _skipped_seen = {}
     chopped = 0
     for attempt in range(args.count):
-        trees = find_trees()
+        trees, skipped = find_trees()
+        for k, v in skipped.items():          # 累计"看见过但没砍"的（同一棵会重复出现，取最大值）
+            _skipped_seen[k] = max(_skipped_seen.get(k, 0), v)
         if not trees:
-            api.log("No more trees nearby")
+            if skipped:
+                api.log(f"No more chopable trees nearby —— 剩下的都是受保护树种："
+                        f"{tt.skipped_summary(skipped)}")
+            else:
+                api.log("No more trees nearby")
             break
 
         tx, ty, ttype, dist = trees[0]
@@ -194,6 +226,11 @@ def run():
     inv = s.get("inventory", [])
     wood_after = sum(i["stack"] for i in inv if i and i["name"] == "Wood")
     api.log(f"Chopped {chopped} trees. Wood: {wood_before} -> {wood_after} (+{wood_after - wood_before})")
+    # 🪓 被保护树种挡下的**必须报出来**（恒：跳过要看得见，不能静默"砍完了"）
+    if _skipped_seen:
+        _n1 = tt.tree_name(sorted(_skipped_seen, key=lambda k: -_skipped_seen[k])[0])
+        api.log(f"🛡️ 受保护跳过：{tt.skipped_summary(_skipped_seen)}"
+                f"　要砍其中某一种：settings chop {_n1}（可多种逗号并列）")
     api.log(f"Stamina: {s['player']['stamina']:.0f}/{s['player']['maxStamina']}")
     api.log(f"Time: {s['time']['timeOfDay']}")
 

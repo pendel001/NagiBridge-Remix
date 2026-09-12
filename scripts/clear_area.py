@@ -28,10 +28,19 @@ parser.add_argument("x2", type=int)
 parser.add_argument("y2", type=int)
 parser.add_argument("--port", type=int, default=7842)
 parser.add_argument("--hits", type=int, default=2)
+# 🪓 放行名单（恒 2026-09-12）：同 chop_trees —— 默认只清橡/枫/松，特殊树受保护
+#    （不然"清一块地"顺手就把蘑菇树/桃花心木铲了）。由 settings 域的 `chop` 设置经服务器传进来。
+parser.add_argument("--allow", default="", help="放行的特殊树种（名字/树号，逗号分隔；none/all）")
 args = parser.parse_args()
 
 os.environ["NAGI_URL"] = f"http://localhost:{args.port}"
 import stardew_api as api
+import tree_types as tt
+
+_ALLOW, _ALLOW_ERR = tt.parse_allow(args.allow)
+if _ALLOW_ERR:
+    print(f"❌ --allow 参数错：{_ALLOW_ERR}")
+    raise SystemExit(2)
 
 TOOL_DELAY = 0.55
 STAMINA_MIN = 20
@@ -51,6 +60,12 @@ TOOL_MAP = {
 TOOL_ORDER = ["Scythe", "Pickaxe", "Axe"]
 
 
+# 🛡️ 被保护树种挡下的。_PASS 是本轮扫描计数（tile_target_name 填），_SEEN 是所有轮次的合并
+#    （取每轮最大值——同一棵树会被 3 轮扫描反复数到，直接累加会灌水）。收尾必须报出来。
+_SKIPPED_PASS = {}
+_SKIPPED_SEEN = {}
+
+
 def tile_target_name(tile):
     obj = tile.get("object", "")
     terrain = tile.get("terrain", "")
@@ -61,6 +76,11 @@ def tile_target_name(tile):
     if resource in TOOL_MAP:
         return resource
     if terrain and terrain.startswith("Tree:"):
+        # 🪓 2026-09-12 恒拍板：特殊树种（蘑菇树/桃花心木/苔雨树/神秘树…）默认不动
+        ttype = tt.tree_type_of(terrain)
+        if not tt.is_choppable(ttype, _ALLOW):
+            _SKIPPED_PASS[ttype] = _SKIPPED_PASS.get(ttype, 0) + 1
+            return None
         return "Tree"
     if terrain == "Grass":
         return "Grass"
@@ -106,6 +126,7 @@ def scan_area():
     data = api.surroundings(min(radius, 30))
 
     targets = []
+    _SKIPPED_PASS.clear()
     for t in data.get("tiles", []):
         x, y = t["x"], t["y"]
         if x < args.x1 or x > args.x2 or y < args.y1 or y > args.y2:
@@ -118,6 +139,8 @@ def scan_area():
         tool, hits = TOOL_MAP[name]
         targets.append((x, y, tool, name, hits))
 
+    for k, v in _SKIPPED_PASS.items():        # 本轮看见的受保护树，合并进总账（取最大值防灌水）
+        _SKIPPED_SEEN[k] = max(_SKIPPED_SEEN.get(k, 0), v)
     return targets
 
 
@@ -236,6 +259,8 @@ def _pickup_drops():
 
 def run():
     api.log(f"=== clear area: ({args.x1},{args.y1})-({args.x2},{args.y2}) ===")
+    api.log(f"🌳 放行: {tt.allow_label(_ALLOW)}"
+            + ("" if _ALLOW else "（特殊树种受保护；要清用 settings chop 蘑菇树,桃花心木 …）"))
     inv_before = inventory_counts()
 
     # Pass 1: scan + fast clear with move_to
@@ -263,6 +288,9 @@ def run():
         leftover = scan_area()
         if leftover:
             api.log(f"Still {len(leftover)} left (may need tool upgrade)")
+        elif _SKIPPED_SEEN:
+            # ⚠️ 别报 "All clear!" —— 地是被保护树种占着的，说"清干净了"是谎报
+            api.log(f"🛡️ 能清的都清了；剩 {tt.skipped_summary(_SKIPPED_SEEN)} 是受保护树种，没动")
         else:
             api.log("All clear!")
     else:
@@ -271,6 +299,9 @@ def run():
     # 智能捡拾：只去有掉落物的格子捡，不散步
     _pickup_drops()
     log_inventory_delta(inv_before, inventory_counts())
+    if _SKIPPED_SEEN:
+        api.log(f"🛡️ 受保护跳过：{tt.skipped_summary(_SKIPPED_SEEN)}"
+                f"　要清：settings chop <树种名>")
 
 
 if __name__ == "__main__":

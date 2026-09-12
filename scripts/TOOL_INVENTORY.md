@@ -194,7 +194,7 @@
 | `rock` | `dig`(True) `radius`(14) `max_break`(0，不限) `break_stone`(False) | 室外镐击；`dig=False` 只扫不敲 |
 | `garbage` | `loc`("") `pos`("") `wait`(1.0) `dry_run`(False) | 翻垃圾桶；`dry_run=True` 只报位置 |
 | `pan` | `dry_run`(False) `radius`(3) `timeout`(20) | 淘金 |
-| `drop` | `name`（必填）`count`(1) | |
+| `drop` | `name` `count`(1) `items` | 丢背包物品（直接消失不落地）：一种用 name+count；**多种一次丢**用 items=逗号分隔（每项可跟 :数量，如 `items=木头,石头:3`）。⚠️ 名字口径=check backpack 里显示的；菜单开着时别丢（满包菜单会持背包快照，关时写回） |
 | `place` | `name`,`x`,`y` | |
 | `break` | `x`,`y`（必填）`steps`(1) `radius`(0) | `radius>0`=方圆若干格 |
 | `maze` / `maze_seg` | `radius`(14/15) `gx` `gy` | 迷宫视图 / 走法链 |

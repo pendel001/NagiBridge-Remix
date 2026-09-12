@@ -86,14 +86,40 @@ BLACKLIST |= {"Weeds", "Stone", "Rock", "Glass Shards", "Rotten Plant",
               "Coop", "Barn", "Shed", "Slime Hutch", "Fish Pond", "Milk Pail",
               "Shears", "Egg Basket", "Duck Egg Basket", "Mini-Fridge",
               "Ostrich Incubator", "Hay", "Automatic Feeders"}
-# 🦪 可捡但 isPassable()=false 的地面采集物（海边/岛上海胆/珊瑚/蛤蜊等，同松露会因不可走被 passable 甩掉）——按名先认。
-#    2026-09-06 恒：海胆/珊瑚不捡。objId 兜底：松露 430、(O)430。
-_NONPASS_FORAGE = {"Truffle", "Sea Urchin", "Coral", "Nautilus Shell", "Rainbow Shell",
-                   "海胆", "珊瑚", "松露", "鹦鹉螺壳", "彩虹贝壳"}
+# 🌿 2026-09-12（恒拍板）：「拾取白名单可以考虑加所有可拾取物品了。贝壳啊水果啊我们也都没有加」
+#    ⇒ **不再维护名单，直接问游戏**：`/surroundings` 现在每格带 `forage`
+#    （C# 侧读 `Object.isForage()`，反编译 `Object.cs:2806`：`Category ∈ {-79,-81,-80,-75,-23}`
+#      或带 tag `forage_item`，**外加硬编码 `(O)430`=松露** —— 游戏自己给松露开的特例）。
+#    一份判据盖住 野菜/浆果/水果/贝壳/海胆/珊瑚/松露 全类，判据从「**必须 passable**」
+#    改成「**passable 或 forage**」：不可站但可手捡的，走过去 face+interact 就进包
+#    （真机验过：站 (8,10) 朝 (8,9) 野梅 interact → `[金]野梅 120g` 进包 + 📰 小新闻）。
+#
+# ⚠️ 旧 DLL（2026-09-12 之前）**没有 forage 字段** ⇒ 这类东西会被下面那行静默跳过（回到"找到 0 个"）。
+#    这正是本项目最怕的"报成功而事没发生"，所以启动时用 `/status.build` 显式查一次、**明说**（见下）。
+_FORAGE_DLL_MIN = "2026-09-12"   # 带 forage 字段的最早构建日（BuildStamp 是 MSBuild 自动烤进 DLL 的）
+
+
+def _dll_has_forage(base):
+    """当前 DLL 带不带 `forage` 字段。True/False/读不到=None（不猜）。"""
+    try:
+        build = (requests.get(f"{base}/status", timeout=5).json().get("build") or "")
+    except Exception:
+        return None
+    head = build[:10]
+    if len(head) != 10 or head.count("-") != 2:
+        return None                      # "未生成(非 MSBuild构建)" 之类 ⇒ 认不出就说认不出
+    return head >= _FORAGE_DLL_MIN
 
 
 def main():
     base = NAGI
+    # ⚠️ 2026-09-12 真机踩到（就在验 forage 那次）：`/surroundings` 的 radius **超过 30 会静默退回 10**
+    #    （`ModEntry.cs` 的 clamp 分支，退回的不是 30 而是**默认 10**，比 30 还小）——我拿 `--radius 40`
+    #    扫海滩，回"找到 0 个"，差点误判成 forage 没生效。这里收回上限并**明说**，别让尺子骗人。
+    if args.radius > 30:
+        log(f"⚠️ --radius {args.radius} 超出 /surroundings 上限 30"
+            f"（再大它会**静默退回 10**，比 30 还小）——已按 30 跑")
+        args.radius = 30
     try:
         st = requests.get(f"{base}/status", timeout=5).json()
     except Exception as e:
@@ -103,35 +129,30 @@ def main():
         log("❌ 游戏未就绪")
         sys.exit(1)
 
+    # 🌿 旧 DLL **明说**（见文件头）：不拦（农场日常大部分不受影响），但绝不让它静默变哑。
+    if _dll_has_forage(base) is False:
+        log(f"⚠️ DLL 是旧版（build={st.get('build')}）——没有 `forage` 字段，"
+            f"水果/贝壳/松露这类「不可站但可手捡」的东西会被漏掉。"
+            f"请重编并部署 NagiBridge.dll（≥ {_FORAGE_DLL_MIN}）后重启游戏。")
+
     data = requests.get(f"{base}/surroundings", params={"radius": args.radius}, timeout=10).json()
     loc = data.get("location", "?")
     cx, cy = data.get("center", {}).get("x", 0), data.get("center", {}).get("y", 0)
 
-    # 可拾取 = 可走 + 有 object + 不在黑名单；🌱 成熟大葱（forageCrop=1 + harvestable）也摘
+    # 可拾取 = （可走 或 forage）+ 有 object + 不在黑名单；🌱 成熟大葱（forageCrop=1 + harvestable）也摘
+    # 🌿 2026-09-12：判据见文件头 —— `forage` 由 C# 照抄游戏 `Object.isForage()`，不再按名猜。
     targets = []
     for t in data.get("tiles", []):
         obj = t.get("object") or ""
-        oid = t.get("objId") or ""
-        # 🍄 2026-09-01 猪松露：SDV 里松露是放在 location.Objects 的普通 Object，但它 isPassable()=false
-        #    （不在游戏 passable 白名单，Category -81 动物产物）→ /surroundings 的 passable=false、
-        #    被下面 `if not passable` 当成障碍跳过，所以之前"没收松露"。
-        #    松露=猪产、直接可捡（走过去 interact 就进包），第一等采集物，不依赖 passable，按 objId 认。
-        #    捡取仍走 pick_up_object：目标格非可走 → walk_to 会落相邻可走格 → face+interact 捡到手。
-        if obj == "Truffle" or oid in ("430", "(O)430"):
-            targets.append((t["x"], t["y"], "松露(Truffle)"))
-            continue
-        # 🦪 2026-09-06 海胆/珊瑚等海边采集物也是 isPassable()=false（同松露）会被 passable 甩掉——按名先认
-        if obj in _NONPASS_FORAGE or obj in ("海胆", "珊瑚"):
-            targets.append((t["x"], t["y"], obj))
-            continue
-        if not t.get("passable", True):
-            continue
-        if t.get("forageCrop") == "1" and t.get("harvestable") is not False:
-            targets.append((t["x"], t["y"], "成熟大葱"))   # interact 摘 crop（不用锄头）
-            continue
         if not obj:
+            # 没物体的格只剩"成熟大葱"那条（长在 HoeDirt 上，crop.indexOfHarvest 为空但 forageCrop=1）
+            if t.get("forageCrop") == "1" and t.get("harvestable") is not False:
+                targets.append((t["x"], t["y"], "成熟大葱"))   # interact 摘 crop（不用锄头）
             continue
         if any(blk in obj for blk in BLACKLIST):
+            continue
+        # 不可站 且 游戏没说它能手捡 ⇒ 当障碍跳过（机器/箱子/家具都走这条）
+        if not t.get("passable", True) and not t.get("forage"):
             continue
         targets.append((t["x"], t["y"], obj))
 
@@ -222,11 +243,34 @@ def main():
         # 验证真的捡到
         return not object_still_there(x, y)
 
+    def _free_slots():
+        """背包还剩几格。读不到 → None（**不拿它做判断**，别用猜的当尺子）。"""
+        try:
+            s = requests.get(f"{base}/state", params={"light": "true"}, timeout=10).json()
+            inv = s.get("inventory", [])
+            used = len([i for i in inv if i.get("name")])
+            return ((s.get("player", {}) or {}).get("maxItems") or 36) - used
+        except Exception:
+            return None
+
+    # 🎒 2026-09-12 真机：恒"包包满了，所以捡不动了" —— 那天海滩 12 个只进 3 个，我**先猜成"走位够不到"**
+    #    （错），回读才看见 `36/36 空位 0`。捡不动**必须说清是哪种捡不动**（背包满 vs 真够不着），
+    #    否则 AI/人都以为东西没了 —— 同"报成功而事没发生"那一类，只是反着来。
+    _free = _free_slots()
+    if _free == 0:
+        log("🎒 背包满了（0 空位）——不是捡不到，是装不下："
+            "先去出货箱卖 / storage 存箱子，再回来捡")
+        return
+
     picked = 0
     for x, y, obj in uniq[:args.max]:
         if pick_up_object(x, y):
             picked += 1
             time.sleep(0.1)
+        elif _free_slots() == 0:
+            log("🎒 背包满了（0 空位）——剩下的不是捡不到，是装不下："
+                "先去出货箱卖 / storage 存箱子，再回来捡")
+            break
 
     # 顺带清 debris（动画掉落物：镰刀作物/怪掉落，走过去才捡）
     try:

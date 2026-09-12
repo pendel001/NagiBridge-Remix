@@ -143,6 +143,41 @@ def _scan_with_state_under_bg_lock():
     return sorted(set(hits))
 
 
+_N_OPS_TOOLS = [0]   # 被检查过的"调 _ops_run 的工具"个数（写回给 print 用，顺带防"扫到 0 个也算绿"）
+
+
+def _scan_tools_missing_wstate() -> list:
+    """调 `_ops_run` 却没用 `_with_state` 收尾的**工具**函数名。
+
+    为什么这是一条**地基级**检查：2026-09-12 恒拍板让 `_with_state` 在域 op 内层**直接返回正文**
+    （内层那条本来就被 `_ops_run` 砍掉、却还在消费一次性注入 —— 见 `_OPS_INNER` 注释）。
+    于是"**外层一定会再调一次**"成了整套机制的前提。⚠️ 扫到 0 个不是"通过"、是"尺子坏了"，一并报出来。
+    """
+    src = _fn_source(M)
+    if not src:
+        PROBLEMS.append("  读不到 nagi_mcp_server 源码 → 域工具收尾检查**没跑**（不是通过）")
+        return []
+    try:
+        tree = ast.parse(src)
+    except SyntaxError as e:
+        PROBLEMS.append(f"  域工具收尾检查：源码解析失败 {e}")
+        return []
+    offenders = []
+    for fn in tree.body:                       # 工具都是模块级 def
+        if not isinstance(fn, ast.FunctionDef):
+            continue
+        calls = {n.func.id for n in ast.walk(fn)
+                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+        if "_ops_run" not in calls:
+            continue
+        _N_OPS_TOOLS[0] += 1
+        if "_with_state" not in calls:
+            offenders.append(fn.name)
+    if _N_OPS_TOOLS[0] < 10:
+        PROBLEMS.append(f"  只扫到 {_N_OPS_TOOLS[0]} 个调 _ops_run 的工具（预期 ≥15）—— 检查本身可能失效")
+    return offenders
+
+
 def main():
     registered = {t.name for t in M.mcp._tool_manager.list_tools()}
 
@@ -203,7 +238,19 @@ def main():
     else:
         print("  ✅ 没有「持 _bg_lock 时调 _with_state」的自锁死")
 
-    # 6. 汇总
+    # 7. 🧱 结构地基：调 `_ops_run` 的域工具**必须**用 `_with_state` 收尾
+    #    2026-09-12 起 `_with_state` 在**域 op 内层直接返回正文**（见 `_OPS_INNER`）⇒ 状态条**只由外层那一次**
+    #    产生。谁新加域工具漏了这层包装，表现是**该工具从此完全不带状态条**（AI 瞎着眼操作），
+    #    而且不报错、只在真机上"好像没看见状态"——跟 09-12 那个"报成功而事没发生"同一类难查。
+    _missing = _scan_tools_missing_wstate()
+    if _missing:
+        for _fn in _missing:
+            PROBLEMS.append(f"  {_fn}() 调了 _ops_run 却没 _with_state 收尾 → 该工具**永远没有状态条**"
+                            f"（改成 `return _with_state(_ops_run(...))`）")
+    else:
+        print(f"  ✅ 调 _ops_run 的 {_N_OPS_TOOLS[0]} 个域工具都有 _with_state 收尾（状态条外层兜底成立）")
+
+    # 8. 汇总
     print(f"  · 注册工具总数: {len(registered)}")
     print(f"  · keep-set 白名单: {len(M._KEEP_TOOLS)}（15 域 + {len(M._KEEP_TOOLS) - 15} 独立）")
 

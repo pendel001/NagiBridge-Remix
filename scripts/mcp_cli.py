@@ -16,6 +16,10 @@ import sys, json, os, requests
 
 BASE = os.environ.get("NAGI_MCP_URL", "http://localhost:8000/mcp")
 HDR = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+# ⏱️ 客户端等待上限（秒）：默认 60s 够短工具用，但**阻塞型长脚本**（festival ice_fish 要钓满
+#    2 分钟、bomb_mine 一局更久）会被客户端先掐断 ⇒ 服务端还在跑、命令却报错，看着像工具坏了。
+#    这类调用把环境变量调大：`NAGI_MCP_TIMEOUT=240 python mcp_cli.py festival '{"ops":"ice_fish"}'`
+CALL_TIMEOUT = float(os.environ.get("NAGI_MCP_TIMEOUT", "60"))
 SESSION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "._mcp_session")
 
 
@@ -67,7 +71,7 @@ def _get_session():
 
 def call(method, params, sess):
     r = sess.post(BASE, json={"jsonrpc": "2.0", "id": 9, "method": method, "params": params},
-                  headers=HDR, timeout=60)
+                  headers=HDR, timeout=CALL_TIMEOUT)
     return _parse(r)
 
 
