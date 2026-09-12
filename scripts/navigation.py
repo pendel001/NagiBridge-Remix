@@ -30,6 +30,7 @@ import subprocess
 import sys
 import time
 
+import calendar_data
 import locations
 import stardew_api as api
 
@@ -1230,10 +1231,29 @@ def _walk_trigger_warp(frm: str, nxt: str, ex: int, ey: int, wx: int, wy: int, e
         api.warp(nxt, wx, wy)
     else:
         api.warp(nxt)
-    for _ in range(3):
+    # 🎪 节日路由例外（2026-09-13 真机抓到，**两个 bug 叠在一起**，恒："还是进不来？什么情况？"）
+    #   节日当天去**逻辑场地**（spring13 的 "Town"），游戏会**故意拦下我们的 warp**、走它自己的路由：
+    #   `Game1.warpFarmer` 被 `whereIsTodaysFest` 拦住 → ReadyCheckDialog → 事件临时图 **`Temp`**。
+    #   ⇒ ① 落地是 **`Temp`，永远不等于 `"Town"`**，原来的 `loc == nxt` 判定**必然判失败**（明明成功了）；
+    #      ② 判失败后走 `/warp_into` 兜底 —— 那是 `WarpDirect` **同步直切 `currentLocation`**，
+    #         **绕过游戏路由** ⇒ 把人**从节日里踢出去、塞进普通 Town**（`activeEvent=null`，
+    #         跟恒所在的 `Temp` 是两张图、互相看不见）。
+    #   **所以现象不是"进不来"，是"进来了又被打出去"**（恒 2026-09-13 复现两次）。
+    #   ⇒ 节日场地：**等久一点**（游戏要弹确认框+换临时图）、**认事件起来当成功**、**绝不跑 /warp_into**。
+    fest = _is_today_festival_dest(nxt)
+    for _ in range(20 if fest else 3):
         time.sleep(0.6)
-        if api.state().get("location", {}).get("name", "") == nxt:
+        st = api.state()
+        loc = (st.get("location") or {}).get("name", "")
+        if loc == nxt:
             return True
+        # 🎪 换到了事件临时图（Temp）且节日事件真的起来了 = 游戏路由成功
+        if fest and (st.get("activeEvent") or {}).get("id"):
+            return True
+    if fest:
+        # ⚠️ **绝不 /warp_into**：那是绕过游戏路由直切，会把刚被路由进去的人打回普通 Town。
+        #   走到这 = 游戏没路由（没开赛/不在时段/路由本身出问题）——如实报，让 AI 用 festival go。
+        return False
     # 兜底：普通 warp 失败（建筑室内）→ /warp_into 同步直切
     try:
         api.warp_into(nxt, wx if wx >= 0 else None, wy if wy >= 0 else None)
@@ -1243,6 +1263,24 @@ def _walk_trigger_warp(frm: str, nxt: str, ex: int, ey: int, wx: int, wy: int, e
     except Exception:
         pass
     return False
+
+
+def _is_today_festival_dest(dest: str) -> bool:
+    """🎪 dest 是不是**今天的节日场地**（逻辑图名：spring13 → "Town"）。
+
+    为什么单独一个判据：节日当天游戏会**故意拦下我们的 warp**、走它自己的路由
+    （ReadyCheckDialog → 事件临时图 `Temp`）。这时"没到 `Town`"**不是失败**，
+    而 `/warp_into` 那种直切兜底会**绕过路由**把人打回普通图（见 `_walk_trigger_warp` 那段）。
+    ⚠️ 判据来源与 `festival go` 同一张表（`calendar_data.FESTIVAL_LOCATIONS`），别另攒名单
+    （「判据别放消费侧猜」+「别维护白名单」，2026-09-12 恒）。
+    读不到时间 ⇒ 返回 False（**按老行为走**，不误伤非节日导航）。
+    """
+    try:
+        t = (api.state().get("time") or {})
+        key = (str(t.get("season") or "").lower(), int(t.get("dayOfMonth") or 0))
+        return calendar_data.FESTIVAL_LOCATIONS.get(key) == dest
+    except Exception:
+        return False
 
 
 def _player_is_male():
