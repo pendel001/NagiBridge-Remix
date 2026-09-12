@@ -544,6 +544,38 @@ public class ModEntry : Mod
     private double _settlementShownMs;
     private const double SettlementAutoDismissMs = 600000;
 
+    // 🎪 节日入场就绪「踹一脚」（2026-09-13 恒「开工」；论证见 CHANGELOG ㊵）
+    //
+    // 【背景】08-14「全撤，回到纯核心」撤掉的三样里，`AutoRefresh` 和 `SLEEP-DEBUG`（每 2 秒调
+    //   `GetNumberReady` 轮询）是**真会把游戏卡死**的元凶（恒实测 7843 冻结/7842 未响应）；
+    //   **「持续重发 ready」是被顺手带走的**。节日录入期没这毛病，正因为那时它还在。
+    //   ⚠️ 但那两样**绝不重新引入**。
+    //
+    // 【为什么不能简单"退一下再置"】`ReadyCheckDialog.update()` **每帧**都调 `SetLocalReady(id,true)`。
+    //   我若只"退"一帧，下一帧（~16ms）就被它自己翻回来 ⇒ 两个包几乎必然落进房主**同一个 tick**，
+    //   净结果还是 Ready，**计数纹丝不动 = 等于没发**。（这是本方案第一版，死在实现阶段。）
+    //
+    // 【实际怎么踹】关键在**执行顺序**：本函数所在的是 SMAPI 的 `UpdateTicked`，跑在菜单
+    //   `update()` **之后**。于是每帧的包序是 `Ready`(游戏自己) → `Cancel`(我们) ⇒
+    //   **房主每个 tick 排空的最后一个包都是 `Cancel`**，它就真的看到"我没就绪"。
+    //   配合上面那条"房主只在计数变化时才跑 Release/Lock" ⇒ 计数 2→1 逼出 `Release`、
+    //   `Locking=false`；松开后客户端回到 Ready，计数 1→2 又逼出一轮**全新的 Lock**
+    //   → 客户端 AcceptLock → 房主 `num3==num2` → `Finish` → 客户端 `confirm()` 进节日。
+    //   **整条路都是游戏自己的代码在走**，我们只负责"让计数动一下"。
+    //
+    // 【什么时候才踹】门槛卡死（三个条件全中，正常流程一次都不会碰到）：
+    //   ① 框是 `festivalStart` ② 客户端视角**全员都已就绪**(numberReady>=numberRequired>=2)
+    //   ③ 却 `isReady=false` 且持续超过 FestReadyStallMs。③ 的语义就是"游戏说大家都好了，
+    //   可房主就是不放行" —— 正是 09-13 恒看到的那个「正在等待其他玩家……（2/2）」。
+    //   房主自己还没就绪时是 1/2，**门槛直接不成立，绝不打扰**。
+    private const double FestReadyStallMs = 2500;    // 卡这么久才踹（正常流程几百毫秒就完了）
+    private const double FestReadyPulseMs = 400;     // 「按住不放」持续多久（够房主排空几个 tick）
+    private const int    FestReadyMaxKicks = 5;      // 最多踹几脚（每脚间隔 FestReadyStallMs）
+    private double _festReadyStuckSinceMs;           // 从什么时候开始"齐了却不放行"（0 = 没卡）
+    private double _festReadyPulseUntilMs;           // 「按住」到什么时候（0 = 没在按）
+    private int _festReadyKicks;                     // 本轮框已踹几脚
+    private bool _festReadyAlerted;                  // 踹过就播报一次，别每次刷屏
+
 
     // ⚠️ 2026-08-14 撤除：host 自动触发 Sleep_Yes 方案已被证伪——
     //    会抢在 farmhand(7843) 同步前触发假过夜（秋17误报），制造假象，必须不用。
@@ -1665,24 +1697,24 @@ public class ModEntry : Mod
                     catch { }
                 }
 
-                // 🎪 节日入场：farmhand 主动上报就绪（2026-09-13 恒「试试吧」）
-                //   **现象**：节日当天 AI 走到节日地点 → 游戏弹 `ReadyCheckDialog("festivalStart")`
-                //     → **卡在 (2/2) 双双进不去**（恒 09-13 复现两次；恒："从你进不来这件事本来就是死锁了"）。
-                //   **推测的病因**（旧代码已不可考，见 CHANGELOG ㊴）：08-14「全撤，回到纯核心」时把
-                //     **通用**的"farmhand 自动确认/上报 ReadyCheckDialog"一起带走了 —— `docs/history` 的
-                //     08-18 快照还写着「farmhand 自动确认结算/ReadyCheckDialog」（**不分类型**）；
-                //     撤掉后只剩游戏 `ReadyCheckDialog.update()` 每帧那句 `SetLocalReady` 兜着，
-                //     farmhand 端一旦没跑到（或时序错过），**房主就永远等不到这一个就绪** → 握手死锁。
-                //     📌 而 mod 的 `Update()` **一直在跑**（`/state` 就是靠它应答的）⇒ 这句正好补上缺口。
-                //   ⚠️ **边界（严守上面 1625 那条 2am 过夜死锁的教训，别越线）**：
-                //     · **只 `SetLocalReady`、绝不 `confirm`** —— 该方法幂等、只在**状态变化**时才发包，
-                //       不会触发 `NewDay`，所以碰不到"抢先过夜"那个坑；
-                //     · **只认 `festivalStart`**，`sleep` 那条路一根手指都不碰；
-                //     · **只对 farmhand**（本块已是 `!IsMainPlayer`）—— host 是真人，框正常更新。
+                // 🎪 节日入场就绪：卡住时踹房主状态机一脚（2026-09-13 恒「开工」）
+                //   机制/门槛/边界全写在 FestReadyKickDuringStall 的文档注释里（常量区也有一份）。
+                //   ⚠️ **只认 `festivalStart`**：`sleep` 那条路一根手指都不碰 —— 2am 昏迷弹的是 `sleep`
+                //     框且 `onConfirm=NewDay(0f)`，碰它才会"抢先过夜"死锁（当年撤除的理由）；
+                //     festivalStart 的 onConfirm 只是 `performWarpFarmer` 进节日图，且我们**绝不 `confirm`**，
+                //     只动 `SetLocalReady` 一个开关。**只对 farmhand**（本块已是 `!IsMainPlayer`）。
                 if (Game1.activeClickableMenu is StardewValley.Menus.ReadyCheckDialog _frc
                     && _frc.checkName == "festivalStart")
                 {
-                    try { Game1.netReady.SetLocalReady("festivalStart", true); } catch { }
+                    try { FestReadyKickDuringStall(_frc.checkName); } catch { }
+                }
+                else
+                {
+                    // 框没了 → 计数全清，下一个就绪框从头算
+                    _festReadyStuckSinceMs = 0;
+                    _festReadyPulseUntilMs = 0;
+                    _festReadyKicks = 0;
+                    _festReadyAlerted = false;
                 }
             }
             catch (Exception ex)
@@ -4179,7 +4211,13 @@ public class ModEntry : Mod
                 // 🧬 技能升级菜单（LevelUpMenu, 2026-08-30 恒）：含 5/10 级职业选择(isProfessionChooser=true)。
                 //    AI 经 /state 看到 activeMenu.type=LevelUpMenu + 本 levelUp 对象，就知道该选分支了。
                 //    offered[0]=左、offered[1]=右；选完走 menu ops=levelup_choose。
-                levelUp = BuildLevelUpInfo(Game1.activeClickableMenu)
+                levelUp = BuildLevelUpInfo(Game1.activeClickableMenu),
+                // 🎪 就绪框真身（2026-09-13）：`ReadyCheckDialog` 是个**通用类**，`checkName` 决定它是
+                //    "睡觉就绪"("sleep")还是"节日入场就绪"("festivalStart")——光看 type 分不出来，
+                //    Python 那边因此一直把它一律喊成"睡觉就绪屏"（恒 09-13 看到的就是这句误导）。
+                //    顺手把**实时计数**一起报出来：卡住时 N/M 一眼可见（客户端只会被房主的
+                //    `Finish` 放行，`2/2` 卡住 = 房主没放行，见 CHANGELOG ㊵）。
+                readyCheck = BuildReadyCheckInfo(Game1.activeClickableMenu)
             };
         }
 
@@ -7396,8 +7434,24 @@ public class ModEntry : Mod
     }
 
     /// <summary>
-    /// GET /ready_state
-    /// 调试：反射读 Game1.netReadyChecks，确认睡觉 ready check 的真实 name（"sleep" 是否正确）。
+    /// GET /ready_state —— **就绪握手实况**（2026-09-13 重写，恒「开工」）。
+    ///
+    /// 【为什么重写】原版只吐 `typeof(...).GetMethods()` 的**方法名清单**（当年是为查"睡觉 check 到底叫
+    ///   'sleep' 吗"），**读不到任何活状态**。09-13 节日卡死时我调它，拿到一堆方法名，一点用没有
+    ///   —— 那次只能靠 `screenshot` 看对话框上印的「2/2」反推。这次改成**真读**。
+    ///
+    /// 【读什么】`Game1.netReady` 是 `ReadySynchronizer`，私有字典 `ReadyChecks` 存每个 id 的
+    ///   `BaseReadyCheck`；这些对象的 `Id/State/NumberReady/NumberRequired/IsReady/ActiveLockId`
+    ///   **全是 public 属性**，反射取实例后直接读（不用碰私有字段）。房主侧另反射读
+    ///   `ServerReadyCheck` 私有的 `Locking` 和 `ReadyStates`（每位玩家一个状态）——**这两个才是
+    ///   死锁的现场**（见下）。
+    ///
+    /// 【怎么读结果】`ReadyState` 枚举：0=NotReady / 1=Ready / 2=Locked。
+    ///   · **客户端**（farmhand）：`IsReady` **只由房主的 `Finish` 置位**。所以
+    ///     `numberReady == numberRequired` 却 `isReady=false` ⇒ **房主没放行**，客户端只能干等。
+    ///   · **房主**：`locking=true` 且 `num3(锁住的玩家数) < numberRequired` ⇒ 握手卡在锁定阶段，
+    ///     而 `Release`（解锁重来）只在**计数变化**时才发 ⇒ **计数一动不动 = 永久死锁**。
+    ///   ⇒ 下次再卡，一眼就能分清是"房主没锁上别人"还是"客户端没收到 Finish"。
     /// </summary>
     private object HandleReadyState()
     {
@@ -7412,42 +7466,85 @@ public class ModEntry : Mod
                 var flags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
                     | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Static;
 
-                // FarmerTeam 里含 Ready 的方法
-                var teamMethods = typeof(FarmerTeam).GetMethods(flags)
-                    .Where(m => m.Name.Contains("Ready", StringComparison.OrdinalIgnoreCase))
-                    .Select(m => m.Name).Distinct().ToList();
-
-                // Game1 / FarmerTeam 里含 Ready 的字段/属性
-                var game1Members = typeof(Game1).GetMembers(flags)
-                    .Where(m => m.Name.Contains("Ready", StringComparison.OrdinalIgnoreCase))
-                    .Select(m => $"{m.MemberType}:{m.Name}").Distinct().ToList();
-
-                var teamMembers = typeof(FarmerTeam).GetMembers(flags)
-                    .Where(m => m.Name.Contains("Ready", StringComparison.OrdinalIgnoreCase))
-                    .Select(m => $"{m.MemberType}:{m.Name}").Distinct().ToList();
-
-                // Game1.netReady 是 ReadySynchronizer，列出其方法 + 当前值
                 var netReadyField = typeof(Game1).GetField("netReady", flags);
-                var netReadyType = netReadyField?.FieldType?.Name ?? "(none)";
-                var readySyncMethods = netReadyField?.FieldType?.GetMethods(flags)
-                    .Select(m => m.Name).Distinct().ToList() ?? new List<string>();
-                var netReadyVal = "";
-                try
+                var sync = netReadyField?.GetValue(null);
+                if (sync == null)
                 {
-                    var val = netReadyField?.GetValue(null);
-                    netReadyVal = val?.ToString() ?? "null";
+                    tcs.SetResult(new { ok = false, error = "Game1.netReady 取不到" });
+                    return;
                 }
-                catch (Exception ex2) { netReadyVal = $"err:{ex2.Message}"; }
+
+                var checksField = sync.GetType().GetField("ReadyChecks", flags);
+                var checks = checksField?.GetValue(sync) as System.Collections.IDictionary;
+                if (checks == null)
+                {
+                    tcs.SetResult(new { ok = false, error = "ReadyChecks 字典取不到（游戏版本变了？）" });
+                    return;
+                }
+
+                var list = new List<Dictionary<string, object?>>();
+                foreach (System.Collections.DictionaryEntry e in checks)
+                {
+                    var c = e.Value;
+                    if (c == null) continue;
+                    var t = c.GetType();
+                    object? Prop(string n)
+                    {
+                        try { return t.GetProperty(n, flags)?.GetValue(c); } catch { return null; }
+                    }
+                    var one = new Dictionary<string, object?>
+                    {
+                        ["id"] = e.Key?.ToString(),
+                        // 本进程是房主还是客机？决定这个 check 是 ServerReadyCheck 还是 ClientReadyCheck
+                        ["kind"] = t.Name,
+                        ["state"] = Prop("State")?.ToString(),
+                        ["numberReady"] = Prop("NumberReady"),
+                        ["numberRequired"] = Prop("NumberRequired"),
+                        ["isReady"] = Prop("IsReady"),
+                        ["activeLockId"] = Prop("ActiveLockId"),
+                    };
+
+                    // 房主专有：Locking（是否正在尝试锁住所有人）+ ReadyStates（每位玩家一个状态）
+                    if (t.Name == "ServerReadyCheck")
+                    {
+                        try
+                        {
+                            one["locking"] = t.GetField("Locking", flags)?.GetValue(c);
+                            if (t.GetField("ReadyStates", flags)?.GetValue(c) is System.Collections.IDictionary rs)
+                            {
+                                var per = new Dictionary<string, object?>();
+                                foreach (System.Collections.DictionaryEntry kv in rs)
+                                {
+                                    // 键是 UniqueMultiplayerID，转成玩家名更好看（转不动就报原 id）
+                                    string key = kv.Key?.ToString() ?? "?";
+                                    try
+                                    {
+                                        long uid = Convert.ToInt64(kv.Key);
+                                        var f = Game1.getOnlineFarmers()
+                                            .FirstOrDefault(x => x.UniqueMultiplayerID == uid);
+                                        if (f != null) key = f.Name;
+                                    }
+                                    catch { }
+                                    per[key] = kv.Value?.ToString();
+                                }
+                                one["readyStates"] = per;
+                            }
+                        }
+                        catch { }
+                    }
+                    list.Add(one);
+                }
+
+                // 顺带把"我当前那个就绪框"的真身也报出来（和 /state 的 activeMenu.readyCheck 同源）
+                var dialog = BuildReadyCheckInfo(Game1.activeClickableMenu);
 
                 tcs.SetResult(new
                 {
                     ok = true,
-                    netReadyType,
-                    netReadyValue = netReadyVal,
-                    readySynchronizerMethods = readySyncMethods,
-                    farmerTeamReadyMethods = teamMethods,
-                    game1ReadyMembers = game1Members,
-                    farmerTeamReadyMembers = teamMembers
+                    isMaster = Game1.IsMasterGame,
+                    player = Game1.player?.Name,
+                    activeDialog = dialog,
+                    checks = list,
                 });
             }
             catch (Exception ex)
@@ -13114,11 +13211,109 @@ public class ModEntry : Mod
         };
     }
 
+    /// <summary>
+    /// 节日入场就绪卡死时，**踹房主状态机一脚**。机制/门槛/执行顺序的完整论证见常量区那段注释。
+    ///
+    /// 一句话：房主的 `ServerReadyCheck.Update()` 只在**计数变化**时才跑 `Release`/`Lock` 两条路，
+    /// 计数一动不动就永久死锁；而我们跑在菜单 `update()` 之后，所以"每帧补一个 `Cancel`"能让房主
+    /// **真的看到我没就绪**（计数 2→1 → 逼出 `Release`）→ 松手后游戏自己把 Ready 发回去（1→2 →
+    /// 逼出全新一轮 `Lock` → `AcceptLock` → 房主 `Finish` → 客户端 `confirm()` 进节日）。
+    ///
+    /// ⚠️ 门槛很窄：**只有"客户端说全员齐了、却迟迟不放行"才会动手**（`festivalStart` + 2/2 + 超时）。
+    ///    房主自己还没就绪时是 1/2 —— 门槛不成立，**一次都不会碰**。
+    /// </summary>
+    private void FestReadyKickDuringStall(string id)
+    {
+        double now = Game1.currentGameTime.TotalGameTime.TotalMilliseconds;
+
+        // 已被房主锁住（Locked ⇒ 不可反悔）→ 该由房主的 Finish 收尾，我们立刻松手别插手。
+        // 注：Locked 时 SetLocalReady 本来也会被 `IsCancelable` 挡掉，这里显式退出只为意图清楚。
+        if (!Game1.netReady.IsReadyCheckCancelable(id))
+        {
+            _festReadyPulseUntilMs = 0;
+            return;
+        }
+
+        // 正在「按住」中 → 每帧补一个 Cancel。这一帧游戏那句 Ready 已经先发过了，
+        // 所以房主排空这个 tick 时**最后收到的必是 Cancel** —— 这正是"踹得动"的关键。
+        if (_festReadyPulseUntilMs > 0)
+        {
+            if (now < _festReadyPulseUntilMs)
+            {
+                Game1.netReady.SetLocalReady(id, false);
+                return;
+            }
+            _festReadyPulseUntilMs = 0;   // 按完了，松手；下一帧游戏自己会把 Ready 发回去
+            return;
+        }
+
+        // 只有"客户端视角全员都齐了、却还没放行"才算卡死。房主没就绪时是 1/2 → 这里直接退出。
+        int ready = Game1.netReady.GetNumberReady(id);
+        int required = Game1.netReady.GetNumberRequired(id);
+        if (!(required >= 2 && ready >= required && !Game1.netReady.IsReady(id)))
+        {
+            _festReadyStuckSinceMs = 0;   // 人没齐 = 正常等待，不打扰
+            return;
+        }
+
+        if (_festReadyStuckSinceMs <= 0) { _festReadyStuckSinceMs = now; return; }
+        if (now - _festReadyStuckSinceMs < FestReadyStallMs) return;    // 再等等，别抢（正常流程几百毫秒）
+        if (_festReadyKicks >= FestReadyMaxKicks) return;               // 踹够了就认了 —— /ready_state 留着查现场
+
+        _festReadyKicks++;
+        _festReadyStuckSinceMs = now;              // 下一脚再等一个 FestReadyStallMs
+        _festReadyPulseUntilMs = now + FestReadyPulseMs;
+
+        // 出声（恒：「别静默兜底」）。第 1 脚 Info，之后 Warn；第 2 脚起往状态条推一条警报。
+        Monitor.Log($"[festival-ready] 就绪卡死（{ready}/{required} 齐了却不放行）→ 踹第 {_festReadyKicks} 脚",
+            _festReadyKicks >= 2 ? LogLevel.Warn : LogLevel.Info);
+        if (!_festReadyAlerted && _festReadyKicks >= 2)
+        {
+            _festReadyAlerted = true;
+            EnqueueAlert("festival_ready_stall",
+                $"🎪 节日就绪卡住（{ready}/{required} 齐了但没放行），已自动踹第 {_festReadyKicks} 脚",
+                "warn", "festivalReady");
+        }
+    }
+
     /// <summary>职业 id → 本地化分支名（LevelUpMenu.getProfessionTitleFromNumber）；失败回退"分支#id"。</summary>
     private static string SafeProfessionName(int pid)
     {
         try { return StardewValley.Menus.LevelUpMenu.getProfessionTitleFromNumber(pid); }
         catch { return $"分支#{pid}"; }
+    }
+
+    /// <summary>
+    /// 当前激活菜单若为 ReadyCheckDialog，报出它的真身；否则返回 null。
+    /// 2026-09-13 恒：AI 卡在节日入场就绪框（画面写着「正在等待其他玩家……（2/2）」）。
+    /// `ReadyCheckDialog` 是**一个类管两件事**（`checkName` 区分），`/state` 原先只报 type，
+    /// Python 只能一律猜"睡觉就绪屏" ⇒ 恒看到的就是那句误导文案。
+    /// **`ReadyCheckDialog` 是 public，`checkName` 是 public 字段；三个计数走 `Game1.netReady`
+    /// 的 public 方法**（`ReadySynchronizer.GetNumberReady/GetNumberRequired/IsReady`、
+    /// `IsReadyCheckCancelable`）⇒ 这里**不用反射**，照抄游戏自己的口径。
+    /// 客户端语义（务必记住，CHANGELOG ㊵）：`numberReady == numberRequired` **不等于能进**，
+    /// 客户端只认房主发来的 `Finish`；`2/2` 却迟迟不动 = 房主侧没放行。
+    /// </summary>
+    private object? BuildReadyCheckInfo(IClickableMenu? menu)
+    {
+        if (menu is not StardewValley.Menus.ReadyCheckDialog rcd)
+            return null;
+        var info = new Dictionary<string, object?>
+        {
+            ["name"] = rcd.checkName,
+            ["isFestival"] = rcd.checkName == "festivalStart",
+            ["isSleep"] = rcd.checkName == "sleep",
+        };
+        try
+        {
+            info["numberReady"] = Game1.netReady.GetNumberReady(rcd.checkName);
+            info["numberRequired"] = Game1.netReady.GetNumberRequired(rcd.checkName);
+            info["isReady"] = Game1.netReady.IsReady(rcd.checkName);
+            // 还能不能反悔（State != Locked）：false = 已被房主锁住，正在等 Finish。
+            info["cancelable"] = Game1.netReady.IsReadyCheckCancelable(rcd.checkName);
+        }
+        catch { }
+        return info;
     }
 
     /// <summary>

@@ -794,7 +794,26 @@ def _menu_advice(menu_type: str, active_menu: dict, active_event: dict = None) -
             return "🗳️ 对话选项：menu click(option=N) 选择"
         return "💬 对话推进：menu advance(推进剧情/对话)；**有选项用 menu click(option=N) 选**（confirm 选不了选项）"
     if m == "readycheckdialog":
-        return "🛏️ 睡觉就绪屏（等全员 ready）：想撤就绪/关屏 → menu cancel；确认就寝过夜 → daily sleep"
+        # 🎪 2026-09-13：`ReadyCheckDialog` 是**一个类管两件事**，靠 `checkName` 区分
+        #   （`"sleep"`=睡觉就绪 / `"festivalStart"`=节日入场就绪）。原先这里一律喊"睡觉就绪屏"，
+        #   恒 09-13 看到的就是这句**误导文案**（AI 明明卡在节日入场，屏上却写着睡觉）。
+        rc = active_menu.get("readyCheck") or {}
+        name = rc.get("name")
+        nr, nq, ok = rc.get("numberReady"), rc.get("numberRequired"), rc.get("isReady")
+        cnt = f"{nr}/{nq}" if isinstance(nr, int) and isinstance(nq, int) else "?"
+        if name == "festivalStart":
+            if isinstance(nr, int) and isinstance(nq, int) and nr >= nq and not ok:
+                # 客户端视角"全员齐了"却未放行 = 卡在房主侧（CHANGELOG ㊵）。**绝不能 cancel**：
+                # 撤了就绪会让房主更等不到人，等于自己把门关上。
+                return (f"🎪 节日入场就绪（{cnt} **全员已就绪**，只等房主放行）：**别 cancel、别动**，"
+                        f"mod 会自己踹一脚；久等不动用 check(what=\"ready\") 看现场")
+            return f"🎪 节日入场就绪（{cnt}，等人齐）：**别 cancel**（撤了就绪会让全员更等不到）"
+        if name == "sleep":
+            return "🛏️ 睡觉就绪屏（等全员 ready）：想撤就绪/关屏 → menu cancel；确认就寝过夜 → daily sleep"
+        if name is None:
+            # 旧 DLL 不报 readyCheck —— **如实说分不出**，别硬猜睡觉（宁报错别兜底）
+            return "❓ 就绪屏（等全员 ready；此 DLL 不报 checkName，分不出睡觉/节日）：**先别 cancel**，看 check(what=\"status\") 是否在节日"
+        return f"❓ 就绪屏（未知 checkName={name}，等全员 ready）：**先别 cancel**"
     if m == "forgemenu":
         return "🔨 锻造台：menu forge 附魔/幻化/组合戒指"
     if m == "junimonotemenu":
@@ -6694,8 +6713,60 @@ def settings(setting: str = "", value: str = "", ops: str = "", kw: dict | None 
 #  ⚠️ 边界：check_status=概览（状态条同款）；check_backpack=逐格详细。查啥用 check。
 # ═══════════════════════════════════════════
 @mcp.tool()
+def check_ready_state() -> str:
+    """🎪 就绪握手实况（`check what=ready` 的实现）——"卡在就绪框"的现场取证。
+
+    ⚠️ **两侧都读**才看得出死锁在哪头（每个进程各有一份 `Game1.netReady`）：
+      · 客户端 `numberReady==numberRequired` 却 `isReady=false` ⇒ **房主没放行**，客户端只能干等；
+      · 房主 `locking=true` 但有人停在 `Ready`（没到 `Locked`）⇒ 握手卡在锁定阶段。
+    详见 CHANGELOG ㊵；端点实现见 ModEntry.handleReadyState。
+    """
+    lines = ["🎪 就绪握手实况（客户端只认房主的 Finish，所以**两侧都要看**）"]
+    seen = {}
+    for label, is_host in (("AI", False), ("房主", True)):
+        try:
+            d = api.ready_state(host=is_host)
+        except Exception as e:
+            lines.append(f"  ⚠️ {label} 读不到：{type(e).__name__} {e}")
+            continue
+        if not d.get("ok"):
+            lines.append(f"  ⚠️ {label}：{d.get('error')}")
+            continue
+        checks = d.get("checks") or []
+        seen[label] = checks
+        who = d.get("player") or "?"
+        head = f"  · {label}({who}{'，房主' if d.get('isMaster') else ''})"
+        if not checks:
+            lines.append(head + "：没有进行中的就绪检查")
+            continue
+        lines.append(head)
+        for c in checks:
+            bits = [f"{c.get('id')} [{c.get('kind')}]",
+                    f"{c.get('numberReady')}/{c.get('numberRequired')}",
+                    f"state={c.get('state')}",
+                    "已放行✅" if c.get("isReady") else "未放行❌"]
+            if c.get("activeLockId"):
+                bits.append(f"lock#{c.get('activeLockId')}")
+            if "locking" in c:
+                bits.append("正在锁人✅" if c.get("locking") else "没在锁人")
+            lines.append("      " + " · ".join(bits))
+            rs = c.get("readyStates")
+            if rs:
+                lines.append("        每人： " + "、 ".join(f"{k}={v}" for k, v in rs.items()))
+    # 判词：把"卡在哪一头"直接说出来，省得每次现推
+    for c in (seen.get("AI") or []):
+        nr, nq = c.get("numberReady"), c.get("numberRequired")
+        if isinstance(nr, int) and isinstance(nq, int) and nr >= nq and not c.get("isReady"):
+            lines.append("  🔴 **客户端视角全员已就绪、却没放行 ⇒ 卡在房主侧**。"
+                          "别 cancel（撤了就绪只会让房主更等不到人）；mod 会在卡满 "
+                          "2.5s 后自动踹一脚，踹过会写 SMAPI 日志 [festival-ready]。")
+            break
+    return _with_state("\n".join(lines))
+
+
+@mcp.tool()
 def check(what: str, kw: dict | None = None) -> str:
-    """🔍 查询域（what=...）——"查我自己 + 查我的世界"。status 全状态 / backpack 背包明细(逐格价值/星级) / worn 穿戴 / machines 机器 / look 环视周围 / quest 开任务日志 / profile 我的技能+职业分支(如是否 Luremaster 蟹笼免饵) / role 端口↔角色确认(AI=谁/host=谁)。完整 what 清单 → help(check)。
+    """🔍 查询域（what=...）——"查我自己 + 查我的世界"。status 全状态 / backpack 背包明细(逐格价值/星级) / worn 穿戴 / machines 机器 / look 环视周围 / quest 开任务日志 / profile 我的技能+职业分支(如是否 Luremaster 蟹笼免饵) / role 端口↔角色确认(AI=谁/host=谁) / ready 就绪握手实况(卡在就绪框时查)。完整 what 清单 → help(check)。
 
     带参的只有两个，参数放进 kw（同域工具的写法）：check(what="look", kw={"radius":30}) / check(what="chests", kw={"chest":2})。其余 what 全无参。
 
@@ -6721,10 +6792,12 @@ def check(what: str, kw: dict | None = None) -> str:
         #   顶层 20→17）。两者定义在本函数之后，调用时才查全局名，故可用。
         "profile": profile, "技能": profile, "职业": profile, "职业分支": profile,
         "role": which_role, "角色": which_role, "端口": which_role, "我是谁": which_role,
+        # 🎪 2026-09-13：就绪握手现场（卡在 ReadyCheckDialog 时查；两侧都读才看得出死锁在哪头）
+        "ready": check_ready_state, "就绪": check_ready_state, "ready_state": check_ready_state,
     }
     fn = dispatcher.get(w)
     if fn is None:
-        return _with_state(f"❌ 未知查询「{what}」（status/backpack/worn/machines/mine/silo/mastery/buildings/quest/chests/look/profile/role）")
+        return _with_state(f"❌ 未知查询「{what}」（status/backpack/worn/machines/mine/silo/mastery/buildings/quest/chests/look/profile/role/ready）")
     # 🐛 2026-09-11 恒：本函数**原来把子函数 `fn()` 裸调**，一个参数都传不进去——可 `what` 里
     #    `chests`/`look` 是有参的（`scan_chests(chest=-1)` / `look_around(radius=10)`），
     #    文档（help(check) + TOOL_INVENTORY）却写着 `chest=N` / `radius=10`：**照着写必然无效**，

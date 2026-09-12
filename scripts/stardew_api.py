@@ -317,6 +317,23 @@ def unlock_debug():
     return _ai_get("/unlock_debug")
 
 
+def ready_state(host=False):
+    """🎪 就绪握手实况（`GET /ready_state`）——诊断"卡在就绪框"用。
+
+    2026-09-13 恒：「AI 走到节日地点 → 卡在「正在等待其他玩家……（2/2）」双双进不去」。
+    `2/2` 只是**显示计数**，客户端真正能不能进只看房主有没有发 `Finish`（见 CHANGELOG ㊵）。
+    这个端点把两侧的**真状态**摊开：每个 ready check 的
+    `state`(NotReady/Ready/Locked) / `numberReady` / `numberRequired` / `isReady` / `activeLockId`，
+    房主侧另有 `locking` 和 `readyStates`（每位玩家各自的锁状态）——卡住时一眼看出是谁没锁上。
+
+    ⚠️ 读的是 `Game1.netReady`，**每个进程各有一份**：默认读 AI(7843)，要对比房主侧
+    （`locking`/`readyStates` 只在房主有）就传 `host=True` 读 7842。**两边都读**才看得出死锁在哪头。
+    """
+    if host:
+        return requests.get(f"{HOST_URL}/ready_state", timeout=10).json()
+    return _ai_get("/ready_state")
+
+
 def emote(emote_id):
     return _post("/emote", {"id": emote_id})
 
