@@ -799,9 +799,16 @@ def _menu_advice(menu_type: str, active_menu: dict, active_event: dict = None) -
                 # 转盘/星星币店）**两支都要 real=true**（恒 08-23 实测星星币店）。
                 return "🗳️ 问句框（跳舞邀请/摊位/转盘…）：menu click(option=N, **real=true**) 选择"
             if qk == "npc":
-                # 选项挂在 `Dialogue` 上（节日里「什么事？」等）：走 `answerDialogueQuestion`
-                # = mod 的 `!real` 路径 ⇒ **别加 real**（08-18 恒实测）。
-                return "🗳️ NPC 对话选项：menu click(option=N) 选择（**别加 real**）"
+                # 选项挂在 `Dialogue` 上（节日里「什么事？」等）。
+                # ✅ 2026-09-13 深夜**定案：也要 `real=true`**（反编译 + 可观测副作用双重实证）：
+                #   · `Dialogue.cs:1613` 真实点击 → `Dialogue.chooseResponse` → 调的就是
+                #     `event.answerDialogueQuestion(speaker, responseKey)`（`case "danceAsk"` 就是邀请）
+                #     ⇒ **real 这条路才是对的**；
+                #   · mod 不给 real 时自己调同一方法，但 NPC 靠 `isCharacterAtTile(player.GetGrabTile())`
+                #     找（`ModEntry.cs:11517`）—— **没面朝对方就是 null ⇒ 静默点空**；
+                #   · 真机：不带 real 连点两次框不关；`real=true` 一次 ⇒ **海莉报出接受台词**
+                #     （`Event.cs:12123-12133`，只有成功分支才设那句）⇒ 邀请**真的生效**。
+                return "🗳️ NPC 对话选项：menu click(option=N, **real=true**) 选择"
             # 旧 DLL 不报 questionKind ⇒ **如实说分不出**，给"点不动再加"（宁报错别兜底）
             if active_event:
                 return "🗳️ 场景问句（事件）：menu click(option=N)；**框不关就加 real=true 再点一次**（此 DLL 不报框种类）"
@@ -1564,7 +1571,8 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
             if _qk == "ask":
                 lines.append("→ 用 menu click(option=N, **real=true**) 选择")
             elif _qk == "npc":
-                lines.append("→ 用 menu click(option=N) 选择")
+                # ✅ 同 `_menu_advice`：**也要 real=true**（见那里的反编译 + 真机实证）
+                lines.append("→ 用 menu click(option=N, **real=true**) 选择")
             elif active_event:
                 # 旧 DLL 不报 questionKind：如实说明 + 给补救动作（两种问句框在节日里并存）
                 lines.append("→ 用 menu click(option=N) 选择；**框不关就加 real=true 再点一次**（此 DLL 不报框种类）")
@@ -9206,42 +9214,60 @@ def _festival_social_chat(a) -> str:
     2026-08-18 恒：改自然走路（不用 /festival/interact 瞬移端点），拟人地走动找人聊。"""
     tname = a.get("displayName") or a.get("name") or "?"
     tx, ty = int(a.get("x", 0)), int(a.get("y", 0))
-    # 走路统一 /walk_to（2026-08-13 恒拍板）先走近（拟人），再 position 精确对位（落点偏一格已知坑）
+    # 🚶 站哪：**先问游戏**（`_stand_near` = 4 正邻里第一个 `/passable` 的），**只决策一次、只走一趟**。
+    #   ⚠️ 2026-09-13 恒抓到：原版死磕 `(tx, ty+1)`（NPC 正下方）—— NPC 站岸边/水边时那格是**水**，
+    #   走不过去 ⇒ BFS 失败 ⇒ mod 兜底瞬移 ⇒ **人飘水里**（战报尾巴那条 `teleporting to (29,36)`）。
+    #   ⚠️ 但**不许"不行就换一格再试"**：那会**围着 NPC 转圈**（恒明确担心这个）⇒ 这里**只挑一次**；
+    #   挑不到就**原地不动**，让下面那句"够不着"如实报出去 —— **绝不试错式走位**。
+    stand = _stand_near(tx, ty)
     cur = (api.state().get("location") or {}).get("name", "")
-    try:
-        api.walk_to_coord(cur, tx, ty + 1)
-        deadline = time.time() + 8
-        while time.time() < deadline:
-            ax, ay = api.player_tile()
-            if abs(ax - tx) + abs(ay - ty) <= 1:
-                break
-            time.sleep(0.2)
-    except Exception:
-        pass
-    # 对位：position 精确站 NPC 下方（2026-08-18 恒：walk_to 落点偏一格，靠 position 对正）
-    try:
-        api.position(tx, ty + 1)
-        time.sleep(0.25)
-    except Exception:
-        pass
-    api.face(0)
+    if stand:
+        sx, sy = stand
+        # 走路统一 /walk_to（2026-08-13 恒拍板）先走近（拟人），再 position 精确对位（落点偏一格已知坑）
+        try:
+            api.walk_to_coord(cur, sx, sy)
+            deadline = time.time() + 8
+            while time.time() < deadline:
+                ax, ay = api.player_tile()
+                if abs(ax - tx) + abs(ay - ty) <= 1:
+                    break
+                time.sleep(0.2)
+        except Exception:
+            pass
+        # 对位：position 精确站到**挑好的那格**（2026-08-18 恒：walk_to 落点偏一格，靠 position 对正）
+        try:
+            api.position(sx, sy)
+            time.sleep(0.25)
+        except Exception:
+            pass
+        # 朝向：站哪边就朝哪边看 NPC（原版恒 `face(0)`，只有"站在正下方"时才碰巧对）
+        api.face({(0, 1): 0, (0, -1): 2, (-1, 0): 1, (1, 0): 3}.get((sx - tx, sy - ty), 0))
     ax, ay = api.player_tile()
-    if abs(ax - tx) + abs(ay - ty) > 4:    # 复查距离：够不着优雅跳过（节日特殊位/墙后）
+    if abs(ax - tx) + abs(ay - ty) > 4:    # 复查距离：够不着优雅跳过（节日特殊位/墙后/挑不到站格）
         return f"  💤 {tname} 够不着（{abs(ax-tx)+abs(ay-ty)}格，可能墙后/特殊位），跳过"
     r = api._post("/interact", {"x": tx, "y": ty})   # 直接打 NPC tile，不依赖面前格
     if not r.get("ok"):
         return f"  ⚠️ {tname}: 搭话失败（{r.get('error', '')}）"
     collected, opts = _collect_dialogue()
+    stand_bad = False
     if not collected and not opts:
         # 兜底：节日事件 actor 用 /interact 可能不触发（NPC走动/事件模式，2026-08-20 花舞节实测）
         # → 换 /festival/interact 按名重试（它内部 checkAction + npc.checkAction 双路径）
+        # ⚠️ 2026-09-13：**这个端点会挪人**（把玩家摆到 NPC 旁边）。原版硬编码 `y+1` 且零检查 ⇒
+        #   NPC 站岸边/水边时**人直接落水里**（恒截图"先站对、后下水"的真凶就是它）。
+        #   C# 已改成挑可站邻格；这里**读回 `standPicked`** —— False = 四邻全站不住、退回默认站位
+        #   ⇒ 如实报出去，**不静默**（宁报错别兜底）。
         try:
-            api._post("/festival/interact", {"name": a.get("name")})
+            fb = api._post("/festival/interact", {"name": a.get("name")})
+            if fb.get("ok") and fb.get("standPicked") is False:
+                stand_bad = True
             time.sleep(0.3)
             collected, opts = _collect_dialogue()
         except Exception:
             pass
     lines = []
+    if stand_bad:
+        lines.append(f"  ⚠️ {tname}: 四邻都站不住，退回默认站位（可能落水里）")
     if collected:
         for d in collected:
             lines.append(f"  💬 {tname}: 「{d}」")
@@ -9257,14 +9283,20 @@ def _festival_social_chat(a) -> str:
 
 
 # 节日社交巡礼断点（2026-08-18：空参循环挨个聊，遇选项停下，选完再调继续）
-_fest_social_state = {"key": None, "targets": [], "idx": 0}
+# ⚠️ 2026-09-13 改结构：`idx` → **`targets` 只存"还没聊的"**（聊完就 pop）+ `done` 计数。
+#    因为改成**就近搭话**（每轮挑离当前位置最近的）后，顺序是动态的，用下标没法表达。
+_fest_social_state = {"key": None, "targets": [], "done": 0}
 
 
-def _festival_interact(name: str = "") -> str:
+def _festival_interact(name: str = "", budget_s: float = 120.0) -> str:
     """🎪 节日互动（2026-08-18 恒：自然走路，不瞬移）
     - 传 name：自然走到指定节日 NPC 前搭话，自动推进对话收台词（遇选项停下让 AI 选）
     - 空参：自动循环和节日现场【除刘易斯外】所有 NPC 挨个聊（纯对话自动点掉收台词；
       遇选项停下——处理完选项再调 festival interact 继续下一个；断点自动续传）
+      ⏱️ **本批限时 `budget_s` 秒（默认 120，恒 2026-09-13 拍板）**：花舞节全场 33 人实测
+         ≈108 秒 ⇒ 一次装得下；万一超时就**停手报"还剩 N 个"**，再调一次接着聊。
+         **绝不硬撑到客户端读超时**（前一版就是这么把汇总丢掉的：`mcp_cli` 读超时 60s < 108s，
+         工具在服务端明明跑完了，结果没人收得到）。
     ⚠️ 排除刘易斯：他是节日主持，很多节日跟他对话会开启节日小游戏/活动。
     """
     try:
@@ -9298,23 +9330,48 @@ def _festival_interact(name: str = "") -> str:
         st["targets"] = [a for a in actors
                          if a.get("name") != "Lewis" and a.get("displayName") != "刘易斯"
                          and a.get("name") != me and a.get("displayName") != me]
-        st["idx"] = 0
+        st["done"] = 0
     if not st["targets"]:
+        # 空列表有两种：①本场压根没有可聊的人 ②前面几批已经全聊完 —— 分开报，别混。
+        if st["done"]:
+            st["key"] = None
+            st["done"] = 0
+            return "🎪 节日全场（除刘易斯）都聊完了"
         return "🎪 节日现场除刘易斯外没有其他 NPC 可聊（刘易斯是节日主持，对话会开小游戏）"
-    if st["idx"] >= len(st["targets"]):
-        st["key"] = None
-        return "🎪 节日全场（除刘易斯）都聊完了"
     results = []
-    while st["idx"] < len(st["targets"]):
-        out = _festival_social_chat(st["targets"][st["idx"]])
-        results.append(out)
-        st["idx"] += 1
-        if "🗳️" in out:
+    t0 = time.time()
+    hit_option = False
+    total = st["done"] + len(st["targets"])
+    while st["targets"]:
+        # ⏱️ 限时到点收工（恒 2026-09-13：设 120s，一场 33 人 ≈108s 装得下）。
+        #    判据放**循环头**、且**至少聊一个**（results 非空才判），免得预算一进来就为 0 个。
+        if results and (time.time() - t0) >= budget_s:
             break
-    head = f"🎪 节日社交巡礼 {st['idx']}/{len(st['targets'])}：\n"
-    if st["idx"] < len(st["targets"]):
-        return head + "\n".join(results) + "\n🚦 遇到选项停下——menu_click(option=N) 选完，再调 festival interact 继续"
+        # 🧭 **就近搭话**（恒 2026-09-13："每次这头跑那头又跑回来的"）——每轮挑**离当前位置最近**的
+        #   那个，而不是按 actors 数组顺序挨个跑 ⇒ 一趟扫过去、不再来回横穿地图。
+        #   ⚠️ 这**只是排序**，不是"这个走不到就换一个试" —— 顺序变了但每人只走一趟，**不会围着谁转圈**。
+        try:
+            ax, ay = api.player_tile()
+            st["targets"].sort(key=lambda a: abs(int(a.get("x", 0)) - ax) + abs(int(a.get("y", 0)) - ay))
+        except Exception:
+            pass          # 读不到位置就按现有顺序走，别为这个中断巡礼
+        out = _festival_social_chat(st["targets"][0])
+        results.append(out)
+        st["targets"].pop(0)
+        st["done"] += 1
+        if "🗳️" in out:
+            hit_option = True
+            break
+    spent = time.time() - t0
+    head = f"🎪 节日社交巡礼 {st['done']}/{total}（本批 {spent:.0f}s）：\n"
+    if st["targets"]:
+        tail = ("\n🚦 遇到选项停下——menu_click(option=N) 选完，再调 festival interact 继续"
+                if hit_option else
+                f"\n⏱️ 本批限时 {budget_s:.0f}s 到点收工，**还剩 {len(st['targets'])} 个**"
+                f"——再调一次 festival interact 接着聊（断点续传）")
+        return head + "\n".join(results) + tail
     st["key"] = None
+    st["done"] = 0
     return head + "\n".join(results) + "\n✅ 节日全场（除刘易斯）都聊完了"
 
 
@@ -10372,7 +10429,10 @@ def _flower_dance_guard() -> str:
 def _festival_dance(target: str = "") -> str:
     """💃 花舞节跳舞邀请（2026-08-21：正常端口已通，direct=true 退役）
     - 邀玩家（target 留空=房主）：走提案系统，对方弹"XX想和你跳舞"Yes/No 接受框（最自然）
-    - 邀 NPC：**不走本工具**——用裸 /interact 站紧邻格弹「什么事？」→选「邀请XX作舞伴」（需4心+）
+    - 邀 NPC：**不走本工具**——用裸 /interact 站紧邻格弹「什么事？」→选「邀请XX作舞伴」（需4心+）。
+      ⚠️ **点法必须带 `real=true`**（`menu click(option=N, real=true)`，N 通常 0）：不带 real 时 mod 走
+      `answerDialogueQuestion` 且 NPC 靠"面朝格"找（`isCharacterAtTile(player.GetGrabTile())`）⇒ 对不上就
+      **静默点空**。2026-09-13 真机：不带 real 连点两次框不关；带 real 一次 ⇒ 海莉报出**接受台词**（真生效）
     ⚠️ 必须在舞会开始前（跟刘易斯对话/主环节前）调用；双方需已在花舞节地图。"""
     g = _flower_dance_guard()
     if g:
@@ -10539,7 +10599,7 @@ def _festival_ice_fish() -> str:
 
 @mcp.tool()
 def festival(ops: str = "", kw: dict | None = None) -> str:
-    """🎪 节日域。today 今天节日 / go 去 / info 实况 / interact 互动 / answer 应答 / shop 节日商店 / prep 备战。节日专属 op（复活节捡蛋、花舞节跳舞、迷宫等）→ help(festival)。"""
+    """🎪 节日域。today 今天节日 / go 去 / info 实况 / interact 互动(**空参=全场巡礼搭话，可能跑~2分钟，属正常，别当卡住**) / answer 应答 / shop 节日商店 / prep 备战。节日专属 op（复活节捡蛋、花舞节跳舞、迷宫等）→ help(festival)。"""
     dispatch = {
         "today": _festival_today, "今天": _festival_today,
         "next": _festival_next, "下一个": _festival_next,
@@ -14037,6 +14097,9 @@ def dance_invite(target: str = "") -> str:
        接受后双方 dancePartner 自动配对（真机验证通过）。
     🧙 邀 NPC：**不走本工具**——站 NPC 紧邻格裸 /interact 弹「什么事？」→选「邀请XX作舞伴」（需4心+，
        对方正常接受/拒绝）。本工具只处理玩家提案。
+       ⚠️ **点法必须带 `real=true`**（`menu click(option=N, real=true)`，N 通常 0）：不带 real 时 mod 走
+       `answerDialogueQuestion` 且 NPC 靠"面朝格"找（`isCharacterAtTile(player.GetGrabTile())`）⇒ 对不上就
+       **静默点空**。2026-09-13 真机：不带 real 连点两次框不关；带 real 一次 ⇒ 海莉报出**接受台词**（真生效）
 
     Args:
         target: 目标玩家名（默认=另一个在线玩家/房主）

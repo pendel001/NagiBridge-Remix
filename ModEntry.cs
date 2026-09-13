@@ -18458,10 +18458,32 @@ public class ModEntry : Mod
                     return;
                 }
 
-                // Move player next to NPC and face them
+                // 🚶 站到 NPC 旁边 + 朝向 —— **必须挑一个真站得住的邻格**
+                // ⚠️ 2026-09-13 恒真机抓到的现场：原版死磕 `(x, y+1)`（NPC 正下方）**且直接设 Position、
+                //    不做任何可行性检查** ⇒ NPC 站岸边/水边时 **人直接落水里**（画面上"飘着"）。
+                //    时间线（恒的截图）：Python 侧 `_stand_near` 已经先挑好站格（**站对了、朝向也对**），
+                //    随后 `/interact` 没收到台词（这 NPC 本来就没台词）⇒ 走本兜底端点 ⇒ **被这一行摁进水里**。
+                //    ⇒ Python 那半已修，**这里是 C# 那一半**，两边都得修，否则兜底会绕过去。
                 var farmer = Game1.player;
-                farmer.Position = new Vector2(target.TilePoint.X, target.TilePoint.Y + 1) * Game1.tileSize;
-                farmer.faceDirection(0); // face up toward NPC
+                var npcTile = target.TilePoint;
+                int[] standDx = { 0, 0, 1, -1 };          // 正下方优先（原行为），再上/右/左
+                int[] standDy = { 1, -1, 0, 0 };
+                int standX = npcTile.X, standY = npcTile.Y + 1;   // 四邻都站不住才退回原行为
+                bool standPicked = false;
+                for (int i = 0; i < standDx.Length; i++)
+                {
+                    int cx = npcTile.X + standDx[i], cy = npcTile.Y + standDy[i];
+                    try
+                    {
+                        if (Game1.currentLocation.isTilePassable(new Vector2(cx, cy)))
+                        { standX = cx; standY = cy; standPicked = true; break; }
+                    }
+                    catch { }
+                }
+                farmer.Position = new Vector2(standX, standY) * Game1.tileSize;
+                // 朝向：站哪边就朝哪边看 NPC（原版恒 faceDirection(0)，只有站正下方时才碰巧对）
+                int sdx = standX - npcTile.X, sdy = standY - npcTile.Y;
+                farmer.faceDirection(sdy > 0 ? 0 : sdy < 0 ? 2 : (sdx < 0 ? 1 : 3));
 
                 // Try to trigger NPC action via checkAction
                 bool triggered = Game1.currentLocation.checkAction(
@@ -18481,6 +18503,8 @@ public class ModEntry : Mod
                     target = target.Name,
                     targetTile = new { x = target.TilePoint.X, y = target.TilePoint.Y },
                     playerTile = new { x = farmer.TilePoint.X, y = farmer.TilePoint.Y },
+                    // 🚶 站格是真的挑到的，还是四邻全站不住退回的 y+1（退回时**大概率落水里**，留个读数）
+                    standPicked,
                     triggered
                 });
             }

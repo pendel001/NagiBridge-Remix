@@ -19,7 +19,10 @@ HDR = {"Content-Type": "application/json", "Accept": "application/json, text/eve
 # ⏱️ 客户端等待上限（秒）：默认 60s 够短工具用，但**阻塞型长脚本**（festival ice_fish 要钓满
 #    2 分钟、bomb_mine 一局更久）会被客户端先掐断 ⇒ 服务端还在跑、命令却报错，看着像工具坏了。
 #    这类调用把环境变量调大：`NAGI_MCP_TIMEOUT=240 python mcp_cli.py festival '{"ops":"ice_fish"}'`
-CALL_TIMEOUT = float(os.environ.get("NAGI_MCP_TIMEOUT", "60"))
+#    ⚠️ 2026-09-13 恒拍板：**默认 60 → 150**。反例就在眼前——`festival interact` 空参全场巡礼
+#    ≈108 秒（花舞节 33 人 × 3.3s），60s 必然掐断 ⇒ 服务端跑完了、汇总**没人收得到**
+#    （那次只能事后从 `sessions/session_log.jsonl` 的 `ret` 字段捞）。150 给服务端 120s 限时留余量。
+CALL_TIMEOUT = float(os.environ.get("NAGI_MCP_TIMEOUT", "150"))
 SESSION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "._mcp_session")
 
 
