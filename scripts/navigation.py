@@ -367,6 +367,71 @@ _NAV_LAST = {"name": None, "loc": None, "x": None, "y": None}   # 上次导航�
 
 _NAV_FAILED = {"v": False}                                      # 上次导航是否失败
 
+# 🚂 2026-09-13 恒「矿车的门禁也没做好，有点严重了」——
+#   病根：`_minecart_go` **先走再试**：走到矿车站 → 交互开菜单 → 轮询找站名 → 找不到才 `return False`。
+#   全程**没有"这存档的矿车通没通"的前置检查**（游戏的口径是 `Data/Minecarts` 里那个网络的
+#   `UnlockCondition` 过 `GameStateQuery.CheckConditions`，反编译 `GameLocation.cs:10226`；
+#   不通就 `drawObjectDialogue(MineCart_OutOfOrder)` —— 真机看到的就是威利那句「已损坏」）。
+#   后果两条，都是恒说的"严重"：
+#     ① 失败后**不关那个对话框** ⇒ AI 被晾在站台上（真机：小星停在 `Town (105,80)`，框开着）；
+#     ② 失败后**不回退走路** ⇒ `_NAV_FAILED=True` 直接把「未到 Mountain」抛上去，明明走路能到。
+#   修法（不依赖新增端点，游戏在跑也能立刻生效）：
+#     · 失败即 `/menu_close` 收掉对话框；
+#     · **本次会话拉黑矿车**（`_MINECART_DEAD`）—— 一次不通就别再花钱走过去试第二回，
+#       而且**出声记账**（恒：「别静默兜底」），下一次 `map go` 直接走路。
+#     · `_minecart_route_go` 失败时返回 **空串**表示"落穿到走路"，由 `map_go` 接着走 BFS 那条路。
+#   ⏳ 真正的"前置门禁"（读 `Data/Minecarts` 的 UnlockCondition）需要新端点 + 重编重启，留作下一件。
+_MINECART_DEAD = {"v": False, "why": "", "day": ""}             # 矿车已被证不可用（**只认当天**）
+_MINECART_LEAD = {"text": ""}                                   # 落穿到走路时带上的叙事
+
+
+def _minecart_dead_now() -> bool:
+    """矿车在当前这一天被证过不可用？**跨天自动失效** —— 存档里修好矿车当天就恢复，
+    不会因为一次失败把矿车永久拉黑（恒：「别静默兜底」，也别静默禁用）。"""
+    if not _MINECART_DEAD["v"]:
+        return False
+    try:
+        t = api.state().get("time") or {}
+        today = f"{t.get('season')}-{t.get('dayOfMonth')}-{t.get('year')}"
+    except Exception:
+        return True                       # 读不到时间 → 沿用旧判断（宁可少绕一趟）
+    if _MINECART_DEAD["day"] and _MINECART_DEAD["day"] != today:
+        _MINECART_DEAD["v"] = False       # 换天了 → 重新给矿车一次机会
+        _MINECART_DEAD["why"] = ""
+        _MINECART_DEAD["day"] = ""
+        return False
+    return True
+
+
+def _cart_gate(cart_target: str) -> tuple:
+    """🚂 **规划期**就问游戏"这车坐不坐得成"（2026-09-13 恒「门禁根本没做好」）。
+
+    【为什么】原流程是**先走再试**：走到站台 → 交互 → 开菜单 → 找不到站名才失败 ⇒ 真机把 AI
+      晾在站台上（`Town (105,80)`、对话框开着），而且整趟导航判失败 —— 走路明明能到。
+    【依据】游戏 `/minecarts`（C# 端照 `GameLocation.ShowMineCartMenu` 的两道门评估过：
+      网络级 `UnlockCondition`、每站级 `Condition`）—— **不再是我们手写的 flag 表**。
+    【返回】`(可行, 说明)`。**读不到 `/minecarts`（老 DLL / 游戏未就绪）⇒ `(True, "")` 不拦** ——
+      宁可照老行为走（后面还有"当天拉黑"兜底），也不能因为读不到就把路禁掉。
+    """
+    try:
+        d = api._get("/minecarts")
+    except Exception:
+        return True, ""
+    if not isinstance(d, dict) or not d.get("ok"):
+        return True, ""
+    nets = d.get("networks") or []
+    if not nets:
+        return True, ""
+    locked = ""
+    for n in nets:
+        if not n.get("unlocked"):
+            locked = locked or (n.get("lockedMessage") or "")
+            continue
+        for dest in (n.get("destinations") or []):
+            if dest.get("ok", True) and str(dest.get("targetLocation") or "") == str(cart_target):
+                return True, ""
+    return False, locked
+
 
 def _nav_resolve(name):
     """把 POI/地点名解析成 {name,loc,x,y}（供紧急脱离 warp 回失败点）。"""
@@ -1241,15 +1306,29 @@ def _walk_trigger_warp(frm: str, nxt: str, ex: int, ey: int, wx: int, wy: int, e
     #   **所以现象不是"进不来"，是"进来了又被打出去"**（恒 2026-09-13 复现两次）。
     #   ⇒ 节日场地：**等久一点**（游戏要弹确认框+换临时图）、**认事件起来当成功**、**绝不跑 /warp_into**。
     fest = _is_today_festival_dest(nxt)
-    for _ in range(20 if fest else 3):
+    _trace = []
+    for _i in range(20 if fest else 3):
         time.sleep(0.6)
         st = api.state()
         loc = (st.get("location") or {}).get("name", "")
+        _trace.append(f"[{_i}] loc={loc!r} ev={(st.get('activeEvent') or {}).get('id')!r}")
         if loc == nxt:
+            return True
+        # 🎪 **人在节日临时图（Temp）里，本身就是"到了"** —— 游戏已经把人路由进去了。
+        #   ⚠️ 2026-09-13 真机坐实（三轮）：只认 `loc == nxt` 时 `Temp ≠ "Town"` ⇒ 判失败 ⇒
+        #      上层兜底**又补一发 `warpFarmer("Town")`**（不是 `warp_into` 的直切——那不会打
+        #      `Warping to Town` 日志行）⇒ 人已经在节日里，游戏这回**不拦了**、当成"离场"⇒
+        #      **丢回普通 Town `(0,54)`、`activeEvent=null`**。
+        #   真机现场：进 Temp 后**原地干等 20 秒**（就是这个循环跑满 20 轮）才被踢 ——
+        #   恒："为什么导航延迟收工。按理说到达目的地就应该叫你，但直到被踢你都没动静"。
+        #   Temp 只在节日期间存在、不是任何正常导航目的地 ⇒ 进了它**按定义就是到达**。
+        if loc in _FESTIVAL_TEMP_MAPS:
             return True
         # 🎪 换到了事件临时图（Temp）且节日事件真的起来了 = 游戏路由成功
         if fest and (st.get("activeEvent") or {}).get("id"):
             return True
+    print(f"🎪 [festival-warp-wait] nxt={nxt!r} fest={fest} 跑满 {len(_trace)} 轮: "
+          + " | ".join(_trace), flush=True)
     if fest:
         # ⚠️ **绝不 /warp_into**：那是绕过游戏路由直切，会把刚被路由进去的人打回普通 Town。
         #   走到这 = 游戏没路由（没开赛/不在时段/路由本身出问题）——如实报，让 AI 用 festival go。
@@ -1806,6 +1885,13 @@ def _minecart_go(sname: str, stn, dest_station: str, dest: str) -> tuple:
                 pass
             time.sleep(0.8)
         if not picked:
+            # 🚂 2026-09-13 恒「矿车的门禁也没做好」：不通时游戏弹的是**对话框**（`MineCart_OutOfOrder`
+            #   「已损坏」），不是菜单 —— 不关掉就把 AI 晾在站台上（真机小星停在 Town (105,80)，框开着）。
+            #   用 `/menu_close`（C# 端会先 CollectOrDrop 再强关，专门治"光标有东西关不掉"）。
+            try:
+                api._post("/menu_close")
+            except Exception:
+                pass
             return False, f"🚂 {sname} 菜单没找到「{dest_station}」（矿车未解锁？）"
         # 等传送
         for _ in range(12):
@@ -1837,8 +1923,18 @@ def _minecart_route_go(walk_path, sname, stn, ds, cart_target, final_dest,
     if walk_path and walk_txt and _STATE_SEP in walk_txt:
         prefix = walk_txt.split(_STATE_SEP)[0] + "\n" + mlog
     if not ok:
-        _NAV_FAILED["v"] = True
-        return _with_state(prefix + f"\n⚠️ 矿车坐车失败，未到 {cart_target}")
+        # 🚂 2026-09-13 恒「有点严重了」：矿车不通**不该**让整趟导航失败 —— 走路明明能到。
+        #   ⇒ 拉黑（本次会话不再规划矿车）+ 出声记账，返回**空串**表示"落穿到走路"，
+        #     由 `map_go` 接着走 BFS 那条路（那句记账挂进 mine_hint，AI 看得见）。
+        _MINECART_DEAD["v"] = True
+        _MINECART_DEAD["why"] = mlog
+        try:
+            _t = api.state().get("time") or {}
+            _MINECART_DEAD["day"] = f"{_t.get('season')}-{_t.get('dayOfMonth')}-{_t.get('year')}"
+        except Exception:
+            _MINECART_DEAD["day"] = ""
+        _MINECART_LEAD["text"] = prefix + f"\n⚠️ 矿车不可用（{mlog}）→ 改走走路"
+        return ""
     # ✅ 已到 cart_target；最后小走
     if final_dest and final_dest != cart_target:
         path = _map_bfs(cart_target, final_dest)
@@ -2253,12 +2349,18 @@ def map_go(destination: str = "", npc: str = "") -> str:
             _mroute = _AUTO_MINECART_ROUTES.get(destination) \
                 or _AUTO_MINECART_ROUTES.get(str(destination).lower()) \
                 or _AUTO_MINECART_ROUTES.get(str(dest).lower())
-        if _mroute:
+        if _mroute and not _minecart_dead_now():
             _cart_target, _final = _mroute
-            _mc = _minecart_walk_plan(_cart_target, cur, final=_final, strict=False, pos=_pos)
+            _cok, _cwhy = _cart_gate(_cart_target)
+            if not _cok:
+                _mine_hint = f"\n🚂 矿车不通（{_cwhy or '未解锁'}）→ 直接走路" + _mine_hint
+            _mc = _minecart_walk_plan(_cart_target, cur, final=_final, strict=False, pos=_pos) if _cok else None
             if _mc:
-                return _minecart_route_go(_mc[0], _mc[1], _mc[2], _mc[3], _cart_target, _final,
-                                          destination, _npc_target, _npc0, mine_hint=_mine_hint)
+                _r = _minecart_route_go(_mc[0], _mc[1], _mc[2], _mc[3], _cart_target, _final,
+                                        destination, _npc_target, _npc0, mine_hint=_mine_hint)
+                if _r:
+                    return _r
+                _mine_hint = _MINECART_LEAD["text"] + "\n" + _mine_hint   # 矿车废了 → 落穿到走路
         # 2.5 ⚠️ 2026-08-16 恒：图腾柱（仅农场/姜岛，最高；矿车已挪到下方就近比较）
         land, tlog = _try_transport(dest, cur)
         if land:
@@ -2280,12 +2382,18 @@ def map_go(destination: str = "", npc: str = "") -> str:
             return _map_go_walk(path, destination, dest, lead_log=tlog, npc_target=_npc_target, npc0=_npc0, mine_hint=_mine_hint)
         # 2.5b ⚠️ 2026-09-07 恒：矿车"就近段数比较"（任何起点，含非农场）。替代原"有车坐矿车"：
         #   dest 在矿车网络时，矿车总段数严格少于纯走才坐；打平比"首段地图内距离"。
-        if dest in MINE_CART_TO:
-            _mc = _minecart_walk_plan(dest, cur, final=dest, strict=True, pos=_pos)
+        if dest in MINE_CART_TO and not _minecart_dead_now():
+            _cok, _cwhy = _cart_gate(dest)
+            if not _cok:
+                _mine_hint = f"\n🚂 矿车不通（{_cwhy or '未解锁'}）→ 直接走路" + _mine_hint
+            _mc = _minecart_walk_plan(dest, cur, final=dest, strict=True, pos=_pos) if _cok else None
             if _mc:
                 _final = destination if destination in locations.POI else ""
-                return _minecart_route_go(_mc[0], _mc[1], _mc[2], _mc[3], dest, _final,
-                                          destination, _npc_target, _npc0, mine_hint=_mine_hint)
+                _r = _minecart_route_go(_mc[0], _mc[1], _mc[2], _mc[3], dest, _final,
+                                        destination, _npc_target, _npc0, mine_hint=_mine_hint)
+                if _r:
+                    return _r
+                _mine_hint = _MINECART_LEAD["text"] + "\n" + _mine_hint   # 矿车废了 → 落穿到走路
         # 3. BFS 路径
         path = _map_bfs(cur, dest)
         if not path:

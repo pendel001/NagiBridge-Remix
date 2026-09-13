@@ -441,6 +441,11 @@ public class ModEntry : Mod
     //    导致补余漏格/过锄。存下这格，走完在 _waitingForMove 清空处对齐。
     private Point? _moveDest;
 
+    // 🎪 2026-09-13 恒「专注修复」：强推 warp 的**占位闩** —— 同一格只推一次，
+    //    离开这一格 / 换了图才重新武装。用法与病根现场见 OnUpdateTicked 里那段注释。
+    private string? _forceWarpLoc;
+    private Point _forceWarpTile = new Point(-1, -1);
+
     // Tool charge state (visual delay before direct tile modification)
     private int _toolChargeTicks;
     private bool _isChargingTool;
@@ -1866,7 +1871,25 @@ public class ModEntry : Mod
 
                 _pathQueue = path; // null = no reachable path, movement won't start
                 _pathTickCooldown = 0;
-                if (path == null || path.Count == 0)
+                if (path != null && path.Count == 0)
+                {
+                    // ✅ 2026-09-13 恒：**已经站在目标格上了** —— 正常完成，不是失败。
+                    //    `FindPath` 对 `start == end`（以及"已经贴着目标格"）返回的是**空队列**，
+                    //    而旧代码用 `path == null || path.Count == 0` 把这两种情况混为一谈 ⇒
+                    //    掉进下面的兜底，**原地"瞬移"到自己脚下那格**，还打一句
+                    //    `⚠️ BFS failed, teleporting to (x,y)`。
+                    //    真机证据（2026-09-13 下午）：AI 已站在 Beach(30,34)，再叫一次 `map go 鱼店(门口)`
+                    //    ⇒ 位置纹丝不动，却照样报 "BFS failed, teleporting to (30,34)"。
+                    //    ⚠️ 这条假警报比它修掉的毛病更毒：它让"到底有没有瞬移"这个**判据本身失真**
+                    //       —— 我当日上午就是拿这句话当尺子判断瞬移的（见 memory: verify-criteria-must-be-verified）。
+                    //    注意：空队列**只**可能来自 FindPath 的三种 `return new Queue<Point>()`
+                    //    （start==end / 邻格即起点），语义都是"已经到位"，所以这里可以放心当成功。
+                    _walkRoute = null;
+                    _walkSegIdx = 0;
+                    _walkSegmentStarted = false;
+                    _pathQueue = null;
+                }
+                else if (path == null)
                 {
                     // BFS couldn't find a path → 兜底瞬移。
                     // ⚠️ 2026-08-26 恒：这行以前**零校验**直接 farmer.Position = 目标——
@@ -2013,6 +2036,19 @@ public class ModEntry : Mod
         // Manual warp trigger: when standing on a warp tile, force the transition.
         // Needed because the direct position manipulation bypasses the game's natural warp detection.
         // Skip during active walk_to routing — walk_to's own logic handles warp transitions.
+        //
+        // 🎪 2026-09-13 恒「专注修复」：**同一格占位只推一次**（原来是每帧都推）。
+        //   真机现场：节日当天走到 BusStop 的 warp 格 (44,22) 站住不动 ⇒ 每帧一句
+        //   `Game1.warpFarmer("Town")` ⇒ 游戏把节日 warp 截胡成 `ReadyCheckDialog`（Event 门禁）
+        //   ⇒ **每帧新建一个框**：新框的 `active` 字段初值恒为 true、`cancelButton.visible` 按
+        //   当时的 Locked 状态算成 false ⇒ 肉眼就是「框永远开着、一个按钮都没有、写着 2/2」；
+        //   而 `confirm()`（游戏自己的那句和我们的代按）都作用在**下一帧就被丢掉的那个实例**上，
+        //   `performWarpFarmer` 的淡出被无限重置 ⇒ 人永远留在原地。
+        //   真机凭据：轮回日志 `Warping to Town` 刷了 **4928** 行；同场的恒站在 (43,23)
+        //   （**不是** warp 格）一次就进去了 —— 对照组完美。
+        //   ⇒ 推开一次就**交给游戏自己走完**（节日要弹框、等全员、换临时图，都是它的事）；
+        //     人不动就一直等；**离开这一格 / 换了图**才重新武装（这才是"重新进出一趟"的语义）。
+        //   ⚠️ 失败时**不静默重试**：推不动就让上层导航如实报「到 X 失败」，别再把游戏流程打断一遍。
         if (_walkRoute == null && (_pathQueue == null || _pathQueue.Count == 0))
         {
             if (Context.IsWorldReady && Game1.player != null && !Game1.player.isInBed.Value)
@@ -2020,8 +2056,14 @@ public class ModEntry : Mod
                 var farmer = Game1.player;
                 var tile = farmer.TilePoint;
                 var warp = farmer.currentLocation?.warps?.FirstOrDefault(w => w.X == tile.X && w.Y == tile.Y);
-                if (warp != null)
+                if (warp == null)
                 {
+                    _forceWarpLoc = null;   // 不在 warp 格上了 ⇒ 重新武装
+                }
+                else if (_forceWarpLoc != farmer.currentLocation.NameOrUniqueName || _forceWarpTile != tile)
+                {
+                    _forceWarpLoc = farmer.currentLocation.NameOrUniqueName;
+                    _forceWarpTile = tile;
                     var (wloc, wx, wy) = ResolveWarp(warp.TargetName, warp.TargetX, warp.TargetY);
                     EnqueueMainThread(() =>
                     {
@@ -2598,6 +2640,11 @@ public class ModEntry : Mod
                 "/festival/answer" => HandleFestivalAnswer(ctx),
                 "/dance_invite" => HandleDanceInvite(ctx),   // 💃 花舞节邀请跳舞（2026-08-20 绕过farmhand端buggy对话框）
                 "/unlocks" => HandleUnlocks(),
+                // 🔓 2026-09-13 恒「矿车的门禁是献祭。电影院的门禁也是献祭。说明门禁根本没做好」
+                //    ⇒ 别再造第二张手写 flag 表，直接**问游戏**：/gsq 就是 `GameStateQuery.CheckConditions` 的口子，
+                //      /minecarts 则是矿车网络的原生数据 + 逐条评估（`Data/Minecarts` 的 UnlockCondition）。
+                "/gsq" => HandleGsq(ctx),
+                "/minecarts" => HandleMinecarts(),
                 "/unlock_debug" => HandleUnlockDebug(),
                 "/chat/push" => HandleChatPush(ctx),
                 "/chat/history" => HandleChatHistory(),
@@ -4237,7 +4284,9 @@ public class ModEntry : Mod
                 //    Python 那边因此一直把它一律喊成"睡觉就绪屏"（恒 09-13 看到的就是这句误导）。
                 //    顺手把**实时计数**一起报出来：卡住时 N/M 一眼可见（客户端只会被房主的
                 //    `Finish` 放行，`2/2` 卡住 = 房主没放行，见 CHANGELOG ㊵）。
-                readyCheck = BuildReadyCheckInfo(Game1.activeClickableMenu)
+                readyCheck = BuildReadyCheckInfo(Game1.activeClickableMenu),
+                // 🗳️ 选项框种类（location/event/plain）——Python 据此给**确定**的点法，不用再猜。
+                questionKind = BuildQuestionKind()
             };
         }
 
@@ -13384,6 +13433,44 @@ public class ModEntry : Mod
     }
 
     /// <summary>
+    /// 🗳️ 当前选项框是**哪一种问句** —— 决定 `menu click` 该走哪条路（2026-09-13 恒："怕 AI 实际不知道怎么选"）。
+    /// 判据全部来自反编译，**不猜**：
+    ///   `DialogueBox.receiveLeftClick`(:371-398) 真实点击时**第一句就问 `characterDialogue == null`**：
+    ///     · **为空**（"问句框"，`Game1.drawObjectQuestionDialogue` 造的）⇒ 再分两支：
+    ///         `eventUp && currentLocation.afterQuestion == null`
+    ///           → `event.answerDialogue(lastQuestionKey, i)` —— **事件脚本问句**
+    ///             （万灵节转盘 / 星星币店；`createQuestionDialogue(q, choices, "key")` **:4431**
+    ///              走的是**字符串键**重载，**只设 `lastQuestionKey`、不设 `afterQuestion`**）
+    ///           else
+    ///           → `currentLocation.answerDialogue(responses[i])` —— **地点级问句**
+    ///             （跳舞邀请/克林特菜单；委托重载 **:4444** 设 `afterQuestion`）
+    ///       ⚠️ **两支都是"真实点击才走对回调"** ⇒ `menu click(option=N, **real=true**)`
+    ///         （恒 2026-08-23 实测星星币店 = 事件脚本问句，确认 real=true 才点得中）
+    ///     · **非空**（"某个 NPC 在说话"、选项挂在 `Dialogue` 上，如节日里「什么事？」）⇒ 真实点击走
+    ///       `Dialogue.chooseResponse` → `Dialogue.answerDialogue` → `event.answerDialogueQuestion`
+    ///       （`Dialogue.cs:1613`）—— 而 mod 的 `!real` 路径**正是** `answerDialogueQuestion`
+    ///       ⇒ 这种框**别加 real**（2026-08-18 恒实测：加了反而走岔）。
+    /// 返回值：`"ask"` = 问句框（**必须 real=true**）/ `"npc"` = NPC 对话选项（**别加 real**）；
+    ///         当前不是 DialogueBox → null。
+    /// ⚠️ 此前这个判据被丢给 Python 侧**猜**——猜错就是点空（2026-08-23 恒实测跳舞邀请），
+    ///    而**判据本来就在 C# 手上**（恒的通式教训：判据别放消费侧猜）。
+    /// ⚠️ 2026-09-13 自纠：我第一版按 `afterQuestion` 三分类（location/event/plain）**是错的**——
+    ///    它会**把事件脚本问句（星星币店那种）错标成 event**、叫 AI 别加 real，正好砸掉恒验过的那条。
+    /// </summary>
+    private static string? BuildQuestionKind()
+    {
+        try
+        {
+            if (Game1.activeClickableMenu is not StardewValley.Menus.DialogueBox db) return null;
+            return db.characterDialogue == null ? "ask" : "npc";
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
     /// POST /levelup_choose — 技能升级职业选择：确定选哪个分支。
     /// 2026-08-30 恒：LevelUpMenu.receiveLeftClick(int,int) 是**空方法**，/menu click 对职业选择无效；
     /// 原生触发在 update() 里靠"鼠标进左/右半区+按下松开"判 professionsToChoose 选哪个。这里镜像其副作用：
@@ -18131,6 +18218,12 @@ public class ModEntry : Mod
                     location = Game1.currentLocation?.Name,
                     uniqueName = Game1.currentLocation?.NameOrUniqueName,
                     eventUp = Game1.eventUp,
+                    // 🎪 2026-09-13 根因探针（恒：「我还是希望治本」）：怀疑**客户端**这个字段是 null ——
+                    //    它**只在时钟跳动的那个 tick 块里赋值**，而节日期间时钟恰好是冻的，两件事撞一起。
+                    //    若确为 null，就解释了"首次进节日场地不加载 festival_* 事件"
+                    //    （`Game1.warpFarmer` 的节日分支 `locationRequest.Name.Equals(whereIsTodaysFest)` 靠它比对）。
+                    //    读法：节日当天正常人在 Temp 里 vs 卡在普通 Town 里，各调一次 `/event_state` 对比。
+                    whereIsTodaysFest = Game1.whereIsTodaysFest,
                     eventId = ev?.id,                       // null = 没事件在播
                     isFestival = ev?.isFestival ?? false,
                     skippable = ev?.skippable ?? false,     // 跳过键（游戏按这个画，Event.cs:11438）
@@ -18178,6 +18271,97 @@ public class ModEntry : Mod
             catch (Exception ex)
             {
                 tcs.SetResult(new { ok = false, asset, error = ex.Message });
+            }
+        });
+        return tcs.Task.GetAwaiter().GetResult();
+    }
+
+    /// <summary>🔓 任意 GameStateQuery 条件求值（2026-09-13 恒「矿车的门禁是献祭。电影院的门禁也是献祭。
+    /// 说明门禁根本没做好」）。
+    ///
+    /// 【为什么要这个口子】游戏判一切门禁都走这一句 —— `GameStateQuery.CheckConditions(条件串, 地图, 玩家)`。
+    ///   我们过去是在 `/unlocks` 里**手写第二张 flag 对照表**，于是必然"表和游戏漂"：真机撞到
+    ///   `/unlocks` 报 `cinema=false` 而人明明进得去电影院；矿车同理（游戏那边不通就弹
+    ///   `MineCart_OutOfOrder`「已损坏」，我们这边一个字都没查）。
+    ///   ⇒ 以后**别再补 flag**，直接把条件串丢给游戏判。
+    ///
+    /// GET /gsq?q=&lt;条件串&gt;（如 `PLAYER_HAS_MAIL Current ccBoilerRoom`）
+    ///   · 缺 `q` ⇒ 明确报错（**宁报错别兜底**，恒 2026-09-10 拍板）。
+    ///   · 空串 / "TRUE" / "FALSE" 照游戏口径（`CheckConditions` 自己的语义，不另立规矩）。
+    ///   · 地图/玩家默认取**当前**（`Game1.currentLocation` / `Game1.player`）—— 门禁多半按"当前玩家"算。</summary>
+    private object HandleGsq(HttpListenerContext ctx)
+    {
+        var q = ctx.Request.QueryString;
+        string? query = q["q"];   // 可能真缺参 ⇒ 下面显式报错（不是 null 兜底）
+        if (string.IsNullOrWhiteSpace(query))
+            return new { ok = false, error = "need q=<GameStateQuery 条件串>（如 PLAYER_HAS_MAIL Current ccBoilerRoom）" };
+
+        var tcs = new TaskCompletionSource<object>();
+        EnqueueMainThread(() =>
+        {
+            try
+            {
+                bool result = GameStateQuery.CheckConditions(query, Game1.currentLocation, Game1.player);
+                tcs.SetResult(new { ok = true, query, result });
+            }
+            catch (Exception ex)
+            {
+                // 条件串语法错 ⇒ 如实报（别把"查不了"伪装成 false，那会静默改行为）
+                tcs.SetResult(new { ok = false, query, error = ex.Message });
+            }
+        });
+        return tcs.Task.GetAwaiter().GetResult();
+    }
+
+    /// <summary>🚂 矿车网络原状 + 逐条可行性（2026-09-13 恒「矿车的门禁是献祭」）。
+    ///
+    /// 【数据源】`DataLoader.Minecarts(Game1.content)` = 游戏自己的 `Data/Minecarts`。
+    /// 【门禁照抄游戏】`GameLocation.ShowMineCartMenu`（反编译 GameLocation.cs:10214）两道：
+    ///   ① 网络级 `UnlockCondition` —— 不过就 `drawObjectDialogue(LockedMessage)`（默认
+    ///      `Strings\Locations:MineCart_OutOfOrder` = 真机看到的「已损坏」）**直接 return，不开菜单**；
+    ///   ② 每站级 `Condition` —— 不过的那一站**根本不进菜单**。
+    ///   ⇒ 这两条都在这里照样评估一遍，Python 侧就能**在规划期**知道"这车坐不坐得成"，
+    ///     不必再"走过去、开菜单、找不到站名才知道"（真机会把 AI 晾在站台上）。
+    ///
+    /// GET /minecarts → { ok, networks: [ {id, unlockCondition, lockedMessage, unlocked, destinations:[{id,targetLocation,condition,ok}]} ] }</summary>
+    private object HandleMinecarts()
+    {
+        if (!Context.IsWorldReady)
+            throw new InvalidOperationException("World not ready");
+
+        var tcs = new TaskCompletionSource<object>();
+        EnqueueMainThread(() =>
+        {
+            try
+            {
+                var nets = DataLoader.Minecarts(Game1.content);
+                var list = new List<object>();
+                foreach (var kv in nets)
+                {
+                    var n = kv.Value;
+                    bool unlocked = GameStateQuery.CheckConditions(n.UnlockCondition, Game1.currentLocation, Game1.player);
+                    var dests = new List<object>();
+                    foreach (var d in (n.Destinations ?? new List<StardewValley.GameData.Minecarts.MinecartDestinationData>()))
+                    {
+                        bool ok = true;
+                        try { ok = GameStateQuery.CheckConditions(d.Condition, Game1.currentLocation, Game1.player); }
+                        catch { ok = false; }
+                        dests.Add(new { id = d.Id, targetLocation = d.TargetLocation, condition = d.Condition, ok });
+                    }
+                    list.Add(new
+                    {
+                        id = kv.Key,
+                        unlockCondition = n.UnlockCondition,
+                        lockedMessage = n.LockedMessage,
+                        unlocked,
+                        destinations = dests,
+                    });
+                }
+                tcs.SetResult(new { ok = true, count = list.Count, networks = list });
+            }
+            catch (Exception ex)
+            {
+                tcs.SetResult(new { ok = false, error = ex.Message });
             }
         });
         return tcs.Task.GetAwaiter().GetResult();
@@ -19057,8 +19241,11 @@ public class ModEntry : Mod
     {
         if (start == end) return new Queue<Point>();
 
-        // 先正常 BFS
-        var direct = BfsTo(location, start, end);
+        // 一次 BFS 铺满可达区（父指针表）。命中终点就**早退**（近目标照样便宜）；
+        // 没命中说明终点不可站/进不去，顺手拿**同一份**表去够它的邻居 ——
+        // 不再像旧代码那样对每个候选邻居各跑一整趟 BFS（那是最坏 5 趟全图搜索）。
+        var parents = BfsParents(location, start, end);
+        var direct = Rebuild(parents, start, end);
         if (direct != null) return direct;
 
         // BFS 失败：终点不可走（床/家具/门）或路径被家具挡住（如床边电视卡位）
@@ -19074,25 +19261,47 @@ public class ModEntry : Mod
             if (!IsTilePassable(location, cand)) continue;
             var d = Math.Abs(start.X - cand.X) + Math.Abs(start.Y - cand.Y);
             if (d >= bestDist) continue;
-            var p = BfsTo(location, start, cand);
+            var p = Rebuild(parents, start, cand);
             if (p != null) { bestPath = p; bestDist = d; }
         }
         return bestPath;
     }
 
-    private Queue<Point>? BfsTo(GameLocation location, Point start, Point end)
+    /// <summary>
+    /// 🧭 从 start 起 BFS 铺开，返回「子 → 父」表（供 Rebuild 回溯路径）。
+    /// 探到 stopAt 就**立即早退**；够不到则铺满整个可达区再返回，调用方可以复用同一份表。
+    ///
+    /// ⚠️ 2026-09-13 恒：这里原先藏着「长距离走位凭空瞬移」的真凶，两个病一起治了 ——
+    ///
+    ///  ① **上限扣错了对象**：旧代码 `maxSteps = 5000`，而 `maxSteps--` 是**每出队一个节点**扣 1，
+    ///     即「最多探索 5000 个格子」、**不是**「路径最多 5000 步」。BFS 是广度优先 ——
+    ///     要到曼哈顿距离 D 的目标，得先把**半径 D 以内所有格**淌一遍（约 2D² 格）。
+    ///     ⇒ 能走的距离被死死卡在 √(5000/2) ≈ 50 格。真机对照（起点 Town(1,54)）：
+    ///          · 旧站格 Town(15,40) 距离 28  ⇒ 约 1,570 格  ✅ 探得完 → 正常走路（所以"一直没出错"）
+    ///          · 正解   Town(81,1)  距离 133 ⇒ 约 35,000 格 ❌ 爆上限 → 掉进 FindPath 的兜底**瞬移**
+    ///     —— 这就是「**把错坐标改对之后反而开始凭空瞬移**」的完整真相。
+    ///
+    ///  ② **每个节点整条路径拷贝**：旧代码 `new List&lt;Point&gt;(path)` 每扩一格就复制整条路径，
+    ///     探索 N 格 = O(N²) 次拷贝 —— 所以**不能只把 5000 调大**，那样一爆就是几十万次拷贝。
+    ///
+    /// 修法：**父指针回溯**（只记 parent，命中后再倒推）+ 上限放到地图格数 W*H
+    /// （130×110 的镇子才 1.4 万格，时间和内存都是 O(W*H)）。
+    /// </summary>
+    private Dictionary<Point, Point> BfsParents(GameLocation location, Point start, Point stopAt)
     {
-        var maxSteps = 5000;
+        int maxSteps = Math.Max(location.Map.DisplayWidth / 64 * (location.Map.DisplayHeight / 64), 1024);
+
+        var parents = new Dictionary<Point, Point>();   // 子 → 父；start 不入表（回溯到它就停）
         var visited = new HashSet<Point> { start };
-        var queue = new Queue<(Point pos, List<Point> path)>();
-        queue.Enqueue((start, new List<Point>()));
+        var queue = new Queue<Point>();
+        queue.Enqueue(start);
 
         int[] dx = { 0, 0, -1, 1 };
         int[] dy = { -1, 1, 0, 0 };
 
         while (queue.Count > 0 && maxSteps-- > 0)
         {
-            var (pos, path) = queue.Dequeue();
+            var pos = queue.Dequeue();
 
             for (int i = 0; i < 4; i++)
             {
@@ -19103,17 +19312,34 @@ public class ModEntry : Mod
                 if (!IsTilePassable(location, next) && !IsInteriorDoor(location, next)) continue;
 
                 visited.Add(next);
-                var newPath = new List<Point>(path) { next };
+                parents[next] = pos;
 
-                if (next == end)
-                    return new Queue<Point>(newPath);
-
-                queue.Enqueue((next, newPath));
+                if (next == stopAt) return parents;   // 近目标：早退，别白铺满整张图
+                queue.Enqueue(next);
             }
         }
 
-        // If no path found, return null (caller will fallback to direct walk)
-        return null;
+        return parents;   // 铺满（或撞上限）——够不够得到终点由调用方 Rebuild 判定
+    }
+
+    /// <summary>
+    /// 🚶 用父指针表回溯出 start→end 的路径（**不含 start、含 end**，与旧 BfsTo 的返回形状一致）。
+    /// 够不到（表里没这个格）返回 null。
+    /// </summary>
+    private static Queue<Point>? Rebuild(Dictionary<Point, Point> parents, Point start, Point end)
+    {
+        if (end == start) return new Queue<Point>();
+        if (!parents.ContainsKey(end)) return null;
+
+        var chain = new List<Point>();
+        var cur = end;
+        while (cur != start && parents.TryGetValue(cur, out var p))
+        {
+            chain.Add(cur);
+            cur = p;
+        }
+        chain.Reverse();   // 回溯是 end→start，反转成 start→end 的行走顺序
+        return new Queue<Point>(chain);
     }
 
     // 🐄 2026-08-26 恒：牲畜占格缓存。BFS 一趟要问几千格，逐格遍历 animals 太亏，

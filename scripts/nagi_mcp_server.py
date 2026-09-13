@@ -789,8 +789,22 @@ def _menu_advice(menu_type: str, active_menu: dict, active_event: dict = None) -
         if active_menu.get("responses"):
             # 🎪 场景问句（createQuestionDialogue：星币商店换奖品/跳舞邀请等）——事件激活时普通 option=N 走
             #   event.answerDialogueQuestion 点不中真回调，须 real=true 走真实 receiveLeftClick（2026-08-23 恒实测）
+            # 🗳️ 2026-09-13：**判据由 C# 给**（`activeMenu.questionKind` ←
+            #   `GameLocation.afterQuestion != null` / `Game1.eventUp`），Python 照读，**不再猜**——
+            #   猜错就是点空（2026-08-23 恒实测跳舞邀请）。恒："怕 AI 实际不知道怎么选"。
+            qk = active_menu.get("questionKind")
+            if qk == "ask":
+                # "问句框"（不在 NPC 的 Dialogue 上）：**真实点击才走对回调**——
+                # 地点级（afterQuestion：跳舞邀请/克林特菜单）与事件脚本级（lastQuestionKey：
+                # 转盘/星星币店）**两支都要 real=true**（恒 08-23 实测星星币店）。
+                return "🗳️ 问句框（跳舞邀请/摊位/转盘…）：menu click(option=N, **real=true**) 选择"
+            if qk == "npc":
+                # 选项挂在 `Dialogue` 上（节日里「什么事？」等）：走 `answerDialogueQuestion`
+                # = mod 的 `!real` 路径 ⇒ **别加 real**（08-18 恒实测）。
+                return "🗳️ NPC 对话选项：menu click(option=N) 选择（**别加 real**）"
+            # 旧 DLL 不报 questionKind ⇒ **如实说分不出**，给"点不动再加"（宁报错别兜底）
             if active_event:
-                return "🗳️ 场景问句（事件）：menu click(option=N, **real=true**) 选择——事件激活时普通 option 点不中真回调"
+                return "🗳️ 场景问句（事件）：menu click(option=N)；**框不关就加 real=true 再点一次**（此 DLL 不报框种类）"
             return "🗳️ 对话选项：menu click(option=N) 选择"
         return "💬 对话推进：menu advance(推进剧情/对话)；**有选项用 menu click(option=N) 选**（confirm 选不了选项）"
     if m == "readycheckdialog":
@@ -1535,7 +1549,27 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
             opts = [f"[{i}]{_opt_text(t)}"
                     for i, t in enumerate(responses)]
             lines.append(f"🗳️ 选项: {' | '.join(opts)}")
-            lines.append("→ 用 menu click(option=N) 选择")
+            # 🎪 2026-09-13 恒："怕 AI 实际不知道怎么选"。老文案在节日里会**点空**：
+            #   C# `Game1.CurrentEvent != null && !real` 会把不带 real 的 option 走成
+            #   `event.answerDialogueQuestion`，对 `createQuestionDialogue`（跳舞邀请/节日摊位问句）
+            #   **点不中真回调**（2026-08-23 恒实测）。
+            # ⚠️ **但不硬改成一律 real=true**：反编译 `DialogueBox.receiveLeftClick:371-398` 显示
+            #   节日里**两种问句框并存**、真实点击走哪条取决于 `afterQuestion`：
+            #     `createQuestionDialogue`（afterQuestion≠null）⇒ 必须 real=true
+            #     event 问句（「什么事？」等）        ⇒ 走 answerDialogueQuestion（real=false）
+            #   而 `/state` **看不出是哪种** ⇒ 只能"先普通点、框不关再加 real=true"，
+            #   **不断言**（真修法=C# 把 `afterQuestion` 是否为空报出来，别让消费侧猜）。
+            # 判据看 C# 报的 `questionKind`（见 `BuildQuestionKind`），**别在消费侧猜**。
+            _qk = active_menu.get("questionKind")
+            if _qk == "ask":
+                lines.append("→ 用 menu click(option=N, **real=true**) 选择")
+            elif _qk == "npc":
+                lines.append("→ 用 menu click(option=N) 选择")
+            elif active_event:
+                # 旧 DLL 不报 questionKind：如实说明 + 给补救动作（两种问句框在节日里并存）
+                lines.append("→ 用 menu click(option=N) 选择；**框不关就加 real=true 再点一次**（此 DLL 不报框种类）")
+            else:
+                lines.append("→ 用 menu click(option=N) 选择")
 
     if active_event:
         ev_msg = active_event.get("message")
@@ -8983,6 +9017,19 @@ def _festival_next() -> str:
             f"剩 {f['days_left']} 天，在 {f['map'] or '?'}")
 
 
+def _festival_event_running() -> bool:
+    """🎪 现在是否**真的在播**节日事件（`/state` 的 `activeEvent.id` 以 `festival_` 开头）。
+
+    用途：`_festival_go` 判"人到了场地，节日事件到底起没起来" —— 起不来就是㊴/㊷ 那个
+    "空场 + 时间冻结"的二手现场。读不到就返回 False（当"没起来"处理，触发恢复动作）。
+    """
+    try:
+        ev = api.state().get("activeEvent") or {}
+        return str(ev.get("id") or "").startswith("festival_")
+    except Exception:
+        return False
+
+
 def _festival_go() -> str:
     d = _festival_now_data()
     if not d.get("ok"):
@@ -9013,6 +9060,51 @@ def _festival_go() -> str:
     if st_loc in _FESTIVAL_TEMP_MAPS and f.get("map") not in _FESTIVAL_TEMP_MAPS:
         return (r + f"\n（map_go 可能误报失败——你已在节日场地 {st_loc}，看状态条 🎪 节日进行中即可；"
                 "退出/卡住→联系 user 帮忙，MCP 端 warp 已禁用）")
+
+    # 🎪 2026-09-13 恒拍板：**把"已知有效的恢复动作"自动化**（⚠️ 治标，不是治本 —— 恒要的就是这句明说）。
+    #
+    #   第二层病（㊴/㊷ 真机抓到）：客户端**只在进图时**跑 `checkForEvents()`，而"首次进节日场地"那条路由
+    #   没把 `festival_spring13` 带起来 ⇒ 人被丢进**空荡荡、时间完全冻结的普通 Town**
+    #   （`activeEvent=null`：人能动，但节日不在）。
+    #   ✅ **已验证有效的恢复动作**（恒的经验，09-13 真机原样复现）：**走出地图边界再走回来一次** ——
+    #      回来那一脚走的是游戏自己的进图流程，`checkForEvents()` 就把它拉起来了。
+    #
+    #   ⚠️ 三条边界（恒：「给我说清楚这是治标」）：
+    #     · **有界**：只做**一次**。失败就如实报，**绝不循环重试** —— 循环会把"没治本"藏起来。
+    #     · **不静默**：输出里明写"用了恢复动作"，让 AI / 恒都看得见这不是正常路径。
+    #     · **未坐实的根因**：怀疑 `Game1.whereIsTodaysFest` **只在时钟跳动的 tick 里赋值**，
+    #       而节日期间时钟恰好是冻的 —— 两件事撞一起。坐实它要给 `/event_state` 加字段再重编重启
+    #       （本轮已加 `whereIsTodaysFest` 探针）。
+    if (st_loc == f.get("map") and st_loc not in _FESTIVAL_TEMP_MAPS
+            and not _festival_event_running()):
+        out = ""
+        for lk in (locations.MAP_LINKS.get(f["map"]) or []):
+            tgt = lk.get("target")
+            if lk.get("kind") == "warp" and tgt and tgt != f["map"]:
+                out = tgt
+                break
+        if not out:
+            return (r + f"\n⚠️ 人在 {st_loc}，但**节日事件没起来**（空场、时间冻），"
+                        f"而 {f['map']} 没有可用的邻图出口 ⇒ 恢复动作做不了，请把现场交给 user。")
+        try:
+            map_go(out)
+        except Exception:
+            pass
+        time.sleep(0.6)
+        try:
+            r2 = map_go(f["map"])
+        except Exception as e:
+            r2 = f"❌ 回 {f['map']} 时出错: {e}"
+        try:
+            st2 = api.state().get("location", {}).get("name", "")
+        except Exception:
+            st2 = ""
+        if st2 in _FESTIVAL_TEMP_MAPS or _festival_event_running():
+            return (f"🎪 首次进场地时**节日没被加载**（空场 + 时间冻结）—— 已按"
+                    f"「{f['map']} → {out} → {f['map']}」出图再进图**一次**把它拉起来了。\n"
+                    f"（⚠️ 这是**恢复动作、不是正常路径**；根因未坐实）\n{r2}")
+        return (r + f"\n⚠️ 进场地后节日事件**没起来**（空场、时间冻结），出图再进图一次"
+                    f"**也没救回来** —— 如实报，不重试。请把现场交给 user。")
     return r
 
 
