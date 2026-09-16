@@ -14,7 +14,11 @@
 """
 import sys, json, os, requests
 
-BASE = os.environ.get("NAGI_MCP_URL", "http://localhost:8000/mcp")
+# ⚠️ 2026-09-16：**必须写 127.0.0.1，别写 localhost**。MCP 服务绑的是 0.0.0.0（纯 IPv4，为了手机能连局域网 IP），
+#    而 Windows 上 `localhost` 先解析成 `::1` —— 那上面没人监听，且**拒连要烧满 2.030 秒**才回退到 IPv4。
+#    实测：http://localhost:8000/mcp 每次 2.04s / http://127.0.0.1:8000/mcp 每次 0.03s。
+#    （游戏 API 那边(7843)不受影响：mod 用 HttpListener 前缀 `http://localhost:7843/`，http.sys 把 ::1 一并监听了。）
+BASE = os.environ.get("NAGI_MCP_URL", "http://127.0.0.1:8000/mcp")
 HDR = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
 # ⏱️ 客户端等待上限（秒）：默认 60s 够短工具用，但**阻塞型长脚本**（festival ice_fish 要钓满
 #    2 分钟、bomb_mine 一局更久）会被客户端先掐断 ⇒ 服务端还在跑、命令却报错，看着像工具坏了。

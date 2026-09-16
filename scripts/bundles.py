@@ -11,8 +11,10 @@
   search_bundles("春季作物")      # 按收集包/物品名模糊搜
   search_bundles("防风草")        # 哪些收集包要它
 
-命名说明：本表用维基/官方中文名（绿豆/甜瓜/西红柿…）；项目 crops.py 里部分作物名
-略有出入（青豆=绿豆/番茄=西红柿/西瓜=甜瓜 等），AI 看到时可自行对应。
+命名说明：本表用维基/官方中文名（绿豆/甜瓜/西红柿…）。**游戏里报的也是官方中文名**
+（`/surroundings` 的 `cropName` 走 ItemRegistry 的 DisplayName 本地化结果，
+真机实测 ID 454 报「上古水果」），两边通常对得上；但 `/select` 认的是**英文内部名**
+（`Starfruit`/`Ancient Fruit`），拿名字操作物品时用英文。
 """
 
 # 每 room: room(中文名) / area(游戏 area 号) / unlock(完成后的奖励简述) / reward(房间总奖励)

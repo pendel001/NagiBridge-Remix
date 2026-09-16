@@ -1,6 +1,6 @@
 # 🧪 全工具测试清单（2026-09-11 生成）
 
-> **505 行 = 190 个后端函数**（抄自各域 dispatch，非文档）｜✅ 306 行 / **118 函数** ｜❌ 0 ｜⏭ 没条件测 28 行 / 8 函数｜**待测 64 函数**｜T1 自动 100 ｜T2 摆场 203 ｜T3 副作用 161 ｜⏭ 当期不可用 41
+> **508 行 = 191 个后端函数**（抄自各域 dispatch，非文档）｜✅ 361 行 / **144 函数** ｜❌ 0 ｜⏭ 没条件测 27 行 / 7 函数｜**待测 40 函数**｜T1 自动 103 ｜T2 摆场 203 ｜T3 副作用 161 ｜⏭ 当期不可用 41
 
 > 用法：跑测试（任何渠道，只要走 :8000 的 MCP）→ `python gen_tool_checklist.py --from-log` 自动打勾。
 > 判定规则见脚本头部；**⚠️ op「」= 参数被静默丢掉，算 ❌ 不算 ✅**。
@@ -8,18 +8,18 @@
 > 🔁 **`⇄` = 跨域同函数**（同一个后端函数挂在别的域下，各占一行）：判定按函数传播，任一行绿了其余行跟着绿 —— 所以**别重复测**，看 `⇄` 挑一行测即可。
 
 
-## `check`（33）
+## `check`（36）
 
 | op | 层 | 参数 | 判定 | 证据 |
 |---|---|---|---|---|
-| `backpack` | T1 自动 |  | ✅ | `session_log:762` |
+| `backpack` | T1 自动 |  | ✅ | `session_log:801` |
 | `building` | T1 自动 |  | ✅ | `session_log:455` |
 | `building_list` ≡`building` | T1 自动 |  | ✅ | ← 同 `check:building`〔building_list〕 |
 | `buildings` ≡`building` | T1 自动 |  | ✅ | `session_log:15` |
-| `chests` | T1 自动 | chest | ✅ | `session_log:456` |
+| `chests` | T1 自动 | chest | ✅ | `session_log:1075` |
 | `hay` | T1 自动 |  | ✅ | `session_log:457` |
 | `look` | T1 自动 | radius | ✅ | `session_log:632` |
-| `machine` | T1 自动 |  | ✅ | `session_log:459` |
+| `machine` | T1 自动 |  | ✅ | `session_log:1074` |
 | `machine_report` ≡`machine` | T1 自动 |  | ✅ | ← 同 `check:machine`〔machine_report〕 |
 | `machines` ≡`machine` | T1 自动 |  | ✅ | `session_log:10` |
 | `mastery` | T1 自动 |  | ✅ | `session_log:626` |
@@ -28,14 +28,17 @@
 | `profile` | T1 自动 |  | ✅ | `session_log:751` |
 | `quest` ⇄`menu:journal` | T2 摆场 |  | ✅ | `session_log:250` |
 | `quests` ≡`quest` ⇄`menu:journal` | T2 摆场 |  | ✅ | ← 同 `menu:journal`〔open_questlog〕 |
-| `role` | T1 自动 |  | ✅ | `session_log:723` |
+| `ready` | T1 自动 |  | ✅ | `session_log:912` |
+| `ready_state` ≡`ready` | T1 自动 |  | ✅ | ← 同 `check:ready`〔check_ready_state〕 |
+| `role` | T1 自动 |  | ✅ | `session_log:897` |
 | `silo` ≡`hay` | T1 自动 |  | ✅ | `session_log:13` |
-| `status` | T1 自动 |  | ✅ | `session_log:725` |
+| `status` | T1 自动 |  | ✅ | `session_log:1044` |
 | `storage` | T1 自动 |  | ✅ | `session_log:623` |
 | `worn` | T1 自动 |  | ✅ | `session_log:466` |
 | `任务` ≡`quest` ⇄`menu:journal` | T2 摆场 |  | ✅ | ← 同 `menu:journal`〔open_questlog〕 |
 | `周围` ≡`look` | T1 自动 |  | ✅ | ← 同 `check:look`〔look_around〕 |
 | `存储` ≡`storage` | T1 自动 |  | ✅ | ← 同 `check:storage`〔storage_layout〕 |
+| `就绪` ≡`ready` | T1 自动 |  | ✅ | ← 同 `check:ready`〔check_ready_state〕 |
 | `我是谁` ≡`role` | T1 自动 |  | ✅ | ← 同 `check:role`〔which_role〕 |
 | `技能` ≡`profile` | T1 自动 |  | ✅ | ← 同 `check:profile`〔profile〕 |
 | `环视` ≡`look` | T1 自动 |  | ✅ | ← 同 `check:look`〔look_around〕 |
@@ -50,83 +53,83 @@
 
 | op | 层 | 参数 | 判定 | 证据 |
 |---|---|---|---|---|
-| `animals` | T2 摆场 |  |  |  |
+| `animals` | T2 摆场 |  | ✅ | `session_log:1048` |
 | `break` ⇄`cabin:break` | T3 副作用 | radius, steps | ✅ | `session_log:289` |
-| `building` | T2 摆场 | location, machine_type |  |  |
+| `building` | T2 摆场 | location, machine_type | ✅ | `session_log:1063` |
 | `buy` | T3 副作用 | animal_type, building |  |  |
 | `chop` | T2 摆场 | area |  |  |
-| `clear` | T2 摆场 | direction, length, rows |  |  |
+| `clear` | T2 摆场 | direction, length, rows | ✅ | `session_log:1077` |
 | `clearground` | T2 摆场 |  |  |  |
-| `collect` | T2 摆场 | location, machine_type |  |  |
-| `doors` | T2 摆场 |  |  |  |
+| `collect` | T2 摆场 | location, machine_type | ✅ | `session_log:1056` |
+| `doors` | T2 摆场 |  | ✅ | `session_log:1003` |
 | `fertilize` | T2 摆场 | direction, fertilizer_name, length, rows |  |  |
 | `harvest` | T2 摆场 | radius |  |  |
-| `hay` | T2 摆场 | dry_run |  |  |
+| `hay` | T2 摆场 | dry_run | ✅ | `session_log:1004` |
 | `hoe` | T2 摆场 | layout, x1, x2, y1, y2 |  |  |
-| `load` | T2 摆场 | location, machine_type |  |  |
+| `load` | T2 摆场 | location, machine_type | ✅ | `session_log:1069` |
 | `milk` | T2 摆场 |  |  |  |
-| `pet` | T3 副作用 |  |  |  |
-| `petwalk` | T3 副作用 | include_petted |  |  |
+| `pet` | T3 副作用 |  | ✅ | `session_log:791` |
+| `petwalk` | T3 副作用 | include_petted | ✅ | `session_log:1047` |
 | `place` ⇄`cabin:place` | T3 副作用 | radius, steps | ✅ | `session_log:291` |
-| `plan` | T2 摆场 | hoe_level, layout, trellis, x1, x2, y1, y2 |  |  |
+| `plan` | T2 摆场 | hoe_level, layout, trellis, x1, x2, y1, y2 | ✅ | `session_log:991` |
 | `plant` | T2 摆场 | direction, length, rows, seed_name |  |  |
-| `plantlayout` | T2 摆场 | direct, layout, seed, trellis, x1, x2, y1, y2 |  |  |
-| `plot` | T2 摆场 | all_plots, radius | ✅ | `session_log:43` |
-| `pond` | T2 摆场 |  |  |  |
-| `pond_add` | T2 摆场 |  |  |  |
-| `pond_collect` | T2 摆场 |  |  |  |
-| `pond_feed` | T2 摆场 |  |  |  |
-| `pond_fish` | T2 摆场 |  |  |  |
-| `scythe` | T2 摆场 | radius |  |  |
+| `plantlayout` | T2 摆场 | direct, layout, seed, trellis, x1, x2, y1, y2 | ✅ | `session_log:1079` |
+| `plot` | T2 摆场 | all_plots, radius | ✅ | `session_log:1080` |
+| `pond` | T2 摆场 |  | ✅ | `session_log:1049` |
+| `pond_add` | T2 摆场 |  | ✅ | `session_log:1054` |
+| `pond_collect` | T2 摆场 |  | ✅ | `session_log:1051` |
+| `pond_feed` | T2 摆场 |  | ✅ | `session_log:1052` |
+| `pond_fish` | T2 摆场 |  | ✅ | `session_log:1053` |
+| `scythe` | T2 摆场 | radius | ✅ | `session_log:1035` |
 | `shear` ≡`milk` | T2 摆场 |  |  |  |
 | `sow` ≡`plant` | T2 摆场 |  |  |  |
 | `statue` ⇄`cabin:statue` | T2 摆场 |  | ✅ | ← 同 `cabin:statue`〔blessing_statue〕 |
-| `till` | T2 摆场 | direction, length, rows | ✅ | `session_log:708` |
+| `till` | T2 摆场 | direction, length, rows | ✅ | `session_log:1078` |
 | `till_plant` | T2 摆场 | direction, length, rows, seed_name, trellis |  |  |
-| `tillfield` | T2 摆场 |  |  |  |
-| `water` | T2 摆场 | radius |  |  |
-| `上料` ≡`load` | T2 摆场 |  |  |  |
+| `tillfield` | T2 摆场 |  | ✅ | `session_log:1039` |
+| `water` | T2 摆场 | radius | ✅ | `session_log:786` |
+| `上料` ≡`load` | T2 摆场 |  | ✅ | ← 同 `farm:load`〔load_machines〕 |
 | `买` ≡`buy` | T3 副作用 |  |  |  |
 | `买动物` ≡`buy` | T3 副作用 |  |  |  |
-| `关门` ≡`doors` | T2 摆场 |  |  |  |
+| `关门` ≡`doors` | T2 摆场 |  | ✅ | ← 同 `farm:doors`〔close_doors〕 |
 | `剪毛` ≡`milk` | T2 摆场 |  |  |  |
-| `加草` ≡`hay` | T2 摆场 |  |  |  |
+| `加草` ≡`hay` | T2 摆场 |  | ✅ | ← 同 `farm:hay`〔feed_hay〕 |
 | `化肥` ≡`fertilize` | T2 摆场 |  |  |  |
-| `喂塘` ≡`pond_feed` | T2 摆场 |  |  |  |
-| `喂水` | T3 副作用 |  |  |  |
-| `塘` ≡`pond` | T2 摆场 |  |  |  |
-| `塘钓` ≡`pond_fish` | T2 摆场 |  |  |  |
-| `宠物碗` ≡`喂水` | T3 副作用 |  |  |  |
+| `喂塘` ≡`pond_feed` | T2 摆场 |  | ✅ | ← 同 `farm:pond_feed`〔_pond_feed〕 |
+| `喂水` | T3 副作用 |  | ✅ | `session_log:796` |
+| `塘` ≡`pond` | T2 摆场 |  | ✅ | ← 同 `farm:pond`〔_pond_list〕 |
+| `塘钓` ≡`pond_fish` | T2 摆场 |  | ✅ | ← 同 `farm:pond_fish`〔_pond_fish〕 |
+| `宠物碗` ≡`喂水` | T3 副作用 |  | ✅ | ← 同 `farm:喂水`〔pet_water〕 |
 | `布局锄` ≡`hoe` | T2 摆场 |  |  |  |
-| `干草` ≡`hay` | T2 摆场 |  |  |  |
+| `干草` ≡`hay` | T2 摆场 |  | ✅ | ← 同 `farm:hay`〔feed_hay〕 |
 | `拆` ≡`break` ⇄`cabin:break` | T3 副作用 |  | ✅ | ← 同 `farm:break`〔break_tile〕 |
 | `挤奶` ≡`milk` | T2 摆场 |  |  |  |
-| `摸动物` ≡`animals` | T2 摆场 |  |  |  |
-| `摸摸` ≡`pet` | T3 副作用 |  |  |  |
-| `摸猫狗` ≡`pet` | T3 副作用 |  |  |  |
-| `播种规划` ≡`plantlayout` | T2 摆场 |  |  |  |
+| `摸动物` ≡`animals` | T2 摆场 |  | ✅ | ← 同 `farm:animals`〔care_animals〕 |
+| `摸摸` ≡`pet` | T3 副作用 |  | ✅ | ← 同 `farm:pet`〔pet_pet〕 |
+| `摸猫狗` ≡`pet` | T3 副作用 |  | ✅ | ← 同 `farm:pet`〔pet_pet〕 |
+| `播种规划` ≡`plantlayout` | T2 摆场 |  | ✅ | ← 同 `farm:plantlayout`〔plant_layout〕 |
 | `收` ≡`harvest` | T2 摆场 |  |  |  |
-| `收放` ≡`building` | T2 摆场 |  |  |  |
+| `收放` ≡`building` | T2 摆场 |  | ✅ | ← 同 `farm:building`〔work_building〕 |
 | `放` ≡`place` ⇄`cabin:place` | T3 副作用 |  | ⏭ 没条件测 | ← 同 `scene:place`〔place_item〕 |
-| `放牧` ≡`petwalk` | T3 副作用 |  |  |  |
+| `放牧` ≡`petwalk` | T3 副作用 |  | ✅ | ← 同 `farm:petwalk`〔pet_walk〕 |
 | `放置` ≡`place` ⇄`cabin:place` | T3 副作用 |  | ⏭ 没条件测 | ← 同 `scene:place`〔place_item〕 |
-| `放鱼` ≡`pond_add` | T2 摆场 |  |  |  |
+| `放鱼` ≡`pond_add` | T2 摆场 |  | ✅ | ← 同 `farm:pond_add`〔_pond_add〕 |
 | `敲` ≡`break` ⇄`cabin:break` | T3 副作用 |  | ✅ | ← 同 `farm:break`〔break_tile〕 |
-| `方形规划` ≡`plan` | T2 摆场 |  |  |  |
-| `机器` ≡`collect` | T2 摆场 |  |  |  |
-| `浇` ≡`water` | T2 摆场 |  |  |  |
-| `清` ≡`clear` | T2 摆场 |  |  |  |
+| `方形规划` ≡`plan` | T2 摆场 |  | ✅ | ← 同 `farm:plan`〔plan_farm_layout_tool〕 |
+| `机器` ≡`collect` | T2 摆场 |  | ✅ | ← 同 `farm:collect`〔collect_machines〕 |
+| `浇` ≡`water` | T2 摆场 |  | ✅ | ← 同 `farm:water`〔water_crops〕 |
+| `清` ≡`clear` | T2 摆场 |  | ✅ | ← 同 `farm:clear`〔_farm_clear〕 |
 | `清格` ≡`clearground` | T2 摆场 |  |  |  |
-| `畜舍` | T2 摆场 |  |  |  |
+| `畜舍` | T2 摆场 |  | ✅ | `session_log:993` |
 | `砍树` ≡`chop` | T2 摆场 |  |  |  |
-| `碗` ≡`喂水` | T3 副作用 |  |  |  |
+| `碗` ≡`喂水` | T3 副作用 |  | ✅ | ← 同 `farm:喂水`〔pet_water〕 |
 | `祈福` ≡`statue` ⇄`cabin:statue` | T2 摆场 |  | ✅ | ← 同 `cabin:statue`〔blessing_statue〕 |
-| `蓄力锄` ≡`tillfield` | T2 摆场 |  |  |  |
+| `蓄力锄` ≡`tillfield` | T2 摆场 |  | ✅ | ← 同 `farm:tillfield`〔till_field〕 |
 | `规划` ≡`plot` | T2 摆场 |  | ✅ | ← 同 `farm:plot`〔plot_plan〕 |
-| `这间` ≡`畜舍` | T2 摆场 |  |  |  |
-| `遛` ≡`petwalk` | T3 副作用 |  |  |  |
-| `领籽` ≡`pond_collect` | T2 摆场 |  |  |  |
-| `鱼塘` ≡`pond` | T2 摆场 |  |  |  |
+| `这间` ≡`畜舍` | T2 摆场 |  | ✅ | ← 同 `farm:畜舍`〔care_building〕 |
+| `遛` ≡`petwalk` | T3 副作用 |  | ✅ | ← 同 `farm:petwalk`〔pet_walk〕 |
+| `领籽` ≡`pond_collect` | T2 摆场 |  | ✅ | ← 同 `farm:pond_collect`〔_pond_collect〕 |
+| `鱼塘` ≡`pond` | T2 摆场 |  | ✅ | ← 同 `farm:pond`〔_pond_list〕 |
 
 ## `mine`（16）
 
@@ -174,7 +177,7 @@
 | `放置` ≡`place` ⇄`farm:place` | T3 副作用 |  | ⏭ 没条件测 | ← 同 `scene:place`〔place_item〕 |
 | `敲` ≡`break` ⇄`farm:break` | T3 副作用 |  | ✅ | ← 同 `farm:break`〔break_tile〕 |
 | `机器` ≡`collect` | T2 摆场 |  | ✅ | ← 同 `cabin:collect`〔_cabin_collect〕 |
-| `点` ≡`interact` ⇄`scene:at` | T2 摆场 |  | ✅ | ← 同 `cabin:interact`〔interact_at〕 |
+| `点` ≡`interact` ⇄`scene:at` | T2 摆场 |  | ✅ | ← 同 `scene:at`〔interact_at〕 |
 | `看` ≡`enum` | T2 摆场 |  | ✅ | ← 同 `cabin:enum`〔_cabin_enum〕 |
 | `睡` ≡`sleep` ⇄`daily:sleep` | T3 副作用 |  | ✅ | ← 同 `daily:sleep`〔go_sleep〕 |
 | `睡觉` ≡`sleep` ⇄`daily:sleep` | T3 副作用 |  | ✅ | ← 同 `daily:sleep`〔go_sleep〕 |
@@ -207,27 +210,27 @@
 
 | op | 层 | 参数 | 判定 | 证据 |
 |---|---|---|---|---|
-| `at` ⇄`cabin:interact` | T2 摆场 | tile_x, tile_y | ✅ | `session_log:429` |
+| `at` ⇄`cabin:interact` | T2 摆场 | tile_x, tile_y | ✅ | `session_log:842` |
 | `berry` | T3 副作用 |  |  |  |
 | `break` ⇄`farm:break` | T3 副作用 | radius, steps | ✅ | `session_log:288` |
-| `drop` | T3 副作用 |  | ✅ | `session_log:501` |
+| `drop` | T3 副作用 | items | ✅ | `session_log:784` |
 | `face` | T2 摆场 | direction | ✅ | `session_log:310` |
 | `forge_help` | T2 摆场 |  | ✅ | `session_log:312` |
 | `front` | T2 摆场 |  | ✅ | `session_log:636` |
 | `furniture` ⇄`cabin:furniture` | T1 自动 |  | ✅ | `session_log:601` |
 | `garbage` | T2 摆场 | dry_run, loc, pos, wait | ✅ | `session_log:321` |
-| `interact` ≡`front` | T2 摆场 |  | ✅ | `session_log:392` |
+| `interact` ≡`front` | T2 摆场 |  | ✅ | `session_log:1011` |
 | `maze` | T2 摆场 | gx, gy, radius | ✅ | `session_log:711` |
 | `maze_seg` | T2 摆场 | gx, gy, radius | ✅ | `session_log:313` |
 | `maze_walk` ⇄`map:walk_multi` | T2 摆场 | location, max_seg, max_wait, waypoints | ✅ | `session_log:715` |
 | `moss` | T3 副作用 | dry_run, radius, rounds, target_max |  |  |
 | `pan` | T2 摆场 | dry_run, radius, timeout |  |  |
 | `pickup` ⇄`cabin:pickup` | T2 摆场 | tile_x, tile_y | ✅ | ← 同 `cabin:pickup`〔furniture_pickup〕 |
-| `pickup_scene` | T3 副作用 | max_items | ✅ | `session_log:502` |
+| `pickup_scene` | T3 副作用 | max_items | ✅ | `session_log:831` |
 | `place` ⇄`farm:place` | T3 副作用 |  | ⏭ 没条件测 | `session_log:307` 要一块能放的地皮 + 可放置物 |
 | `rock` | T3 副作用 | break_stone, dig, max_break, radius |  |  |
 | `rummage` ≡`garbage` | T2 摆场 |  | ✅ | ← 同 `scene:garbage`〔trash_run〕 |
-| `seats` | T1 自动 | radius | ✅ | `session_log:600` |
+| `seats` | T1 自动 | radius | ✅ | `session_log:845` |
 | `select` | T3 副作用 |  | ✅ | `session_log:295` |
 | `sit` | T2 摆场 | face | ✅ | `session_log:646` |
 | `spot` | T3 副作用 |  |  |  |
@@ -261,7 +264,7 @@
 | `淘` ≡`pan` | T2 摆场 |  |  |  |
 | `淘盘` ≡`pan` | T2 摆场 |  |  |  |
 | `淘金` ≡`pan` | T2 摆场 |  |  |  |
-| `点` ≡`at` ⇄`cabin:interact` | T2 摆场 |  | ✅ | ← 同 `cabin:interact`〔interact_at〕 |
+| `点` ≡`at` ⇄`cabin:interact` | T2 摆场 |  | ✅ | ← 同 `scene:at`〔interact_at〕 |
 | `站起` ≡`stand` | T2 摆场 |  | ✅ | ← 同 `scene:stand`〔stand〕 |
 | `站起来` ≡`stand` | T2 摆场 |  | ✅ | ← 同 `scene:stand`〔stand〕 |
 | `绿雨` ≡`moss` | T3 副作用 |  |  |  |
@@ -276,18 +279,18 @@
 | `采矿点` ≡`rock` | T3 副作用 |  |  |  |
 | `铜锅` ≡`pan` | T2 摆场 |  |  |  |
 | `锻造帮助` ≡`forge_help` | T2 摆场 |  | ✅ | ← 同 `scene:forge_help`〔_lambda_scene_932ae5f5〕 |
-| `面前` ≡`front` | T2 摆场 |  | ✅ | ← 同 `scene:front`〔interact〕 |
+| `面前` ≡`front` | T2 摆场 |  | ✅ | ← 同 `scene:interact`〔interact〕 |
 
 ## `menu`（70）
 
 | op | 层 | 参数 | 判定 | 证据 |
 |---|---|---|---|---|
-| `advance` | T2 摆场 |  | ✅ | `session_log:761` |
+| `advance` | T2 摆场 |  | ✅ | `session_log:982` |
 | `bin` | T3 副作用 | sell_all | ✅ | `session_log:657` |
 | `bundle` | T1 自动 | area | ✅ | `session_log:602` |
 | `bundle_kb` | T1 自动 | query | ✅ | `session_log:603` |
-| `cancel` | T2 摆场 |  | ✅ | `session_log:707` |
-| `click` | T3 副作用 | action, button, category, option, quantity, real, right, slot | ✅ | `session_log:771` |
+| `cancel` | T2 摆场 |  | ✅ | `session_log:900` |
+| `click` | T3 副作用 | action, button, category, option, quantity, real, right, slot | ✅ | `session_log:981` |
 | `craft` | T3 副作用 | item_name | ✅ | `session_log:548` |
 | `craftables` | T1 自动 |  | ✅ | `session_log:606` |
 | `customize` ⇄`settings:customize` | T3 副作用 | farmname, favorite | ✅ | ← 同 `settings:customize`〔character_customize〕 |
@@ -304,17 +307,17 @@
 | `minigame` | T2 摆场 | action |  |  |
 | `minigame_state` | T2 摆场 |  | ⏭ 没条件测 | `session_log:545` 要赌场小游戏（CalicoJack/Slots，得先进沙漠赌场） |
 | `number` | T2 摆场 | confirm | ⏭ 没条件测 | `session_log:546` 要弹着数量框（节庆兑换台 / 转盘押注） |
-| `read` | T2 摆场 |  | ✅ | `session_log:763` |
+| `read` | T2 摆场 |  | ✅ | `session_log:984` |
 | `read_book` | T3 副作用 |  | ✅ | `session_log:549` |
 | `recipes` | T1 自动 |  | ✅ | `session_log:605` |
-| `sell` | T3 副作用 |  |  |  |
+| `sell` | T3 副作用 |  | ✅ | `session_log:866` |
 | `shop` | T2 摆场 | place, want |  |  |
 | `任务知` ≡`know` | T2 摆场 |  | ✅ | ← 同 `menu:know`〔calendar_data.special_orders_available〕 |
 | `关` ≡`cancel` | T2 摆场 |  | ✅ | ← 同 `menu:cancel`〔cancel〕 |
 | `出货` ≡`bin` | T3 副作用 |  | ✅ | ← 同 `menu:bin`〔sell_to_bin〕 |
 | `分支` ≡`levelup_choose` | T3 副作用 |  |  |  |
 | `剧情` ≡`advance` | T2 摆场 |  | ✅ | ← 同 `menu:advance`〔advance_story〕 |
-| `卖` ≡`sell` | T3 副作用 |  |  |  |
+| `卖` ≡`sell` | T3 副作用 |  | ✅ | ← 同 `menu:sell`〔sell_to_shop〕 |
 | `取消` ≡`cancel` | T2 摆场 |  | ✅ | ← 同 `menu:cancel`〔cancel〕 |
 | `合成` ≡`craft` | T3 副作用 |  | ✅ | ← 同 `menu:craft`〔craft〕 |
 | `填槽` ≡`display_fill` ⇄`festival:display_fill` | T3 副作用 |  |  |  |
@@ -359,10 +362,10 @@
 |---|---|---|---|---|
 | `default` | T3 副作用 |  | ✅ | `session_log:263` |
 | `find` | T1 自动 |  | ✅ | `session_log:604` |
-| `store` | T3 副作用 | all, items, keepTools, target | ✅ | `session_log:644` |
+| `store` | T3 副作用 | all, items, keepTools, target | ✅ | `session_log:846` |
 | `tag` | T3 副作用 | target | ✅ | `session_log:258` |
 | `take` | T3 副作用 | items | ✅ | `session_log:643` |
-| `view` | T1 自动 | box | ✅ | `session_log:598` |
+| `view` | T1 自动 | box | ✅ | `session_log:1076` |
 | `取` ≡`take` | T3 副作用 |  | ✅ | ← 同 `storage:take`〔storage_take〕 |
 | `堆` ≡`store` | T3 副作用 |  | ✅ | ← 同 `storage:store`〔storage_store〕 |
 | `多取` ≡`take` | T3 副作用 |  | ✅ | ← 同 `storage:take`〔storage_take〕 |
@@ -417,14 +420,14 @@
 
 | op | 层 | 参数 | 判定 | 证据 |
 |---|---|---|---|---|
-| `go` | T2 摆场 | destination | ✅ | `session_log:710` |
-| `lookup` | T1 自动 | location | ✅ | `session_log:728` |
+| `go` | T2 摆场 | destination | ✅ | `session_log:1068` |
+| `lookup` | T1 自动 | location | ✅ | `session_log:1034` |
 | `npc` | T2 摆场 |  | ✅ | `session_log:650` |
 | `query` | T1 自动 | function | ✅ | `session_log:611` |
 | `unlocks` | T2 摆场 |  | ✅ | `session_log:582` |
-| `walk` | T2 摆场 | poi_name | ✅ | `session_log:758` |
+| `walk` | T2 摆场 | poi_name | ✅ | `session_log:955` |
 | `walk_multi` ⇄`scene:maze_walk` | T2 摆场 | location, max_seg, max_wait, waypoints | ✅ | `session_log:720` |
-| `warp_safe` | T2 摆场 |  | ✅ | `session_log:656` |
+| `warp_safe` | T2 摆场 |  | ✅ | `session_log:927` |
 | `反查` ≡`query` | T1 自动 |  | ✅ | ← 同 `map:query`〔map_query〕 |
 | `多段走` ≡`walk_multi` ⇄`scene:maze_walk` | T2 摆场 |  | ✅ | ← 同 `map:walk_multi`〔_maze_walk〕 |
 | `找人` ≡`npc` | T2 摆场 |  | ✅ | ← 同 `map:npc`〔find_npc〕 |
@@ -443,22 +446,22 @@
 | `dance` | ⏭ 当期不可用 | target |  |  |
 | `display_fill` ⇄`menu:display_fill` | ⏭ 当期不可用 | items |  |  |
 | `display_takeback` ⇄`menu:display_takeback` | ⏭ 当期不可用 |  |  |  |
-| `egg_note` | ⏭ 当期不可用 | route |  |  |
+| `egg_note` | ⏭ 当期不可用 | route | ✅ | `session_log:885` |
 | `egg_run` | ⏭ 当期不可用 | route |  |  |
-| `eggs` | ⏭ 当期不可用 |  |  |  |
-| `go` | ⏭ 当期不可用 |  | ✅ | `session_log:755` |
+| `eggs` | ⏭ 当期不可用 |  | ✅ | `session_log:858` |
+| `go` | ⏭ 当期不可用 |  | ✅ | `session_log:970` |
 | `help` | T1 自动 |  | ✅ | `session_log:736` |
 | `ice_fish` | ⏭ 当期不可用 |  | ✅ | 🎣 **真机过(2026-09-12 冬钓节复测)**：哨兵自动接管→钓 6 条**赢了**(赢线≥5)；新满级站位(69,36)一次到位。⚠️ 这次不经 MCP 调用(后台线程跑的)故无 session_log 行；证据=比赛 score=6 + 哨兵播报 + 背包收到首胜四件套(水手帽/精装旋式鱼饵/倒刺钩/磁铁) |
-| `info` | T1 自动 |  | ✅ | `session_log:730` |
-| `interact` | ⏭ 当期不可用 |  | ✅ | `session_log:757` |
+| `info` | T1 自动 |  | ✅ | `session_log:968` |
+| `interact` | ⏭ 当期不可用 |  | ✅ | `session_log:983` |
 | `maze` | ⏭ 当期不可用 |  |  |  |
 | `maze_walk` ⇄`scene:maze_walk` | ⏭ 当期不可用 | location, max_seg, max_wait, waypoints |  |  |
 | `next` | T1 自动 |  | ✅ | `session_log:617` |
 | `poi` | ⏭ 当期不可用 |  | ✅ | `session_log:731` |
 | `prep` | ⏭ 当期不可用 |  | ✅ | `session_log:734` |
-| `shop` | ⏭ 当期不可用 |  | ✅ | `session_log:739` |
+| `shop` | ⏭ 当期不可用 |  | ✅ | `session_log:962` |
 | `strength` | ⏭ 当期不可用 | delay |  |  |
-| `today` | T1 自动 |  | ✅ | `session_log:615` |
+| `today` | T1 自动 |  | ✅ | `session_log:854` |
 | `下一个` ≡`next` | T1 自动 |  | ✅ | ← 同 `festival:next`〔_festival_next〕 |
 | `互动` ≡`interact` | ⏭ 当期不可用 |  |  |  |
 | `今天` ≡`today` | T1 自动 |  | ✅ | ← 同 `festival:today`〔_festival_today〕 |
@@ -486,7 +489,7 @@
 | `玩法` ≡`help` | T1 自动 |  | ✅ | ← 同 `festival:help`〔_festival_help〕 |
 | `纸条` ≡`egg_note` | ⏭ 当期不可用 |  |  |  |
 | `舞` ≡`dance` | ⏭ 当期不可用 |  |  |  |
-| `蛋` ≡`eggs` | T1 自动 |  |  |  |
+| `蛋` ≡`eggs` | T1 自动 |  | ✅ | ← 同 `festival:eggs`〔_festival_eggs〕 |
 | `记` ≡`egg_note` | ⏭ 当期不可用 |  |  |  |
 | `走迷宫` ≡`maze_walk` ⇄`scene:maze_walk` | T1 自动 |  | ✅ | ← 同 `map:walk_multi`〔_maze_walk〕 |
 | `跳舞` ≡`dance` | ⏭ 当期不可用 |  |  |  |
@@ -500,7 +503,7 @@
 | op | 层 | 参数 | 判定 | 证据 |
 |---|---|---|---|---|
 | `bobber` | T2 摆场 | style | ✅ | `session_log:523` |
-| `crab` | T1 自动 |  | ✅ | `session_log:613` |
+| `crab` | T1 自动 |  | ✅ | `session_log:849` |
 | `crab_bait` | T2 摆场 | bait | ⏭ 没条件测 | `session_log:537` 要背包里有鱼饵（先去威利鱼店买 Bait） |
 | `crab_collect` | T2 摆场 |  | ✅ | `session_log:539` |
 | `crab_diag` | T2 摆场 | location | ✅ | `session_log:538` |
@@ -570,7 +573,7 @@
 |---|---|---|---|---|
 | `async` | T2 摆场 | add, enable, remove, show | ✅ | `session_log:648` |
 | `continue` | T3 副作用 | job_id | ✅ | `session_log:508` |
-| `stop` | T3 副作用 | job_id | ✅ | `session_log:655` |
+| `stop` | T3 副作用 | job_id | ✅ | `session_log:1062` |
 | `停` ≡`stop` | T3 副作用 |  | ✅ | ← 同 `script:stop`〔_script_stop〕 |
 | `异步` ≡`async` | T2 摆场 |  | ✅ | ← 同 `script:async`〔_script_async〕 |
 | `白名单` ≡`async` | T2 摆场 |  | ✅ | ← 同 `script:async`〔_script_async〕 |

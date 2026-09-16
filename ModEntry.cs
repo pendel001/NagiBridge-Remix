@@ -215,6 +215,89 @@ internal static class AchievementToastPatch
     }
 }
 
+/// <summary>🎓 精通弹窗即时播报（2026-09-16 恒：「游戏弹出提示应该是"你的领悟达到了新的境界"就可以去精通山洞领取」）。
+///
+/// 缺口：这句走 `Game1.showGlobalMessage` → `addHUDMessage(HUDMessage.ForCornerTextbox(...))`（Game1.cs:3569），
+///   而上一个成就补丁**只认 `achievement && whatType==1`**（真成就 toast 的签名）⇒ 角标文本框一律被它放掉，
+///   **AI 完全收不到"精通升级了"这件事**。这里补一条同款 Postfix 专门捞它。
+///
+/// ⚠️ 判据用**游戏自己的本地化文案**（`Game1.content.LoadString`），不手抄中文串 —— 游戏改词/换语言都不怕。
+/// ⚠️ 不能拿原文直接等值比：`ForCornerTextbox` 构造时先过了一遍 `Game1.parseText(msg, dialogueFont, 384)`
+///   （HUDMessage.cs:99-107），**会往长句里插换行** ⇒ 必须**先归一化**（去掉所有空白）再比。
+/// ⚠️ 三个 key 都只在**本进程**真弹时才命中；联机广播不走 addHUDMessage 角标框，天然不误报。
+/// </summary>
+[HarmonyPatch(typeof(Game1), nameof(Game1.addHUDMessage))]
+internal static class MasteryToastPatch
+{
+    /// <summary>本进程已加载过的游戏原文（key → 归一化后的文案）。只缓存**成功**结果，失败不粘住。</summary>
+    private static readonly Dictionary<string, string> _texts = new();
+
+    private static string Normalize(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return "";
+        var sb = new System.Text.StringBuilder(s.Length);
+        foreach (char c in s)
+        {
+            if (char.IsWhiteSpace(c) || c == '　') continue;   // 半角 + 全角空格、换行
+            sb.Append(c);
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>问游戏要这条 key 的原文；读不到就返回 ""（该 key 在本语言下不存在）。</summary>
+    private static string Text(string key)
+    {
+        if (_texts.TryGetValue(key, out var cached)) return cached;
+        string norm = "";
+        try { norm = Normalize(Game1.content.LoadString(key)); } catch { }
+        if (norm.Length > 0) _texts[key] = norm;   // 只在成功时缓存
+        return norm;
+    }
+
+    internal static void Postfix(HUDMessage message)
+    {
+        try
+        {
+            if (ModEntry.Instance == null || message?.message == null) return;
+            // 成就 toast 归上一个补丁管，别两头都报
+            if (message.achievement && message.whatType == HUDMessage.achievement_type) return;
+
+            string got = Normalize(message.message);
+            if (got.Length == 0) return;
+
+            // key → 注入给 AI 的人话。三条正好对应精通的三个节点。
+            var known = new (string Key, string Line)[]
+            {
+                ("Strings\\1_6_Strings:Mastery_newlevel",
+                    "🎓 精通等级提升！可以去精通山洞（森林右下角）领一块精通了 —— 走到石碑前 interact 开菜单，`menu read` 看奖励、`menu click(button=mainButton)` 领取。"),
+                ("Strings\\1_6_Strings:MasteryHint",
+                    "🎓 五项技能全部满级了，精通之路开启 —— 精通山洞在森林右下角，进去摸中央基座看总进度、摸石碑看具体奖励。"),
+                ("Strings\\1_6_Strings:MasteryCompleteToast",
+                    "🎓 五块精通石碑全部领取完毕，精通山洞的烛火亮了。"),
+            };
+
+            foreach (var (key, line) in known)
+            {
+                string want = Text(key);
+                if (want.Length == 0) continue;
+                // parseText 会插换行/可能截断 ⇒ 归一化后等值，或"原文被包在这条里"都算命中
+                if (got == want || got.Contains(want))
+                {
+                    string who = Game1.player?.Name ?? "";
+                    ModEntry.Instance.AddRecentEvent("mastery",
+                        $"{(who.Length > 0 ? who + " " : "")}{line}", Game1.ticks);
+                    ModEntry.Instance.Monitor.Log($"[mastery] toast 命中 {key}", LogLevel.Debug);
+                    return;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            ModEntry.Instance?.Monitor.Log($"[mastery] 捕获异常: {ex.Message}", LogLevel.Warn);
+        }
+    }
+}
+
 /// <summary>
 /// 🎁 地上赠送彩蛋（2026-09-11 反编译 + 真机验）：**谁丢的**由 `Debris.DroppedByPlayerID` 权威给出。
 /// 全量反编译（35 万行）里只有两处给它赋值，都是**玩家手动丢**（都赋的是 `Game1.player.UniqueMultiplayerID`）：
@@ -2628,7 +2711,10 @@ public class ModEntry : Mod
                 "/mastery" => HandleMastery(),
                 "/special_items" => HandleSpecialItems(),   // 💼 钱包特殊物品列表（含 mastery_xxx/TownKey，2026-08-23 恒）
                 "/achievements" => HandleAchievementProbe(),   // 🏆 成就列表（读 player.achievements NetIntHashSet + 成就名，2026-08-23 恒）
-                "/mastery_claim" => HandleMasteryClaim(ctx),
+                // 🗑️ `/mastery_claim` 已于 2026-09-16 删除：它**什么也不领**却回 `ok:true`（body 只是
+                //    反射列一串候选方法名），且没有任何 MCP 工具调用它 —— 正是"工具说成功但事没发生"的陷阱。
+                //    领取走**拟人路线**：走到碑前 `interact` 开 MasteryTrackerMenu → `menu read` 看内容
+                //    → `menu click(button=mainButton)` 点游戏自己的领取按钮。不需要旁路端点。
                 "/carpenter" => HandleCarpenter(),
                 "/mine_debug" => HandleMineDebug(),
                 "/mine/elevator" => HandleMineElevator(),   // 🪜 读鹈鹕镇矿井电梯当前可达楼层（动态起始层，2026-08-22）
@@ -4286,7 +4372,11 @@ public class ModEntry : Mod
                 //    `Finish` 放行，`2/2` 卡住 = 房主没放行，见 CHANGELOG ㊵）。
                 readyCheck = BuildReadyCheckInfo(Game1.activeClickableMenu),
                 // 🗳️ 选项框种类（location/event/plain）——Python 据此给**确定**的点法，不用再猜。
-                questionKind = BuildQuestionKind()
+                questionKind = BuildQuestionKind(),
+                // 🎓 精通碑/基座（MasteryTrackerMenu, 2026-09-16 恒）：**与 `/menu` 共用** BuildMasteryInfo。
+                //    ⚠️ 这个键曾经只在 `/menu` 有、`/state` 没有 ⇒ 状态条 `_menu_advice` 拿空 dict，
+                //    对着**能领**的碑喊"现在领不了"（真机当场撞见）。两处共用同一函数即为根治。
+                mastery = BuildMasteryInfo(Game1.activeClickableMenu)
             };
         }
 
@@ -5450,7 +5540,10 @@ public class ModEntry : Mod
                 bool diggable = loc.doesTileHaveProperty(tx, ty, "Diggable", "Back") != null
                     && !loc.IsTileBlockedBy(tileVec, ~(StardewValley.CollisionMask.Characters | StardewValley.CollisionMask.Farmers));
                 bool watered = false;
-                string? cropName = null;
+                string? cropName = null;         // crop.indexOfHarvest（产物 **item ID**，不是名字）→ 键 "crop"
+                string? cropRealName = null;     // 🎓 产物**真名**（问游戏；见下面 5469 那段长注释）
+                bool? cropScythe = null;         // 🎓 是否**非得镰刀**收（Crop.GetHarvestMethod()）
+                bool? cropRegrow = null;         // 🎓 收完会不会**再生**（Crop.RegrowsAfterHarvest()）
                 string? forageCropType = null;   // 🫚 2026-08-17：crop.forageCrop 类型（"2"=姜，锄出）
                 bool treeHasMoss = false;        // 🌿 2026-08-17：绿雨树长苔藓（Tree.hasMoss，可收 Moss）
                 bool treeTempGreenRain = false;  // 🌿 临时绿雨树
@@ -5471,6 +5564,20 @@ public class ModEntry : Mod
                             cropName = dirt.crop.indexOfHarvest.Value;
                             cropPhase = dirt.crop.currentPhase.Value;
                             harvestable = dirt.readyForHarvest();
+                            // 🎓 2026-09-16 恒拍板：**把 crops.py 那张表删了，改问游戏**。
+                            //    起因：`scripts/crops.py` 那张 40 条的手抄 ID→名字表，拿 `/give` 逐条核完
+                            //    **错 20 条**（ID 454 写"杨桃"实为上古水果、20 写"甘蓝"实为韭葱、
+                            //    282 写"草莓"实为蔓越莓，还有几条指向"蛋黄酱/铜矿石/错误物品"——
+                            //    是当初拍脑袋填的，不是从游戏导的）。它把三件事带歪：
+                            //      `zh` 名字错（AI 以为在收杨桃）、`scythe` 错（**选错工具**）、
+                            //      `regrow` 错（阶段播报歪）。
+                            //    ⇒ 这个作物对象 `dirt.crop` 身上就带着真答案，**读它，别在消费侧猜**
+                            //      （同 `Object.isForage()` 替三张名单、`/debris` 替名单减法那条规矩）。
+                            //    ⚠️ 名字走 IngredientLabel（ItemRegistry 再退 old Object，负数=分类名）——
+                            //       别自己 `new Object(id)`，那玩意儿 ID 不认识时**不抛异常**、直接造"错误物品"。
+                            try { cropRealName = IngredientLabel(cropName); } catch { }
+                            try { cropScythe = dirt.crop.GetHarvestMethod() == StardewValley.GameData.Crops.HarvestMethod.Scythe; } catch { }
+                            try { cropRegrow = dirt.crop.RegrowsAfterHarvest(); } catch { }
                             // 🫚 forageCrop（春葱/姜）：锄地出（crop.hitWithHoe）。类型 "2"=姜（Ginger）
                             if (dirt.crop.forageCrop.Value)
                                 forageCropType = dirt.crop.whichForageCrop.Value;
@@ -5546,6 +5653,10 @@ public class ModEntry : Mod
                         tile["cropPhase"] = cropPhase;
                         tile["harvestable"] = harvestable;
                     }
+                    // 🎓 2026-09-16：作物真名/要不要镰刀/收完再不再生，一律**游戏说了算**（替掉 crops.py 那张错表）
+                    if (cropRealName != null) tile["cropName"] = cropRealName;
+                    if (cropScythe != null) tile["cropScythe"] = cropScythe;
+                    if (cropRegrow != null) tile["cropRegrow"] = cropRegrow;
                     if (forageCropType != null) tile["forageCrop"] = forageCropType;   // "1"=大葱(摘) "2"=姜(锄)
                     if (treeHasMoss) tile["moss"] = true;             // 🌿 树长苔藓（可收 Moss）
                     if (treeTempGreenRain) tile["greenRainTree"] = true;
@@ -10320,6 +10431,7 @@ public class ModEntry : Mod
                 int shippingTotal = 0, shippingCurrentTab = -1;
                 object? shippingCategories = null;
                 int shippingCurrentPage = -1;   // 🧾 ShippingMenu 当前展开类目（-1=收拢看五大项小计）
+                object? mastery = null;   // 🎓 MasteryTrackerMenu（精通石碑/中央基座，2026-09-16）
 
                 if (menu is DialogueBox db)
                 {
@@ -10807,6 +10919,15 @@ public class ModEntry : Mod
                     catch { }
                 }
 
+                else if (menu is MasteryTrackerMenu)
+                {
+                    // 🎓 精通菜单（2026-09-16 恒现场抓的缺口）：此前 `menu read` 对这块菜单只吐两个按钮坐标，
+                    //    **正文一个字没有** —— AI 就算走到碑前开出来，也读不到"这是哪块碑 / 能不能领 / 领什么"。
+                    //    内容序列化**与 `/state` 共用同一个函数**（BuildMasteryInfo）——
+                    //    早先两处各写一份，结果 `/menu` 有、`/state` 没有，直接让状态条说错话。
+                    mastery = BuildMasteryInfo(menu);
+                }
+
                 else if (menu is StardewValley.Menus.QuestLog ql)
                 {
                     // 📜 任务日志（2026-08-29 恒）：**游戏内为准**的完整任务视图——GetAllQuests = team.specialOrders + player.questLog，
@@ -11243,7 +11364,8 @@ public class ModEntry : Mod
                     menuTitle,
                     listTotal, listPage, listPageSize,
                     shipping, shippingTotal, shippingCurrentTab,
-                    shippingCategories, shippingCurrentPage
+                    shippingCategories, shippingCurrentPage,
+                    mastery   // 🎓 MasteryTrackerMenu 内容（2026-09-16）
                 });
             }
             catch (Exception ex)
@@ -12614,6 +12736,11 @@ public class ModEntry : Mod
                     result["crop"] = _hd.crop.indexOfHarvest.Value;
                     result["cropPhase"] = _hd.crop.currentPhase.Value;
                     result["harvestable"] = _hd.readyForHarvest();
+                    // 🎓 2026-09-16 同 /surroundings：真名/要不要镰刀/再不再生，问游戏（这张牌是诊断用，
+                    //    留它跟 /surroundings 一个口径，好让两边**互相印证**——上回就是靠对读才发现表错了 20 条）
+                    try { result["cropName"] = IngredientLabel(_hd.crop.indexOfHarvest.Value); } catch { }
+                    try { result["cropScythe"] = _hd.crop.GetHarvestMethod() == StardewValley.GameData.Crops.HarvestMethod.Scythe; } catch { }
+                    try { result["cropRegrow"] = _hd.crop.RegrowsAfterHarvest(); } catch { }
                     if (_hd.crop.forageCrop.Value)
                         result["forageCrop"] = _hd.crop.whichForageCrop.Value;   // "2"=姜
                 }
@@ -13278,6 +13405,82 @@ public class ModEntry : Mod
             level,
             offered = offered.Select(pid => new { id = pid, name = SafeProfessionName(pid) }).ToList(),
         };
+    }
+
+    /// <summary>
+    /// 🎓 精通碑 / 中央基座菜单（MasteryTrackerMenu）内容序列化（2026-09-16 恒）。
+    /// **两个端点共用**：`/menu`（详读，HandleMenu）与 `/state`（热路径快照，HandleState）。
+    /// ⚠️ 早先只加进了 `/menu`，`/state` 那份 activeMenu **没有这个键** ⇒ Python 状态条的
+    /// `_menu_advice` 拿到空 dict，**顺着空 dict 一路落到兜底分支、对着能领的碑喊"现在领不了"**
+    /// （真机当场撞见，比不提示坏得多）。抽成共用函数就是为了**两处不可能再漂移**。
+    /// ⚠️ 通式教训：同一份游戏数据在多个端点各序列化一遍就会漂移，加字段时**两个端点一起加**。
+    /// </summary>
+    private object? BuildMasteryInfo(IClickableMenu? menu)
+    {
+        if (menu is not MasteryTrackerMenu mt)
+            return null;
+        try
+        {
+            var mflags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+            var mtType = typeof(MasteryTrackerMenu);
+            int which = Convert.ToInt32(mtType.GetField("which", mflags)?.GetValue(mt) ?? -1);
+            bool canClaim = (bool)(mtType.GetField("canClaim", mflags)?.GetValue(mt) ?? false);
+            var rewardList = mtType.GetField("rewards", mflags)?.GetValue(mt) as System.Collections.IEnumerable;
+
+            var rewards = new List<object>();
+            if (rewardList != null)
+            {
+                int ri = 0;
+                foreach (var r in rewardList)
+                {
+                    var comp = r as ClickableTextureComponent;
+                    if (comp == null || string.IsNullOrEmpty(comp.hoverText)) { ri++; continue; }
+                    // myAlternateID == 1 ⇒ 领的是**配方**（进 craftingRecipes）；否则是**物品**（进背包）
+                    rewards.Add(new
+                    {
+                        index = ri,
+                        name = comp.name,
+                        label = comp.label,     // 说明长文（已 parseText 折行）
+                        id = comp.hoverText,    // 内部名/ID：'(W)66' 'Statue Of Blessings' 'MysticTreeSeed' …
+                        isRecipe = comp.myAlternateID == 1
+                    });
+                    ri++;
+                }
+            }
+
+            // 顺序取自游戏自己（GameLocation.cs 的 `case "MasteryCave_{X}"` → `new MasteryTrackerMenu(i)`）
+            string[] skillNames = { "farming", "fishing", "foraging", "mining", "combat" };
+            bool claimed = false;
+            if (which >= 0 && which < skillNames.Length)
+            {
+                try { claimed = Game1.player.stats.Get($"mastery_{which}") != 0; } catch { }
+            }
+
+            string title = "";
+            try
+            {
+                title = which == -1
+                    ? Game1.content.LoadString("Strings\\1_6_Strings:FinalPath")
+                    : Game1.content.LoadString($"Strings\\1_6_Strings:{which}_Mastery");
+            }
+            catch { }
+
+            return new
+            {
+                which,                 // -1 = 中央基座总览（只有进度条+五颗星，无具体奖励）/ 0..4 = 具体石碑
+                isOverview = which == -1,
+                skill = (which >= 0 && which < skillNames.Length) ? skillNames[which] : null,
+                title,
+                rewards,
+                claimed,               // 这块碑**已经领过了**（领过的碑游戏不再建 mainButton）
+                canClaim,              // 还有没花掉的精通等级 → 领取按钮才点得动
+                hasClaimButton = mt.mainButton != null,
+                note = canClaim
+                    ? "可以领：menu click(button=mainButton)"
+                    : (claimed ? "这块碑已经领过了（游戏不再给领取按钮）" : "暂时不能领：精通等级已经花光了，先去攒精通经验")
+            };
+        }
+        catch { return null; }
     }
 
     /// <summary>
@@ -17476,8 +17679,21 @@ public class ModEntry : Mod
 
     /// <summary>
     /// GET /mastery — 精通状态（SDV 1.6）。
-    /// 反射读 Farmer 上所有含 Mastery 的字段/属性（MasteryExp/MasteryLevelsSpent 等），
-    /// 兼容各 1.6 小版本命名。经验值检测 + 已领取点数检测都靠它。
+    ///
+    /// ⚠️ 2026-09-16 重写：旧版**反射 `Farmer` 上名字含 "Mastery" 的字段/属性** —— 真机实测回
+    ///   `{"ok":true,"fields":[],"props":[]}`，**这个端点从上线起就是死的**，`check mastery` 跟着一起空。
+    ///   根因（反编译实锤）：精通经验根本不在 `Farmer` 上，而在 `Game1.stats` 这个 **string-keyed** 容器：
+    ///     · `Game1.stats.Increment("MasteryExp", …)`                 （Farmer.cs:3041）
+    ///     · `Game1.stats.Get("masteryLevelsSpent")`                  （MasteryTrackerMenu.cs:177）
+    ///     · `Game1.player.stats.Get($"mastery_{i}")`   ← 逐技能"这块碑领没领"（StatKeys.cs:186）
+    ///   ⇒ 按**字段名**去反射找 string-keyed 的条目，必然一个都找不到。
+    ///
+    /// ⚠️ 精通**各人各的，没有共享点数池**：`Game1.stats => player.stats`（Game1.cs:1671），而
+    ///   `Game1.player` 是**本进程玩家**（Game1.cs:1250）⇒ 联机下读到的是自己那份。AI 领取不会吃掉房主的等级。
+    ///
+    /// 等级/阈值一律**问游戏**（`MasteryTrackerMenu.getCurrentMasteryLevel` / `getMasteryExpNeededForLevel`），
+    /// 不另抄一份阈值表。技能标题走本地化字符串 `Strings\1_6_Strings:{i}_Mastery`——
+    /// 正是菜单 `draw()` 渲染标题用的那一个。
     /// </summary>
     private object HandleMastery()
     {
@@ -17489,26 +17705,40 @@ public class ModEntry : Mod
         {
             try
             {
-                var farmer = Game1.player;
-                var t = typeof(Farmer);
-                var flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
-                var fields = new List<object>();
-                foreach (var f in t.GetFields(flags).Where(f => f.Name.Contains("Mastery", StringComparison.OrdinalIgnoreCase)))
+                // 顺序来自游戏自己：GameLocation.cs 的 `case "MasteryCave_{X}"` → `new MasteryTrackerMenu(i)`
+                //   0=Farming 1=Fishing 2=Foraging 3=Mining 4=Combat
+                string[] skills = { "farming", "fishing", "foraging", "mining", "combat" };
+
+                int exp = (int)Game1.stats.Get("MasteryExp");
+                int level = MasteryTrackerMenu.getCurrentMasteryLevel();
+                int spent = (int)Game1.stats.Get("masteryLevelsSpent");
+                int unspent = level - spent;
+                // -1 = 已满级（游戏 getMasteryExpNeededForLevel(6+) 返回 int.MaxValue，别原样吐出去吓人）
+                int nextNeed = level >= 5 ? -1 : MasteryTrackerMenu.getMasteryExpNeededForLevel(level + 1);
+
+                var plaques = new List<object>();
+                for (int i = 0; i < skills.Length; i++)
                 {
-                    object? v = null;
-                    try { v = f.GetValue(farmer); } catch { }
-                    v = UnwrapNetValue(v);
-                    fields.Add(new { name = f.Name, value = v?.ToString() ?? "(null)" });
+                    bool claimed = false;
+                    try { claimed = Game1.player.stats.Get($"mastery_{i}") != 0; } catch { }
+                    string cn = "";
+                    try { cn = Game1.content.LoadString($"Strings\\1_6_Strings:{i}_Mastery"); } catch { }
+                    plaques.Add(new { index = i, skill = skills[i], cn, claimed });
                 }
-                var props = new List<object>();
-                foreach (var pr in t.GetProperties(flags).Where(p => p.Name.Contains("Mastery", StringComparison.OrdinalIgnoreCase)))
+
+                tcs.SetResult(new
                 {
-                    object? v = null;
-                    try { v = pr.GetValue(farmer); } catch { }
-                    v = UnwrapNetValue(v);
-                    props.Add(new { name = pr.Name, value = v?.ToString() ?? "(null)" });
-                }
-                tcs.SetResult(new { ok = true, fields, props });
+                    ok = true,
+                    who = Game1.player?.Name ?? "",
+                    exp,
+                    level,
+                    expForNext = nextNeed,
+                    levelsSpent = spent,
+                    unspent,
+                    canClaim = unspent > 0,
+                    allPlaques = MasteryTrackerMenu.hasCompletedAllMasteryPlaques(),
+                    plaques
+                });
             }
             catch (Exception ex)
             {
@@ -17628,52 +17858,12 @@ public class ModEntry : Mod
         return v;
     }
 
-    /// <summary>
-    /// POST /mastery_claim  { type: "Farming" }
-    /// 领取精通。1.6 各版本的领取方法名不一致（无统一 claimMastery），
-    /// 此端点先用反射列出 Farmer 上所有含 Mastery 的方法供确认，
-    /// 并顺手报告当前精通经验。真正的领取 API 确认后一步到位。
-    /// </summary>
-    private object HandleMasteryClaim(HttpListenerContext ctx)
-    {
-        var p = ReadJson(ctx);
-        var typeName = GetParamOr(p, "type", "");
-
-        if (!Context.IsWorldReady)
-            throw new InvalidOperationException("World not ready");
-
-        var tcs = new TaskCompletionSource<object>();
-        EnqueueMainThread(() =>
-        {
-            try
-            {
-                var farmer = Game1.player;
-                var flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
-                var methods = typeof(Farmer).GetMethods(flags)
-                    .Where(m => m.Name.Contains("Mastery", StringComparison.OrdinalIgnoreCase))
-                    .Select(m => m.Name).Distinct().OrderBy(n => n).ToList();
-                object? expObj = null;
-                try
-                {
-                    var f = typeof(Farmer).GetField("MasteryExp", flags);
-                    expObj = f != null ? UnwrapNetValue(f.GetValue(farmer)) : null;
-                }
-                catch { }
-                tcs.SetResult(new
-                {
-                    ok = true,
-                    requestedType = typeName,
-                    masteryExp = expObj?.ToString() ?? "?",
-                    candidateClaimMethods = methods
-                });
-            }
-            catch (Exception ex)
-            {
-                tcs.SetResult(new { ok = false, error = ex.Message });
-            }
-        });
-        return tcs.Task.GetAwaiter().GetResult();
-    }
+    // 🗑️ HandleMasteryClaim（POST /mastery_claim）已于 2026-09-16 删除。
+    //    它**什么也不领**却回 `ok:true`（body 只是反射列一串候选方法名 + 一个永远读不到的 MasteryExp），
+    //    是个纯粹的期望陷阱；且 stardew_api.mastery_claim() 包装也无人调用（无任何 MCP 工具指向它）。
+    //    真正的领取路径是**拟人**的：走到碑前 `interact` 开 MasteryTrackerMenu（GameLocation.cs:8748
+    //    `MasteryCave_{X}` → `new MasteryTrackerMenu(i)`）→ `menu read` 看奖励 → `menu click(button=mainButton)`
+    //    点游戏自己的领取按钮（MasteryTrackerMenu.receiveLeftClick → claimReward）。
 
     /// <summary>
     /// GET /carpenter — 木匠商店建筑清单（只读）。

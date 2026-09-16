@@ -10,7 +10,7 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
 async def main():
-    url = os.environ.get("NAGI_MCP_URL", "http://localhost:8000/mcp")
+    url = os.environ.get("NAGI_MCP_URL", "http://127.0.0.1:8000/mcp")   # ⚠️ 别用 localhost，见 mcp_cli.py 说明
     tool = sys.argv[1]
     args = json.loads(sys.argv[2]) if len(sys.argv) > 2 else {}
     async with streamablehttp_client(url) as (read, write, _):

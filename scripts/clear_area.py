@@ -226,33 +226,36 @@ def clear_pass(targets, use_warp=False):
 
 
 def _pickup_drops():
-    """智能捡拾：扫描区域内地面物品，position 过去捡，不散步。"""
+    """智能捡拾：**只捡游戏自己认定为掉落物的东西**（走 /debris），区域内就过去捡。
+
+    ⚠️ 2026-09-16 恒真机抓到，**旧判据是名单减法，会薅走设施**：
+        `if obj and obj not in ("Weeds","Stone","Twig","Grass")` —— 意思是"格子有 object 且名字
+        不在排除表里 ⇒ 当成敲出来的掉落"。可是**洒水器/稻草人/火把也全是 object**，一个都跑不掉。
+        实测：`farm clear` 一个 9×9，日志 `掉落物: 6 处`，紧接着把 **6 个优质洒水器**
+        挨个 `position` 站上去按 `confirm` 刨了起来，留了一地（恒在游戏里看见并问
+        "把 6 个洒水器全部精准站位薅了出来是什么意思"）。位置全在 /debris 里躺着，可回收，但**本不该发生**。
+        病根同 2026-09-12 那次：**拾取判据别在消费侧猜名字，去问游戏**
+        （那次是 `Object.isForage()` 替掉三张名单）。
+    ✅ 现在直接读 `/debris`（游戏 Debris 层的真·掉落物），再按目标矩形过滤。
+    """
     try:
-        # 重新扫周围看看有没有掉落物
-        cx = (args.x1 + args.x2) // 2
-        cy = (args.y1 + args.y2) // 2
-        api.position(cx, cy)
-        time.sleep(0.3)
-        data = api.surroundings(max(args.x2 - args.x1, args.y2 - args.y1) // 2 + 5)
-        tiles = data.get("tiles", [])
-
-        # 在目标区域内找有物品的格（排除 Weeds/Stone/Twig 等原始障碍物，只捡掉落）
-        dropped = []
-        for t in tiles:
-            x, y = t["x"], t["y"]
-            if x < args.x1 or x > args.x2 or y < args.y1 or y > args.y2:
-                continue
-            obj = t.get("object", "")
-            # 地面物品特征：有 object 但不是原始障碍物（说明是敲出来的掉落）
-            if obj and obj not in ("Weeds", "Stone", "Twig", "Grass"):
-                dropped.append((x, y, obj))
-
+        d = api._ai_get("/debris")
+        dropped = [(it["x"], it["y"], it.get("itemName") or "?")
+                   for it in (d.get("debris") or [])
+                   if args.x1 <= it["x"] <= args.x2 and args.y1 <= it["y"] <= args.y2]
         if dropped:
             api.log(f"  掉落物: {len(dropped)} 处")
             for x, y, name in dropped:
                 api.position(x, y)
-                time.sleep(0.1)
-                api.key("confirm")  # position 不触发自动拾取，补个交互
+                # ⚠️ 这里**绝不能**再跟一发 `api.key("confirm")`（原版就是这么写的）。
+                #    `confirm` 在没有菜单时 = `Game1.pressActionButton` = **挥手里的工具**：
+                #    打在掉落物格是捡，打在设施格是**铲掉**——同一个动作两种命运。2026-09-16 那次
+                #    6 个优质洒水器就是这么没的（旧判据把它们当成了掉落物）。
+                #    ✅ 实测（活世界，2026-09-16）：**光 `/position` 站上去就会自动吸附**
+                #      —— 掉落 3 木材在 (60,18) → `/position` 过去 → 地上清空、背包 +3。
+                #      走位经过同样会吸附（`walk_to` 路过即收）。所以那一发 confirm 从来就是多余的。
+                #    ⏳ 留个睡：给 Debris.update 的包围盒判定跑一两帧。
+                time.sleep(0.25)
     except Exception as e:
         api.log(f"  捡拾跳过: {e}")
 

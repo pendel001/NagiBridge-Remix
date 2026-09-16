@@ -47,7 +47,16 @@ def _current_location():
 
 
 def enter_building(loc, b):
-    """走门口 → 开门进去（拟人）。返回 True/False。"""
+    """走门口 → 开门进去（拟人）。返回 True/False。
+
+    ⚠️ 2026-09-16 恒观察到「**重跑脚本时先传到屋外再进来**」——就是这里造成的：
+       下面那句 `walk_to {location:"Farm"}` 是**无条件**发的，而人在屋里时它走**跨图分支**
+       （先 warp 到目标图=屋外，再走回门口、再进门）⇒ 肉眼看就是"被传到屋外又跑进来"。
+       ⇒ 开头先确认是不是**已经在里面**，是就直接收工（恒："建议也是从当前位置出发过去建筑"）。
+    """
+    if str(_current_location() or "").lower() == str(loc).lower():
+        api.log(f"🚪 已经在 {loc} 里了，不重复进出")
+        return True
     api.log(f"🚪 走门口进 {loc} Farm({b['doorX']},{b['doorY']})")
     api._post("/walk_to", {"location": "Farm", "x": b["doorX"], "y": b["doorY"]})
     if not _wait_arrival(b["doorX"], b["doorY"], timeout=20):
@@ -112,13 +121,45 @@ def interact_at(x, y):
     return r
 
 
+def select_fruit(fruit):
+    """选待放果物，并**回读 `currentItem` 核对手上真的是不是它**。返回 bool。
+
+    ⚠️ 2026-09-16 真机抓到的坑（"放不进"报错的真凶，我一开始还错怪了斜角）：
+       `/select` 在精确匹配失败后有 **Contains 兜底**（`"Pickaxe"→"Iridium Pickaxe"`，是特意加的），
+       于是 `select("Ancient Fruit")` 在果子用完时**会匹配到 "Ancient Fruit Wine"**——
+       背包里 583 瓶上古水果果酒当场被选上手，然后拿去往小桶里塞（桶不收成品酒）⇒
+       日志报"放不进"，看着像"机器不匹配"，其实**根本是没果子了**。
+       更早的版本还会把 `m["status"]` 改成 "processing" 假装放成功——错得无声无息。
+       ⇒ 选完必须回读核对：`/state` 的 `player.currentItem` 得**正好等于**要放的那个名字。
+    """
+    s = api.select(fruit)
+    if not s.get("ok"):
+        return False
+    time.sleep(0.15)
+    try:
+        cur = (api.state().get("player") or {}).get("currentItem") or ""
+    except Exception:
+        return False
+    return str(cur).strip().lower() == str(fruit).strip().lower()
+
+
 def process_tile(ax, ay, machines_by_pos, fruit):
     """站在 (ax,ay)，检测上下左右 4 邻机器：熟的空手收，空的选果放。
     自动设备(蜂房/避雷针/太阳能板等)只收不放——收完置 "auto" 终态，不当空机塞料。
-    返回 (收了几台, 放了几台, 日志)。"""
+    返回 (收了几台, 放了几台, 日志, 停因)。
+    停因: "" = 正常继续 / "no_fruit" = 待放物品已用完 / "rejected" = 机器不收这东西。
+
+    ⚠️ 2026-09-16 恒（"拿着电池去放它居然不拦你"）：原来这两个失败**都被吞掉继续走**——
+      ①没果了只记一句 `没果(x,y)`，接着把整间屋的过道格全走完（一台都放不上，纯浪费）；
+      ②`interact_at` 没收下东西（`actionTriggered=false`）时，**照样把 `m["status"]` 改成 "processing"**
+        —— 等于**假装放成功了**，日志上看着像放上了，机器其实还是空的。
+      恒定的规矩：收放要"**待放物品放完 / 手上的东西放不进设备**"时就收工返回结果，别硬走完。
+      ⇒ 现在这两种情况都当**终止信号**抛给主循环（见 run() 里的 break）。
+    """
     collected = 0
     loaded = 0
     logs = []
+    stop = ""
     for dx, dy in INTERACT_NEIGHBORS:
         m = machines_by_pos.get((ax + dx, ay + dy))
         if not m:
@@ -135,20 +176,32 @@ def process_tile(ax, ay, machines_by_pos, fruit):
             # 收了变空 → 接着放新果；但自动设备(蜂房/避雷针/太阳能板…)只收不放
             m["status"] = "auto" if auto else "empty"
         if fruit and m["status"] == "empty" and not auto:
-            s = api.select(fruit)
-            if s.get("ok"):
+            if select_fruit(fruit):
                 r = interact_at(x, y)
                 if r.get("actionTriggered"):
                     loaded += 1
                     logs.append(f"放({x},{y})")
-                m["status"] = "processing"   # 假设已放
+                    m["status"] = "processing"
+                else:
+                    # 游戏没收下（物品与机器不匹配等）→ 别再假装"已放"，报停
+                    # ⚠️ 斜角**不是**这里的成因：`interact_at` 走 `/interact{x,y}`，docstring 明写
+                    #    "8 方向对角交互也行，不需要朝向"。2026-09-16 我一度把失败归给"SDV 不能斜着交互"
+                    #    —— **错了**（恒当场纠正："之前我们测过收放斜角的，成功了才有这个工具"）。
+                    #    那两次失败的真因见下面 `_select_fruit`：水果用完了，select 兜底抓成了果酒。
+                    logs.append(f"放不进({x},{y})")
+                    stop = stop or "rejected"
             else:
                 logs.append(f"没果({x},{y})")
-    return collected, loaded, " ".join(logs)
+                stop = stop or "no_fruit"
+    return collected, loaded, " ".join(logs), stop
 
 
 def run(location, machine_type, fruit):
     api.log(f"=== Fruit Round(过道格版): loc={location} machine={machine_type or 'any'} fruit={fruit or '-'} ===")
+    if not fruit:
+        # ⚠️ 恒 2026-09-16："如果只收，那可能没必要用这个，用刚刚的一键收就行"
+        api.log("⚠️ 没传待放物品 ⇒ 这是**只收不放**。只收请直接用 farm ops=collect"
+                "（全农场一遍瞬收、不走路）；本 op 的价值在「收完顺手放」，要收放请传 item。")
 
     fr = api.farm_report()
     if not fr.get("ok"):
@@ -208,11 +261,12 @@ def run(location, machine_type, fruit):
     total_collected = 0
     total_loaded = 0
     visited = 0
+    stop_reason = ""
     for ax, ay in path:
         if not go_to_tile(location, ax, ay):
             api.log(f"  ⚪ 过道格 ({ax},{ay}) 走不到，跳过")
             continue
-        c, l, log = process_tile(ax, ay, machines_by_pos, fruit)
+        c, l, log, stop = process_tile(ax, ay, machines_by_pos, fruit)
         if c or l:
             total_collected += c
             total_loaded += l
@@ -221,7 +275,18 @@ def run(location, machine_type, fruit):
         else:
             visited += 1
             api.log(f"  ⚪ 格({ax},{ay}) 无操作")
-    api.log(f"完成: 走了 {visited}/{len(path)} 格, 收 {total_collected} 台, 放 {total_loaded} 台")
+        if stop:
+            # ⚠️ 恒 2026-09-16：放不下去就**立刻收工返回结果**，别把剩下的过道格硬走完
+            stop_reason = stop
+            _why = ("待放物品已用完" if stop == "no_fruit"
+                    else f"「{fruit}」放不进这里的机器（游戏没收下）")
+            api.log(f"  ⏹ {_why} —— 提前收工（已走 {visited}/{len(path)} 格，还剩 {len(path) - visited} 格没走）")
+            break
+    _tail = ""
+    if stop_reason:
+        _tail = ("，⏹ 提前收工：待放物品已用完" if stop_reason == "no_fruit"
+                 else f"，⏹ 提前收工：「{fruit}」放不进机器")
+    api.log(f"完成: 走了 {visited}/{len(path)} 格, 收 {total_collected} 台, 放 {total_loaded} 台{_tail}")
 
 
 if __name__ == "__main__":

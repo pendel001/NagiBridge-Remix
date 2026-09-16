@@ -706,9 +706,17 @@ def _resolve_place(place: str):
         "地窖": "cellar",
         "传送": "obelisk",
         "金钟": "gold clock",
+        # 🇬🇧 英文键（2026-09-16 补）：**AI 与 `/map` 用的就是英文地点名**（"Greenhouse"/"Big Shed"），
+        #    原来只有中文键 ⇒ `map go Greenhouse` 这里解析成 None ⇒ 推门路断 ⇒ 走兜底 warp 硬进
+        #    ⇒ 恒真机看到"进温室飞到墙外"。⚠️ 键必须配下面那句 `p.lower()` 才有用。
+        "barn": "barn", "coop": "coop", "greenhouse": "greenhouse",
+        "cabin": "cabin", "shipping": "shipping", "silo": "silo",
+        "fish pond": "fish pond", "stable": "stable", "shed": "shed",
+        "cellar": "cellar", "obelisk": "obelisk", "gold clock": "gold clock",
     }
+    pl = p.lower()   # ⚠️ 英文键要小写比对；中文无大小写，写在这里对中文键是 no-op
     for k, typekw in KEYWORDS.items():
-        if k in p:
+        if k in pl:
             for b in bs:
                 if typekw in b.get("type", "").lower():
                     if "doorX" in b:
@@ -1961,9 +1969,18 @@ def _interior_to_farm(cur: str) -> bool:
     ⚠️ 2026-08-30 恒：**只用「门式连接」(target==Farm 且 tile is None) 判定**——室内建筑(FarmHouse/Cabin/
     Greenhouse/FarmCave) 走门连回 Farm，均 tile=None；而 Backwoods/Forest/BusStop 等紧邻农场的**室外图**
     虽也连 Farm，但是**世界 warp 瓦片**(tile=(x,y))，不是室内，不许走这个"出屋"分支。
-    (旧版只判"有没有连 Farm"，把室外邻图也误判成室内 → 从深山回农场报"离开小屋"误导。)"""
+    (旧版只判"有没有连 Farm"，把室外邻图也误判成室内 → 从深山回农场报"离开小屋"误导。)
+
+    ⚠️ 2026-09-16 恒：**畜棚/鸡舍必须按名字单独认**（`locations.FARM_ANIMAL_BUILDINGS`）。
+       上面那条 MAP_LINKS 判据对它们**恒为假**——农场建筑室内根本不是 MAP_LINKS 的节点
+       （`/warps` 表里连 "Deluxe Barn" 这个图都没有）⇒ `map go Farm` 从棚里出不去，
+       报「知识库没找到从 Deluxe Barn 到 Farm 的路径」。而下游 `_exit_farm_building` 本就通用
+       （自己读 /map 的原生出口 warp + 走到门**邻格**再 warp，不踩门瓦片），只是没被叫到。
+       ⚠️ 别为了省事改成"有连 Farm 就算室内"——那正是 08-30 修掉的误判（Backwoods 等室外邻图）。"""
     if cur == "Farm":
         return False
+    if cur in locations.FARM_INTERIOR_BUILDINGS:   # 畜棚/鸡舍/小桶屋（2026-09-16；地窖见 locations.py 备注）
+        return True
     for l in locations.MAP_LINKS.get(cur, []):
         if l["target"] == "Farm" and l.get("tile") is None:
             return True

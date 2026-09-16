@@ -2,7 +2,7 @@
   "mcpServers": {
     "nagibridge": {
       "description": "NagiBridge 星露谷 AI 控制接口 — 文游化 MCP 服务器",
-      "url": "http://localhost:8000/mcp",
+      "url": "http://127.0.0.1:8000/mcp",
       "env": {
         "NAGI_MCP_PORT": "8000",
         "NAGI_URL": "http://localhost:7843"

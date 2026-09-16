@@ -853,6 +853,36 @@ def _menu_advice(menu_type: str, active_menu: dict, active_event: dict = None) -
             return (f"🔀 升级选职业(Skill {lu.get('skillName')} Lv{lu.get('level')})：{nm}。"
                     f"→ **menu ops=levelup_choose side=left/right**(或 profession=职业id) 定夺")
         return f"🎉 升级到 {lu.get('skillName') or '?'} Lv{lu.get('level')}——普通升级已自动点OK"
+    if m == "masterytrackermenu":
+        # 🎓 2026-09-16：精通山洞的碑/基座菜单（此前这里没分支 ⇒ AI 开出来只看到两个按钮坐标，读不懂）。
+        #    ⚠️ 这条分支**常年拿不到数据**：本函数喂进来的是 `/state` 的 activeMenu，而 C#
+        #    `HandleState` 那份序列化**没有 `mastery` 键**（`/menu` 才有，见 HandleMenu 的
+        #    MasteryTrackerMenu 支）。所以这里**绝不能凭空的 mt 下结论**——早先那版会把
+        #    "读不到"误判成"现在领不了"，等于对着能领的碑喊"领不了"，比不提示更坏（恒 09-16 当场撞见）。
+        #    ✅ 已根治：C# 把 `mastery` 也塞进了 HandleState 的 activeMenu，且与 `/menu` **共用
+        #    BuildMasteryInfo**（两处不可能再漂移）。下面这条"拿不到"分支留着只为**兼容旧 DLL**——
+        #    真走到这儿说明 DLL 是 09-16 之前的，如实指路 `menu read`（它读 `/menu`，是权威）。
+        mt = active_menu.get("mastery") or {}
+        if not mt:
+            return ("🎓 精通碑/基座菜单 → `menu read` 看这块碑给什么、现在能不能领"
+                    "（有没花掉的精通等级才点得动 `menu click(button=mainButton)`）")
+        rw = mt.get("rewards") or []
+        rw_txt = " / ".join(
+            f"{x.get('name') or x.get('id')}"
+            + ("(配方)" if x.get("isRecipe") else "(物品)")
+            for x in rw) or "（读不到奖励列表）"
+        if mt.get("isOverview"):
+            return ("🎓 精通**总览**（中央基座）：这页只画精通等级进度条 + 五颗星，看不到具体奖励。"
+                    "想看某块碑给什么，得走到那块碑前 `interact` 单独开。")
+        if mt.get("claimed"):
+            return (f"🎓 精通**{mt.get('title') or mt.get('skill')}**碑 — **这块已经领过了**"
+                    f"（游戏不再给领取按钮）。奖励原本是：{rw_txt}。`menu click(button=upperRightCloseButton)` 收掉")
+        if mt.get("canClaim"):
+            return (f"🎓 精通**{mt.get('title') or mt.get('skill')}**碑，**可以领**：{rw_txt}。"
+                    f"→ `menu click(button=mainButton)` 领取（领完这块碑就点亮了）")
+        return (f"🎓 精通**{mt.get('title') or mt.get('skill')}**碑，奖励是 {rw_txt}，"
+                f"但**现在领不了**（没有没花掉的精通等级）—— 先攒精通经验再来。"
+                f"`menu click(button=upperRightCloseButton)` 收掉")
     return ""
 
 
@@ -1582,12 +1612,14 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
     if active_event:
         ev_msg = active_event.get("message")
         ev_id = active_event.get("id")
+        # 🎬 2026-09-16 恒：「可跳过」光说不给动作=白说——AI 只会一句句 advance。
+        #    现在把**怎么跳**写出来（menu skip），并让"无台词的事件"也一样能跳。
+        skip_hint = "（可跳过 → `menu skip` 整段跳；想一句句看就接着 `menu advance`）" \
+            if active_event.get("skippable") else ""
         if ev_msg:
-            # 剧情演出中：显示当前台词，可跳过则提示（AI 可按跳过键加速）
-            skip_hint = "（可跳过）" if active_event.get("skippable") else ""
             lines.append(f"🎬 演出中: {_attributed(ev_msg, _speaker_of(active_menu))}{skip_hint}")
         elif ev_id not in (None, "-1"):
-            lines.append(f"🎬 事件中: id={ev_id}")
+            lines.append(f"🎬 事件中: id={ev_id}{skip_hint}")
 
     # 🎪 节日限时小游戏提示（2026-08-16）：ReadyCheckDialog/BobberBar 时注入今天节日引导
     try:
@@ -1653,6 +1685,14 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
     except Exception:
         pass
 
+    # 🎓 精通山洞洞内引导（2026-09-16）——只在 MasteryCave 出，其它图返回空
+    try:
+        _mch = _mastery_cave_hint(loc_name)
+        if _mch:
+            lines.append(_mch)
+    except Exception:
+        pass
+
     # 🧾 纯聊天环节（2026-08-17 恒）：等睡（AI 在床等恒）/ 过夜结算（ShippingMenu）期——
     #    只聊天，30s 轮询 + 新消息推送（recent_events 的 chat/emote 重置超时）+ 无消息超时兜底。
     try:
@@ -1671,7 +1711,8 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
         # ⚠️ 2026-09-12 改口径：原先尾巴恒写「台词未完 → menu advance 继续」——**只要缓冲非空它就恒这么说**，
         #    而节日期间事件整场在播、指针常年停在自由活动段（真机 21/24）⇒ 那是句**恒真的假消息**，
         #    会把 AI 骗去反复空推。改成**只报"要新台词该调什么"，不再断言剧情没完**；上次推进卡住就在尾巴点名。
-        _tail = "（要看新台词 → menu advance）"
+        # 🎬 2026-09-16 恒：这里也把"整段跳过"的入口一并给出来（光给 advance = 只给一种选择）。
+        _tail = "（要看新台词 → menu advance；不想看这段 → menu skip 整段跳）"
         if _ADV_NOTE.get("stuck"):
             _tail = f"（上次推不动：command {_ADV_NOTE['cmd']}/{_ADV_NOTE['cmd_count']} 停住，别再空推）"
         lines.append(f"🎬 剧情: {joined}{'…' if len(_story_buffer) > 6 else ''}{_tail}")
@@ -1812,6 +1853,56 @@ def _count_clump_blocks(points: set) -> int:
 
 # 📦 迷你出货箱提示（2026-09-12 恒："也可以报一下这个出货箱让 AI 知道能用"）
 _SHIPBIN_SEEN = {"loc": None, "line": ""}
+
+
+# 🎓 精通山洞洞内引导（2026-09-16 恒：「在精通山洞内时，做好精通领取流程的引导」）。
+#   为什么值得单独写一个：`MasteryCave` 原先在 `MAP_FEATURES` 里**连键都没有**，洞内状态条一行不提示；
+#   而洞里的正事（摸哪块碑、还剩几个可领、领完干嘛）**看地图看不出来 —— 五块石碑长得一模一样**。
+#   ⚠️ 挂在状态条**尾块**（跟 `_machine_ready_hint` / `_shipbin_hint` 同一层）⇒ 自动吃到 `_OPS_INNER`
+#      守卫，只在最外层出现一次，不会在域 op 内层被重复注入。
+#   ⚠️ 节流：`/mastery` 是要过 HTTP 的，站着不动时没必要每个工具调用都问一遍。
+#      这里用「同图 + 15 秒内不重扫」。**要最新值就 `check mastery`** —— 那条路径不缓存，永远实时。
+_MASTERY_CAVE_SEEN = {"loc": "", "ts": 0.0, "line": ""}
+_MASTERY_CAVE_TTL = 15.0
+
+
+def _mastery_cave_hint(loc_name: str = "") -> str:
+    """🎓 站在精通山洞里时的领取引导：五碑各自状态 + 下一步。其它地图返回 ""。"""
+    if (loc_name or "") != "MasteryCave":
+        return ""
+    now = time.time()
+    if _MASTERY_CAVE_SEEN["loc"] == loc_name and now - _MASTERY_CAVE_SEEN["ts"] < _MASTERY_CAVE_TTL:
+        return _MASTERY_CAVE_SEEN["line"]
+    _MASTERY_CAVE_SEEN["loc"] = loc_name
+    _MASTERY_CAVE_SEEN["ts"] = now
+
+    line = ""
+    try:
+        r = api.mastery()
+        if r.get("ok"):
+            can_claim = bool(r.get("canClaim"))
+            unspent = r.get("unspent") or 0
+            plaques = {(p.get("skill") or "").lower(): p for p in (r.get("plaques") or [])}
+            marks = []
+            for sk in _MASTERY_CAVE_ORDER:
+                p = plaques.get(sk) or {}
+                mark = "✅" if p.get("claimed") else ("🟢" if can_claim else "⚪")
+                marks.append(f"{mark}{p.get('cn') or sk}")
+            head = f"🎓 精通山洞 · 五碑(左→右)：{' '.join(marks)}"
+            if can_claim:
+                tail = (f"有 {unspent} 个可以领 → 走到 🟢 那块碑前 `interact` 开菜单 → "
+                        f"`menu read` 看给什么 → `menu click(button=mainButton)` 领取")
+            elif plaques and all(p.get("claimed") for p in plaques.values()):
+                tail = "五块全领完了。出洞：走到 (7,12) 自动回森林"
+            else:
+                tail = "暂时没有可领名额（先攒精通经验）。中央基座 (7,9) 看总进度；出洞走 (7,12)"
+            line = f"{head}\n  {tail}"
+        else:
+            line = "🎓 在精通山洞：`check mastery` 查五碑状态（端点报错，模组可能需重编译）"
+    except Exception:
+        line = "🎓 在精通山洞：`check mastery` 查五碑状态（读不到 /mastery）"
+    _MASTERY_CAVE_SEEN["line"] = line
+    return line
 
 
 def _shipbin_hint(loc_name: str = "") -> str:
@@ -2307,7 +2398,8 @@ def advance_story() -> str:
         elif ev2.get("id"):
             lines.append(f"  ⏳ 事件还在播（command {_ADV_NOTE['cmd']}/{_ADV_NOTE['cmd_count']}，"
                          f"本次推 {_ADV_NOTE['pushed']} 次/收 {_ADV_NOTE['lines']} 句），"
-                         "要接着推就再调 menu advance")
+                         "要接着推就再调 menu advance"
+                         + ("；不想看这段就 `menu skip` 整段跳" if ev2.get("skippable") else ""))
         elif m2.get("type") == "DialogueBox" and m2.get("responses"):
             # 别把原始 dict 甩给 AI（以前是一串 {"index":0,"key":...}），摊平成 [N]文本
             _o = " | ".join(f"[{i}]{_opt_text(t)}"
@@ -2320,6 +2412,37 @@ def advance_story() -> str:
         return _with_state("\n".join(lines))
     except Exception as e:
         return _with_state(f"❌ 推进剧情失败: {e}")
+
+
+@mcp.tool()
+def skip_event() -> str:
+    """⏭️ 整段跳过当前剧情/事件（menu ops="skip" 的子函数，2026-09-16 恒）。
+    和 `menu advance`（一句句看完）互补：不想看这段就走这个，直接结束、控制权交回。
+    底层=游戏原生跳过（C# `/key key=skip` → `currentEvent.skipEvent()`），只对
+    **事件**生效；没事件时**明确报错不做旁的事**（不假装跳过、也不顺手关掉菜单）。"""
+    try:
+        st = api.state(light=True)
+        ev = st.get("activeEvent") or {}
+        m = st.get("activeMenu") or {}
+        if not ev.get("id"):
+            # 宁报错别兜底：没事件就直说，别让 "skip" 静默变成"关菜单"这种别的事。
+            if m.get("type") == "DialogueBox":
+                return _with_state("⏭️ 没跳过：现在只有普通对话框、没有事件。"
+                                   "想一句句看完用 `menu advance`；要关掉它用 `menu cancel`")
+            return _with_state("⏭️ 没跳过：当前没有剧情/事件在播（无事可跳）")
+        if ev.get("skippable") is False:
+            return _with_state(f"⏭️ 没跳过：这段剧情**不可跳过**（skippable=false，id={ev.get('id')}），"
+                               "只能 `menu advance` 一句句推")
+        api.key("skip")
+        time.sleep(0.4)
+        ev2 = (api.state(light=True).get("activeEvent") or {})
+        if ev2.get("id"):
+            # 别只报"按键已发送"——回读确认，没跳掉就说没跳掉（恒：工具说成功但事没发生最坑）。
+            return _with_state(f"⏭️ 发了跳过键但事件还在播（id={ev2.get('id')}）——这段可能跳不动。"
+                               "再调一次 `menu skip`，或 `menu advance` 一句句推")
+        return _with_state("⏭️ 已跳过当前剧情/事件，控制权交回（该干嘛干嘛去）")
+    except Exception as e:
+        return _with_state(f"❌ 跳过剧情失败: {e}")
 
 
 def _dismiss_dialogue(active_menu=None) -> bool:
@@ -2520,7 +2643,10 @@ _PORT_SCRIPTS = {"water_crops", "chop_trees", "clear_area", "mine_run", "fish_ru
 # 🚀 自动异步白名单（2026-08-16 恒拍板）：便利工具跑这些长脚本 → 自动后台异步，AI 不用手动后台。
 # 长任务（钓鱼/挖矿/炸矿/收放机器/浇水可能很久）被动异步；短任务（清地/砍树/摸动物/捡采集等）保持同步。
 _ASYNC_SCRIPTS = {"mine_run", "fish_run", "bomb_mine", "bomb_escort", "bomb_volcano",
-                  "fruit_round", "machine_loader", "water_crops"}
+                  "fruit_round", "machine_loader", "water_crops",
+                  # 🌾 2026-09-16 恒：收获改回**拟人**（逐个走位+动手）后一株要 2~4 秒，
+                  #    一片地几十株就是好几分钟 ⇒ 必须进白名单转后台（同 harvest 的老问题）。
+                  "scythe_crops"}
 
 
 def async_config(show: bool = False, add: str = "", remove: str = "", enable: str = "") -> str:
@@ -2639,7 +2765,11 @@ def _warp_home_if_needed(loc_name: str) -> str:
         except Exception:
             pass
         api.warp(loc_name)
-        time.sleep(1)
+        # ⚠️ 2026-09-16：`api.warp` 的回包**早于 warp 生效**（实测回包 `actual` 还写着旧图），
+        #    固定 sleep 之后调用方若立刻读**位置相关**的端点（/animals、/map 之类）会读到旧图 ⇒
+        #    判据当场失真。改成轮询确认，拿不准也别撒谎说"已到"。
+        if not _wait_on_map(loc_name, timeout=6):
+            return f"⚠️ warp 到 {loc_name} 后没能确认已经站上去（后续读数可能还是旧图）→ "
         return f"🚀 warp到 {loc_name} → "
     except Exception:
         pass
@@ -3054,39 +3184,44 @@ def map_query(function: str) -> str:
 #    任何室内建筑/任意档位通用，不再按尺寸查表。
 
 
-# 💼 精通领取门禁（2026-08-23 恒：5 颗精通星在钱包特殊物品，非 mailReceived）
-# 读 AI 进程(7843) /special_items 的 has.mastery_<skill>（farmer.specialItems 预解析）。
-# ⚠️ 与 _wallet_flag_present 是两个钱包源——精通/小镇钥匙在 specialItems，钥匙 flag 在 mailReceived。
-# TTL 30s 缓存；读不到/旧 DLL → False（不误伤，藏而不拦）。
-# ⚠️ 2026-08-23 实测：specialItems 不含 mastery_*（此档=['499','464']），精通奖励配方才是可靠判据。
-# 精通奖励配方在 /craft_recipes（=已学配方，ModEntry HandleCraftRecipes 只报已学）里出现=已领取。
-_MASTERY_KEYS = {
-    "farming": "Statue Of Blessings",      # 耕种精通→祝福雕像配方
-    "mining": "Statue Of The Dwarf King",  # 采矿精通→矮人国王配方
-    "combat": "Anvil",                      # 战斗精通→铁砧配方（饰品槽/铁砧）
-    "foraging": "Mystic Tree Seed",         # 觅食精通→神秘树种配方（或 Treasure Totem）
-}
-_MASTERY_CACHE = {"ts": 0.0, "learned": None}
+# 🎓 精通领取门禁（2026-09-16 改判据：**问游戏**）
+#
+# 历史：2026-08-23 想读 /special_items 的 has.mastery_<skill>，实测**不在里面**（specialItems 不含 mastery_*）；
+#   于是退而求其次，拿 /craft_recipes 里"已学配方含某个精通奖励配方名"**倒推**——_MASTERY_KEYS 那张
+#   四行手抄表就是这么来的。它的毛病：
+#     · 手抄（跟被删掉的 crops.py 同一个病）——游戏改奖励名/换语言就静默失效；
+#     · fishing 的奖励是**物品**（Advanced Iridium Rod）不是配方，所以只能**写死 return False**，
+#       任何钓鱼精通的判断永远是错的；
+#     · 奖励变体（如采集精通给两个东西）盖不全。
+#
+# 现在直读权威源：`/mastery` 报的 `plaques[].claimed` —— 它就是
+#   `Game1.player.stats.Get($"mastery_{i}") != 0`（游戏自己的领没领标志，反编译 StatKeys.cs:186）。
+#   ⇒ 手抄表连同"猜"的逻辑一起删掉。
+#
+# TTL 30s 缓存；**读不到 → False**（藏而不拦：旧 DLL 没新端点时不误伤功能，只是门禁暂时不生效）。
+_MASTERY_CACHE = {"ts": 0.0, "claimed": None}
 
 
 def _mastery_claimed(skill: str) -> bool:
     """是否已领取某精通（如 combat=战斗精通→解锁饰品槽/铁砧）。
-    skill ∈ farming/mining/combat/foraging；fishing(高级铱鱼竿=物品非配方) 无条件 False。
-    判据=/craft_recipes 已学配方含该精通奖励配方名。"""
+    skill ∈ farming/fishing/foraging/mining/combat —— **五个都支持**（旧版把 fishing 写死成 False）。
+    判据 = AI 进程(7843) `/mastery` 的 plaques[].claimed，即游戏自己的 `mastery_<i>` 统计。"""
     global _MASTERY_CACHE
-    recipe = _MASTERY_KEYS.get((skill or "").lower())
-    if recipe is None:
+    key = (skill or "").lower()
+    if key not in ("farming", "fishing", "foraging", "mining", "combat"):
         return False
-    if _MASTERY_CACHE["learned"] is not None and time.time() - _MASTERY_CACHE["ts"] < 30:
-        return recipe in _MASTERY_CACHE["learned"]
-    learned = set()
+    if _MASTERY_CACHE["claimed"] is not None and time.time() - _MASTERY_CACHE["ts"] < 30:
+        return key in _MASTERY_CACHE["claimed"]
+    claimed = set()
     try:
-        u = api._get("/craft_recipes")
-        learned = {x.get("name") for x in (u.get("recipes") or [])}
+        r = api.mastery()          # 已走 _ai_get（7843，AI 自己那份）
+        for p in (r.get("plaques") or []):
+            if p.get("claimed"):
+                claimed.add((p.get("skill") or "").lower())
     except Exception:
-        learned = set()  # 读不到 → 不误伤
-    _MASTERY_CACHE = {"ts": time.time(), "learned": learned}
-    return recipe in learned
+        claimed = set()            # 读不到 → 不误伤
+    _MASTERY_CACHE = {"ts": time.time(), "claimed": claimed}
+    return key in claimed
 
 
 # 🏘️ 小镇钥匙隐藏营业时间注入（2026-08-23 恒：有钥匙能随时进镇店，营业时间没意义）。
@@ -5043,14 +5178,46 @@ def care_building() -> str:
     return _with_state("\n".join(report_parts))
 
 
+def _wait_on_map(loc_name: str, timeout: float = 6.0) -> bool:
+    """轮询等玩家**真的**站到 loc_name 上。
+
+    ⚠️ 2026-09-16 恒真机抓到：`api.warp()` 的 **HTTP 回包早于 warp 生效**——实测从畜棚
+    `/warp Farm` 的回包里 `actual` 还写着 `{"location":"Deluxe Barn","x":11,"y":14}`，
+    `sleep(0.5)` 之后人仍在棚内。**所以 warp 之后不能靠固定 sleep 就读下一个读数**，
+    要拿结果当判据的地方（尤其 `/animals` 这种"读当前地图"的端点）必须先确认真到了。
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            if api.state().get("location", {}).get("name") == loc_name:
+                return True
+        except Exception:
+            pass
+        time.sleep(0.25)
+    return False
+
+
 def _grazing_care() -> str:
     """🌾 室外放牧牲畜照料（2026-08-24 恒：忘关门牛羊鸡跑 Farm 上）。AI 站在 Farm 上调用——
     读 api.animals()(=farm.animals 放牧动物)，拟人自然走路摸（pet_walk 已改读 /animals 物理位置，
-    petall 摸不到室外）+ 挤奶剪毛(_milk_shear_animals skip_grabber=True，室外无自动采集器)。无放牧动物→空串。"""
+    petall 摸不到室外）+ 挤奶剪毛(_milk_shear_animals skip_grabber=True，室外无自动采集器)。无放牧动物→空串。
+
+    ⚠️ 2026-09-16 恒真机抓到**静默跳过**：`/animals` 读的是**玩家当前所在图**（实测棚内恒 0 只、
+    Farm 上 24 只），而调用方 `care_animals` 从畜棚 `api.warp("Farm")` 后只 `sleep(0.5)`
+    —— warp 那时**还没生效** ⇒ 读到棚内 0 只 ⇒ 下面那条 `not count` 守卫当场判空 ⇒
+    **整趟室外放牧一声不响地跳过**（24 只动物一只没摸，`farm animals` 11 秒就"收工"）。
+    ⇒ 现在：**函数自己先确认人真的在 Farm 上再读**（不再指望调用方摆好位），
+      不在 Farm 就**明说**——绝不再把"读不着"伪装成"没有放牧动物"。
+    """
     try:
+        cur = api.state().get("location", {}).get("name", "")
+        if cur != "Farm":
+            return (f"⚠️ 室外放牧这趟没做：人还在「{cur}」不在 Farm —— "
+                    "`/animals` 只报**玩家当前所在图**的动物（棚内恒 0 只），在这儿读会把"
+                    "「跑 Farm 放牧的牲畜」误判成「没有」")
         data = api.animals()
         if not data.get("animals") or not data.get("count"):
-            return ""   # 全在室内 / 没放牧动物 → 不打扰
+            return ""   # 人就在 Farm 上、读到的就是 0 → 确实没放牧动物，安静收工
         out = _run_script("pet_walk", [], timeout=300)
         parts = [f"🌾 室外放牧:\n{_pet_digest(out)}"]
         mss = _milk_shear_animals(skip_grabber=True)
@@ -5098,7 +5265,9 @@ def care_animals() -> str:
         # 出门回 Farm
         try:
             api.warp("Farm", dx, dy + 1)
-            time.sleep(0.5)
+            # ⚠️ 2026-09-16：`api.warp` 的回包**早于 warp 生效**（实测回包 `actual` 还写着 Deluxe Barn），
+            #    固定 sleep 等着靠不住 —— 下一趟是"读当前图"的 /animals，慢半拍就会读到棚内 0 只。
+            _wait_on_map("Farm", timeout=6)
             report_parts.append(f"  ✅ 出门")
         except Exception as e:
             report_parts.append(f"  ⚠️ 出门失败: {e}")
@@ -5138,20 +5307,51 @@ def milk_shear() -> str:
     return _with_state(f"{warp_log}挤奶/剪毛：\n" + "\n".join(report_parts))
 
 
+def _door_snapshot(r: dict) -> list:
+    """把 /toggle_doors 回包解析成 [(建筑名, 翻转后门是否开着)]；读不到状态记 None。
+
+    ⚠️ 2026-09-16：C# 回包字段是 `{ok, toggled, details}`，**不是** `{closed, doors}`。
+       历史上这里读 `closed`/`doors` ⇒ 恒为 0 ⇒ 无论找没找到建筑都报「没有动物建筑」，
+       而 C# 那边其实真把门翻了（实测回包 `toggled: 2`，建筑明明找到了）。
+       `details` 每项形如 `{building, door_open}` / `{building, toggled_via}`
+       / `{building, error, runtime_type}` —— **没有** `door` 坐标对，旧格式化 `d['door'][0]`
+       即使键名修对也会 KeyError。
+    """
+    out = []
+    for d in (r.get("details") or []):
+        name = d.get("building") or "?"
+        if "door_open" in d:
+            out.append((name, bool(d["door_open"])))
+        else:
+            out.append((name, None))   # toggled_via / error 都算未确认
+    return out
+
+
 @mcp.tool()
 def close_doors() -> str:
     """🚪 关闭所有动物建筑的门
     晚上调用，防止野生动物袭击牲畜。
-    右键切换开关，开门已包含在 care_animals 中。
+    开门已包含在 care_animals 中。
     """
     try:
         r = api.close_doors()
-        if r.get("ok"):
-            n = r.get("closed", 0)
-            doors = r.get("doors", [])
-            detail = ", ".join(f"{d['building']}@({d['door'][0]},{d['door'][1]})" for d in doors)
-            return _with_state(f"🚪 已关闭 {n} 扇门: {detail}" if n else "⚠️ 没有动物建筑")
-        return _with_state(f"❌ {r.get('error', '关门失败')}")
+        if not r.get("ok"):
+            return _with_state(f"❌ {r.get('error', '关门失败')}")
+        state = _door_snapshot(r)
+        if not state:
+            return _with_state("⚠️ 没有动物建筑")
+        # ⚠️ C# `/toggle_doors` **忽略 action 参数**，实现是 `netBool.Value = !netBool.Value`
+        #    纯翻转 ⇒ 「关门」不是关门。这里翻完自检：还有开着的就再翻一次，收敛到全关。
+        #    （代价：一次调用最多两次 /toggle_doors；正常情况一次就收敛。）
+        if any(open_ is True for _, open_ in state):
+            state = _door_snapshot(api.close_doors())
+        closed = [n for n, o in state if o is False]
+        unknown = [n for n, o in state if o is None]
+        detail = "、".join(closed + unknown)
+        msg = f"🚪 已关闭 {len(closed)} 扇门" + (f"：{detail}" if detail else "")
+        if unknown:
+            msg += f"（{len(unknown)} 个未确认）"
+        return _with_state(msg)
     except Exception as e:
         return _with_state(f"❌ {e}")
 
@@ -5162,14 +5362,28 @@ def close_doors() -> str:
 
 @mcp.tool()
 def harvest_crops(radius: int = 15) -> str:
-    """🌾 收割当前场景所有已成熟作物（自动扫描，不用坐标；2026-08-14 改用 scythe_crops）
-    ⚠️ 需要背包有镰刀（/harvest 带镰刀才收得了镰刀作物；手摘作物直接进包）。
-    radius: 扫描半径（默认15，覆盖周围作物）。
+    """🌾 收割当前场景所有已成熟作物（**拟人**：逐个走到作物旁 → 面朝 → 动手）
+
+    恒定两条路：**已领耕种精通 + 背包有铱镰刀 → 挥镰刀；否则 → 手摘**。
+    （精通门禁 = `_mastery_claimed("farming")`，读的是游戏自己的 `mastery_0` 统计，
+      经 `/mastery` 的 plaques[].claimed —— 2026-09-16 前是拿"已学配方含 Statue Of Blessings"倒推的。）
+
+    ⚠️ 2026-09-16 恒："我记得有一个个摘的工具的，理应没有做过程序化收获……是不是把原作者的
+       作弊方案弄了进来"。属实：原实现走 C# `GET /harvest`——一次遍历 `terrainFeatures`
+       直接 `crop.harvest()`，**不走路、不挥工具、产物直进背包**（恒："没有挥镰刀也没有一个个摘，
+       直接全作弊进包了"）。2026-09-06 那次"工具收敛"把拟人的 `harvest.py` 退役、把收获改指向了
+       这条程序化路径。现改回拟人（站位待恒校准）。
+    ⚠️ 拟人慢（每株：走位+等到达+面朝+按键，约 2~4 秒）⇒ 已进 `_ASYNC_SCRIPTS` 转后台跑。
 
     Args:
-        radius: 收获半径
+        radius: 扫描半径（默认15，覆盖周围作物）
     """
-    result = _run_script("scythe_crops", ["--radius", str(radius)], timeout=120)
+    args_list = ["--radius", str(radius)]
+    if _mastery_claimed("farming"):
+        args_list.append("--scythe")     # 已领耕种精通 → 优先挥镰刀（脚本仍会确认铱镰刀在背包）
+    result = _run_script("scythe_crops", args_list, timeout=1800, async_ok=True)
+    if result.startswith("🚀"):
+        return _with_state(result)       # 长脚本自动异步：立即返回 job_id
     return _with_state(f"🌾 收菜完成\n{result[:600]}")
 
 
@@ -5202,15 +5416,19 @@ def collect_machines(machine_type: str = "", location: str = "") -> str:
 
 
 @mcp.tool()
-def load_machines(item: str, machine_type: str = "", location: str = "") -> str:
+def load_machines(item: str, machine_type: str = "", location: str = "", count: int = 0) -> str:
     """⚙️ 批量往空机器放原料（游戏原生路径：warp过去→选中→interact）
     把背包里的原料装进匹配的空机器，加工时间由游戏自己算（Keg酿酒/Cask陈化）。
     每台机器都真实走过去操作（warp 快速移动），100% 走游戏交互逻辑。
+    ⚠️ 原料**彻底用尽**就整轮提前收工（不再拿空手把剩余空机器逐台试一遍）。
+    ⚠️ 品质不影响：`/select` 每次都重新选，普通品质那栈用完了自然选到金/银星那栈。
 
     Args:
-        item: 原料英文名（如 Starfruit；Cask 用成品如 Starfruit Wine）
+        item: 原料英文名（如 Starfruit；Cask 用成品如 Starfruit Wine）。
+              **可逗号给多个**按优先级依次用完，如 "Ancient Fruit,Starfruit"（恒 2026-09-16）
         machine_type: 目标机器类型（Keg / Cask / Preserves Jar…，留空试所有空机器）
         location: 限定地点（Cellar / Big Shed…；**留空=当前场景/建筑**，不跑全农场——恒 2026-08-13）
+        count: **最多装几台**（0=不限）。想"就放 50 台"就传 50——恒 2026-09-16
     """
     if not location:
         # 默认只装当前场景/建筑（AI 在哪装哪，别到处乱串全农场同机器）
@@ -5223,6 +5441,8 @@ def load_machines(item: str, machine_type: str = "", location: str = "") -> str:
         args_list += ["--type", machine_type]
     if location:
         args_list += ["--location", location]
+    if count:
+        args_list += ["--count", str(int(count))]
     out = _run_script("machine_loader", [item] + args_list, timeout=600, async_ok=True)
     if out.startswith("🚀"):
         return _with_state(out)   # 长脚本自动异步：立即返回 job_id
@@ -5236,10 +5456,15 @@ def work_building(location: str, item: str = "", machine_type: str = "") -> str:
     走的是 4 邻+斜对角 8 方向真 checkAction（不是直加作弊）。站过道格一趟处理一圈。
     一屋一轮（单地点），AI 决定去哪些屋子、按什么顺序。
     ⚠️ vs collect：这是拟人走位(逐台真交互)；要全农场一遍瞬收(只收不放)用 collect。
+    ⚠️ 2026-09-16 恒：**留空 item = 只收不放**，那就跟 collect 重复了（collect 还不用走路）
+       ⇒ 只收请直接用 collect；本 op 的价值在"收完顺手放"，**收放请务必传 item**。
+    ⚠️ 同批：脚本现在会在**放不下去**时提前收工返回，不再把整间屋走完——
+       ①待放物品用完（背包里没这个 item 了）②机器不收这东西（游戏 `actionTriggered=false`）。
+       两种情况都会在日志里写明 `⏹ 提前收工` + 报"已走 N/M 格"。
 
     Args:
         location: 屋子/地点名（Big Shed / Cabin / Cellar / Farm…）
-        item: 要放的原料英文名（如 Starfruit；留空=只收不放）
+        item: 要放的原料英文名（如 Starfruit；留空=只收不放，见上面的⚠️）
         machine_type: 放原料的机器类型（Keg / Cask…，留空=该屋所有空机器）
     ⚠️ 2026-08-31 恒：作弊直加版 building_round 保留但不再走此路径（后续加作弊模式时再挂回）。
     """
@@ -6118,10 +6343,18 @@ def silo_status() -> str:
         return _with_state(f"❌ 读筒仓失败: {e}")
 
 
+# 🎓 精通山洞里五块石碑**从左到右**的物理顺序（恒 2026-09-16 现场指认）。
+#   注意这**不是**游戏的技能 index 顺序（游戏是 0耕种/1钓鱼/2采集/3采矿/4战斗）——
+#   按洞内实际走位顺序排，AI 一看就知道该往哪边走。坐标见 locations.POI 的"精通山洞(XX碑)"。
+_MASTERY_CAVE_ORDER = ["combat", "foraging", "farming", "fishing", "mining"]
+
+
 @mcp.tool()
 def mastery_status() -> str:
-    """🏆 精通状态：精通经验 + 已领取精通（反射读 Farmer 所有 Mastery 字段）
-    武器/钓鱼等技能满级后攒的精通经验检测用。
+    """🎓 精通状态（SDV 1.6）：精通等级/经验/未花点数 + **五块石碑各自领没领**。
+
+    五项技能**全部到 10 级**之后开始攒精通经验；每升一级给 1 个"可领"名额，
+    去**精通山洞**（森林右下角）摸石碑领——五块碑每块只能领一次，领什么由碑决定。
 
     （需 NagiBridge 模组重编译到最新版）
     """
@@ -6129,12 +6362,39 @@ def mastery_status() -> str:
         r = api.mastery()
         if not r.get("ok"):
             return _with_state(f"❌ {r.get('error', 'mastery 端点不可用')}（模组需重编译）")
-        lines = ["🏆 精通状态："]
-        for item in (r.get("fields") or []) + (r.get("props") or []):
-            name = item.get("name", "?")
-            val = item.get("value", "")
-            if name and val:
-                lines.append(f"  · {name} = {val}")
+        who = r.get("who") or ""
+        level = r.get("level") or 0
+        exp = r.get("exp") or 0
+        need = r.get("expForNext")
+        spent = r.get("levelsSpent") or 0
+        unspent = r.get("unspent") or 0
+        can_claim = bool(r.get("canClaim"))
+
+        prog = "已满级(Lv5)" if (need is None or need < 0) else f"{exp}/{need}（还差 {max(0, need - exp)}）"
+        lines = [f"🏆 精通状态{'（' + who + '）' if who else ''}：Lv{level}/5 · {prog} · 已花 {spent} 点"]
+        if can_claim:
+            lines.append(f"  🟢 **有 {unspent} 个没花掉的精通可以领**")
+        else:
+            lines.append(f"  ⚪ 暂时没得领（等级 {level}、已花 {spent}）—— 先攒精通经验")
+
+        plaques = r.get("plaques") or []
+        # 按洞内从左到右排（认不出的 skill 排最后，不丢）
+        plaques = sorted(plaques, key=lambda p: (
+            _MASTERY_CAVE_ORDER.index((p.get("skill") or "").lower())
+            if (p.get("skill") or "").lower() in _MASTERY_CAVE_ORDER else 99))
+        lines.append("  五块石碑（洞内从左到右）：")
+        for p in plaques:
+            cn = p.get("cn") or p.get("skill") or "?"
+            if p.get("claimed"):
+                mark, tail = "✅", "已领"
+            elif can_claim:
+                mark, tail = "🟢", "**可领**"
+            else:
+                mark, tail = "⚪", "没名额"
+            lines.append(f"    {mark} {cn} — {tail}")
+
+        lines.append("  💡 在洞里：走到碑前 `interact` 开菜单 → `menu read` 看这块碑给什么 → "
+                     "`menu click(button=mainButton)` 领；中央基座(7,9)看总进度")
         return _with_state("\n".join(lines))
     except Exception as e:
         return _with_state(f"❌ 读精通失败: {e}")
@@ -7014,14 +7274,32 @@ def _ops_run(ops_str: str, dispatch: dict, kw: dict) -> str:
 # 域 → 适用地图（能干活的功能区；未列出的域任意区可用）
 DOMAIN_HOME = {
     # ⚠️ 2026-08-15 恒：温室/姜岛农场也是 farm 适用区（之前只认 Farm，温室给错建议）
-    "farm": ["Farm", "Greenhouse", "IslandWest", "IslandNorth", "IslandEast"],
+    # 🐄 2026-09-16 恒：畜棚/鸡舍内部**本来就是 farm 的工作场所** —— hay 加干草（饲料槽是畜棚
+    #    自带的，棚外没有）、喂水 宠物碗、畜舍 摸动物，全都只能在棚内做。以前不在表里 ⇒ 棚内调
+    #    farm 会吃到「💡 当前在Deluxe Barn，farm通常在Farm做；可先 map go Farm」的**反建议**
+    #    （饲料槽那事就是这么被拱出来的），状态条也只显示「🛠️ 可用域: cabin」。
+    #    ⚠️ 必须列**全名**：`_is_domain_applicable` 的前缀匹配是 `cur.startswith(p)`，而
+    #       "Deluxe Barn" 的限定词在**前面** ⇒ 往 DOMAIN_PREFIX 塞 "Barn" 压根匹配不上
+    #       （2026-09-16 第一版就栽在这：doors 测全绿、这条建议却纹丝不动）。矿洞能用前缀
+    #       是因为 `UndergroundMine50` 的数字在后头。
+    #    ⚠️ 只能**追加在尾部**：`DOMAIN_HOME[domain][0]` 被当建议文案里的「家」用，挪了会改口径。
+    #    ⚠️ 2026-09-16 同批补：**棚屋(Big Shed)/地窖(Cellar)** 也是 farm 的工作场所（小桶/罐头瓶/木桶
+    #       全在里面）——刚补完畜棚鸡舍就当场又栽在 Big Shed 上（在小桶屋里上料，头顶还挂着
+    #       「💡 可先 map go Farm」）。名单与导航共用 `locations.*`（同一件事，别写两份）。
+    "farm": ["Farm", "Greenhouse", "IslandWest", "IslandNorth", "IslandEast",
+             *locations.FARM_INTERIOR_BUILDINGS],
     "mine": ["Mine", "SkullCave"],
     # 🏠 2026-08-16 恒：小屋域=屋里（FarmHouse/Cabin/岛屋）enum 引导
     "cabin": ["FarmHouse", "Cabin", "IslandFarmHouse"],
 }
-# 前缀匹配（矿洞/火山各层是独立 location）
+# 前缀匹配（矿洞/火山各层是独立 location）—— ⚠️ 只适用"限定词在后"的名字
+#    （UndergroundMine50 / VolcanoDungeon3）。"Deluxe Barn" 这种限定词在前的**不能**用前缀，
+#    得去 DOMAIN_HOME 列全名，见那里 2026-09-16 的备注。
 DOMAIN_PREFIX = {
     "mine": ["UndergroundMine", "VolcanoDungeon"],
+    # 🏠 地窖 Cellar / Cellar2 … Cellar8：限定词在后，"Cellar" 前缀正好能一次盖住 8 个。
+    #    ⚠️ 只进"域适用区"不进导航（出门是两跳，见 locations.FARM_MACHINE_PREFIXES 备注）。
+    "farm": list(locations.FARM_MACHINE_PREFIXES),
 }
 # 免建议的 op：导航类（自己会导航）/ API 直操作
 DOMAIN_EXEMPT = {
@@ -7270,7 +7548,9 @@ def bundle_kb(query: str = "") -> str:
       - 空 → 全房间概览
       - 房间名: 工艺室/茶水间/鱼缸/锅炉房/布告栏/地下室/遗失 → 那间所有收集包
       - 收集包名 or 物品名: 春季作物/防风草/蟹笼/土豆... → 匹配到的收集包
-    ⚠️ 名称以 wiki/官方中文为准(绿豆/甜瓜/西红柿)；项目 crops.py 命名略异（青豆=绿豆/番茄=西红柿/西瓜=甜瓜）。
+    ⚠️ 名称以 wiki/官方中文为准(绿豆/甜瓜/西红柿)；`/surroundings` 的 cropName 也是**官方中文**
+    （ItemRegistry DisplayName 本地化，真机 ID 454 报「上古水果」）⇒ 两边通常对得上。
+    但 `/select` 认 **英文内部名**（Starfruit/Ancient Fruit），要操作物品时用英文。
     """
     return _with_state(bundles.search_bundles(query))
 
@@ -8423,7 +8703,7 @@ def open_questlog() -> str:
 
 @mcp.tool()
 def menu(ops: str = "", kw: dict | None = None) -> str:
-    """📋 界面/菜单域（菜单开着时用）：read 看菜单 / advance **推进剧情·对话**(卡剧情就调这个) / click 点选项 / key 按键 / cancel 关弹窗 / shop 逛店。全 ops + 关键坑 → help(menu)。
+    """📋 界面/菜单域（菜单开着时用）：read 看菜单 / advance **推进剧情·对话**(卡剧情就调这个) / skip **整段跳过剧情** / click 点选项 / key 按键 / cancel 关弹窗 / shop 逛店。全 ops + 关键坑 → help(menu)。
 
     """
     dispatch = {
@@ -8432,6 +8712,7 @@ def menu(ops: str = "", kw: dict | None = None) -> str:
         "display_fill": _menu_display_fill, "放满": _menu_display_fill, "填槽": _menu_display_fill,
         "display_takeback": _menu_display_takeback, "收好": _menu_display_takeback, "收": _menu_display_takeback,
         "advance": advance_story, "推进": advance_story, "剧情": advance_story,
+        "skip": skip_event, "跳过": skip_event, "跳剧情": skip_event, "跳": skip_event,
         "click": menu_click, "点": menu_click,
         "key": press_key, "按键": press_key,
         "cancel": cancel, "取消": cancel, "关": cancel,
@@ -11827,7 +12108,7 @@ _DOMAIN_GUIDES = {
 "cabin": "小屋引导域(🏠 FarmHouse/Cabin/岛屋；不传=扫屋)：enum(扫**本屋**查待收) collect(收**本屋**机器;要全农场→farm collect) statue(雕像) furniture(扫家具) interact(点家具,tile_x/tile_y) pickup(拿起家具,tile_x/tile_y) cook(做饭,recipe_name) sleep(睡觉,who=谁床：不传/房主名=睡房主床一起睡,传自己名=睡自己床) cook(做饭,recipe_name,count) place/break(同scene)。📐参数键名: interact/pickup=**tile_x,tile_y(不是x,y)** cook=recipe_name,count sleep=who place=name,x,y break=x,y,steps,radius；enum/collect/statue/furniture 无参。kw={'参数名':值}。",
 "social": "社交域：chat(搭话,name=NPC名) gift(送礼,npc_name/item_name) give(送玩家物品,手持右键正式赠予,一次一个要等同意) hand(递给玩家,走过去丢他脚边,磁吸自动收,可整叠) send(发消息,message) emote(表情,name) friendship(查好感,npc_name) movie(影院,npc)。📐参数键名: chat=name / gift=npc_name+item_name / give=player_name+item_name / hand=player_name+item_name+count(0=整叠) / send=message / emote=name(默认爱心) / friendship=name / movie=npc。⚠️**give vs hand**：give=面对面正式赠予(手持右键,一次一个,要等同意)；hand=走过去丢他脚边(磁吸自动收,**可整叠**)——想整叠给/对方不在手边就用 hand。kw={'参数名':值}。",
 "scene": "场景交互域(点东西/工具/转身/捡/坐)：at(tile_x,tile_y)(点指定格/柜台) interact(点面前) use(挥工具) face(转向0上1右2下3左) select(拿手上) sit(x,y[,face])(**坐椅子**:自动走到座位旁再坐,上不了会明确报错;状态条「🪑 可交互：sit(x,y)」给坐标;可选 face=坐下朝向0上1右2下3左,**只对「朝向来自坐下那刻面朝方向」的座位生效**(反编译:stool 类/opposite 长椅/名字带Stool的家具),其它写死——吃不吃由端点回的 face 字段说了算,不生效会在回报里点名) stand(**起身**:坐着时用,没坐着明确报错,带动画+轮询确认) seats(radius=12)(扫附近能坐的椅子/长凳/沙发,✋=可改朝向) pickup(拿起家具) pickup_scene(捡当前场景物) berry(摇浆果) spot(挖蚯蚓点) moss(绿雨搜苔藓) rock(室外镐击:敲当前图可破物,采石场/挖掘场/蚌矿场跳普通石,dig/dry,battle-free) garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物:一种 name+count / 多种 items=逗号分隔) furniture(扫家具) place(放置/播种:name=物品名,x/y=目标格→箱子/树种/蟹笼落地或种下,只放可放置物) break(拆/敲:x,y=目标格,steps=挥击次,radius=方圆→镐子敲石头/翻已耕地,跳过箱子/容器格) maze(迷宫视图r半径,gx/gy目标格→ASCII棋盘#墙.可走P自己G目标) maze_seg(走法链gx,gy目标→拆直走廊列表+拼「左/右上/下走到(x,y)」多段链,AI按段walk_to) maze_walk(走迷宫 waypoints=「x,y x,y…」依次walk_to;⚠️**它其实是通用多段走位,主门牌已挪到 `map walk_multi/闲逛`**(闲逛遛弯/绕人转圈/泳池绕圈游),此处保留旧名为兼容) pan(淘金/淘盘:本图水下闪光点→岸边走位面水→铜锅淘金收掉落) front/rummage(分别是interact/garbage的别名)。📌**坐着想起来：scene stand**（2026-09-11 起有正门，别再拿 at 猜一个够得着的格子——那条路会静静失败）。📐带参速查(键名必须=下面这些,**写错会被静默丢掉、不报错**): at(tile_x,tile_y) **⚠️是 tile_x/tile_y 不是 x/y** / pickup(tile_x,tile_y **同 at 用 tile_**) / use(name) / face(direction 0上1右2下3左) / select(name) / sit(x,y,face) / seats(radius=12) / pickup_scene(max_items=30) / moss(radius,target_max,rounds,dry_run) / rock(dig,radius,max_break,break_stone) / garbage(loc,pos,wait,dry_run) / pan(dry_run,radius,timeout) / drop(name,count,items=多种一起丢) / place(name,x,y) / break(x,y,steps,radius) / maze(radius,gx,gy) / maze_seg(gx,gy,radius) / maze_walk(waypoints,location,max_wait,max_seg)。kw={'参数名':值}。",
-"menu": "菜单/界面域(开→看→点)：read(看菜单) advance(推进剧情/对话) click(option/item/button/xy 点;action=claim领/action=discard丢桶腾格;slot=序号领指定格) key(ok/esc/数字按键) cancel(关弹窗/撤就绪) shop(逛店) sell(卖商店) bin(投出货箱) craft(合成) recipes(菜谱) craftables(配方) forge(锻造) geode/geodes(砸晶球) customize(捏人) bundle(献祭缺口·**只读存档不走路**) bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读消耗品:书/秘密纸条/日记残页,统一走右键读 name=物品名) levelup_choose(技能升级职业选择 5/10级:不带参读左右选项,side=left/right 或 profession=职业id 定分支;普通升级自会确认OK) number(数量输入:展览会兑换台/转盘押注 NumberSelectionMenu) minigame(赌场小游戏点按钮 action=hit/stand/bet10/…) minigame_state(读牌面/转盘) display_fill(农展台放满 items='钻石,山羊奶酪') display_takeback(收好) journal(开任务日志→menu read 读卡,翻页=click(button=forward/back),领奖励=click(button=rewardBox)) know(查特别订单详情/知识库SPECIAL_ORDERS,如menu know 岛屿食材;2026-09-02 task域退役并入menu)。📐参数键名: click=option,button,x,y,item,right,quantity,action,real,slot,category(**action=claim领 / discard丢桶腾格**;button 用按钮名 ok/upperRightCloseButton/forward/back/rewardBox/mainButton) / key=key,count,hold / number=value,confirm / shop=place,want / sell=name,count(-1=全卖) / bin=name,sell_all / craft=item_name,count / forge=item1,item2,mode,target / geodes=count / customize=name,farmname,favorite / bundle=area / bundle_kb=query / read_book=name / levelup_choose=side,profession(**不带参=只读当前左右选项**,供配 check(what=profile) 分析后再决定) / minigame=action,x,y / display_fill=items。⚠️cook(做饭)**不在 menu 在 cabin**。🚫满包接鱼/领箱:原 claim_swap(替换领取)已退役→**click action=discard 丢桶腾格(回收返金)+action=claim 领取(或用 slot 领指定格;不想要直接 button=ok 关掉)**。🧾关闭菜单一律 click(button=upperRightCloseButton)（ItemGrabMenu/交付容器用 button=ok 确认才关）；订单交付容器(QuestContainerMenu)=点背包对应物品格(见slots的坐标)→放进→点 button=ok 结算；任务日志领钱=点击已完成的有钱任务卡后 click(button=rewardBox)；兑奖机兑换=click(button=mainButton)；特别订单领奖链=日志领钱(上面)→社区板旁领奖箱(60,93)拿兑奖券→刘易斯家兑奖机(mainButton)兑换。",
+"menu": "菜单/界面域(开→看→点)：read(看菜单) advance(推进剧情/对话,一句句) **skip(整段跳过剧情/事件,事件 skippable=true 才跳得动)** click(option/item/button/xy 点;action=claim领/action=discard丢桶腾格;slot=序号领指定格) key(ok/esc/数字按键) cancel(关弹窗/撤就绪) shop(逛店) sell(卖商店) bin(投出货箱) craft(合成) recipes(菜谱) craftables(配方) forge(锻造) geode/geodes(砸晶球) customize(捏人) bundle(献祭缺口·**只读存档不走路**) bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读消耗品:书/秘密纸条/日记残页,统一走右键读 name=物品名) levelup_choose(技能升级职业选择 5/10级:不带参读左右选项,side=left/right 或 profession=职业id 定分支;普通升级自会确认OK) number(数量输入:展览会兑换台/转盘押注 NumberSelectionMenu) minigame(赌场小游戏点按钮 action=hit/stand/bet10/…) minigame_state(读牌面/转盘) display_fill(农展台放满 items='钻石,山羊奶酪') display_takeback(收好) journal(开任务日志→menu read 读卡,翻页=click(button=forward/back),领奖励=click(button=rewardBox)) know(查特别订单详情/知识库SPECIAL_ORDERS,如menu know 岛屿食材;2026-09-02 task域退役并入menu)。📐参数键名: click=option,button,x,y,item,right,quantity,action,real,slot,category(**action=claim领 / discard丢桶腾格**;button 用按钮名 ok/upperRightCloseButton/forward/back/rewardBox/mainButton) / key=key,count,hold / number=value,confirm / shop=place,want / sell=name,count(-1=全卖) / bin=name,sell_all / craft=item_name,count / forge=item1,item2,mode,target / geodes=count / customize=name,farmname,favorite / bundle=area / bundle_kb=query / read_book=name / levelup_choose=side,profession(**不带参=只读当前左右选项**,供配 check(what=profile) 分析后再决定) / minigame=action,x,y / display_fill=items。⚠️cook(做饭)**不在 menu 在 cabin**。🚫满包接鱼/领箱:原 claim_swap(替换领取)已退役→**click action=discard 丢桶腾格(回收返金)+action=claim 领取(或用 slot 领指定格;不想要直接 button=ok 关掉)**。🧾关闭菜单一律 click(button=upperRightCloseButton)（ItemGrabMenu/交付容器用 button=ok 确认才关）；订单交付容器(QuestContainerMenu)=点背包对应物品格(见slots的坐标)→放进→点 button=ok 结算；任务日志领钱=点击已完成的有钱任务卡后 click(button=rewardBox)；兑奖机兑换=click(button=mainButton)；特别订单领奖链=日志领钱(上面)→社区板旁领奖箱(60,93)拿兑奖券→刘易斯家兑奖机(mainButton)兑换。",
 "storage": "箱子域：view(看箱,box=N看单箱全清单) store(存:what/items限定存哪些,名可带xN数量只存那N份,留空=归位只存已有同类堆,target指定箱/all=True全存腾空间) take(取:x,y+name单箱 或 items批量) find(模糊查哪箱有某物) default(设/清默认箱 clear=清) tag(改名,可带color改色)。📐参数键名(view=box / store=what,items,target,keepTools默认True,all / take=items 或 x+y+name+count默认999 / find=name / default=x,y,clear / tag=tag,target**必填**,color)。🤖存取统一走位：store/take都会先走到相关箱旁(批量只走到第一个),不区分拟人/原子,别靠编号逐箱翻。⭐每个箱子前自动带【类目标签】(内容过半归类):矿/古物/鱼/种子/作物/农产/建材/料理/装备——AI按标签定位箱,找东西用find。⚠️改色别染纯#000000(=默认木纹,识别成未染色);要黑箱用暗灰#303030。",
 "daily": "过日子域：sleep(睡觉) eat(吃食物回血体力,name/item_name) wear(穿/脱衣物,name/slot/hand) lie_bed(躺床不过夜) settle(确认过夜结算) heartbeat(心跳间隔,minutes) pause(后台不暂停,out_of_focus) peek(看恒干嘛) whiteboard(写白板,content) wb_read/wb_pin/wb_clear。📐参数键名: sleep/lie_bed=who eat=name,item_name wear=name,slot,hand(**hand 仅戒指**:1/left 或 2/right,或传「要换掉的那枚戒指名」自动找手) heartbeat=minutes pause=out_of_focus whiteboard/wb_pin=content appearance=hair,hair_color,skin,shirt,pants,hat,acc,eye_color,pants_color；settle/peek/wb_read/wb_clear 无参。kw={'参数名':值}。📌sleep/lie_bed 的 who：不传或传房主名=睡房主床(一起睡+🌹彩蛋)；传自己名字=睡自己床。lie_bed 只躺不睡，想离开随时 walk_to 走离床格即可。⚠️睡别人床/协作前先 check(what=\"role\") 确认端口↔角色（端口按启动顺序分配，重启可能翻转，认错角色=挪了恒的人）。",
 "map": "导航域(🗺️跨图唯一入口)：lookup(查地点功能+出口) query(功能反查) go(走到目标/多段寻路+交通) walk(走到POI **或给x,y走同图坐标**) walk_multi(多段走位:喂一串坐标依次走) npc(找NPC) warp_safe(紧急逃脱)。⚠️出口走出口前一格；交通图腾柱>矿车>走路。📐参数全放kw对象(**别拼进ops串**,键名: go=destination地点名/POI 或 npc=NPC名(二选一)、walk=poi_name 或 x+y(二选一,坐标=只走同图;跨图用go)、walk_multi=waypoints(\"x,y x,y …\"空格/分号分隔),location,max_wait,max_seg、npc=name、lookup=location、query=function、warp_safe 无参)。⚠️walk 到 POI 会**自动应用结构化站位+朝向**(水池朝右/柜台朝上),但交互仍要 AI 自己 scene at/interact 触发。🫧walk_multi 别名 **闲逛/多段走**（旧名 festival/scene 的 maze_walk/走迷宫 仍可用）：正事=万灵节迷宫按段走；**活人感**=闲逛遛弯·绕着人转圈示好·浴场泳池绕圈游。",
@@ -11962,6 +12243,8 @@ def press_key(key: str, count: int = 1, hold: int = 0) -> str:
     常用键:
     - confirm — 确认/对话/推进
     - cancel — 取消/后退
+    - skip — **整段跳过当前剧情/事件**（C# 走 `currentEvent.skipEvent()`；无事件时会退化成"按 ESC 关菜单"，
+      所以想跳剧情优先用 `menu skip`，它会先确认真有事件再动手）
     - w/a/s/d — WASD 移动（走到出口/传送瓦片时用 hold=400 长按触发）
     - F5 — 切换 Fishbot
     - F6 — 切换 AutoCombat
@@ -13347,6 +13630,35 @@ def read_menu() -> str:
                 tline = f"（需 {tname}×{i.get('tradeCount')}）" if (i.get("tradeCount") and tname) else ""
                 lines.append(f"  {mark} {i['name']} [{i['id']}] {i.get('price', 0)}g x{i.get('stock')}{tline}"
                              + (f" @({b['x']},{b['y']})" if b else ""))
+        # 🎓 精通山洞的碑/基座（MasteryTrackerMenu, 2026-09-16 恒）
+        #    ⚠️ 数据只在 `/menu` 的 `mastery` 键里；`/state` 的 activeMenu **不带**它
+        #    （那边只有 type/dialogue/levelUp/readyCheck/questionKind…）⇒ 状态条 `_menu_advice`
+        #    拿不到，所以**以 `menu read` 为权威**。which=-1=中央基座总览（只画进度条，不列奖励）。
+        if t == "MasteryTrackerMenu":
+            mt = m.get("mastery") or {}
+            if not mt:
+                lines.append("  ⚠️ 读不到 mastery 数据（DLL 太旧？本菜单需要 2026-09-16 之后的 NagiBridge.dll）")
+                return _with_state("\n".join(lines))
+            if mt.get("isOverview"):
+                lines.append("  🎓 **中央基座（总览）**：这一页只画精通等级进度条 + 五颗星，看不到具体奖励。")
+                lines.append("  💡 想看某块碑给什么 → 走到那块碑前 `interact` 单独开（五碑位置 `map lookup MasteryCave`）")
+                return _with_state("\n".join(lines))
+            lines.append(f"  🎓 **{mt.get('title') or mt.get('skill') or '?'}**碑"
+                         f"（which={mt.get('which')} / skill={mt.get('skill')}）")
+            for r in (mt.get("rewards") or []):
+                tag = "配方" if r.get("isRecipe") else "物品"
+                lines.append(f"    · {r.get('name')} [{r.get('id')}]（{tag}）—— {r.get('label') or ''}")
+            if mt.get("claimed"):
+                lines.append("  ✅ 这块**已经领过了**（游戏不再生成领取按钮）；上面列的是它当年给的东西。")
+                lines.append("  🧭 收起: menu click(button=upperRightCloseButton)")
+            elif mt.get("canClaim"):
+                lines.append("  🟢 **有没花掉的精通等级 ⇒ 现在就能领！**")
+                lines.append("  🧭 领: menu click(button=mainButton)（领完这块碑点亮、精通等级 -1）")
+                lines.append("  🧭 不领/再看看: menu click(button=upperRightCloseButton) 收起")
+            else:
+                lines.append("  ⚪ 领不了：**当前没有未花掉的精通等级**（领碑消耗 1 点）。")
+                lines.append("  🧭 查还差多少经验升级: check(what=mastery) ｜ 收起: menu click(button=upperRightCloseButton)")
+            return _with_state("\n".join(lines))
         # 🆕 特别任务板（SpecialOrdersBoard：社区布告栏/齐先生核桃房/沙漠节马龙 同机制 2026-08-22 恒）
         #    订单卡序列化在 items（不进 shopItems）——read_menu 必须读 items 才显示任务卡。
         #    ✅ 领奖链（2026-08-29 恒实测正确，之前"板上点accept领奖"是错的）：板上accept按钮只接新单；

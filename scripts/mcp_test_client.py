@@ -22,7 +22,8 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 async def main():
-    url = os.environ.get("NAGI_MCP_URL", "http://localhost:8000/mcp")  # streamable-http（/sse 已废弃）
+    # ⚠️ 127.0.0.1 而非 localhost —— 见 mcp_cli.py 同处的说明（localhost 先试 ::1，拒连烧 2 秒）
+    url = os.environ.get("NAGI_MCP_URL", "http://127.0.0.1:8000/mcp")  # streamable-http（/sse 已废弃）
 
     if len(sys.argv) == 1:
         # ── 列出工具 ──

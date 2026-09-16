@@ -393,8 +393,20 @@ POI = {
     "浣熊窝":            {"map": "Forest",      "pos": (57, 9),  "note": "1.6浣熊一家，修树桩后触发，可换物品"},
     "猪车(旅行货车)":    {"map": "Forest",      "pos": (27, 12), "note": "周五/周日来森林，卖随机稀有物品"},
     "森林河边钓点":      {"map": "Forest",      "pos": (70, 95),"note": "森林河边钓鱼（河鱼/鲶鱼）❌待校准"},
-    "精通山洞(门口)":    {"map": "Forest",      "pos": (101, 73),"note": "1.6精通山洞入口"},
-    "精通山洞(石碑)":    {"map": "MasteryCave", "pos": (7, 9),  "note": "精通石碑，交互领精通奖励（/interact可用）"},
+    # ── 🎓 精通山洞（1.6）：五项技能**全部**到 10 级才进得去 ──
+    #   布局（恒 2026-09-16 现场指认 + `/tile_props?scan=Action&location=MasteryCave` 实测）：
+    #   五块碑嵌在三面墙上、中央一座基座看总进度。从左到右 = 战斗/采集/耕种/钓鱼/采矿。
+    #   所有站位都经 `/passable` 全图扫描实测**可走**；进门落点 (7,11)，出洞踩 (7,12)。
+    #   ⚠️ **奖励内容一律不写在这**——游戏 `MasteryTrackerMenu` 里就那份，写第二遍必然长歪。
+    #      统一走 `menu read`（读的是菜单自己那个奖励列表，本地化后的官方文案）。
+    "精通山洞(门口)":     {"map": "Forest",      "pos": (101, 73),"note": "🎓 1.6 精通山洞入口（森林右下角）。**站 (101,73) 面北 `interact (101,72)`** → 五技能全 10 级才放行（不够会弹提示说还差几项），放行后传进 MasteryCave(7,11)。旁边 (101,71) 也是同款格子（游戏 `MasteryRoom` Action，反编译 GameLocation.cs:8780）"},
+    "精通山洞(中央基座)": {"map": "MasteryCave", "pos": (7, 9),  "note": "🎓 **中央基座**：站 (7,9) 面北 `interact (7,8)` → 开总览菜单（`MasteryTrackerMenu` which=-1）。**只显示精通等级进度条 + 五颗星**，看不到具体奖励；要看奖励得去摸对应的碑。`menu read` 读得到"},
+    "精通山洞(耕种碑)":   {"map": "MasteryCave", "pos": (7, 6),  "note": "🎓 耕种精通碑（正中那块）：站 (7,6) 面北 `interact (7,5)` → `menu read` 看奖励 → 有未花掉的精通等级才点得动 `menu click(button=mainButton)`"},
+    "精通山洞(钓鱼碑)":   {"map": "MasteryCave", "pos": (9, 6),  "note": "🎓 钓鱼精通碑：站 (9,6) 面北 `interact (9,5)` → `menu read` → `menu click(button=mainButton)` 领取"},
+    "精通山洞(采集碑)":   {"map": "MasteryCave", "pos": (5, 6),  "note": "🎓 采集精通碑：站 (5,6) 面北 `interact (5,5)` → `menu read` → `menu click(button=mainButton)` 领取"},
+    "精通山洞(战斗碑)":   {"map": "MasteryCave", "pos": (3, 7),  "note": "🎓 战斗精通碑（最左）：站 (3,7) 面北 `interact (3,6)` → `menu read` → `menu click(button=mainButton)` 领取。领了才解锁饰品槽"},
+    "精通山洞(采矿碑)":   {"map": "MasteryCave", "pos": (11, 7), "note": "🎓 采矿精通碑（最右）：站 (11,7) 面北 `interact (11,6)` → `menu read` → `menu click(button=mainButton)` 领取"},
+    "精通山洞(爷爷的信)": {"map": "MasteryCave", "pos": (10, 10),"note": "💌 地上那张信纸（Action `GrandpaMasteryNote`）：站 (10,10) 面北 `interact (10,9)` → 开 `LetterViewerMenu` 读爷爷的信；`menu read` 看内容、`menu click(button=close)` 收掉"},
 
     # ── 🏝️ 姜岛 ──
     "姜岛(码头)":         {"map": "IslandSouth", "pos": (21, 43),"note": "姜岛码头，从Willy鱼店坐船到姜岛的落点"},
@@ -529,7 +541,16 @@ POI_FACE = {
     "潜艇艇长":          {"face": 0, "stand": (2, 10)},
     # 锻造台/石碑/教授（朝北交互）
     "火山锻造台":        {"face": 0, "stand": (22, 22)},  # 人站(22,22)朝北交互
-    "精通山洞(石碑)":    {"face": 0},                      # 石碑交互
+    # 🎓 精通山洞（2026-09-16）：五块碑 + 基座 + 信纸，全部站下面那格**朝北**交互。
+    #    stand 不写 ⇒ 用 POI 自己的 pos（七条 pos 都是实测可走的站位）。
+    "精通山洞(门口)":     {"face": 0, "stand": (101, 73)},
+    "精通山洞(中央基座)": {"face": 0},
+    "精通山洞(耕种碑)":   {"face": 0},
+    "精通山洞(钓鱼碑)":   {"face": 0},
+    "精通山洞(采集碑)":   {"face": 0},
+    "精通山洞(战斗碑)":   {"face": 0},
+    "精通山洞(采矿碑)":   {"face": 0},
+    "精通山洞(爷爷的信)": {"face": 0},
     "蜗牛教授":          {"face": 0},                      # 站(8,8)面向互动
     # 商店柜台（pos=站位，柜台在面前一格，朝上）
     "皮埃尔商店(柜台)":  {"face": 0, "stand": (4, 19)},    # 站(4,19)朝上，柜台(4,18)
@@ -691,7 +712,7 @@ MAP_LINKS = {
         {"tile": (5, 27), "target": "WizardHouse", "kind": "door", "note": "法师塔门→(8,24)，祝尼魔任务/改宠物"},
         {"tile": (90, 16), "target": "AnimalShop", "kind": "door", "note": "玛妮牧场门→(13,19)，买动物/饲料"},
         {"tile": (27, 12), "target": "Forest", "kind": "door", "note": "猪车（周五/周日旅行货车）"},
-        {"tile": (101, 73), "target": "MasteryCave", "kind": "door", "note": "精通山洞→(7,9)，全技能10级领精通（2026-08-15补）"},
+        {"tile": (101, 73), "target": "MasteryCave", "kind": "door", "note": "精通山洞→落点(7,11)，五技能全10级才放行（2026-09-16 校准：旧注写 (7,9) 是基座站位，非落点）"},
     ],
     # ── 海滩 ──
     "Beach": [
@@ -852,7 +873,12 @@ MAP_LINKS = {
         {"tile": (44, 48), "target": "Caldera", "kind": "warp", "arrive": (11, 36),
          "note": "🌋 入口层→山顶（**捷径**）。真 warp 瓦片=(44,48)（反编译 833 行）；arrive=(11,36) ✅ **2026-09-12 真机实测**（不是定义值猜的了）。⚠️ 前置=mail flag `volcanoShortcutUnlocked`（用 `map ops=unlocks` 查）：首次到过 Caldera 次日自动补发（Caldera.cs:106），或在入口层矮人门机关 (40,51) 踩下当场发（DwarfGate.cs:121）。**它锁的是 (40,48) 那道矮人门，不是出口本身** —— 没解锁时人会被门挡在楼梯外"},
     ],
-    "MasteryCave": [{"tile": None, "target": "Forest", "kind": "warp", "note": "精通山洞门口→森林（2026-08-15补）"}],
+    # 🎓 精通山洞出口（2026-09-16 写实）：出口是**地图级 `Warp` 属性** `7 12 Forest 101 73`
+    #    ——不是瓦片属性，所以 `/tile_props?scan=Warp` 扫不到（扫出来 count=0），
+    #    但 `/warps` 的 `EnsureWarpGraph` 读得到（已实测 `{x:7,y:12}→Forest(101,73)`）。
+    #    原来写 `tile:None` 靠 live /warps 兜，现按实测钉死；arrive 也钉上游戏真实落点。
+    "MasteryCave": [{"tile": (7, 12), "target": "Forest", "kind": "warp", "arrive": (101, 73),
+                     "note": "精通山洞→森林(101,73)：踩 (7,12) 自动出（地图级 Warp 属性，2026-09-16 实测）"}],
     "Summit": [{"tile": None, "target": "Railroad", "kind": "warp", "note": "山顶下山→铁路（2026-08-15补）"}],
     "WitchWarpCave": [{"tile": (4, 9), "target": "Railroad", "kind": "warp", "arrive": (54, 34), "note": "魔女沼泽洞穴→铁路(54,34)；原出口(4,10) y=10 在高度10边界外（/warps实测，2026-08-30）"},
                       {"tile": (4, 5), "target": "WitchSwamp", "kind": "portal", "stand": [4, 6], "note": "🔮 传送阵(准确坐标(4,5)，2026-08-30 恒领跑实测)：站(4,6)面0 interact(面前=(4,5))→女巫沼泽(20,42)。map_go 先walk到(4,6)站位再warp跨。需黑暗护身符(HasDarkTalisman)"}],
@@ -978,6 +1004,7 @@ MAP_FEATURES = {
     "AdventureGuild": ["马龙(买武器/接怪物任务)", "吉尔(讨伐奖励)"],
     "ScienceHouse": ["罗宾柜台(买建筑/家具/升级)", "地下室塞巴斯蒂安"],
     "Forest": ["玛妮牧场(买动物/饲料)", "巫师塔(祝尼魔/改宠物)", "秘密森林(硬木/木跃鱼)", "猪车(周五周日)", "精通山洞", "河边钓点"],
+    "MasteryCave": ["🎓 五块精通碑(战斗/采集/耕种/钓鱼/采矿，各领一次)", "中央基座(看精通等级总进度)", "爷爷的信(地上信纸)"],
     "AnimalShop": ["玛妮柜台(买鸡鸭牛羊/饲料/加热器/挤奶器)"],
     "WizardHouse": ["法师(祝尼魔任务/改宠物/买魔力项链)", "魔法书"],
     "Woods": ["硬木桩×6", "木跃鱼钓点", "老大师香炸奶酪卷(放甜宝石莓换星之果实)"],
@@ -1040,6 +1067,19 @@ BUILDING_DOORS = {
     "WizardHouseBasement": ("WizardHouse", (4, 5)),  # 🪜 法师塔地下室（2026-08-30 恒+AI 实测：站塔内(4,5)面0 interact 爬梯→下地下室；含幻觉神龛/法师传送阵）
     "SkullCave":       ("Desert",   (8, 6)),
     "FarmCave":        ("Farm",     (34, 7)),
+    # 🌱 温室（2026-09-16 补）：**此前三处全缺** ⇒ `map go Greenhouse` 推门拿不到门格 →
+    #    走兜底 warp 硬进 ⇒ 落到 ARRIVE 的 (1,1) 墙角，恒真机看到"**进温室飞到墙外**"。
+    #    门格来源（问游戏，不猜）：`/farm_buildings` 报 Greenhouse doorX=28,doorY=15；
+    #    且温室自己的出口 warp 是 `Greenhouse(10,24) → Farm(28,16)` —— 出口落点就是门口，
+    #    两边**互相印证**，所以门格取 (28,15)、站门下方 (28,16) 面朝上推。
+    "Greenhouse":      ("Farm",     (28, 15)),
+    # 🎓 精通山洞（2026-09-16 补）：入口是 Forest (101,71)/(101,72) 的 `Action:MasteryRoom` 格
+    #    （反编译 GameLocation.cs:8780：五技能全 10 级 → `warpFarmer("MasteryCave",7,11,0)`，不够就弹提示）。
+    #    **不是推门、也不是踩上去就传** —— 要 `checkAction` 才触发。_enter_building_door 的语义正好是
+    #    「walk 到 (dx,dy) → `interact_at(dx,dy)`」，而 `/interact {x,y}` 是直接对目标格 checkAction、
+    #    **不依赖面朝**，所以这里给**目标 Action 格 (101,72)** 而不是站位 (101,73)。
+    #    此前这张表没有 MasteryCave ⇒ 推门拿不到门格 ⇒ 退回 ARRIVE 硬瞬移进屋（日志「⚠️推门没成」）。
+    "MasteryCave":     ("Forest",   (101, 72)),
     "Sewer":           ("Town",     (35, 97)),
     "BathHouse_Entry": ("Railroad", (10, 57)),
     # ♨️ 更衣室两扇**性别门禁门**（2026-09-10 补）：同图隔间门，非 warp。不进这张表的话
@@ -1053,6 +1093,33 @@ BUILDING_DOORS = {
 }
 
 
+# 🐄 农场动物建筑（畜棚/鸡舍全变体）—— 名字 = `/state` 报的室内名 = `/farm_buildings` 的 indoorsName。
+#    2026-09-16 恒：以前有两处都不知道畜棚鸡舍的存在，各栽了一次——
+#      ①**导航**：`_interior_to_farm` 只查 MAP_LINKS，而农场建筑室内**压根不是 MAP_LINKS 的节点**
+#        （`/warps` 表里连 "Deluxe Barn" 这个图都没有）⇒ 认不出"人在棚里" ⇒ `map go Farm` 一路走到
+#        BFS，拿 "Deluxe Barn" 当节点，报「🗺️ 知识库没找到从 Deluxe Barn 到 Farm 的路径（缺地图链接）」。
+#        实际上 `_exit_farm_building` 本来就是通用的（自己读 /map 的原生出口 warp），只是没被叫到——
+#        等于出棚只剩内部 `_warp_home_if_needed` 的裸 warp，AI 看得见的那条路是断的。
+#      ②**farm 域适用区**：棚内调 farm 会吃到「💡 可先 map go Farm」的反建议，而棚内**正是**干农活的
+#        地方（饲料槽是畜棚自带的、宠物碗/摸动物都只能在棚里做）。
+#    ⚠️ 单一来源：navigation.py 与 nagi_mcp_server.py 都从这里取，别各写一份（列表漂移最难查）。
+FARM_ANIMAL_BUILDINGS = ("Coop", "Big Coop", "Deluxe Coop", "Barn", "Big Barn", "Deluxe Barn")
+
+# 🏠 农场工作建筑（机器屋）—— 同一类的第三、第四个受害者（2026-09-16 当场又栽在 Big Shed 上：
+#    在屋里给小桶上料，头顶却挂着「💡 当前在Big Shed，farm通常在Farm做；可先 map go Farm」）。
+#    小桶/罐头瓶/复制机全在棚屋里，**这里就是 farm 的工作场所**。
+FARM_MACHINE_BUILDINGS = ("Big Shed",)
+# 限定词在**后面**的（Cellar / Cellar2 … Cellar8，恒 8 个地窖）⇒ 可走 startswith 前缀。
+# ⚠️ 地窖只放进"域适用区"（不要再劝它出去），**暂不放进 `_interior_to_farm`**：
+#    地窖的原生出口是通到**它上面那栋房子**（FarmHouse/Cabin/Big Shed），不是 Farm
+#    ⇒ `_exit_farm_building(cellar, "Farm")` 找不到通往 Farm 的 warp 会直接失败。
+#    要修得出"地窖→楼→Farm"两跳，单独立项，别顺手塞进来把出门路搅断。
+FARM_MACHINE_PREFIXES = ("Cellar",)
+
+# 导航用：人在这些屋里时，先走出到 Farm（`_exit_farm_building` 通用的，读 /map 原生出口 warp）
+FARM_INTERIOR_BUILDINGS = FARM_ANIMAL_BUILDINGS + FARM_MACHINE_BUILDINGS
+
+
 # ── 每地点到达入口（map_go 传送到这继续走，2026-08-13 恒：只传标注过的点）──
 # 校准安全落点（POI/ROUTES 提取）。⚠️ Farm 是河流农场，入口待实测（普通农场坐标会传进河）。
 ARRIVE = {
@@ -1060,7 +1127,10 @@ ARRIVE = {
     "FarmHouse": (10, 6),
     "Cabin": (3, 12),
     "FarmCave": (8, 11),
-    "Greenhouse": (1, 1),
+    # 🌱 温室入口 (10,24)：**问游戏要的**——温室自己的出口 warp 就是 `(10,24) → Farm(28,16)`，
+    #    玩家从门进来必然落在同一格，所以那格就是入口。原来是拍脑袋的 **(1,1)**（墙角），
+    #    恒 2026-09-16 真机看到"进温室飞到墙外"就是它。
+    "Greenhouse": (10, 24),
     "BusStop": (9, 23),         # 从农场来
     "Town": (0, 54),            # 从巴士站来（主入口）
     "Mountain": (54, 5),        # 矿洞门口（安全）
@@ -1115,7 +1185,9 @@ ARRIVE = {
     "VolcanoDungeon0": (31, 50),
     "IslandFarmHouse": (14, 15),
     "QiNutRoom": (7, 7),
-    "MasteryCave": (7, 9),
+    # 🎓 精通山洞（2026-09-16 改）：原来是 (7,9)，但游戏的**真实落点**是 `warpFarmer("MasteryCave",7,11,0)`
+    #    （反编译 GameLocation.cs:8784）—— (7,11) 就在出洞口 (7,12) 正北一格，不会被立刻弹出去。
+    "MasteryCave": (7, 11),
     "Caldera": (22, 22),
     "WitchWarpCave": (4, 9),
     "WitchSwamp": (20, 42),

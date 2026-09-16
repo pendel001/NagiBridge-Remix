@@ -52,7 +52,9 @@ FILE_STRUCTURE = {
     "scripts/player_activity.py": "行为检测 + 心跳：发呆检测/同场景玩家检测/窗口判定，描述房主活动给 AI 看",
     "scripts/locations.py": "地图知识库：MAP_LINKS(门/出口瓦片) + MAP_FEATURES(地点功能) + POI(兴趣点) + POI_FACE(结构化站位朝向) + SHOP_HOURS",
     "scripts/calendar_data.py": "日历知识库：FESTIVALS/FESTIVAL_SHOPS/FESTIVAL_POI/FESTIVAL_GUIDE/FESTIVAL_PREP/生日/商店/解锁表",
-    "scripts/crops.py": "作物知识库（ID→名字/镰刀/再生）",
+    # ⚠️ scripts/crops.py（作物 ID→名字/镰刀/再生 手抄表）2026-09-16 **已删**：
+    #    /give 逐条核完 39 条错 20 条（454 写"杨桃"实为上古水果…）。改由游戏直报
+    #    `/surroundings` 的 cropName/cropScythe/cropRegrow（C# 读 Crop.GetHarvestMethod() 等）。
     "scripts/movie_data.py": "电影院知识库（8 电影 2 年循环 + 24 零食）",
     "scripts/go_to.py": "一键导航（homeDoor 等）",
     "scripts/plan_engine.py": "⚠️ 已退役（计划模式 2026-08-17 下线），勿用",
@@ -62,7 +64,7 @@ FILE_STRUCTURE = {
     "scripts/mine_run.py": "矿洞/头骨矿冲层脚本（逐层+整理背包）——08-29 _rock_name 三级(object名>ORE_NODE_IDS>dump_tile真名)认隐藏名宝石/放射矿,ore_score 关键词(放射>宝石),mine_rock 校验改目标格有object",
     "scripts/rock_run.py / rock_scan.py": "室外镐击：采石场/挖掘场/蚌矿场 敲可破物(骨/黏土/蚌/矿点/宝石/煤/放射矿)，只跳普通石。默认只扫不敲(--dig 才敲)，目标按 objId+dump_tile 真名认(1.6 节点 Name 全报 'Stone' 只 objId 可信)；MCP scene ops=rock",
     "scripts/fish_run.py": "钓鱼自动化（walk_to 到钓点→拿竿→抛竿，--max-casts 收手）+ 拿竿后自动补饵/钓具",
-    "scripts/farm_row.py / fruit_round.py / building_round.py / harvest.py / scythe_crops.py / keg_manager.py / furnace_manager.py": "农活：行田/果树圈收/建筑一轮/收获/镰刀收割/酒桶管理/熔炉",
+    "scripts/farm_row.py / fruit_round.py / building_round.py / harvest.py / scythe_crops.py / keg_manager.py / furnace_manager.py": "农活：行田/果树圈收/建筑一轮/收获/作物收获(拟人逐个走位,镰刀 or 手摘)/酒桶管理/熔炉",
     "scripts/pet_animals.py / feed_hay.py / pet_walk.py": "养动物：摸宠/喂干草/遛宠",
     "scripts/pickup_scene.py / scan_entries.py": "场景拾取/扫描",
     "scripts/berry_run.py / blessing_statue.py / chop_trees.py / clear_area.py / machine_loader.py / check_design.py": "其他自动化：浆果/祝福像/砍树/清地/装机器(装载失败列机器需求给AI自查,机器type→输入种类表_MACHINE_NEED)/设计检查",

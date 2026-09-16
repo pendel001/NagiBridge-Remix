@@ -1373,9 +1373,15 @@ def silo():
 
 
 def mastery():
-    """🏆 精通状态：反射列出 Farmer 上所有 Mastery 字段/属性的值（经验检测）。
-    返回: {ok, fields: [{name, value}], props: [{name, value}]}"""
-    return _get("/mastery")
+    """🏆 精通状态（SDV 1.6）：等级/经验/未花点数 + 五块碑各自领没领。
+    返回: {ok, who, exp, level, expForNext, levelsSpent, unspent, canClaim, allPlaques,
+           plaques: [{index, skill, cn, claimed}]}
+
+    ⚠️ 走 **AI 进程(7843)** —— 精通是**各人各的**（`Game1.stats => player.stats`，读的是本进程玩家），
+    不是共享池。AI 查自己当然要问自己那个进程（同 special_items）。
+    ⚠️ 2026-09-16 前这里打 7842：AI 查"我的精通"看到的其实是**房主**的。
+    """
+    return _ai_get("/mastery")
 
 
 def special_items():
@@ -1386,12 +1392,11 @@ def special_items():
     return _ai_get("/special_items")
 
 
-def mastery_claim(type_name=""):
-    """🏆 领取精通（当前为探测版：报告候选领取方法 + 当前经验，供确认 API）。
-    Args:
-        type_name: 目标精通名（如 "Farming"）
-    """
-    return _post("/mastery_claim", {"type": type_name})
+# 🗑️ `mastery_claim()` 已于 2026-09-16 删除。
+#    对应的 POST /mastery_claim **什么也不领**却回 `ok:true`（body 只是反射列一串候选方法名），
+#    是个"工具说成功但事没发生"的陷阱；而且它从来没有被任何 MCP 工具调用过（纯死代码）。
+#    领取走**拟人路线**：走到碑前 `interact` 开 MasteryTrackerMenu → `menu read` 看奖励
+#    → `menu click(button=mainButton)` 点游戏自己的领取按钮。
 
 
 def carpenter():
