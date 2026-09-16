@@ -17716,6 +17716,17 @@ public class ModEntry : Mod
                 // -1 = 已满级（游戏 getMasteryExpNeededForLevel(6+) 返回 int.MaxValue，别原样吐出去吓人）
                 int nextNeed = level >= 5 ? -1 : MasteryTrackerMenu.getMasteryExpNeededForLevel(level + 1);
 
+                // 🎓 2026-09-16 恒：「精通那个经验条…是有数字进度的 xxx/xxx」——游戏画的确实是**本级内**进度，
+                //    不是总量。反编译 `MasteryTrackerMenu.drawBar`（第 509 行）原文：
+                //        text = (exp − getMasteryExpNeededForLevel(level))
+                //             + "/" + (getMasteryExpNeededForLevel(level+1) − getMasteryExpNeededForLevel(level))
+                //    条长也按这个比例（num2/num3）。所以照抄游戏的两个数给 Python，
+                //    **别让 Python 自己拿总量去 ratio**——那会显示成 74365/100000，跟游戏对不上。
+                //    满级(level>=5)时游戏**不画文字**、条拉满 ⇒ 这里给 -1 让 Python 照办。
+                int levelBase = level >= 5 ? -1 : MasteryTrackerMenu.getMasteryExpNeededForLevel(level);
+                int expThisLevel = levelBase < 0 ? -1 : exp - levelBase;
+                int expThisLevelNeed = (levelBase < 0 || nextNeed < 0) ? -1 : nextNeed - levelBase;
+
                 var plaques = new List<object>();
                 for (int i = 0; i < skills.Length; i++)
                 {
@@ -17733,6 +17744,9 @@ public class ModEntry : Mod
                     exp,
                     level,
                     expForNext = nextNeed,
+                    // 🎓 游戏经验条上真正显示的那两个数（本级内 / 本级总需；满级为 -1）
+                    expThisLevel,
+                    expThisLevelNeed,
                     levelsSpent = spent,
                     unspent,
                     canClaim = unspent > 0,

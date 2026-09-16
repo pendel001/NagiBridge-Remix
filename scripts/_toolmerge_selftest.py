@@ -12,11 +12,19 @@ import nagi_mcp_server as M
 FAIL = []
 
 # ── 打桩：不进游戏 ──
-M.api._get = lambda path, *a, **k: (
-    {"ok": True, "name": "轮回", "skills": {"farming": 10, "fishing": 7, "foraging": 5, "mining": 4, "combat": 3},
-     "professions": [11]}
-    if "profile" in path else {"ok": False, "error": "stub"}
-)
+# ⚠️ 2026-09-16：`profile()` 改走 **`_ai_get`** 了（查 AI 自己；原来错走 `_get`=房主，见该函数注释）。
+#    桩**两个都要打** —— 只打 `_get` 的话 profile 会真去连 7843，而这条自测号称"不碰游戏"。
+_SKILLS_NOT10 = {"farming": 10, "fishing": 7, "foraging": 5, "mining": 4, "combat": 3}
+_SKILLS_ALL10 = {k: 10 for k in ("farming", "fishing", "foraging", "mining", "combat")}
+
+
+def _stub_profile_side(path, *a, **k):
+    return ({"ok": True, "name": "轮回", "skills": _SKILLS_NOT10, "professions": [11]}
+            if "profile" in path else {"ok": False, "error": "stub"})
+
+
+M.api._get = _stub_profile_side
+M.api._ai_get = _stub_profile_side
 M.api.which_role = lambda: {"ok": True, "ai": {"name": "轮回", "port": 7843}, "host": {"name": "恒", "port": 7842}}
 M._with_state = lambda text, force_full=False: text   # 隔离状态注入，只看 op 本体
 
@@ -36,6 +44,25 @@ case('check(what="role")   ', M.check("role"), "7843")
 
 # 3) 中文别名
 case('check(what="技能")', M.check("技能"), "技能等级")
+
+# 3b) 🎓 精通进度条并进 profile（恒 2026-09-16）：**技能全满才出现**——
+#     未满级时 MasteryExp 不涨，画个空条只会误导，直接不显示。
+M.api.mastery = lambda: {"ok": True, "who": "轮回", "level": 4, "exp": 74365,
+                         "expThisLevel": 4365, "expThisLevelNeed": 30000,
+                         "levelsSpent": 4, "unspent": 0}
+M.api._get = M.api._ai_get = lambda path, *a, **k: (
+    {"ok": True, "name": "轮回", "skills": _SKILLS_ALL10, "professions": [11]}
+    if "profile" in path else {"ok": False, "error": "stub"})
+# ⚠️ 数字要跟**游戏经验条**一致（本级内/本级总需）= 4365/30000，
+#    不是拿总量算的 74365/100000（恒当场指出过）。
+case("技能全满 → 出精通条(游戏同款 xxx/xxx)", M.check("profile"), "4365/30000")
+
+M.api._get = M.api._ai_get = _stub_profile_side   # 退回"未满级"那套桩
+if "🏆" in M.check("profile"):
+    print("  ❌ 技能未满 → 不该显示精通条")
+    FAIL.append("技能未满不该显示精通条")
+else:
+    print("  ✅ 技能未满 → 不显示精通条")
 
 # 4) 未知 what 的报错要列上新 op（防 AI 猜不中时找不到路）
 case("未知 what 报错列 profile/role", M.check("nope"), "profile")

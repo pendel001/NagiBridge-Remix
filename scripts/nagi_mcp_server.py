@@ -6348,6 +6348,46 @@ def silo_status() -> str:
 #   按洞内实际走位顺序排，AI 一看就知道该往哪边走。坐标见 locations.POI 的"精通山洞(XX碑)"。
 _MASTERY_CAVE_ORDER = ["combat", "foraging", "farming", "fishing", "mining"]
 
+# 🎓 精通"开启条件" = 五项技能**全部到 10 级**（游戏的 `MasteryHint` 就是那时弹的）。
+#    在那之前 `MasteryExp` 不涨 ⇒ **不显示精通进度**（恒 2026-09-16 拍板）。
+_MASTERY_SKILLS = ("farming", "fishing", "foraging", "mining", "combat")
+
+
+def _mastery_bar(r: dict) -> tuple:
+    """🎓 精通经验条（**与游戏 `MasteryTrackerMenu.drawBar` 同算法**）。
+
+    反编译原文（MasteryTrackerMenu.cs:509）：
+        text = (exp − getMasteryExpNeededForLevel(level))
+             + "/" + (getMasteryExpNeededForLevel(level+1) − getMasteryExpNeededForLevel(level))
+    ⇒ 条和数字都是**本级内**进度，不是总量。⚠️ 别拿 `exp/expForNext` 去 ratio ——
+    那会显示成 `74365/100000`，跟游戏里的 `4365/30000` 对不上（2026-09-16 恒当场指出）。
+    满级(level>=5)时游戏**不画数字**、条拉满 ⇒ 这里给满格 + "已满级"。
+    """
+    lv = r.get("level") or 0
+    cur = r.get("expThisLevel")
+    tot = r.get("expThisLevelNeed")
+    if lv >= 5 or not tot or tot <= 0:
+        return "█" * 10, "已满级"
+    ratio = max(0.0, min(1.0, (cur or 0) / tot))
+    filled = int(round(ratio * 10))
+    return "█" * filled + "░" * (10 - filled), f"{cur}/{tot}"
+
+
+def _mastery_brief() -> str:
+    """🎓 profile 里那一行精通进度（含游戏同款经验条）。
+    读不到就**如实说**（旧 DLL/端点挂了），不静默吞掉。"""
+    try:
+        r = api.mastery()
+    except Exception as e:
+        return f"  ⚠️ 精通进度读不到: {e}"
+    if not r.get("ok"):
+        return f"  ⚠️ 精通进度读不到（{r.get('error', '端点不可用')}；模组需重编译）"
+    bar, txt = _mastery_bar(r)
+    unspent = r.get("unspent") or 0
+    tail = f" · 🟢 有 {unspent} 点可领（去精通山洞摸碑）" if unspent > 0 else ""
+    return (f"  🏆 精通 Lv{r.get('level') or 0}/5 · {bar} {txt}"
+            f" · 已花 {r.get('levelsSpent') or 0} 点{tail}")
+
 
 @mcp.tool()
 def mastery_status() -> str:
@@ -6370,8 +6410,11 @@ def mastery_status() -> str:
         unspent = r.get("unspent") or 0
         can_claim = bool(r.get("canClaim"))
 
-        prog = "已满级(Lv5)" if (need is None or need < 0) else f"{exp}/{need}（还差 {max(0, need - exp)}）"
-        lines = [f"🏆 精通状态{'（' + who + '）' if who else ''}：Lv{level}/5 · {prog} · 已花 {spent} 点"]
+        # 进度条**照抄游戏那根**（本级内 xxx/xxx），不是总量——见 _mastery_bar 的注释。
+        bar, txt = _mastery_bar(r)
+        lines = [f"🏆 精通状态{'（' + who + '）' if who else ''}：Lv{level}/5 · {bar} {txt} · 已花 {spent} 点"]
+        if need and need > 0:
+            lines.append(f"  （条=本级进度，与游戏经验条一致；总量 {exp}，攒到 {need} 升 Lv{level + 1}）")
         if can_claim:
             lines.append(f"  🟢 **有 {unspent} 个没花掉的精通可以领**")
         else:
@@ -16022,7 +16065,11 @@ def profile() -> str:
     """🧬 看当前角色技能等级 + 职业分支(professions)——比如是不是 Luremaster(蟹笼免饵)。
     2026-09-11 起收进 check 域：`check(what="profile")`（不再占顶层工具槽）。"""
     try:
-        r = api._get("/profile")
+        # ⚠️ 2026-09-16 修「读错人」：原来走 `_get`（BASE_URL=**7842 恒**）⇒ 查的是**房主**的技能，
+        #    可 C# 路由注释白纸黑字写着「(2026-08-30 恒:AI 看自己)」，下文还拿它判"你是不是 Luremaster、
+        #    蟹笼免不免饵"——那全是 **AI 自己的**农活。跟 `/mastery` 是同一类 bug（读全局 ≠ 读自己）。
+        #    一直没被发现是因为**两边技能都 10 级**、数字长得一样；职业分支/精通数据才露馅。
+        r = api._ai_get("/profile")
         if not r.get("ok"):
             return _with_state(f"❌ {r.get('error', '读取失败')}")
         name = r.get("name") or "?"
@@ -16031,6 +16078,11 @@ def profile() -> str:
             f"🧬 {name} 技能等级:",
             f"  农{sk.get('farming')} | 渔{sk.get('fishing')} | 采集{sk.get('foraging')} | 矿{sk.get('mining')} | 战{sk.get('combat')}",
         ]
+        # 🎓 精通进度（2026-09-16 恒：并进"看技能等级/分支"的地方）。
+        #    **没开精通就不显示** —— 开启条件 = 五项技能全部 10 级（游戏 `MasteryHint` 的触发条件）；
+        #    在那之前 `MasteryExp` 根本不涨，画个空条只会误导。
+        if all(int(sk.get(_k) or 0) >= 10 for _k in _MASTERY_SKILLS):
+            lines.append(_mastery_brief())
         profs = r.get("professions") or []
         if profs:
             parts = [_PROF_NAMES.get(i, f"分支#{i}") for i in profs]
