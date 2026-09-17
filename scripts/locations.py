@@ -682,16 +682,22 @@ MAP_LINKS = {
         {"tile": (1, 90), "target": "Forest", "kind": "warp", "note": "镇左上→森林(118,25)。站格=Forest→Town 落点(0,90)往图内一格；原错标(1,55)"},
         {"tile": (54, 107), "target": "Beach", "kind": "warp", "note": "镇下方隧道→海滩(38,0)。站格=Beach→Town 落点(54,108)往图内一格；原错标(53,96)"},
         {"tile": (81, 1), "target": "Mountain", "kind": "warp", "note": "镇上口→山(15,40)。站格=Mountain→Town 落点(81,0)往图内一格；原错标(15,40)填的是**山那格**的坐标"},
-        {"tile": (53, 20), "target": "CommunityCenter", "kind": "door", "note": "社区中心门→(32,23)，祝尼魔献祭"},
-        {"tile": (43, 57), "target": "SeedShop", "kind": "door", "note": "皮埃尔店门→SeedShop(6,29)，买种子/肥料"},
-        {"tile": (36, 56), "target": "Hospital", "kind": "door", "note": "哈维医院门→(6,17)，看病/买药"},
-        {"tile": (45, 72), "target": "Saloon", "kind": "door", "note": "星之果实餐吧门→(14,24)，格斯柜台"},
-        {"tile": (94, 82), "target": "Blacksmith", "kind": "door", "note": "铁匠铺门→(5,19)，升级工具/买矿/开晶球"},
-        {"tile": (57, 64), "target": "JoshHouse", "kind": "door", "note": "艾芙琳家(亚历克斯)门→(9,24)"},
-        {"tile": (59, 86), "target": "ManorHouse", "kind": "door", "note": "镇长家门→(5,11)"},
-        {"tile": (101, 90), "target": "ArchaeologyHouse", "kind": "door", "note": "博物馆/图书馆门→(3,14)，捐矿物/古物"},
+        {"tile": (53, 19), "target": "CommunityCenter", "kind": "door", "note": "社区中心门→(32,23)，祝尼魔献祭"},
+        {"tile": (43, 56), "target": "SeedShop", "kind": "door", "note": "皮埃尔店门→SeedShop(6,29)，买种子/肥料"},
+        {"tile": (36, 55), "target": "Hospital", "kind": "door", "note": "哈维医院门→(6,17)，看病/买药"},
+        {"tile": (45, 70), "target": "Saloon", "kind": "door", "note": "星之果实餐吧门→(14,24)，格斯柜台"},
+        {"tile": (94, 81), "target": "Blacksmith", "kind": "door", "note": "铁匠铺门→(5,19)，升级工具/买矿/开晶球"},
+        {"tile": (57, 63), "target": "JoshHouse", "kind": "door", "note": "艾芙琳家(亚历克斯)门→(9,24)"},
+        {"tile": (59, 85), "target": "ManorHouse", "kind": "door", "note": "镇长家门→(5,11)"},
+        # 🆕 2026-09-17 补三户（此前**压根不在表里** ⇒ `map_go` 直接报"知识库没有地点链接"，
+        #    连带 9 个 POI 全不可达，含 Pam 订单「烈酒」的交付点）。tile 必须与 BUILDING_DOORS 同值
+        #    （`_REVERSE_DOORS` 的键就是 BUILDING_DOORS 的值，两边不一致就推不开门）。
+        {"tile": (20, 88), "target": "HaleyHouse", "kind": "door", "note": "🌊 海莉&艾米丽家门→(2,24)（2026-09-17 真机验）"},
+        {"tile": (10, 85), "target": "SamHouse", "kind": "door", "note": "🏠 乔迪/山姆/文森特/肯特家门→(4,23)（2026-09-17 真机验）"},
+        {"tile": (72, 68), "target": "Trailer", "kind": "door", "note": "🚚 潘姆/佩妮拖车门→(12,9)（2026-09-17 真机验）"},
+        {"tile": (101, 89), "target": "ArchaeologyHouse", "kind": "door", "note": "博物馆/图书馆门→(3,14)，捐矿物/古物"},
         {"tile": (35, 97), "target": "Sewer", "kind": "door", "note": "下水道口（需钥匙）→(16,11)，科罗布斯商店"},
-        {"tile": (96, 51), "target": "MovieTheater", "kind": "door", "note": "电影院（前Joja超市）→(12,12)"},
+        {"tile": (96, 50), "target": "MovieTheater", "kind": "door", "note": "电影院（前Joja超市）→(12,12)"},
     ],
     # ── 山 ──
     "Mountain": [
@@ -699,9 +705,9 @@ MAP_LINKS = {
         {"tile": (15, 40), "target": "Town", "kind": "warp", "arrive": (81, 0), "note": "山下口站格(15,40)→/warp 镇(81,0)，温泉旁。原出口(15,41) y=41 在高度41边界外"},
         {"tile": (9, 1), "target": "Railroad", "kind": "warp", "note": "山上口→铁路(29,59)"},
         {"tile": (54, 4), "target": "Mine", "kind": "door", "note": "矿井口→Mine(18,13)，下矿"},
-        {"tile": (76, 9), "target": "AdventureGuild", "kind": "door", "note": "探险家公会门→(6,12)，买武器/怪物任务"},
+        {"tile": (76, 8), "target": "AdventureGuild", "kind": "door", "note": "探险家公会门→(6,12)，买武器/怪物任务"},
         {"tile": (29, 6), "target": "Tent", "kind": "warp", "arrive": (2, 5), "note": "⛺ 莱纳斯帐篷 warp(29,6)→Tent(2,5)（2026-09-06 恒：/warps实测非门，站上自动传）"},
-        {"tile": (12, 26), "target": "ScienceHouse", "kind": "door", "note": "罗宾木匠店门→(6,24)，买建筑/家具"},
+        {"tile": (12, 25), "target": "ScienceHouse", "kind": "door", "note": "罗宾木匠店门→(6,24)，买建筑/家具"},
         {"tile": (16, 8), "target": "LeoTreeHouse", "kind": "door", "arrive": (3, 8), "note": "🌳 雷欧树屋(雷欧6心搬来住/常在)：站(16,8)面0 interact(16,7)开树屋门→LeoTreeHouse(3,8)（2026-09-06 树屋门口实测）"},
     ],
     # ── 森林 ──
@@ -709,28 +715,33 @@ MAP_LINKS = {
         {"tile": (119, 25), "target": "Town", "kind": "warp", "arrive": (0, 90), "note": "森林东口站格(119,25)→/warp 镇(0,90)。原出口(120,25) x=120 在宽度120边界外"},
         {"tile": (67, 0), "target": "Farm", "kind": "warp", "arrive": (41, 64), "note": "森林上口站格(67,0)→/warp 农场(41,64)。原出口(67,-1) y=-1 边界外(原靠push-in兜底,已显式标站格)"},
         {"tile": (0, 6), "target": "Woods", "kind": "door", "note": "秘密森林口（需钢斧）→Woods(59,15)，硬木/钓木跃鱼。door 走砖门动态路径,此 tile 仅标注用,原(-1,6) 边界外已回0"},
-        {"tile": (5, 27), "target": "WizardHouse", "kind": "door", "note": "法师塔门→(8,24)，祝尼魔任务/改宠物"},
-        {"tile": (90, 16), "target": "AnimalShop", "kind": "door", "note": "玛妮牧场门→(13,19)，买动物/饲料"},
+        {"tile": (5, 26), "target": "WizardHouse", "kind": "door", "note": "法师塔门→(8,24)，祝尼魔任务/改宠物"},
+        {"tile": (90, 15), "target": "AnimalShop", "kind": "door", "note": "玛妮牧场门→(13,19)，买动物/饲料"},
         {"tile": (27, 12), "target": "Forest", "kind": "door", "note": "猪车（周五/周日旅行货车）"},
-        {"tile": (101, 73), "target": "MasteryCave", "kind": "door", "note": "精通山洞→落点(7,11)，五技能全10级才放行（2026-09-16 校准：旧注写 (7,9) 是基座站位，非落点）"},
+        {"tile": (104, 32), "target": "LeahHouse", "kind": "door", "note": "🏠 莉亚小屋→(7,9)（2026-09-17 补）。⚠️门是 `LockedDoorWarp … 1000 1800 Leah 500`：10:00–18:00 之外锁 + **Leah 好感≥500**"},
+        # ⚠️ 2026-09-17：tile 由 (101,73) 改成 (101,72)，与 `BUILDING_DOORS["MasteryCave"]` 对齐
+        #    （那张表的注释本就写着"给**目标 Action 格 (101,72)** 而不是站位 (101,73)"）。
+        #    两边不一致时 `_REVERSE_DOORS` 查不到 ⇒ 推门那步**静默失效**、退回硬瞬移进屋。
+        {"tile": (101, 72), "target": "MasteryCave", "kind": "door", "note": "精通山洞→落点(7,11)，五技能全10级才放行（2026-09-16 校准：旧注写 (7,9) 是基座站位，非落点）"},
     ],
     # ── 海滩 ──
     "Beach": [
         {"tile": (38, 1), "target": "Town", "kind": "warp", "note": "海滩→镇（隧道）"},
-        {"tile": (30, 34), "target": "FishShop", "kind": "door", "note": "威利鱼店门→(5,9)，买鱼竿/鱼饵/蟹笼"},
+        {"tile": (30, 33), "target": "FishShop", "kind": "door", "note": "威利鱼店门→(5,9)，买鱼竿/鱼饵/蟹笼"},
+        {"tile": (49, 10), "target": "ElliottHouse", "kind": "door", "note": "🏠 艾利欧特小屋→(3,9)（2026-09-17 补）。⚠️门是 `LockedDoorWarp … 1000 1800 Elliott 500`：10:00–18:00 之外锁 + **Elliott 好感≥500**，不够就弹「上锁了……」"},
     ],
     # ── 铁路 ──
     "Railroad": [
         {"tile": (29, 61), "target": "Mountain", "kind": "warp", "arrive": (9, 0), "note": "铁路下口站格(29,61)→/warp 山(9,0)。原出口(29,62) y=62 在高度62边界外"},
         {"tile": (33, 0), "target": "Summit", "kind": "warp", "arrive": (10, 29), "note": "铁路上口站格(33,0)→/warp 山顶(10,29)（需完美达成）。原出口(33,-1) y=-1 边界外"},
-        {"tile": (10, 57), "target": "BathHouse_Entry", "kind": "door", "note": "浴场门→(5,9)，泡澡回体力"},
+        {"tile": (10, 56), "target": "BathHouse_Entry", "kind": "door", "note": "浴场门→(5,9)，泡澡回体力"},
         {"tile": (54, 33), "target": "WitchWarpCave", "kind": "warp", "note": "魔女沼泽洞穴口(54,33)→WitchWarpCave(4,9)（/warps实测，2026-08-30）"},
     ],
     # ── 沙漠 ──
     "Desert": [
         {"tile": (18, 26), "target": "BusStop", "kind": "warp", "note": "巴士站→回鹈鹕镇巴士站(22,10)（返程，/warps实测）"},
         {"tile": (8, 5), "target": "SkullCave", "kind": "door", "note": "头骨矿洞口→(7,8)，下100层"},
-        {"tile": (6, 52), "target": "SandyHouse", "kind": "door", "note": "桑迪绿洲店门→(4,9)，买杨桃种子/饰品"},
+        {"tile": (6, 51), "target": "SandyHouse", "kind": "door", "note": "桑迪绿洲店门→(4,9)，买杨桃种子/饰品"},
         {"tile": (42, 24), "target": "Desert", "kind": "door", "note": "沙漠商人（换万象晶球等）"},
     ],
     # ── 姜岛 ──
@@ -800,6 +811,16 @@ MAP_LINKS = {
     "CommunityCenter": [{"tile": None, "target": "Town", "kind": "warp", "note": "社区中心门口→镇"}],
     "JoshHouse": [{"tile": None, "target": "Town", "kind": "warp", "note": "艾芙琳家门口→镇"}],
     "ManorHouse": [{"tile": None, "target": "Town", "kind": "warp", "note": "镇长家门口→镇"}],
+    # 🆕 2026-09-17 补五户（此前**都不在 MAP_LINKS** ⇒ `map_go` 报"知识库没有地点链接"）。
+    #    `tile: None` 与邻居同款 = 出口瓦片运行时从 `/warps` 取；出口落点在 note 里备查。
+    "HaleyHouse": [{"tile": None, "target": "Town", "kind": "warp", "note": "🌊 海莉&艾米丽家门口→镇（出口瓦片 (2,25)，落 Town(20,89)）"}],
+    "SamHouse": [{"tile": None, "target": "Town", "kind": "warp", "note": "🏠 乔迪/山姆家→镇（出口瓦片 (4,24)，落 Town(10,86)）"}],
+    "Trailer": [{"tile": None, "target": "Town", "kind": "warp", "note": "🚚 潘姆/佩妮拖车→镇（出口瓦片 (12,10)，落 Town(72,69)；2026-09-17 真机走验：站上去即回镇）"}],
+    # ⚠️ `Trailer_Big`（升级版拖车）**故意不列**：它和 `Trailer` **共用同一扇门** (Town 72,68)，
+    #    而 `_REVERSE_DOORS` 是「一格 → 一个建筑」的字典，两个都填会互相覆盖 ⇒ 反而把 Trailer 的进门弄坏。
+    #    一个存档只会是其中一种；本档是 Trailer。(出口瓦片 (13,25) → Town(72,69))
+    "ElliottHouse": [{"tile": None, "target": "Beach", "kind": "warp", "note": "🏠 艾利欧特小屋→海滩（出口瓦片 (3,10)，落 Beach(49,11)）"}],
+    "LeahHouse": [{"tile": None, "target": "Forest", "kind": "warp", "note": "🏠 莉亚小屋→森林（出口瓦片 (7,10)，落 Forest(104,33)）"}],
     "ArchaeologyHouse": [{"tile": None, "target": "Town", "kind": "warp", "note": "博物馆门口→镇"}],
     "MovieTheater": [{"tile": None, "target": "Town", "kind": "warp", "note": "电影院门口→镇"}],
     "ScienceHouse": [{"tile": None, "target": "Mountain", "kind": "warp", "note": "木匠店门口→山"},
@@ -884,7 +905,7 @@ MAP_LINKS = {
                       {"tile": (4, 5), "target": "WitchSwamp", "kind": "portal", "stand": [4, 6], "note": "🔮 传送阵(准确坐标(4,5)，2026-08-30 恒领跑实测)：站(4,6)面0 interact(面前=(4,5))→女巫沼泽(20,42)。map_go 先walk到(4,6)站位再warp跨。需黑暗护身符(HasDarkTalisman)"}],
     # 🧙 女巫沼泽/女巫小屋（2026-08-30 恒：黑暗护身符洞穴内传送阵→女巫区；LIVE /warps 实测）
     "WitchSwamp": [{"tile": (20, 49), "target": "Railroad", "kind": "warp", "arrive": (54, 34), "note": "女巫沼泽→铁路(54,34)；原出口(20,50) y=50 在高度50边界外（/warps实测，2026-08-30）"},
-                   {"tile": (20, 21), "target": "WitchHut", "kind": "door", "note": "女巫沼泽站(20,21)面0 interact→WitchHut(7,16)，**交互开门非warp**（2026-08-30 AI实测）"},
+                   {"tile": (20, 20), "target": "WitchHut", "kind": "door", "note": "女巫沼泽站(20,21)面0 interact→WitchHut(7,16)，**交互开门非warp**（2026-08-30 AI实测）"},
                    {"tile": (20, 42), "target": "WitchWarpCave", "kind": "portal", "stand": [20, 42], "arrive": [4, 5], "note": "🔮 可逆传送阵(2026-08-30 恒领跑)：站(20,42)即沼泽入口/洞穴传送阵落点→回魔女洞穴(**walk到(20,42)站位再warp落(4,5)**)；再铁路。**回铁路=踩这→洞穴→(4,10)warp→铁路**"}],
     "WitchHut": [{"tile": (7, 16), "target": "WitchSwamp", "kind": "portal", "stand": [7, 15], "arrive": [20, 21], "note": "🧙 女巫小屋→女巫沼泽**模拟出口warp**(2026-08-30 恒)：离开小屋→walk到(7,15)站位再warp落地沼泽门口(20,21)。⚠️真瓦片(7,16)/interact触发不了，靠模拟warp"},
                  {"tile": (11, 11), "target": "WizardHouseBasement", "kind": "portal", "stand": [10, 11], "note": "🔮 传送阵(单向，面前格(11,11) 2026-08-30 恒确认)：女巫小屋(三大神龛)→法师塔地下室WizardHouseBasement(2,5)。**站(10,11)面右(1)面前(11,11) = 传送阵**；女巫→法师塔单向，不可回小屋；map_go 先walk到(10,11)再warp落(2,5)。需黑暗护身符"}],
@@ -1041,29 +1062,48 @@ MINE_CART_STATIONS = {
 # ── 建筑门口坐标（map_go 进门用：建筑地点 → (室外地图, 门口瓦片)）──
 # 农场建筑（FarmHouse/Cabin/畜棚/鸡舍/温室等）动态用 /farm_buildings，不在这张表
 BUILDING_DOORS = {
-    "SeedShop":        ("Town",     (43, 57)),
-    "Hospital":        ("Town",     (36, 56)),
-    "Saloon":          ("Town",     (45, 71)),  # 用户实测 2026-08-13：门在 45,71（面向0交互45,70）
-    "Blacksmith":      ("Town",     (94, 82)),
-    "CommunityCenter": ("Town",     (53, 20)),
-    "JoshHouse":       ("Town",     (57, 64)),
-    "HaleyHouse":      ("Town",     (20, 89)),   # 🌊 海莉&艾米丽家（2026-09-10 恒校准）
-    "SamHouse":        ("Town",     (10, 86)),   # 🏠 乔迪/山姆/文森特/肯特家（2026-09-10 恒校准）
-    "ManorHouse":      ("Town",     (59, 86)),
-    "ArchaeologyHouse":("Town",     (101, 90)),
-    "MovieTheater":    ("Town",     (96, 51)),
+    # ⚠️⚠️ 2026-09-17 大修正：下面这批原本填的是**出口落点**（= 门格 + 1 行），系统性差 1。
+    #    权威源 = 游戏自己的 Action 瓦片：`/tile_props?scan=Action&location=<图>`
+    #    （门 = `LockedDoorWarp <内x> <内y> <建筑> <开门h> <关门h> [好感门槛]` 那一格）。
+    #    改前它也能跑，但**靠兜底**：`_enter_building_door` walk 到落点 → `interact_at` 打空地（没反应）
+    #    → 才走最后那条 `face(0)` + `/interact`（打**面前格**）蒙中真门。主路径每次空转一轮。
+    "SeedShop":        ("Town",     (43, 56)),   # 也在 (44,56)（双子门）
+    "Hospital":        ("Town",     (36, 55)),
+    "Saloon":          ("Town",     (45, 70)),   # 门格 (45,70)；原注写的"交互45,70"才是对的，存的值(45,71)是站位
+    "Blacksmith":      ("Town",     (94, 81)),
+    "CommunityCenter": ("Town",     (53, 19)),   # 也在 (52,19)
+    "JoshHouse":       ("Town",     (57, 63)),
+    # ⚠️⚠️ 2026-09-17 发现：**本表绝大多数条目填的是「出口落点」而不是「门格」，系统性差 1 行**
+    #    （落点 = 门格 + 1）。它一直能跑，是因为 `_enter_building_door` 末尾有条
+    #    `face(0)` + `/interact`（打**面前格**）的兜底正好打中真门 —— 属于"靠兜底蒙对、主路径没走通"。
+    #    权威来源 = 游戏自己的 Action 瓦片：`/tile_props?scan=Action&location=<图>`（`LockedDoorWarp` 那条）。
+    #    下面这三条是 2026-09-17 **逐扇真机走验**过的（走过去→interact→真进屋），已改成**真门格**。
+    "HaleyHouse":      ("Town",     (20, 88)),   # 🌊 海莉&艾米丽家，门格=出口落点(20,89)上一格（2026-09-17 真机验）
+    "SamHouse":        ("Town",     (10, 85)),   # 🏠 乔迪/山姆/文森特/肯特家，门格=落点(10,86)上一格（2026-09-17 真机验）
+    "Trailer":         ("Town",     (72, 68)),   # 🚚 潘姆/佩妮拖车，门格=落点(72,69)上一格（2026-09-17 真机验：站(72,69)面0推→Trailer(12,9)）
+    "ManorHouse":      ("Town",     (59, 85)),   # 也在 (58,85)，双子门
+    "ArchaeologyHouse":("Town",     (101, 89)),
+    "MovieTheater":    ("Town",     (96, 50)),   # 前 Joja 超市；JojaMart 门是 (95,50)/(96,50) 同一扇
     "Mine":            ("Mountain", (54, 5)),
-    "AdventureGuild":  ("Mountain", (76, 9)),
-    "ScienceHouse":    ("Mountain", (12, 26)),
+    "AdventureGuild":  ("Mountain", (76, 8)),
+    "ScienceHouse":    ("Mountain", (12, 25)),   # 也在 (8,20)（Maru 侧门）
     "Tent":            ("Mountain", (29, 6)),
     "LeoTreeHouse":    ("Mountain", (16, 8)),
-    "FishShop":        ("Beach",    (30, 34)),
-    "AnimalShop":      ("Forest",   (90, 16)),
-    "WizardHouse":     ("Forest",   (5, 27)),
+    "FishShop":        ("Beach",    (30, 33)),
+    # 🏠 Elliott 家（2026-09-17 新增）：门格来源=游戏 Action 扫描
+    #    `Beach(49,10) = LockedDoorWarp 3 9 ElliottHouse 1000 1800 Elliott 500`
+    #    ⇒ **10:00–18:00 之外锁、且要 Elliott 好感≥500**。AI 好感不够 ⇒ 推门弹「上锁了……」（真机见）。
+    #    ⚠️ 这是**门禁**不是坐标错——`_enter_building_door` 的 `_locked_door_dialogue()` 会把它和"走不到"分开。
+    "ElliottHouse":    ("Beach",    (49, 10)),
+    "AnimalShop":      ("Forest",   (90, 15)),
+    # 🏠 Leah 家（2026-09-17 新增）：`Forest(104,32) = LockedDoorWarp 7 9 LeahHouse 1000 1800 Leah 500`
+    #    ——同 Elliott 家，10:00–18:00 + Leah 好感≥500 才开。
+    "LeahHouse":       ("Forest",   (104, 32)),
+    "WizardHouse":     ("Forest",   (5, 26)),
     "Woods":           ("Forest",   (0, 7)),
-    "SandyHouse":      ("Desert",   (6, 52)),
+    "SandyHouse":      ("Desert",   (6, 51)),
     "Club":            ("SandyHouse", (17, 1)),   # 🎰 进赌场的门口在桑迪店内(17,1)（2026-08-23 恒：AI 实测 /map warp 出口=17,1→Club(8,13)；BUILDING_DOORS 新补，此前缺致 _enter_building_door 拿不到门口坐标进不去）
-    "WitchHut":        ("WitchSwamp", (20, 21)),  # 🧙 女巫小屋（2026-08-30 恒+AI 实测：站(20,21)面朝0交互→进 WitchHut(7,16)；交互开门非 warp）
+    "WitchHut":        ("WitchSwamp", (20, 20)),  # 🧙 女巫小屋（2026-08-30 恒+AI 实测：站(20,21)面朝0交互→进 WitchHut(7,16)；交互开门非 warp）
     "WizardHouseBasement": ("WizardHouse", (4, 5)),  # 🪜 法师塔地下室（2026-08-30 恒+AI 实测：站塔内(4,5)面0 interact 爬梯→下地下室；含幻觉神龛/法师传送阵）
     "SkullCave":       ("Desert",   (8, 6)),
     "FarmCave":        ("Farm",     (34, 7)),
@@ -1081,7 +1121,7 @@ BUILDING_DOORS = {
     #    此前这张表没有 MasteryCave ⇒ 推门拿不到门格 ⇒ 退回 ARRIVE 硬瞬移进屋（日志「⚠️推门没成」）。
     "MasteryCave":     ("Forest",   (101, 72)),
     "Sewer":           ("Town",     (35, 97)),
-    "BathHouse_Entry": ("Railroad", (10, 57)),
+    "BathHouse_Entry": ("Railroad", (10, 56)),
     # ♨️ 更衣室两扇**性别门禁门**（2026-09-10 补）：同图隔间门，非 warp。不进这张表的话
     #    _enter_building_door 拿不到门格 → 直接放弃 → 走兜底 warp 瞬移进屋（真机日志「⚠️推门没成」抓到的）。
     #    门格：女 (2,3) / 男 (7,3)，都是站大厅 y=4 面朝上(0) 推。性别不符→checkAction 弹 DialogueBox → 报"门锁着"不硬闯。
