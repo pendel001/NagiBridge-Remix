@@ -4567,141 +4567,6 @@ def _till_rect(x1: int, y1: int, x2: int, y2: int) -> str:
         return f"❌ {e}"
 
 
-def till_field(x1: int, y1: int, x2: int, y2: int) -> str:
-    """🌾 蓄力锄地一块矩形田（AI 一句话犁地）
-    自动读当前锄头等级决定蓄力范围（0:1格 1:3线 2:5线 3:3×3 4:6×3），
-    调 tool_area 蓄力模拟执行（角色走位→蓄力→释放）。
-    锄完逐下检测+补漏：扫目标区，被杂物/水挡住没锄出的格列出来补上。
-
-    Args:
-        x1, y1: 田左上角坐标
-        x2, y2: 田右下角坐标
-    """
-    return _with_state(_till_rect(x1, y1, x2, y2))
-
-
-@mcp.tool()
-def hoe_layout(x1: int, y1: int, x2: int, y2: int, layout: int = 0) -> str:
-    """🌾 按洒水器布局锄地（自动选锄地逻辑，AI 给坐标+布局模式）
-
-    layout: 0=标准(整块无洒水器) 1=初级洒水器 2=高级洒水器 3=铱洒水器
-    - layout==0（标准）：不预留洒水器，**整块**锄。与 layout1 一样走 `/till_area`（见下）。
-    - layout==1（初级）：洒水器是稀疏十字，只锄每个洒水器上下左右 4 格（**不锄整块**）；
-      与锄头等级无关——升级了高级锄头也能做初级布局。
-    - layout 2/3（高级/铱）：整块蓄力锄（`tool_area`，吃满当前锄头等级，含自动选锄头；漏格 DLL 自动取余补站位）
-    🐛 **2026-09-17 修**：0/1 的"拟人逐格锄"原来调 `use_item()`（→ `/use`），而 `/use` 对 Tool
-      **只 `BeginUsingTool()` 不落锄**（真机 0/9 锄出、恒看见"举着锄头没落下"）。
-      **改成 `use_tool()`（→ `/tool`）**，动画照旧、当场生效。
-      ⚠️ 试过统一成 `/till_area`（快、与 till 一致），**恒看过一次就否了**：「看起来很失败，
-        直接修改了地块」⇒ `hoe` 保留拟人挥锄的观感，不跟 till 合并。**别再顺手"统一"掉它。**
-
-    Args:
-        x1, y1: 地块左上角坐标
-        x2, y2: 地块右下角坐标
-        layout: 洒水器布局模式 0-3
-    """
-    try:
-        p = plan_farm_layout(x1, y1, x2, y2, layout)
-        a = p["area"]
-        if layout == 1:
-            # ── 初级：按锄头等级分流 ──
-            # 🐛 2026-09-17 真机抓到：下面"拟人逐格"那条**一直是空转的** —— 它调的 `use_item()`
-            #    打的是 `/use`，而 `/use` 对 **Tool 只 `BeginUsingTool()`、不调 `EndUsingTool()`**
-            #    ⇒ **举锄不落下**（恒当场看见"举着锄头没落下"），回包却照样 `ok:true`。
-            #    真机实证：`farm hoe` 报 "✅ 0/9 锄出"，`/tile_props` 一问 9 格 terrain 全是 None。
-            #    ⚠️ 修法**不是**改成 `/till_area`（那样会丢动画，恒 2026-09-17 看过一次就否了：
-            #       "看起来很失败，直接修改了地块"）⇒ 改调 `use_tool()`，它走 `/tool`
-            #       （`BeginUsingTool(); EndUsingTool();` 两个都调）**照样有挥锄动画、且当场生效**。
-            #       （同时 C# 那边也给 `/use` 的 Tool 分支补了 EndUsingTool，当根治 —— 救
-            #        `_milk_shear_animals` 那些只能走 `/use` 的调用方。）
-            cross = p["plant_tiles"]
-            n_spr = len(p["sprinklers"])
-            st0 = api.state()
-            hoe_level = st0.get("player", {}).get("currentToolUpgrade", 0)
-            if hoe_level == 0:
-                # 普通锄头 → 拟人逐格锄（走位+挥锄，像人一样一块块来）
-                _select_best_hoe()
-                for _sx, _sy, group in p["till_order"]:
-                    for tx, ty in group:
-                        api.walk_natural(tx, ty - 1)
-                        api.face(2)
-                        time.sleep(0.1)
-                        api.use_tool()      # ⚠️ 必须 use_tool（/tool）；use_item（/use）不落锄
-                        time.sleep(0.45)   # 挥锄动画
-                method = "拟人逐格(基础锄)"
-            else:
-                # 高级锄头 → 直接 /till_area（物理挥锄对高级锄失效，一键锄完）
-                api.till_area(tiles=[{"x": tx, "y": ty} for tx, ty in cross])
-                method = "一键 /till_area(锄头{0}级)".format(hoe_level)
-            # 逐下检测
-            time.sleep(0.4)
-            cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-            try:
-                api.position(cx, cy)
-                time.sleep(0.3)
-            except Exception:
-                pass
-            surr = api.surroundings(max(a["w"], a["h"]) // 2 + 6)
-            tiles = {(t["x"], t["y"]): t for t in surr.get("tiles", [])}
-            tilled = [pt for pt in cross if tiles.get(pt, {}).get("terrain") == "HoeDirt"]
-            missing = [pt for pt in cross if pt not in tilled]
-            lines = [f"🌾 初级洒水器布局锄地 ({a['x1']},{a['y1']})-({a['x1']+a['w']-1},{a['y1']+a['h']-1}) {a['w']}x{a['h']} | {method}"]
-            lines.append(f"  🚿 {n_spr} 个洒水器 | 十字 {len(cross)} 格 | ✅ {len(tilled)}/{len(cross)} 锄出")
-            if missing:
-                lines.append(f"  ⚠️ 缺失 {len(missing)} 格（被杂物/水挡？）:")
-                for mx, my in missing[:10]:
-                    info = tiles.get((mx, my), {})
-                    lines.append(f"    ({mx},{my}) {info.get('object') or info.get('resource') or info.get('terrain') or ''}")
-            path = " → ".join(f"({sx},{sy})" for sx, sy, _ in p["till_order"][:8])
-            if len(p["till_order"]) > 8:
-                path += " …"
-            lines.append(f"  🐍 蛇形: {path}")
-            return _with_state("\n".join(lines))
-        elif layout == 0:
-            # ── 标准布局：不预留洒水器，整块蛇形逐格锄地（拟人挥锄，见上条 ⚠️）──
-            w0, h0 = a["w"], a["h"]
-            ax, ay = a["x1"], a["y1"]
-            snake = []
-            for r in range(h0):
-                row = [(ax + c, ay + r) for c in range(w0)]
-                if r % 2 == 1:
-                    row.reverse()
-                snake.extend(row)
-            _select_best_hoe()
-            for tx, ty in snake:
-                api.walk_natural(tx, ty - 1)   # 走不到自动 position 兜底
-                api.face(2)
-                time.sleep(0.1)
-                api.use_tool()                 # ⚠️ 必须 use_tool（/tool）；use_item（/use）不落锄
-                time.sleep(0.4)
-            # 逐下检测
-            time.sleep(0.4)
-            cx = ax + (w0 - 1) // 2
-            cy = ay + (h0 - 1) // 2
-            try:
-                api.position(cx, cy)
-                time.sleep(0.3)
-            except Exception:
-                pass
-            surr = api.surroundings(max(w0, h0) // 2 + 6)
-            tiles = {(t["x"], t["y"]): t for t in surr.get("tiles", [])}
-            tilled = [pt for pt in snake if tiles.get(pt, {}).get("terrain") == "HoeDirt"]
-            missing = [pt for pt in snake if pt not in tilled]
-            lines = [f"🌾 标准布局锄地 ({ax},{ay})-({ax+w0-1},{ay+h0-1}) {w0}x{h0}"]
-            lines.append(f"  ✅ {len(tilled)}/{len(snake)} 锄出")
-            if missing:
-                lines.append(f"  ⚠️ 缺失 {len(missing)} 格（被杂物/水挡？）:")
-                for mx, my in missing[:10]:
-                    info = tiles.get((mx, my), {})
-                    lines.append(f"    ({mx},{my}) {info.get('object') or info.get('resource') or info.get('terrain') or ''}")
-            return _with_state("\n".join(lines))
-        else:
-            # ── 密排布局（高级/铱）：整块蓄力锄 ──
-            return till_field(x1, y1, x2, y2)
-    except Exception as e:
-        return _with_state(f"❌ {e}")
-
-
 @mcp.tool()
 def plant_layout(x1: int, y1: int, x2: int, y2: int, layout: int, seed: str, direct: bool = False,
                  trellis: bool = False) -> str:
@@ -7532,19 +7397,133 @@ def _farm_kw_norm(x, y, rows, length, direction, extra, extra_ok=()):
     return (length, None)
 
 
+def _snake_tiles(tiles):
+    """把格子按"行分组、隔行反向"排成蛇形，减少拟人逐格锄的来回走位。"""
+    by_row = {}
+    for tx, ty in tiles:
+        by_row.setdefault(ty, []).append(tx)
+    out = []
+    for i, ty in enumerate(sorted(by_row)):
+        xs = sorted(by_row[ty])
+        if i % 2:
+            xs.reverse()
+        out.extend((tx, ty) for tx in xs)
+    return out
+
+
 def _farm_till(x: int = -1, y: int = -1, rows: int = 1, length: int = 1,
-               direction: str = "horizontal", **extra) -> str:
-    """纯锄地（不开播种）。⚠️ 2026-09-03 恒：**尺寸默认 1×1，不擅自扩**——AI 说种多少就锄多少，
-    想锄多宽自己传 rows/length（旧默认 5×5 会把"就锄一下"扩成 25 格大田=意外耗体力）。
-    ⚠️ 2026-09-10 恒：**x/y 必填**——缺坐标不再兜底成"玩家面向格"（那会朝上/朝左时长回自己脚下、
-    连站位格一起犁）。尺寸缺省仍是 1×1。"""
-    length, err = _farm_kw_norm(x, y, rows, length, direction, extra)
-    if err: return err
-    xy, err = _farm_require_xy(x, y)
-    if err: return err
-    x, y = xy
-    x1, y1, x2, y2 = _farm_rect(x, y, rows, length, direction)
-    return _till_rect(x1, y1, x2, y2)
+               direction: str = "horizontal",
+               x1: int = -1, y1: int = -1, x2: int = -1, y2: int = -1,
+               layout: int = 0, **extra) -> str:
+    """🌾 锄地 —— **唯一入口**（2026-09-17 恒拍板收敛：旧的 `hoe`/布局锄、`tillfield`/蓄力锄 都并进来）。
+
+    **两种给坐标的方式，二选一**：
+      · `x,y` + `rows,length,direction` —— 起点 + 尺寸（老 `till` 的用法）
+      · `x1,y1,x2,y2`                  —— 直接给矩形两角（老 `tillfield`/`hoe` 的用法）
+
+    **两个维度分开管**（这正是恒记忆里那个"一个工具传坐标和布局参数就解决"的形态）：
+      · `layout` 决定**锄哪些格** —— 0 标准 / 2 高级 / 3 铱 → **整块**；
+                                  1 初级 → 只锄每个洒水器上下左右 4 格（十字，不锄整块）
+      · **锄头等级 + 地块大小**决定**怎么锄** ——
+          基础锄(0 级)        → **拟人逐格挥锄**（走过去→抬手→落下，看得见动作）
+          升级锄 + **田块 ≤ 一次蓄力的覆盖格数** → **也逐格**（恒 2026-09-17：小块地蓄力是大炮打蚊子）
+          升级锄 + 田块更大   → **蓄力/一键**（`tool_area`/`till_area`，无动画但快得多）
+        覆盖格数按等级：0级1格 / 铜3 / 钢5 / 金9(3×3) / 铱18(6×3)
+
+    ⚠️ 尺寸默认 1×1，**不擅自扩**（恒 2026-09-03：旧默认 5×5 会把"就锄一下"扩成 25 格大田=意外耗体力）。
+    ⚠️ 用 `x,y` 形式时 **x/y 必填**（恒 2026-09-10：缺坐标的兜底会朝上/朝左时长回自己脚下、连站位格一起犁）。
+    """
+    # ── 1. 解析矩形（给了 x1..y2 就用它，否则由 x,y + 尺寸算）──
+    if min(x1, y1, x2, y2) >= 0:
+        rx1, ry1 = min(x1, x2), min(y1, y2)
+        rx2, ry2 = max(x1, x2), max(y1, y2)
+    else:
+        length, err = _farm_kw_norm(x, y, rows, length, direction, extra)
+        if err:
+            return err
+        xy, err = _farm_require_xy(x, y)
+        if err:
+            return err
+        x, y = xy
+        rx1, ry1, rx2, ry2 = _farm_rect(x, y, rows, length, direction)
+
+    # ── 2. layout 决定"锄哪些格" ──
+    try:
+        layout = int(layout)
+    except (TypeError, ValueError):
+        return f"❌ layout 只能是 0/1/2/3，收到 {layout!r}（0标准 1初级 2高级 3铱）"
+    if layout not in (0, 1, 2, 3):
+        return f"❌ layout 只能是 0/1/2/3，收到 {layout}（0标准 1初级 2高级 3铱）"
+
+    w, h = rx2 - rx1 + 1, ry2 - ry1 + 1
+    if layout == 1:
+        p = plan_farm_layout(rx1, ry1, rx2, ry2, layout)
+        tile_list = [(tx, ty) for tx, ty in p["plant_tiles"]]
+        head = f"🌾 初级洒水器布局锄地 ({rx1},{ry1})-({rx2},{ry2}) {w}x{h}"
+        note = f"  🚿 {len(p['sprinklers'])} 个洒水器 | 十字 {len(tile_list)} 格"
+    else:
+        tile_list = [(cx, cy) for cy in range(ry1, ry2 + 1) for cx in range(rx1, rx2 + 1)]
+        _lay_cn = {0: "标准", 2: "高级", 3: "铱"}[layout]
+        head = f"🌾 {_lay_cn}布局锄地 ({rx1},{ry1})-({rx2},{ry2}) {w}x{h}"
+        note = None
+
+    # ── 3. 锄头等级决定"怎么锄" ──
+    _select_best_hoe()
+    try:
+        hoe_level = (api.state().get("player") or {}).get("currentToolUpgrade", 0)
+    except Exception:
+        hoe_level = 0
+
+    # 2026-09-17 恒：「既然高级工具也做了非蓄力逐个格子锄，**不妨在田块小于范围时切换成逐格**
+    #   （如 3×6 的铱锄锄 3×3 的地）」⇒ 除基础锄恒逐格外，**升级锄在小块地也走逐格** ——
+    #   蓄力一次就覆盖 N 格，地里只要 ≤N 格就没必要蓄（大炮打蚊子），逐格挥更像人、也看得见动作。
+    #   容量表取自 till_field docstring 的蓄力范围（0:1格 1:3线 2:5线 3:3×3 4:6×3）。
+    _HOE_CHARGE_TILES = {0: 1, 1: 3, 2: 5, 3: 9, 4: 18}
+    _need = len(tile_list)
+    _cap = _HOE_CHARGE_TILES.get(hoe_level, 1)
+    if hoe_level == 0 or _need <= _cap:
+        # 逐格挥锄（走位 → 面向下 → 挥锄落下）
+        # ⚠️ **必须 `use_tool()`**（→ `/tool`，`BeginUsingTool()`+`EndUsingTool()` 两个都调）；
+        #    原来调的 `use_item()`（→ `/use`）**只抬手不落锄** —— 2026-09-17 真机：报 "0/9 锄出"、
+        #    恒当场看见"举着锄头没落下"。别改回去。
+        for tx, ty in _snake_tiles(tile_list):
+            api.walk_natural(tx, ty - 1)
+            api.face(2)
+            time.sleep(0.1)
+            api.use_tool()
+            time.sleep(0.4)   # 挥锄动画
+        method = ("拟人逐格(基础锄)" if hoe_level == 0
+                  else f"拟人逐格(锄头{hoe_level}级，{_need}格 ≤ 蓄力{_cap}格)")
+    else:
+        if layout == 1:
+            # 初级布局只锄十字格 → 按格列一键（物理挥锄对高级锄失效）
+            api.till_area(tiles=[{"x": tx, "y": ty} for tx, ty in tile_list])
+            method = f"一键 /till_area(锄头{hoe_level}级)"
+        else:
+            # 整块 → 复用 _till_rect（tool_area 蓄力 + DLL 自检补漏），它自带报告
+            return _till_rect(rx1, ry1, rx2, ry2)
+
+    # ── 4. 逐下检测（判据 `terrain == "HoeDirt"`；2026-09-17 真机 A/B 校过：手锄一格立刻读到）──
+    time.sleep(0.4)
+    try:
+        api.position((rx1 + rx2) // 2, (ry1 + ry2) // 2)
+        time.sleep(0.3)
+    except Exception:
+        pass
+    surr = api.surroundings(max(w, h) // 2 + 6)
+    tiles = {(t["x"], t["y"]): t for t in surr.get("tiles", [])}
+    tilled = [pt for pt in tile_list if tiles.get(pt, {}).get("terrain") == "HoeDirt"]
+    missing = [pt for pt in tile_list if tiles.get(pt, {}).get("terrain") != "HoeDirt"]
+    lines = [f"{head} | {method}"]
+    if note:
+        lines.append(note)
+    lines.append(f"  ✅ {len(tilled)}/{len(tile_list)} 锄出")
+    if missing:
+        lines.append(f"  ⚠️ 缺失 {len(missing)} 格（被杂物/水挡？）:")
+        for mx, my in missing[:10]:
+            info = tiles.get((mx, my), {})
+            lines.append(f"    ({mx},{my}) {info.get('object') or info.get('resource') or info.get('terrain') or ''}")
+    return "\n".join(lines)
 
 
 def _farm_plant_only(seed_name: str, x: int = -1, y: int = -1, rows: int = 1,
@@ -7698,7 +7677,12 @@ def farm(ops: str = "", kw: dict | None = None) -> str:
         op_list = [o for o in op_list if o not in ("till", "plant", "sow")]
 
     dispatch = {
+        # 🌾 2026-09-17 恒拍板「收敛成一个」：锄地只有 `_farm_till` 一个实现 ——
+        #    `hoe`/`布局锄`（旧的、唯一带 layout 的）与 `tillfield`/`蓄力锄`（旧的一键）**都并进来了**。
+        #    旧名**全部保留为别名**（调用方/AI 老文案照用不误），只是不再各走各的实现。
         "till": _farm_till,
+        "hoe": _farm_till, "布局锄": _farm_till,
+        "tillfield": _farm_till, "蓄力锄": _farm_till,
         "plant": _farm_plant_only, "sow": _farm_plant_only, "till_plant": till_and_plant,
         "water": water_crops, "浇": water_crops,
         "harvest": harvest_crops, "收": harvest_crops,
@@ -7706,8 +7690,8 @@ def farm(ops: str = "", kw: dict | None = None) -> str:
         "fertilize": apply_fertilizer, "化肥": apply_fertilizer,
         "clear": _farm_clear, "清": _farm_clear,
         "plot": plot_plan, "规划": plot_plan,
-        "tillfield": till_field, "蓄力锄": till_field,
-        "hoe": hoe_layout, "布局锄": hoe_layout,
+        # （tillfield/hoe 的映射已并到上面 `_farm_till` 那一组 —— 别在这再加回来：
+        #   同一个 dict 里**重复键是后者赢**，加回来 = 悄悄退回旧实现。）
         "plantlayout": plant_layout, "播种规划": plant_layout,
         "plan": plan_farm_layout_tool, "方形规划": plan_farm_layout_tool,
         "chop": chop_trees, "砍树": chop_trees,

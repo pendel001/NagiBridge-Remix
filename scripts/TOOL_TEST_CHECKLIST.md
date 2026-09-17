@@ -1,6 +1,6 @@
 # 🧪 全工具测试清单（2026-09-11 生成）
 
-> **512 行 = 192 个后端函数**（抄自各域 dispatch，非文档）｜✅ 397 行 / **160 函数** ｜❌ 0 ｜⏭ 没条件测 37 行 / 10 函数｜**待测 22 函数**｜T1 自动 103 ｜T2 摆场 207 ｜T3 副作用 161 ｜⏭ 当期不可用 41
+> **512 行 = 190 个后端函数**（抄自各域 dispatch，非文档）｜✅ 397 行 / **158 函数** ｜❌ 0 ｜⏭ 没条件测 37 行 / 10 函数｜**待测 22 函数**｜T1 自动 103 ｜T2 摆场 207 ｜T3 副作用 161 ｜⏭ 当期不可用 41
 
 > 用法：跑测试（任何渠道，只要走 :8000 的 MCP）→ `python gen_tool_checklist.py --from-log` 自动打勾。
 > 判定规则见脚本头部；**⚠️ op「」= 参数被静默丢掉 ⇒ 不算 ✅**（也不算 ❌ —— 那一下压根没执行，当"没有证据"跳过，本行沿用上一轮结论）；真报错才 ❌。
@@ -66,7 +66,7 @@
 | `fertilize` | T2 摆场 | direction, fertilizer_name, length, rows |  |  |
 | `harvest` | T2 摆场 | radius | ✅ | `session_log:1177` |
 | `hay` | T2 摆场 | dry_run | ✅ | `session_log:1004` |
-| `hoe` | T2 摆场 | layout, x1, x2, y1, y2 | ✅ | `session_log:1260` |
+| `hoe` | T2 摆场 | layout, x1, x2, y1, y2 | ✅ | `session_log:1265` |
 | `load` | T2 摆场 | location, machine_type | ✅ | `session_log:1097` |
 | `milk` | T2 摆场 |  | ⏭ 没条件测 | `session_log:1186` 鸡舍/畜棚都装了**自动采集器**（工具如实报"产物已自动收集、不用挤奶"）⇒ 挤奶动作没被执行；需手动收产物的档 |
 | `pet` | T3 副作用 |  | ✅ | `session_log:791` |
@@ -85,9 +85,9 @@
 | `shear` ≡`milk` | T2 摆场 |  | ⏭ 没条件测 | ← 同 `farm:milk`〔milk_shear〕 |
 | `sow` ≡`plant` | T2 摆场 |  |  |  |
 | `statue` ⇄`cabin:statue` | T2 摆场 |  | ✅ | ← 同 `cabin:statue`〔blessing_statue〕 |
-| `till` | T2 摆场 | direction, length, rows | ✅ | `session_log:1078` |
+| `till` ≡`hoe` | T2 摆场 | direction, length, rows | ✅ | `session_log:1262` |
 | `till_plant` | T2 摆场 | direction, length, rows, seed_name, trellis |  |  |
-| `tillfield` | T2 摆场 |  | ✅ | `session_log:1039` |
+| `tillfield` ≡`hoe` | T2 摆场 |  | ✅ | `session_log:1263` |
 | `water` | T2 摆场 | radius | ✅ | `session_log:786` |
 | `上料` ≡`load` | T2 摆场 |  | ✅ | ← 同 `farm:load`〔load_machines〕 |
 | `买` ≡`buy` | T3 副作用 |  |  |  |
@@ -101,7 +101,7 @@
 | `塘` ≡`pond` | T2 摆场 |  | ✅ | ← 同 `farm:pond`〔_pond_list〕 |
 | `塘钓` ≡`pond_fish` | T2 摆场 |  | ✅ | ← 同 `farm:pond_fish`〔_pond_fish〕 |
 | `宠物碗` ≡`喂水` | T3 副作用 |  | ✅ | ← 同 `farm:喂水`〔pet_water〕 |
-| `布局锄` ≡`hoe` | T2 摆场 |  | ✅ | ← 同 `farm:hoe`〔hoe_layout〕 |
+| `布局锄` ≡`hoe` | T2 摆场 |  | ✅ | `session_log:1266` |
 | `干草` ≡`hay` | T2 摆场 |  | ✅ | ← 同 `farm:hay`〔feed_hay〕 |
 | `拆` ≡`break` ⇄`cabin:break` | T3 副作用 |  | ✅ | ← 同 `farm:break`〔break_tile〕 |
 | `挤奶` ≡`milk` | T2 摆场 |  | ⏭ 没条件测 | ← 同 `farm:milk`〔milk_shear〕 |
@@ -125,7 +125,7 @@
 | `砍树` ≡`chop` | T2 摆场 |  |  |  |
 | `碗` ≡`喂水` | T3 副作用 |  | ✅ | ← 同 `farm:喂水`〔pet_water〕 |
 | `祈福` ≡`statue` ⇄`cabin:statue` | T2 摆场 |  | ✅ | ← 同 `cabin:statue`〔blessing_statue〕 |
-| `蓄力锄` ≡`tillfield` | T2 摆场 |  | ✅ | ← 同 `farm:tillfield`〔till_field〕 |
+| `蓄力锄` ≡`hoe` | T2 摆场 |  | ✅ | `session_log:1264` |
 | `规划` ≡`plot` | T2 摆场 |  | ✅ | ← 同 `farm:plot`〔plot_plan〕 |
 | `这间` ≡`畜舍` | T2 摆场 |  | ✅ | ← 同 `farm:畜舍`〔care_building〕 |
 | `遛` ≡`petwalk` | T3 副作用 |  | ✅ | ← 同 `farm:petwalk`〔pet_walk〕 |
