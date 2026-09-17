@@ -161,9 +161,12 @@ def _apply_poi_stand_face(poi_name: str) -> str:
     """POI 到达后应用结构化站位+朝向（2026-08-16 恒，locations.POI_FACE）。
     返回"，朝X/站位"日志串；无配置或失败返回空串。交互仍交给 AI（interact/interact_at）。
     ⚠️ 农场设施不在 POI_FACE（动态检测），这里只处理固定可交互 POI。
-    ⚠️ 2026-09-17：朝向改为"等停下 → 写 → 读回校验 → 重试"，**验不过如实报**（见 _face_verified）。
-       有 `stand` 的 POI 会先瞬移把人定住所以不中招；中招的是**只有 face、没有 stand** 那 14 个
-       （皮埃尔商店/鱼店柜台/博物馆柜台/桑迪商店/两个矿车/精通山洞 8 处/蜗牛教授）。"""
+    ⚠️ 2026-09-17：朝向**按有没有 `stand` 分成两条路**（恒当天定的边界）——
+       · **有 `stand`（52 条，含全部节庆 POI）**：`position()` 瞬移已把人定住，朝向本来就可靠 ⇒
+         **原样不动**（不加延时、不做校验）。恒：「节日已经验证成功的了，改动可能不宜牵扯到那边」。
+       · **只有 `face`、没有 `stand`（14 条）**：就是那个"报朝上、实则没转、interact 点空"的 bug 的全部
+         受害者 ⇒ 走"等停下 → 写 → **读回 farmer.FacingDirection 校验** → 重试"，**验不过如实报**
+         （见 `_settle_after_walk` / `_face_verified`）。"""
     try:
         _mark_festival_poi_name(poi_name)   # 导航到达节日 POI → 记入交互历史
         cfg = getattr(locations, "POI_FACE", {}).get(poi_name)
@@ -180,19 +183,31 @@ def _apply_poi_stand_face(poi_name: str) -> str:
                     api.position(int(stand[0]), int(stand[1]))
                     time.sleep(0.25)
                     logs.append(f"站位({stand[0]},{stand[1]})")
-                _settle_after_walk(1.0)   # 瞬移/刚落点同样可能还在收尾
             except Exception:
                 pass
         face = cfg.get("face")
         if face is not None:
             face = int(face)
-            _settle_after_walk()                    # ① 先等人真的停下
-            if _face_verified(face):                # ② 写 + 读回校验 + 重试
+            if stand:
+                # 🛡️ 2026-09-17 恒：「**节日已经验证成功的了，改动可能不宜牵扯到那边**」——
+                #    有 `stand` 的 52 条**刻意保持原样**：先 `position()` 瞬移把人了定住，朝向本来就可靠，
+                #    而**节庆 POI 全在这 52 条里**（夜市钓鱼潜艇/沙漠钓鱼点/酒吧冰箱/齐先生冰箱/
+                #    冰淇淋摊…都带 stand，实测过）。这里**不加任何延时、不做校验**，零行为变更。
+                api.face(face)
+                time.sleep(0.15)
                 logs.append(f"朝{'上右下左'[face]}")
             else:
-                # 验不过就别说成功——AI 照着一个没发生的"朝X"去 interact 会点空
-                logs.append(f"⚠️朝向没能转成「{'上右下左'[face]}」（现朝向不对，"
-                            f"交互前先 `scene face {face}`）")
+                # 🐛 只有 face、没有 stand 的那 **14 条** = 2026-09-17 那个 bug 的**全部受害者**
+                #    （皮埃尔商店/鱼店柜台/博物馆柜台/桑迪商店/两个矿车/精通山洞 8 处/蜗牛教授）：
+                #    人还在滑步就写朝向 → 被游戏下一 tick 覆盖，而失败**照样被记成"朝X"**
+                #    ⇒ AI 照着它 interact，回"已互动"却什么都没开。
+                #    修法：等停下 → 写 → **读回 farmer.FacingDirection 校验** → 重试；验不过如实报。
+                _settle_after_walk()
+                if _face_verified(face):
+                    logs.append(f"朝{'上右下左'[face]}")
+                else:
+                    logs.append(f"⚠️朝向没能转成「{'上右下左'[face]}」（现朝向不对，"
+                                f"交互前先 `scene face {face}`）")
         return "，" + "，".join(logs) if logs else ""
     except Exception:
         return ""

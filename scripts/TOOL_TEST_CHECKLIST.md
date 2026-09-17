@@ -1,6 +1,6 @@
 # 🧪 全工具测试清单（2026-09-11 生成）
 
-> **512 行 = 192 个后端函数**（抄自各域 dispatch，非文档）｜✅ 390 行 / **157 函数** ｜❌ 0 ｜⏭ 没条件测 40 行 / 11 函数｜**待测 24 函数**｜T1 自动 103 ｜T2 摆场 207 ｜T3 副作用 161 ｜⏭ 当期不可用 41
+> **512 行 = 192 个后端函数**（抄自各域 dispatch，非文档）｜✅ 393 行 / **158 函数** ｜❌ 0 ｜⏭ 没条件测 37 行 / 10 函数｜**待测 24 函数**｜T1 自动 103 ｜T2 摆场 207 ｜T3 副作用 161 ｜⏭ 当期不可用 41
 
 > 用法：跑测试（任何渠道，只要走 :8000 的 MCP）→ `python gen_tool_checklist.py --from-log` 自动打勾。
 > 判定规则见脚本头部；**⚠️ op「」= 参数被静默丢掉 ⇒ 不算 ✅**（也不算 ❌ —— 那一下压根没执行，当"没有证据"跳过，本行沿用上一轮结论）；真报错才 ❌。
@@ -31,9 +31,9 @@
 | `quests` ≡`quest` ⇄`menu:journal` | T2 摆场 |  | ✅ | ← 同 `menu:journal`〔open_questlog〕 |
 | `ready` | T1 自动 |  | ✅ | `session_log:912` |
 | `ready_state` ≡`ready` | T1 自动 |  | ✅ | ← 同 `check:ready`〔check_ready_state〕 |
-| `role` | T1 自动 |  | ✅ | `session_log:1229` |
+| `role` | T1 自动 |  | ✅ | `session_log:1243` |
 | `silo` ≡`hay` | T1 自动 |  | ✅ | `session_log:13` |
-| `status` | T1 自动 |  | ✅ | `session_log:1210` |
+| `status` | T1 自动 |  | ✅ | `session_log:1242` |
 | `storage` | T1 自动 |  | ✅ | `session_log:623` |
 | `worn` | T1 自动 |  | ✅ | `session_log:466` |
 | `任务` ≡`quest` ⇄`menu:journal` | T2 摆场 |  | ✅ | ← 同 `menu:journal`〔open_questlog〕 |
@@ -425,7 +425,7 @@
 
 | op | 层 | 参数 | 判定 | 证据 |
 |---|---|---|---|---|
-| `go` | T2 摆场 | destination | ✅ | `session_log:1236` |
+| `go` | T2 摆场 | destination | ✅ | `session_log:1244` |
 | `lookup` | T1 自动 | location | ✅ | `session_log:1103` |
 | `npc` | T2 摆场 |  | ✅ | `session_log:650` |
 | `query` | T1 自动 | function | ✅ | `session_log:611` |
@@ -515,8 +515,8 @@
 | `crab_place` | T2 摆场 | bait, radius | ✅ | `session_log:532` |
 | `crab_retract` | T2 摆场 | location | ✅ | `session_log:540` |
 | `crab_water` | T2 摆场 | radius | ✅ | `session_log:531` |
-| `fish` | T2 摆场 |  | ⏭ 没条件测 | ← 同 `fish:go`〔go_fishing〕 |
-| `go` ≡`fish` | T2 摆场 | location, max_casts, no_sleep | ⏭ 没条件测 | `session_log:1209` **脚本起来了、菜单护栏也生效了，但一条鱼没钓上来** ⇒ 机械判据会给绿、实际没验过。根因是第三方 Fishbot mod（AdroSlice 0.6.1）启用后弹背包且**不抛竿**（2026-09-17 坐实，详见 CHANGELOG 64）。要验它得先解决那个 mod |
+| `fish` | T2 摆场 |  | ✅ | ← 同 `fish:go`〔go_fishing〕 |
+| `go` ≡`fish` | T2 摆场 | location, max_casts, no_sleep | ✅ | `session_log:1241` |
 | `info` | T1 自动 | location | ✅ | `session_log:616` |
 | `rod` | T2 摆场 | action | ✅ | `session_log:614` |
 | `spots` | T2 摆场 |  | ✅ | `session_log:1202` |
@@ -531,7 +531,7 @@
 | `能钓` ≡`info` | T1 自动 |  | ✅ | ← 同 `fish:info`〔_fish_info〕 |
 | `蟹笼` ≡`crab` | T1 自动 |  | ✅ | ← 同 `fish:crab`〔_crab_status〕 |
 | `诊断笼` ≡`crab_diag` | T2 摆场 |  | ✅ | ← 同 `fish:crab_diag`〔_crab_diag〕 |
-| `钓` ≡`fish` | T2 摆场 |  | ⏭ 没条件测 | ← 同 `fish:go`〔go_fishing〕 |
+| `钓` ≡`fish` | T2 摆场 |  | ✅ | ← 同 `fish:go`〔go_fishing〕 |
 | `钓点` ≡`spots` | T2 摆场 |  | ✅ | ← 同 `fish:spots`〔_fish_all_spots〕 |
 | `鱼` ≡`info` | T1 自动 |  | ✅ | ← 同 `fish:info`〔_fish_info〕 |
 | `鱼竿` ≡`rod` | T2 摆场 |  | ✅ | ← 同 `fish:rod`〔_rod_cmd〕 |

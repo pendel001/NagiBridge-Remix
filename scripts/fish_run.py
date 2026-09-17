@@ -159,6 +159,27 @@ class FishBot:
         return f.get("isFishing", False) or f.get("isCasting", False) or f.get("isReeling", False)
 
 
+def stow_rod(bot):
+    """🎣 把鱼竿**从手上收起来**（换拿别的工具），别攥着竿走路。
+
+    ⚠️ 2026-09-17 恒：「**脚本结束记得收杆啊，或者你没结束就执行下一条了，拉着竿跑老远**」。
+    这里说的**不是"收线"**——`finish_cast` 的 cancel 已经把线收了；是**竿还拿在手里**：
+    脚本一收工，AI 下一个动作常常就是 `map go` 走去别处，于是画面上成了"**拖着竿满地图跑**"。
+    同一个毛病 **2026-08-14 恒就点过**（原话"鱼竿在路上就装备会'边走边钓'的样子"），
+    所以脚本**开头**早有一段"走路前先收起鱼竿"（`for putaway in ("Pickaxe","Axe",...)`）——
+    收工这半边对称的逻辑当时**漏了**，这次补上。
+    换的是镐/斧/锄/镰刀这类**背包里一定有**的工具；一个都换不了就作罢（不报错、不阻断收工）。
+    """
+    for putaway in ("Pickaxe", "Axe", "Hoe", "Scythe"):
+        try:
+            r = bot.select(putaway)
+            if isinstance(r, dict) and r.get("ok"):
+                return True
+        except Exception:
+            pass
+    return False
+
+
 def finish_cast(bot, reason):
     """🎣 停止条件触发：关鱼机自动抛(防停不掉/再抛下一竿) + cancel 收线(即时停，小游戏中也可退出)。
     竿抛着没咬(isFishing/isCasting)→ cancel 收线(实时)；正收线(isReeling)→ 短等放行当前竿(钓上就钓上，
@@ -177,7 +198,11 @@ def finish_cast(bot, reason):
             time.sleep(0.3)
     except Exception:
         pass
-    log(f"⏸ 已停钓（{reason}，鱼机已关、竿已收）")
+    # 🎣 线收了，还要把**竿从手上收起来**——否则 AI 收工后一走路就是"拖着竿跑"（恒 2026-09-17 当场看见）
+    if stow_rod(bot):
+        log(f"⏸ 已停钓（{reason}，鱼机已关、竿已收、**竿已收起换手**）")
+    else:
+        log(f"⏸ 已停钓（{reason}，鱼机已关、竿已收）⚠️ 手上还拿着鱼竿（背包里没别的工具可换）")
 
 
 def run(port, location, max_casts=0, stamina_pct=15, no_sleep=False):
@@ -313,6 +338,7 @@ def run(port, location, max_casts=0, stamina_pct=15, no_sleep=False):
                 break
             bot.key("cancel")
             time.sleep(0.8)
+        stow_rod(bot)   # 收工时同样把竿从手上收起（别攥着竿走）
         return
     log("🎯 能抛，开始钓（水域固定，之后无需再判死水）")
 
