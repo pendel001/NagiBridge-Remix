@@ -4585,11 +4585,15 @@ def hoe_layout(x1: int, y1: int, x2: int, y2: int, layout: int = 0) -> str:
     """🌾 按洒水器布局锄地（自动选锄地逻辑，AI 给坐标+布局模式）
 
     layout: 0=标准(整块无洒水器) 1=初级洒水器 2=高级洒水器 3=铱洒水器
-    - layout==0（标准）：不预留洒水器，整块蛇形逐格走位锄（walk_natural 自然走+position兜底），
-      任何锄头等级都适用
-    - layout==1（初级）：洒水器是稀疏十字，用 /till_area 精确锄每个洒水器上下左右 4 格，
-      锄头等级无关——升级了高级锄头也能做初级布局
-    - layout 2/3（高级/铱）：整块蓄力锄（tool_area，吃满当前锄头等级，含自动选锄头；漏格 DLL 自动取余补站位）
+    - layout==0（标准）：不预留洒水器，**整块**锄。与 layout1 一样走 `/till_area`（见下）。
+    - layout==1（初级）：洒水器是稀疏十字，只锄每个洒水器上下左右 4 格（**不锄整块**）；
+      与锄头等级无关——升级了高级锄头也能做初级布局。
+    - layout 2/3（高级/铱）：整块蓄力锄（`tool_area`，吃满当前锄头等级，含自动选锄头；漏格 DLL 自动取余补站位）
+    🐛 **2026-09-17 修**：0/1 的"拟人逐格锄"原来调 `use_item()`（→ `/use`），而 `/use` 对 Tool
+      **只 `BeginUsingTool()` 不落锄**（真机 0/9 锄出、恒看见"举着锄头没落下"）。
+      **改成 `use_tool()`（→ `/tool`）**，动画照旧、当场生效。
+      ⚠️ 试过统一成 `/till_area`（快、与 till 一致），**恒看过一次就否了**：「看起来很失败，
+        直接修改了地块」⇒ `hoe` 保留拟人挥锄的观感，不跟 till 合并。**别再顺手"统一"掉它。**
 
     Args:
         x1, y1: 地块左上角坐标
@@ -4601,6 +4605,15 @@ def hoe_layout(x1: int, y1: int, x2: int, y2: int, layout: int = 0) -> str:
         a = p["area"]
         if layout == 1:
             # ── 初级：按锄头等级分流 ──
+            # 🐛 2026-09-17 真机抓到：下面"拟人逐格"那条**一直是空转的** —— 它调的 `use_item()`
+            #    打的是 `/use`，而 `/use` 对 **Tool 只 `BeginUsingTool()`、不调 `EndUsingTool()`**
+            #    ⇒ **举锄不落下**（恒当场看见"举着锄头没落下"），回包却照样 `ok:true`。
+            #    真机实证：`farm hoe` 报 "✅ 0/9 锄出"，`/tile_props` 一问 9 格 terrain 全是 None。
+            #    ⚠️ 修法**不是**改成 `/till_area`（那样会丢动画，恒 2026-09-17 看过一次就否了：
+            #       "看起来很失败，直接修改了地块"）⇒ 改调 `use_tool()`，它走 `/tool`
+            #       （`BeginUsingTool(); EndUsingTool();` 两个都调）**照样有挥锄动画、且当场生效**。
+            #       （同时 C# 那边也给 `/use` 的 Tool 分支补了 EndUsingTool，当根治 —— 救
+            #        `_milk_shear_animals` 那些只能走 `/use` 的调用方。）
             cross = p["plant_tiles"]
             n_spr = len(p["sprinklers"])
             st0 = api.state()
@@ -4613,7 +4626,7 @@ def hoe_layout(x1: int, y1: int, x2: int, y2: int, layout: int = 0) -> str:
                         api.walk_natural(tx, ty - 1)
                         api.face(2)
                         time.sleep(0.1)
-                        api.use_item()
+                        api.use_tool()      # ⚠️ 必须 use_tool（/tool）；use_item（/use）不落锄
                         time.sleep(0.45)   # 挥锄动画
                 method = "拟人逐格(基础锄)"
             else:
@@ -4645,9 +4658,7 @@ def hoe_layout(x1: int, y1: int, x2: int, y2: int, layout: int = 0) -> str:
             lines.append(f"  🐍 蛇形: {path}")
             return _with_state("\n".join(lines))
         elif layout == 0:
-            # ── 标准布局：不预留洒水器，整块蛇形逐格锄地 ──
-            # 蛇形顺序（偶行正序、奇行反序，原作者 farm_row 的走位），
-            # 逐格 walk_natural（自然走，走不到自动 position 兜底）→ 面向下挥锄
+            # ── 标准布局：不预留洒水器，整块蛇形逐格锄地（拟人挥锄，见上条 ⚠️）──
             w0, h0 = a["w"], a["h"]
             ax, ay = a["x1"], a["y1"]
             snake = []
@@ -4661,7 +4672,7 @@ def hoe_layout(x1: int, y1: int, x2: int, y2: int, layout: int = 0) -> str:
                 api.walk_natural(tx, ty - 1)   # 走不到自动 position 兜底
                 api.face(2)
                 time.sleep(0.1)
-                api.use_item()
+                api.use_tool()                 # ⚠️ 必须 use_tool（/tool）；use_item（/use）不落锄
                 time.sleep(0.4)
             # 逐下检测
             time.sleep(0.4)

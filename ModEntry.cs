@@ -6404,7 +6404,15 @@ public class ModEntry : Mod
 
             if (item is Tool)
             {
+                // 🐛 2026-09-17 真机抓到：这里原来**只 `BeginUsingTool()`**，而 `/tool` 走的是
+                //    `BeginUsingTool(); EndUsingTool();` —— 少一个就**只抬手、不落下**
+                //    （恒当场看见"举着锄头没落下"），可回包照样 `ok:true` ⇒ 又是"说用了、其实没动"。
+                //    受害的是所有拿 `/use` 挥**工具**的调用方：`hoe_layout` 的逐格锄（Python 侧已改为
+                //    `/till_area` 统一到 till 那条）、`_milk_shear_animals`（挤奶/剪毛）。
+                //    ⚠️ 与 `/tool` 那条注释对齐：**别改成 DoFunction** —— 剑的 DoFunction 不触发攻击
+                //       判定会"持剑不挥"；`Begin+End` 这对才是通用的"挥一下"。
                 farmer.BeginUsingTool();
+                farmer.EndUsingTool();
                 tcs.SetResult(new { ok = true, action = "tool", item = item.Name,
                     tile = new { x = ftx, y = fty } });
             }
