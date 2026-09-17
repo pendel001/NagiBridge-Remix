@@ -124,6 +124,29 @@ class FishBot:
     def key(self, key):
         return self._post("/key", {"key": key})
 
+    def close_menu(self, tries=3, gap=0.35):
+        """用**端点**把挡路的菜单关掉（`/menu_close`），返回是否真关掉了。
+
+        ⚠️ 2026-09-17 恒：「fishbot 开菜单叫你补鱼饵，这个优化真是太蠢了 —— 加一个自动关掉吧。」
+        症结不是"没自动关"，是**关不掉**：原来只 `key("esc")` —— `/key` 是**合成按键**，
+           AI 窗口在后台时**根本不生效**（真机：关一次读回来还在、再关一次还在 ⇒ 判"关不掉"停脚本），
+           而同族坑早就记过（`ReadyCheckDialog` 不响应 Escape、只有端点能关）。
+           ⇒ 改用端点：它直接改游戏状态、**不挑窗口焦点**（手动 POST /menu_close 一次就干净了）。
+        为什么带重试：fishbot 补饵是**反复弹**的，关一次可能正好撞在它又弹的那一帧上。
+        """
+        for _ in range(max(1, tries)):
+            try:
+                self._post("/menu_close", {})
+            except Exception:
+                pass
+            time.sleep(gap)
+            try:
+                if not ((self.state().get("activeMenu") or {}).get("type")):
+                    return True
+            except Exception:
+                pass
+        return False
+
     def count_fish(self):
         s = self.state()
         p = s["player"]
@@ -244,16 +267,39 @@ def run(port, location, max_casts=0, stamina_pct=15, no_sleep=False):
     log(f"pos: ({p['x']},{p['y']}) tool: {p['currentTool']} stamina: {p['stamina']}")
     initial_stamina = p["stamina"]
 
+    # 🚧 2026-09-17 恒：**开钓前先清场**。fishbot 补饵会弹 GameMenu，菜单一开**鱼根本抛不出去**
+    #    ⇒ 下面那段启动判定会把"菜单挡着"误判成"抛竿方向没有水"，5 秒直接收手（真机实测：5s 退出、
+    #    菜单还杵在那儿）。⚠️ 而且原来**只把关菜单写在了 monitor loop 里** —— 脚本压根走不到那里就被
+    #    启动判定 `return` 了，那段逻辑等于挂在一条**永远到不了**的路上。
+    _m0 = (bot.state().get("activeMenu") or {}).get("type")
+    if _m0 and _m0 != "BobberBar":
+        log(f"  🚧 开钓前挡着「{_m0}」→ 先关掉")
+        if not bot.close_menu():
+            bot.fishbot("off")
+            log(f"  ⚠️ 关不掉「{_m0}」，收手（可手动 POST /menu_close）")
+            return
+
     # start fishbot
     r = bot.fishbot("on")
     log(f"fishbot: {r}")
 
     # 🎯 一次性轻量判定（恒 2026-08-23 定稿）：水域固定，能抛一杆就能抛很多竿 → 只在开头确认一次。
     # isFishing(等咬钩) 抛竿后 ~3s 内建立 = 抛到水、可钓；STARTUP_WAIT(5s) 都没建立 = 抛不进水里/没水 → 收手。
+    # ⚠️ 2026-09-17：启动期内**再被菜单挡**就当场关掉、且**这秒不算数**（补饵是反复弹的，
+    #    不这样 5 秒会被它耗光、照样误判成"没有水"）。加了硬上限，别被反复弹拖成死循环。
     _ok = False
-    for i in range(STARTUP_WAIT):
+    _hard_end = time.time() + STARTUP_WAIT + 20
+    _deadline = time.time() + STARTUP_WAIT
+    while time.time() < _deadline and time.time() < _hard_end:
         time.sleep(1)
-        _f = (bot.state().get("player") or {}).get("fishing") or {}
+        _st = bot.state()
+        _mt = (_st.get("activeMenu") or {}).get("type")
+        if _mt and _mt != "BobberBar":
+            log(f"  🚧 启动期被「{_mt}」挡住 → 关掉再等（这秒不计）")
+            bot.close_menu()
+            _deadline += 1.5
+            continue
+        _f = (_st.get("player") or {}).get("fishing") or {}
         if _f.get("isFishing"):
             _ok = True
             break
@@ -320,23 +366,18 @@ def run(port, location, max_casts=0, stamina_pct=15, no_sleep=False):
                         log("  🎒 满包接鱼(ItemGrabMenu)→ 停脚本交 AI 手动：menu click action=discard item=低价值物(丢桶腾格) 再 "
                             "action=claim item=鱼名 领取；不想要就 menu click(button=ok) 直接退出放弃这条鱼；处理完再跑 fish_run")
                         break
-                    # 其它菜单（GameMenu=fishbot 开背包补饵等）：esc 关，关不掉就补饵后再试一次
-                    bot.key("esc")
-                    time.sleep(0.8)
-                    s2 = bot.state()
-                    m2 = s2.get("activeMenu") or {}
-                    if m2.get("type"):
-                        try:
-                            bot._post("/rod", {"action": "bait"})
-                        except Exception:
-                            pass
-                        bot.key("esc")
-                        time.sleep(0.8)
-                        if (bot.state().get("activeMenu") or {}).get("type"):
-                            log(f"  ⚠️ 菜单关不掉: {m2.get('type')}，停止钓鱼")
-                            break
-                    if not (s2.get("activeMenu") or {}).get("type"):
-                        log("  菜单已关闭")
+                    # 其它菜单（GameMenu=fishbot 开背包补饵等）：**先满足它、再用端点关**（恒 2026-09-17）
+                    #   顺序有讲究：先补饵是**治本** —— 包里有饵 fishbot 就不再反复弹；没有也无妨，下面照样关得掉。
+                    try:
+                        bot._post("/rod", {"action": "bait"})
+                    except Exception:
+                        pass
+                    if bot.close_menu():
+                        log(f"  已关掉挡路菜单 {mtype}，继续钓")
+                    else:
+                        log(f"  ⚠️ 菜单关不掉: {mtype}，停止钓鱼"
+                            f"（可手动 POST /menu_close；别再用 /key esc——后台窗口不生效）")
+                        break
                 except Exception as e:
                     log(f"  ⚠️ 关菜单出错: {e}，停止钓鱼")
                     break

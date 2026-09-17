@@ -258,6 +258,31 @@ def _menu_gate_now():
     return m
 
 
+def _close_stray_gamemenu(tries: int = 3) -> bool:
+    """用**端点**关掉挡路的 GameMenu（fishbot 补饵弹的那种）。返回是否真关掉了。
+
+    ⚠️ **别用 `/key esc`**：那是**合成按键**，AI 窗口在后台时**根本不生效**
+       （同 `ReadyCheckDialog` 那族——不响应 Escape，只有端点关得掉）。
+       端点直接改游戏状态、**不挑窗口焦点**。
+    ⚠️ 判据**绕过 `_menu_gate_now` 的 TTL 缓存**直接重读 —— 否则刚关掉还会读到缓存里的旧值，
+       误判"没关掉"。
+    """
+    for _ in range(max(1, tries)):
+        try:
+            api._ai_post("/menu_close", {})
+        except Exception:
+            pass
+        time.sleep(0.35)
+        _MENU_GATE_CACHE.update(ts=0.0, menu=None)     # 作废缓存：下一步读的是真值
+        try:
+            if not _menu_gate_now():
+                return True
+        except Exception:
+            pass
+    _MENU_GATE_CACHE.update(ts=0.0, menu=None)
+    return False
+
+
 def _close_hint(menu: str) -> str:
     """「这个菜单该怎么处理掉」——**按类型给**，别一刀切。
 
@@ -290,6 +315,15 @@ def _menu_gate(name, kwargs, args=(), fn=None):
         menu = _menu_gate_now()
         if not menu:
             return False, ""
+        # 🐟 2026-09-17 恒：「fishbot 开菜单叫你补充鱼饵，这个优化真是太蠢了 —— 加一个自动关掉吧。」
+        #    fishbot 补饵弹的 GameMenu 会被它**反复弹回来**，菜单挡着鱼就抛不出去（真机：脚本 5s 收手）。
+        #    ⇒ **只对 `fish` + `GameMenu` 这一个组合**先端点关掉、关了再放行。
+        #    ⚠️ 刻意**不扩大**到别的工具/别的菜单：AI 自己开背包整理是正经营生，
+        #       闸门顺手把它关了 = 另一种"替你瞎做主"（同闸门那族教训）。
+        if name == "fish" and "gamemenu" in (menu or "").lower():
+            if _close_stray_gamemenu():
+                return False, ""
+            menu = _menu_gate_now() or menu     # 没关掉 → 用刷新后的真值继续走原拦截逻辑
         if name in _MENU_GATE_TOOLS_OK:
             return False, ""
         _reason = ""
@@ -5953,7 +5987,14 @@ def bomb_place(x: int, y: int) -> str:
     try:
         if bot.count_bombs() <= 0:
             return _with_state(f"❌ 没有 {bot.bomb_type} 了（用 /give 或先去买）")
-        ok, msg = bot.bomb_and_collect(x, y, collect=True)
+        # ⚠️ 2026-09-17 真机抓到：这里原写 `ok, msg = ...` —— 而 `bomb_and_collect` 按自己的
+        #    docstring 返回 **3 个值** `(ok, message, broken_estimate)`（另外三个调用方
+        #    bomb_escort/bomb_mine/bomb_volcano 也都解 3 个）⇒ 每次调用必抛
+        #    `ValueError: too many values to unpack (expected 2)`，被下面 except 兜成
+        #    "❌ 放炸弹失败" ⇒ **bomb_place 从来没成功过**。
+        #    更糟的是**炸弹真放出去炸了**（那一下就放完即炸，AI 掉了 4 血），
+        #    工具却报"失败" —— 又一条"说失败但事已发生"。
+        ok, msg, _broken = bot.bomb_and_collect(x, y, collect=True)
         bombs_left = bot.count_all_bombs()
         return _with_state(f"💣 {msg}\n剩余炸弹: {bombs_left}")
     except Exception as e:
@@ -7155,6 +7196,10 @@ def check(what: str, kw: dict | None = None) -> str:
     except (ValueError, TypeError):
         sig = None
     call_kw, _dropped = _filter_kw(sig, _unpack_kw(kw))
+    # 🧪 同上：传了"只预览"的参数而本查询不认 ⇒ 拦住，别静默当成真查询/真动作
+    _refuse = _dry_intent_refusal(w, _dropped, sig)
+    if _refuse:
+        return _with_state(_refuse)
     out = fn(**call_kw)
     if _dropped and isinstance(out, str):
         note = _dropped_kw_note(w, _dropped, sig)
@@ -7221,6 +7266,30 @@ def _filter_kw(sig, kw) -> tuple:
     return call_kw, dropped
 
 
+# 🧪 调用方传了"只预览、别真做"的参数，而该 op 不认识 ⇒ **拒绝这一 op**（2026-09-17 恒拍板）
+#    **真机教训**（session_log:1092）：`farm(ops="harvest", kw={"dry_run": True})` —— 当时只是
+#    **警告**参数被丢掉，然后**照样真开机割了菜**。调用方以为在看预览、现实却发生了不可逆的事，
+#    与恒「宁报错别兜底 / 缺参数就明确报错别长歪」是同族病。
+#    ⚠️ **为什么按 op 拒、不拒整次调用**：一次调用可以带多个 op 共用一份 kw
+#       （`farm(ops="till plant", kw={...})`），整次报错会让本来跑得动的 op 一起陪葬
+#       ——同 `_dropped_kw_note` 上面那条注释的理由。`_dropped` 本来就是**按 op 算**的，
+#       所以按 op 拒既拦住"以为在干跑"、又不误伤兄弟 op。
+#    ⚠️ **为什么只认这几个名字**：它们是无歧义的"预览"语义。`test`/`check_only` 这类
+#       可能撞上真参数名，不列进来（宁可漏拦，不可误拦）。
+_DRY_INTENT_KW = {"dry_run", "dryrun", "dry", "preview", "simulate", "simulation"}
+
+
+def _dry_intent_refusal(op: str, dropped: list, sig) -> str | None:
+    """传了"只预览"的参数而本 op 不认 ⇒ 返回拒绝文案；否则 None（照常执行）。"""
+    hit = sorted({str(k) for k in dropped if str(k).strip().lower() in _DRY_INTENT_KW})
+    if not hit:
+        return None
+    avail = ", ".join(p.name for p in sig.parameters.values()) if sig else "?"
+    return (f"❌ op「{op}」**拒绝执行**：你传了 {hit}（=只预览、不真做），"
+            f"但本 op 不认识它（可用参数: {avail}）。照原样跑下去就变成**真做了**、跟你想要的正相反，"
+            f"所以这里**一下都不动** —— 确实要真做请去掉该参数重发；本 op 若有干跑模式，请用它的官方参数名。")
+
+
 def _dropped_kw_note(op: str, dropped: list, sig) -> str:
     """参数名写错时的点名文案（AI 一眼能改）。"""
     avail = ", ".join(p.name for p in sig.parameters.values()) if sig else "?"
@@ -7276,6 +7345,11 @@ def _ops_run(ops_str: str, dispatch: dict, kw: dict) -> str:
         try:
             # kw 过滤 + 别名归一（别名：AI 传 npc/item/npc_name/item_name/name 都能落到正式参数名）
             call_kw, _dropped = _filter_kw(sig, kw)
+            # 🧪 传了"只预览"的参数而本 op 不认 ⇒ 拦住这一 op，别把它当真做跑了（见 _dry_intent_refusal）
+            _refuse = _dry_intent_refusal(op, _dropped, sig)
+            if _refuse:
+                results.append(_refuse)
+                continue
             # ⚠️ 2026-09-11：标记"本层产生的状态条会被丢掉"——里面所有 op 都自带 _with_state，
             #    下面会把它们的内嵌状态条整条砍掉、由域工具在外层统一再附一次。
             #    期间"变化才报"的注入（_sit_hint 等）据此闭嘴且**不消费**，否则变化被内层吃掉、

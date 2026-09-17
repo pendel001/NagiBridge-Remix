@@ -113,10 +113,57 @@ def bind(*, with_state, plan_notify, state_sep, festival_poi_active,
 #  导航工具
 # ═══════════════════════════════════════════
 
+def _settle_after_walk(timeout: float = 3.0) -> bool:
+    """等走路真正收工（`isMoving` 转 false）。返回是否已静止。
+
+    ⚠️ 2026-09-17 真机坐实：`map walk` 到 POI 后**紧接着**写朝向不生效——
+    `go_to.py` 一退出就 `api.face()`，人还在滑步，**游戏的移动逻辑立刻把朝向覆盖回去**；
+    而这次写失败**照样被记成"朝上"**，AI 于是"站在碑前朝错方向 interact" ⇒
+    回一个"已互动"却什么都没开（真机四条分支：POI 报"朝上"、`/state` 实为朝左/朝右，
+    手动补一次 face 就开出来了；同一个端点、同一个值，**只差零点几秒**）。
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            p = api.state(light=True).get("player") or {}
+        except Exception:
+            return False
+        if not p.get("isMoving"):
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def _face_verified(face: int, retries: int = 4) -> bool:
+    """写朝向 + **读回 `FacingDirection` 校验** + 重试；返回是否真的生效。
+
+    判据用 `/state` 的 `facingDirection`——它就是 `farmer.FacingDirection` 原字段，
+    与 `/face` 写的是**同一个**，所以"读回相等"= 游戏里真的转了。
+    （宁报错别兜底：验不过就让调用方如实报，别打印一个没发生的"朝X"。）
+    """
+    for i in range(max(1, retries)):
+        try:
+            api.face(int(face))
+        except Exception:
+            pass
+        time.sleep(0.12 if i == 0 else 0.2)
+        try:
+            cur = (api.state(light=True).get("player") or {}).get("facingDirection")
+        except Exception:
+            return False
+        if cur == int(face):
+            return True
+        _settle_after_walk(0.6)   # 还没停稳就再等一会儿，然后重来
+    return False
+
+
 def _apply_poi_stand_face(poi_name: str) -> str:
     """POI 到达后应用结构化站位+朝向（2026-08-16 恒，locations.POI_FACE）。
     返回"，朝X/站位"日志串；无配置或失败返回空串。交互仍交给 AI（interact/interact_at）。
-    ⚠️ 农场设施不在 POI_FACE（动态检测），这里只处理固定可交互 POI。"""
+    ⚠️ 农场设施不在 POI_FACE（动态检测），这里只处理固定可交互 POI。
+    ⚠️ 2026-09-17：朝向改为"等停下 → 写 → 读回校验 → 重试"，**验不过如实报**（见 _face_verified）。
+       有 `stand` 的 POI 会先瞬移把人定住所以不中招；中招的是**只有 face、没有 stand** 那 14 个
+       （皮埃尔商店/鱼店柜台/博物馆柜台/桑迪商店/两个矿车/精通山洞 8 处/蜗牛教授）。"""
     try:
         _mark_festival_poi_name(poi_name)   # 导航到达节日 POI → 记入交互历史
         cfg = getattr(locations, "POI_FACE", {}).get(poi_name)
@@ -133,13 +180,19 @@ def _apply_poi_stand_face(poi_name: str) -> str:
                     api.position(int(stand[0]), int(stand[1]))
                     time.sleep(0.25)
                     logs.append(f"站位({stand[0]},{stand[1]})")
+                _settle_after_walk(1.0)   # 瞬移/刚落点同样可能还在收尾
             except Exception:
                 pass
         face = cfg.get("face")
         if face is not None:
-            api.face(int(face))
-            time.sleep(0.15)
-            logs.append(f"朝{'上右下左'[int(face)]}")
+            face = int(face)
+            _settle_after_walk()                    # ① 先等人真的停下
+            if _face_verified(face):                # ② 写 + 读回校验 + 重试
+                logs.append(f"朝{'上右下左'[face]}")
+            else:
+                # 验不过就别说成功——AI 照着一个没发生的"朝X"去 interact 会点空
+                logs.append(f"⚠️朝向没能转成「{'上右下左'[face]}」（现朝向不对，"
+                            f"交互前先 `scene face {face}`）")
         return "，" + "，".join(logs) if logs else ""
     except Exception:
         return ""
