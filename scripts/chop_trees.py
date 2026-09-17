@@ -171,10 +171,25 @@ def chop_target(tx, ty, target_type):
                 return "stamina"
             time.sleep(0.4)
             _ensure_at(tx, ty)
-        # 转圈吸掉落：往4个方向走一步再走回来
-        for step in ['D', 'A', 'W', 'S', 'D', 'A', 'W', 'S']:
-            api.key(step)
-            time.sleep(0.12)
+        # 转圈吸掉落：绕四个邻格一圈再回到树格，把掉在地上的木头/树液吸附进包。
+        # ⚠️ 2026-09-17 恒：「这个砍树会动我的键盘灯!A!w！S!!d」——原实现是
+        #     `for step in ['D','A','W','S',...]: api.key(step)`，而 `api.key` → `POST /key` →
+        #     `ModEntry.HandleKey` 里调的是 **Win32 `keybd_event()`**：操作系统级真按键
+        #     （还顺带 SetForegroundWindow 抢前台）⇒ 会在恒的键盘上**真的**敲出 D A W S
+        #     （当晚日志/灯都对得上），而且打进当时有焦点的任何窗口。
+        #     改用本文件已在用的 walk_natural（走 /move 的 FindPath，会寻路不穿墙）：
+        #     人走过去就吸附，一个系统按键都不再发。
+        for dx, dy in ((1, 0), (-1, 0), (0, -1), (0, 1)):
+            try:
+                api.walk_natural(tx + dx, ty + dy)
+            except Exception:
+                pass
+            time.sleep(0.1)
+        try:
+            api.walk_natural(tx, ty)   # 回树格收尾（树已倒，这格是通的）
+        except Exception:
+            pass
+        time.sleep(0.1)
 
     return "chopped"
 

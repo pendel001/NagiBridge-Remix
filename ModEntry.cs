@@ -7023,6 +7023,9 @@ public class ModEntry : Mod
         bool stay = GetParamOr(p, "stay", false);
 
         var tcs = new TaskCompletionSource<object>();
+        // 非 stay 分支的"贴床"结果（由 DelayedAction 链在主线程写入；HTTP 线程在外层等它）。
+        // 声明在 lambda 外面——否则外层拿不到。
+        var snapTcs = new TaskCompletionSource<object>();
         EnqueueMainThread(() =>
         {
             try
@@ -7076,43 +7079,105 @@ public class ModEntry : Mod
                     return;
                 }
 
-                var bedX = 10;
-                var bedY = 6;
+                // 🛏️ 2026-09-17 恒真机抓到：这里原来**写死 (10,6)**——那是「农舍」的床位坐标，
+                //    套在 farmhand 的小屋上就是一块普通地板格（轮回的真床读出来在 (41,23)，差 31 格）。
+                //    后果不只是"没上床"：人被 warp 到非床格再手工 isInBed=true，会被游戏 tick 弹下床
+                //    （见 7422 那条注释），就绪上报不上去 ⇒ **夜不过、脚本干等**。
+                //    踩到的调用方：fish_run.py:449 / mine_run.py:1263（收工睡觉都没传 stay）。
+                //    ⚠️ 同一文件早有正确解法 FindPlayerBed（/crawl_bed 一直在用），只有这里漏了。
+                var (bedLocName, bedX, bedY) = FindPlayerBed(farmer);
+                if (string.IsNullOrEmpty(bedLocName)) { bedLocName = homeName; bedX = 10; bedY = 6; }
+                homeName = bedLocName;   // 回包/下游一律报"实际去的那个地方"
 
-                var needsWarp = farmer.currentLocation.Name != homeLoc.Name;
+                // 显示名/唯一名任一匹配即算"已经在家"（小屋 Name="Cabin" ≠ 唯一名 FarmHouse<guid>）
+                var hereName = farmer.currentLocation.Name;
+                var hereUnique = farmer.currentLocation.NameOrUniqueName;
+                var needsWarp = hereName != bedLocName && hereUnique != bedLocName;
                 if (needsWarp)
                 {
-                    Game1.warpFarmer(homeName, bedX, bedY, false);
+                    Game1.warpFarmer(bedLocName, bedX, bedY, false);
                 }
 
-                // Longer delay for farmhand warp sync
-                var delay = needsWarp ? 3000 : 500;
-                DelayedAction.functionAfterDelay(() =>
+                // ⚠️⚠️ 2026-09-17 二次真机（恒："你没上床只是进了自己屋，这很可能卡"）：
+                //    光把坐标算对**还不够**。`Game1.warpFarmer` 进**建筑内部**时，游戏会把落点
+                //    **redirect 回门口**——实测请求进小屋 (30,30)，人落在门口 (27,30)，坐标被整个丢掉；
+                //    同一句 warp 到农场 (50,20) 却精确生效 ⇒ 是"进屋"这件事在吞坐标，不是坐标算错。
+                //    08-14 那条注释（见本文件 crawl_bed 段）早记过同一现象，但当时只修了 `crawl_bed`，
+                //    `/sleep` 这条**漏网**——于是"夜不过、脚本干等"。
+                //    正解照抄已验证的 `_snap_onto_bed`（scripts/stardew_api.py:944）：
+                //      warp **只负责进屋**（落门口无所谓），进屋后**直接设 Position** 贴到床格。
+                //      `/position` 走的就是直接赋值（非 warpFarmer），实测**不会**被 redirect；
+                //      再给游戏 tick 时间，让它自己把 isInBed 置上。
+                //    ⚠️ 并且**没真躺上去就绝不报 ready**：旧的"没躺上也硬置 isInBed 再报 ready"
+                //      正是那晚把恒窗口卡住（游戏在等一个根本没上床的人）的形态。宁报错别兜底。
+                var snapRowList = $"{bedY + 1}/{bedY}/{bedY + 2}";
+                int[] snapRows = { bedY + 1, bedY, bedY + 2 };   // 双人床通常只有中间行能站住 isInBed
+                int snapAttempt = 0;
+                Action snapStep = null;
+                snapStep = () =>
                 {
-                    var f = Game1.player;
-                    f.isInBed.Value = true;
-                    f.sleptInTemporaryBed.Value = false;
-                    f.currentLocation.answerDialogueAction("Sleep_Yes", Array.Empty<string>());
-                    // 程序化触发时 ReadyCheckDialog 无人交互，需手动上报 ready 给 host。
-                    // 真人流程：ReadyCheckDialog 内部自动 SetLocalReady("sleep", true)，
-                    // 我们程序化触发没有这一步，所以 host 一直不认可。延迟等 dialog 创建后补上。
-                    DelayedAction.functionAfterDelay(() =>
+                    try
                     {
-                        // 1.6 正确 API：Game1.netReady 是 ReadySynchronizer。
-                        // 真人流程：ReadyCheckDialog 内部调 SetLocalReady("sleep", true) 上报 ready 给 host。
-                        // 我们程序化触发无 UI 交互，需手动补上这一步，host 才会认可并等所有玩家就绪。
-                        Game1.netReady.SetLocalReady("sleep", true);
-                    }, 1500);
-                }, delay);
+                        var f = Game1.player;
+                        if (f.isInBed.Value)
+                        {
+                            f.sleptInTemporaryBed.Value = false;
+                            f.currentLocation.answerDialogueAction("Sleep_Yes", Array.Empty<string>());
+                            // 程序化触发时 ReadyCheckDialog 无人交互，需手动上报 ready 给 host。
+                            // 真人流程：ReadyCheckDialog 内部自动 SetLocalReady("sleep", true)，
+                            // 我们程序化触发没有这一步，所以 host 一直不认可。延迟等 dialog 创建后补上。
+                            // 1.6 正确 API：Game1.netReady 是 ReadySynchronizer。
+                            DelayedAction.functionAfterDelay(() =>
+                                Game1.netReady.SetLocalReady("sleep", true), 1500);
+                            snapTcs.TrySetResult(new
+                            {
+                                ok = true, action = "sleeping", home = homeName,
+                                bed = $"{bedX},{bedY}", snapped = true,
+                                at = $"{f.currentLocation.Name} ({f.TilePoint.X},{f.TilePoint.Y})"
+                            });
+                            return;
+                        }
+                        if (snapAttempt >= snapRows.Length)
+                        {
+                            snapTcs.TrySetResult(new
+                            {
+                                ok = false, action = "not_in_bed", home = homeName, bed = $"{bedX},{bedY}",
+                                snapped = false,
+                                error = $"进屋后贴不到床格（试过 y={snapRowList}）——**没有**上报 ready"
+                                      + "（免得把房主卡在「等人睡觉」里）。请改用 go_sleep 走拟人流程",
+                                at = $"{f.currentLocation.Name} ({f.TilePoint.X},{f.TilePoint.Y})"
+                            });
+                            return;
+                        }
+                        // 直接设 Position（=/position 的做法）→ 绕开 warpFarmer 的"进屋 redirect 回门口"
+                        f.Position = new Vector2(bedX, snapRows[snapAttempt]) * Game1.tileSize;
+                        CenterViewportOnFarmer(f);
+                        snapAttempt++;
+                        DelayedAction.functionAfterDelay(snapStep, 900);   // 给游戏 tick 置 isInBed 的时间
+                    }
+                    catch (Exception ex) { snapTcs.TrySetResult(new { ok = false, error = ex.Message }); }
+                };
+                // farmhand 跨图同步慢一些，进屋后再贴床
+                DelayedAction.functionAfterDelay(snapStep, needsWarp ? 3000 : 500);
 
-                tcs.SetResult(new { ok = true, action = "sleeping", home = homeName, bed = $"{bedX},{bedY}" });
+                // 起手完成；真结果由 snapTcs 回（外层等它）
+                tcs.SetResult(null);
             }
             catch (Exception ex)
             {
                 tcs.SetResult(new { ok = false, error = ex.Message });
             }
         });
-        return tcs.Task.GetAwaiter().GetResult();
+
+        // 起手（解析床位 + warp 进屋）在主线程完成得很快；null = "贴床链已排好，真结果在 snapTcs"
+        var first = tcs.Task.GetAwaiter().GetResult();
+        if (first != null) return first;   // stay 分支 / 错误分支：原样返回
+
+        // ⚠️ 下面是在 **HTTP 线程** 上等，不是在主线程——贴床链由 DelayedAction 在主线程跑，不会死锁。
+        //    加超时兜底：真出意外也别把调用方永久吊住（且此时**没有**报 ready，房主不会被卡住）。
+        if (!snapTcs.Task.Wait(TimeSpan.FromSeconds(15)))
+            return new { ok = false, action = "timeout", error = "贴床超时（15s）——没有上报 ready，房主不会被卡在等待里" };
+        return snapTcs.Task.Result;
     }
 
     /// <summary>
@@ -15723,7 +15788,15 @@ public class ModEntry : Mod
                         continue;
                     }
 
-                    loc.terrainFeatures[vec] = new HoeDirt();
+                    // 🌧️ 2026-09-17 恒真机抓到：直接 `new HoeDirt()` 绕过了游戏锄地的"雨天自动浇湿"。
+                    //    铁证（同一场雷暴雨里做的 A/B）：逐格真挥锄 → watered=true；/tool_area → watered 空。
+                    //    后果比看着严重：water 域 op **遇雨自动跳过**（恒 09-12 拍板），
+                    //    所以这些格子**永远喝不到水**、作物不长 —— 而 DLL 自动补漏也走这条 ⇒
+                    //    连普通 farm till 都会悄悄留下干土（真机见"2 干 2 湿"）。
+                    //    判据用 loc.IsRainingHere() 而不是 Game1.isRaining：温室不能被外面下雨浇到。
+                    var dirt = new HoeDirt();
+                    if (loc.IsRainingHere()) dirt.state.Value = 1;
+                    loc.terrainFeatures[vec] = dirt;
                     tilled.Add(new() { ["x"] = tx, ["y"] = ty });
                 }
 
@@ -16181,7 +16254,11 @@ public class ModEntry : Mod
                         && !loc.terrainFeatures.ContainsKey(vec)
                         && !loc.IsTileBlockedBy(vec, ~(StardewValley.CollisionMask.Characters | StardewValley.CollisionMask.Farmers)))
                     {
-                        loc.terrainFeatures[vec] = new HoeDirt();   // 与人/132xxx 同款无参构造
+                        // 🌧️ 2026-09-17：补漏也用无参构造 ⇒ 同样漏掉"雨天浇湿"（同上面 15726 那条）。
+                        //    补漏正是"2 干 2 湿"里那两个干格的来源，别只修主循环。
+                        var ndirt = new HoeDirt();   // 与人/132xxx 同款无参构造
+                        if (loc.IsRainingHere()) ndirt.state.Value = 1;
+                        loc.terrainFeatures[vec] = ndirt;
                         patched = true;
                     }
                 }

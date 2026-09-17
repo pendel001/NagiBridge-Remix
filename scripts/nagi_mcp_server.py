@@ -4416,6 +4416,14 @@ def till_and_plant(
                 blocked.append((tx, ty, terrain))
             elif t.get("passable") is False:
                 blocked.append((tx, ty, "水/不可走"))   # 河流农场：河不能锄
+            elif not t.get("diggable") and terrain != "HoeDirt":
+                # 🆕 2026-09-17 恒：「报错加报目标格障碍物算了」。
+                #    病根：目标格"地图没标 Diggable"时这里一路放行 → 到 tool_area 只回一句
+                #    "No diggable tiles nearby"，AI 看不出是**地**的问题（当晚我拿一片 Grass
+                #    就这样锄了 4 下、体力掉了 4 点、地里啥也没变，还以为是 till_plant 坏了）。
+                #    ⚠️ 判据必须排掉 HoeDirt：**已翻好的地也不报 diggable**（2026-09-17 真机实测，
+                #    四格 HoeDirt 全无该字段）——一刀切会把"已耕/已种"的格误报成不可耕。
+                blocked.append((tx, ty, f"{terrain or '裸地'}·地图没标可耕"))
 
         # ⚠️ 2026-09-03 恒：旧代码只要有水/设施就整单中止——农场设备+河密布，3×3 也凑不出"全净"
         #    → 一条龙永远跑不成（冒烟实测"反复规划失败"）。但 tool_area 锄地本就会跳过 object/非Diggable
@@ -7522,7 +7530,13 @@ def _farm_till(x: int = -1, y: int = -1, rows: int = 1, length: int = 1,
         lines.append(f"  ⚠️ 缺失 {len(missing)} 格（被杂物/水挡？）:")
         for mx, my in missing[:10]:
             info = tiles.get((mx, my), {})
-            lines.append(f"    ({mx},{my}) {info.get('object') or info.get('resource') or info.get('terrain') or ''}")
+            what = info.get('object') or info.get('resource') or info.get('terrain') or '裸地'
+            # 🆕 2026-09-17 恒：「报错加报目标格障碍物」——把"这格压根不可耕"和
+            #    "可耕但被挡"分开说，否则一片草地只会得到一句没头没脑的"缺失 N 格"。
+            #    ⚠️ HoeDirt 还要报不可耕就是误报（已翻的地不带 diggable 字段，真机实测）。
+            if not info.get('diggable') and info.get('terrain') != 'HoeDirt':
+                what = f"{what}·地图没标可耕"
+            lines.append(f"    ({mx},{my}) {what}")
     return "\n".join(lines)
 
 
