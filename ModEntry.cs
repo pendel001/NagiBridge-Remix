@@ -7423,32 +7423,57 @@ public class ModEntry : Mod
         {
             try
             {
+                // 诊断：列出游戏里所有 farmer（含离线 farmhand），供选择彩蛋演员。
+                // ⚠️ 名字**一律从游戏里取**，不许写死——玩家名随存档/多人加入而变（2026-09-19 恒）。
+                var farmers = Game1.getAllFarmers()
+                    .Select(f => new
+                    {
+                        name = f.Name,
+                        isMain = f.IsMainPlayer,
+                        online = f.isActive(),
+                        home = f.homeLocation.Value ?? "",
+                        bedLoc = FindPlayerBed(f).locName
+                    }).ToList();
+
                 // 解析目标玩家：默认房主(小恒)，或按 player 名字指定（如 DS 自己的名字 → 睡自己小屋的床）。
+                // ⚠️ 2026-09-19 恒：名字**必须校验**——原实现 `if (found != null) targetPlayer = found;`
+                //    查无此人时**不报错**、静默保持默认(=房主) ⇒ `sleep who=打错的名字` 实为爬房主的床，
+                //    外面还只看得到一句"当前场景没有床"，完全看不出是参数写错（兜底把问题搬走了）。
+                //    现在直接报错 + 列出这个存档里真实存在的名字（含 bedLoc，AI 一眼能看出该传谁）。
                 var targetPlayer = Game1.MasterPlayer;
                 var targetName = GetParamOr(p, "player", "");
                 if (!string.IsNullOrEmpty(targetName))
                 {
                     var found = Game1.getAllFarmers().FirstOrDefault(f => f.Name == targetName);
-                    if (found != null) targetPlayer = found;
+                    if (found == null)
+                    {
+                        var names = string.Join(" / ", farmers.Select(f =>
+                            f.name + (f.isMain ? "(房主)" : "") + (f.online ? "" : "(离线)") + "→" + f.bedLoc));
+                        tcs.SetResult(new
+                        {
+                            ok = false,
+                            error = $"找不到玩家「{targetName}」——这个存档里的玩家只有: {names}。"
+                                  + "请把 who 改成上面其中一个名字（别打错字/注意大小写）",
+                            farmers
+                        });
+                        return;
+                    }
+                    targetPlayer = found;
                 }
                 var (bedLoc, bedX, bedY) = FindPlayerBed(targetPlayer);
+                // 🆕 2026-09-19：目标玩家家的门（Farm 外立面）。PY 侧据此**走过去**（map_go→门口→推门→床边），
+                //   不再只支持"睡自家"。自己=小屋（按 indoors 匹配）/ 房主=Farmhouse（按建筑类型匹配），
+                //   两条分支都在 FindHomeDoor 里，动态定位、不写死坐标。
+                var homeDoor = FindHomeDoor(targetPlayer);
 
                 if (action == "locate")
                 {
-                    // 诊断：列出游戏里所有 farmer（含离线 farmhand），供选择彩蛋演员
-                    var farmers = Game1.getAllFarmers()
-                        .Select(f => new
-                        {
-                            name = f.Name,
-                            isMain = f.IsMainPlayer,
-                            home = f.homeLocation.Value ?? ""
-                        }).ToList();
-
                     tcs.SetResult(new
                     {
                         ok = true,
                         action = "locate",
                         bed = new { location = bedLoc, x = bedX, y = bedY },
+                        door = homeDoor,
                         player2 = Game1.player.Name,
                         player = targetPlayer.Name,
                         isInBed = Game1.player.isInBed.Value,

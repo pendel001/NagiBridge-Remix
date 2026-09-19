@@ -319,7 +319,8 @@ def _describe_menu(active_menu: dict, name: str, loc_lower: str, is_moving: bool
     """根据打开的菜单类型推断玩家在干嘛（"开了窗口"分支）。
 
     返回 None 表示不拦截（让后续判定继续，比如要带商店名的购物）。
-    `in_bed` 只用于把 ReadyCheckDialog 区分类别（见下面 readych 那支）。
+    `in_bed` 只用于把 ReadyCheckDialog 区分类别，且**仅在旧 DLL 没有 `readyCheck.name` 时**才用
+    （那是老判据，太宽——见下面 readych 那支 2026-09-19 的说明）；新 DLL 一律认 `readyCheck.name`。
     """
     mtype = (active_menu.get("type") or "").lower()
     if not mtype:
@@ -357,10 +358,22 @@ def _describe_menu(active_menu: dict, name: str, loc_lower: str, is_moving: bool
     if "readych" in mtype:
         # ⚠️ 2026-09-12 修：ReadyCheckDialog **不只有睡觉**（节日参加 `festivalStart`、其它"等所有人"
         #    确认框都走它）——原先一律叫"准备睡觉"，真机把恒开着的**节日参加确认框**播成了
-        #    「💤 恒 准备睡觉了」，害 AI 以为该睡了。**分判据 = 人在不在床上**（`/state` 有 isInBed，
-        #    见 ModEntry.cs:4211）；不在床上就别说是睡觉。
-        if in_bed:
+        #    「💤 恒 准备睡觉了」，害 AI 以为该睡了。
+        # ⚠️ 2026-09-19 **再修**（恒：「`isInBed` 就只是字面的'在床上'，**每天都是从床上开始的**，
+        #    可不能给 AI 说'你在睡觉不要动'」）：09-12 那次拿 `isInBed` 当分判据，**它太宽** ——
+        #    按"脚踩那格有没有 Bed 属性"算（`Farmer.cs:7553`），清早刚起床那一秒就成立，
+        #    于是"早上站在床边开个节日框"照样会被播成「准备睡觉了」——正是他担心那句。
+        #    ⇒ 改用**游戏自己写在 `checkName` 上的名字**（`readyCheck.name`：sleep / festivalStart）
+        #      —— 权威判据，跟 `nagi_mcp_server` 状态条 2026-09-13 那处同一个源。
+        rc_name = (active_menu.get("readyCheck") or {}).get("name")
+        if rc_name == "sleep":
             return f"💤 **{name}** 准备睡觉了"
+        if rc_name == "festivalStart":
+            return f"🎪 **{name}** 在等节日入场就绪（等人齐，不是睡觉）"
+        if rc_name is None:
+            # 旧 DLL 不报 readyCheck → 退回老判据（并如实说分不出，别硬猜）
+            return (f"💤 **{name}** 准备睡觉了" if in_bed
+                    else f"🙋 **{name}** 开着确认框（等人齐/等确认，不是睡觉）")
         return f"🙋 **{name}** 开着确认框（等人齐/等确认，不是睡觉）"
     if "forgemenu" in mtype:
         return f"🔨 **{name}** 正在锻造武器"

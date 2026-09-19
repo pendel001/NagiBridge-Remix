@@ -137,7 +137,7 @@
 |---|---|---|
 | `interact` / `pickup` | `tile_x`,`tile_y`（**必填**） | ⚠️ 参数名是 `tile_x`/`tile_y`，**不是 `x`/`y`** |
 | `cook` | `recipe_name`（必填）`count`(1) | 做饭（⚠️ 在 `cabin` 域，**不在 `menu`**）|
-| `sleep` | `who`("") | 不传/房主名 = 睡房主床（一起睡 + 🌹彩蛋）；传自己名 = 睡自己床 |
+| `sleep` | `who`（**必填**） | 传自己名 = 睡自己床；传别人名 = 睡那个人的床（一起睡 + 🌹彩蛋）。**传对名字就不用先回家**——不在那栋屋会自动走过去。名字写错 → 报错并列出可选名 |
 | `place` / `break` | 同 `scene` 同名 op | `name`,`x`,`y` ／ `x`,`y`,`steps`,`radius` |
 
 > 其余（`enum`/`collect`/`statue`/`furniture`）**无参**。
@@ -304,7 +304,7 @@
 
 | op | 参数（括号内=默认） | 说明 |
 |---|---|---|
-| `sleep` / `lie_bed` | `who`("") | `sleep` = 真过夜；`lie_bed` = **只躺不睡**（想离开随时 `map walk` 走离床格，`isInBed` 自动变 false）。`who`：不传/房主名 = 房主床（一起睡 + 🌹彩蛋）；传自己名 = 自己床 |
+| `sleep` / `lie_bed` | `who`（**必填**） | `sleep` = 真过夜；`lie_bed` = **只躺不睡**（想离开随时 `map walk` 走离床格，`isInBed` 自动变 false）。`who`：传自己名 = 自己床；传别人名 = 那人的床（一起睡 + 🌹彩蛋）。**传对名字就不用先回家**——不在那栋屋会自动走过去（map_go 跨图→门口→推门→床边）。名字写错 → 报错并列出可选名（不会默默睡成别人的床） |
 | `eat` | `name`("") `item_name`("") | 吃食物回血/体力 |
 | `wear` | `name`(None) `slot`(None) `hand`(None) | `name` = 穿上（**自动判槽位**，替下的回背包）；`slot` = 脱下该槽（`boots`/`leftRing`/`rightRing`/`trinket`/`hat`）；`hand` = **仅戒指**，`1`/`left` 或 `2`/`right`，或传"要换掉的那枚戒指名"（自动找它在哪只手）|
 | `heartbeat` | `minutes`(5) | 0 = 每次工具返回都显示 |

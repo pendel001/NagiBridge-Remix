@@ -762,10 +762,21 @@ def _resolve_place(place: str):
 
     # 2. 建筑关键字 → 实时定位门
     KEYWORDS = {
+        # ⚠️ 2026-09-19（恒）：**这里必须走"最长匹配"**（见下面 sorted），否则单字键会抢走长键。
+        #    真机实录（只读探出来的一族同病）：`农舍`→**鸡舍的门**、`工棚`→**畜棚的门**——
+        #    都是 `"舍": "coop"` / `"棚": "barn"` 排在 `"鸡舍"` / `"工棚"` 前面，字典顺序先撞谁算谁。
+        #    跟当初 `_loc_label` 把 FarmHouse 叫成"农场"是同一个病、同一个药（改最长匹配）。
+        #    恒原话：「农舍两个字就精确指 farmhouse 吧，鸡舍就指 coop。毕竟人类或 AI 都不会单传
+        #    一个"舍"字来着」⇒ 顺手**删掉裸 `"舍"`**（没人会这么喊，留着只会抢匹配）。
         "畜棚": "barn", "谷仓": "barn", "棚": "barn",
-        "鸡舍": "coop", "舍": "coop",
+        "鸡舍": "coop",
         "温室": "greenhouse",
         "小屋": "cabin",
+        # 🏠 主屋（恒的 Farmhouse）：**1.6 里主屋本身就是一栋 Building**（`type == "Farmhouse"`），
+        #    所以它跟畜棚鸡舍一样能动态定位。原先这里没有对应键 ⇒ `_resolve_place` 返回 None
+        #    ⇒ `_enter_building_door` 查不到门 ⇒ 掉进 `ARRIVE['FarmHouse']=(10,6)` **warp 硬进**
+        #    （恒最烦的"飞"）⇒ 现在补上，走门。
+        "农舍": "farmhouse", "主屋": "farmhouse", "大屋": "farmhouse",
         "出货": "shipping",
         "筒仓": "silo", "粮仓": "silo",
         "鱼塘": "fish pond", "池塘": "fish pond",
@@ -781,37 +792,43 @@ def _resolve_place(place: str):
         "cabin": "cabin", "shipping": "shipping", "silo": "silo",
         "fish pond": "fish pond", "stable": "stable", "shed": "shed",
         "cellar": "cellar", "obelisk": "obelisk", "gold clock": "gold clock",
+        "farmhouse": "farmhouse",
     }
     pl = p.lower()   # ⚠️ 英文键要小写比对；中文无大小写，写在这里对中文键是 no-op
-    for k, typekw in KEYWORDS.items():
-        if k in pl:
-            for b in bs:
-                if typekw in b.get("type", "").lower():
-                    if "doorX" in b:
-                        return ("Farm", b["doorX"], b["doorY"])
-                    return ("Farm", b["x"], b["y"])
+    # 🔑 **最长匹配优先**：先把命中的键按长度从长到短排，长的先试。
+    #    这样 `农舍`/`鸡舍`/`工棚` 一定压过 `棚` —— 不再依赖字典书写顺序（那种"顺序对就对、
+    #    谁插一行就崩"的隐式依赖，正是这一族 bug 的来源）。
+    for k in sorted((k for k in KEYWORDS if k in pl), key=len, reverse=True):
+        typekw = KEYWORDS[k]
+        for b in bs:
+            if typekw in b.get("type", "").lower():
+                if "doorX" in b:
+                    return ("Farm", b["doorX"], b["doorY"])
+                return ("Farm", b["x"], b["y"])
     return None
 
 
-def _go_to_bed(bed_loc: str, bx: int, by: int) -> str:
+def _go_to_bed(bed_loc: str, bx: int, by: int) -> tuple[bool, str]:
     """进屋后走到床边（自然走，别站床 tile——会被 game redirect 弹回门口）。
-    ⚠️ 到达判定用**玩家格距离**，不用 _wait_arrival（它拿 location.name 显示名，跟床唯一名比恒假→必超时）。"""
+    ⚠️ 到达判定用**玩家格距离**，不用 _wait_arrival（它拿 location.name 显示名，跟床唯一名比恒假→必超时）。
+    返回 (ok, msg)——**判据是位置**，别让调用方去猜 msg 里有没有 ❌。"""
     r3 = api._post("/walk_to", {"location": bed_loc, "x": bx, "y": by + 1})
     if not r3.get("ok"):
-        return _with_state(f"❌ 到床失败: {r3.get('error', r3)}")
+        return False, f"❌ 到床失败: {r3.get('error', r3)}"
     deadline = time.time() + 25
     while time.time() < deadline:
         s = api.state()
         px, py = s.get("player", {}).get("x"), s.get("player", {}).get("y")
         if px is not None and py is not None and abs(px - bx) <= 2 and abs(py - by) <= 2 \
                 and not s.get("player", {}).get("isMoving"):
-            return _with_state(f"🏠 已到家床上 ({bed_loc} {bx},{by})")
+            return True, f"已到床边 ({bed_loc} {bx},{by})"
         time.sleep(0.8)
-    return _with_state("⚠️ 到床超时")
+    return False, f"⚠️ 到床超时（{bed_loc} 床在 {bx},{by}）——人可能卡在门口/被家具挡住"
 
 
-def _go_home() -> str:
-    """回家：走到自己屋门口（Farm外立面）→ 互动进门 → 动态找自己床 → 走到床边。
+def _go_home(who: str = "") -> tuple[bool, str]:
+    """回家：走到「谁的床」那个屋的门口（Farm 外立面）→ 互动进门 → 走到床边。
+    `who` 空 = 自己；传别人名字 = 去那个人的屋子/床边（爬床彩蛋那套）。
 
     出门不能自动化（walk_to 不肯踩上传送格），所以回家只做"进门"；
     出门用 /warp 传门外（见 go_to 兜底逻辑）。
@@ -820,41 +837,62 @@ def _go_home() -> str:
     1. 进屋判定：用 crawl_bed locate 返回的 curLoc(当前场景**唯一名**)跟床所在唯一名比，
        别拿 location.name(显示名"Cabin") 跟 homeLocation(唯一名"FarmHouse<guid>")比——恒不等 →
        明明进屋却反复"当门外"反复点门 → 进不去/报"进门失败"。
-    2. 找床：crawl_bed locate 必须带 player=自己，否则默认找 host(恒/MasterPlayer)的床，不是自家床。
+    2. 找床：crawl_bed locate 必须带 player=目标人，否则默认找 host(房主)的床，不是要找的那张。
     3. 到床：walk 到床边，别 walk_to 床 tile（会被 game redirect 弹回门口）。
+
+    ⚠️ 2026-09-19 恒：**拆掉"只回自己家"的限制**。门不再从 `/state.homeDoor`（那只有自己）取，
+    改用 `/crawl_bed locate` 一并返回的 `door`（C# `FindHomeDoor(目标玩家)`，同一套逻辑：
+    自己=按室内名匹配小屋、房主=按 "Farmhouse" 建筑类型匹配，**都是动态定位、没写死坐标**）。
+    ⇒ 睡觉工具传谁的名字，就把人走到谁家床边；全程走（map_go 跨图 → 门口 → 推门 → 床边），不 warp。
+    返回 **(ok, msg)**：`msg` 是给人看的一句话（含 👍/❌ 语气），`ok` 才是判据。
+    走不到就**如实报 + 说清下一步**，绝不静默瞬移过去充数。
     """
     try:
-        p = api.state().get("player", {})
-        home = p.get("homeLocation")
-        door = p.get("homeDoor")
-        if not door or not home:
-            return _with_state("❌ 拿不到 homeDoor/homeLocation（需要新DLL）")
+        # ‑ 空 who = 自己：先问游戏"这个进程的玩家叫什么"（crawl_bed locate 回 player2）
+        if not who:
+            who = (api._post("/crawl_bed", {"action": "locate"}) or {}).get("player2") or ""
+        if not who:
+            return False, "❌ 认不出自己是谁（crawl_bed locate 没回 player2）"
 
-        # ‑ 探测本进程玩家名（crawl_bed locate 返回 player2=本进程玩家），并带 player=自己找床
-        myname = api._post("/crawl_bed", {"action": "locate"}).get("player2") or "我"
-        bl = api._post("/crawl_bed", {"action": "locate", "player": myname})
-        bed = bl.get("bed", {})
-        if not bed:
-            return _with_state("⚠️ 进门了但找不到床")
+        bl = api._post("/crawl_bed", {"action": "locate", "player": who})
+        if not bl.get("ok"):
+            # 名字写错/查无此人时 C# 会在这里直接把可选名字列出来（别再往下猜）
+            return False, f"❌ 找不到{who}的床: {bl.get('error')}"
+        bed = bl.get("bed") or {}
+        door = bl.get("door") or {}
         bed_loc, bx, by = bed.get("location"), bed.get("x"), bed.get("y")
+        if not bed_loc or bx is None or by is None:
+            return False, f"❌ 不知道{who}的床在哪（crawl_bed 没回 bed.location）"
 
         def _cur() -> str:
             """当前场景唯一名（crawl_bed locate 的 curLoc），进屋判定用它。"""
-            return (api._post("/crawl_bed", {"action": "locate", "player": myname}).get("curLoc")
+            return (api._post("/crawl_bed", {"action": "locate", "player": who}).get("curLoc")
                     or "?")
 
         # ‑ 已在床所在场景 → 直接去床边
         if _cur() == bed_loc:
             return _go_to_bed(bed_loc, bx, by)
 
-        # 1. 走到自家门口（Farm 外立面）
+        # 1. 走到那栋屋子门口（Farm 外立面）
         #    🚪 人在别的图（镇上/别人屋里）时，`_walk_on_map` 先 map_go 回农场再走——
         #       原来直接拿 Farm 坐标 walk_to = 跨图瞬移（恒 2026-09-19 抓的"飞"同款）。
+        if not door.get("location") and who == (bl.get("player2") or ""):
+            # 🔧 兼容窗口：老 DLL 的 locate 还没有 `door` 字段，而"回自己家"这条路**以前是好的**。
+            #    `/state.player.homeDoor` 与 locate 的 `door` 是**同一个 C# 函数**（`FindHomeDoor(Game1.player)`），
+            #    取值必然相同 ⇒ 这是"同源换个入口"，不是找一个近似值来凑（不算兜底）。
+            #    别人的门没有等价来源 ⇒ 不硬凑，往下走如实报错（那本来就是本次新加的能力）。
+            _sd = (api.state().get("player") or {}).get("homeDoor") or {}
+            if _sd.get("location"):
+                door = _sd
+        if not door.get("location"):
+            return False, (f"❌ 找不到{who}家的门（床上报的是 {bed_loc}，但没查到对应建筑的门口）"
+                           f"——先 map go Farm 再手动走过去；这栋屋子可能不在农场（如姜岛小屋），"
+                           f"或游戏还没重启加载新 DLL")
         _err = _walk_on_map(door["location"], door["x"], door["y"], timeout=35)
         if _err:
-            return _with_state(f"❌ 去门口失败: {_err}")
+            return False, f"❌ 去{who}家门口失败: {_err}"
 
-        # 2. 若已在门外 → 下马 + 站门口正下方(门在正上) + 面朝门 + /interact 触发 checkAction
+        # 2. 若还在门外 → 下马 + 站门口正下方(门在正上) + 面朝门 + /interact 触发 checkAction
         if _cur() != bed_loc:
             if api.state().get("player", {}).get("riding"):
                 api._post("/key", {"key": "confirm"})  # 下马
@@ -873,12 +911,13 @@ def _go_home() -> str:
                 api.interact_at(door["x"], door["y"])
                 time.sleep(1.5)
         if _cur() != bed_loc:
-            return _with_state(f"⚠️ 进门失败（仍在 {_cur()}），可能被挡/在菜单里")
+            return False, (f"⚠️ 进{who}家失败（人还在 {_cur()}）——门可能锁着/被挡/在菜单里；"
+                           f"门在 {door['location']} ({door['x']},{door['y']})")
 
         # 3. 到床边
         return _go_to_bed(bed_loc, bx, by)
     except Exception as e:
-        return _with_state(f"❌ 回家失败: {e}")
+        return False, f"❌ 回家失败: {e}"
 
 
 def _wait_arrival(target_loc: str, target_x: int, target_y: int, timeout: int = 30) -> bool:
@@ -951,14 +990,16 @@ def go_to(place: str) -> str:
         _pl = str(place or "").lower()
         _excl = ("女巫", "巫师", "魔法", "神殿", "witch")
         if "回家" in _pl and not any(k in _pl for k in _excl):
-            return _go_home()          # 明确"回家"→进屋到床边
+            _ok, _m = _go_home()       # 明确"回家"→进屋到床边
+            return _with_state(_m)
         if any(k in _pl for k in ("小屋", "cabin")) \
                 and not any(k in _pl for k in _excl):
             # ⚠️ 2026-09-12：**点名要床的**（walk 的 POI 表里就叫「自己小屋(床)」）走全流程进屋到床边
             #    —— 原来一律 `_nav_home_door()` 只到门口，却回「已导航到「自己小屋(床)」已到达」，
             #    名字写"床"、人站在门外 = 货不对板（恒 09-12 抓的）。裸"小屋/cabin"仍只到门口（原设计）。
             if "床" in _pl:
-                return _go_home()
+                _ok, _m = _go_home()
+                return _with_state(_m)
             return _nav_home_door()    # "进小屋/cabin"→只导航到门口（进屋交给 AI interact_at）
 
         target = _resolve_place(place)
@@ -2563,7 +2604,10 @@ def warp_safe() -> str:
 
 
 def _nav_home_door() -> str:
-    """导航到自家小屋门口（Farm 外立面，用动态 homeDoor），**不进屋**（进屋用 interact_at 门；睡觉用 go_sleep 自动回屋）。
+    """导航到自家小屋门口（Farm 外立面，用动态 homeDoor），**不进屋**（进屋用 interact_at 门）。
+    ⚠️ 睡觉要说清谁：`sleep who=自己名` 才睡自家床（`_aim_sleep_home` 会先走回屋）；
+       **裸调 sleep 的默认是房主的床**（爬床彩蛋），而且那种情况不会自动导航。
+    （恒 2026-09-19 读文案时问到这个，原来那句「睡觉用 sleep(自动回屋)」没写前提，会把人带沟里。）
     解决"进 cabin 找不到门"：不依赖 _enter_building_door 的静态坐标(3,12)。"""
     try:
         door = api.state().get("player", {}).get("homeDoor")
@@ -2573,6 +2617,8 @@ def _nav_home_door() -> str:
         _err = _walk_on_map(door["location"], door["x"], door["y"], timeout=35)
         if _err:
             return _with_state(f"❌ 没到自家门口: {_err}")
-        return _with_state(f"🏠 已到自家小屋门口 ({door['location']} {door['x']},{door['y']})——进屋 interact_at 门；睡觉用 sleep(自动回屋)")
+        return _with_state(f"🏠 已到自家小屋门口 ({door['location']} {door['x']},{door['y']})"
+                           f"——进屋 interact_at 门；睡觉是 `sleep who=<自己名字>`"
+                           f"（会自动走回屋到床边，不用先回家）；who **必填**、名字写错会报错列出可选名")
     except Exception as e:
         return _with_state(f"❌ {e}")

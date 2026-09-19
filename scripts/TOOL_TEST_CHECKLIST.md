@@ -214,7 +214,7 @@
 | `berry` | T3 副作用 |  | ⏭ 没条件测 | `session_log:1189` 农场没有结果的浆果灌木（春25 早过树莓季春15-18）⇒ 摇的动作没发生；需在浆果季再验 |
 | `break` ⇄`farm:break` | T3 副作用 | radius, steps | ✅ | `session_log:288` |
 | `decor` | T2 摆场 |  |  |  |
-| `drop` | T3 副作用 | items | ✅ | `session_log:784` |
+| `drop` | T3 副作用 | items | ✅ | `session_log:1374` |
 | `face` | T2 摆场 | direction | ✅ | `session_log:1257` |
 | `forge_help` | T2 摆场 |  | ✅ | `session_log:312` |
 | `front` | T2 摆场 |  | ✅ | `session_log:636` |
@@ -427,7 +427,7 @@
 
 | op | 层 | 参数 | 判定 | 证据 |
 |---|---|---|---|---|
-| `go` | T2 摆场 | destination | ✅ | `session_log:1368` |
+| `go` | T2 摆场 | destination | ✅ | `session_log:1376` |
 | `lookup` | T1 自动 | location | ✅ | `session_log:1103` |
 | `npc` | T2 摆场 |  | ✅ | `session_log:650` |
 | `query` | T1 自动 | function | ✅ | `session_log:611` |

@@ -978,17 +978,20 @@ def _snap_onto_bed(bx, by, loc=None):
 def _sleep_bed_gate(locate: dict, bed_location: str) -> str:
     """🔑 睡流程本地门禁（2026-08-22 恒：只睡当前场景的床，不跨图、不 warp）。
     只有 cabin / farmhouse / 姜岛小屋(IslandFarmHouse) 有床，别处一定没床。
-    返回空串=通过；非空=拦截原因（AI 应先用 map_go 回家/到对方屋再 go_sleep）。
+    返回空串=通过；非空=拦截原因。
+    ⚠️ 2026-09-19：这是**安全网**。正常路（go_sleep/lie_bed）会先 `_aim_sleep_home` 把人走过去，
+       根本到不了这两句；走得到 = 上一步没成 ⇒ 报错必须**说清下一步**（别只报"没有床"）。
     - ① 精确（新 DLL 才有 curLoc 当前场景唯一名）：扫到的床必须就在当前场景
-      （co-sleep：恒的床在恒 FarmHouse，和当前小屋不同 → 拦）。
+      （co-sleep：房主的床在房主 FarmHouse，和当前小屋不同 → 拦）。
     - ② 兜底（老 DLL 无 curLoc）：只按当前场景显示名粗判 Cabin/FarmHouse/IslandFarmHouse。"""
     try:
         cur_loc = locate.get("curLoc")  # 新 DLL：当前场景唯一名
         cur_show = (_ai_get("/state").get("location") or {}).get("name", "")
+        _next = "先 map go 到那栋屋再喊一次，或看上一步的 ❌ 报错"
         if cur_loc and bed_location != cur_loc:
-            return f"当前场景没有床（床位在{bed_location}，当前在{cur_loc}）——先用 map_go 回家/到对方屋再 go_sleep"
+            return f"当前场景没有床（床位在{bed_location}，当前在{cur_loc}）——go_sleep 本该自动把人带过去，能走到这句说明自动导航没成：{_next}"
         if not cur_loc and cur_show not in ("Cabin", "FarmHouse", "IslandFarmHouse"):
-            return f"当前场景没有床（{cur_show}）——先用 map_go 回家/到对方屋再 go_sleep"
+            return f"当前场景没有床（{cur_show}）——go_sleep 本该自动把人带过去，能走到这句说明自动导航没成：{_next}"
         return ""
     except Exception as e:
         return f"当前场景没有床（{e}）"
@@ -997,9 +1000,10 @@ def _sleep_bed_gate(locate: dict, bed_location: str) -> str:
 def go_sleep_flow(who="", log=None, humanize=True) -> dict:
     """🛏️ 完整睡觉流程（humanize 二选一）：
     - humanize=True（默认，AI 主动 go_sleep/lie_bed 的"拟人休息"）：**本地扫床、去 warp**。
-      当前场景没床（非 Cabin/FarmHouse/姜岛小屋，或床不在当前场景）→ 报「当前场景没有床」终止；
-      有床 → 同图 walk 到床边 → crawl_bed sleep → /sleep stay → 等过夜；夜不过则原地重爬重就绪。
-      不跨图，远途回小屋/到对方屋由 AI 先 map_go。
+      当前场景没床（床不在当前场景）→ 报「当前场景没有床」终止；有床 → 同图 walk 到床边 →
+      crawl_bed sleep → /sleep stay → 等过夜；夜不过则原地重爬重就绪。
+      本函数自己**不跨图**；跨图那半步由上层 `_aim_sleep_home`（走 map_go）先做完
+      （2026-09-19 恒：以前只有"睡自家"会走，现在谁的名字都走）。
     - humanize=False（内部兜底，凌晨自动睡）：**沿用旧版 warp**——warp 进床所在建筑 → walk → 对位 → 躺 → 就绪；
       夜不过走"warp Farm 出建筑 → 回床重爬"。兜底要稳，不用拟人。
     返回 {ok, summary, steps:[{step,ok,detail}], woke_in_expected_bed, wake, co_sleep, slept_in}。
