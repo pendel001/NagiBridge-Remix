@@ -11834,6 +11834,59 @@ def _furniture_miss_msg(x: int, y: int) -> str:
                    f"（**大件只报左上角那格，但点它覆盖的任意一格都行**）")
 
 
+# ── 🪑 家具「读回验证」的两个小工具（2026-09-19，坐实「报的是地毯、动的是椅子」）──────────
+# 为什么需要：`furniture_pickup` 原来直接把 C# 给的 `furniture` 名字回给 AI，而那个名字是
+#   「**第一个包围盒命中**」—— 游戏真删的却是**从后往前**扫到的那件
+#   （`GameLocation.cs:7999` `for (num = furniture.Count-1; num >= 0; num--)`），
+#   同一格压着两件家具时**两边逻辑上必然报不同的那件**，不是偶尔猜错。
+#   ⇒ 改成**前后 diff**：不猜、也不照抄一份判据（照抄将来游戏一改又会漂），直接看谁不见了。
+#   ⚠️ **key 里绝不能带名字**：同款两件（两把橡木椅子）名字一模一样，一对比就分不出来；
+#     用 (itemId, x, y, 宽, 高) —— 世界里家具的"型号+位置"是唯一的。
+def _furn_key(f) -> tuple:
+    return (f.get("itemId"), f.get("x"), f.get("y"), f.get("width"), f.get("height"))
+
+
+def _furn_list():
+    """当前地点的家具全表；**读不到返回 None**（调用方要分得清"真的空了"和"我没读到"）。"""
+    try:
+        return api.furniture_scan().get("furniture") or []
+    except Exception:
+        return None
+
+
+def _inv_slots():
+    """背包**占格数**（不含空格）；读不到返回 None。
+
+    ⚠️ 用"占格数"而**不是"物品数量之和"**：家具的 `Stack` 可能是 0（恒 2026-09-19：
+    家具在包里不堆叠、占一格），按数量求和会算出 `-1` 这种鬼数，判断直接失真。
+    """
+    try:
+        return len(api.state().get("inventory") or [])
+    except Exception:
+        return None
+
+
+def _wait_furniture_gone(before, tries: int = 12, dt: float = 0.25):
+    """等 `before` 里**最先消失**的那件，返回它；一直没少 / 读不到，返回 None。
+
+    ⚠️ **必须轮询**：删除走 `furnitureToRemove`（`NetMutexQueue`，Processor=`removeQueuedFurniture`）
+    ⇒ **下一个 update 才真删**，`LowPriorityLeftClick` 返回时还没删。读完就走会误判成"没拿动"。
+    """
+    if not before:
+        return None
+    want = {_furn_key(f): f for f in before}
+    for _ in range(tries):
+        time.sleep(dt)
+        cur = _furn_list()
+        if cur is None:
+            return None
+        left = {_furn_key(f) for f in cur}
+        for k, f in want.items():
+            if k not in left:
+                return f
+    return None
+
+
 @mcp.tool()
 def furniture_pickup(tile_x: int, tile_y: int) -> str:
     """🪑 拿起家具（把摆放的家具收回背包）
@@ -11842,8 +11895,13 @@ def furniture_pickup(tile_x: int, tile_y: int) -> str:
        游戏 `CanFreePlaceFurniture()` 恒真，把"站旁边"那道 96px 检查短路了；
        只有**户外农场**这类非装修图才要站 1~2 格内。（09-19 真机：(10,10) 拿起 (25,14)，隔 15 格成功）
     ⚠️ **初始家具也拿得起**（`AllowLocalRemoval` 默认 true）；真拿不起的是**别人家的床**。
-    ⚠️ 背包满会**静默失败**（`picked` 照样回 true，但东西不一定进包 —— 拿完重读背包确认）；
-       开菜单时拿不了。
+    ✅ **报的名字是"读回来"的**（2026-09-19 起）：拿完会**前后 diff 家具表**，报**真正少掉**的那件。
+       以前回的是 C# 猜的名字（"第一个包围盒命中"），而同格压着两件家具时**游戏是从后往前扫**的
+       ⇒ 必然报错人（真机实证：回「拿起了 Burlap Rug」，实际拿走的是椅子）。
+    ✅ **背包满现在会被抓出来**（以前是静默的）：游戏 `removeQueuedFurniture` 一旦
+       `couldInventoryAcceptThisItem` 为假就**整个 return（连家具都不删）**，而 `picked` 照样回 true。
+       本工具会盯着看家具少没少 —— 一件没少就如实报"没拿动"并让你先腾格子。
+    ⚠️ 开菜单时拿不了。
     摆放走同一域：ops=place kw={name:…, x:…, y:…}
 
     Args:
@@ -11851,19 +11909,59 @@ def furniture_pickup(tile_x: int, tile_y: int) -> str:
         tile_y: 家具所在的瓦片 Y 坐标
     """
     try:
+        # 🔍 2026-09-19 **读回验证**（恒真机抓到「报的是地毯、动的是椅子」）：
+        #    病根**不在名字取错，在扫描方向相反** —— 游戏 `GameLocation.cs:7999` 是
+        #    `for (num = furniture.Count-1; num >= 0; num--)`（**从后往前**，拿最上面那件），
+        #    而 C# 那边 `foreach (var f in loc.furniture)` **从前往后**取"第一个包围盒命中"
+        #    ⇒ 同一格压着两件家具时，**两边逻辑上必然报不同的那件**，不是偶尔猜错。
+        #    ⚠️ 光把方向改对也只是"照抄一份判据"，将来游戏一改就又漂 —— 所以这里**不猜**：
+        #       拿 `/furniture` **前后 diff**，报**真正少掉**的那件。C# 回的 `furniture` 一个字不用。
+        #    ⚠️ 游戏的删除走 `furnitureToRemove`（NetMutexQueue，`removeQueuedFurniture` 是 Processor）
+        #       ⇒ **下一个 update 才真删**，所以要点轮询等它落地，不能读完就走。
+        _before = _furn_list()
+        _n0 = _inv_slots()
         r = api.furniture_pickup(tile_x, tile_y)
-        if r.get("ok") and r.get("picked"):
-            name = r.get("furniture") or "家具"
-            return _with_state(f"🪑 拿起了 {name}，已收回背包")
         if not r.get("ok"):
             return _with_state(f"❌ 拿起家具失败: {r.get('error', '未知')}")
-        # picked=False：C# 已经扫过包围盒 —— `furniture` 为空是"这格压根没家具"，
-        # 和"有家具但没拿动"是两回事，别混成一句三选一的猜测（2026-09-19 恒）。
-        if not r.get("furniture"):
-            return _with_state(_furniture_miss_msg(int(tile_x), int(tile_y)))
+        if not r.get("picked"):
+            # picked=False：C# 已经扫过包围盒 —— `furniture` 为空是"这格压根没家具"，
+            # 和"有家具但没拿动"是两回事，别混成一句三选一的猜测（2026-09-19 恒）。
+            if not r.get("furniture"):
+                return _with_state(_furniture_miss_msg(int(tile_x), int(tile_y)))
+            return _with_state(
+                f"⚠️ 「{r['furniture']}」没拿起来：可能是**站太远**（只在户外这类非装修图才有这限制）、"
+                f"**开着菜单**、或这是**别人家的床**。**物品没动。**")
+        _gone = _wait_furniture_gone(_before)
+        if _gone:
+            # 再补一环：**地上少了 ≠ 包里多了**。家具不堆叠（恒 2026-09-19），
+            # `removeQueuedFurniture` 是"先塞工具栏 12 格，塞不下再 addItemToInventory"——
+            # 两头都可能出岔子，所以**数一下背包占格有没有 +1**。
+            # （用占格数而不是数量：家具的 `Stack` 可能是 0，按数量算会得出 -1 这种鬼数。）
+            _n1 = _inv_slots()
+            if _n0 is not None and _n1 is not None and _n1 <= _n0:
+                return _with_state(
+                    f"⚠️ 「{_gone.get('name') or '家具'}」**从地上没了，可背包占格没多**（{_n0}→{_n1}）。\n"
+                    f"两种可能，我不敢替它下结论：\n"
+                    f"  ① **并进了已有的同类格** —— 家具本该不堆叠，但被写成 `Stack=0` 的那种格子\n"
+                    f"     可能被 `addItemToInventory` 当成「没满」（这条我**没验过**，只是有可能）\n"
+                    f"  ② **真没进包**。\n"
+                    f"👉 立刻 `check ops=backpack` 数一遍：**数目对不上就告诉我**，别当它拿到了")
+            return _with_state(f"🪑 拿起了 {_gone.get('name') or '家具'}，已收回背包")
+        if _before is None:
+            # 读不到家具表 ⇒ **没复核到**，如实说，别拿 C# 那个猜的名字糊过去
+            return _with_state(
+                "🪑 已点击（游戏回了 picked=true）——⚠️ **但我没能复核**（读不到家具列表），"
+                "到底拿走没有**请以背包为准**")
+        # picked=true **却一件家具都没少**：游戏那边**根本没删**。
+        # 反编译 `removeQueuedFurniture`：`if (!furniture.TryGetValue(...) || !player.couldInventoryAcceptThisItem(value)) return;`
+        # ⇒ **背包接不下就整个 return**（连删都不删）—— 这正是 #27「背包满静默失败」的真身，
+        #   而 **picked 照样回 true**。以前我们照抄成「已收回背包」，AI 以为拿到了、其实地上还在。
         return _with_state(
-            f"⚠️ 「{r['furniture']}」没拿起来：可能是**站太远**（只在户外这类非装修图才有这限制）、"
-            f"**开着菜单**、或这是**别人家的床**。**物品没动。**")
+            "⚠️ 游戏回了 picked=true，可**家具一件没少**（我盯了 3 秒）——\n"
+            "最常见是**背包接不下**：反编译 `removeQueuedFurniture` 是"
+            "`if (!couldInventoryAcceptThisItem(value)) return;` ⇒ **连删都不删**。\n"
+            "**物品没动、地上还在。**\n"
+            "👉 先腾格子：`check ops=backpack` 看剩下什么，或 `scene ops=drop` 丢几件再来")
     except Exception as e:
         return _with_state(f"❌ 拿起家具失败: {e}")
 
@@ -12040,6 +12138,112 @@ def decor_report() -> str:
     return _with_state("\n".join(lines))
 
 
+# ── 🧍 放置的两道新门（2026-09-19 恒「叠放吃物品」，真机四情形全走完）────────────────────
+# **背景**：`/use {x,y}` 是**直接调 `Object.placementAction`**、**跳过 `Utility.playerCanPlaceItemHere`**
+#   ⇒ 隔半张图也能凭空放，于是看得见游戏内部那两处粗糙行为（真人玩家永远撞不到）：
+#     ① 目标格已有**同款** ⇒ 兜底那段 `if (id != id)` 不成立 ⇒ **什么都不做**，但函数末尾照样
+#        `return true` ⇒ 我们先前照抄成「已放置」并 `reduceActiveItemByOne()` ⇒
+#        **物品凭空消失、地上零变化**（铁证：`/use` 回 `{"ok":true,"action":"placed"}`、背包 1→0、地上没变）。
+#     ② 目标格已有**异款** ⇒ `Game1.createItemDebris(旧的)` **把原来那台打落成掉落物**，新的顶上去。
+#     ③ 箱子反而**安全** —— 它走的是另一条分支（反编译 `IL_1d66`），自带 `objects.ContainsKey` 检查、
+#        游戏自己会拒（真机对照：`Cannot place 'Chest' here`、物品没消耗）。
+#   ⇒ 差别只在**兜底那段没查**。C# 侧已补「读回验证」兜住所有调用方；这里两道门是**给 AI 当场说清**、
+#      并且**在动手之前**就把事拦住（C# 那道是事后如实报，那时物品已经出过手了）。
+#
+# ⚠️ **两道门必须按顺序**：先拟人闸门（保证目标格落进 `/surroundings` 的半径），再占位守门（才看得见那格）。
+#
+# 📐 闸门取 **2 格**，**照抄游戏、不是我拍脑袋**（`Utility.playerCanPlaceItemHere` 的两条判据）：
+#     · 鼠标放置   → `withinRadiusOfPlayer(x, y, 1, f)`            → `Utility.cs:5719` Chebyshev ≤ 1
+#     · 非鼠标放置 → `_HasNonMousePlacementLeeway`                → `Utility.cs:5446` Chebyshev ≤ 2
+#     取宽的 2（AI 对应"非鼠标放置"那一档），**且判据形式也照抄**：`withinRadiusOfPlayer` 比的是
+#     **Chebyshev（切比雪夫/棋盘距离 max(|dx|,|dy|)）**，不是欧氏、不是曼哈顿 —— 别自己换。
+_PLACE_REACH = 2
+
+
+def _place_reach_check(name: Optional[str], x: int, y: int) -> str:
+    """🧍 够得着吗？够不着返回拒绝文案，够得着返回 ""。
+
+    ⚠️ **地板/墙纸必须豁免**：`Utility.cs:5736` 那句
+        `... || (item is Wallpaper && location is DecoratableLocation) || ...`
+    用 `||` 短路 ⇒ 在装修图里**压根不判距离**（`Flooring` 也是 `Wallpaper`）。
+    不豁免的话，**靠远墙那圈墙格一次都铺不了**。
+    """
+    if x is None or y is None:
+        return ""
+    try:
+        st = api.state()
+    except Exception:
+        return ""
+    look = name or (st.get("player") or {}).get("currentItem") or ""
+    qid = next((str(e.get("itemId") or "") for e in _inv_entries(st, look)), "")
+    if qid.startswith("(FL)") or qid.startswith("(WP)"):
+        return ""
+    pl = st.get("player") or {}
+    px, py = pl.get("x"), pl.get("y")
+    if px is None or py is None:
+        return ""
+    # 照抄 withinRadiusOfPlayer：Chebyshev，不是欧氏距离
+    d = max(abs(int(px) - int(x)), abs(int(py) - int(y)))
+    if d <= _PLACE_REACH:
+        return ""
+    return (f"❌ 够不着 @({x},{y})：你现在在 ({px},{py})，**隔了 {d} 格**。\n"
+            f"🧍 真人放置最多够到 **{_PLACE_REACH} 格**（游戏 `Utility.playerCanPlaceItemHere` 的判据），"
+            f"再远就不是人做得出来的动作了。**物品没消耗、地上没动。**\n"
+            f"👉 先走过去：map ops=walk kw={{x:{x}, y:{y}}}，到了再调一次 place")
+
+
+def _place_empty_hint(tiles, x: int, y: int, n: int = 3) -> str:
+    """从 `/surroundings` 的扫描结果里挑几个**没物件**的格给 AI 照抄。
+
+    ⚠️ 只说"**没物件**"，**不说是"可站"** —— 放置本来就不要求那格能站（洒水器/栅栏正是用来占路的），
+    而且 `/surroundings` 的 `passable` 字段我们还没验过（2026-09-19 撞见过它和 `/passable` 报不同答案，
+    复测又一致 ⇒ 未定性）。宁可说小一点，也别给一个我没验过的判据。
+    """
+    cand = [(t["x"], t["y"]) for t in tiles
+            if t.get("x") is not None and t.get("y") is not None and not t.get("object")]
+    cand.sort(key=lambda p: abs(p[0] - x) + abs(p[1] - y))
+    pick = cand[:n]
+    return " ".join(f"({a},{b})" for a, b in pick) if pick else "（附近没扫到没物件的格）"
+
+
+def _place_occupied_check(name: Optional[str], x: int, y: int) -> str:
+    """🚧 要放的那格已经有东西了吗？有就返回拒绝文案。
+
+    **必须在 `_place_reach_check` 之后调**：目标格只有在 ≤2 格时才落进 `/surroundings` 的半径，
+    否则这里读不到那格、会静默放行（那就是兜底了，恒不要）。
+
+    ⚠️ **读不到那格时放行**（返回 ""），**这不是兜底、是有意的分层**：
+      `BuildSurroundings` 会跳过越界格（`tx<0 || ty<0 || tx>=mapW || ty>=mapH`），玩家贴地图边时
+      目标格可能不在结果里。那时**不判** ≠ "假装它空着" —— 因为 **C# 侧的读回验证才是正确性地板**
+      （它直接看 `loc.objects`，不依赖任何扫描半径）；这道 Python 门只是**在动手之前**把话说清楚，
+      漏判的那一下由 C# 事后如实报。两层的分工就是"能提前说的提前说，说不了的由底下兜住"。
+    """
+    if x is None or y is None:
+        return ""
+    try:
+        st = api.state()
+        tiles = (api._get("/surroundings", {"radius": _PLACE_REACH}).get("tiles") or [])
+    except Exception:
+        return ""
+    t = next((t for t in tiles if t.get("x") == x and t.get("y") == y), None)
+    if t is None or not t.get("object"):
+        return ""
+    existing = t.get("object")
+    eid = t.get("objId") or ""
+    look = name or (st.get("player") or {}).get("currentItem") or ""
+    qid = next((str(e.get("itemId") or "") for e in _inv_entries(st, look)), "")
+    if qid and eid and qid == eid:
+        why = (f"⚠️ 游戏对**同款叠放静默不做事** —— 它照样回报成功，谁照抄它就以为放上了，"
+               f"**你手上这台凭空消失**（真机实证：`/use` 回 `ok:true`、地上没变、背包 −1）。")
+    else:
+        why = (f"⚠️ 真人放不了（那格已被占，游戏会拦）。强行放**会把它打落成掉落物**、新东西顶上去 ——"
+               f"满包或滚远了就是**真丢**。")
+    return (f"❌ ({x},{y}) 上有「{existing}」，放不下这台。\n{why}\n"
+            f"**物品没消耗、地上没动。**\n"
+            f"👉 想放这儿就先拆：ops=break kw={{x:{x}, y:{y}}}；"
+            f"或换一格（你身边**没物件**的格：{_place_empty_hint(tiles, x, y)}）")
+
+
 @mcp.tool()
 def place_item(name: Optional[str] = None, x: Optional[int] = None, y: Optional[int] = None) -> str:
     """🪧 放置物品/播种（把背包物品放到指定格：落地/种树；scene 域）
@@ -12049,6 +12253,10 @@ def place_item(name: Optional[str] = None, x: Optional[int] = None, y: Optional[
        点错了游戏**静默不理**（连错在哪都不说）。拿不准先 `ops=decor` 看这间屋子能铺哪
        （`decor` 在本 op 所在的每个域都有：scene/farm/cabin）；
        点错时本工具会直接告诉你"这格其实是墙不是地板"并给出能铺的格。
+    🧍 **够得着才放**：目标格要在你**身边 2 格内**（照抄游戏 `Utility.playerCanPlaceItemHere` 的判据，
+       地板/墙纸豁免——游戏自己对它不判距离）。够不着会给你"先走过去"的那一步。
+    🚧 **那格得是空的**：目标格上已有东西就**拒绝**——同款叠同款游戏会**静默不做事却回报成功**
+       （你手上那台凭空消失，真机实证过），异款叠上去会**把原来那台打落成掉落物**。
 
     Args:
         name: 物品英文名（Chest / Keg / Maple Seed / Crab Pot …），不传则用当前手上物
@@ -12069,13 +12277,28 @@ def place_item(name: Optional[str] = None, x: Optional[int] = None, y: Optional[
             _decor_msg = _decor_place_check(name, int(x), int(y))
             if _decor_msg:
                 return _with_state(_decor_msg)
+            # 🧍 先拟人闸门 → 🚧 再占位守门。**顺序不能反**（见两道门上面的那段注释）
+            _reach = _place_reach_check(name, int(x), int(y))
+            if _reach:
+                return _with_state(_reach)
+            _occ = _place_occupied_check(name, int(x), int(y))
+            if _occ:
+                return _with_state(_occ)
             r = api._post("/use", {"x": int(x), "y": int(y), "force": True})
         else:
             r = api.use_item(force=True)
         if r.get("ok"):
             _it = name or r.get("item") or "物品"
             _tile = f"({x},{y})" if x is not None else "面前格"
-            return _with_state(f"🪧 已放置「{_it}」@{_tile}")
+            # ⚠️ C# 读回验证发现"原来那台被顶掉了"时会给 note —— **如实转达**，别吞掉。
+            _note = r.get("note") or ""
+            return _with_state(f"🪧 已放置「{_it}」@{_tile}" + (f"\n{_note}" if _note else ""))
+        # 🔍 C# 读回验证抓到"游戏静默没做事"（正常被 B 挡住，这里是第二道保险）——给下一步
+        if r.get("action") == "placed_noop":
+            _ex = r.get("existing") or ""
+            return _with_state(
+                f"❌ 放置失败: {r.get('error', '未知')}\n"
+                f"👉 那格已经有「{_ex}」了 —— 换一格；真想换掉它就先 ops=break kw={{x:{x}, y:{y}}}")
         return _with_state(f"❌ 放置失败: {r.get('error', '未知')}（物品未消耗、未丢地）")
     except Exception as e:
         return _with_state(f"❌ 放置出错: {e}")
@@ -13793,15 +14016,28 @@ def storage_tag(tag: str = "", target: str = "", color: str = "") -> str:
 
 def _drop_one(name: str, count: int = 1):
     """丢**一种**物品，返回 (成功?, 回话, 剩余格数)。"""
+    _n0 = _inv_slots()
     r = api._post("/drop", {"name": name, "count": count})
     if not r.get("ok"):
         return False, f"❌ {name}: 丢弃失败（{r.get('error', r)}）", r.get("inventoryLeft")
     # ⚠️ 2026-09-11：`removed=0` 以前也照报「已丢弃 … x0」⇒ 名字对不上时 AI 以为丢掉了。
     #    名字口径 = `check backpack` 里显示的（C# 侧已对齐 Name|DisplayName）。
     n = r.get("removed", 0)
-    if not n:
-        return False, f"❌ 背包里没有「{name}」，一个都没丢（名字用 check backpack 里显示的）", r.get("inventoryLeft")
-    return True, f"🗑️ 已丢弃 {name} x{n}", r.get("inventoryLeft")
+    if n:
+        return True, f"🗑️ 已丢弃 {name} x{n}", r.get("inventoryLeft")
+    # 🔍 2026-09-19 反向补一刀：**`removed=0` 不等于没丢**。
+    #    C# `HandleDrop` 的循环是 `toRemove = Math.Min(remaining, item.Stack)` ——
+    #    `Stack` 为 **0** 的物品（真机见过：**我们放下去的家具**，见下）算出来 `toRemove=0`、
+    #    `removed += 0`，**可紧接着 `if (item.Stack <= 0) Items[i] = null` 照样把槽位清了**
+    #    ⇒ **东西真没了，回包却说"一个都没丢"**（方向最危险的那种谎报：AI 以为还在）。
+    #    ⚠️ 这种 `Stack=0` 是**我们 `/use` 放家具**造成的：游戏 `location.furniture.Add(this as Furniture)`
+    #      加的是**背包那个对象本身**（不是副本），我们放完又 `reduceActiveItemByOne()` ⇒ 它被减成 0；
+    #      捡回来时 `removeQueuedFurniture` 把这个 0 原样放回包里。**根治要动 C#（记账中）。**
+    #    ⇒ 这里**不信 `removed`，读回占格数**：真少了就算成功，别把已丢的说成没丢。
+    _n1 = _inv_slots()
+    if _n0 is not None and _n1 is not None and _n1 < _n0:
+        return True, f"🗑️ 已丢弃 {name}（游戏回的 `removed=0`，但**背包占格 {_n0}→{_n1}**，确实丢了）", r.get("inventoryLeft")
+    return False, f"❌ 背包里没有「{name}」，一个都没丢（名字用 check backpack 里显示的）", r.get("inventoryLeft")
 
 
 def drop_item(name: str = "", count: int = 1, items: str = "") -> str:

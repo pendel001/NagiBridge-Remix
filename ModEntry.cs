@@ -6666,11 +6666,57 @@ public class ModEntry : Mod
                 var ppy = GetParamOr(p, "y", -1);
                 if (ppx >= 0 && ppy >= 0) { placeX = ppx; placeY = ppy; }
                 int px = placeX * 64, py = placeY * 64;
+                // 🔍 2026-09-19 **读回验证**（恒真机抓到的「叠放吃物品」，四种情形全走完）：
+                //    `Object.placementAction` 兜底那段（反编译 Object.cs:7025-7037）**不查格子占用** ——
+                //      ① 目标格上已有**同款** ⇒ `if (id != id)` 不成立 ⇒ **什么都不做**，但函数末尾
+                //         照样 `return true` ⇒ 我们先前照抄成「已放置」并 `reduceActiveItemByOne()`
+                //         ⇒ **物品凭空消失、地上零变化**（真机铁证：`/use` 回
+                //         `{"ok":true,"action":"placed"}`，地上还是原来那台，背包 1→0）。
+                //      ② 目标格上已有**异款** ⇒ `Game1.createItemDebris(旧的)` **把原来那台打落成掉落物**，
+                //         新的顶上去（真机：小桶被顶成熔炉、小桶掉回背包）。
+                //    而箱子走的是另一条分支（`IL_1d66`，自带 `objects.ContainsKey` 检查）⇒ **游戏自己会拒**。
+                //    ⇒ 差别只在于**兜底那段没查**。这里不猜、不兜底，**放之前放之后各看一眼那格**：
+                //      同实例 ⇒ 游戏确实啥也没干 ⇒ 如实报错**且不消耗**（宁报错别兜底）；
+                //      异实例 ⇒ 事真发生了，但**如实补一句"原来那台被顶掉了"**，别让 AI 以为没代价。
+                //    ⚠️⚠️ **判据必须三处一起看，只看 `objects` 会误杀两类**（我第一版就写错过）：
+                //      · **木地板**(`IsFloorPathItem`) 放在有箱子的格 ⇒ 地板进 `terrainFeatures`、
+                //        `objects` **一动不动** ⇒ 只看 objects 会当成"没做事"**冤枉**。
+                //      · **家具**放在有物件的格 ⇒ `object4 is Furniture` 会**跳过**顶替那段、
+                //        直接把家具塞进 `location.furniture` ⇒ `objects` 同样不动（`CanPlaceOnGround`
+                //        放行家具：`Furniture.isPlaceable()` 恒 true）。
+                //      ⇒ 判"什么都没发生"要 **objects ∩ terrainFeatures ∩ furniture 全都没动**才算。
+                //    ⚠️ 再叠一层 `beforeObj != null` 做锚：播种类走 terrainFeatures、objects 前后都是 null，
+                //      没有这层的话"种子真种下去了"也会被判成没生效。
+                var tgtVec = new Vector2(placeX, placeY);
+                loc.objects.TryGetValue(tgtVec, out var beforeObj);
+                loc.terrainFeatures.TryGetValue(tgtVec, out var beforeTf);
+                int beforeFurn = loc.furniture.Count;
                 bool placed = obj.placementAction(loc, px, py, farmer);
+                loc.objects.TryGetValue(tgtVec, out var afterObj);
+                loc.terrainFeatures.TryGetValue(tgtVec, out var afterTf);
+                bool nothingChanged = ReferenceEquals(beforeObj, afterObj)
+                                   && ReferenceEquals(beforeTf, afterTf)
+                                   && loc.furniture.Count == beforeFurn;
+                if (placed && beforeObj != null && nothingChanged)
+                {
+                    tcs.SetResult(new { ok = false, action = "placed_noop",
+                        error = $"这一格上已经有一台同款「{beforeObj.Name}」了 —— 游戏对这种叠放**静默不做事**"
+                              + $"（它照样返回成功，别人抄它就当成放上了）。**已不消耗你的物品。**",
+                        item = item.Name, existing = beforeObj.Name,
+                        tile = new { x = placeX, y = placeY } });
+                    return;
+                }
                 if (placed)
                 {
                     farmer.reduceActiveItemByOne();
-                    tcs.SetResult(new { ok = true, action = "placed", item = item.Name,
+                    string note = null;
+                    if (beforeObj != null && !ReferenceEquals(beforeObj, afterObj))
+                    {
+                        note = afterObj == null
+                            ? $"⚠️ 原来这格上的「{beforeObj.Name}」被这次放置弄没了（游戏把它打落/移走了）"
+                            : $"⚠️ 原来这格上的「{beforeObj.Name}」被顶掉了（游戏把它打落成掉落物 —— 满包或够不着时就是真丢）";
+                    }
+                    tcs.SetResult(new { ok = true, action = "placed", item = item.Name, note = note,
                         tile = new { x = placeX, y = placeY } });
                 }
                 else

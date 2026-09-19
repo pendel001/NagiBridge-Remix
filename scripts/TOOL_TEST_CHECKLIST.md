@@ -217,7 +217,7 @@
 | `berry` | T3 副作用 |  | ⏭ 没条件测 | `session_log:1189` 农场没有结果的浆果灌木（春25 早过树莓季春15-18）⇒ 摇的动作没发生；需在浆果季再验 |
 | `break` ⇄`farm:break` | T3 副作用 | radius, steps | ✅ | `session_log:288` |
 | `decor` ⇄`cabin:decor` | T2 摆场 |  | ✅ | 真机 09-19(81) 于 IslandFarmHouse：`cabin`/`scene` 域都调通；**两端(7842/7843)各读一次逐项一致**（4 地板房+5 墙房，applied/格数/bbox/tiles 全同），且与反编译 `IslandFarmHouse` 构造硬编码的 9 句 `SetFloor/SetWallpaper` 一一对上 |
-| `drop` | T3 副作用 | items | ✅ | `session_log:1374` |
+| `drop` | T3 副作用 | items | ✅ | `session_log:1374`；**🔴 09-19(88) 真机抓到「反向谎报」并已修（Python 侧）**：`Stack=0` 的物品（＝**我们放下去的家具**捡回来的那种）⇒ C# `HandleDrop` 里 `toRemove = Math.Min(remaining, item.Stack)` 算出 **0**、`removed` 记 0，**可紧接着 `if (item.Stack <= 0) Items[i] = null` 照样把槽位清了** ⇒ **东西真没了，却回「一个都没丢」**（AI 以为还在）。修法=`_drop_one` 不信 `removed`，**读回占格数**（`_n1 < _n0` 即算成功并注明）。真机闭环验过：给→放→捡→丢 ⇒ 「已丢弃 家居植物（游戏回的 removed=0，但背包占格 15→14，确实丢了）」✅。⏭ **根治要动 C#**（见任务 #40） |
 | `face` | T2 摆场 | direction | ✅ | `session_log:1257` |
 | `forge_help` | T2 摆场 |  | ✅ | `session_log:312` |
 | `front` | T2 摆场 |  | ✅ | `session_log:636` |
@@ -229,9 +229,9 @@
 | `maze_walk` ⇄`map:walk_multi` | T2 摆场 | location, max_seg, max_wait, waypoints | ✅ | `session_log:715` |
 | `moss` | T3 副作用 | dry_run, radius, rounds, target_max | ✅ | `session_log:1191` |
 | `pan` | T2 摆场 | dry_run, radius, timeout | ✅ | `session_log:1176` |
-| `pickup` ⇄`cabin:pickup` | T2 摆场 | tile_x, tile_y | ✅ | ⚠️ 原判定是 `--from-log` **自动打的**（只证明"调用没报错"，不算验过）；**09-19 真机补**：隔 15 格拿起(`/furniture` 19→18、背包 11→12) ＋ 放回(18→19、原地)，空格子点名「这格没有家具」＋列就近家具（CHANGELOG 82） |
+| `pickup` ⇄`cabin:pickup` | T2 摆场 | tile_x, tile_y | ✅ | ⚠️ 原判定是 `--from-log` **自动打的**（只证明"调用没报错"，不算验过）；**09-19 真机补**：隔 15 格拿起(`/furniture` 19→18、背包 11→12) ＋ 放回(18→19、原地)，空格子点名「这格没有家具」＋列就近家具（CHANGELOG 82）。⚠️ **09-19(87) 又抓到一个谎报（未修，已记账）**：**多件家具重叠时，报的名字是"猜的"** —— 拿 `(39,24)` 的椅子（上面压着 2x2 地毯），工具回「拿起了 Burlap Rug」，**全量 diff 却是椅子被拿走、地毯没动**。根因 `HandleFurniturePickup` 的 `furnitureName` 取「第一个包围盒命中」，真删的是 `LowPriorityLeftClick` —— 两者不是一回事（同「判据别放消费侧猜」）。修法=`LowPriorityLeftClick` 前后 diff `loc.furniture`。**✅ 09-19(88) 已修并真机验**（Python 侧读回，没关游戏）：`/furniture` 前后 diff 报**真正少掉**的那件（跑轮询，因为删除走 `furnitureToRemove` 队列、下一个 update 才落地）；真机 `(39,24)`（地毯压着）报「家居植物」✅、`(39,26)` 报「橡木椅子」✅。**同日一并验掉 #27「背包满静默失败」**：塞满 36/36 ⇒ 如实报「picked=true 可一件没少…物品没动、地上还在」+ 椅子独立核验仍在原地 ✅（反编译 `removeQueuedFurniture`：`if (!couldInventoryAcceptThisItem) return;` 连删都不删）。再补一环：捡完还数**背包占格有没有 +1**（用占格数不用数量——家具 Stack 可能是 0）。⏭ 仍没条件测：**开菜单时拿不了**（要 AI 窗口前台才能合成按键） |
 | `pickup_scene` | T3 副作用 | max_items | ✅ | `session_log:831` |
-| `place` ⇄`farm:place` | T3 副作用 |  | ✅ | 🪵 **地板/墙纸全链 09-19 真机验过**（IslandFarmHouse）：正铺地板 `applied 48→0` / 正铺墙纸 `87→0`（**两端 7842/7843 逐项一致**、背包各 −1）＋ 故意拿地板点**墙格** ⇒ 点名「这格是**墙格**」+ 列各房可铺格 + 给可照抄 op，且**不消耗、applied 一点没变** ＋ 直接打 `/use` 的**对照组**证明守门是承重的（游戏自己只回 `Cannot place 'Flooring' here`、不说为什么）＋ 非装修图(IslandSouth) 拒绝且不消耗 ＋ 非地板/墙纸**不误拦**（树液走物品门）＋ 铺完**还原 9 个值全回原样**。⚠️ **仍然没验的**：地皮上放**箱子/机器**那一路（`session_log:307` 原本要的那块地皮）。⚠️ 已知缺口见 `select` 行 |
+| `place` ⇄`farm:place` | T3 副作用 |  | ✅ | 🪵 **地板/墙纸全链 09-19 真机验过**（IslandFarmHouse）：正铺地板 `applied 48→0` / 正铺墙纸 `87→0`（**两端 7842/7843 逐项一致**、背包各 −1）＋ 故意拿地板点**墙格** ⇒ 点名「这格是**墙格**」+ 列各房可铺格 + 给可照抄 op，且**不消耗、applied 一点没变** ＋ 直接打 `/use` 的**对照组**证明守门是承重的（游戏自己只回 `Cannot place 'Flooring' here`、不说为什么）＋ 非装修图(IslandSouth) 拒绝且不消耗 ＋ 非地板/墙纸**不误拦**（树液走物品门）＋ 铺完**还原 9 个值全回原样**。⚠️ **仍然没验的**：地皮上放**箱子/机器**那一路（`session_log:307` 原本要的那块地皮）。⚠️ 已知缺口见 `select` 行。**🎯 09-19(87) 又补一轮 —— 放置三件（同款叠放吃物品根治）**：真机坐实 `Object.placementAction` 兜底那段**不查占位** ⇒ 同款叠放**物品凭空消失、`/use` 还回 `ok:true`**（异款则把旧的打落成掉落物；**箱子走另一条分支、游戏自己会拒**）。改了三处并**八条真机全验**：**A** C# `/use` 读回验证（`placed_noop` + 不消耗，判据要 `objects`∩`terrainFeatures`∩`furniture` **三处一起看**，否则误杀木地板/家具）· **C** 拟人闸门（Chebyshev ≤2，照抄 `_HasNonMousePlacementLeeway`；**地板/墙纸豁免**，已验隔 19 格远墙仍可铺）· **B** 占位守门（动手前点名 + 给 `break`/换格两条路）。现场全还原 |
 | `rock` | T3 副作用 | break_stone, dig, max_break, radius | ✅ | `session_log:1185` |
 | `rummage` ≡`garbage` | T2 摆场 |  | ✅ | ← 同 `scene:garbage`〔trash_run〕 |
 | `seats` | T1 自动 | radius | ✅ | `session_log:845` |
