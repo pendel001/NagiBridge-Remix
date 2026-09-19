@@ -161,7 +161,7 @@ class BombMineBot(BombMiner):
     """自主炸矿矿工"""
 
     def __init__(self, port, host_port, bomb_type="Bomb", min_covered=4,
-                 hp_threshold=50, follow_host=True, lead=2, autodrop=0, weapon=None):
+                 hp_threshold=30, follow_host=True, lead=2, autodrop=0, weapon=None):
         super().__init__(port=port, host_port=host_port, bomb_type=bomb_type)
         self.min_covered = min_covered
         self.hp_threshold = hp_threshold
@@ -193,11 +193,17 @@ class BombMineBot(BombMiner):
 
     # ── 卡死检测 ──
 
-    def _update_stuck(self, bombed):
+    def _update_stuck(self):
+        """卡死检测：**只看位置有没有变**（连续 STUCK_ROUNDS 轮没挪窝 ⇒ 判卡死）。
+        ⚠️ 2026-09-19 修：原签名是 `_update_stuck(bombed)`，而"成功放弹"那处调用传的是
+        **字面量 `True`** ⇒ `if bombed or ...` 恒成立 ⇒ 计数恒清零 ⇒ 返回值恒 False ⇒
+        整段"卡死 → 扫整层找铱矿密集点 → 作弊给楼梯下楼"**从来没执行过一次**。
+        改动理由：判据本就该是"人在不在动"，放没放弹不代表没卡死（正是"边放弹边原地打转"
+        才需要被认出来）。所以把 `bombed` 这个参数**整个删掉**，不保留一个会误导的默认值。"""
         s = self.state()
         px, py = s.get("player", {}).get("x", 0), s.get("player", {}).get("y", 0)
         pos = (px, py)
-        if bombed or self._last_pos != pos:
+        if self._last_pos != pos:
             self._stuck_rounds = 0
         else:
             self._stuck_rounds += 1
@@ -292,7 +298,12 @@ class BombMineBot(BombMiner):
         # 只打user的对手（限时）
         deadline = time.time() + COOP_BURST_SEC
         while time.time() < deadline:
-            if not self.combat_aggressive(around=(hx, hy), host_targets_only=True):
+            st = self.combat_aggressive(around=(hx, hy), host_targets_only=True)
+            if st == "unsafe":
+                # ⚠️ 增援不是送命：危险了先收手，回主循环自保（原来这里把 unsafe 当成"继续打"）
+                log(f"  ⚠️ 增援中状态危险（{self.unsafe_reason()}），收手")
+                break
+            if st == "clear":
                 break
             time.sleep(0.3)
         return True
@@ -371,10 +382,13 @@ class BombMineBot(BombMiner):
                 # 退出：AI已被bomb_retreat传出矿 / 恒离开矿井
                 if not is_mine_location(ml) or not is_mine_location(hl):
                     break
-                # 生存优先：血低先吃，没吃的撤
-                if not self.is_safe(self.hp_threshold):
-                    if not self.eat_if_needed(self.hp_threshold):
-                        self.retreat_to_entrance("协同血低无食")
+                # 生存优先：该撤了先吃，吃完还该撤就撤（原因串分开报，不再笼统"血低无食"）
+                why = self.unsafe_reason()
+                if why:
+                    if self.eat_if_needed(self.hp_threshold):
+                        why = self.unsafe_reason()
+                    if why:
+                        self.retreat(f"协同：{why}")
                         break
                 acted = False
                 # 恒在打架 → 增援（只打血量不满的对手）
@@ -399,16 +413,22 @@ class BombMineBot(BombMiner):
 
     def clear_floor(self, level, goal):
         """炸穿当前层直到找到梯子/无法继续。
-        goal: 允许到达的最高层（一起冲层时 = user层数+lead；超过则等user）。
-        返回 ("DONE", next_level) | ("WAIT", None) | (None, reason)
+        goal: 允许到达的最高层。⚠️ 恒 2026-08-23 起**恒等于 target_floor**（AI 领先自由冲，
+        不再被 user 层数卡住等），所以下面 can_descend() 实际恒为 True。
+        返回 ("DONE", next_level) | (None, reason)。
+        ⚠️ 2026-09-19：原来还会返回 ("WAIT", None)（"在等 user"），那条路**不可达**
+        （goal==target_floor 且循环条件 level<target_floor ⇒ can_descend 恒真），
+        已删除；主循环那边改成"真收到 WAIT 就明确报内部不变量被破坏"。
         """
         loc_name = f"UndergroundMine{level}"
         bombs_this_floor = 0
         stuck_msg = None
         explore_count = 0
+        no_collect = False   # 背包满之后本层剩余部分只炸不捡（见下面背包规划那段）
 
         def can_descend():
-            """能否下到 level+1（受一起冲层的 goal 限制）"""
+            """能否下到 level+1。⚠️ 当前 goal 恒等于 target_floor ⇒ 恒 True（见 docstring）；
+            保留这个判断是为了将来若给 goal 重新加限制时不用回头补。"""
             return level + 1 <= goal
 
         # ── 感染层检测：怪多矿少→直接作弊楼梯跳关（约好的：不杀怪，作弊给梯下去） ──
@@ -420,9 +440,10 @@ class BombMineBot(BombMiner):
                 log(f"  👾 感染层！怪{mcount}只 矿{rcount}块 → 作弊楼梯跳关")
                 if self.cheat_staircase() and self.use_staircase():
                     return "DONE", self.my_mine_level()
-                # 楼梯失败 + HP 警告 → warp 下一层保底
-                if not self.is_safe(self.hp_threshold):
-                    log("  💢 HP 警告，warp 下一层保底")
+                # 楼梯失败 + 危险 → warp 下一层保底
+                why = self.unsafe_reason()
+                if why:
+                    log(f"  💢 危险（{why}），warp 下一层保底")
                     if self.safe_warp(f"UndergroundMine{level+1}", x=5, y=5):
                         self.mine_level = level + 1
                         return "DONE", self.my_mine_level()
@@ -435,11 +456,12 @@ class BombMineBot(BombMiner):
 
             # 自保：HP<60% 真实吃食物回血（IsActive 补丁后 eatObject 回血可靠；吃完仍低才 /heal 救急）
             self.eat_recovery(hard=self.hp_threshold, target=60)
-            if not self.is_safe(self.hp_threshold):
-                if not self.eat_if_needed(self.hp_threshold):
-                    return None, f"状态不足(HP<{self.hp_threshold}%)"
-                if not self.is_safe(self.hp_threshold):
-                    return None, "吃完还是危险"
+            why = self.unsafe_reason()
+            if why:
+                if self.eat_if_needed(self.hp_threshold):
+                    why = self.unsafe_reason()
+                if why:
+                    return None, why
 
             # 受击反击：HP 比上次低 → 立刻回击两下（保底，不依赖怪检测——魔法箭筒击退/延迟也能防）
             self.retaliate_if_hit()
@@ -548,12 +570,12 @@ class BombMineBot(BombMiner):
             ax, ay, covered, _ = anchor
             log(f"  🎯 炸点 ({ax},{ay}) 覆盖 {covered} 块")
 
-            # 炸 + 躲 + 等 + 捡
-            ok, msg, broken = self.bomb_and_collect(ax, ay, collect=True)
+            # 炸 + 躲 + 等 + 捡（背包满之后本层就不再捡，见下）
+            ok, msg, broken = self.bomb_and_collect(ax, ay, collect=not no_collect)
             if not ok:
                 log(f"  ⚠️ {msg}")
                 time.sleep(0.5)
-                if self._update_stuck(bombed=False):
+                if self._update_stuck():
                     stuck_msg = "连续放置失败，疑似卡死"
                     break
                 continue
@@ -567,13 +589,19 @@ class BombMineBot(BombMiner):
                 for ln in plan:
                     log(ln)
                 if freed == 0 and self.inventory_free_slots() <= 2:
-                    # ⭐ 2026-08-23 恒：背包满不停脚本（只停本层拾取），清包交给三层一停整理/异步 bomb_organize；
-                    #    只有弹战利品/待领物 ItemGrabMenu(开箱) 才 ManualChestFull 停脚本。
-                    log("  ⚠️ 背包满了（自动丢物已退役）→ 本层停止拾取，清包交给整理机制")
-                    break
+                    # ⭐ 2026-08-23 恒：背包满**不停脚本**（只停本层拾取），清包交给三层一停整理 /
+                    #    异步 bomb_organize；只有弹战利品/待领物 ItemGrabMenu(开箱) 才 ManualChestFull 停脚本。
+                    # ⚠️ 2026-09-19 修：原先这里是 `break` —— 那是**整层不炸了**，跟注释承诺的
+                    #    "只停本层拾取"不是一回事（而且脚本末尾那段 `startswith("背包满")` 因为
+                    #    从没人产出这个 reason，其实永远不执行）。现在按注释的本意来：本层剩下的
+                    #    放弹一律 collect=False，脚本照常往下走。
+                    if not no_collect:
+                        log("  ⚠️ 背包满了（自动丢物已退役）→ 本层剩余部分停止拾取，脚本继续")
+                    no_collect = True
 
             # 卡死检测：先扫整层按铱矿密集点走路，移动了继续炸；没移动就作弊给楼梯下楼
-            if self._update_stuck(bombed=True):
+            # ⚠️ 这里原来传字面量 True ⇒ 恒不触发（见 _update_stuck 注释）
+            if self._update_stuck():
                 log("  ⚠️ 位置没变，扫整层找铱矿密集点")
                 if self.walk_to_rich_ore(level):
                     continue
@@ -694,10 +722,15 @@ class BombMineBot(BombMiner):
             if (level - 120) % 100 == 0 or (level < 121 and level % 10 == 0):
                 self.open_treasure_chests()
 
-            # 安全
-            if not self.is_safe(self.hp_threshold):
-                if not self.eat_if_needed(self.hp_threshold):
-                    retreat_reason = "状态不足"
+            # 安全：⚠️ 吃完必须**复检**。clear_floor 那处有复检、主循环这处原来没有——
+            #    结果吃一口就当"安全"继续走，跟吃食目标线之间留出一段死区（恒观察到的
+            #    "被怪打到死还在吃东西"就长在这）。2026-09-19 补齐，两处对齐。
+            why = self.unsafe_reason()
+            if why:
+                if self.eat_if_needed(self.hp_threshold):
+                    why = self.unsafe_reason()
+                if why:
+                    retreat_reason = why
                     break
 
             # 一起冲层：AI 领先自由冲（goal=目标层，不再被user层数卡住等——user反馈"下楼有延迟"）
@@ -730,24 +763,15 @@ class BombMineBot(BombMiner):
                 retreat_reason = payload
                 break
             if status == "WAIT":
-                if max_floors:
-                    break  # 逐层模式：本层清完了（在等user），直接返回摘要，不硬等
-                # 在等user：等user往前走到 goal 增大（或离开矿井），再继续
-                log(f"  🧍 已在第 {level} 层等user（goal={goal}）…")
-                waited = 0
-                while waited < 120:  # 最多等 2 分钟
-                    time.sleep(3)
-                    waited += 3
-                    if is_mine_location(self.host_location()):
-                        hlv = self.host_mine_level()
-                        if hlv and hlv + self.lead > level:
-                            break  # user往前了，继续冲
-                    else:
-                        break  # user离开矿井，自己冲
-                # 若user离开了矿井 → goal 恢复全局目标，重新进循环
-                if not is_mine_location(self.host_location()):
-                    log("  user离开了矿井，自己冲")
-                continue
+                # 🚫 不可达：goal 恒等于 target_floor，而循环条件是 level < target_floor
+                #    ⇒ can_descend()（level+1 <= goal）恒 True，clear_floor 不可能返回 WAIT。
+                #    原来这里有一大段"等 user 两分钟"的代码 + 唯一用到 self.lead 的那行，
+                #    全是死的（恒 2026-08-23 把"等 user"改掉之后就没人再产出 WAIT）。
+                #    按恒"宁报错别兜底"：真走到这里说明不变量被破坏了，**明确报错**，不静默继续。
+                log(f"  ❌ 内部不变量被破坏：clear_floor 返回 WAIT，但 goal={goal} level={level}"
+                    f"（goal==target_floor 时 can_descend 恒真，不该出现）")
+                retreat_reason = "内部状态异常（WAIT 不可达）"
+                break
 
             nxt = payload
             if nxt <= level:
@@ -800,10 +824,10 @@ class BombMineBot(BombMiner):
             # 2026-08-22 恒：没炸弹+玩家同矿→已转【内部】协同（_run_cooperate 处理跟随+撤退），这里不重复出矿
             log("🔄 === 协同模式结束 ===")
             return False
-        if retreat_reason and retreat_reason.startswith("背包满"):
-            # ⭐ 背包满：不撤退，留原地停手（AI 手动 bomb_organize/腾格，重跑 resume 原地续）——恒 2026-08-23
-            log("  背包满已停脚本交AI手动整理（不撤退，留原地）→ 处理完重跑 bomb_mine 原地续层")
-            return True
+        # ⚠️ 2026-09-19 删：这里原来有一段 `if retreat_reason.startswith("背包满")`，
+        #    但全文件**没有任何一处**把 retreat_reason 赋成"背包满"（517/573 那两处只 log），
+        #    所以它从来没执行过——留着就是"看着像有处理、其实是死的"。背包满的真实行为
+        #    现在写在 clear_floor 里（只停本层拾取、脚本继续），跟注释承诺一致。
         # 🔥 2026-09-06 恒：城镇没显式设 target 走默认 120 时，若电梯/进度已到顶(start>=target)，
         #   其实"没层可炸就撤"。点名让 AI/人知道这不是真冲到更深，而是城镇到头了。头骨(≥121)无此概念，不提示。
         if (not self.target_was_default_skull) and getattr(self, "target_was_default", False) \
@@ -830,10 +854,18 @@ def main():
     parser.add_argument("--target", type=int, default=0, help="目标层（0=按当前层自适应：头骨/沙漠≥121→500、城镇→120）")
     parser.add_argument("--bomb", type=str, default="Bomb", help="炸弹类型：Bomb/Mega Bomb/Cherry Bomb")
     parser.add_argument("--min-covered", type=int, default=4, help="至少覆盖N块岩体才炸（默认4，爆炸区不重叠后效率够）")
-    parser.add_argument("--hp-threshold", type=int, default=30, help="血量低于此%撤退（默认30，user建议）")
+    # ⚠️ 2026-09-19 语义收口：**这不是撤退线**。撤退线已改成 HP<20 **绝对值**（恒定的
+    #    "不到快死都可以继续下"）。本阈值只管"吃/兜底"——eat_if_needed 的触发线、
+    #    eat_recovery 里 /heal 的救急线、以及 preflight 的拦启动线。
+    #    四个入口原来三种值（bomb_mine 30 / mine go 50 / escort 50 / volcano 30），统一成 30。
+    parser.add_argument("--hp-threshold", type=int, default=30,
+                        help="吃/兜底线：血量低于此% 吃食物（含 /heal 救急、preflight 拦启动）。"
+                             "默认30。⚠️ 撤退线不在这里——撤退看 HP<20 绝对值。")
     parser.add_argument("--follow-host", type=int, default=1, help="user在矿里就一起冲层（1开0关）")
     parser.add_argument("--weapon", type=str, default=None, help="武器绑定：指定用某把武器（如 'Galaxy Hammer'），不指定自动选真实武器")
-    parser.add_argument("--lead", type=int, default=2, help="和user保持的层差（默认2）")
+    parser.add_argument("--lead", type=int, default=2,
+                        help="⚠️已废弃（恒 2026-08-23 起 AI 领先自由冲，不再被 user 层数卡住）。"
+                             "传非默认值会**明确报错**，不再静默无效。")
     parser.add_argument("--autodrop", type=int, default=0, help="自动丢物（已退役，恒 2026-08-23 全退役）：0=只规划不丢，交AI手动整理腾格")
     parser.add_argument("--resume", action="store_true", default=True, help="从炸矿进度恢复（默认开）")
     parser.add_argument("--no-resume", action="store_false", dest="resume")
@@ -843,6 +875,14 @@ def main():
     parser.add_argument("--organize-disable", action="store_true", help="AI 判定后续不需要整理背包：写 bomb_organize.json disabled")
     parser.add_argument("--organize-reset", action="store_true", help="整理完背包后重置间隔计数（bomb_organize.json floors_since_organize=0）")
     args = parser.parse_args()
+
+    # ⚠️ 2026-09-19：--lead 自 2026-08-23 起**完全无效**（goal 恒等于 target_floor，
+    # 既不等 user 也不看层差），但 CLI 和 MCP 都还在传它——传了没反应是最坏的一种"谎报"。
+    # 按恒"宁报错别兜底"：传了非默认值就直接报错，让人知道这条已经不存在了。
+    if args.lead != 2:
+        log("❌ --lead 已废弃（恒 2026-08-23：AI 领先自由冲，不再按层差等 user）。"
+            "这个参数现在不起任何作用，别传它；要限制冲到哪一层请用 --target。")
+        return
 
     if args.check_progress:
         deepest = load_progress()

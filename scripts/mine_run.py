@@ -23,8 +23,11 @@
   --target        目标层数（rush）/ --ore 指定矿（farm）
   --cycles        刷矿循环次数（farm 模式，默认 5）
   --resume / --no-resume   是否从已到达最深恢复（rush默认resume）
-  --hp-threshold  血量低于此 % 吃食物（默认 50）
-  --sta-threshold 体力低于此 % 吃食物（默认 20）
+  --hp-threshold  吃/兜底线：血量低于此 % 吃食物（默认 30，与 argparse 一致）
+  --sta-threshold 体力低于此 % 吃食物（默认 10，与 argparse 一致）
+  ⚠️ 撤退线不在这两个阈值里：**撤退看 HP<20 绝对值**（恒 2026-09-19 拍板）
+  ⚠️ 撤退时间：**24:30**（与 bomb 系列统一；原来这里是 24:00）
+
   --food-sta      体力食物名称（如 Salad）
   --food-hp       回血食物名称（如 Cheese）
   --port          NagiBridge 端口（默认 7842）
@@ -1026,33 +1029,37 @@ class MineBot(WeaponMixin):
                 return False
         return True
 
-    def is_safe(self, hp_threshold=30, sta_threshold=15):
-        """基础安全检查：HP/体力/时间"""
+    # 🏳️ 撤退血量线用**绝对值**（恒 2026-09-19 拍板，与 bomb_common 对齐）：
+    #    "不到快死都可以跟着房主继续下"。原来是百分比阈值 ⇒ 时间到点会被报成
+    #    "状态不足"，再落到"没有食物，撤退"，误导 AI 去补食物。
+    RETREAT_HP_ABS = 20
+    # 撤退时间与 bomb 系列统一（原来 mine 是 2400、bomb 是 2430——同一件事两个值）。
+    # 取 2430：现在撤退是瞬移（权杖/图腾），不用留走路时间，晚一点多挖 30 分钟。
+    RETREAT_TOD = 2430
+
+    def unsafe_reason(self, sta_threshold=15):
+        """返回"该撤了"的原因串（None=安全）。血/体力/时间**分开报**（2026-09-19 修）。"""
         s = self.state()
         p = s["player"]
         hp = p["health"]
-        max_hp = p["maxHealth"]
+        max_hp = p["maxHealth"] or 1
         sta = p["stamina"]
-        max_sta = p["maxStamina"]
+        max_sta = p["maxStamina"] or 1
         tod = s.get("time", {}).get("timeOfDay", 600)
-
-        hp_pct = (hp / max_hp * 100) if max_hp > 0 else 0
-        sta_pct = (sta / max_sta * 100) if max_sta > 0 else 0
-
         if hp <= 0:
-            log("  💀 玩家死亡！")
-            return False
-        if hp_pct < hp_threshold:
-            log(f"  ❤️ HP {hp_pct:.0f}% < {hp_threshold}%")
-            return False
-        if sta_pct < sta_threshold:
-            log(f"  ⚡ 体力 {sta_pct:.0f}% < {sta_threshold}%")
-            return False
-        if tod >= 2400:
-            log(f"  ⏰ 已经凌晨 {tod//100}:{tod%100:02d}，强制回家")
-            return False
+            return "死亡"
+        if hp < self.RETREAT_HP_ABS:
+            return f"血量 {hp} < {self.RETREAT_HP_ABS}（危险线）"
+        if max_sta > 0 and sta / max_sta * 100 < sta_threshold:
+            return f"体力 {sta / max_sta * 100:.0f}% < {sta_threshold}%"
+        if tod >= self.RETREAT_TOD:
+            return f"时间 {tod // 100}:{tod % 100:02d} 已过 {self.RETREAT_TOD // 100} 点半"
+        return None
 
-        return True
+    def is_safe(self, hp_threshold=30, sta_threshold=15):
+        """（兼容壳）`hp_threshold` **已废弃**——血量线改成绝对值 <20（恒 2026-09-19），
+        保留形参只为不打断老调用方；真判据一律看 unsafe_reason()。"""
+        return self.unsafe_reason(sta_threshold=sta_threshold) is None
 
     # ── 梯子 ──
 
@@ -1203,6 +1210,21 @@ class MineBot(WeaponMixin):
             log(f"  🍄 采集 {fname}")
         return picked
 
+    def retreat(self, reason):
+        """🏳️ 撤退：复用 bomb_common 的四级链（返回权杖 > 农场图腾 > 走回入口梯 > warp）。
+        ⚠️ 2026-09-19：原来这里（run_rush 结尾）和 run_farm 结尾**各写死了一次**
+        `warp("Mountain",54,5)`，还包在 `try/except: pass` 里——两份必然漂移，且失败也不知道。
+        借 BombMiner 走同一条链（同 open_treasure_chests 的做法），落点与降级都有校验。
+        返回是否真的撤出去了。"""
+        try:
+            ok = BombMiner(port=self.port).retreat(reason)
+        except Exception as e:
+            log(f"  ⚠️ 撤退链异常：{e}")
+            ok = False
+        if not ok:
+            log("  ⚠️ 四级撤退全失败，角色可能还在矿里——请人工确认")
+        return ok
+
     def open_treasure_chests(self):
         """城镇矿井宝箱层开箱（复用 bomb_common.BombMiner 开箱逻辑，2026-09-07 真机验证 40 层能开）。
         城镇宝箱只在**整10层**、一次性领完即止（沙漠/火山会刷）；扫不到 Chest 即 no-op 不卡。
@@ -1308,16 +1330,18 @@ class MineBot(WeaponMixin):
                 except Exception as e:
                     log(f"  ⚠️ 开宝箱失败: {e}")
 
-            # ── 安全检查 ──
-            if not self.is_safe(hp_threshold, sta_threshold):
+            # ── 安全检查（原因串分开报，别再一律"状态不足"）──
+            why = self.unsafe_reason(sta_threshold)
+            if why:
                 if self.eat_if_needed(food_sta, food_hp, EAT_HP, sta_threshold):
-                    if not self.is_safe(hp_threshold, sta_threshold):
-                        log("  ❌ 吃了东西还是不行，撤退")
-                        retreat_reason = "状态不足"
+                    why = self.unsafe_reason(sta_threshold)
+                    if why:
+                        log(f"  ❌ 吃了东西还是不行（{why}），撤退")
+                        retreat_reason = f"{why}（吃完仍不行）"
                         break
                 else:
-                    log("  ❌ 状态不足且没有食物，撤退")
-                    retreat_reason = "状态不足"
+                    log(f"  ❌ {why}，且没有食物，撤退")
+                    retreat_reason = why
                     break
 
             # ── 先扫一眼有没有现成梯子 ──
@@ -1361,14 +1385,16 @@ class MineBot(WeaponMixin):
             while attempts < MAX_ATTEMPTS and self.mine_level == level:
                 attempts += 1
 
-                # 安全检查
-                if not self.is_safe(hp_threshold, sta_threshold):
+                # 安全检查（原因串分开报）
+                why = self.unsafe_reason(sta_threshold)
+                if why:
                     if self.eat_if_needed(food_sta, food_hp, EAT_HP, sta_threshold):
-                        if not self.is_safe(hp_threshold, sta_threshold):
-                            retreat_reason = "状态不足"
+                        why = self.unsafe_reason(sta_threshold)
+                        if why:
+                            retreat_reason = f"{why}（吃完仍不行）"
                             break
                     else:
-                        retreat_reason = "状态不足"
+                        retreat_reason = why
                         break
 
                 # ⚔️ 受击立即回击两下（每轮都查 HP-drop，不依赖扫描间隔——补刀 + 低延迟，2026-09-06）
@@ -1409,7 +1435,11 @@ class MineBot(WeaponMixin):
                     if self.mine_level != level:
                         break  # 已经下楼了
 
-                    if not self.is_safe(hp_threshold, sta_threshold):
+                    # ⚠️ 2026-09-19 修：这里原来只 `break` 内层、**不设 retreat_reason** ⇒
+                    #    控制流接着落到"没梯子就 warp 下一层"，等于**在低血/凌晨状态下强行下潜**。
+                    why = self.unsafe_reason(sta_threshold)
+                    if why:
+                        retreat_reason = why
                         break
 
                     result = self.mine_rock(tx, ty, name, loc_name)
@@ -1485,11 +1515,7 @@ class MineBot(WeaponMixin):
         s = self.state()
         p = s["player"]
         log(f"  剩余 ❤️ {p['health']}/{p['maxHealth']}  ⚡ {p['stamina']:.0f}/{p['maxStamina']}")
-        log(f"  回矿井口！")
-        try:
-            self.warp("Mountain", x=54, y=5)
-        except Exception:
-            pass
+        self.retreat(retreat_reason or "冲层结束")
 
     # ═══════════════════════════════════════════════════════════════
     #  模式 B：刷矿
@@ -1601,11 +1627,7 @@ class MineBot(WeaponMixin):
         s = self.state()
         p = s["player"]
         log(f"  剩余 {p['health']}/{p['maxHealth']}  {p['stamina']:.0f}/{p['maxStamina']}")
-        log(f"  回矿井口！")
-        try:
-            self.warp("Mountain", x=54, y=5)
-        except Exception:
-            pass
+        self.retreat("刷矿结束")
 
 
 # ═══════════════════════════════════════════════════════════════════

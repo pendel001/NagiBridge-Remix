@@ -6386,6 +6386,39 @@ public class ModEntry : Mod
                 return;
             }
 
+            // ── 🪄 scepter：真用一次"效果在 DoFunction 里"的工具（返回权杖）──
+            //    2026-09-19 新增。为什么现成的两条都不行：
+            //      · `/use` 的 Tool 分支只走 BeginUsingTool+EndUsingTool（见下面那条 2026-09-17 注释）——
+            //        对剑/镐是对的，但权杖/水壶/锄头这类**效果在 DoFunction 里**的工具压根不触发，
+            //        而回包照样 `ok:true` ⇒ 又是"说用了、其实没动"（真机实测：回包 action:"tool"，
+            //        人还在原地）。`/use {"mode":"read"}` 只认 Object（书/纸条），Tool 也进不去。
+            //    ⇒ 照 `/pan` 的思路**专门开一条直调 DoFunction**。
+            //    ⚠️ 只放行 `Wand`（返回权杖）——别的 Tool 一律拒绝，免得有人拿镐子/锄头乱调
+            //       DoFunction 把地图改了（`/pan` 只放行 Pan 也是这个道理）。
+            //    ⚠️ 反编译 `Wand.DoFunction`：`DelayedAction.fadeAfterDelay(wandWarpForReal, 1000)`
+            //       —— 传送是**1 秒后**才发生，调用方要等（Python 侧 _wait_loc_change 已覆盖）。
+            if (mode == "scepter")
+            {
+                if (item is StardewValley.Tools.Wand wand)
+                {
+                    try
+                    {
+                        wand.DoFunction(farmer.currentLocation, (int)farmer.Tile.X, (int)farmer.Tile.Y, 0, farmer);
+                        tcs.SetResult(new { ok = true, action = "scepter", item = item.Name });
+                    }
+                    catch (Exception ex)
+                    {
+                        tcs.SetResult(new { ok = false, action = "scepter", item = item.Name, error = ex.Message });
+                    }
+                }
+                else
+                {
+                    tcs.SetResult(new { ok = false, action = "scepter", item = item?.Name,
+                        error = "scepter 模式只放行返回权杖(Wand)——先 select 返回权杖再调（其它工具用 /tool 或 /use）" });
+                }
+                return;
+            }
+
             var facingTile = GetFacingTile(farmer);
             var loc = farmer.currentLocation;
             int ftx = (int)facingTile.X, fty = (int)facingTile.Y;

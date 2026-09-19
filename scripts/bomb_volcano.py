@@ -165,11 +165,13 @@ class VolcanoBot(BombMineBot):
     # ═══════════ 撤退 ═══════════
 
     def retreat_volcano(self, reason):
-        log(f"  🏳️ 火山撤退：{reason}")
-        loc = self.my_location()
-        if self.is_volcano_loc(loc):
-            self.warp(*VOLCANO_EXIT)
-        return True
+        """🏳️ 火山撤退 → 走定案的四级链（返回权杖 > 农场图腾 > 走回入口梯 > warp）。
+        ⚠️ 火山**只有 5/10 层能走出去**（恒 2026-09-19），所以第③级"走回入口梯"在别的层
+        会因为没有 entrance 自己返回 False，不会瞎走；实际靠 ①②（权杖/农场图腾任何层都能用）。
+        ④ warp 落 IslandNorth(40,24)（火山矿洞出口，沿用 VOLCANO_EXIT）。"""
+        if not self.is_volcano_loc(self.my_location()):
+            return True
+        return self.retreat(reason)
 
     # ═══════════ 🏁 到点交还控制权 ═══════════
 
@@ -246,11 +248,13 @@ class VolcanoBot(BombMineBot):
             maxhp = p_ai.get("maxHealth", 1)
             hp_pct = hp / maxhp * 100 if maxhp else 0
             tod = s_ai.get("time", {}).get("timeOfDay", 600)
-            if hp <= 0 or (maxhp and hp_pct < self.hp_threshold) or tod >= 2430:
-                self.eat_if_needed(self.hp_threshold)
+            # ⚠️ 2026-09-19 恒拍板：火山**只做低血量撤离这一种触发**，且血量用**绝对值 20**
+            #    不用百分比（"不到快死都可以跟着房主继续下"）。原来这里是 血%阈值／时间 2430／
+            #    死亡 三件事挤在一个分支里，现在只留血量；时间那条触发**按恒要求撤掉**。
+            if hp < self.RETREAT_HP_ABS:
                 self.eat_recovery(hard=self.hp_threshold, target=60)
-                if not self.is_safe(self.hp_threshold):
-                    self.retreat_volcano("血回不上来 / 快昏迷，撤退")
+                if self.unsafe_reason():
+                    self.retreat_volcano(f"血量 {hp} < {self.RETREAT_HP_ABS}，撤退")
                     return False
             elif hp_pct < 60:
                 self.eat_recovery(hard=self.hp_threshold, target=60)

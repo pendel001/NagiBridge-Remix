@@ -50,11 +50,11 @@
 ### `farm(ops)` — 农活（锄/种/水/收/机器）*AI 必走* **只能在 Farm/温室/姜岛**
 | ops | 干嘛的 |
 |---|---|
-| `till` / `plant` / `till plant`(合并) | 锄地 / 播种 / 锄+种一条龙 |
+| `till` / `plant` | 锄地 / 播种（**各只有一个实现**；想一次锄+种就 `ops="till plant"`，一份 kw 共用）|
 | `water` | 浇水（自动跳过下雨、水壶没水先装满）|
 | `harvest` / `scythe` | 收成熟作物 / 镰刀收（蒜/花/茶）|
 | `fertilize` / `clear` / `plot` | 撒化肥 / 清杂草石头树桩 / 地皮规划 |
-| `tillfield` / `plan` / `hoe` / `plantlayout` | 蓄力锄整块地 / **方形规划(算格)** / 按洒水器布局锄 / 按布局播种 |
+| `tillfield` / `hoe` / `plan` | 全是 `till` 的别名（蓄力锄/布局锄）/ **方形规划(算格)**——`plantlayout`/`播种规划` 也是 `plant` 的别名 |
 | `chop` / `clearground` | 砍树 / 清单格 |
 | `collect` / `load` / `building` | 收机器产物 / 往机器放原料 / 一屋收放一轮 |
 | `pond` / `pond_add` / `pond_feed` / `pond_collect` / `pond_fish` | 鱼塘：状态/放鱼/喂/领鱼籽/直钓 |
@@ -65,9 +65,8 @@
 
 | op | 参数（括号内=默认值） | 说明 |
 |---|---|---|
-| `till` / `clear` | **`x`,`y`（必填，不传直接报错）** `rows`(1) `length`(1) `direction`("horizontal") | 锄地 / 清杂草石树桩 |
-| `plant` | `seed_name`(必填) `x`,`y`(必填) `rows` `length` `direction` | 播种（跳过已种）|
-| `till_plant` | `seed_name` `x`,`y` `rows` `length` `direction` `trellis`(False) | 锄+种一条龙 |
+| `till` / `clear` | **`x`,`y`（必填，不传直接报错）** `rows`(1) `length`(1) `direction`("horizontal")；till 另有 `x1,y1,x2,y2` / `layout`(0) | 锄地 / 清杂草石树桩 |
+| `plant` | `seed_name`(必填) `x`,`y`(必填) `rows` `length` `direction` **或** `x1,y1,x2,y2`；`layout`(0) `direct`(False) `trellis`(False) | 播种（跳过已种/设施格；带 `layout` 就按洒水器布局种）|
 | `fertilize` | `fertilizer_name`(必填) `x`,`y` `rows` `length` `direction` | 撒化肥 |
 | `water` / `harvest`(15) / `scythe`(15) | `radius` | 浇水无参 / 收 / 镰刀收 |
 | `plot` | `x`(-1) `y`(-1) `radius`(15) `all_plots`(False) | 连通域规划（不传 x/y=以自己为心）|
@@ -84,22 +83,22 @@
 
 **💧 大田洒水器布局（可选，纯自动化建议——可用可不用）**
 
-三件套 `plan` → `hoe` → `plantlayout`，`layout` 四档含义相同、**都要传**：
+三件套 `plan` → `till` → `plant`，`layout` 四档含义相同（`plant` 不传=0 整块）：
 
 | `layout` | 布局 | 洒水器 | 覆盖 | 留格规则 |
 |---|---|---|---|---|
 | `0` | 标准整块 | 不预留 | — | 整块全种；**锄法**蛇形逐格走位（任何锄头等级都行）|
-| `1` | 初级（Sprinkler）| 稀疏十字 | 4 格 | 对角网格（行隔2列隔3每行斜移1）；锄法=**按洒水器逐台锄它上下左右 4 格**（`layout=1` 不用蓄力站位 ⇒ **与锄头等级无关**；普通锄拟人逐格走位 / 高级锄一键 `/till_area`）|
+| `1` | 初级（Sprinkler）| 稀疏十字 | 4 格 | 对角网格（行隔2列隔3每行斜移1）；锄法=**按洒水器逐台锄它上下左右 4 格**（`layout=1` 不用蓄力站位 ⇒ **与锄头等级无关**：**一律拟人逐格走位**，升级锄也不切蓄力/一键）|
 | `2` | 高级（优质，3 的倍数）| 每 3×3 中心 | 8 格 | 田宽高**先裁成 3 的倍数**；整块蓄力锄（吃满当前锄头等级）|
 | `3` | 铱（5 的倍数）| 每 5×5 中心 | 24 格 | 同上裁成 5 的倍数；**爬架作物不适用（`plant_tiles` 返回空）** |
 
 - `plan(x1,y1,x2,y2, layout=0, hoe_level=-1, trellis=False)` —— **纯计算只报格**（不动机器），先拿它看要锄/种哪些格。
   `hoe_level` 0→1格 / 1→3线 / 2→5线 / 3→3×3 / 4→6×3，`-1`=自动读当前手持锄头。
-- `hoe(x1,y1,x2,y2, layout=0)` —— 按布局锄地（锄法随 layout 自动切，见上表"锄法"列）。
-- `plantlayout(x1,y1,x2,y2, layout, seed, direct=False, trellis=False)` —— 按布局播种。
+- `till(x1,y1,x2,y2, layout=0)` —— 按布局锄地（锄法随 layout 自动切，见上表"锄法"列；`till` 还有同义别名 `hoe`/`布局锄`/`tillfield`/`蓄力锄`）。
+- `plant(x1,y1,x2,y2, seed_name, layout=0, direct=False, trellis=False)` —— 按布局播种（`layout` 不传=0 整块，就是老 `plant` 的语义；老名字 `plantlayout`/`播种规划` 仍可用）。
   `direct=True` 用瞬移（格多时快）/ 默认走位拟人。
 - `trellis=True` = 爬架作物（啤酒花/青豆/葡萄，**不可通过格**）⇒ 自动**种2留1**留出 AI 能走进去浇/收的走道；`layout=0/2` 会过滤走道格并重排顺序，`layout=1` 十字天然有走道不用调。
-- **只管种**（不摆洒水器）就直接 `till_plant`，不用这三件套。
+- **只管种**（不摆洒水器）就直接 `plant`（不传 layout 就是整块），不用这三件套。
 
 > ⚠️ **已知限制（`layout=0/2/3` + 金/铱锄）**：3×3 / 6×3 的蓄力落点**没实测校准过**，所以 `hoe_level>=3` 时 `plan` 会报 **0 处锄地站位**、并自己打印一行"金/铱锄 3×3/6×3 落点未实测校准，暂不规划蓄力站位"——**这不是出错，是刻意不猜**。`layout=1` 不吃蓄力站位，**不受影响**。
 

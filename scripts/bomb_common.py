@@ -422,6 +422,7 @@ class BombMiner(WeaponMixin):
         self._pending_bombs = []       # [(ax, ay, 放置时间, bomb_type)] 还没爆炸的炸弹——选锚点/敲石头要避开其范围
         self._floor_entrance = None    # 当前层入口梯子（逃出用）
         self._buff_track = {}          # buff 自跟踪 {"dish":{start,duration}, "drink":{...}}——重启不重复吃
+        self._recover_streak = 0       # 连续吃了几次血还没回上去（"站着吃挨打"的收敛计数，见 unsafe_reason）
 
     # ═══════════ 炸弹类型选择（黑>超级>樱桃，背包实际有才算数） ═══════════
 
@@ -727,20 +728,38 @@ class BombMiner(WeaponMixin):
                 foods.append((name, 1, 0))
         return foods
 
-    def is_safe(self, hp_threshold=40):
-        """基础安全：没死、血量高于阈值、时间没到12:30（凌晨12:30后撤退，留时间回家）"""
+    # ── 🏳️ 撤退触发线（恒 2026-09-19 拍板）──
+    #   血量用**绝对值**不用百分比——恒："不到快死都可以跟着房主继续下"。
+    #   ⚠️ 吃东西的**目标线**（eat_recovery 的 target=60%）是另一回事，别跟这条混。
+    #   ⚠️ 这条同时是"被怪打到死"的根治点：老代码撤退线是百分比、且与吃食线之间有 30~60%
+    #      的死区，人在里面永远判"安全"→ 一直吃、一直挨打。
+    RETREAT_HP_ABS = 20
+    RETREAT_TOD = 2430
+    EAT_RECOVER_MAX = 3   # 连吃这么多次仍没回上血 → 判"回不上来"，当撤退信号
+
+    def unsafe_reason(self):
+        """返回"该撤了"的原因串（None=安全）。血/时间/**吃回不上来**三类分开报——
+        原来混成一个布尔，凌晨满血会被报成"状态不足(HP<30%)"，再经 eat_if_needed 落到
+        "没有食物，撤退"，误导 AI 去补食物（2026-09-19 修）。"""
         s = self.state()
         p = s.get("player", {})
         hp = p.get("health", 0)
         max_hp = p.get("maxHealth", 1)
         tod = s.get("time", {}).get("timeOfDay", 600)
         if hp <= 0:
-            return False
-        if max_hp > 0 and hp / max_hp * 100 < hp_threshold:
-            return False
-        if tod >= 2430:  # 12:30am 后撤（撤退直接 warp 回入口很快，主要留走路回家时间）
-            return False
-        return True
+            return "死亡"
+        if hp < self.RETREAT_HP_ABS:
+            return f"血量 {hp} < {self.RETREAT_HP_ABS}（危险线）"
+        if self._recover_streak >= self.EAT_RECOVER_MAX:
+            return f"连吃 {self._recover_streak} 次血回不上来（{hp}/{max_hp}）"
+        if tod >= self.RETREAT_TOD:
+            return f"时间 {tod // 100}:{tod % 100:02d} 已过 {self.RETREAT_TOD // 100} 点半"
+        return None
+
+    def is_safe(self, hp_threshold=40):
+        """（兼容壳）形参 `hp_threshold` **已废弃**——撤退线改成 HP<20 绝对值（恒 2026-09-19），
+        保留它只为不打断老调用方；真判据一律看 unsafe_reason()。"""
+        return self.unsafe_reason() is None
 
     def eat_if_needed(self, hp_threshold=40, sta_threshold=10):
         foods = self.detect_food()
@@ -962,6 +981,15 @@ class BombMiner(WeaponMixin):
             p2 = s2.get("player", {})
             hp2 = p2.get("health", 0)
             max2 = p2.get("maxHealth", 1)
+            # 🩸 收敛计数（2026-09-19 新增）：等满 2 秒动画却**一点血都没回**（+1 容差算没回）——
+            #    典型就是"边吃边挨打"。连中 EAT_RECOVER_MAX 次 ⇒ unsafe_reason() 判"回不上来" ⇒
+            #    主循环撤退。**这条是砍掉"站着吃挨打直到死"的关键**（光有 HP<20 只解决"何时该撤"，
+            #    解决不了"撤之前一直在原地吃"）。
+            if hp2 <= hp + 1:
+                self._recover_streak += 1
+                log(f"  🩸 吃完血没回（{hp}→{hp2}），连 {self._recover_streak}/{self.EAT_RECOVER_MAX} 次")
+            else:
+                self._recover_streak = 0
             if max2 and hp2 / max2 * 100 < hard:
                 self.heal()
                 log(f"  🚑 吃完仍低血({hp2 / max2 * 100:.0f}%)，/heal 兜底")
@@ -1889,7 +1917,13 @@ class BombMiner(WeaponMixin):
         追击到砍死为止。甲虫(Bug)/螃蟹(Crab)打不死跳过。战斗内每2刀查血（eat_recovery heal 兜底）。
         host_targets_only=True：只打血量不满(health<maxHealth)的怪=user正在对抗的对象，满血怪不纠缠（增援用）。
         锤子：能重砸就重砸（6s 冷却内自动降级平砍），主动反击都吃重砸。
-        返回 True=在战斗/有怪（主循环 continue 处理），False=无怪继续挖矿。"""
+        ⚠️ 2026-09-19 返回**状态串**，不再是布尔——原来 `True` 同时表示"有怪在打"和
+        "我不安全了"，调用方分不出来，只能一律 continue 接着打（恒观察到的"被怪打到死"
+        有一份就长在这）。现在：
+          "fight"  = 有怪，继续打（含超时退出——怪还在但时间到）
+          "clear"  = 没怪/怪清完/追太远，可以回去挖矿
+          "unsafe" = 危险该撤了（unsafe_reason 判的），调用方**必须**真的撤
+        """
         def _targets():
             s0 = self.state()
             px, py = s0.get("player", {}).get("x", 0), s0.get("player", {}).get("y", 0)
@@ -1912,9 +1946,9 @@ class BombMiner(WeaponMixin):
 
         targets = _targets()
         if not targets:
-            return False
+            return "clear"
         if targets[0][5] > engage_dist + 2:
-            return False  # 最近怪也离太远
+            return "clear"  # 最近怪也离太远
         self.detect_weapon()
         start = time.time()
         swings = 0
@@ -1922,20 +1956,20 @@ class BombMiner(WeaponMixin):
             if swings % 2 == 0:  # 每2刀查血（降HTTP）
                 self.eat_recovery(hard=self.hp_threshold, target=60)
                 if not self.is_safe(self.hp_threshold):
-                    return True
+                    return "unsafe"   # ← 原来是 return True（=接着打），等于危险了还继续
             targets = _targets()
             if not targets:
-                return True  # 怪清完/跑光
+                return "clear"  # 怪清完/跑光
             name, mx, my, hp, maxhp, dist = targets[0]
             if dist > engage_dist + 2:
-                return True  # 追太远放弃
+                return "clear"  # 追太远放弃
             if dist > 1:
                 self.natural_walk(mx, my, self.my_location(), walk_only=True)
                 time.sleep(0.3)
             # 锤子：能重砸就重砸（冷却 6s 自动降级平砍，重砸 AoE 贴脸必中），别一刀刀磨
             self.swing((mx, my), special=self.weapon_class == "hammer")
             swings += 1
-        return True
+        return "fight"   # 超时退出：怪还在，只是不打了
 
     # ═══════════ 协同：帮user开路 ═══════════
 
@@ -2062,23 +2096,159 @@ class BombMiner(WeaponMixin):
             pass
         return None
 
-    def retreat_to_entrance(self, reason):
-        """撤退：直接 warp 回对应矿口（快且可靠，12:30 撤退后留够回家时间）。
-        火山矿洞→姜岛火山入口 IslandNorth(40,24)；头骨矿洞(121+)→沙漠 Desert(8,6)；
-        普通矿井→鹈鹕镇矿井口 Mountain(54,5)。"""
-        log(f"  🏳️ 撤退：{reason}")
-        level = self.my_mine_level()
+    # ── 🏳️ 撤退链（恒 2026-09-19 定案，顺序即优先级，别改次序）──
+    #   ① 返回权杖         → 落点=农场门口（游戏原生）
+    #   ② 传送图腾：农场    → 落点=农场   （游戏原生）
+    #   ③ 走回入口梯出矿    → 落点=矿口   （我们手写的）
+    #   ④ /warp 兜底       → 落点=矿口   （我们手写的）
+    # ⚠️ 山岭/沙漠/海滩图腾**一律不用**——恒："太远了，落到那里也不知道要干嘛"。
+    # ⚠️ 每级都必须**校验落点**：`/warp` 回包里那个 `actual` 是**旧值**
+    #    （2026-09-19 实测：回包写 Mine(23,8)，人其实已经在 Farm 了）⇒ 只认**另读的 /state**。
+    RETREAT_SCEPTER = "Return Scepter"
+    RETREAT_TOTEM = "Warp Totem: Farm"
+
+    def _loc_now(self):
+        return self.state().get("location", {}).get("name", "")
+
+    def _pos_now(self):
+        """(地图, x, y) —— 落点校验必须带坐标，**只看地图名会漏**。
+        ⚠️ 2026-09-19 真机踩到：权杖/农场图腾的落点都在**农场**，人在农场时用它们
+        "地图没变" ⇒ 被误判成"没走"⇒ 白烧一个图腾还错降级（实测图腾 65→64、却被报失败）。"""
+        s = self.state()
+        p = s.get("player", {})
+        return (s.get("location", {}).get("name", ""), p.get("x"), p.get("y"))
+
+    def _wait_pos_change(self, old_pos, timeout=6.0):
+        """等 (地图,x,y) 真的变了再返回；超时返回当前位置，由调用方判成败。
+        ⚠️ 权杖要 1 秒后才真传（反编译 Wand.DoFunction → fadeAfterDelay(wandWarpForReal,1000)），
+        所以这里超时给到 6s。"""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            cur = self._pos_now()
+            if cur[0] and cur != old_pos:
+                return cur
+            time.sleep(0.3)
+        return self._pos_now()
+
+    def _use_retreat_item(self, item_name, mode, label):
+        """用一件撤退道具并校验落点。mode 直接透给 C# 的 `/use`：
+          · "read"    = Object.performUseAction（图腾——右键语义，2026-09-19 真机验过）
+          · "scepter" = Wand.DoFunction（返回权杖是 Tool，`/use` 的 Tool 分支只抬手不落）
+        返回 (ok, msg)。"""
+        have = self.count_item(item_name)
+        if have <= 0:
+            return False, f"背包没有 {item_name}"
+        old_pos = self._pos_now()
+        r = self.select(item_name)
+        if not r.get("ok"):
+            return False, f"选不中（{r.get('error', '')}）"
+        time.sleep(0.4)
+        rr = self._post("/use", {"mode": mode})
+        if not rr.get("ok"):
+            return False, f"没生效（{rr.get('error', '无回包/端点不存在')}）"
+        # ⚠️ 精确判据（2026-09-19 真机踩到）：`mode=scepter` 在老 DLL 上**不报错**——
+        #    它会静静落到普通 Tool 分支（只抬手），回包 `action:"tool"` 照样 ok:true。
+        #    这时"位置后来变了"**不能算它干的**（实测：真有别的东西把人挪走了，我的
+        #    "位置变了=成功"当场误报成"权杖生效"）。所以先认回包的 action 对不对得上。
+        if mode == "scepter" and rr.get("action") != "scepter":
+            return False, ("当前 DLL 没有 scepter 分支（回包 action="
+                           f"{rr.get('action')!r}）——权杖这条路还没生效，需要重启游戏加载新 DLL")
+        # ⚠️ 回包 ok 只说明"请求被接了"，**不算用过**——老 DLL 里 mode=scepter 会静静落到
+        #    普通 Tool 分支（只抬手），照样回 ok:true。所以一律**另读位置**确认。
+        new_pos = self._wait_pos_change(old_pos, timeout=6.0)
+        if new_pos == old_pos:
+            return False, f"用了但没走（还在 {new_pos[0]}({new_pos[1]},{new_pos[2]})）"
+        if mode == "read" and self.count_item(item_name) >= have:
+            # 走了却没消耗——图腾是一次性的，数量没减说明走成的那一下不是它干的，得说出来
+            return True, f"生效→{new_pos[0]}({new_pos[1]},{new_pos[2]})（⚠️ 数量没减，请留意）"
+        return True, f"生效→{new_pos[0]}({new_pos[1]},{new_pos[2]})"
+
+    def retreat_leave_mine(self):
+        """走回入口梯出矿：站到 entrance → 面向楼梯格 interact → 按 **key** 选 Leave。
+        ⚠️ 2026-09-19 反编译 + 真机双证（**推翻** CHANGELOG 那句"矿层只能往下、无上行楼梯"）：
+          · `MineShaft.findLadder`（MineShaft.cs:848-851）：瓦片 **115 = 上楼梯图案**，
+            `tileBeneathLadder = (j, i+1)` = **楼梯正下方那格** = /ladder 报的 `entrance`
+            = 人该站的格（`find_entrance()` 拿的就是它）。
+          · `MineShaft.checkAction` case 115（MineShaft.cs:3073-3082）：面向楼梯格交互 →
+            对话 **[Leave「离开矿井」, Do「不进行任何操作」]**。
+          · 选 Leave → `warpFarmer("Mine", 23, 8)`（城镇）/ `("SkullCave", 3, 4)`（>120，
+            GameLocation.cs:12388-12401）。
+        真机实测（UndergroundMine2 / 7843）：站 (4,5)=entrance → interact (4,4) →
+        `in_dialogue=True`、`/menu` 响应 key=[Leave,Do] → 点 Leave → **落 Mine(23,8)** ✓。
+        ⚠️ 按 **key** 选，不硬编码 index——游戏在别处（`performAction:ExitMine`，GameLocation.cs:9818）
+        给的是**三选项**版 Leave/Go/Do，index 会错位。
+        ⚠️ 本层没有 entrance → 直接 False，不猜、不兜底（头骨/火山可能就没有）。
+        返回 (ok, msg)。"""
+        ent = self.find_entrance()
+        if not ent:
+            return False, "本层 /ladder 没报 entrance（没有上楼梯）"
+        ex, ey = ent
         loc = self.my_location()
-        try:
-            if is_volcano(loc):
-                self.warp("IslandNorth", 40, 24)    # 火山矿洞出口（姜岛火山入口）
-            elif level >= 121:
-                self.warp("Desert", 8, 6)           # 头骨矿洞出口（沙漠）
-            else:
-                self.warp("Mountain", 54, 5)        # 普通矿井出口
-        except Exception:
-            pass
-        return True
+        pos_before = self._pos_now()   # 落点校验基线（点 Leave 前的位置）
+        for _ in range(3):
+            p = self.state().get("player", {})
+            if abs(p.get("x", 0) - ex) <= 1 and abs(p.get("y", 0) - ey) <= 1:
+                break
+            self.safe_walk_to(ex, ey, loc, timeout=20)   # 拟人：走过去，不 position
+        p = self.state().get("player", {})
+        if abs(p.get("x", 0) - ex) > 1 or abs(p.get("y", 0) - ey) > 1:
+            return False, f"走不到入口梯 ({ex},{ey})（现在 ({p.get('x')},{p.get('y')})）"
+        self.face(0)
+        time.sleep(0.3)
+        self._post("/interact", {"x": ex, "y": ey - 1})
+        time.sleep(1.2)
+        resps = self._get("/menu").get("responses") or []
+        idx = next((r.get("index") for r in resps
+                    if str(r.get("key", "")).lower() in ("leave", "exitmine_leave")), None)
+        if idx is None:
+            if resps:
+                return False, f"对话里没有 Leave（只有 {[r.get('key') for r in resps]}）"
+            return False, "交互后没弹对话（可能没站在入口梯上）"
+        self._post("/menu/click", {"option": idx})
+        new_pos = self._wait_pos_change(pos_before, timeout=6.0)
+        if new_pos[0] == loc:
+            return False, f"选了 Leave 但没出去（还在 {loc}）"
+        return True, f"走出矿井→{new_pos[0]}({new_pos[1]},{new_pos[2]})"
+
+    def _retreat_warp(self):
+        """原 retreat_to_entrance 的裸 warp，补上落点校验。
+        火山→IslandNorth(40,24)；头骨→Desert(8,6)；普通矿井→Mountain(54,5)。"""
+        loc = self.my_location()
+        level = self.my_mine_level()
+        # ⚠️ SkullCave 本身 extract_mine_level 返 None ⇒ level=0 ⇒ 老代码落到 else 传去
+        #    Mountain（从沙漠传回鹈鹕镇，传错大陆）。这里显式认 SkullCave。
+        if is_volcano(loc):
+            dest = ("IslandNorth", 40, 24)
+        elif loc.startswith("SkullCave") or level >= 121:
+            dest = ("Desert", 8, 6)
+        else:
+            dest = ("Mountain", 54, 5)
+        if self.safe_warp(*dest):
+            return True, f"warp 到 {dest[0]}({dest[1]},{dest[2]})"
+        return False, f"warp 到 {dest[0]} 失败或被拒"
+
+    def retreat(self, reason):
+        """🏳️ 撤退：按定案四级链逐级降级，每级**校验落点**；全失败就明确报错，绝不谎报成功。
+        返回 True/False（调用方据此上报）。"""
+        log(f"  🏳️ 撤退：{reason}")
+        failed = []
+        for label, fn in (
+            ("① 返回权杖", lambda: self._use_retreat_item(self.RETREAT_SCEPTER, "scepter", "返回权杖")),
+            ("② 农场图腾", lambda: self._use_retreat_item(self.RETREAT_TOTEM, "read", "农场图腾")),
+            ("③ 走回入口梯", self.retreat_leave_mine),
+            ("④ warp 兜底", self._retreat_warp),
+        ):
+            ok, msg = fn()
+            log(f"    {label}：{msg}")
+            if ok:
+                return True
+            failed.append(f"{label}({msg})")
+        log(f"  ❌ 四级撤退全失败：{' | '.join(failed)}")
+        return False
+
+    def retreat_to_entrance(self, reason):
+        """（兼容壳）老调用方不用改——内部已升级为四级撤退链。"""
+        return self.retreat(reason)
 
     def touch_skull_statue(self):
         """头骨矿洞入口（沙漠）摸雕像：加竖井概率（下矿前调用）。

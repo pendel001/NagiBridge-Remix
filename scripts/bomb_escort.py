@@ -114,8 +114,10 @@ class EscortBot(BombMiner):
     def combat_aggressive(self, around=None, engage_dist=3, kill_timeout=30):
         """主动进攻：AI 周围 3 格 + user周围 3 格（各一个黑炸弹范围）内的怪，
         追击到砍死为止。甲虫(Bug)打不死/会飞，跳过。超时/怪追太远放弃。
-        循环内检查 HP，危险就停（回主循环自保）。返回是否在打。
-        目标距离统一按"离 AI"算；最近怪太远(>engage_dist+3)返回 False（不追，先跟近）。"""
+        循环内检查 HP，危险就停（回主循环自保）。
+        目标距离统一按"离 AI"算；最近怪太远(>engage_dist+3)直接 "clear"（不追，先跟近）。
+        ⚠️ 2026-09-19 与基类对齐：返回**状态串**而不是布尔——"fight"/"clear"/"unsafe"。
+        原来 `return True` 同时表示"在打"和"我不安全了"，调用方只能一律 continue 继续打。"""
         def _targets():
             px, py = self.my_pos()
             ms = list(self.nearby_monsters(engage_dist))
@@ -134,22 +136,22 @@ class EscortBot(BombMiner):
 
         targets = _targets()
         if not targets:
-            return False
+            return "clear"
         if targets[0][4] > engage_dist + 3:
-            return False  # 最近怪也离 AI 太远，先不追（跟近user再打）
+            return "clear"  # 最近怪也离 AI 太远，先不追（跟近user再打）
         start = time.time()
         swings = 0
         while time.time() - start < kill_timeout:
             if swings % 2 == 0:  # 每 2 刀查一次血（降 HTTP 请求频率）
                 self.eat_recovery(hard=self.hp_threshold, target=60)
                 if not self.is_safe(self.hp_threshold):
-                    return True  # 回不上来，回主循环自保
+                    return "unsafe"  # 回不上来，回主循环自保
             targets = _targets()
             if not targets:
-                return True  # 范围内怪清完/跑光
+                return "clear"  # 范围内怪清完/跑光
             name, mx, my, hp, dist = targets[0]
             if dist > engage_dist + 3:
-                return True  # 追太远放弃（避免追出视野）
+                return "clear"  # 追太远放弃（避免追出视野）
             if dist > 1:
                 self.natural_walk(mx, my, self.my_location(), walk_only=True)
                 time.sleep(0.3)
@@ -165,7 +167,7 @@ class EscortBot(BombMiner):
                 self.use_tool("Pickaxe")
                 time.sleep(0.4)
             swings += 1
-        return True
+        return "fight"   # 超时退出：怪还在，只是不打了
 
     # ═══════════ 4️⃣ 8 格内炸矿（贪心复用） ═══════════
 
@@ -335,7 +337,13 @@ class EscortBot(BombMiner):
                 dist_to_host = abs(hx - px) + abs(hy - py)
 
                 # 2️⃣ 主动攻击（AI/user 3 格黑炸弹范围内怪，追击到砍死）——有怪优先打
-                if self.combat_aggressive(around=(hx, hy)):
+                st = self.combat_aggressive(around=(hx, hy))
+                if st == "unsafe":
+                    # 危险不该继续缠斗：交给主循环自保（主循环会吃/撤）
+                    log(f"  ⚠️ 战斗中状态危险（{self.unsafe_reason()}），收手自保")
+                    time.sleep(0.3)
+                    continue
+                if st == "fight":
                     monsters_killed += 1
                     time.sleep(0.3)
                     continue

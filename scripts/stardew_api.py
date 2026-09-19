@@ -941,11 +941,27 @@ def _sleeping_now() -> bool:
         return _in_bed_now(retries=1)
 
 
-def _snap_onto_bed(bx, by):
+def _snap_onto_bed(bx, by, loc=None):
     """精确把玩家放到床的睡眠格上（walk 容差可能站偏 → isInBed 被游戏 tick 弹掉）。
     实测 2×3 床只有中间行(y=by+1)能站住 isInBed；对候选格依次 /position 探测。
     /position 是直接设 Position（非 warpFarmer），传床格不 redirect（实测无弹回门口）。
-    返回落点 (x,y)。"""
+    返回落点 (x,y)。
+
+    ⚠️ loc=床所在场景（唯一名或显示名）：`/position` **是在玩家当前图上设坐标**
+    （C# HandlePosition 取 `farmer.currentLocation`，**端点没有 location 参数**）——
+    人若还在别的图，床坐标就被原样打在**错的图**上。2026-09-19 真机逮到：兜底睡觉的
+    "走刷新"把 farmhand warp 到 Farm 之后直接对位 ⇒ 人落在**农场的 (42,25)**（=小屋里床的坐标）。
+    给了 loc 就先核当前场景，不在就先 warp 过去（当场纠回）。核不上/老 DLL 没 uniqueName 时跳过，
+    不误伤正常路（humanize 拟人路本来就过了 `_sleep_bed_gate`）。"""
+    if loc:
+        try:
+            _st = _ai_get("/state").get("location") or {}
+            _cur, _cur_show = _st.get("uniqueName") or "", _st.get("name") or ""
+            if _cur and _cur != loc and _cur_show != loc:
+                _ai_post("/warp", {"location": loc})
+                time.sleep(1.5)
+        except Exception:
+            pass
     for dy in (1, 0, 2):
         _ai_post("/position", {"x": bx, "y": by + dy})
         time.sleep(0.9)   # 0.6→0.9：给游戏 tick 置 isInBed 时间（实测 0.7s 才 True，0.6 卡边界→无谓多探测一轮）
@@ -1040,7 +1056,7 @@ def go_sleep_flow(who="", log=None, humanize=True) -> dict:
                     break
         except Exception:
             pass
-        snap = _snap_onto_bed(bx, by)
+        snap = _snap_onto_bed(bx, by, loc)
         time.sleep(0.3)
         rec("reach_bed", True, f"床边对位到 {snap}")
 
@@ -1062,7 +1078,7 @@ def go_sleep_flow(who="", log=None, humanize=True) -> dict:
         time.sleep(1)
         sleeping = _sleeping_now()
         if not sleeping:
-            _snap_onto_bed(bx, by)
+            _snap_onto_bed(bx, by, loc)
             _ai_post("/crawl_bed", {"action": "sleep", "player": who})
             _ai_post("/sleep", {"stay": True})
             time.sleep(1)
@@ -1083,12 +1099,34 @@ def go_sleep_flow(who="", log=None, humanize=True) -> dict:
                     return True
             return False
 
+        def _ready_and_waiting():
+            """我方**真在等过夜**吗 = 在床 **且** 就绪屏已弹（恒记忆里的"等睡双条件"）。
+            ⚠️ 故意**不**用宽松的 `_sleeping_now()`（它是 isInBed **或** 对话框，为的是"别重爬"）：
+            只判 isInBed 会把"上了床但 `/sleep` 没注册上 ready"误当成功 ⇒ 那种情况恰恰**该**刷新重来。"""
+            try:
+                return (_in_bed_now(retries=1) and
+                        ((_ai_get("/state").get("activeMenu") or {}).get("type") == "ReadyCheckDialog"))
+            except Exception:
+                return False
+
         log_refresh = ""
         if wait_night(20):
             rec("night", True, "20s 内过夜")
             return _after_night(steps, loc, bx, by,
                                 f"💤 已睡在{p1}的床上，新的一天开始了！",
                                 co_sleep, p1)
+
+        # 🆕 2026-09-19 恒：「兜底反复触发……能不能检测到**入睡成功**，就不用兜底重睡了？」
+        #    —— 20s 没过夜有**两种**截然不同的情况，旧代码一律当成"我这边没睡好"去走刷新：
+        #      · 人明明已经躺好、只是在**等房主就绪** ⇒ 也被"起身→出屋→回来"折腾一遍；
+        #      · 结尾还 `cancel_sleep` 把就绪撤掉（恒："刚刚睡了还莫名其妙取消了菜单"）
+        #        ⇒ 人离床 ⇒ 下一个兜底 tick(10s) 再触发一次 ⇒ **一分钟一轮的死循环**。
+        #    现在先分清：**我方已就绪（在床 / 就绪屏）⇒ 原地保持、收工**；
+        #    只有我方就绪**真没成**（isInBed 被弹掉且没对话框）才走刷新重爬。
+        if _ready_and_waiting():
+            rec("night", True, f"我方已就绪，20s 未过夜 = 在等{p1}（正常，保持睡姿）")
+            return finish(True, f"💤 已上床并已就绪，在等{p1}确认过夜（保持睡姿：不重爬、不撤就绪）",
+                          co_sleep, p1)
 
         # 刷新同步：humanize=True 原地重爬重就绪；humanize=False 沿用旧版"起身→warp Farm→回床重爬"
         try:
@@ -1097,7 +1135,14 @@ def go_sleep_flow(who="", log=None, humanize=True) -> dict:
             if not humanize:
                 _ai_post("/warp", {"location": "Farm"})
                 time.sleep(2)
-            _snap_onto_bed(bx, by)
+                # ⚠️ 2026-09-19 修：出建筑之后**必须再回建筑**才轮到对位。上一版少了这一步，
+                #    而 `/position` 是在**玩家当前图**上设坐标 ⇒ 人已经站在 Farm，紧接着把
+                #    **小屋里床的坐标**打下去 ⇒ 人落在**农场的同一个格子**上；再叠上
+                #    `_snap_onto_bed` 要逐格探 6 个候选格，恒看到的就是"挪出屋子 + 一格一格地试"。
+                #    （原注释"起身→出建筑→**回来**重爬"本来就含"回来"，是实现漏了。）
+                _ai_post("/warp", {"location": loc})
+                time.sleep(2)
+            _snap_onto_bed(bx, by, loc)
             _ai_post("/crawl_bed", {"action": "sleep", "player": who})
             time.sleep(0.5)
             _ai_post("/sleep", {"stay": True})
@@ -1107,6 +1152,11 @@ def go_sleep_flow(who="", log=None, humanize=True) -> dict:
                 return _after_night(steps, loc, bx, by,
                                     f"💤 已睡在{p1}的床上，新的一天开始了！{log_refresh}",
                                     co_sleep, p1)
+            # 刷新后我方仍是就绪的 → 同样**原地保持**（别撤就绪把人从床上拽下来）
+            if _ready_and_waiting():
+                rec("night", True, f"刷新后我方已就绪，仍在等{p1}（正常，保持睡姿）")
+                return finish(True, f"💤 已上床并已就绪（刷新后），在等{p1}确认过夜（保持睡姿）",
+                              co_sleep, p1)
         except Exception as e:
             log_refresh = f"（刷新异常: {e}）"
 
@@ -1283,6 +1333,56 @@ def walk_to_coord(location, x, y):
     自动跨地图、找有效落点。返回后需轮询等待到达。
     """
     return _post("/walk_to", {"location": location, "x": x, "y": y})
+
+# ── 🦶 站位格（2026-09-19 恒：「初级布局无论什么等级都用逐格」那次真机逮到的产物）──
+# 「站在目标格**正上方**、面向下、用道具」是锄地/播种/撒化肥共用的动作模式。
+# 原来一律写死 `(tx, ty-1)`：站位格被箱子/机器/洒水器占住时 `walk_natural` 会**静默走
+# position 兜底** ⇒ 人**落在障碍格上**挥锄/播种（真机：站在一排箱子里；锄地 24 格里 5 格如此）。
+# 现在先问游戏「这格站不站得住」，站不住就换 下/左/右 并**用对应朝向**；四边都站不进去 ⇒
+# 调用方**如实报缺失、不瞬移**（恒：「宁报错别兜底」）。
+# ⚠️ 判据只有这一份：`/passable_rect` 的 `passable`（寻路同款 IsTilePassable，含物件/家具/牲畜，
+#    和 walk_to 实际能走的完全一致）。**别在调用方各写一份**（"判据别放消费侧猜"）。
+# ⚠️ 移动层（walk_natural / `/position` 的兜底）**恒 2026-09-19 拍板不动**：
+#    开荒时农场很乱，若"必须清障才能走"会很难受；这里只解决"**工具站位**"选哪格。
+_STAND_ORDER = ((2, 0, -1), (0, 0, 1), (1, -1, 0), (3, 1, 0))   # (面朝方向, ddx, ddy) = 上/下/左/右
+
+
+def walk_ok_tiles(x1, y1, x2, y2):
+    """取矩形（含边距自己加）里"**人真能站**"的格集合，供 stand_tile 挑站位。
+    返回 set 或 None（None = 拿不到 —— 调用方应**报错不干活**，别退回盲走）。"""
+    try:
+        r = _get(f"/passable_rect?x1={x1}&y1={y1}&x2={x2}&y2={y2}")
+        if not r.get("ok"):
+            return None
+        return {(t["x"], t["y"]) for t in r.get("tiles", []) if t.get("passable")}
+    except Exception:
+        return None
+
+
+def stand_near(tiles, walk_ok, cx, cy):
+    """从 `tiles` 里挑一个**人真能站**的格子、优先最靠近 (cx,cy) 的 —— 给"站到田中间扫描/验收"
+    这类**瞬移**用。返回 (x,y) 或 None（一个能站的都没有 ⇒ 调用方**别硬瞬移**，原地扫就是了）。
+    ⚠️ 2026-09-19 真机：验收那句 `api.position((rx1+rx2)//2,(ry1+ry2)//2)` **不查落点**，
+    田心正好是**洒水器/箱子**格时人就被闪上去了（恒当场看见"踩到洒水器了"）。"""
+    if walk_ok and (cx, cy) in walk_ok:
+        return (cx, cy)
+    cand = [p for p in tiles if walk_ok and p in walk_ok]
+    if not cand:
+        return None
+    return min(cand, key=lambda p: abs(p[0] - cx) + abs(p[1] - cy))
+
+
+def stand_tile(tx, ty, walk_ok):
+    """给目标格 (tx,ty) 挑一个站位格：`上→下→左→右` 里第一个能站的。
+    返回 `(sx, sy, facing)`（facing=用道具时要朝的方向），**四边都站不进去返回 None**
+    （调用方报缺失，别 position 硬落）。walk_ok 来自 walk_ok_tiles；传 None 视为"没数据"→ None。"""
+    if not walk_ok:
+        return None
+    for fd, dx, dy in _STAND_ORDER:
+        if (tx + dx, ty + dy) in walk_ok:
+            return (tx + dx, ty + dy, fd)
+    return None
+
 
 def walk_natural(target_x, target_y, timeout_scale=2, min_timeout=5):
     """⚠️ 已弃用（2026-08-13 恒拍板）：走路统一用 walk_to_coord（/walk_to）。

@@ -3822,11 +3822,18 @@ def plot_plan(x: int = -1, y: int = -1, radius: int = 15, all_plots: bool = Fals
         if x < 0 or y < 0:
             x, y = cx0, cy0
         if abs(cx0 - x) + abs(cy0 - y) > max(radius - 2, 2):
-            try:
-                api.position(x, y)
-                time.sleep(0.3)
-            except Exception:
-                pass
+            # 🦶 2026-09-19：要闪过去扫的是"地块中心"，但那格**可能正摆着洒水器/箱子**
+            #    （恒真机："踩到洒水器了"）⇒ 就近挑一个能站的格，差一两格不影响半径 15 的扫描。
+            _r = min(max(radius, 1), 30)
+            _wk = api.walk_ok_tiles(x - _r, y - _r, x + _r, y + _r)
+            _pk = api.stand_near([(px, py) for px in range(x - _r, x + _r + 1)
+                                  for py in range(y - _r, y + _r + 1)], _wk, x, y)
+            if _pk:
+                try:
+                    api.position(_pk[0], _pk[1])
+                    time.sleep(0.3)
+                except Exception:
+                    pass
         d = api.surroundings(min(max(radius, 1), 30))
         tiles = d.get("tiles", [])
         if not tiles:
@@ -4223,7 +4230,8 @@ def _norm_fert(fert_val):
 
 @mcp.tool()
 def apply_fertilizer(fertilizer_name: str, x: int = -1, y: int = -1,
-                     rows: int = 1, length: int = 1, direction: str = "horizontal") -> str:
+                     rows: int = 1, length: int = 1, direction: str = "horizontal",
+                     **extra) -> str:
     """🌱 撒化肥（照播种逻辑抄的：逐格走→撒→检测兜底）
 
     撒前扫描目标区：**已有同种化肥的格跳过**（不浪费），不同种才覆盖，
@@ -4239,6 +4247,11 @@ def apply_fertilizer(fertilizer_name: str, x: int = -1, y: int = -1,
         length: 每行多长（默认 1 格）
         direction: horizontal=横着 / vertical=竖着（默认 horizontal）
     """
+    # ⚠️ 2026-09-19：本 op 原来**只吃固定签名**，于是 `farm ops="till fertilize"` 共用一份 kw 时，
+    #    它收不下的 `seed_name` 会走组合器那层"参数名写错"的通用提示（误导：那不是写错，是别的 op 的）。
+    #    改成和 till/plant 同款：吃 `**extra` + 走 `_farm_kw_norm` 的兄弟参数点名。
+    length, err, ignored = _farm_kw_norm(x, y, rows, length, direction, extra, _FARM_SIBLING_KW)
+    if err: return err
     xy, err = _farm_require_xy(x, y)   # ⚠️ 坐标必填——先拦，别为一次报错白跑回农场
     if err: return err
     x, y = xy
@@ -4268,12 +4281,19 @@ def apply_fertilizer(fertilizer_name: str, x: int = -1, y: int = -1,
     # ⚠️ 先定位到田块中心再扫——不然目标超出扫描半径会被误判"没锄地"（2026-08-13 实测坑）
     # ⚠️ 异种化肥=占用（SDV 不允许已施肥的地改施别的化肥，实测覆盖不生效），跳过并提示
     do, skip, occupied, not_tilled = [], [], [], []
-    try:
-        api.position(x + dx * length // 2 + rdx * rows // 2,
-                     y + dy * length // 2 + rdy * rows // 2)
-        time.sleep(0.3)
-    except Exception:
-        pass
+    # 🦶 2026-09-19：站田心扫描**要挑能站的格**——原来写死田心，田心正好是洒水器/箱子格时
+    #    人就被闪上去了（恒真机："踩到洒水器了"）。挑不出能站的格就**原地扫**。
+    _fcx = x + dx * length // 2 + rdx * rows // 2
+    _fcy = y + dy * length // 2 + rdy * rows // 2
+    _wk0 = api.walk_ok_tiles(min(t[0] for t in target_tiles) - 1, min(t[1] for t in target_tiles) - 1,
+                             max(t[0] for t in target_tiles) + 1, max(t[1] for t in target_tiles) + 1)
+    _pk0 = api.stand_near(target_tiles, _wk0, _fcx, _fcy)
+    if _pk0:
+        try:
+            api.position(_pk0[0], _pk0[1])
+            time.sleep(0.3)
+        except Exception:
+            pass
     try:
         surr = api.surroundings(max(length, rows) + 5)
         tiles = {(t["x"], t["y"]): t for t in surr.get("tiles", [])}
@@ -4296,15 +4316,28 @@ def apply_fertilizer(fertilizer_name: str, x: int = -1, y: int = -1,
         return _with_state(f"{warp_log}🌱 目标区 {len(target_tiles)} 格无需撒"
                            f"（同种跳过 {len(skip)}，异种占用 {len(occupied)}，没锄 {len(not_tilled)}）")
 
-    # 5. 逐格撒（同 till_and_plant 的走位）
+    # 5. 逐格撒（同锄地/播种的走位）
+    # 🦶 2026-09-19：原来写死 `(tx, ty-1)` 面朝下 —— 站位格被箱子/机器占住时会**静默瞬移上去**
+    #    （和锄地/播种同一个病根，恒："只管耕种"就一并改）。改用共用件挑站位；四邻全占就报缺失、不硬落。
+    _xs = [p[0] for p in do]
+    _ys = [p[1] for p in do]
+    _walk_ok = api.walk_ok_tiles(min(_xs) - 1, min(_ys) - 1, max(_xs) + 1, max(_ys) + 1)
+    if _walk_ok is None:
+        return _with_state("❌ 拿不到田块的可走信息（/passable_rect 失败）——本次没撒化肥（不盲走）")
     api.select(fertilizer_name)
     time.sleep(0.2)
+    no_stand_f = []
     for tx, ty in do:
+        stand = api.stand_tile(tx, ty, _walk_ok)
+        if stand is None:
+            no_stand_f.append((tx, ty))     # 四邻都被占 → 不瞬移，留给报告说清楚
+            continue
+        api.select(fertilizer_name)         # 走位/瞬移会重置选中（同播种那条纪律）
         try:
-            api.walk_natural(tx, ty - 1)
+            api.walk_natural(stand[0], stand[1])
         except Exception:
-            api.position(tx, ty - 1)
-        api.face(2)
+            api.position(stand[0], stand[1])
+        api.face(stand[2])
         time.sleep(0.1)
         api.use_item()
         time.sleep(0.35)
@@ -4313,11 +4346,14 @@ def apply_fertilizer(fertilizer_name: str, x: int = -1, y: int = -1,
     time.sleep(0.4)
     cx = x + dx * length // 2 + rdx * rows // 2
     cy = y + dy * length // 2 + rdy * rows // 2
-    try:
-        api.position(cx, cy)
-        time.sleep(0.3)
-    except Exception:
-        pass
+    # 🦶 站田心扫描要挑能站的格（同锄地/播种）——田心正好是洒水器/箱子格时不能硬闪上去
+    _park = api.stand_near(do, _walk_ok, cx, cy)
+    if _park:
+        try:
+            api.position(_park[0], _park[1])
+            time.sleep(0.3)
+        except Exception:
+            pass
     got = 0
     try:
         surr = api.surroundings(max(length, rows) + 5)
@@ -4332,154 +4368,31 @@ def apply_fertilizer(fertilizer_name: str, x: int = -1, y: int = -1,
         got = None  # 检测失败不误报
 
     lines = [f"🌱 撒化肥「{fertilizer_name}」 ({x},{y}) 起 {rows}x{length}" ]
+    _ig = _ignored_note(ignored)
+    if _ig:
+        lines.append(_ig)
     if got is not None:
         lines.append(f"  ✅ 已撒 {got}/{len(do)} 格")
     else:
         lines.append(f"  ✅ 已执行 {len(do)} 格（检测失败）")
+    if no_stand_f:
+        lines.append(f"  ⚠️ 没撒 {len(no_stand_f)} 格（**四邻没处站**）: "
+                     + " ".join(f"({a},{b})" for a, b in no_stand_f[:8]))
     if occupied:
         lines.append(f"  🔒 异种化肥占用 {len(occupied)} 格（一块地只能撒一种，可镐掉重锄再撒）: {occupied[:6]}{'…' if len(occupied)>6 else ''}")
     if skip:
         lines.append(f"  ⏭️ 已有同种跳过 {len(skip)} 格")
     if not_tilled:
-        lines.append(f"  ⚠️ 没锄地跳过 {len(not_tilled)} 格: {not_tilled[:8]}{'…' if len(not_tilled)>8 else ''}（先 till_and_plant 再撒）")
+        lines.append(f"  ⚠️ 没锄地跳过 {len(not_tilled)} 格: {not_tilled[:8]}{'…' if len(not_tilled)>8 else ''}"
+                     f"（先 `farm ops=\"till\"` 锄好再撒；想一次说完就 `farm ops=\"till fertilize\"`，一份 kw 共用）")
     return _with_state(f"{warp_log}\n" + "\n".join(lines))
 
 
-@mcp.tool()
-def till_and_plant(
-    seed_name: str,
-    x: int = -1,
-    y: int = -1,
-    rows: int = 1,
-    length: int = 1,
-    direction: str = "horizontal",
-    trellis: bool = False,
-) -> str:
-    """🌱 翻地 + 播种一条龙
-    自动锄地→播种，支持蛇形排列。
-    执行前会先扫目标区域有没有障碍物（洒水器不算），有则提醒先除杂。
-
-    trellis=True 时是爬架作物（啤酒花/青豆/葡萄，不可通过格）：
-    自动锄整块田（含走道）→ 按爬架布局播种（种2留1留走道，先下排后上排）。
-    爬架种子名都是 "Starter" 结尾（Bean/Hops/Grape Starter），没传 trellis 也能自动识别。
-
-    Args:
-        seed_name: 种子名称（如 Blueberry Seeds、Parsnip Seeds、Hops Starter）
-        x: 起始 X 坐标（必填）
-        y: 起始 Y 坐标（必填）
-        rows: 耕几行（默认 1，不擅自扩）
-        length: 每行多长（默认 1 格，不擅自扩）
-        direction: horizontal=横着耕 / vertical=竖着耕（默认 horizontal）
-        trellis: True=爬架作物留走道（默认 False，种子名含 Starter 自动识别）
-    """
-    # 爬架种子自动识别（Bean Starter / Hops Starter / Grape Starter）
-    if seed_name.strip().lower().endswith("starter"):
-        trellis = True
-    xy, err = _farm_require_xy(x, y)   # ⚠️ 坐标必填——先拦，别为一次报错白跑回农场
-    if err: return err
-    x, y = xy
-    warp_log = _warp_home_if_needed("Farm")
-
-    # 计算目标地格
-    dx, dy = (1, 0) if direction == "horizontal" else (0, 1)
-    rdx, rdy = (0, 1) if direction == "horizontal" else (1, 0)
-    target_tiles = []
-    for r in range(rows):
-        for i in range(length):
-            tx = x + dx * i + rdx * r
-            ty = y + dy * i + rdy * r
-            target_tiles.append((tx, ty))
-
-    # 扫描障碍物（洒水器过滤掉）
-    # ⚠️ 先定位到田块中心再扫（同 apply_fertilizer：超出扫描半径会漏检——河流农场实测坑 2026-08-13）
-    try:
-        api.position(x + dx * length // 2 + rdx * rows // 2,
-                     y + dy * length // 2 + rdy * rows // 2)
-        time.sleep(0.3)
-    except Exception:
-        pass
-    try:
-        surr = api.surroundings(max(length, rows) + 5)
-        seen_tiles = {(t["x"], t["y"]): t for t in surr.get("tiles", [])}
-        blocked = []
-        for tx, ty in target_tiles:
-            t = seen_tiles.get((tx, ty))
-            if not t:
-                continue
-            obj = t.get("object", "")
-            terrain = t.get("terrain", "")
-            # ⚠️ 2026-09-04 恒：可绕过设施（洒水器/稻草人/火把）不算障碍——它们留着、种的时候绕；
-            #    只有真播种不了 / 会被铲的（箱子/蟹笼/雕像等其它 object）才报障碍。
-            if obj and not _is_bypass_facility(obj):
-                blocked.append((tx, ty, obj))
-            elif terrain and "Tree" in terrain:
-                blocked.append((tx, ty, terrain))
-            elif t.get("passable") is False:
-                blocked.append((tx, ty, "水/不可走"))   # 河流农场：河不能锄
-            elif not t.get("diggable") and terrain != "HoeDirt":
-                # 🆕 2026-09-17 恒：「报错加报目标格障碍物算了」。
-                #    病根：目标格"地图没标 Diggable"时这里一路放行 → 到 tool_area 只回一句
-                #    "No diggable tiles nearby"，AI 看不出是**地**的问题（当晚我拿一片 Grass
-                #    就这样锄了 4 下、体力掉了 4 点、地里啥也没变，还以为是 till_plant 坏了）。
-                #    ⚠️ 判据必须排掉 HoeDirt：**已翻好的地也不报 diggable**（2026-09-17 真机实测，
-                #    四格 HoeDirt 全无该字段）——一刀切会把"已耕/已种"的格误报成不可耕。
-                blocked.append((tx, ty, f"{terrain or '裸地'}·地图没标可耕"))
-
-        # ⚠️ 2026-09-03 恒：旧代码只要有水/设施就整单中止——农场设备+河密布，3×3 也凑不出"全净"
-        #    → 一条龙永远跑不成（冒烟实测"反复规划失败"）。但 tool_area 锄地本就会跳过 object/非Diggable
-        #    （ModEntry 逐格校验），farm_row --plant-only 也只种进有效格。所以障碍是"提示非中止"：
-        #    只在整块全被挡才中止，否则照跑并附跳过清单。
-        if blocked and len(blocked) >= len(target_tiles) * 0.8:
-            lines = [f"  ({x},{y}): {name}" for x, y, name in blocked]
-            return _with_state(
-                f"⚠️ 目标区域 {len(blocked)}/{len(target_tiles)} 格被挡（设备/水/树），几乎没法锄——"
-                + "请换块干净地或先 clear_area。\n"
-                + "\n".join(lines[:10])
-                + f"\n   例: clear_area(x1={x}, y1={y}, x2={x+dx*length+rdx*rows}, y2={y+dy*length+rdy*rows})"
-            )
-        elif blocked:
-            # 只提示会跳过哪些，照跑（tool_area / farm_row 自会避开）
-            pass
-    except Exception:
-        pass  # 扫描失败不阻塞，让 farm_row 自己的检测兜底
-
-    # 转成 farm_row.py 的参数
-    dir_map = {"horizontal": "right", "vertical": "down"}
-    farm_dir = dir_map.get(direction, "right")
-
-    if trellis:
-        # ── 爬架作物：整块蓄力锄地（吃满升级锄头范围 + 逐下补漏）→ 爬架布局播种 ──
-        x2 = x + dx * (length - 1) + rdx * (rows - 1)
-        y2 = y + dy * (length - 1) + rdy * (rows - 1)
-        # 1. 蓄力锄整块（_till_rect 内含 tool_area + DLL 自动取余补站位补漏）
-        out = "  " + _till_rect(min(x, x2), min(y, y2), max(x, x2), max(y, y2))
-        # 2. 爬架播种格（种2留1 + 先下排后上排）
-        p = plan_farm_layout(x, y, x2, y2, 0, trellis=True)
-        plant_tiles = p["plant_tiles"]
-        if not plant_tiles:
-            return _with_state(f"{warp_log}⚠️ 爬架布局没有可播种格（{p['walkway_rows']} 行走道）")
-        api.select(seed_name)
-        time.sleep(0.2)
-        for tx, ty in plant_tiles:
-            try:
-                api.walk_natural(tx, ty - 1)
-            except Exception:
-                api.position(tx, ty - 1)
-            api.face(2)
-            time.sleep(0.1)
-            api.use_item()
-            time.sleep(0.35)
-        out += f"\n  🧗 爬架播种 {len(plant_tiles)} 格 | 🚶 留 {p['walkway_rows']} 行走道（种2留1）"
-        return _with_state(f"{warp_log}🌱 翻地播种爬架「{seed_name}」:\n{out[:800]}")
-
-    # 2026-09-03 恒：一条龙改用可靠路径——锄地走 tool_area(_till_rect 自验收+补漏)，播种走 farm_row --plant-only。
-    #    旧 farm_row 逐格走位+"position fallback"假成功（plot 0/0、种子未消耗）；tool_area 是已验证的可靠锄地。
-    x2 = x + dx * (length - 1) + rdx * (rows - 1)
-    y2 = y + dy * (length - 1) + rdy * (rows - 1)
-    till_out = _till_rect(min(x, x2), min(y, y2), max(x, x2), max(y, y2))
-    plant_out = _farm_plant_only(seed_name, x, y, rows, length, direction)
-    return _with_state(f"{warp_log}🌱 翻地播种「{seed_name}」:\n{till_out}\n{plant_out}")
-
+# ⛔ 2026-09-19 恒拍板：**退役两个 op**（函数已删，别再往回加）——
+#    · `till_plant`（锄+种一条龙）：它**绕过 `_farm_till`** 直接调 `_till_rect` ⇒ 没有 layout、不走逐格路由
+#      （09-17 收敛锄地时漏掉的一处）。要锄+种就写 **`farm ops="till plant"`** —— 一次调用、**一份 kw 共用**，
+#      锄地会自动**点名忽略** seed_name（见 `_FARM_SIBLING_KW`）。
+#    · `plantlayout`（按布局播种）：并进 `_farm_plant`，`layout` 变成**传参**（0 整块 / 1 初级 / 2 高级 / 3 铱）。
 
 # 锄头优先级（中英文名都行——恒 2026-08-13：游戏可能切中英文，匹配要兼容）
 HOE_PRIORITY = [
@@ -4575,86 +4488,7 @@ def _till_rect(x1: int, y1: int, x2: int, y2: int) -> str:
         return f"❌ {e}"
 
 
-@mcp.tool()
-def plant_layout(x1: int, y1: int, x2: int, y2: int, layout: int, seed: str, direct: bool = False,
-                 trellis: bool = False) -> str:
-    """🌱 按洒水器布局播种（拟人逐格走位，或 direct 瞬移播种）
-
-    播种位置由 plan_farm_layout 的 plant_tiles 决定：
-    - 初级(layout=1): 种所有十字格（地在哪里种哪里）
-    - 高级/铱(2/3): 种田里除去洒水器位的格
-    - 整块(0): 整块种
-    流程：选种子 → 到格上方 → face(下) → use_item 播种。
-    direct=True 用瞬移（position）不走路，适合格多的密排布局；默认走位拟人。
-    trellis=True 是爬架作物（啤酒花/青豆/葡萄）→ 自动留走道（种2留1），
-    并按"先下排后上排"顺序种（保证站的格是空/走道，不踩爬架）。
-
-    Args:
-        x1, y1: 地块左上角坐标
-        x2, y2: 地块右下角坐标
-        layout: 洒水器布局模式 0-3
-        seed: 种子名称（如 Blueberry Seeds / Parsnip Seeds）
-        direct: True=瞬移播种(快) / False=走位拟人(慢但自然)
-        trellis: True=爬架作物留走道（默认 False）
-    """
-    try:
-        # 1. 检查种子在背包
-        st = api.state()
-        inv = st.get("inventory", [])
-        if not any(seed in (i.get("name") or "") for i in inv):
-            return _with_state(f"❌ 背包里没有「{seed}」")
-        # 2. 算播种格
-        p = plan_farm_layout(x1, y1, x2, y2, layout, trellis=trellis)
-        plant_tiles = p["plant_tiles"]
-        if not plant_tiles:
-            return _with_state("⚠️ 这块地没有可播种的格子" + ("（铱洒水器不做爬架，交给 7842）" if trellis and layout == 3 else ""))
-        # 3. 选种子 + 逐格播种（站在格上方面向下种；direct 瞬移 / 默认走位）
-        api.select(seed)
-        time.sleep(0.2)
-        failed = []
-        for tx, ty in plant_tiles:
-            if direct:
-                api.position(tx, ty - 1)
-                time.sleep(0.1)
-            else:
-                try:
-                    api.walk_natural(tx, ty - 1)
-                except Exception:
-                    api.position(tx, ty - 1)
-            api.face(2)
-            time.sleep(0.1)
-            api.use_item()
-            time.sleep(0.35)
-        # 4. 验证（站在田中央扫，看哪些格种上了——terrain 有 crop 的）
-        time.sleep(0.4)
-        cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-        try:
-            api.position(cx, cy)
-            time.sleep(0.3)
-        except Exception:
-            pass
-        a = p["area"]
-        surr = api.surroundings(max(a["w"], a["h"]) // 2 + 6)
-        tiles = {(t["x"], t["y"]): t for t in surr.get("tiles", [])}
-        # crop 字段可能不存在，fallback 到 HoeDirt 计数
-        planted = [pt for pt in plant_tiles
-                   if tiles.get(pt, {}).get("crop") or tiles.get(pt, {}).get("terrain") == "HoeDirt"]
-        lines = [f"🌱 按{ {0:'整块',1:'初级',2:'高级',3:'铱'}.get(layout,'?') }布局播种「{seed}」"
-                 f" ({a['x1']},{a['y1']})-({a['x1']+a['w']-1},{a['y1']+a['h']-1})"
-                 + ("（🧗爬架走道）" if trellis else "")]
-        lines.append(f"  🚿 洒水器 {len(p['sprinklers'])} 个 | 播种 {len(plant_tiles)} 格")
-        if trellis and p.get("walkway_rows"):
-            lines.append(f"  🚶 已留 {p['walkway_rows']} 行走道（种2留1）")
-        # 尝试数真实作物
-        real_crops = [pt for pt in plant_tiles if tiles.get(pt, {}).get("crop")]
-        if real_crops:
-            lines.append(f"  ✅ {len(real_crops)}/{len(plant_tiles)} 已长出作物")
-        else:
-            lines.append(f"  ✅ 播种完成 {len(plant_tiles)} 格")
-        return _with_state("\n".join(lines))
-    except Exception as e:
-        return _with_state(f"❌ {e}")
-
+# ⛔ 2026-09-19：`plantlayout` 已并入 `_farm_plant`（`layout` 改传参）——见上面那条退役说明。
 
 @mcp.tool()
 def water_crops() -> str:
@@ -5500,7 +5334,7 @@ def go_mining(
     target: Optional[int] = None,
     ore: Optional[str] = None,
     cycles: int = 5,
-    hp_threshold: int = 50,
+    hp_threshold: int = 30,
     food_sta: Optional[str] = None,
     food_hp: Optional[str] = None,
     resume: bool = True,
@@ -5526,7 +5360,8 @@ def go_mining(
         target: 目标层数，仅 rush 模式（默认 120）
         ore: 目标矿石，仅 farm 模式（Copper/Iron/Gold，默认 Iron）
         cycles: 刷矿循环次数，仅 farm 模式（默认 5）
-        hp_threshold: 血量低于此 % 吃食物/撤退（默认 50%）
+        hp_threshold: 血量低于此 % 吃食物（默认 30%）。⚠️ 这是**吃/兜底**线不是撤退线——
+            **撤退看 HP<20 绝对值**（恒 2026-09-19："不到快死都可以跟着房主继续下"）
         food_sta: 体力食物名称（如 Salad / Bread），不传就不吃
         food_hp: 回血食物名称（如 Cheese / Fish Taco），不传则共用 food_sta
         resume: 是否从已到达最深层恢复（默认 True，仅 rush 模式）
@@ -6015,7 +5850,7 @@ def bomb_organize(disable: bool = False, reset: bool = False) -> str:
 
 @mcp.tool()
 def bomb_escort(ore_radius: int = 7, cooldown: int = 20, max_minutes: Optional[int] = None,
-                hp_threshold: int = 50) -> str:
+                hp_threshold: int = 30) -> str:
     """👥 协同模式：跟着 user 下矿炸矿（贴身保镖）
     滞后跟随 user（站身后不贴脸），只在途径处看到高价值矿（铱/宝石/金）才放炸弹，
     帮打怪（user 附近出现怪物就砍）。user 离开矿井就撤，没炸弹就转纯保镖跟随。
@@ -6024,7 +5859,7 @@ def bomb_escort(ore_radius: int = 7, cooldown: int = 20, max_minutes: Optional[i
         ore_radius: 高价值矿离 user 多近才炸（默认7格）
         cooldown: 两次炸弹最小间隔秒数（默认20）
         max_minutes: 最多跟随分钟数（默认不限）
-        hp_threshold: 血量低于此%撤退（默认50）
+        hp_threshold: 血量低于此%吃食物（默认30）。⚠️ 吃/兜底线，不是撤退线（撤退看 HP<20 绝对值）
     """
     args_list = [f"--ore-radius", str(ore_radius), f"--cooldown", str(cooldown),
                  f"--hp-threshold", str(hp_threshold)]
@@ -6050,7 +5885,8 @@ def bomb_volcano(bomb: str = "Bomb", min_covered: int = 3, hp_threshold: int = 3
     Args:
         bomb: Bomb/Mega Bomb/Cherry Bomb（默认 Bomb；背包没有黑会按 黑>超级>樱桃 自动换有的用）
         min_covered: 至少覆盖N块岩体才炸（火山簇小，默认3）
-        hp_threshold: 血量低于此%撤退（默认30）
+        hp_threshold: 血量低于此%吃食物（默认30）。⚠️ 吃/兜底线，不是撤退线
+            （火山的撤退线是 HP<20 绝对值，恒 2026-09-19）
         max_minutes: 最多跟随分钟数（默认不限）
         poll: user位置轮询间隔秒（默认2.5）
     """
@@ -7212,6 +7048,21 @@ def _ops_run(ops_str: str, dispatch: dict, kw: dict) -> str:
     ops = [o for o in re.split(r"[\s,，]+", (ops_str or "").strip()) if o]
     if not ops:
         return "❌ ops 为空（如 farm(ops=\"till plant water\")）"
+    # 🌾 2026-09-19：「一次调用、一份 kw 共用」是**官方用法**（如 `farm ops="till plant water"`），
+    #    所以"某个 op 收不下的键"未必是写错字——**可能只是同次调用里另一个 op 的参数**。
+    #    先把"本次调用里所有 op 认得的参数名"并起来，下面据此把两种情形分开说
+    #    （否则 `water`/`harvest` 这种零参 op 会打一句误导的"参数名写错不会报错"，把 AI 带沟里）。
+    _sib_params = set()
+    for _o in ops:
+        _f = dispatch.get(_o)
+        if _f is None:
+            continue
+        try:
+            _s = inspect.signature(_f)
+        except (ValueError, TypeError):
+            continue
+        _sib_params |= {p.name for p in _s.parameters.values()
+                        if p.kind not in (p.VAR_KEYWORD, p.VAR_POSITIONAL)}
     results = []
     for op in ops:
         fn = dispatch.get(op)
@@ -7256,7 +7107,18 @@ def _ops_run(ops_str: str, dispatch: dict, kw: dict) -> str:
                 #    为什么是 ⚠️ 不是 ❌：一次调用可以带多个 op（`farm(ops="till plant")`）共用一份
                 #    kw，报错会让本来跑得动的那个 op 一起陪葬；点名 + 列出该 op 的真参数名，一眼能改。
                 #    （farm 域另有更强的 `_farm_kw_norm`：那边 op 吃 **extra、自己报错，走不到这层。）
-                results.append(_dropped_kw_note(op, _dropped, sig))
+                # 🆕 2026-09-19：先分清"写错字"和"这是**同次调用里别的 op** 的参数"——
+                #    后者不是错，别打误导的"参数名写错"（`farm ops="till plant water"` 里
+                #    `water` 零参，x/y/seed_name 全会被丢掉 ⇒ 老文案会连打三行"你写错了"）。
+                #    ⚠️ 措辞**别用 `⚠️ op「` 开头**：`gen_tool_checklist.py --from-log` 把那个前缀
+                #    当成工具报错，会把一次正常调用记成 ❌。
+                _other = sorted(k for k in _dropped if k in _sib_params)
+                _typo = sorted(k for k in _dropped if k not in _sib_params)
+                if _typo:
+                    results.append(_dropped_kw_note(op, _typo, sig))
+                if _other:
+                    results.append(f"  ⚠️ 已忽略参数 {_other}——那是同一次调用里**别的 op** 的参数"
+                                   f"（本 op 用不到，不是写错字、也不用改）")
         except TypeError as e:
             # 2026-09-03 恒：参数名猜错（缺参）→ 直接列出可用参数名，别再让 AI 靠报错猜
             # 2026-09-12：再往前一步，把 Python 原生文案翻成人话（_humanize_call_error）
@@ -7392,17 +7254,62 @@ def _farm_rect(x: int, y: int, rows: int, length: int, direction: str):
     return min(x, x2), min(y, y2), max(x, x2), max(y, y2)
 
 
+# 🌾 farm 域「兄弟参数」集合（2026-09-19）：`farm(ops="till plant fertilize", kw={...})` 是**一份 kw 多个 op 共用**，
+#   每个 op 只吃自己认识的那几个键。farm 各 op 都带 `**extra`（`_filter_kw` 因此"原样全给、由目标自己报错"），
+#   所以**容错只能在这里做**：命中本集合的键 = "这次调用里给**别的** op 的参数" ⇒ 从 extra 摘掉并**在输出里点名**；
+#   不在集合里的照旧 ❌ 未知参数（`lenght` 这类真拼错还是照样报错，别想糊过去）。
+#   ⚠️ `dry_run`/`preview` 这类"**只预览**"键**故意不在集合里**：它们必须走拒绝路径（见 `_farm_kw_norm`），
+#      否则一次组合调用会把"以为在干跑"变成"真干了"（2026-09-17 真机教训：dry_run 被丢掉后照样开机割菜）。
+#   ⚠️ **加新 farm op 时记得把它的参数补进来** —— `check_design.py` 有一条静态检查盯着
+#      （本集合必须 ⊇ farm dispatch 各 op 的参数并集），忘了补会被自检拦下。
+_FARM_SIBLING_KW = frozenset({
+    # 播种（_farm_plant）
+    "seed_name", "seed", "trellis", "direct",
+    # 锄地/规划（_farm_till、plan_farm_layout_tool）
+    "layout", "hoe_level", "x1", "y1", "x2", "y2",
+    # 化肥 / 机器 / 建筑
+    "fertilizer_name", "machine_type", "location", "item", "count",
+    # 动物 / 宠物 / 放置 / 砍收
+    "animal_type", "building", "name", "include_petted", "area", "steps", "radius", "all_plots",
+})
+
+
 def _farm_kw_norm(x, y, rows, length, direction, extra, extra_ok=()):
     """农活域 kw 归一化：cols/col/width/len → length；未知 kw 报错，别静默吞（2026-09-03 恒）。
-    返回 (length, None) 正常，或 (None, err)。extra_ok=额外允许键（plant 的 seed_name）。"""
+    返回 **(length, err, ignored)**：
+      · 正常 → `(length, None, [被忽略的兄弟参数名])`；出错 → `(None, 错误串, [])`。
+      · `ignored` 由调用方**拼进正文**点名（"已忽略 seed_name —— 那是 plant 的参数"），别静默吞。
+    extra_ok = 「兄弟参数」集合（传 `_FARM_SIBLING_KW`）——见上面那段注释。"""
     for k in ("cols", "col", "width", "len"):
         if k in extra:
             length = extra.pop(k)
-    bad = set(extra) - set(extra_ok)
-    if bad:
+    # 🧪 "只预览"键**一律拒绝本 op**，绝不走下面的忽略路径（比 `_dry_intent_refusal` 更早拦：
+    #    farm 各 op 吃 `**extra`，那边"按签名过滤"对这族从来不触发）
+    _dry = sorted(str(k) for k in extra if str(k).strip().lower() in _DRY_INTENT_KW)
+    if _dry:
+        return (None,
+                f"❌ 本 op **拒绝执行**：你传了 {_dry}（=只预览、不真做），但农活 op 没有干跑模式——"
+                f"照原样跑下去就变成**真做了**、跟你想要的正相反，所以这里**一下都不动**。"
+                f"确实要真做请去掉该参数重发。", [])
+    ignored = sorted(set(extra) & set(extra_ok))
+    for k in ignored:
+        extra.pop(k)
+    if extra:
         avail = "x y rows length direction" + (f" {' '.join(sorted(extra_ok))}" if extra_ok else "")
-        return (None, f"❌ 未知参数 {sorted(bad)}。此 op 可用: {avail}（每行几格写 length，或 cols/width 别名，别同时写）")
-    return (length, None)
+        return (None,
+                f"❌ 未知参数 {sorted(extra)}。此 op 可用: {avail}"
+                f"（每行几格写 length，或 cols/width 别名，别同时写；"
+                f"若那是**别的 op** 的参数，请检查 op 名有没有写错）", [])
+    return (length, None, ignored)
+
+
+def _ignored_note(ignored) -> str:
+    """兄弟参数被忽略时的正文点名行（`_ops_run` 只砍状态条，正文里的这行会留到 AI 眼前）。
+    ⚠️ 措辞**别用 `⚠️ op「` 开头** —— `gen_tool_checklist.py --from-log` 把那个前缀判成工具报错。"""
+    if not ignored:
+        return ""
+    return (f"  ⚠️ 已忽略参数 {sorted(ignored)}——那是同一次调用里**别的 op** 的参数"
+            f"（本 op 用不到，没静默吞、也不会影响别的 op）")
 
 
 def _snake_tiles(tiles):
@@ -7433,27 +7340,35 @@ def _farm_till(x: int = -1, y: int = -1, rows: int = 1, length: int = 1,
       · `layout` 决定**锄哪些格** —— 0 标准 / 2 高级 / 3 铱 → **整块**；
                                   1 初级 → 只锄每个洒水器上下左右 4 格（十字，不锄整块）
       · **锄头等级 + 地块大小**决定**怎么锄** ——
-          基础锄(0 级)        → **拟人逐格挥锄**（走过去→抬手→落下，看得见动作）
+          `layout=1` 初级布局      → **恒拟人逐格**（恒 2026-09-19：十字格天生离散，
+                                      跟锄头等级无关，别因为"升级锄锄得动"就切一键）
+          基础锄(0 级)             → **拟人逐格挥锄**（走过去→抬手→落下，看得见动作）
           升级锄 + **田块 ≤ 一次蓄力的覆盖格数** → **也逐格**（恒 2026-09-17：小块地蓄力是大炮打蚊子）
-          升级锄 + 田块更大   → **蓄力/一键**（`tool_area`/`till_area`，无动画但快得多）
+          升级锄 + 田块更大        → **蓄力**（`_till_rect`→`tool_area`，无动画但快得多）
         覆盖格数按等级：0级1格 / 铜3 / 钢5 / 金9(3×3) / 铱18(6×3)
 
     ⚠️ 尺寸默认 1×1，**不擅自扩**（恒 2026-09-03：旧默认 5×5 会把"就锄一下"扩成 25 格大田=意外耗体力）。
     ⚠️ 用 `x,y` 形式时 **x/y 必填**（恒 2026-09-10：缺坐标的兜底会朝上/朝左时长回自己脚下、连站位格一起犁）。
+    🦶 逐格锄的**站位格**：优先目标正上方，被占则试 下/左/右（配对应朝向）；**四边都站不进去
+        ⇒ 该格如实报缺失（"四邻没处站"），绝不瞬移过去站**（2026-09-19 恒）。
     """
     # ── 1. 解析矩形（给了 x1..y2 就用它，否则由 x,y + 尺寸算）──
+    # ⚠️ 2026-09-19：**两个分支都要过 `_farm_kw_norm`**。原来只有 x,y 分支过，
+    #    x1..y2 分支**一次都不查 extra** ⇒ `hoe(x1..y2, seed_nme="x")` 拼错参数被**静默吞掉**，
+    #    与 "未知 kw 报错，别静默吞" 直接矛盾（顺手补上）。
+    length, err, ignored = _farm_kw_norm(x, y, rows, length, direction, extra, _FARM_SIBLING_KW)
+    if err:
+        return err
     if min(x1, y1, x2, y2) >= 0:
         rx1, ry1 = min(x1, x2), min(y1, y2)
         rx2, ry2 = max(x1, x2), max(y1, y2)
     else:
-        length, err = _farm_kw_norm(x, y, rows, length, direction, extra)
-        if err:
-            return err
         xy, err = _farm_require_xy(x, y)
         if err:
             return err
         x, y = xy
         rx1, ry1, rx2, ry2 = _farm_rect(x, y, rows, length, direction)
+    _ig_note = _ignored_note(ignored)
 
     # ── 2. layout 决定"锄哪些格" ──
     try:
@@ -7486,38 +7401,65 @@ def _farm_till(x: int = -1, y: int = -1, rows: int = 1, length: int = 1,
     #   （如 3×6 的铱锄锄 3×3 的地）」⇒ 除基础锄恒逐格外，**升级锄在小块地也走逐格** ——
     #   蓄力一次就覆盖 N 格，地里只要 ≤N 格就没必要蓄（大炮打蚊子），逐格挥更像人、也看得见动作。
     #   容量表取自 till_field docstring 的蓄力范围（0:1格 1:3线 2:5线 3:3×3 4:6×3）。
+    # 🆕 2026-09-19 恒：「**初级洒水器布局时，无论什么等级的锄头都用逐格**」——
+    #   十字格是**离散**的（不是一块矩形），蓄力/一键在这里省不了多少、却把挥锄观感丢了；
+    #   域指引早就写着 layout=1「锄法与锄头等级无关」，是实现里那条 `_need <= _cap` 把它带偏了。
     _HOE_CHARGE_TILES = {0: 1, 1: 3, 2: 5, 3: 9, 4: 18}
     _need = len(tile_list)
     _cap = _HOE_CHARGE_TILES.get(hoe_level, 1)
-    if hoe_level == 0 or _need <= _cap:
-        # 逐格挥锄（走位 → 面向下 → 挥锄落下）
+    if layout == 1 or hoe_level == 0 or _need <= _cap:
+        # 逐格挥锄（走位 → 面向目标 → 挥锄落下）
         # ⚠️ **必须 `use_tool()`**（→ `/tool`，`BeginUsingTool()`+`EndUsingTool()` 两个都调）；
         #    原来调的 `use_item()`（→ `/use`）**只抬手不落锄** —— 2026-09-17 真机：报 "0/9 锄出"、
         #    恒当场看见"举着锄头没落下"。别改回去。
+        #
+        # 🦶 站位格：优先目标**正上方**（面向下）；被占就退回 下/左/右。
+        #    ⚠️ 2026-09-19 恒真机逮到：原来写死 `walk_natural(tx, ty-1)`，站位格被箱子占住时
+        #    `walk_natural` **静默走 `position` 兜底** ⇒ 人**落在箱子格上**挥锄（观感=站进箱子里）。
+        #    实测复现：`walk_natural(59,17)` 返回 False、落点就是 (59,17)（那格是 Chest）；
+        #    测试田 y=17 一排箱子，24 格里 5 格如此。
+        #    判据 = `api.stand_tile`（stardew_api 里的**共用件**，锄/种/撒化肥都用它；
+        #    底层 `/passable_rect` 的 passable = 寻路同款 IsTilePassable，含物件/家具/牲畜）。
+        #    **四边都站不进去就如实报缺失、不瞬移**；拿不到可走信息则**直接报错不干活**
+        #    （宁报错别兜底：盲走正是上面那个 bug 的来源）。
+        _walk_ok = api.walk_ok_tiles(rx1 - 1, ry1 - 1, rx2 + 1, ry2 + 1)
+        if _walk_ok is None:
+            return "❌ 拿不到田块的可走信息（/passable_rect 失败）——本次没锄任何格（不盲走）"
+        no_stand, teleported = [], 0
         for tx, ty in _snake_tiles(tile_list):
-            api.walk_natural(tx, ty - 1)
-            api.face(2)
+            stand = api.stand_tile(tx, ty, _walk_ok)
+            if stand is None:
+                no_stand.append((tx, ty))   # 四邻都被占 → 不瞬移，留给报告说清楚
+                continue
+            # walk_natural 返回 False = 走不过去、它自己用了 position 兜底（站位格本身可站，
+            # 只是路被挡）——数一数报出来，别让"瞬移过去站的"混在"拟人逐格"里没人知道。
+            if not api.walk_natural(stand[0], stand[1]):
+                teleported += 1
+            api.face(stand[2])
             time.sleep(0.1)
             api.use_tool()
             time.sleep(0.4)   # 挥锄动画
-        method = ("拟人逐格(基础锄)" if hoe_level == 0
-                  else f"拟人逐格(锄头{hoe_level}级，{_need}格 ≤ 蓄力{_cap}格)")
-    else:
         if layout == 1:
-            # 初级布局只锄十字格 → 按格列一键（物理挥锄对高级锄失效）
-            api.till_area(tiles=[{"x": tx, "y": ty} for tx, ty in tile_list])
-            method = f"一键 /till_area(锄头{hoe_level}级)"
+            method = f"拟人逐格(初级布局恒逐格·与锄头等级无关，锄头{hoe_level}级，{_need}格)"
+        elif hoe_level == 0:
+            method = "拟人逐格(基础锄)"
         else:
-            # 整块 → 复用 _till_rect（tool_area 蓄力 + DLL 自检补漏），它自带报告
-            return _till_rect(rx1, ry1, rx2, ry2)
+            method = f"拟人逐格(锄头{hoe_level}级，{_need}格 ≤ 蓄力{_cap}格)"
+    else:
+        # 整块 → 复用 _till_rect（tool_area 蓄力 + DLL 自检补漏），它自带报告
+        return _till_rect(rx1, ry1, rx2, ry2) + ("\n" + _ig_note if _ig_note else "")
 
     # ── 4. 逐下检测（判据 `terrain == "HoeDirt"`；2026-09-17 真机 A/B 校过：手锄一格立刻读到）──
+    # 🦶 站田心扫描**要挑能站的格**：原来写死 `position(田心)`，田心是洒水器/箱子格时人就被闪上去
+    #    （恒 2026-09-19 真机："踩到洒水器了"）。挑不出能站的格就**原地扫**（不硬瞬移）。
     time.sleep(0.4)
-    try:
-        api.position((rx1 + rx2) // 2, (ry1 + ry2) // 2)
-        time.sleep(0.3)
-    except Exception:
-        pass
+    _park = api.stand_near(tile_list, _walk_ok, (rx1 + rx2) // 2, (ry1 + ry2) // 2)
+    if _park:
+        try:
+            api.position(_park[0], _park[1])
+            time.sleep(0.3)
+        except Exception:
+            pass
     surr = api.surroundings(max(w, h) // 2 + 6)
     tiles = {(t["x"], t["y"]): t for t in surr.get("tiles", [])}
     tilled = [pt for pt in tile_list if tiles.get(pt, {}).get("terrain") == "HoeDirt"]
@@ -7525,55 +7467,238 @@ def _farm_till(x: int = -1, y: int = -1, rows: int = 1, length: int = 1,
     lines = [f"{head} | {method}"]
     if note:
         lines.append(note)
+    if _ig_note:
+        lines.append(_ig_note)
     lines.append(f"  ✅ {len(tilled)}/{len(tile_list)} 锄出")
     if missing:
         lines.append(f"  ⚠️ 缺失 {len(missing)} 格（被杂物/水挡？）:")
+        _no_stand = set(no_stand)
         for mx, my in missing[:10]:
             info = tiles.get((mx, my), {})
             what = info.get('object') or info.get('resource') or info.get('terrain') or '裸地'
             # 🆕 2026-09-17 恒：「报错加报目标格障碍物」——把"这格压根不可耕"和
             #    "可耕但被挡"分开说，否则一片草地只会得到一句没头没脑的"缺失 N 格"。
             #    ⚠️ HoeDirt 还要报不可耕就是误报（已翻的地不带 diggable 字段，真机实测）。
+            # 🆕 2026-09-19：再加一条"**四邻没处站**"——那是站位问题不是地的问题，
+            #    不写清楚 AI 只会盯着这格发呆（原本这里只会说"裸地"，看着像工具失灵）。
+            marks = []
+            if (mx, my) in _no_stand:
+                marks.append("四邻没处站")
             if not info.get('diggable') and info.get('terrain') != 'HoeDirt':
-                what = f"{what}·地图没标可耕"
+                marks.append("地图没标可耕")
+            if marks:
+                what = f"{what}·{'、'.join(marks)}"
             lines.append(f"    ({mx},{my}) {what}")
     return "\n".join(lines)
 
 
-def _farm_plant_only(seed_name: str, x: int = -1, y: int = -1, rows: int = 1,
-                     length: int = 1, direction: str = "horizontal", **extra) -> str:
-    """🌱 独立播种（在已锄好地上种，不锄不浇）——2026-08-15 恒：单独播种工具。
-    走 farm_row --plant-only（每格走位+select种子+种）。
-    ⚠️ 2026-09-10 恒：**x/y 必填**（缺坐标不再兜底成"玩家面向格"）。
-    ⚠️ 尺寸默认 1×1 不擅自扩——AI 报多少格就种多少格。"""
-    length, err = _farm_kw_norm(x, y, rows, length, direction, extra)
-    if err: return err
-    xy, err = _farm_require_xy(x, y)
-    if err: return err
-    x, y = xy
+def _farm_plant(seed_name: str = "", seed: str = "", x: int = -1, y: int = -1, rows: int = 1,
+                length: int = 1, direction: str = "horizontal",
+                x1: int = -1, y1: int = -1, x2: int = -1, y2: int = -1,
+                layout: int = 0, direct: bool = False, trellis: bool = False, **extra) -> str:
+    """🌱 播种 —— **唯一入口**（2026-09-19 恒拍板收敛：`plant`/`sow`/`plantlayout`/`播种规划`
+    四个名字都指这里；旧的 `till_plant` 一条龙**已退役**，要锄+种就 `farm ops="till plant"`，
+    一次调用共用一份 kw，锄地会自动忽略 `seed_name`）。
+
+    **两种给坐标的方式，二选一**（学 `_farm_till`）：
+      · `x,y` + `rows,length,direction` —— 起点 + 尺寸
+      · `x1,y1,x2,y2`                  —— 直接给矩形两角
+
+    **`layout` 决定种哪些格**：0 标准（= 整个矩形，缺省）/ 1 初级（洒水器十字）/
+    2 高级（3 的倍数，扣掉洒水器位）/ 3 铱（5 的倍数）—— 算格全交给 `plan_farm_layout`。
+    `trellis=True` = 爬架作物（啤酒花/青豆/葡萄，不可通过格）⇒ **种2留1** 留走道；
+    种子名以 `Starter` 结尾时**自动**按爬架算（沿用老一条龙的行为）。
+    `direct=True` 用瞬移（格多的密排布局快），默认**走位拟人**。
+
+    ⚠️ 2026-09-10 恒：用 `x,y` 形式时 **x/y 必填**（缺坐标不再兜底成"玩家面向格"）。
+    ⚠️ 尺寸默认 1×1 不擅自扩——AI 报多少格就种多少格。
+    🦶 站位格走 `api.stand_tile`（和锄地同一个共用件）：优先目标正上方，被占则 下/左/右，
+       **四邻全占就如实报缺失、绝不瞬移过去站**。
+    """
+    # ── 1. 归一化 + 解析矩形（两个分支**都**过 `_farm_kw_norm`，别让未知参数静默漏过）──
+    if seed != "" and seed_name == "":
+        # 🕳️ `seed` 是**兼容暗桩**：真机 session_log:992/1079 用的就是 `seed`（不是 seed_name）。
+        #    文档里一律写 `seed_name`（`_kw_doc_check.py` 会盯着文档与签名的一致性）。
+        seed_name = seed
+        seed = ""
+    if seed != "":
+        extra["seed"] = seed
+    length, err, ignored = _farm_kw_norm(x, y, rows, length, direction, extra, _FARM_SIBLING_KW)
+    if err:
+        return err
+    if min(x1, y1, x2, y2) >= 0:
+        rx1, ry1 = min(x1, x2), min(y1, y2)
+        rx2, ry2 = max(x1, x2), max(y1, y2)
+    else:
+        xy, err = _farm_require_xy(x, y)
+        if err:
+            return err
+        x, y = xy
+        rx1, ry1, rx2, ry2 = _farm_rect(x, y, rows, length, direction)
+    _ig_note = _ignored_note(ignored)
+    if not seed_name:
+        return "❌ 要传 seed_name（种子名，如 Parsnip Seeds）——不传就没法种"
+
+    # ── 2. layout 决定"种哪些格" ──
     try:
-        dir_map = {"horizontal": "right", "vertical": "down"}
-        farm_dir = dir_map.get(direction, "right")
-        args_list = ["--port", str(_ai_port()), "--plant-only",
-                     "--seed", seed_name, str(x), str(y), str(length),
-                     "--rows", str(rows), "--dir", farm_dir]
-        out = _run_script("farm_row", args_list, timeout=180)
-        return f"🌱 播种「{seed_name}」（{rows}行×{length}格，不锄不浇）:\n{out[:600]}"
-    except Exception as e:
-        return f"❌ 播种失败: {e}"
+        layout = int(layout)
+    except (TypeError, ValueError):
+        return f"❌ layout 只能是 0/1/2/3，收到 {layout!r}（0标准 1初级 2高级 3铱）"
+    if layout not in (0, 1, 2, 3):
+        return f"❌ layout 只能是 0/1/2/3，收到 {layout}（0标准 1初级 2高级 3铱）"
+    if not trellis and seed_name.lower().endswith("starter"):
+        trellis = True    # 🌱 爬架种子自动留走道（老一条龙的行为，2026-09-19 并进来）
+    p = plan_farm_layout(rx1, ry1, rx2, ry2, layout, trellis=trellis)
+    plant_tiles = [(tx, ty) for tx, ty in p["plant_tiles"]]
+    if not plant_tiles:
+        return _with_state("⚠️ 这块地没有可播种的格子"
+                           + ("（铱洒水器不做爬架，这块交给房主）" if trellis and layout == 3 else ""))
+    w, h = rx2 - rx1 + 1, ry2 - ry1 + 1
+    _lay_cn = {0: "整块", 1: "初级", 2: "高级", 3: "铱"}[layout]
+    head = (f"🌱 按{_lay_cn}布局播种「{seed_name}」({rx1},{ry1})-({rx2},{ry2}) {w}x{h}"
+            + ("（🧗爬架走道）" if trellis else "")
+            + (" | 🚀瞬移" if direct else " | 🚶拟人走位"))
+
+    # ── 3. 种子在背包？ ──
+    try:
+        inv = api.state().get("inventory", [])
+    except Exception:
+        inv = []
+    if not any(seed_name in (i.get("name") or "") or seed_name in (i.get("displayName") or "")
+               for i in inv):
+        return _with_state(f"❌ 背包里没有「{seed_name}」（要**英文内部名**，如 Parsnip Seeds / Parsnip Seeds 这类；"
+                           f"先 check what=backpack 看有什么）")
+
+    # ── 4. 回到能种的地方（温室/姜岛/附近有 HoeDirt 则不挪，见该函数注释）──
+    warp_log = _warp_home_if_needed("Farm")
+
+    # ── 5. 扫地形：① 目标地块在不在当前图 ② 哪些格要跳过（已有作物 / 设施占格）──
+    #    ⚠️ 判据用"**田心格在不在扫描结果里**"，不能用"tiles 为空"——半径不够时也会空。
+    def _scan(radius):
+        try:
+            return {(t["x"], t["y"]): t for t in api.surroundings(radius).get("tiles", [])}
+        except Exception:
+            return {}
+    radius = max(w, h) // 2 + 8
+    tiles = _scan(radius)
+    if not any(pt in tiles for pt in plant_tiles):
+        # 当前位置扫不到田块（站得远，或**压根不在同一张图**）→ 站到田里再扫一次。
+        # 🦶 落脚点**要挑能站的**：田心是洒水器/箱子格时不能硬闪上去（恒 2026-09-19："踩到洒水器了"）。
+        _walk_ok0 = api.walk_ok_tiles(rx1 - 1, ry1 - 1, rx2 + 1, ry2 + 1)
+        _park0 = api.stand_near(plant_tiles, _walk_ok0, (rx1 + rx2) // 2, (ry1 + ry2) // 2)
+        if _park0:
+            try:
+                api.position(_park0[0], _park0[1])
+                time.sleep(0.4)
+                tiles = _scan(radius)
+            except Exception:
+                pass
+    if not any(pt in tiles for pt in plant_tiles):
+        cur = (api.state().get("location") or {}).get("name", "?")
+        return _with_state(f"❌ 目标田块 ({rx1},{ry1})-({rx2},{ry2}) 不在当前地图（现在在 {cur}）"
+                           f"——一个动作都没做。请先用 map go 到那块地所在的图。")
+    planted_crop = {pt for pt in plant_tiles if tiles.get(pt, {}).get("crop")}
+    planted_obj = {pt for pt in plant_tiles if tiles.get(pt, {}).get("object")}
+    do_tiles = [pt for pt in plant_tiles if pt not in planted_crop and pt not in planted_obj]
+    if not do_tiles:
+        return _with_state(f"{warp_log}🌱 {len(plant_tiles)} 格无需种"
+                           f"（已有作物 {len(planted_crop)}、被设施占 {len(planted_obj)}）")
+
+    # ── 6. 站位格（共用件；四邻全占则如实报缺失、不瞬移）──
+    _walk_ok = api.walk_ok_tiles(rx1 - 1, ry1 - 1, rx2 + 1, ry2 + 1)
+    if _walk_ok is None:
+        return _with_state("❌ 拿不到田块的可走信息（/passable_rect 失败）——本次没播种（不盲走）")
+
+    # ── 7. 逐格种：走位 → 重选种子 → 面向目标 → 种 ──
+    #    ⚠️ **每格都要 `api.select(seed_name)`**：走位/瞬移会把选中重置掉
+    #    （farm_row.py:122-124 + check_design.py 的农活原则："种到第三排才拿种子=没重选"）。
+    failed, no_stand, teleported, stopped, refused = [], [], 0, "", []
+    for tx, ty in _snake_tiles(do_tiles):
+        try:
+            cur, _mx = api.player_stamina()
+            if cur is not None and cur < 20:
+                stopped = f"⚠️ 体力 {cur} < 20，停在 ({tx},{ty})，剩 {len(do_tiles) - len(failed) - len(no_stand)} 格没种"
+                break
+        except Exception:
+            pass
+        stand = api.stand_tile(tx, ty, _walk_ok)
+        if stand is None:
+            no_stand.append((tx, ty))
+            continue
+        sx, sy, facing = stand
+        if direct:
+            api.position(sx, sy)
+            time.sleep(0.1)
+        else:
+            try:
+                if not api.walk_natural(sx, sy):
+                    teleported += 1
+            except Exception:
+                api.position(sx, sy)
+        api.select(seed_name)
+        time.sleep(0.1)
+        api.face(facing)
+        time.sleep(0.1)
+        # 🌱 游戏拒了就**把它的原话记下来**——这是唯一可靠的"为什么种不上"判据。
+        #    ⚠️ 别自己算"是不是当季"：那要么维护一张种子→季节的表（本项目早拍掉"手抄表改成问游戏"），
+        #    要么漏掉"温室/姜岛全年可种"这条（露天农场才有季节限制）。**游戏是按当前地点判的**，
+        #    温室里种夏季种子它压根不拒 ⇒ 我们照抄它的判断，天然分地点，不用特判。
+        _r = api.use_item()
+        if isinstance(_r, dict) and _r.get("ok") is False:
+            refused.append((tx, ty, str(_r.get("error") or "?")))
+        time.sleep(0.35)
+
+    # ── 8. 验证：**只认 `crop`**（别拿 HoeDirt 兜底——已翻的地一堆 HoeDirt，
+    #    那样"一格没种上"也会报"✅ 播种完成"，是假绿；恒："别把红的记成绿的"）──
+    time.sleep(0.4)
+    tiles2 = _scan(max(w, h) // 2 + 8)
+    real = [pt for pt in do_tiles if tiles2.get(pt, {}).get("crop")]
+    lines = [head]
+    if warp_log:
+        lines.append(f"  {warp_log}")
+    if _ig_note:
+        lines.append(_ig_note)
+    lines.append(f"  🚿 洒水器 {len(p['sprinklers'])} 个 | 计划 {len(plant_tiles)} 格"
+                 + (f" | 🚶 留 {p['walkway_rows']} 行走道（种2留1）" if trellis and p.get("walkway_rows") else ""))
+    lines.append(f"  ✅ {len(real)}/{len(do_tiles)} 确认种上（判据=这格真长出 crop）")
+    if stopped:
+        lines.append(f"  {stopped}")
+    if refused:
+        # 🌱 游戏明确拒绝了 → 把**它的原话**端上来（恒 2026-09-19：啤酒花春季种不上就是这一条）
+        lines.append(f"  ⛔ {len(refused)} 格**被游戏拒绝种下**（原话「{refused[0][2]}」）"
+                     + " ".join(f"({x},{y})" for x, y, _ in refused[:8]))
+        lines.append("     💡 最常见是**不是当季作物**（露天农场才看季节；**温室/姜岛全年可种**，"
+                     "那两个地方种得下去），也可能是那格不能种（水/未锄/被占）")
+    if len(real) < len(do_tiles) - len(no_stand) - len(refused):
+        lines.append(f"  ❓ {len(do_tiles) - len(no_stand) - len(refused) - len(real)} 格没验到作物"
+                     f"（游戏没说拒，但也没长出 crop——用 dump_tile 看那一格）")
+    if planted_crop:
+        lines.append(f"  ⏭ 跳过 {len(planted_crop)} 格（已有作物）")
+    if planted_obj:
+        lines.append(f"  ⏭ 跳过 {len(planted_obj)} 格（被设施/物件占："
+                     + " ".join(f"({x},{y})" for x, y in sorted(planted_obj)[:6]) + "）")
+    if no_stand:
+        lines.append(f"  ⚠️ 没种 {len(no_stand)} 格（**四邻没处站**）: "
+                     + " ".join(f"({x},{y})" for x, y in no_stand[:10]))
+    if teleported:
+        lines.append(f"  🦶 {teleported} 格是瞬移落位（走路被挡，站位格本身可站）——不是拟人走过去的")
+    return _with_state("\n".join(lines))
 
 
 def _farm_clear(x: int = -1, y: int = -1, rows: int = 1, length: int = 1,
                 direction: str = "horizontal", **extra) -> str:
-    """清杂草/石头（按 x,y,rows,length 或 x1,y1,x2,y2 都行）。
-    ⚠️ 2026-09-10 恒：**x/y 必填**（缺坐标不再兜底成"玩家面向格"）；尺寸默认 1×1 不擅扩。"""
-    length, err = _farm_kw_norm(x, y, rows, length, direction, extra)
+    """清杂草/石头（按 x,y,rows,length 给；x/y 必填）。
+    ⚠️ 2026-09-10 恒：**x/y 必填**（缺坐标不再兜底成"玩家面向格"）；尺寸默认 1×1 不擅扩。
+    ⚠️ 2026-09-19 更正：docstring 原写"或 x1,y1,x2,y2 都行"，但**签名里根本没有** x1..y2 —— 改成事实。"""
+    length, err, ignored = _farm_kw_norm(x, y, rows, length, direction, extra, _FARM_SIBLING_KW)
     if err: return err
     xy, err = _farm_require_xy(x, y)
     if err: return err
     x, y = xy
     x1, y1, x2, y2 = _farm_rect(x, y, rows, length, direction)
-    return clear_area(x1, y1, x2, y2)
+    out = clear_area(x1, y1, x2, y2)
+    _ig = _ignored_note(ignored)
+    return f"{out}\n{_ig}" if _ig else out
 
 
 @mcp.tool()
@@ -7678,17 +7803,24 @@ def bundle_kb(query: str = "") -> str:
 
 @mcp.tool()
 def farm(ops: str = "", kw: dict | None = None) -> str:
-    """🌾 农活域（农场/温室/姜岛）。till 锄地 / plant 种 / water 浇地 / harvest 收 / fertilize 施化肥 / clear 清杂草石头树桩 / collect 收机器(一键只收,不走路) / building 一屋收放(拟人走) / chop 砍树。动物：animals 摸+收 / 喂水 宠物碗 / milk 挤奶剪毛。全 ops → help(farm)。⚠️带尺寸 op(till/plant/clear/fertilize)：**x/y 必填**（不传直接报错，不再兜底成"玩家面向格"）；rows×length 缺省只做 1 格，要多大自己传。动物水用 喂水，water=浇地。"""
+    """🌾 农活域（农场/温室/姜岛）。till 锄地 / plant 种(可带 layout 按洒水器布局) / water 浇地 / harvest 收 / fertilize 施化肥 / clear 清杂草石头树桩 / collect 收机器(一键只收,不走路) / building 一屋收放(拟人走) / chop 砍树。动物：animals 摸+收 / 喂水 宠物碗 / milk 挤奶剪毛。全 ops → help(farm)。⚠️带尺寸 op(till/plant/clear/fertilize)：**x/y 必填**（不传直接报错，不再兜底成"玩家面向格"）；rows×length 缺省只做 1 格，要多大自己传。animal water 用 喂水，water=浇地。💡**多 op 一次调用共用一份 kw**（如 ops="till plant"），各自只吃自己认识的参数、属于别人的会**点名忽略**。"""
     op_list = [o for o in re.split(r"[\s,，]+", (ops or "").strip()) if o]
     if not op_list:
         return _with_state("❌ ops 为空（如 farm(ops=\"till plant water\")）")
     # 🗺️ 动态工具检测：不在可种植区 → 建议行（不拦，照跑）
     _adv = _domain_advice("farm", ops)
-    # 组合语义：till+plant 同时出现 → 合并成一次 till_and_plant（锄+种一体）
-    has_till = "till" in op_list
-    has_plant = any(o in ("plant", "sow") for o in op_list)
-    if has_till and has_plant:
-        op_list = [o for o in op_list if o not in ("till", "plant", "sow")]
+    # 🌾 2026-09-19：一条龙那个 op 退役了，**但"一次调用、一份 kw 共用"的组合要保住** ⇒
+    #    这里只做**稳定重排**：锄地类 op 一律排在播种类之前（老组合器是"摘掉再合并"，效果等价：
+    #    `plant till` 也跑成先锄后种）。其余 op 保持书写顺序不动。
+    #    ⚠️ 别改成"合并成一次调用"——那样又会长出一条龙的替身（`_farm_till` 与 `_farm_plant` 共用
+    #    坐标参数，但 `layout` 语义不同：锄地按等级/地块大小路由，播种只按洒布格）。
+    _TILL_OPS = ("till", "hoe", "布局锄", "tillfield", "蓄力锄")
+    _PLANT_OPS = ("plant", "sow", "plantlayout", "播种规划")
+    if any(o in _TILL_OPS for o in op_list) and any(o in _PLANT_OPS for o in op_list):
+        _fp = next(i for i, o in enumerate(op_list) if o in _PLANT_OPS)
+        _moved = [o for o in op_list[_fp:] if o in _TILL_OPS]
+        if _moved:    # 只把"写在播种后面的锄地"挪到播种前，**其余 op 原位不动**
+            op_list = op_list[:_fp] + _moved + [o for o in op_list[_fp:] if o not in _TILL_OPS]
 
     dispatch = {
         # 🌾 2026-09-17 恒拍板「收敛成一个」：锄地只有 `_farm_till` 一个实现 ——
@@ -7697,7 +7829,11 @@ def farm(ops: str = "", kw: dict | None = None) -> str:
         "till": _farm_till,
         "hoe": _farm_till, "布局锄": _farm_till,
         "tillfield": _farm_till, "蓄力锄": _farm_till,
-        "plant": _farm_plant_only, "sow": _farm_plant_only, "till_plant": till_and_plant,
+        # 🌱 2026-09-19 恒拍板「播种也收敛成一个」：`plant`/`sow`/`plantlayout`/`播种规划`
+        #    **四个名字都指 `_farm_plant`**（`layout` 变成传参：0 整块 / 1 初级 / 2 高级 / 3 铱）。
+        #    ⛔ `till_plant`（一条龙）**已退役** —— 要锄+种写 `farm ops="till plant"`（一次调用、一份 kw 共用）。
+        "plant": _farm_plant, "sow": _farm_plant,
+        "plantlayout": _farm_plant, "播种规划": _farm_plant,
         "water": water_crops, "浇": water_crops,
         "harvest": harvest_crops, "收": harvest_crops,
         "scythe": scythe_crops,
@@ -7706,7 +7842,6 @@ def farm(ops: str = "", kw: dict | None = None) -> str:
         "plot": plot_plan, "规划": plot_plan,
         # （tillfield/hoe 的映射已并到上面 `_farm_till` 那一组 —— 别在这再加回来：
         #   同一个 dict 里**重复键是后者赢**，加回来 = 悄悄退回旧实现。）
-        "plantlayout": plant_layout, "播种规划": plant_layout,
         "plan": plan_farm_layout_tool, "方形规划": plan_farm_layout_tool,
         "chop": chop_trees, "砍树": chop_trees,
         "clearground": clear_ground, "清格": clear_ground,
@@ -7734,13 +7869,10 @@ def farm(ops: str = "", kw: dict | None = None) -> str:
         "hay": feed_hay, "干草": feed_hay, "加草": feed_hay,
         "statue": blessing_statue, "祈福": blessing_statue,
     }
-    results = []
-    # till+plant 合并后先锄+种，再接剩余 ops
-    if has_till and has_plant:
-        results.append(_ops_run("till_plant", dispatch, kw))
-    results.append(_ops_run(" ".join(op_list), dispatch, kw))
-    _body = "\n\n".join(r for r in results if r)
-    return _with_state((_adv + "\n\n" if _adv else "") + _body)
+    # 🌾 2026-09-19：原来这里有条"till+plant 先合并成一条龙再跑"的特殊分支，**已随该 op 退役删掉**：
+    #    现在逐个 op 各跑一次（顺序由上面的"稳定重排"保证锄在种前），**一份 kw 共用**靠
+    #    `_FARM_SIBLING_KW` 点名忽略对方参数来兜住。
+    return _with_state((_adv + "\n\n" if _adv else "") + _ops_run(" ".join(op_list), dispatch, kw))
 
 
 @mcp.tool()
@@ -12229,7 +12361,7 @@ _SETTINGS_DISPATCH = {
 # 📖 详细域指引（2026-08-22：docstring 精简后，深度/坑靠 help 查，不丢细节）
 _DOMAIN_GUIDES = {
 "check": "查询域，what=...：status(完整状态) backpack(逐格价值/星级) worn(穿戴) machines(全场机器清单) mine(下矿进度) silo(干草) mastery(精通) buildings(木匠建筑) quest(开任务日志) chests(当前图箱) storage(箱子网络) look(环视周围) profile(我的技能等级+职业分支,如是否 Luremaster 蟹笼免饵) role(端口↔角色确认:我是谁/恒是谁)。⚠️查概览用 status，查逐格用 backpack，别都调浪费 token。📌profile/role 2026-09-11 从顶层工具收编进来（原来直接叫 profile()/which_role()，现在一律走 check）。📐这个域的参数叫 **what**，**不是 ops**。带参的只有两个: chests(chest=N 看第N个箱) / look(radius=10 环视半径)；其余(status/backpack/worn/machines/mine/silo/mastery/buildings/quest/storage/profile/role)**全无参**。⚠️查概览用 status、查逐格用 backpack，别都调一遍浪费 token。",
-"farm": "农活域(🌱必走，别手动挥工具组合，用域 ops)：till(蓄力锄) plant(种,跳过已种) water(浇,自动跳雨+水壶没水先装满) harvest(收) scythe(镰刀收蒜/花/茶) fertilize(化肥) clear(清杂草石树桩) plot(连通域规划) till_plant(锄+种一条龙) tillfield(蓄力锄矩) plan(方形规划,纯算格) hoe(布局锄) plantlayout(按布局种) chop(砍树) clearground(清单格) collect(一键收机器:只收不放,全农场瞬收不走路) load(放原料) building(一屋收放:拟人走进去收+放料,item留空=只收不放) break(拆/敲同scene,镐子敲可破物/翻已耕地) place(放置/播种同scene) pond/pond_add/pond_feed/pond_collect/pond_fish(鱼塘)。⚠️漏格DLL自动补；高级工具蓄力用 tool_area(别用/tool)。只在 Farm/温室/姜岛。带参 op(plant 的 seed_name、till/clear 的 x/y/rows、fertilize 的 fertilizer_name、place 的 name、building 的 location、collect 的 machine_type、pond_add 的 item)→ kw={'参数名':值}。🐄动物(2026-09-02 care域并入farm): animals(摸+收) 喂水/碗(宠物水,🌧️雨天自动跳过——雨会把碗填满) milk(挤奶剪毛) buy(买动物,豁免建议) doors(关门) hay(干草) pet(猫狗) petwalk(拟人摸) 畜舍/这间(这间屋动物) statue(祈福)——⚠️farm water=浇地,动物水用 喂水; farm building=机器收放,这屋动物用 畜舍。📐参数键名: till/clear/plant/fertilize 都是 x,y(**必填**),rows,length,direction；till_plant 另有 seed_name,trellis；harvest/scythe=radius；plot=x,y,radius,all_plots；chop=area；collect=machine_type,location；load=item,machine_type,location；building=location,item,machine_type；place=name,x,y；break=x,y,steps,radius；pond_add=item+x,y（pond_feed/collect/fish 只要 x,y）；buy=animal_type,name,building；petwalk=include_petted；hay=dry_run。⚠️direction 只认 horizontal(默认)/vertical 两个值,别写'横'/'竖'。💡大田洒水器布局(可选,纯自动化建议)：要按洒水器留格/留走道就 plan→hoe→plantlayout 三件套——plan(x1,y1,x2,y2,layout=0,hoe_level=-1,trellis=False) **纯算格不动机器**先看要锄/种哪些; hoe(x1,y1,x2,y2,layout=0) 按布局锄; plantlayout(x1,y1,x2,y2,layout,seed,direct=False,trellis=False) 按布局种(direct=True 瞬移快/默认走位拟人)。**layout 四档**: 0=标准整块(不预留洒水器,锄法蛇形逐格走位,任何锄头等级都行) 1=初级(十字稀疏,每台覆盖上下左右4格;锄法=精确锄每台4格,**与锄头等级无关**) 2=高级(优质,田宽高先裁成**3的倍数**,每3×3中心1台覆盖8格,整块蓄力锄) 3=铱(裁成**5的倍数**,每5×5中心1台覆盖24格;⚠️爬架作物不适用)。hoe_level: 0→1格 1→3线 2→5线 3→3×3 4→6×3,-1=自动读手持。trellis=True=爬架作物(啤酒花/青豆/葡萄,不可通过格)⇒自动**种2留1**留走道让AI能进田浇收。只管种不摆洒水器就直接 till_plant,不用三件套。⚠️已知限制: layout 0/2/3 碰上金/铱锄(hoe_level>=3)会报**0处锄地站位**并自打一行'落点未实测校准,暂不规划蓄力站位'——**那是刻意不猜不是出错**; layout 1 不吃蓄力站位不受影响。",
+"farm": "农活域(🌱必走，别手动挥工具组合，用域 ops)：till(锄地) plant(种,跳过已种;带 layout 就按洒水器布局种) water(浇,自动跳雨+水壶没水先装满) harvest(收) scythe(镰刀收蒜/花/茶) fertilize(化肥) clear(清杂草石树桩) plot(连通域规划) plan(方形规划,纯算格) chop(砍树)。⚠️**锄地/播种各只有一个实现**：锄地=`till`（`hoe`/`布局锄`/`tillfield`/`蓄力锄` 都是它的别名）、播种=`plant`（`sow`/`plantlayout`/`播种规划` 都是它的别名）；⛔ `till_plant` 已退役——要锄+种写 `ops=\"till plant\"`。 clearground(清单格) collect(一键收机器:只收不放,全农场瞬收不走路) load(放原料) building(一屋收放:拟人走进去收+放料,item留空=只收不放) break(拆/敲同scene,镐子敲可破物/翻已耕地) place(放置/播种同scene) pond/pond_add/pond_feed/pond_collect/pond_fish(鱼塘)。⚠️漏格DLL自动补；高级工具蓄力用 tool_area(别用/tool)。只在 Farm/温室/姜岛。带参 op(plant 的 seed_name、till/clear 的 x/y/rows、fertilize 的 fertilizer_name、place 的 name、building 的 location、collect 的 machine_type、pond_add 的 item)→ kw={'参数名':值}。🐄动物(2026-09-02 care域并入farm): animals(摸+收) 喂水/碗(宠物水,🌧️雨天自动跳过——雨会把碗填满) milk(挤奶剪毛) buy(买动物,豁免建议) doors(关门) hay(干草) pet(猫狗) petwalk(拟人摸) 畜舍/这间(这间屋动物) statue(祈福)——⚠️farm water=浇地,动物水用 喂水; farm building=机器收放,这屋动物用 畜舍。📐参数键名: till/clear/plant/fertilize 都是 x,y(**必填**),rows,length,direction（till/plant 也可用 x1,y1,x2,y2 直接给矩形两角）；plant 另有 seed_name,layout,direct,trellis；harvest/scythe=radius；plot=x,y,radius,all_plots；chop=area；collect=machine_type,location；load=item,machine_type,location；building=location,item,machine_type；place=name,x,y；break=x,y,steps,radius；pond_add=item+x,y（pond_feed/collect/fish 只要 x,y）；buy=animal_type,name,building；petwalk=include_petted；hay=dry_run。⚠️direction 只认 horizontal(默认)/vertical 两个值,别写'横'/'竖'。💡大田洒水器布局(可选,纯自动化建议)：要按洒水器留格/留走道就 plan→till→plant 三件套——plan(x1,y1,x2,y2,layout=0,hoe_level=-1,trellis=False) **纯算格不动机器**先看要锄/种哪些; till(x1,y1,x2,y2,layout=0) 按布局锄; plant(x1,y1,x2,y2,seed_name,**layout**) 按布局种（layout=0 整块/1 初级十字/2 高级/3 铱；direct=True 瞬移快、默认走位拟人）。想一次说完就 `ops=\"till plant\"`（**一份 kw 共用**，锄地会自动点名忽略 seed_name）。**layout 四档**: 0=标准整块(不预留洒水器,锄法蛇形逐格走位,任何锄头等级都行) 1=初级(十字稀疏,每台覆盖上下左右4格;锄法=精确锄每台4格,**与锄头等级无关**) 2=高级(优质,田宽高先裁成**3的倍数**,每3×3中心1台覆盖8格,整块蓄力锄) 3=铱(裁成**5的倍数**,每5×5中心1台覆盖24格;⚠️爬架作物不适用)。hoe_level: 0→1格 1→3线 2→5线 3→3×3 4→6×3,-1=自动读手持。trellis=True=爬架作物(啤酒花/青豆/葡萄,不可通过格)⇒自动**种2留1**留走道让AI能进田浇收。只管种不摆洒水器就直接 plant,不用 plan 那套。⚠️已知限制: layout 0/2/3 碰上金/铱锄(hoe_level>=3)会报**0处锄地站位**并自打一行'落点未实测校准,暂不规划蓄力站位'——**那是刻意不猜不是出错**; layout 1 不吃蓄力站位不受影响。",
 "mine": "下矿域(⚒️ 矿井/头骨/火山)：go(去挖矿:mode=rush冲层/farm刷矿,start起始层,target目标层,ore,cycles圈数) progress(进度) bomb_status/bomb_plan/bomb_place/bomb_collect/bomb_ladder/bomb_retreat(单步炸,**都要 bomb_ 前缀**) bomb_mine(自动) bomb_volcano(火山) organize(整理背包)。🔁**刷矿=mode=go(mode=farm)**：定点刷指定矿→ore=Copper铜(21层)/Iron铁(41层)/Gold金(71层)；**煤靠 farm 铁层(41)顺手清尘埃精灵/蝙蝠掉**（不是 ore 选项，跑 auto 内部刷）。🏃下矿=mode=go(mode=rush,start可选≤电梯上限+5倍数,target默认120)。⚠️无镐/血低硬拦；梯子 /ladder+confirm。⚠️bomb_mine 没炸弹+host在同矿井→自动转【内部】协同(跟随host+帮忙敲矿/打怪)不撤退出矿(bomb_escort 不对外暴露、AI 不主动启用)；bomb_retreat 结束协同+停脚本+脱离矿井回门口。⚠️接「深处的危险」重置电梯→起始层动态从1起(内置脚本自动读，不暴露工具)；刷矿目标层不可直达会上报，需先冲层带回或改浅层。📐带参速查: go(mode=rush冲层/farm刷矿, start起始层, target目标层, ore=Copper铜/Iron铁/Gold金, cycles圈数, hp_threshold, food_sta, food_hp, resume) bomb_plan(radius,min_covered,top) bomb_place(x,y **必填**) bomb_collect(max_items) bomb_mine(target,bomb,min_covered,follow_host,lead,autodrop,one_floor) bomb_volcano(bomb,min_covered,hp_threshold,max_minutes,poll) organize(disable,reset)。💣bomb 三个取值 'Cherry Bomb'樱桃/'Bomb'黑/'Mega Bomb'超级——**点名的包里没有就按 黑>超级>樱桃 自动换成有的**(不会误报没炸弹)；范围 樱桃=边长7十字 / 黑=11x11方块 / 超级=15x15方块，⚠️黑和超级**会炸伤自己**(实测黑掉3血)。⚠️bomb_volcano **要求 host 已在矿/火山里**才放行(火山瓦片没法程序化换层)。⚠️bomb_mine one_floor=True=逐层模式(同步,只跑一层出摘要,不撤退)；**默认冲层模式=异步后台跑,推荐**。💡出发前占位物(恒2026-08-23)：提前放1个可堆叠物(铱矿/铱锭/五彩碎片)在包，满包时同种战利品自动堆叠吸附、少触发满包停；别拿银河之魂这类带死亡会丢的稀有物当占位。",
 "cabin": "小屋引导域(🏠 FarmHouse/Cabin/岛屋；不传=扫屋)：enum(扫**本屋**查待收) collect(收**本屋**机器;要全农场→farm collect) statue(雕像) furniture(扫家具) interact(点家具,tile_x/tile_y) pickup(拿起家具,tile_x/tile_y) cook(做饭,recipe_name) sleep(睡觉,who=谁床：不传/房主名=睡房主床一起睡,传自己名=睡自己床) cook(做饭,recipe_name,count) place/break(同scene)。📐参数键名: interact/pickup=**tile_x,tile_y(不是x,y)** cook=recipe_name,count sleep=who place=name,x,y break=x,y,steps,radius；enum/collect/statue/furniture 无参。kw={'参数名':值}。",
 "social": "社交域：chat(搭话,name=NPC名) gift(送礼,npc_name/item_name) give(送玩家物品,手持右键正式赠予,一次一个要等同意) hand(递给玩家,走过去丢他脚边,磁吸自动收,可整叠) send(发消息,message) emote(表情,name) friendship(查好感,npc_name) movie(影院,npc)。📐参数键名: chat=name / gift=npc_name+item_name / give=player_name+item_name / hand=player_name+item_name+count(0=整叠) / send=message / emote=name(默认爱心) / friendship=name / movie=npc。⚠️**give vs hand**：give=面对面正式赠予(手持右键,一次一个,要等同意)；hand=走过去丢他脚边(磁吸自动收,**可整叠**)——想整叠给/对方不在手边就用 hand。kw={'参数名':值}。",
@@ -15180,6 +15312,7 @@ class _BgJob:
         self.returncode = None
         self.running = False      # 读线程 EOF 后置 False
         self.finish_announced = False   # 收工信号只播报一次（_bg_activity_line 守卫，防循环）
+        self.killed = False       # 🛑 被 script stop / _bg_kill 主动停的（≠自然跑完，播报要分开）
         self.output = []
         self.reader = None
 
@@ -15279,12 +15412,25 @@ def _bg_activity_line() -> str:
         finished = [j for j in _bg_jobs.values()
                     if not j.running and not j.finish_announced]
         # ✅ 收工一次性信号（优先，不受 AI 活跃限频；守卫打一次即止）
+        # ⚠️ 2026-09-19 修：原来这里**无条件播 `✅ 收工`**，于是被 script stop 掐掉的脚本
+        #    跟自然跑完的长得一模一样（AI 不知道是自己人停的、更不知道脚本是不是崩了）。
+        #    现在按"被停 / 有返回码 / 正常"分开说，别再一律报喜。
         if finished:
             j = finished[0]
             j.finish_announced = True
             dur = int((j.end_ts or time.time()) - j.start_ts)
+            rc = j.returncode
             tail = "🎣 已停钓（鱼机已关、未再抛竿）" if j.name in _FISHING_SCRIPTS else ""
-            return f"✅ 脚本「{j.name}」收工（跑了 {dur}s）{'，' + tail if tail else ''}"
+            if getattr(j, "killed", False):
+                head = f"🛑 脚本「{j.name}」是**被停的**（不是自然跑完；跑了 {dur}s"
+                head += f"，返回码 {rc}）" if rc is not None else "）"
+            elif rc == 0:
+                head = f"✅ 脚本「{j.name}」收工（跑了 {dur}s）"
+            elif rc is None:
+                head = f"💀 脚本「{j.name}」异常终止（拿不到返回码，跑了 {dur}s）"
+            else:
+                head = f"⚠️ 脚本「{j.name}」非正常退出（跑了 {dur}s，返回码 {rc}）"
+            return f"{head}{'，' + tail if tail else ''}"
     if not active:
         return ""
     job = active[0]
@@ -15338,6 +15484,29 @@ def script_start(name: str, args: str = "") -> str:
 _MINE_SCRIPTS = {"mine_run", "bomb_mine", "bomb_escort", "bomb_volcano"}
 
 
+def _send_home_from_mine(tries: int = 4):
+    """矿类脚本被杀后，把 farmhand 送出矿井。返回送成了的落点 (loc,x,y)，或 None。
+    ⚠️ 2026-09-19：**一律回读 /state 确认**——`/warp` 回包是"发了就信"，实测回包里那个
+    `actual` 是**旧值**（回包写 Mine(23,8)，人其实已经在 Farm 了），照着回包播报就是谎报。
+    返回 None 的两种情况：本来就不在矿井 / 试完还在矿井里（都不该说"已送回"）。"""
+    dest = None
+    for _ in range(tries):
+        try:
+            cur = api.state().get("location", {}).get("name", "")
+        except Exception:
+            return None
+        here = _mine_exit_from_loc(cur)
+        if here is None:
+            return dest          # 本来就不在矿井(首次)→None；送成了(后续)→dest
+        dest = here
+        try:
+            api._post("/warp", {"location": dest[0], "x": dest[1], "y": dest[2]})
+        except Exception:
+            return None
+        time.sleep(1.5)
+    return None                  # 试完还在矿井 → 没送成，不谎报
+
+
 def _mine_exit_from_loc(loc_name: str):
     """判断 farmhand 当前是否站在矿井，是则回对应出口（复用 bomb_common.retreat_to_entrance 约定）。
     返回 (location, x, y) 或 None（不在矿井→不动）。让"主动停矿"不把 farmhand 留在矿井里。"""
@@ -15383,17 +15552,23 @@ def script_stop(job_id: str = "") -> str:
     if early:
         return _with_state(early)
     if not job.running:
-        return _with_state(f"任务 {job.job_id} 已结束（返回码 {job.returncode}），无需停止。")
+        # ⚠️ 2026-09-19 修：原来这里**提前 return、不给 tail** ⇒ 异步跑完的脚本，AI 永远只能
+        #    看到"跑了 Ns"，看不到脚本自己打的"🏁 结束/撤退原因/到了几层"。现在把它带出来。
+        #    （这正是"报成功但事没发生"的另一面：不知道到底干了什么。）
+        how = "被停的" if getattr(job, "killed", False) else "已结束"
+        body = f"任务 {job.job_id} {how}（返回码 {job.returncode}），无需停止。"
+        tail = job._tail(60)
+        if tail:
+            body += f"\n── 最后输出 ──\n{tail[-1000:]}"
+        return _with_state(body)
     is_fish = job.name in _FISHING_SCRIPTS
     is_mine = job.name in _MINE_SCRIPTS
     _bg_kill(job)
-    # ⛏️ 2026-09-06 恒：停的是矿类脚本→杀完立刻看 farmhand 在哪，还在矿井就 warp 回对应出口（不留在矿井）。
-    mine_exit = _mine_exit_from_loc(api.state().get("location", {}).get("name", "")) if is_mine else None
-    if mine_exit:
-        try:
-            api._post("/warp", {"location": mine_exit[0], "x": mine_exit[1], "y": mine_exit[2]})
-        except Exception:
-            mine_exit = None   # warp 失败就不谎报"已送回"
+    # ⛏️ 2026-09-06 恒：停的是矿类脚本→杀完立刻看 farmhand 在哪，还在矿井就送回对应出口。
+    # ⚠️ 2026-09-19 修两处：①原来这行 `api.state()` 露在 try 外面——脚本刚被硬杀时 /state 一旦
+    #    超时抛异常，整个 script_stop 就炸了，而**进程已经死了**（"报错但事已发生"，连"已停止"
+    #    都看不到）；②落点改成**回读确认**（见 _send_home_from_mine），不信 /warp 回包。
+    mine_exit = _send_home_from_mine() if is_mine else None
     last = job._tail(60)
     body = f"🛑 已停止任务 {job.job_id} 「{job.name}」。"
     if is_fish:
@@ -15526,6 +15701,10 @@ def _bg_kill(job):
                 pass
     except Exception:
         pass
+    # 🛑 打上"被停"的标记——收工播报要能区分"被停"和"自然跑完"（恒 2026-09-19）。
+    #    原来不打标记，被杀的脚本下一次工具调用会播报"✅ 脚本收工（跑了 Ns）"，
+    #    跟正常完成一模一样，AI/恒看不出这是被掐掉的。
+    job.killed = True
     try:
         job.proc.terminate()
         job.proc.wait(timeout=3)
@@ -16067,6 +16246,13 @@ def _fallback_tick():
     if _fallback_last_fail_ts and now - _fallback_last_fail_ts < _FALLBACK_FAIL_COOLDOWN:
         return
     # 已在床/有菜单/剧情/对话框 → 不打扰（避免重爬破坏 ready 同步）
+    # ⚠️ 2026-09-19 恒：「兜底反复触发……能不能检测到**入睡成功**就不用兜底重睡了？」
+    #    —— 这行注释一直写着"**已在床**→不打扰"，但实现里**根本没判 isInBed**，只判了菜单/剧情。
+    #    于是人明明已经躺好（就绪屏没弹 or 被撤掉时），到点照样把整条流程再跑一遍：
+    #    warp 进小屋 → 上床 → 20s → 起身出屋刷新 → 再上床……把人从床上反复折腾下来。
+    #    ⇒ 补上这条（判据用 /state 的 player.isInBed，和"等睡注入"用的同一个字段）。
+    if (s.get("player") or {}).get("isInBed"):
+        return
     am = s.get("activeMenu")
     if am or s.get("activeEvent") or s.get("in_dialogue"):
         return
