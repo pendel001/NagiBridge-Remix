@@ -3214,6 +3214,67 @@ public class ModEntry : Mod
     /// 没开菜单、背包有空位（满了静默失败）。家具由游戏下一 tick 自动放回背包（furnitureToRemove 队列）。
     /// 右键 checkAction 在 SDV 1.6 拿不起家具（椅子会坐下/开菜单），必须走这条左键路径。
     /// </summary>
+    /// <summary>
+    /// 🪑 **预测** `GameLocation.LowPriorityLeftClick` 会挑中哪件家具（**只读、不动手**）。
+    ///
+    /// 为什么需要（2026-09-19 恒真机抓到「报的是地毯、动的是椅子」）：我们原来用
+    /// `foreach (var f in loc.furniture)` **从前往后**取"第一个包围盒命中"，而游戏是
+    /// **两趟循环、每趟从后往前**，且每趟谓词不同 ⇒ 同一格压着两件家具时**必然报错人**。
+    ///
+    /// ⚠️ **逐条照抄 `GameLocation.cs:7993-8067`**，尤其是：
+    ///   · 每趟都**从后往前**（`Count-1 → 0`）—— 这是"拿最上面那件"的实现方式；
+    ///   · `CanFreePlaceFurniture() || IsCloseEnoughToFarmer(who)` 这个**短路** ——
+    ///     装修图（自家小屋/棚屋/岛屋）里前面那个**恒真**，距离检查一次都不求值；
+    ///   · 第一趟里的**三个分支**各自的谓词（`!isPassable` / `heldObject` / 墙挂那支）。
+    ///
+    /// ⚠️ **只判断、不调用 `AttemptRemoval` / `clicked`** —— 那是真正会改游戏状态的两个。
+    /// ⚠️ 第二支（`bbox 命中 && heldObject != null`）游戏走的是 `furniture.clicked(who)` 后
+    ///   `return true` —— **返回 true 但东西没被拿走**。所以这里返回 null（"没有会被拿走的"），
+    ///   别把"点了一下"当成"拿走了"。
+    /// ⚠️ 为什么不"放之前放之后 diff"：游戏的删除走 `furnitureToRemove`（NetMutexQueue），
+    ///   **下一个 update 才真删**，同步读 `loc.furniture` 还是删前的样子 —— 只能预测。
+    ///   （Python 侧已经做了真正的 diff 并以它为准；这里是把 C# 的口径也摆正。）
+    /// </summary>
+    private static StardewValley.Objects.Furniture? PredictPickTarget(GameLocation loc, int px, int py, Farmer who)
+    {
+        try
+        {
+            if (loc == null) return null;
+            // 第一趟：不可穿行的（含墙挂）
+            for (int i = loc.furniture.Count - 1; i >= 0; i--)
+            {
+                var f = loc.furniture[i];
+                if (f == null) continue;
+                if (!(loc.CanFreePlaceFurniture() || f.IsCloseEnoughToFarmer(who))) continue;
+                if (!f.isPassable() && f.boundingBox.Value.Contains(px, py) && f.canBeRemoved(who))
+                    return f;
+                if (f.boundingBox.Value.Contains(px, py) && f.heldObject.Value != null)
+                    return null;                       // 这支是"点一下"不是"拿走"
+                if (!f.isGroundFurniture() && f.canBeRemoved(who))
+                {
+                    int y2 = py;
+                    if (loc is DecoratableLocation dl)
+                    {
+                        var wy = dl.GetWallTopY(px / 64, py / 64);
+                        y2 = wy != -1 ? wy * 64 : py;
+                    }
+                    if (f.boundingBox.Value.Contains(px, y2)) return f;
+                }
+            }
+            // 第二趟：可穿行的（地毯这类）
+            for (int i = loc.furniture.Count - 1; i >= 0; i--)
+            {
+                var f = loc.furniture[i];
+                if (f == null) continue;
+                if ((loc.CanFreePlaceFurniture() || f.IsCloseEnoughToFarmer(who))
+                    && f.isPassable() && f.boundingBox.Value.Contains(px, py) && f.canBeRemoved(who))
+                    return f;
+            }
+        }
+        catch { }
+        return null;
+    }
+
     private object HandleFurniturePickup(HttpListenerContext ctx)
     {
         var p = ReadJson(ctx);
@@ -3230,15 +3291,25 @@ public class ModEntry : Mod
                 var loc = Game1.player.currentLocation;
                 int px = tx * 64 + 32, py = ty * 64 + 32;
 
-                // 找出覆盖该像素的家具名（供返回；大家具点任意一格都行）
-                string? furnitureName = null;
+                // 🔍 2026-09-19 **报的名字改成"预测游戏的选法"**（恒真机抓到：拿 (39,24) 的椅子、
+                //    上面压着一块 2x2 地毯，工具却回「拿起了 Burlap Rug」）。
+                //    病根**不是偶尔猜错，是扫描方向相反**：我们原来 `foreach (var f in loc.furniture)`
+                //    **从前往后**取"第一个包围盒命中"，而游戏 `LowPriorityLeftClick` 是
+                //    **两趟、每趟从后往前**（`GameLocation.cs:7999/8044`）、谓词还各不同
+                //    ⇒ 同格压两件时**逻辑上必然报不同的那件**。
+                //    ⚠️ 为什么这里"预测"而不是"前后 diff"：游戏的删除走 `furnitureToRemove`
+                //      （NetMutexQueue，Processor=`removeQueuedFurniture`）⇒ **下一个 update 才真删**，
+                //      在 HTTP 线程同步读 `loc.furniture` 读到的还是删前的样子。
+                //      （Python 侧已经做了 diff 兜底并以此为准，这里只是把 C# 自己的口径也摆正。）
+                var target = PredictPickTarget(loc, px, py, Game1.player);
+
+                // ⚠️ **另留一个"这格有没有家具"的旧语义字段**：`furniture` 现在可能因为
+                //    `canBeRemoved=false`（别人家的床/坐着人/手上拿着东西）而预测不出目标，
+                //    那时不能反推成"这格没家具" —— 两件事必须分得开（Python 的 miss 文案靠这个分流）。
+                string? furnitureHere = null;
                 foreach (var f in loc.furniture)
                 {
-                    if (f != null && f.GetBoundingBox().Contains(px, py))
-                    {
-                        furnitureName = f.Name;
-                        break;
-                    }
+                    if (f != null && f.GetBoundingBox().Contains(px, py)) { furnitureHere = f.Name; break; }
                 }
 
                 bool picked = loc.LowPriorityLeftClick(px, py, Game1.player);
@@ -3246,7 +3317,8 @@ public class ModEntry : Mod
                 {
                     ok = true,
                     picked,
-                    furniture = furnitureName,
+                    furniture = target?.Name,
+                    furnitureHere,
                     tile = new { x = tx, y = ty },
                     playerTile = new { x = Game1.player.TilePoint.X, y = Game1.player.TilePoint.Y }
                 });
@@ -9941,8 +10013,17 @@ public class ModEntry : Mod
                         && !(item.QualifiedItemId ?? "").Equals(name, StringComparison.OrdinalIgnoreCase))
                         continue;
 
-                    int toRemove = Math.Min(remaining, item.Stack);
-                    item.Stack -= toRemove;
+                    // ⚠️ 2026-09-19 真机抓到的**反向谎报**：`Stack` 为 **0** 的物品（vanilla 自己就会造 ——
+                    //    `Utility.tryToPlaceItem` 放家具时是 `placementAction`(把**对象本身**加进
+                    //    `location.furniture`、非副本) 后再 `reduceActiveItemByOne()` ⇒ 世界那件被减成 0；
+                    //    捡回来 `removeQueuedFurniture` 把这个 0 原样塞回包）。
+                    //    旧写法 `Math.Min(remaining, item.Stack)` 对它算出 **toRemove=0** ⇒ `removed` 记 0，
+                    //    **可下面 `if (item.Stack <= 0) Items[i] = null` 照样把槽位清了**
+                    //    ⇒ **东西真没了，回包却说"一个都没丢"**（AI 以为还在，方向最危险）。
+                    //    ⇒ 把"**占着一格**"折算成 1 个：`Stack<=0` 也当它有 1 件。
+                    int have = item.Stack > 0 ? item.Stack : 1;
+                    int toRemove = Math.Min(remaining, have);
+                    if (item.Stack > 0) item.Stack -= toRemove;
                     removed += toRemove;
                     remaining -= toRemove;
                     if (item.Stack <= 0)

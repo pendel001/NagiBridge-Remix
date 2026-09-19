@@ -11924,12 +11924,17 @@ def furniture_pickup(tile_x: int, tile_y: int) -> str:
         if not r.get("ok"):
             return _with_state(f"❌ 拿起家具失败: {r.get('error', '未知')}")
         if not r.get("picked"):
-            # picked=False：C# 已经扫过包围盒 —— `furniture` 为空是"这格压根没家具"，
-            # 和"有家具但没拿动"是两回事，别混成一句三选一的猜测（2026-09-19 恒）。
-            if not r.get("furniture"):
+            # picked=False：**"这格有没有家具"看 `furnitureHere`**（C# 里"第一个包围盒命中"那个，
+            # 语义就是「你点的那格上有没有东西」）。⚠️ **不能再用 `furniture`** —— 它现在是
+            # C# 预测的"游戏会挑中哪件"，遇到 `canBeRemoved=false`（别人家的床/坐着人/手上拿着东西）
+            # 时会预测不出来、回 null，那时**反推成"这格没家具"就是错的**（2026-09-19 拆成两个字段的原因）。
+            _here = r.get("furnitureHere")
+            if not _here:
                 return _with_state(_furniture_miss_msg(int(tile_x), int(tile_y)))
+            _tgt = r.get("furniture")
+            _who = f"「{_tgt}」" if _tgt else f"这格上的「{_here}」"
             return _with_state(
-                f"⚠️ 「{r['furniture']}」没拿起来：可能是**站太远**（只在户外这类非装修图才有这限制）、"
+                f"⚠️ {_who}没拿起来：可能是**站太远**（只在户外这类非装修图才有这限制）、"
                 f"**开着菜单**、或这是**别人家的床**。**物品没动。**")
         _gone = _wait_furniture_gone(_before)
         if _gone:

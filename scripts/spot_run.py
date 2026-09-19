@@ -134,6 +134,14 @@ def main():
         except Exception:
             return None
 
+    def _moving():
+        """还在走吗（`/state` 的 `isMoving`）。读不到就当"停了"，别把等待拖满。"""
+        try:
+            p = requests.get(f"{base}/state", timeout=10).json().get("player") or {}
+            return bool(p.get("isMoving"))
+        except Exception:
+            return False
+
     def _face_toward(face_dir):
         try:
             requests.post(f"{base}/face", json={"direction": face_dir}, timeout=8)
@@ -143,14 +151,23 @@ def main():
             return False
 
     def _walk_exact(sx, sy):
-        """把小人**正好**放到 (sx,sy) 这一格上（走一趟 + 必要时一次校正）。
+        """把小人**正好**放到 (sx,sy) 这一格上：**先等它自己走过去**，到了再做像素校正。
 
+        ⚠️ 2026-09-19 恒真机（「**如果能自然走路衔接就好了，突然就飞走了**」）：
+        `/walk_to` 是**排好路线就返回**（实测回包 **0.01 秒**、`ok:true`），真正走完得按格数等
+        —— 实测 **≈4.8 格/秒**（10 格 ≈ 2.1 秒）。这里原来写死 `sleep(0.6)`，**只够走 3 格**；
+        姜点彼此隔 6~27 格 ⇒ **每一次都落到下面那句 `/position`** ⇒ 换一棵姜瞬移一次，
+        肉眼看就是"**突然就飞走了**"。
+        ⇒ 改成**等它自己走到**（同 `moss_run._walk_to_stand` / `berry_run.walk_near` 的写法）；
+          `/position` 只留作**贴到格上之后的像素校正**（它本来的用途，见 `_snap`）。
+        ⚠️ 没走到就**如实返回 False**（宁报错别兜底）——让 `_stand_and_face` 换下一个邻格，
+          不许拿瞬移糊过去。
         ⚠️ 2026-09-19 恒真机（「**朝向有时不是很准**」）：单挥只命中**面朝的那一格**，
         而这游戏按**像素**算朝向格（`GetToolLocation()` = 包围盒边缘 ± 48~64px）。
         小人骑在瓦片边界上，同样的"面朝下"会四舍五入到**隔壁列/行** ⇒ 对着空气挥。
         已知 `/walk_to` 与 `/position` 落点差 16px（CHANGELOG 09-10「走位落点精度」：
         `walk_to` 落 `y*64-32`、`position` 落 `y*64`）—— 差这一截就够挥空。
-        ⇒ 走一趟（拟人），**回读确认**；不是正好那格就 `/position` 校正**一次**。
+        ⇒ 走停之后**回读确认**，只校正**一次**。
         ⚠️ 只校正一次：原来写成 3 轮循环，恒当场看见「**左跑一下右跑一下很傻**」。
         """
         cur = _me()
@@ -158,14 +175,29 @@ def main():
             return True                                   # 已经站着了，别动
         try:
             requests.post(f"{base}/walk_to", json={"x": sx, "y": sy, "location": loc}, timeout=20)
-            time.sleep(0.6)
         except Exception:
-            pass
-        if _me() == (sx, sy):
-            return True
+            return False
+        # 按距离等（≈4.8 格/秒 + 余量，上限 25s）；走停（isMoving=False）就提前收
+        # ⚠️ **必须先看见它走过**才认"走停"：`/walk_to` 刚返回那一瞬间小人还没迈步，
+        #    `isMoving` 是 False —— 直接拿它当"走完了"会让**每一趟都当场判失败**。
+        cur = _me() or (10 ** 9, 10 ** 9)
+        deadline = time.time() + min(25.0, 3.0 + (abs(sx - cur[0]) + abs(sy - cur[1])) * 0.45)
+        seen_moving = False
+        while time.time() < deadline:
+            if _me() == (sx, sy):
+                break
+            if _moving():
+                seen_moving = True
+            elif seen_moving:
+                break                                     # 走起来了又停 = 这一趟结束
+            time.sleep(0.25)
+        cur = _me() or (10 ** 9, 10 ** 9)
+        # 走停了却差一格（walk_to 常差一格）⇒ 下面贴正；差得远 = 压根没走到，如实失败
+        if abs(cur[0] - sx) + abs(cur[1] - sy) > 1:
+            return False
         try:
-            requests.post(f"{base}/position", json={"x": sx, "y": sy}, timeout=10)
-            time.sleep(0.35)
+            requests.post(f"{base}/position", json={"x": sx, "y": sy}, timeout=10)  # 像素级贴正
+            time.sleep(0.25)
         except Exception:
             return False
         return _me() == (sx, sy)
