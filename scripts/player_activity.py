@@ -441,6 +441,10 @@ def describe_activity(state_data: dict) -> str:
     max_stamina = p.get("maxStamina", 1)
     tod = t.get("timeOfDay", 600)
     loc_lower = loc_name.lower()
+    # ⚠️ `isInBed` 的准确含义（2026-09-19 才彻底摸清，见 CHANGELOG (76)⑩）：
+    #    它**不是"在睡觉"**，而是 `Farmer.cs:7553` 那句「**脚踩的那格有 `Bed` 属性**」——
+    #    每天清早 6:00 醒来那一刻就成立（人正好站在床格上）。**单用它一定会把"刚起床"看成"赖床"。**
+    in_bed = bool(p.get("isInBed"))
     is_fishing = p.get("fishing") is not None or "FishingRod" in tool
 
     hp_ratio = health / max(1, max_health)
@@ -470,8 +474,7 @@ def describe_activity(state_data: dict) -> str:
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     if menu_open:
-        msg = _describe_menu(active_menu, name, loc_lower, is_moving,
-                             in_bed=bool(p.get("isInBed")))
+        msg = _describe_menu(active_menu, name, loc_lower, is_moving, in_bed=in_bed)
         if msg:
             return msg
 
@@ -640,7 +643,20 @@ def describe_activity(state_data: dict) -> str:
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     if not is_moving and not menu_open and stationary_seconds >= IDLE_STATIONARY_SECONDS:
-        if "farmhouse" in loc_lower and (tod < 600 or tod >= 2400):
+        # 💤 赖床（2026-09-19 恒拍板：「6:30 之后 + 被观测者还在**床格**上」）
+        # ⚠️ 旧判据 `"farmhouse" in loc and (tod < 600 or tod >= 2400)` **压根没看 isInBed**：
+        #   · `tod < 600` 其实**不可达**（新一天从 600 起）——真正的活判据是 `tod >= 2400`；
+        #   · 于是**半夜站在自家屋里发呆也会被播成"还在赖床"**，语义整个反了。
+        # 现在只看"脚踩床格"+ 时间下限：6:00~6:30 站在床格上 = **刚起床**（正常），
+        # 6:30 还站在那儿不动 = 真赖着。不再要求"在 farmhouse"——床格本身就在屋里，
+        # 多那一道只会把姜岛小屋排掉。
+        # 🔒 **顺序契约**（别把这段挪到上面的 `menu_open` 分支之前！2026-09-19 恒：
+        #    「就绪是**真睡了**，不就绪才是**躺着不干活**」）：就绪屏开着时，`menu_open` 那层
+        #    （1.5 级）会先答「💤 准备睡觉了」并**提前 return** ⇒ 能走到这里的"脚踩床格"
+        #    天然就是**没有就绪屏**的那种 = 躺着不干活 ⇒ 这才叫赖床。
+        #    ⚠️ 这是个**靠层级顺序成立的隐式契约**（没有写成显式判据）；把赖床挪到菜单前面
+        #    会静默破坏它 —— 深夜 `lie_bed` 躺好的人会被说成"还在赖床"。
+        if in_bed and tod >= 630:
             return f"💤 **{name}** 还在赖床"
         if "bathhouse" in loc_lower:
             return f"♨️ **{name}** 正在泡澡，好悠闲"
@@ -673,7 +689,10 @@ def describe_activity(state_data: dict) -> str:
     # 农场
     if loc_lower in ("farm", "farmhouse"):
         if "farmhouse" in loc_lower:
-            if tod < 600 or tod >= 2400:
+            # 💤 同上（2026-09-19 恒）：判据 = **脚踩床格 + 过了 6:30**，不再看钟点瞎猜。
+            #    要 `not is_moving`：人从床格上走过去也满足 isInBed，别把人"路过"说成赖床。
+            #    （"没就绪屏才算赖床"那条**顺序契约**见上面 4.5 级的注释——这里同理。）
+            if in_bed and not is_moving and tod >= 630:
                 return f"💤 **{name}** 还在赖床"
             if not is_moving:
                 # 🧭 2026-08-17 恒：删去"似乎在思念谁"（其他发呆提示词都是"似乎在发呆"，
