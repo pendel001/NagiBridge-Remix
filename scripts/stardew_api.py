@@ -5,6 +5,7 @@ import base64
 import time
 import sys
 import socket
+import random
 
 import os
 BASE_URL = os.environ.get("NAGI_URL", "http://localhost:7842")
@@ -47,6 +48,53 @@ def _host_post(endpoint, data=None, timeout=30):
     """
     r = requests.post(f"{HOST_URL}{endpoint}", json=data or {}, timeout=timeout)
     return r.json()
+
+
+def host_get(endpoint, params=None, timeout=10):
+    """GET 打到 **host 进程**（房主/权威，默认7842）。
+
+    ⚠️ **别拿 `_get` 当它用**（2026-09-19）：`_get` 打的是 **BASE_URL＝AI 自己那个进程**
+    （`_set_roles()` 之后），而 farmhand 那份 `loc.characters` **会滞留过期 NPC**
+    （见 CHANGELOG 09-17）。要问"**房主**身边有谁"必须走这里。
+    """
+    r = requests.get(f"{HOST_URL}{endpoint}", params=params or {}, timeout=timeout)
+    return r.json()
+
+
+def find_npc(name, timeout=10):
+    """🔍 查某个 NPC 在哪 —— **以 host 为准**，并把"只有自家这端才有的幽灵"单独列出来。
+
+    ⚠️ **别再改回 `_get`**（2026-09-19 真机定的）：
+      · **NPC 只在 host（房主进程）跑模拟**。farmhand 那头的地图只要没同步，NPC 就冻在
+        "各人的家" —— 轮回人在姜岛那次，Alex/Willy/Linus/Leo/Kent **全卡在老家**，
+        而恒**亲眼**看着 Alex 就站在沙滩上 ⇒ **`_get`（＝AI 自己那端）专产幽灵**。
+      · 但 host 也会漏（改前：住 cabin 的村民一个都扫不到 —— `HandleFindNpc` 原先只走
+        `Game1.locations`，而农场建筑的室内是 instanced interior、压根不在里面）。
+      · ⇒ **主用 host**；自己那端只当参考，且**只列 host 没有的那几条**（`stale`），
+        **不静默丢**（宁摊开别兜底）。
+      · host 一根毛都查不到（房主没开游戏/世界没就绪）→ 退回自己那端，`src="self"`，
+        别让调用方空手而归 —— 但调用方要看得见 `src` 才知道这份可信度低。
+
+    返回 {"ok": bool, "npcs": [...], "stale": [...], "src": "host" | "self"}
+    """
+    host_npcs, self_npcs = [], []
+    try:
+        host_npcs = (host_get("/find_npc", {"name": name}, timeout=timeout) or {}).get("npcs") or []
+    except Exception:
+        host_npcs = []
+    try:
+        self_npcs = (_get("/find_npc", {"name": name}) or {}).get("npcs") or []
+    except Exception:
+        self_npcs = []
+
+    def _key(n):
+        return (n.get("name"), n.get("location"), n.get("x"), n.get("y"))
+
+    if host_npcs:
+        hk = {_key(n) for n in host_npcs}
+        return {"ok": True, "npcs": host_npcs, "stale": [n for n in self_npcs if _key(n) not in hk],
+                "src": "host"}
+    return {"ok": True, "npcs": self_npcs, "stale": [], "src": "self"}
 
 
 # ── Basic queries ──
@@ -241,12 +289,20 @@ def chat(message):
     return _post("/chat", {"message": message})
 
 
-def host_chat(message):
-    """💬 广播到 host 进程(7842)——房主窗口可见（正常聊天框）。
+def host_chat(message, color=""):
+    """💬 广播到 host 进程(7842)——**房主窗口可见**（正常聊天框）。
     ⚠️ 2026-08-15 恒拍板：给 user 的通知/推送**统一走这个**（HUD 过夜复盘看不到）。
     host 进程 /chat 已改成只 addMessage 本地显示——不再顶掉 user 正在输入的内容，
-    结算复盘（聊天窗口）也看得见；要广播成 AI 自己的消息用 chat()（走 AI 进程）。"""
-    return requests.post(f"{HOST_URL}/chat", json={"message": message}, timeout=10).json()
+    结算复盘（聊天窗口）也看得见；要广播成 AI 自己的消息用 chat()（走 AI 进程）。
+
+    ⚠️ **`color` 别和 `chat()` 搞混**（2026-09-19 真机踩到）：`chat()` 打的是 **AI 自己进程**，
+    它的 `/chat` 只在本机 `addMessage` + 走**原生发送**，而原生聊天在这套双开下**不通**
+    ⇒ 恒**看不到**。要恒看见**必须**走本函数（显式 HTTP 推到 7842）。
+    `color` 传 C# `HandleChat` 认的那几个名（hotpink/orange/red/green），留空=白。"""
+    body = {"message": message}
+    if color:
+        body["color"] = color
+    return requests.post(f"{HOST_URL}/chat", json=body, timeout=10).json()
 
 
 def host_push(message, sender="DeeSeek"):
@@ -941,11 +997,16 @@ def _sleeping_now() -> bool:
         return _in_bed_now(retries=1)
 
 
-def _snap_onto_bed(bx, by, loc=None):
+def _snap_onto_bed(bx, by, loc=None, tiles=None):
     """精确把玩家放到床的睡眠格上（walk 容差可能站偏 → isInBed 被游戏 tick 弹掉）。
     实测 2×3 床只有中间行(y=by+1)能站住 isInBed；对候选格依次 /position 探测。
     /position 是直接设 Position（非 warpFarmer），传床格不 redirect（实测无弹回门口）。
     返回落点 (x,y)。
+
+    🆕 `tiles`（2026-09-19，姜岛）：`/crawl_bed action=beds` 给的**该床的真实床格表**——
+    C# 那边是拿 `doesTileHaveProperty(...,"Bed","Back")`（= `isInBed` 内部那一句）扫出来的，
+    即"游戏说踩这几格 isInBed 就成立"。给了就先按它探（**一次就中**），探不中再退回下面的凭经验列表。
+    ⚠️ 姜岛床型号与大陆不同（单人/上铺），靠"y+1/y/y+2 + 右列"这套经验顺序可能要多试 3 次（≈3 秒）。
 
     ⚠️ loc=床所在场景（唯一名或显示名）：`/position` **是在玩家当前图上设坐标**
     （C# HandlePosition 取 `farmer.currentLocation`，**端点没有 location 参数**）——
@@ -962,17 +1023,198 @@ def _snap_onto_bed(bx, by, loc=None):
                 time.sleep(1.5)
         except Exception:
             pass
-    for dy in (1, 0, 2):
-        _ai_post("/position", {"x": bx, "y": by + dy})
+    _cands = [(int(t[0]), int(t[1])) for t in (tiles or []) if len(t) == 2]
+    _cands += [(bx, by + dy) for dy in (1, 0, 2)]
+    _cands += [(bx + 1, by + dy) for dy in (1, 0, 2)]  # 2 宽床兜底右列
+    for (cx, cy) in _cands:
+        _ai_post("/position", {"x": cx, "y": cy})
         time.sleep(0.9)   # 0.6→0.9：给游戏 tick 置 isInBed 时间（实测 0.7s 才 True，0.6 卡边界→无谓多探测一轮）
         if _in_bed_now(retries=2):
-            return (bx, by + dy)
-    for dy in (1, 0, 2):  # 2 宽床兜底右列
-        _ai_post("/position", {"x": bx + 1, "y": by + dy})
-        time.sleep(0.9)
-        if _in_bed_now(retries=2):
-            return (bx + 1, by + dy)
+            return (cx, cy)
     return (bx, by + 1)
+
+
+# ═══════════════════════════════════════════
+#  🏝️ 姜岛大通铺（2026-09-19 恒）
+# ═══════════════════════════════════════════
+# 恒：「如果想睡姜岛的话怎么办。姜岛就是共用姜岛小屋了」——大陆那套"谁的床"在岛上**没有对应物**：
+#   反编译 `IslandFarmHouse.InitializeBeds()` 按**玩家数**铺 1~N 张床（2176），从头到尾
+#   **不记"谁归哪张床"**。所以岛上规则反过来：
+#     · who 是**别人**、且那人**此刻正躺在一张床上** → 挤他那张（岛上版爬床彩蛋）
+#     · 否则（who 是自己 / 那人还没躺） → 从床表里挑一张**空床**随便睡（恒：「就随便在大通铺找张床睡」）
+#   "躺"的第一层判据是 `/crawl_bed action=beds` 的 `sleeper`（= `isInBed`，"人站在床格上"）——
+#   它是**游戏自己算的，任何人都判得出**（跨进程），而 `ReadySynchronizer` 的 State **每进程一份**。
+#   ⚠️ **但它一个人不够**（2026-09-19 真机当场推翻我原先那句"岛上咬不到"）：`isInBed` 的字面义只是
+#      "脚下瓦片带 Bed 属性"，**清早刚起床照样成立**——真机上早上 07:50 轮回 `isInBed=True`，
+#      可他只是**刚醒还杵在床格里**。⇒ 第二层 `sleeper_is_real()`：按名字找到**那个人自己的端口**，
+#      读他的 `sleepReady.ready`（真登记过"要睡"才算躺）。只有 AI(7843)/host(7842) 两端能这么查，
+#      查不到（第三个人/老 DLL）就退回第一层——**宁可按"他睡着"保守，也不播一句假的挤床**。
+ISLAND_MAPS = {
+    "IslandSouth", "IslandSouthEast", "IslandSouthEastCave", "IslandWest",
+    "IslandEast", "IslandNorth", "IslandNorthCave1", "IslandFarmCave",
+    "IslandHut", "IslandShrine", "IslandFieldOffice", "QiNutRoom",
+    "IslandFarmHouse",
+}
+ISLAND_HOUSE = "IslandFarmHouse"   # 共用的那间（大通铺在这）
+
+
+def cur_loc_names() -> tuple:
+    """(当前场景唯一名, 显示名)。读不到 → ("", "")。"""
+    try:
+        st = _ai_get("/state").get("location") or {}
+        return (st.get("uniqueName") or ""), (st.get("name") or "")
+    except Exception:
+        return "", ""
+
+
+def on_island() -> bool:
+    """人在姜岛吗（按当前场景唯一名/显示名判，不按坐标）。"""
+    u, n = cur_loc_names()
+    return u in ISLAND_MAPS or n in ISLAND_MAPS
+
+
+def island_beds() -> dict:
+    """当前场景的床表 + 谁躺在上头（C# `/crawl_bed action=beds`）。
+    `beds[i]` = {x,y（家具 TileLocation）, spotX/spotY（游戏让人落的那格，ShiftPositionForBed）,
+                 tiles（**踩上有 isInBed 的格**，由 C# 拿 doesTileHaveProperty 问出来的真值）,
+                 sleeper（谁躺在这张床上，null=空）}。"""
+    try:
+        return _ai_post("/crawl_bed", {"action": "beds"}) or {}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def player_sleep_ready(name: str):
+    """某个玩家**自己的进程**里，"sleep" 就绪登记了吗？→ True / False / **None(查不到)**。
+
+    `ReadySynchronizer` 的 `State` **每进程一份**（`ServerReadyCheck`/`ClientReadyCheck` 都只存**本机玩家**）
+    ⇒ 按名字找到那个人的端口再读。只有 AI(7843) 与 host(7842) 两个端口 ⇒ **只认这两个名字**，
+    别人（3 人以上）返回 None。
+    `None` 与 `False` 必须分开：None＝尺子没有（老 DLL/第三个人），False＝**量过了，他没登记**。
+    """
+    if not name:
+        return None
+    try:
+        if name == (ai_name() or ""):
+            st = _ai_get("/state")
+        elif name == ((host_state().get("player") or {}).get("name") or ""):
+            st = host_state()
+        else:
+            return None
+        sr = ((st or {}).get("player") or {}).get("sleepReady")
+        if not isinstance(sr, dict) or "state" not in sr:
+            return None                      # 老 DLL 没这字段 → 当作"尺子没有"
+        return bool(sr.get("ready"))
+    except Exception:
+        return None
+
+
+def sleeper_is_real(name: str) -> bool:
+    """`beds[i].sleeper` 报的这个人，是**真的躺下睡了**，还是**只是脚踩在床格上**？
+
+    ⚠️ 2026-09-19 真机当场逮到：早上 07:50 轮回 `isInBed=True`，可他**只是刚起床还杵在床格里**
+    ——`isInBed` 的字面义就是"脚下瓦片带 Bed 属性"（`Farmer.cs:7553`），**清早刚醒照样成立**。
+    本函数原 docstring 赌"岛上起床后没人会杵在床格里不动"⇒ **赌输了**，所以这里真去量一眼。
+    查得到那个人的端口 ⇒ 以他自己的 `sleepReady.ready` 为准；查不到 ⇒ 退回"脚踩床格就算"（= 老行为）。
+    """
+    r = player_sleep_ready(name)
+    return True if r is None else r
+
+
+def island_sleep_plan(who: str = "") -> dict:
+    """🏝️ 姜岛大通铺：这次该躺哪张床。返回
+    `{ok, loc, bx, by, tiles, squeeze, sleeper, why, msg}` 或 `{ok:False, error}`（error 里带下一步）。
+    `squeeze=True` = 挤到了别人正躺的那张（岛上版爬床彩蛋）；`False` = 大通铺随便一张空床。
+    ⚠️ `msg` 是**只在 squeeze 时**才给的广播文案（C# 侧 `msg` 参数）；空床不放广播——那不是彩蛋。"""
+    r = island_beds()
+    if not r.get("ok"):
+        return {"ok": False, "error": f"读不到姜岛的床表: {r.get('error', r)}"}
+    loc = r.get("loc") or ""
+    if not r.get("isIsland"):
+        return {"ok": False,
+                "error": f"现在不在姜岛小屋里（{loc or '?'}）——先 `map go 姜岛小屋` 进屋再睡"}
+    beds = r.get("beds") or []
+    if not beds:
+        return {"ok": False,
+                "error": f"{loc} 里没扫到能睡的床（儿童床不算）——先 `map go 姜岛小屋` 确认人在屋里"}
+    me = (r.get("me") or {}).get("name") or ""
+    mx, my = (r.get("me") or {}).get("x", 0), (r.get("me") or {}).get("y", 0)
+
+    # ① who 是别人、且他此刻**真的躺下了** → 挤他那张
+    #    ⚠️ `sleeper` 只说明"他脚踩床格"，清早刚醒照样成立（真机 2026-09-19 逮到）⇒ 再量一眼就绪，
+    #    免得早上播一句假的"我钻进他被窝"。
+    if who and who != me:
+        for b in beds:
+            if b.get("sleeper") == who and sleeper_is_real(who):
+                return {"ok": True, "loc": loc, "bx": b["x"], "by": b["y"],
+                        "tiles": b.get("tiles") or [], "squeeze": True, "sleeper": who,
+                        "why": f"{who} 真躺在 {loc}({b['x']},{b['y']}) 那张床上 → 挤一挤",
+                        # 🏝️ 文案三选一（2026-09-19 恒：「这个好可爱啊」→ 每次换着说，别复读）。
+                        #    ⚠️ 主语恒定（永远是"我钻进他"），只换语气——同床时**方向**不能糊。
+                        "msg": random.choice([
+                            f"<{me}>钻进<{who}>的被窝——通铺就这点宽，将就一晚 🌴",
+                            f"<{me}>把自己塞进<{who}>那张床，木板吱呀响了一声 🏝️",
+                            f"<{me}>摸黑爬上<{who}>的床，理直气壮地占了一半 🌙",
+                        ])}
+
+    # ② 否则挑一张**空床**（离自己近的优先）
+    free = [b for b in beds if not b.get("sleeper")]
+    if not free:
+        # 没有"官方空床"时，退一步看有没有"只是被人脚踩着的床"（清早刚醒那种）——那其实空着。
+        # 依次序挑：真空床 → 只有非真睡者站着的床 → 才算全满。
+        free = [b for b in beds if not sleeper_is_real(b.get("sleeper") or "")]
+    if not free:
+        busy = "、".join(f"{b.get('sleeper')}@{b['x']},{b['y']}" for b in beds)
+        return {"ok": False,
+                "error": f"姜岛小屋的 {len(beds)} 张床全有人了（{busy}）——"
+                         f"只能挤：把 who 传成其中一个人名再喊一次 sleep"}
+    free.sort(key=lambda b: abs(b.get("x", 0) - mx) + abs(b.get("y", 0) - my))
+    b = free[0]
+    why = (f"{who} 还没躺" if (who and who != me) else "睡自己/没指定到别人床上")
+    if b.get("sleeper"):
+        why += f"（{b['sleeper']} 只是脚踩在这张床上、并没睡，按空床算）"
+    return {"ok": True, "loc": loc, "bx": b["x"], "by": b["y"],
+            "tiles": b.get("tiles") or [], "squeeze": False, "sleeper": "",
+            "why": f"{why} → 大通铺挑一张空床 {loc}({b['x']},{b['y']})", "msg": ""}
+
+
+def _resolve_target_bed(who: str = "") -> dict:
+    """这次 sleep/lie_bed 睡哪张床——**两条路（go_sleep_flow / approach_bed）共用一个入口**，
+    免得"大陆一套、姜岛一套"再各自长一份。
+
+    · 大陆：`/crawl_bed locate player=who`（谁的床=谁的；顺带回 door 给导航用）
+    · 🏝️ 姜岛：`island_sleep_plan`（岛上没有"谁的床"，只有大通铺）
+
+    返回 {ok, island, loc, bx, by, tiles, p1(床主), p2(我), co_sleep, note, crawl_kw}；
+    失败 {ok:False, error}（error 是**能照做的一句话**）。
+    `crawl_kw` 是给 `/crawl_bed action=sleep` 的参数：大陆 `{player}`；
+    姜岛额外带 `bed_x/bed_y`（点名那张床）+ `quiet`/`msg`（空床不播报、挤床播姜岛版文案）。"""
+    if on_island():
+        pl = island_sleep_plan(who)
+        if not pl.get("ok"):
+            return {"ok": False, "error": pl.get("error", "姜岛选床失败")}
+        me = ai_name() or "我"
+        return {"ok": True, "island": True, "loc": pl["loc"], "bx": pl["bx"], "by": pl["by"],
+                "tiles": pl["tiles"], "p2": me, "p1": pl["sleeper"] or me,
+                "co_sleep": bool(pl["squeeze"]), "note": pl["why"],
+                "crawl_kw": {"player": who, "bed_x": pl["bx"], "bed_y": pl["by"],
+                             "quiet": not pl["squeeze"], "msg": pl["msg"]}}
+    try:
+        locate = _ai_post("/crawl_bed", {"action": "locate", "player": who})
+    except Exception as e:
+        return {"ok": False, "error": f"找床失败: {e}"}
+    if not locate.get("ok"):
+        return {"ok": False, "error": f"找床失败: {locate.get('error', locate)}"}
+    bed = locate.get("bed") or {}
+    loc, bx, by = bed.get("location"), bed.get("x"), bed.get("y")
+    if not loc or bx is None or by is None:
+        return {"ok": False, "error": "crawl_bed 没回床坐标（床.location/x/y）"}
+    p2 = locate.get("player2") or "我"
+    p1 = locate.get("player") or p2
+    return {"ok": True, "island": False, "loc": loc, "bx": bx, "by": by, "tiles": [],
+            "p1": p1, "p2": p2, "co_sleep": p1 != p2, "locate": locate,
+            "note": f"目标床 {loc}({bx},{by}) 床主 {p1}（{'一起睡' if p1 != p2 else '自家'}）",
+            "crawl_kw": {"player": who}}
 
 
 def _sleep_bed_gate(locate: dict, bed_location: str) -> str:
@@ -1027,21 +1269,22 @@ def go_sleep_flow(who="", log=None, humanize=True) -> dict:
 
     detect_roles()  # 尽力修正端口↔角色（失败则保持现状，不打断）
     try:
-        # 1. 找目标玩家的床
-        locate = _ai_post("/crawl_bed", {"action": "locate", "player": who})
-        if not locate.get("ok"):
-            rec("locate", False, locate.get("error", locate))
-            return finish(False, f"❌ 找床失败: {locate.get('error', locate)}")
-        bed = locate["bed"]
-        loc, bx, by = bed["location"], bed["x"], bed["y"]
-        p2 = locate.get("player2") or "我"
-        p1 = locate.get("player", p2)
-        co_sleep = p1 != p2  # 睡的是别人的床 → 爬床彩蛋（睡自己家 False）
-        rec("locate", True, f"目标床: {loc}({bx},{by}) 目标玩家: {p1} ({'一起睡' if co_sleep else '自家'})")
+        # 1. 定"睡哪张床"——大陆=locate 谁的床；🏝️ 姜岛=大通铺（`_resolve_target_bed` 里分流）
+        _tb = _resolve_target_bed(who)
+        if not _tb.get("ok"):
+            rec("locate", False, _tb.get("error", ""))
+            return finish(False, f"❌ {_tb.get('error')}")
+        loc, bx, by = _tb["loc"], _tb["bx"], _tb["by"]
+        tiles = _tb.get("tiles") or []
+        crawl_kw = _tb["crawl_kw"]
+        p2, p1, co_sleep = _tb["p2"], _tb["p1"], _tb["co_sleep"]
+        rec("locate", True, _tb["note"])
 
-        # 🔑 本地门禁（2026-08-22 恒：睡不跨图、不 warp；床必须在当前场景）——拟人版才拦
-        if humanize:
-            _gate = _sleep_bed_gate(locate, loc)
+        # 🔑 本地门禁（2026-08-22 恒：睡不跨图、不 warp；床必须在当前场景）——拟人版才拦。
+        #    🏝️ 姜岛不需要：床表是**从当前场景**现扫的（`island_sleep_plan` 已核过 isIsland），
+        #       而 locate 那套回的是大陆那张床，拿它比必然不等 ⇒ 套上来反而误拦。
+        if humanize and not _tb.get("island"):
+            _gate = _sleep_bed_gate(_tb.get("locate") or {}, loc)
             if _gate:
                 rec("gate", False, _gate)
                 return finish(False, f"❌ {_gate}", co_sleep, p1)
@@ -1060,12 +1303,12 @@ def go_sleep_flow(who="", log=None, humanize=True) -> dict:
                     break
         except Exception:
             pass
-        snap = _snap_onto_bed(bx, by, loc)
+        snap = _snap_onto_bed(bx, by, loc, tiles=tiles)
         time.sleep(0.3)
         rec("reach_bed", True, f"床边对位到 {snap}")
 
-        # 3. 爬床（只设 isInBed，不挪位）
-        r = _ai_post("/crawl_bed", {"action": "sleep", "player": who})
+        # 3. 爬床（只设 isInBed，不挪位）；姜岛那条额外带 bed_x/bed_y + 广播文案（见 crawl_kw）
+        r = _ai_post("/crawl_bed", {"action": "sleep", **crawl_kw})
         if not r.get("ok"):
             rec("crawl", False, r.get("error", r))
             return finish(False, f"❌ 爬床失败: {r.get('error', r)}", co_sleep, p1)
@@ -1082,8 +1325,8 @@ def go_sleep_flow(who="", log=None, humanize=True) -> dict:
         time.sleep(1)
         sleeping = _sleeping_now()
         if not sleeping:
-            _snap_onto_bed(bx, by, loc)
-            _ai_post("/crawl_bed", {"action": "sleep", "player": who})
+            _snap_onto_bed(bx, by, loc, tiles=tiles)
+            _ai_post("/crawl_bed", {"action": "sleep", **crawl_kw})
             _ai_post("/sleep", {"stay": True})
             time.sleep(1)
             sleeping = _sleeping_now()
@@ -1146,8 +1389,8 @@ def go_sleep_flow(who="", log=None, humanize=True) -> dict:
                 #    （原注释"起身→出建筑→**回来**重爬"本来就含"回来"，是实现漏了。）
                 _ai_post("/warp", {"location": loc})
                 time.sleep(2)
-            _snap_onto_bed(bx, by, loc)
-            _ai_post("/crawl_bed", {"action": "sleep", "player": who})
+            _snap_onto_bed(bx, by, loc, tiles=tiles)
+            _ai_post("/crawl_bed", {"action": "sleep", **crawl_kw})
             time.sleep(0.5)
             _ai_post("/sleep", {"stay": True})
             log_refresh = "（已原地重趴就绪）" if humanize else "（已自动走刷新：起身→出建筑→回来重爬）"
@@ -1179,24 +1422,27 @@ def approach_bed(who="", log=None) -> dict:
     有床 → 同图 walk 到床边 → /position 精确对位床格 → /crawl_bed sleep（只设 isInBed）。
     刻意**不走 warp/teleport 直落床格**（会被游戏 redirect 弹回门口，08-01 实测教训）。
     返回 {ok, bed, player:床主, co_sleep, snap}。要真睡→go_sleep；要起身→ai_cancel_sleep()。
+    ⚠️ 只躺不睡**不发爬床广播**（`quiet`）——广播是"一起睡"彩蛋的信号，光躺一下不该惊动对方；
+    但**姜岛挤床**例外（那是恒点名的岛上彩蛋，`island_sleep_plan` 会把 msg 给出来）。
+    （姜岛分流同 go_sleep：岛上走大通铺，见 `_resolve_target_bed`。）
     """
     detect_roles()
     log = log or (lambda *a, **k: None)
     try:
-        locate = _ai_post("/crawl_bed", {"action": "locate", "player": who})
-        if not locate.get("ok"):
-            return {"ok": False, "error": locate.get("error", locate)}
-        bed = locate["bed"]
-        loc, bx, by = bed["location"], bed["x"], bed["y"]
-        p2 = locate.get("player2") or "我"
-        p1 = locate.get("player", p2)
-        co_sleep = p1 != p2
-        log("locate", True, f"目标床:{loc}({bx},{by}) 床主:{p1} ({'一起睡' if co_sleep else '自家'})")
+        _tb = _resolve_target_bed(who)
+        if not _tb.get("ok"):
+            return {"ok": False, "error": _tb.get("error", "")}
+        loc, bx, by = _tb["loc"], _tb["bx"], _tb["by"]
+        tiles = _tb.get("tiles") or []
+        p2, p1, co_sleep = _tb["p2"], _tb["p1"], _tb["co_sleep"]
+        crawl_kw = dict(_tb["crawl_kw"])
+        log("locate", True, _tb["note"])
 
-        # 🔑 本地门禁（2026-08-22 恒：只躺当前场景的床，不跨图不 warp）
-        _gate = _sleep_bed_gate(locate, loc)
-        if _gate:
-            return {"ok": False, "error": _gate}
+        # 🔑 本地门禁（2026-08-22 恒：只躺当前场景的床，不跨图不 warp）——姜岛不走（床表本就是本图扫的）
+        if not _tb.get("island"):
+            _gate = _sleep_bed_gate(_tb.get("locate") or {}, loc)
+            if _gate:
+                return {"ok": False, "error": _gate}
 
         try:
             _ai_post("/walk_to", {"location": loc, "x": bx, "y": by + 1})
@@ -1206,21 +1452,22 @@ def approach_bed(who="", log=None) -> dict:
                     break
         except Exception:
             pass
-        snap = _snap_onto_bed(bx, by)
+        snap = _snap_onto_bed(bx, by, loc, tiles=tiles)
         time.sleep(0.3)
         log("reach_bed", True, f"床边对位到 {snap}")
 
-        r = _ai_post("/crawl_bed", {"action": "sleep", "player": who})
+        r = _ai_post("/crawl_bed", {"action": "sleep", **crawl_kw})
         if not r.get("ok"):
             return {"ok": False, "error": r.get("error", r)}
         # ⚠️ 防 isInBed 被游戏 tick 瞬时弹掉：1s 后没站稳 → 对位+重爬一次（与 go_sleep 同款防御）
         time.sleep(1)
         if not _in_bed_now(retries=1):
-            _snap_onto_bed(bx, by)
-            _ai_post("/crawl_bed", {"action": "sleep", "player": who})
+            _snap_onto_bed(bx, by, loc, tiles=tiles)
+            _ai_post("/crawl_bed", {"action": "sleep", **crawl_kw})
             time.sleep(1)
         log("lie", True, f"crawled, inBed={_in_bed_now(retries=1)}, bed={r.get('bed')}")
-        return {"ok": True, "bed": bed, "snap": snap, "co_sleep": co_sleep, "player": p1, "location": loc}
+        return {"ok": True, "bed": {"location": loc, "x": bx, "y": by}, "snap": snap,
+                "co_sleep": co_sleep, "player": p1, "location": loc}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 

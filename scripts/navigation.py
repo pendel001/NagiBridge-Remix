@@ -826,6 +826,30 @@ def _go_to_bed(bed_loc: str, bx: int, by: int) -> tuple[bool, str]:
     return False, f"⚠️ 到床超时（{bed_loc} 床在 {bx},{by}）——人可能卡在门口/被家具挡住"
 
 
+def _go_island_house() -> tuple[bool, str]:
+    """🏝️ 岛上"去睡觉的地方"= 走进**共用姜岛小屋**（大通铺在那）。返回 (ok, msg)。
+
+    ⚠️ 为什么走不了 `_go_home` 那套"门口 → 推门"：姜岛小屋**不在 Farm 上**，
+       而 `door` 来自 C# `FindHomeDoor`——它只扫 Farm 上的建筑 ⇒ 岛屋**压根没有 door 字段**。
+       改用 `map_go` 的跨图路径（`locations.MAP_LINKS["IslandWest"] → IslandFarmHouse`，
+       tile (77,40)，kind=door）。
+    成败**回读场景唯一名**才算数（`map_go` 回的是给人看的一句话，文案变了也不该影响判据）。
+    """
+    def _cur() -> str:
+        try:
+            return (api._post("/crawl_bed", {"action": "locate"}) or {}).get("curLoc") or ""
+        except Exception:
+            return ""
+
+    if _cur() == api.ISLAND_HOUSE:
+        return True, "🏝️ 已在姜岛小屋里"
+    _m = map_go(api.ISLAND_HOUSE)
+    if _cur() == api.ISLAND_HOUSE:
+        return True, "🏝️ 已走进姜岛小屋"
+    return False, (f"❌ 没能进姜岛小屋（现在在 {_cur() or '?'}）——{_m}；"
+                   f"也可以自己 `map go 姜岛小屋` 走过去，再喊一次 sleep（who 照样要传）")
+
+
 def _go_home(who: str = "") -> tuple[bool, str]:
     """回家：走到「谁的床」那个屋的门口（Farm 外立面）→ 互动进门 → 走到床边。
     `who` 空 = 自己；传别人名字 = 去那个人的屋子/床边（爬床彩蛋那套）。
@@ -853,6 +877,11 @@ def _go_home(who: str = "") -> tuple[bool, str]:
             who = (api._post("/crawl_bed", {"action": "locate"}) or {}).get("player2") or ""
         if not who:
             return False, "❌ 认不出自己是谁（crawl_bed locate 没回 player2）"
+
+        # 🏝️ 姜岛分流（2026-09-19 恒）：岛上睡的是**共用姜岛小屋**的大通铺，没有"谁的床"——
+        #    再往下走就会拿着**大陆那张床**的坐标导航 ⇒ 把人从姜岛带回农场。
+        if api.on_island():
+            return _go_island_house()
 
         bl = api._post("/crawl_bed", {"action": "locate", "player": who})
         if not bl.get("ok"):
@@ -2308,7 +2337,9 @@ def _npc_arrive_note(npc_name, npc0, at_loc):
     """map_go 带 npc 到场处理：重新查人 → 判是否移动 → 走近 NPC，返回提示给 AI。
     npc0 = 出发时 (location, x, y)，到场再查一次对比位置差 → 判"移动中/延时偏差"。"""
     try:
-        fr = api._get("/find_npc", {"name": npc_name})
+        # ⚠️ `api.find_npc`（**以 host 为准**）—— 别用 `api._get`：那打的是轮回自己那端，
+        #    远处地图会滞留旧位置（2026-09-19）
+        fr = api.find_npc(npc_name)
         ns = fr.get("npcs") if fr.get("ok") else []
     except Exception:
         ns = []
@@ -2374,7 +2405,7 @@ def map_go(destination: str = "", npc: str = "") -> str:
             _NAV_LAST.update({"name": "马龙", "loc": "AdventureGuild", "x": 6, "y": 12})
         else:
             try:
-                fr = api._get("/find_npc", {"name": npc})
+                fr = api.find_npc(npc)   # ⚠️ 以 host 为准（`_get` 那端会报幽灵位置）
                 ns = fr.get("npcs") if fr.get("ok") else []
             except Exception:
                 ns = []

@@ -314,13 +314,54 @@ def _check_poi_nearby(loc_name: str, px: int, py: int) -> list:
         return []
 
 
+def facing_npc(state_data: dict) -> str | None:
+    """玩家**正对着的 / 紧挨着**的那个 NPC 的显示名（认不到 → None）。
+
+    ⚠️ **为什么要有它**：对话框的说话人首选判据是 `activeMenu.speaker`（C# 取自
+    `Dialogue.speaker`，是权威）—— 但它**会为空**：纯文本对话（旁白/信件/`drawObjectDialogue`）
+    本来就没有说话人。2026-09-19 恒真机看到过一次"好像在**跟人搭话**"（没有名字），
+    但**复现不出**（探针连看 123 拍 `speaker` 全有值）⇒ 这条是**那时**的兜底，不是替代。
+
+    ⚠️ **只认面朝格会漏人**（真机实测）：恒站 `(24,27)` 面朝上 ⇒ 面朝格 `(24,26)`，
+    可科罗布斯在 **`(23,26)`**（**斜一格**）⇒ 严格判面朝格当场认不到。
+    所以：**先面朝格，认不到再退到 2 格内最近的那个**。
+    """
+    p = state_data.get("player") or {}
+    px, py = p.get("x"), p.get("y")
+    if px is None or py is None:
+        return None
+    # ⚠️ 优先用 `nearby_npcs`（调用方富化过的**≤2 格**子集，带中文名）；
+    #    没有就退回 `raw.npcs`（**全量**、只有内部英文名）——单位测试/别的调用方可能只给了 raw。
+    npcs = state_data.get("nearby_npcs")
+    if npcs is None:
+        npcs = (state_data.get("raw") or {}).get("npcs") or []
+    if not npcs:
+        return None
+    face = {0: (0, -1), 1: (1, 0), 2: (0, 1), 3: (-1, 0)}.get(p.get("facingDirection"))
+    if face:
+        fx, fy = px + face[0], py + face[1]
+        for n in npcs:
+            if (n.get("x"), n.get("y")) == (fx, fy):
+                return n.get("displayName") or n.get("name") or None
+    best, best_d = None, 99
+    for n in npcs:
+        nx, ny = n.get("x"), n.get("y")
+        if nx is None or ny is None:
+            continue
+        d = abs(nx - px) + abs(ny - py)
+        if d <= 2 and d < best_d:
+            best, best_d = (n.get("displayName") or n.get("name")), d
+    return best or None
+
+
 def _describe_menu(active_menu: dict, name: str, loc_lower: str, is_moving: bool,
-                   in_bed: bool = False) -> str | None:
+                   in_bed: bool = False, npc_name: str | None = None) -> str | None:
     """根据打开的菜单类型推断玩家在干嘛（"开了窗口"分支）。
 
     返回 None 表示不拦截（让后续判定继续，比如要带商店名的购物）。
     `in_bed` 只用于把 ReadyCheckDialog 区分类别，且**仅在旧 DLL 没有 `readyCheck.name` 时**才用
     （那是老判据，太宽——见下面 readych 那支 2026-09-19 的说明）；新 DLL 一律认 `readyCheck.name`。
+    `npc_name` = **面朝格/就近**认到的人（`facing_npc()` 的结果），**只在 `speaker` 为空时**才用。
     """
     mtype = (active_menu.get("type") or "").lower()
     if not mtype:
@@ -329,6 +370,14 @@ def _describe_menu(active_menu: dict, name: str, loc_lower: str, is_moving: bool
         speaker = active_menu.get("speaker")
         if speaker:
             return f"💬 **{name}** 好像在和 **{speaker}** 搭话"
+        if npc_name:
+            # 🗣️ 说话人没报上来（纯文本对话等）→ 用**面朝格认到的人**顶上，措辞多款随机
+            #    （2026-09-19 恒：「按面朝格的 npc 来显示和《某某》相谈甚欢」+ 选了"多款随机"）。
+            return random.choice([
+                f"💬 **{name}** 正和 **{npc_name}** 相谈甚欢",
+                f"💬 **{name}** 跟 **{npc_name}** 聊得正起劲",
+                f"💬 **{name}** 在和 **{npc_name}** 搭话",
+            ])
         return f"💬 **{name}** 好像在跟人搭话"
     if "itemgrabmenu" in mtype:
         return f"📦 **{name}** 正在整理箱子"
@@ -474,7 +523,8 @@ def describe_activity(state_data: dict) -> str:
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     if menu_open:
-        msg = _describe_menu(active_menu, name, loc_lower, is_moving, in_bed=in_bed)
+        msg = _describe_menu(active_menu, name, loc_lower, is_moving, in_bed=in_bed,
+                             npc_name=facing_npc(state_data))
         if msg:
             return msg
 

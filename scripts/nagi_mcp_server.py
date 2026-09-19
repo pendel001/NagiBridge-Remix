@@ -648,7 +648,59 @@ def _gather_user_state() -> dict:
         data["swimming"] = bool((api.host_pool().get("me") or {}).get("swimming"))
     except Exception:
         data["swimming"] = False
+    # 🙋 附近 NPC（**带中文显示名**）：对话框 `speaker` 为空时的"面朝格兜底"要用（`player_activity.facing_npc`）。
+    #    ⚠️ 富化**放这儿、不在 player_activity 里现打 HTTP**——跟上面 `seat` 同一个道理
+    #    （"打包好给消费方判，别在那重打一次 HTTP"）。**只富化 2 格内的**：那是 `facing_npc` 唯一会用的范围，
+    #    顺手把 `/find_npc` 的调用数压到 0~2 次（村中心站着十几个 NPC 时不会一次打十几枪）。
+    #    ⚠️ 键名故意叫 **`nearby_npcs`** 而不是 `npcs`：`data["raw"]["npcs"]` 是**全量**，
+    #    这份是**截过的**（≤2 格）。同名不同义＝以后读的人踩坑（本项目最不缺这种坑）。
+    try:
+        data["nearby_npcs"] = _nearby_npcs_with_display(s.get("npcs") or [], data.get("player") or {})
+    except Exception:
+        data["nearby_npcs"] = []
     return data
+
+
+_NPC_DISPLAY_CACHE: dict = {}
+
+
+def _npc_display_name(english: str) -> str:
+    """英文内部名 → 中文显示名（`/find_npc` 一次 ~31ms，**只在真拿到名字时**才缓存）。
+
+    ⚠️ 新 DLL 的 `/state.npcs[]` 会**直接带 `displayName`**（C# 一行，见 CHANGELOG 09-19(79)）——
+    那时本函数一次都不会被调到，它只是**老 DLL 兼容路**。
+    ⚠️ **查不到不写缓存**：NPC 可能不在已加载的图里，一次抖动就把英文名永久钉住是"用兜底把问题搬走"。
+    """
+    if not english:
+        return ""
+    if english in _NPC_DISPLAY_CACHE:
+        return _NPC_DISPLAY_CACHE[english]
+    try:
+        r = api.host_get("/find_npc", {"name": english}, timeout=5)
+    except Exception:
+        return english
+    for n in (r.get("npcs") or []):
+        if n.get("displayName"):
+            _NPC_DISPLAY_CACHE[english] = n["displayName"]
+            return n["displayName"]
+    return english
+
+
+def _nearby_npcs_with_display(npcs, player, radius: int = 2) -> list:
+    """挑出玩家 `radius` 格内的 NPC 并补上中文显示名（`/state.npcs` 只给内部英文名）。"""
+    px, py = player.get("x"), player.get("y")
+    out = []
+    for n in npcs:
+        if not isinstance(n, dict):
+            continue
+        if px is not None and py is not None and n.get("x") is not None and n.get("y") is not None:
+            if abs(n["x"] - px) + abs(n["y"] - py) > radius:
+                continue
+        e = dict(n)
+        if not e.get("displayName"):
+            e["displayName"] = _npc_display_name(e.get("name") or "")
+        out.append(e)
+    return out
 
 
 def _heartbeat_line(ai_data: dict) -> str:
@@ -937,6 +989,160 @@ _CHAT_PHASE = {
     "msg_sig": None,        # 上次已提醒过的"用户最新一条消息"签名（用于"有新消息立刻催"）
 }
 _CHAT_POLL_INTERVAL = 30      # 轮询间隔：30s 一次（恒拍板 2026-08-17）
+
+# ── 🏝️ 姜岛"互相挤床"彩蛋的一次性闸门（2026-09-19 恒：「如果房主是后睡，触发的时机也要动（互相爬床）」）──
+# 大陆那套是**我方主动爬**（进床那一刻播报）；姜岛反过来：我方先躺进大通铺某张床等过夜，
+# **房主后来**也钻进**同一张**床 → 那一刻才该播彩蛋。所以要"看着他来没来"，见 `_island_mutual_crawl`。
+# 进环节时先记一笔"他当时在不在我床上"——他要是一开始在，那是**我爬他**那条路（进床时已播过），
+# 这条就不该再响一次（否则一次同床两条播报）。
+_ISLAND_SQUEEZE = {
+    "done": False,                 # 今晚这张床的"互相挤床"是否已播过 / 是否已被判定"不该播"
+    "check_ts": 0.0,               # 上次问房主位置的时间（节流，别每次状态条都打 HTTP）
+    # 🕐 上次看到"我在姜岛小屋"——**省 HTTP 的闸门**：只有当它为真时，2s 那条快线才去拉状态。
+    #    平时在大陆就完全空转（否则要常年每 2s 打一次 /state）。
+    "maybe": False,
+    # 🔒 **本回合"就绪"是否已经上过闩**（每个"就绪回合"只上闩一次，见 `_island_squeeze_tick`）。
+    #    ⚠️ 上闩以前挂在**状态条**的环节切换上（旧函数 `_island_mutual_arm`，**已删**）——而阻塞睡觉时状态条
+    #    **根本不构建** ⇒ "我爬他"那一晚会**两条都播**（C# 播"我钻进他被窝"，这边又播"他钻进我被窝"）。
+    #    现在改成由**就绪信号自己**驱动：ready 由 False→True 那一刻上闩，状态条不再参与。
+    "armed": False,
+}
+
+
+def _host_on_my_island_bed(data) -> bool:
+    """房主此刻是不是**真的跟我躺同一张姜岛床**（同图 + `isInBed` + 相距 ≤1 格 + **他自己登记了就绪**）。
+
+    ⚠️ 原 docstring 写"岛上那格本来就是床、不是走道 ⇒ `isInBed` 咬不到清早刚醒"——**2026-09-19 真机
+    当场推翻**：早 07:50 轮回 `isInBed=True`，只是刚起床杵在床格里。所以这里补第三问：房主**自己的**
+    `/state.player.sleepReady.ready`（`h` 本来就是 host 端 `/state`，不用再打一次 HTTP）。
+    老 DLL 没这字段 ⇒ 退回只看 `isInBed`（版本兼容，不是改判）。
+    """
+    me = data.get("player") or {}
+    mx, my = me.get("x"), me.get("y")
+    if mx is None or my is None:
+        return False
+    h = api.host_state()
+    hp = h.get("player") or {}
+    if (h.get("location") or {}).get("name") != api.ISLAND_HOUSE:
+        return False
+    if not hp.get("isInBed"):
+        return False
+    if abs(hp.get("x", 999) - mx) > 1 or abs(hp.get("y", 999) - my) > 1:
+        return False
+    sr = hp.get("sleepReady") or {}
+    if "state" in sr and not sr.get("ready"):
+        return False          # 量过了：他只是脚踩床格（刚起床/发呆），没登记"要睡"
+    return True
+
+
+
+
+def _island_mutual_crawl(data, loc_name) -> str:
+    """🏝️ 姜岛**互相挤床**（房主后睡）：返回要播的一句广播，或 ""。
+
+    只在"等睡"环节调（AI 已登记就绪、正躺在**姜岛小屋**的床上等过夜）。
+    与大陆那套的关系：大陆是**我方主动爬**（进床那一刻播报）；这里是我方先躺下、**房主后来**
+    钻进**同一张**床 ⇒ 那一刻才播——正是恒说的「如果房主是后睡，触发的时机也要动」。
+    播报走 AI 进程的 `/chat`（= C# `Broadcast` 在 farmhand 侧的同款：本机粉色 + 显式推给房主）。
+    """
+    if loc_name != api.ISLAND_HOUSE or _ISLAND_SQUEEZE["done"]:
+        return ""
+    now = time.time()
+    # 节流：最多每 1.5s 问一次房主在哪（状态条会频繁构建）。
+    # ⚠️ 原来是 5s —— 那会**饿死** 2s 快线：节流计时是"问过就记"，而窗口本身只有几秒，
+    #    一次空问就能把整段窗口挡掉（2026-09-19 真机第一晚的另一种可能死法）。
+    if now - _ISLAND_SQUEEZE["check_ts"] < 1.5:
+        return ""
+    _ISLAND_SQUEEZE["check_ts"] = now
+    try:
+        if not _host_on_my_island_bed(data):
+            return ""
+    except Exception:
+        return ""
+    _ISLAND_SQUEEZE["done"] = True
+    me = data.get("player") or {}
+    try:
+        host_name = ((api.host_state().get("player") or {}).get("name")) or _host_name()
+    except Exception:
+        host_name = _host_name()
+    me_name = me.get("name") or "我"
+    # 🏝️ 文案三选一（2026-09-19 恒：「这个好可爱啊」）。⚠️ 主语恒定（永远是"他钻进我"）——
+    #    这条与 `island_sleep_plan` 那条是**反方向**的同一张床，方向糊了就分不清谁爬谁。
+    #    恒当时把第二条破折号后的调侃（"通铺嘛，挤挤热闹"）划掉了，别再补回去。
+    msg = random.choice([
+        f"<{host_name}>掀开被子挤了进来，姜岛的小床立刻不够睡了 🏝️",
+        f"<{host_name}>一声不吭钻进<{me_name}>的被窝 🌴",
+        f"被窝一沉——<{host_name}>也躺下了，两个人挤一张床 🌙",
+    ])
+    try:
+        api._post("/chat", {"message": msg, "color": "hotpink"})     # 轮回自己那侧窗口
+    except Exception:
+        pass
+    # ⚠️ **必须再显式推给恒**（2026-09-19 真机逮到，恒原话「也没广播」）：上面那句打的是 **AI 自己的进程**，
+    #    它的 `/chat` 只在本机 `addMessage` + 走**原生发送**，而原生聊天在这套双开下**不通**
+    #    （浴场同泡彩蛋踩过同一条，见 `host_chat` 的 docstring）⇒ 彩蛋只在轮回窗口闪过。
+    #    C# 侧的 `Broadcast` 有"显式推对面"那段，Python 这边原来漏了。
+    #    payload 对齐 `Broadcast` 的 AI→host 分支：hotpink、**不带 notice**（notice 是 host→AI 防回声用的）。
+    try:
+        api.host_chat(msg, color="hotpink")
+    except Exception:
+        pass
+    return f"🏝️ 姜岛挤床彩蛋已播：{msg}"
+
+
+def _island_squeeze_tick(s, loc_name=None) -> str:
+    """🏝️ 转一次"房主后睡、钻进我被窝"的检查。返回要展示的回执（没播 = ""）。
+
+    ⚠️ **为什么非得自己转、不能只靠状态条**：这套检查原先只挂在**状态条**上，而状态条
+    **只在 AI 调工具时**才构建。可这个彩蛋要等的恰恰是"**我躺好等过夜、房主后来才钻进来**"那一刻
+    ——那时 AI 正躺着、**根本不会去调工具** ⇒ 检查永远不转、彩蛋永远不响（"触发时机要动"等于没动）。
+
+    🕐 **采样频率是命门**（2026-09-19 真机第一晚就栽在这）：房主一钻进被窝，两人都就绪
+    ⇒ 游戏**几秒内**就翻页，而"他已在床上"这个状态只存在那几秒。10s 的后台 tick 整段漏掉
+    ⇒ 现在 `_autopilot_loop` 里开了 **2s 一条快线**（`_island_squeeze_fast`），状态条也改调本函数。
+
+    🔒 **上闩（本回合只上一次）**：`armed` 由**就绪信号自己**驱动 —— `ready` 由 False→True 的那一刻，
+    问一次"他是不是已经在我床上"：在 ⇒ 那是"**我爬他**"（进床时 C# 已播过），本回合就**不再播**
+    （否则一次同床两条播报）。`ready` 落回 False（起床/翻页）⇒ 闩与 done 一起清掉，下一觉重来。
+    ⚠️ 以前这闩挂在状态条的环境切换上，而阻塞睡觉时状态条不构建 ⇒ 那个洞是真的（见 `_ISLAND_SQUEEZE` 注释）。
+    """
+    p = (s or {}).get("player") or {}
+    # `loc_name` 可由调用方直接给（状态条那边本来就有），省得依赖 `s["location"]` 的形状
+    loc = loc_name if loc_name is not None else ((s.get("location") or {}).get("name") or "")
+    _ISLAND_SQUEEZE["maybe"] = (loc == api.ISLAND_HOUSE)   # 喂给 2s 快线的闸门
+    if not ((p.get("sleepReady") or {}).get("ready")):
+        # 没就绪（清早刚起 / 白天 / 还没上床）⇒ 本回合作废，下一觉从头来
+        _ISLAND_SQUEEZE["armed"] = False
+        _ISLAND_SQUEEZE["done"] = False
+        return ""
+    if loc != api.ISLAND_HOUSE:
+        return ""
+    if not _ISLAND_SQUEEZE["armed"]:
+        _ISLAND_SQUEEZE["armed"] = True
+        try:
+            _ISLAND_SQUEEZE["done"] = _host_on_my_island_bed({"player": p})
+        except Exception:
+            _ISLAND_SQUEEZE["done"] = False
+        return ""                       # 上闩这一拍只判方向，不播
+    if _ISLAND_SQUEEZE["done"]:
+        return ""
+    return _island_mutual_crawl({"player": p}, api.ISLAND_HOUSE)
+
+
+def _island_squeeze_fast() -> None:
+    """🕐 **2s 快线**：只在"上次看到我在姜岛小屋"时才去拉状态（`maybe` 闸门，平时在大陆零 HTTP）。
+
+    为什么值得单开一条 2s 的线：`_island_mutual_crawl` 要抓的窗口只有**几秒**
+    （房主钻进被窝 → 双方就绪 → 游戏翻页），10s 的常规 tick 很容易整段错过。
+    """
+    if not _ISLAND_SQUEEZE.get("maybe"):
+        return
+    try:
+        _island_squeeze_tick(api._ai_get("/state"))
+    except Exception:
+        pass
+
+
 _CHAT_TIMEOUT_STEP = 180      # 超时兜底步进（等睡期）：每 3 分钟没新消息发一次
 # 🧾 结算期**单独缩短**（2026-09-12 恒：「过夜菜单也180s吗，太久了。过夜菜单应该算聊天环节，
 #    专门缩短一下比较好。一分钟比较合适」）—— 结算本身就是聊天环节，而且是**卡着新一天开始**的
@@ -1006,8 +1212,20 @@ def _chat_phase_line(data, menu_type, tod, loc_name) -> str:
             _CHAT_PHASE = {"phase": phase, "poll_ts": 0.0, "last_msg_ts": time.time(),
                            "timeout_n": 0, "entered": time.time(), "just_entered": True,
                            "msg_sig": None}
+            # 🏝️ 姜岛"互相挤床"随环节复位**只清节流**，**不动闸门**：
+            #    ⚠️ 原先这里连 `done`/上闩一起重置，而**状态条在阻塞睡觉时不构建** ⇒ 那个"上闩"压根不会发生，
+            #       "我爬他"那一晚会两条都播。现在上闩归 `_island_squeeze_tick` 按就绪信号自己管（单一真相源）。
+            _ISLAND_SQUEEZE["check_ts"] = 0.0
         if not phase:
             return ""
+        # 🏝️ 姜岛：房主**后睡**时钻进我这张床 → 播一次"挤一挤"（恒 2026-09-19）
+        #    状态条只是**顺路**再转一次（判据/上闩都在 `_island_squeeze_tick` 里，与 2s 快线同一份真相）
+        _isl_line = ""
+        if phase == "wait_sleep":
+            try:
+                _isl_line = _island_squeeze_tick(data, loc_name)
+            except Exception:
+                _isl_line = ""
         now = time.time()
         # 🔔 取用户**最新一条**消息（chat/emote）：既重置超时计时，也用来判"这条还没提醒过"。
         #    ⚠️ 唯一要排掉的是**自然聊天同步回流的自己那条**（格式 `💬 轮回: …` / `💬 轮回 发了…`）
@@ -1038,16 +1256,21 @@ def _chat_phase_line(data, menu_type, tod, loc_name) -> str:
         if _CHAT_PHASE.get("just_entered"):
             _CHAT_PHASE["just_entered"] = False
             return _chat_phase_banner(phase)
-        # ② 🔔 有新消息 → **立刻**催回话，不等 30s 轮询（恒 2026-09-12）
+        # ② 🏝️ 姜岛挤床彩蛋**刚播出去** → 立刻告诉 AI（它自己"感觉到被窝一沉"，
+        #    比 30s 轮询/超时都紧急；播报本身已在 `_island_mutual_crawl` 里发过了，这里只是回执）
+        if _isl_line:
+            _CHAT_PHASE["poll_ts"] = now
+            return _isl_line
+        # ③ 🔔 有新消息 → **立刻**催回话，不等 30s 轮询（恒 2026-09-12）
         if _new_msg:
             _CHAT_PHASE["poll_ts"] = now
             return _chat_phase_newmsg(phase)
-        # ③ 超时兜底（结算 60s / 等睡 180s 步进加码，不刷屏）——比轮询更紧急，先判
+        # ④ 超时兜底（结算 60s / 等睡 180s 步进加码，不刷屏）——比轮询更紧急，先判
         _step = _CHAT_TIMEOUT_STEP_BY_PHASE.get(phase, _CHAT_TIMEOUT_STEP)
         if now - _CHAT_PHASE["last_msg_ts"] >= _step * (_CHAT_PHASE["timeout_n"] + 1):
             _CHAT_PHASE["timeout_n"] += 1
             return _chat_phase_timeout(phase, int(now - _CHAT_PHASE["last_msg_ts"]))
-        # ④ 30s 轮询
+        # ⑤ 30s 轮询
         if now - _CHAT_PHASE["poll_ts"] >= _CHAT_POLL_INTERVAL:
             _CHAT_PHASE["poll_ts"] = now
             return _chat_phase_poll(phase)
@@ -4044,15 +4267,20 @@ def wear(name: Optional[str] = None, slot: Optional[str] = None, hand: Optional[
 def find_npc(name: str) -> str:
     """🔍 找到某个 NPC 现在在哪（社交用）
     扫全地图，返回位置+当前对话。找到后可用 go_to / walk_to 走过去搭话或送礼。
+    （位置**以房主那端为准**；万一房主这端和轮回自己记的不一样，会另起一行把差异摊开给你看。）
 
     Args:
         name: NPC 名字（中文名如"莉亚"，或英文名"Leah"，支持子串）
     """
     try:
-        r = api._get("/find_npc", {"name": name})
+        # ⚠️ 走 `api.find_npc`（**以 host 为准**），不是 `api._get`：后者打的是轮回**自己**那个进程，
+        #    而 farmhand 那端的 NPC 会滞留"各人的家"（2026-09-19 真机：Alex 明明站在沙滩上，
+        #    自己这端报 JoshHouse）。
+        r = api.find_npc(name)
         if not r.get("ok"):
             return _with_state(f"❌ {r.get('error', r)}")
         nps = r.get("npcs", [])
+        stale = r.get("stale", [])
         if not nps:
             return _with_state(f"🔍 没找到「{name}」——可能出门在外或名字不对")
         lines = []
@@ -4061,7 +4289,15 @@ def find_npc(name: str) -> str:
             extra = f" 💬「{d}」" if d else ""
             sleep = " 💤在睡" if n.get("isSleeping") else ""
             lines.append(f"  {n.get('displayName') or n.get('name')} @ {n.get('location')} ({n['x']},{n['y']}){sleep}{extra}")
-        return _with_state(f"🔍 「{name}」找到 {r.get('count')} 处：\n" + "\n".join(lines))
+        # ⚠️ 两端不一致**摊开说**（宁报错别兜底）：只列 host 没有的那几条，不静默丢
+        tail = ""
+        if r.get("src") == "self":
+            tail = "\n⚠️ 这只有**轮回自己这端**的记录（房主那端没答上来）——远处的人可能是滞留的旧位置"
+        elif stale:
+            _s = "、".join(f"{n.get('displayName') or n.get('name')}@{n.get('location')}({n['x']},{n['y']})"
+                           for n in stale[:3])
+            tail = f"\n⚠️ 轮回自己这端另记着 {_s} —— **已忽略**（它那边远处的地图会滞留旧位置）"
+        return _with_state(f"🔍 「{name}」找到 {len(nps)} 处：\n" + "\n".join(lines) + tail)
     except Exception as e:
         return _with_state(f"❌ {e}")
 
@@ -4107,7 +4343,8 @@ def chat_npc(name: str = "") -> str:
             tname = target.get("displayName") or target.get("name") or name
         else:
             # 附近没找到 → find_npc 定位（跨图先 map_go 过去再走）
-            f = api._get("/find_npc", {"name": name})
+            # ⚠️ 用 `api.find_npc`（host 为准），别用 `api._get`（自己那端会报幽灵位置）
+            f = api.find_npc(name)
             found = (f.get("npcs") or []) if f.get("ok") else []
             if not found:
                 return _with_state(f"❌ 没找到「{name}」——可能出门在外或名字不对")
@@ -6359,7 +6596,12 @@ def _aim_sleep_home(who: str) -> str:
         if bed_loc == cur:
             return ""                                   # 已经在屋里了 → 后面流程自己走到床边
         ok, msg = _go_home(who)                         # 走过去（含推门进屋 → 到床边）
-        return "" if ok else f"❌ 没能走到{who}屋里的床边——{msg}"
+        if ok:
+            return ""
+        # 🏝️ 姜岛：目的地是**共用的姜岛小屋**（不是"谁的屋"）——报错文案别照搬大陆那句，
+        #    否则 AI 会看到"没能走到恒屋里的床边"却其实人在岛上，看不出该往哪走。
+        _where = "姜岛小屋（大通铺）" if api.on_island() else f"{who}屋里的床边"
+        return f"❌ 没能走到{_where}——{msg}"
     except Exception as e:
         return f"❌ 回屋失败: {e}"
 
@@ -6373,7 +6615,10 @@ def go_sleep(who: str = "") -> str:
     ⚠️ 名字要跟游戏里一致（打错会**直接报错并列出可选名字**，不会默默睡成别人的床）。
     **传对名字就不用先回家**：不在那栋屋会自动走过去（map_go 跨图→门口→推门→床边，全程走不瞬移）。
     流程（2026-08-14 四场景验证锁定）：到床边→精确对位→爬床广播→就地 ready→等过夜；
-    夜不过自动"走刷新"重爬。对方没配合(卡 ReadyCheckDialog)超时则取消起床，绝不卡死。
+    夜不过自动"走刷新"重爬。对方没配合(卡ReadyCheckDialog)超时则取消起床，绝不卡死。
+    🏝️ **在姜岛时是另一套（共用姜岛小屋的大通铺，没有"谁的床"）**：who 传**正躺在那儿的别人**
+    → 挤他这张床（姜岛版爬床彩蛋）；否则（who 是自己 / 那人还没躺）→ 大通铺随便挑一张空床
+    （安静睡，不播报）。不在小屋里会自动走过去（`map go 姜岛小屋`）。
     """
     api.ensure_roles()  # 端口↔角色可能翻转，先对齐
     if not (who or "").strip():
@@ -6395,6 +6640,7 @@ def lie_bed(who: str = "") -> str:
     但**不调 /sleep 确认** → 日不结束、不结束一天。刻意不传送进床格（会 redirect 弹回门口）。
     用于休息/等待/躺一下。**who 必填**：传自己的名字=躺自家；传别人的名字=躺那个人的床（爬床彩蛋）。
     传对名字就不用先到那栋屋：不在会自动走过去（和 go_sleep 同一条路）。
+    🏝️ 在姜岛同 go_sleep：走大通铺（挤到别人床上才播报，睡空床安静）。
     就寝真过夜→go_sleep；**不想躺了就 walk_to 走离床格**（isInBed 自动变 false，无需特别起身）；
     就绪屏弹出想撤就绪/关屏→cancel。
     """
@@ -12722,12 +12968,12 @@ _DOMAIN_GUIDES = {
 "check": "查询域，what=...：status(完整状态) backpack(逐格价值/星级) worn(穿戴) machines(全场机器清单) mine(下矿进度) silo(干草) mastery(精通) buildings(木匠建筑) quest(开任务日志) chests(当前图箱) storage(箱子网络) look(环视周围) profile(我的技能等级+职业分支,如是否 Luremaster 蟹笼免饵) role(端口↔角色确认:我是谁/恒是谁)。⚠️查概览用 status，查逐格用 backpack，别都调浪费 token。📌profile/role 2026-09-11 从顶层工具收编进来（原来直接叫 profile()/which_role()，现在一律走 check）。📐这个域的参数叫 **what**，**不是 ops**。带参的只有两个: chests(chest=N 看第N个箱) / look(radius=10 环视半径)；其余(status/backpack/worn/machines/mine/silo/mastery/buildings/quest/storage/profile/role)**全无参**。⚠️查概览用 status、查逐格用 backpack，别都调一遍浪费 token。",
 "farm": "农活域(🌱必走，别手动挥工具组合，用域 ops)：till(锄地) plant(种,跳过已种;带 layout 就按洒水器布局种) water(浇,自动跳雨+水壶没水先装满) harvest(收) scythe(镰刀收蒜/花/茶) fertilize(化肥) clear(清杂草石树桩;坐标同 till，也可 `radius=N` 走**圆形**；**会自动往外多清 2 格**——田边的杂草会长进田里把作物顶掉，不用自己放大) plot(连通域规划) plan(方形规划,纯算格) chop(砍树)。⚠️**锄地/播种各只有一个实现**：锄地=`till`（`hoe`/`布局锄`/`tillfield`/`蓄力锄` 都是它的别名）、播种=`plant`（`sow`/`plantlayout`/`播种规划` 都是它的别名）；⛔ `till_plant` 已退役——要锄+种写 `ops=\"till plant\"`。 clearground(清单格) collect(一键收机器:只收不放,全农场瞬收不走路) load(放原料) building(一屋收放:拟人走进去收+放料,item留空=只收不放) break(拆/敲同scene,镐子敲可破物/翻已耕地) place(放置/播种同scene) pond/pond_add/pond_feed/pond_collect/pond_fish(鱼塘)。⚠️漏格DLL自动补；**缺的格会被点名「被什么挡着」**（🌿草/杂草/🪨石头/🪵树枝→**先 `clear` 清一遍再 till/plant**；🏗️洒水器/箱子等设施→⛔别清、那是规划该绕开的格）——草占着地格时锄头是锄不出 HoeDirt 的，别对着「缺失N格」发呆；高级工具蓄力用 tool_area(别用/tool)。只在 Farm/温室/姜岛。带参 op(plant 的 seed_name、till/clear 的 x/y/rows、fertilize 的 fertilizer_name、place 的 name、building 的 location、collect 的 machine_type、pond_add 的 item)→ kw={'参数名':值}。🐄动物(2026-09-02 care域并入farm): animals(摸+收) 喂水/碗(宠物水,🌧️雨天自动跳过——雨会把碗填满) milk(挤奶剪毛) buy(买动物,豁免建议) doors(关门) hay(干草) pet(猫狗) petwalk(拟人摸) 畜舍/这间(这间屋动物) statue(祈福)——⚠️farm water=浇地,动物水用 喂水; farm building=机器收放,这屋动物用 畜舍。📐参数键名: till/clear/plant/fertilize 都是 x,y(**必填**),rows,length,direction（till/plant 也可用 x1,y1,x2,y2 直接给矩形两角）；plant 另有 seed_name,layout,direct,trellis；harvest/scythe=radius；plot=x,y,radius,all_plots；chop=area(**值写几个数**：4 个数=矩形两角 / 3 个数=圆心+半径，逗号空格都认)；collect=machine_type,location；load=item,machine_type,location；building=location,item,machine_type；place=name,x,y；break=x,y,steps,radius；pond_add=item+x,y（pond_feed/collect/fish 只要 x,y）；buy=animal_type,name,building；petwalk=include_petted；hay=dry_run。⚠️direction 只认 horizontal(默认)/vertical 两个值,别写'横'/'竖'。💡大田洒水器布局(可选,纯自动化建议)：要按洒水器留格/留走道就 plan→till→plant 三件套——plan(x1,y1,x2,y2,layout=0,hoe_level=-1,trellis=False) **纯算格不动机器**先看要锄/种哪些; till(x1,y1,x2,y2,layout=0) 按布局锄; plant(x1,y1,x2,y2,seed_name,**layout**) 按布局种（layout=0 整块/1 初级十字/2 高级/3 铱；direct=True 瞬移快、默认走位拟人）。想一次说完就 `ops=\"till plant\"`（**一份 kw 共用**，锄地会自动点名忽略 seed_name）。**layout 四档**: 0=标准整块(不预留洒水器,锄法蛇形逐格走位,任何锄头等级都行) 1=初级(十字稀疏,每台覆盖上下左右4格;锄法=精确锄每台4格,**与锄头等级无关**) 2=高级(优质,田宽高先裁成**3的倍数**,每3×3中心1台覆盖8格,整块蓄力锄) 3=铱(裁成**5的倍数**,每5×5中心1台覆盖24格;⚠️爬架作物不适用)。hoe_level: 0→1格 1→3线 2→5线 3→3×3 4→6×3,-1=自动读手持。trellis=True=爬架作物(啤酒花/青豆/葡萄,不可通过格)⇒自动**种2留1**留走道让AI能进田浇收。只管种不摆洒水器就直接 plant,不用 plan 那套。⚠️已知限制: layout 0/2/3 碰上金/铱锄(hoe_level>=3)会报**0处锄地站位**并自打一行'落点未实测校准,暂不规划蓄力站位'——**那是刻意不猜不是出错**; layout 1 不吃蓄力站位不受影响。",
 "mine": "下矿域(⚒️ 矿井/头骨/火山)：go(去挖矿:mode=rush冲层/farm刷矿,start起始层,target目标层,ore,cycles圈数) progress(进度) bomb_status/bomb_plan/bomb_place/bomb_collect/bomb_ladder/bomb_retreat(单步炸,**都要 bomb_ 前缀**) bomb_mine(自动) bomb_volcano(火山) organize(整理背包)。🔁**刷矿=mode=go(mode=farm)**：定点刷指定矿→ore=Copper铜(21层)/Iron铁(41层)/Gold金(71层)；**煤靠 farm 铁层(41)顺手清尘埃精灵/蝙蝠掉**（不是 ore 选项，跑 auto 内部刷）。🏃下矿=mode=go(mode=rush,start可选≤电梯上限+5倍数,target默认120)。⚠️无镐/血低硬拦；梯子 /ladder+confirm。⚠️bomb_mine 没炸弹+host在同矿井→自动转【内部】协同(跟随host+帮忙敲矿/打怪)不撤退出矿(bomb_escort 不对外暴露、AI 不主动启用)；bomb_retreat 结束协同+停脚本+脱离矿井回门口。⚠️接「深处的危险」重置电梯→起始层动态从1起(内置脚本自动读，不暴露工具)；刷矿目标层不可直达会上报，需先冲层带回或改浅层。📐带参速查: go(mode=rush冲层/farm刷矿, start起始层, target目标层, ore=Copper铜/Iron铁/Gold金, cycles圈数, hp_threshold, food_sta, food_hp, resume) bomb_plan(radius,min_covered,top) bomb_place(x,y **必填**) bomb_collect(max_items) bomb_mine(target,bomb,min_covered,follow_host,lead,autodrop,one_floor) bomb_volcano(bomb,min_covered,hp_threshold,max_minutes,poll) organize(disable,reset)。💣bomb 三个取值 'Cherry Bomb'樱桃/'Bomb'黑/'Mega Bomb'超级——**点名的包里没有就按 黑>超级>樱桃 自动换成有的**(不会误报没炸弹)；范围 樱桃=边长7十字 / 黑=11x11方块 / 超级=15x15方块，⚠️黑和超级**会炸伤自己**(实测黑掉3血)。⚠️bomb_volcano **要求 host 已在矿/火山里**才放行(火山瓦片没法程序化换层)。⚠️bomb_mine one_floor=True=逐层模式(同步,只跑一层出摘要,不撤退)；**默认冲层模式=异步后台跑,推荐**。💡出发前占位物(恒2026-08-23)：提前放1个可堆叠物(铱矿/铱锭/五彩碎片)在包，满包时同种战利品自动堆叠吸附、少触发满包停；别拿银河之魂这类带死亡会丢的稀有物当占位。",
-"cabin": "小屋引导域(🏠 FarmHouse/Cabin/岛屋；不传=扫屋)：enum(扫**本屋**查待收) collect(收**本屋**机器;要全农场→farm collect) statue(雕像) furniture(扫家具) interact(点家具,tile_x/tile_y) pickup(拿起家具,tile_x/tile_y) cook(做饭,recipe_name) sleep(睡觉,who=谁床：不传/房主名=睡房主床一起睡,传自己名=睡自己床) cook(做饭,recipe_name,count) place/break(同scene)。📐参数键名: interact/pickup=**tile_x,tile_y(不是x,y)** cook=recipe_name,count sleep=who place=name,x,y break=x,y,steps,radius；enum/collect/statue/furniture 无参。kw={'参数名':值}。",
+"cabin": "小屋引导域(🏠 FarmHouse/Cabin/岛屋；不传=扫屋)：enum(扫**本屋**查待收) collect(收**本屋**机器;要全农场→farm collect) statue(雕像) furniture(扫家具) interact(点家具,tile_x/tile_y) pickup(拿起家具,tile_x/tile_y) cook(做饭,recipe_name) sleep(睡觉,**who=谁床必填**：传自己名=睡自己床,传别人名=睡那个人的床/一起睡；不在那栋屋会自动走过去；🏝️姜岛例外=共用小屋大通铺) cook(做饭,recipe_name,count) place/break(同scene)。📐参数键名: interact/pickup=**tile_x,tile_y(不是x,y)** cook=recipe_name,count sleep=who place=name,x,y break=x,y,steps,radius；enum/collect/statue/furniture 无参。kw={'参数名':值}。",
 "social": "社交域：chat(搭话,name=NPC名) gift(送礼,npc_name/item_name) give(送玩家物品,手持右键正式赠予,一次一个要等同意) hand(递给玩家,走过去丢他脚边,磁吸自动收,可整叠) send(发消息,message) emote(表情,name) friendship(查好感,npc_name) movie(影院,npc)。📐参数键名: chat=name / gift=npc_name+item_name / give=player_name+item_name / hand=player_name+item_name+count(0=整叠) / send=message / emote=name(默认爱心) / friendship=name / movie=npc。⚠️**give vs hand**：give=面对面正式赠予(手持右键,一次一个)——**它发的是「赠送提议」,对方点同意东西才过去**(没点会退回;回报会明说「等他点同意」,看到这句别当成已经送到)；hand=走过去丢他脚边(磁吸自动收,**可整叠**,不用对方操作)——想整叠给/对方不在手边就用 hand。kw={'参数名':值}。",
 "scene": "场景交互域(点东西/工具/转身/捡/坐)：at(tile_x,tile_y)(点指定格/柜台) interact(点面前) use(挥工具) face(转向0上1右2下3左) select(拿手上) sit(x,y[,face])(**坐椅子**:自动走到座位旁再坐,上不了会明确报错;状态条「🪑 可交互：sit(x,y)」给坐标;可选 face=坐下朝向0上1右2下3左,**只对「朝向来自坐下那刻面朝方向」的座位生效**(反编译:stool 类/opposite 长椅/名字带Stool的家具),其它写死——吃不吃由端点回的 face 字段说了算,不生效会在回报里点名) stand(**起身**:坐着时用,没坐着明确报错,带动画+轮询确认) seats(radius=12)(扫附近能坐的椅子/长凳/沙发,✋=可改朝向) pickup(拿起家具) pickup_scene(捡当前场景物) berry(摇浆果) spot(挖蚯蚓点) moss(绿雨搜苔藓) rock(室外镐击:敲当前图可破物,采石场/挖掘场/蚌矿场跳普通石,dig/dry,battle-free) garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物:一种 name+count / 多种 items=逗号分隔) decor(🪵地板/墙纸真值表:这间屋哪些格能铺+现在铺的什么,**铺前先查这**) furniture(扫家具) place(放置/播种:name=物品名,x/y=目标格→箱子/树种/蟹笼落地或种下,只放可放置物;🪵**地板/墙纸是特例**——只能点在**地板格**(地板)/**靠墙那圈墙格**(墙纸)上,点错游戏**静默不理**;点错时回报会直接告诉你「这格其实是墙不是地板」并给出能铺的格) break(拆/敲:x,y=目标格,steps=挥击次,radius=方圆→镐子敲石头/翻已耕地,跳过箱子/容器格) maze(迷宫视图r半径,gx/gy目标格→ASCII棋盘#墙.可走P自己G目标) maze_seg(走法链gx,gy目标→拆直走廊列表+拼「左/右上/下走到(x,y)」多段链,AI按段walk_to) maze_walk(走迷宫 waypoints=「x,y x,y…」依次walk_to;⚠️**它其实是通用多段走位,主门牌已挪到 `map walk_multi/闲逛`**(闲逛遛弯/绕人转圈/泳池绕圈游),此处保留旧名为兼容) pan(淘金/淘盘:本图水下闪光点→岸边走位面水→铜锅淘金收掉落) front/rummage(分别是interact/garbage的别名)。📌**坐着想起来：scene stand**（2026-09-11 起有正门，别再拿 at 猜一个够得着的格子——那条路会静静失败）。📐带参速查(键名必须=下面这些,**写错会被静默丢掉、不报错**): at(tile_x,tile_y) **⚠️是 tile_x/tile_y 不是 x/y** / pickup(tile_x,tile_y **同 at 用 tile_**) / use(name) / face(direction 0上1右2下3左) / select(name) / sit(x,y,face) / seats(radius=12) / pickup_scene(max_items=30) / moss(radius,target_max,rounds,dry_run) / rock(dig,radius,max_break,break_stone) / garbage(loc,pos,wait,dry_run) / pan(dry_run,radius,timeout) / drop(name,count,items=多种一起丢) / place(name,x,y) / decor(无参) / break(x,y,steps,radius) / maze(radius,gx,gy) / maze_seg(gx,gy,radius) / maze_walk(waypoints,location,max_wait,max_seg)。kw={'参数名':值}。",
 "menu": "菜单/界面域(开→看→点)：read(看菜单) advance(推进剧情/对话,一句句) **skip(整段跳过剧情/事件,事件 skippable=true 才跳得动)** click(option/item/button/xy 点;action=claim领/action=discard丢桶腾格;slot=序号领指定格) key(ok/esc/数字按键) cancel(关弹窗/撤就绪) shop(逛店) sell(卖商店) bin(投出货箱) craft(合成) recipes(菜谱) craftables(配方) forge(锻造) geode/geodes(砸晶球) customize(捏人) bundle(献祭缺口·**只读存档不走路**) bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读消耗品:书/秘密纸条/日记残页,统一走右键读 name=物品名) levelup_choose(技能升级职业选择 5/10级:不带参读左右选项,side=left/right 或 profession=职业id 定分支;普通升级自会确认OK) number(数量输入:展览会兑换台/转盘押注 NumberSelectionMenu) minigame(赌场小游戏点按钮 action=hit/stand/bet10/…) minigame_state(读牌面/转盘) display_fill(农展台放满 items='钻石,山羊奶酪') display_takeback(收好) journal(开任务日志→menu read 读卡,翻页=click(button=forward/back),领奖励=click(button=rewardBox)) know(查特别订单详情/知识库SPECIAL_ORDERS,如menu know 岛屿食材;2026-09-02 task域退役并入menu)。📐参数键名: click=option,button,x,y,item,right,quantity,action,real,slot,category(**action=claim领 / discard丢桶腾格**;button 用按钮名 ok/upperRightCloseButton/forward/back/rewardBox/mainButton) / key=key,count,hold / number=value,confirm / shop=place,want / sell=name,count(-1=全卖) / bin=name,sell_all / craft=item_name,count / forge=item1,item2,mode,target / geodes=count / customize=name,farmname,favorite / bundle=area / bundle_kb=query / read_book=name / levelup_choose=side,profession(**不带参=只读当前左右选项**,供配 check(what=profile) 分析后再决定) / minigame=action,x,y / display_fill=items。⚠️cook(做饭)**不在 menu 在 cabin**。🚫满包接鱼/领箱:原 claim_swap(替换领取)已退役→**click action=discard 丢桶腾格(回收返金)+action=claim 领取(或用 slot 领指定格;不想要直接 button=ok 关掉)**。🧾关闭菜单一律 click(button=upperRightCloseButton)（ItemGrabMenu/交付容器用 button=ok 确认才关）；订单交付容器(QuestContainerMenu)=点背包对应物品格(见slots的坐标)→放进→点 button=ok 结算；任务日志领钱=点击已完成的有钱任务卡后 click(button=rewardBox)；兑奖机兑换=click(button=mainButton)；特别订单领奖链=日志领钱(上面)→社区板旁领奖箱(60,93)拿兑奖券→刘易斯家兑奖机(mainButton)兑换。",
 "storage": "箱子域：view(看箱,box=N看单箱全清单) store(存:what/items限定存哪些,名可带xN数量只存那N份,留空=归位只存已有同类堆,target指定箱/all=True全存腾空间) take(取:x,y+name单箱 或 items批量) find(模糊查哪箱有某物) default(设/清默认箱 clear=清) tag(改名,可带color改色)。📐参数键名(view=box / store=what,items,target,keepTools默认True,all / take=items 或 x+y+name+count默认999 / find=name / default=x,y,clear / tag=tag,target**必填**,color)。🤖存取统一走位：store/take都会先走到相关箱旁(批量只走到第一个),不区分拟人/原子,别靠编号逐箱翻。⭐每个箱子前自动带【类目标签】(内容过半归类):矿/古物/鱼/种子/作物/农产/建材/料理/装备——AI按标签定位箱,找东西用find。⚠️改色别染纯#000000(=默认木纹,识别成未染色);要黑箱用暗灰#303030。",
-"daily": "过日子域：sleep(睡觉) eat(吃食物回血体力,name/item_name) wear(穿/脱衣物,name/slot/hand) lie_bed(躺床不过夜) settle(确认过夜结算) heartbeat(心跳间隔,minutes) pause(后台不暂停,out_of_focus) peek(看恒干嘛) whiteboard(写白板,content) wb_read/wb_pin/wb_clear。📐参数键名: sleep/lie_bed=who eat=name,item_name wear=name,slot,hand(**hand 仅戒指**:1/left 或 2/right,或传「要换掉的那枚戒指名」自动找手) heartbeat=minutes pause=out_of_focus whiteboard/wb_pin=content appearance=hair,hair_color,skin,shirt,pants,hat,acc,eye_color,pants_color；settle/peek/wb_read/wb_clear 无参。kw={'参数名':值}。📌sleep/lie_bed 的 who **必填**（名字随存档变，现读现传）：传自己名字=睡自己床；传别人名字=睡那个人的床(一起睡+🌹彩蛋)。⚠️名字写错会报错并列出可选名(不会默默睡成别人的床)。**传对名字就不用先回家**——不在那栋屋会自动走过去(map_go跨图→门口→推门→床边，全程走)。lie_bed 只躺不睡，想离开随时 walk_to 走离床格即可。⚠️睡别人床/协作前先 check(what=\"role\") 确认端口↔角色（端口按启动顺序分配，重启可能翻转，认错角色=挪了恒的人）。",
+"daily": "过日子域：sleep(睡觉) eat(吃食物回血体力,name/item_name) wear(穿/脱衣物,name/slot/hand) lie_bed(躺床不过夜) settle(确认过夜结算) heartbeat(心跳间隔,minutes) pause(后台不暂停,out_of_focus) peek(看恒干嘛) whiteboard(写白板,content) wb_read/wb_pin/wb_clear。📐参数键名: sleep/lie_bed=who eat=name,item_name wear=name,slot,hand(**hand 仅戒指**:1/left 或 2/right,或传「要换掉的那枚戒指名」自动找手) heartbeat=minutes pause=out_of_focus whiteboard/wb_pin=content appearance=hair,hair_color,skin,shirt,pants,hat,acc,eye_color,pants_color；settle/peek/wb_read/wb_clear 无参。kw={'参数名':值}。📌sleep/lie_bed 的 who **必填**（名字随存档变，现读现传）：传自己名字=睡自己床；传别人名字=睡那个人的床(一起睡+🌹彩蛋)。⚠️名字写错会报错并列出可选名(不会默默睡成别人的床)。**传对名字就不用先回家**——不在那栋屋会自动走过去(map_go跨图→门口→推门→床边，全程走)。lie_bed 只躺不睡，想离开随时 walk_to 走离床格即可。🏝️**在姜岛是另一套**：岛上共用一间小屋(大通铺)，没有「谁的床」——who 传**正躺在床上的别人**=挤他那张(姜岛版爬床彩蛋)；否则(传自己/那人还没躺)=随便挑一张空床安静睡。⚠️睡别人床/协作前先 check(what=\"role\") 确认端口↔角色（端口按启动顺序分配，重启可能翻转，认错角色=挪了恒的人）。",
 "map": "导航域(🗺️跨图唯一入口)：lookup(查地点功能+出口) query(功能反查) go(走到目标/多段寻路+交通) walk(走到POI **或给x,y走同图坐标**) walk_multi(多段走位:喂一串坐标依次走) npc(找NPC) warp_safe(紧急逃脱)。⚠️出口走出口前一格；交通图腾柱>矿车>走路。📐参数全放kw对象(**别拼进ops串**,键名: go=destination地点名/POI 或 npc=NPC名(二选一)、walk=poi_name 或 x+y(二选一,坐标=只走同图;跨图用go)、walk_multi=waypoints(\"x,y x,y …\"空格/分号分隔),location,max_wait,max_seg、npc=name、lookup=location、query=function、warp_safe 无参)。⚠️walk 到 POI 会**自动应用结构化站位+朝向**(水池朝右/柜台朝上),但交互仍要 AI 自己 scene at/interact 触发。🫧walk_multi 别名 **闲逛/多段走**（旧名 festival/scene 的 maze_walk/走迷宫 仍可用）：正事=万灵节迷宫按段走；**活人感**=闲逛遛弯·绕着人转圈示好·浴场泳池绕圈游。",
 "festival": "节日域(🎪)：today(今天节日) next(下一个) go(去) info(实况) interact(互动) answer(应答) shop(节日商店) eggs(找蛋) egg_note(纸条) egg_run(捡蛋) dance(跳舞邀请) strength(力量测试 delay=毫秒) ice_fish(冰雪节冰钓自动化) help(玩法) prep(备战) poi(限定点) maze(迷宫坐标奇偶年) maze_walk(走迷宫 waypoints=「x,y x,y…」依次walk_to;⚠️**通用多段走位已搬到 `map walk_multi/闲逛`**,此处保留旧名兼容) strength(力量测试,delay=毫秒) display_fill/display_takeback(农展台放满/收好)。📐参数键名: interact=name answer=answer egg_run/egg_note=route dance=target strength=delay maze_walk=waypoints,location,max_wait,max_seg display_fill=items；today/next/go/info/shop/eggs/help/prep/poi/maze/ice_fish/display_takeback 无参。",
 "fish": "钓鱼域(🎣 2026-08-22修复)：go(去钓 location=) info(查某地鱼) spots(钓点) bobber(浮漂样式) rod(鱼竿:看/上饵钓具 item=名) crab(蟹笼总览) crab_water(找水) crab_place(放笼) crab_bait(放饵) crab_collect(收笼) crab_diag(诊断笼/定位挂饵) crab_retract(回收笼/清搁浅 location=可选)。⚠️**crab_bait/crab_collect/crab_retract 不带坐标 = 处理「当前图**全部**」的笼**(不是附近几个;一天真机在海滩 32 只被一次收光)——只想动一只就传 x+y。📐参数键名: go=location(None=**就地钓**,须自己已站到水边;指定 Beach/Mountain/Forest/Town=先 map_go 走真实路径到校准钓点再钓,不是warp),max_casts(0=不限),no_sleep(True) / info=location / bobber=style(默认dice) / rod=action+item / crab_place=count+radius+bait / crab_bait=bait / crab_water=radius / crab_diag=location / crab_retract=x+y+location。⚠️鱼塘在 farm 域不在 fish。带参 op(go 的 location、rod 的 item、crab 的 count)→ kw={'参数名':值}。🧬**挂饵前先 check(what=\"profile\")**：若是 Luremaster(职业11) 蟹笼免饵，crab_bait/crab_place 挂饵是空操作，别浪费。",
@@ -13582,7 +13828,7 @@ def gift_npc(npc_name: str, item_name: str) -> str:
     """
     try:
         # 0. 找到 NPC → 同图走位；跨图先 map_go 过去再走（镜像 chat_npc，全图可做）
-        fr = api._get("/find_npc", {"name": npc_name})
+        fr = api.find_npc(npc_name)
         if fr.get("npcs"):
             n = fr["npcs"][0]
             nloc = n.get("location")
@@ -13591,7 +13837,7 @@ def gift_npc(npc_name: str, item_name: str) -> str:
                 go = map_go(nloc)
                 if "✅ 到达" not in go and "已经在" not in go:
                     return f"❌ 到不了「{nname}」所在的 {nloc}：\n{go[:300]}"
-                fr2 = api._get("/find_npc", {"name": npc_name})   # 人可能移动了，重查一次走位
+                fr2 = api.find_npc(npc_name)   # 人可能移动了，重查一次走位
                 if fr2.get("npcs"):
                     n = fr2["npcs"][0]
             api.walk_natural(int(n.get("x", 0)), int(n.get("y", 0)) + 1)
@@ -16072,6 +16318,7 @@ def script(ops: str = "", kw: dict | None = None) -> str:
 # ═══════════════════════════════════════════
 
 _PLAN_TICK = 10              # 调度器轮询间隔（秒）（存档：仅供兜底 loop 用）
+_AUTOPILOT_FAST = 2          # 🕐 姜岛挤床快线周期（秒）——窗口只有几秒，必须比 _PLAN_TICK 密（见 _autopilot_loop）
 _PLAN_TIME_MARGIN = 30       # 任务 until 前多少游戏分钟还够跑？（存档）
 _plan_data = plan_engine.new_plan()   # 存档：计划数据（state 恒 idle，不参与执行）
 _plan_lock = _threading.Lock()
@@ -16636,6 +16883,32 @@ def _waiting_day_tick():
         pass
 
 
+def _already_sleeping(s: dict) -> bool:
+    """😴 我方**真的已经在睡**了吗（凌晨兜底据此决定"别再折腾人"）。判据=`/state.player.sleepReady.ready`。
+
+    ⚠️ 2026-09-19 恒：「兜底反复触发……能不能检测到**入睡成功**就不用兜底重睡了？」
+       —— 这段原来写着"**已在床**→不打扰"，实现却是判 `isInBed`（"脚踩床格"，`Farmer.cs:7553`）。
+       于是人明明已经躺好（就绪屏没弹 or 被撤掉时），到点照样把整条流程再跑一遍：
+       warp 进小屋 → 上床 → 20s → 起身出屋刷新 → 再上床……把人从床上反复折腾下来。
+
+    ✅ **2026-09-19 根治（本批）**：改用 C# `ReadSleepReady()` =
+       `ReadySynchronizer` 里 "sleep" 那条 check 的**本地 `State`**——
+       "这个人**真的按过床、就绪已上报**"，正好是旧 `isInBed` 想表达却表达不了的那层：
+         · 躺好但 ready 被撤/没弹 → `ready=false` ⇒ **兜底照跑**（夜本来就过不了，人就该被捞起来）；
+         · 站在床边发呆（isInBed 可能为真）→ `ready=false` ⇒ 兜底照跑 ✅（旧判据会**误跳过**）；
+         · 真躺好 + 已就绪（在等恒）→ `ready=true` ⇒ 跳过 ✅。
+       ⇒ 旧代码那个"真躺好(B) / 站着发呆(C) 分不清"的问题**自然消失**（不再需要拿"人在床格"当证据）。
+
+    ⚠️ 兼容窗口：老 DLL 没有 `sleepReady` 字段（`state` 缺失）→ 退回旧 `isInBed` 判据。
+       这是**临时**的（DLL 一部署就走上面那条）；别把它当长期分支留着。
+    """
+    p = s.get("player") or {}
+    sr = p.get("sleepReady") or {}
+    if "state" in sr:          # 新 DLL：字段在 → 只认它（别再掺 isInBed，那会退回旧病）
+        return bool(sr.get("ready"))
+    return bool(p.get("isInBed"))   # 老 DLL：维持原行为
+
+
 def _fallback_tick():
     """🌙 兜底：凌晨到点自动 go_sleep（覆盖所有行为，最高优先）。
     ⚠️ 2026-08-16 修：爬床失败后加冷却（_FALLBACK_FAIL_COOLDOWN 秒内不重试）——
@@ -16651,6 +16924,12 @@ def _fallback_tick():
     tod = (s.get("time", {}) or {}).get("timeOfDay")
     if not isinstance(tod, int):
         return
+    # 🏝️ 姜岛"互相挤床"：**必须排在下面那个凌晨时间窗早退之前**——它跟几点无关，
+    #    要等的是"房主后睡钻进来"，那一晚可能很早就躺好了。复用这里已取到的 `s`，不多打 HTTP。
+    try:
+        _island_squeeze_tick(s)
+    except Exception:
+        pass
     limit = int(_sleep_cfg.get("time", 2500))
     if not (limit <= tod < 2600):
         return
@@ -16659,24 +16938,8 @@ def _fallback_tick():
     now = time.time()
     if _fallback_last_fail_ts and now - _fallback_last_fail_ts < _FALLBACK_FAIL_COOLDOWN:
         return
-    # 已在床/有菜单/剧情/对话框 → 不打扰（避免重爬破坏 ready 同步）
-    # ⚠️ 2026-09-19 恒：「兜底反复触发……能不能检测到**入睡成功**就不用兜底重睡了？」
-    #    —— 这行注释一直写着"**已在床**→不打扰"，但实现里**根本没判 isInBed**，只判了菜单/剧情。
-    #    于是人明明已经躺好（就绪屏没弹 or 被撤掉时），到点照样把整条流程再跑一遍：
-    #    warp 进小屋 → 上床 → 20s → 起身出屋刷新 → 再上床……把人从床上反复折腾下来。
-    #    ⇒ 补上这条（判据用 /state 的 player.isInBed，和"等睡注入"用的同一个字段）。
-    # ⚠️⚠️ 2026-09-19 **已知残留（未修，等恒拍板）**：`isInBed` 是"脚踩床格"（`Farmer.cs:7553`），
-    #   **清早刚起床那一秒就成立**（详见 CHANGELOG (76)⑩）。它在这里会和下面那句 `if am` 叠成：
-    #     · 有就绪屏 → 被 `if am` 拦掉（这条 `isInBed` 压根没参与）；
-    #     · **没**就绪屏 + 人在床格 → 被这条 `isInBed` 拦掉。
-    #   ⇒ **这条实际只在"没就绪屏"时才起效**，而"没就绪屏"有两种截然不同的成因：
-    #     (B) 真躺好但 ready 被撤/没弹 → **跳过是错的**（夜过不了，人还白躺一晚）；
-    #     (C) 只是站在床边发呆 → 跳过是对的。
-    #   现有数据**分不出 B 和 C**（都想把"人在床格"当证据）。
-    #   ⚠️ 所以**别顺手把它改成 `readyCheck.name`** —— 那会变成死代码（`if am` 已覆盖），
-    #      等于把 2026-09-19 那次"防反复重睡"整个撤掉。真要修得先补一个"我方已登记睡觉就绪"
-    #      的信号（游戏侧 `Game1.netReady.IsReady("sleep")` / `timeWentToBed`,目前都没暴露）。
-    if (s.get("player") or {}).get("isInBed"):
+    # 已登记睡觉就绪 → 不打扰（避免重爬破坏 ready 同步）。判据见 `_already_sleeping()`。
+    if _already_sleeping(s):
         return
     am = s.get("activeMenu")
     if am or s.get("activeEvent") or s.get("in_dialogue"):
@@ -16734,12 +16997,22 @@ def _autopilot_tick():
 
 
 def _autopilot_loop():
+    # ⚠️ **不是**每 `_PLAN_TICK` 秒才醒一次：姜岛"房主后睡"那个彩蛋的窗口只有**几秒**
+    #    （房主钻进被窝 → 双方就绪 → 游戏翻页），10s 采样会整段漏掉
+    #    —— 2026-09-19 真机第一晚就是这么漏的（聊天里只有游戏自己那两句，彩蛋一声没响）。
+    #    拆两层：**每 2s** 一条轻量快线（只做姜岛挤床，`maybe` 闸门挡住平时空转），
+    #    **每 `_PLAN_TICK`** 秒才跑一次完整的 🌙 兜底睡觉。
+    last_full = 0.0
     while True:
-        try:
-            _autopilot_tick()
-        except Exception:
-            pass
-        time.sleep(_PLAN_TICK)
+        _island_squeeze_fast()
+        now = time.time()
+        if now - last_full >= _PLAN_TICK:
+            last_full = now
+            try:
+                _autopilot_tick()
+            except Exception:
+                pass
+        time.sleep(_AUTOPILOT_FAST)
 
 
 # ═══════════════════════════════════════════

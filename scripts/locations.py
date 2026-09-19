@@ -868,7 +868,10 @@ MAP_LINKS = {
     "Tunnel": [{"tile": (39, 9), "target": "Backwoods", "kind": "warp", "arrive": (23, 30), "note": "隧道出口站格(39,9)→/warp 深山(23,30)；原出口(40,9) x=40 在宽度40边界外；齐先生电池箱 TunnelSafe(17,6) 在里头"},{"tile": None, "target": "Backwoods", "kind": "warp", "note": "隧道→深山(兜底)"}],
     "Tent": [{"tile": None, "target": "Mountain", "kind": "warp", "note": "帐篷→山"}],
     "LeoTreeHouse": [{"tile": (3, 8), "target": "Mountain", "kind": "warp", "arrive": (16, 8), "note": "🌳 雷欧树屋出口→山(16,8)：树屋仅7x9(0..6,0..8)，/warps报(3,9)越界，站(3,8)边格warp（2026-09-06实测；门单向，进=interact<16,7> 出=warp站边格）"}],
-    "IslandFarmHouse": [{"tile": None, "target": "IslandWest", "kind": "warp", "note": "姜岛小屋门口→姜岛农场"}],
+    # 🏝️ 出口格 (14,18) —— 2026-09-19 由 `/warps` 补（原来 tile=None ⇒ 走出去只能靠兜底 warp 硬瞬移）：
+    #    `IslandFarmHouse(14,18) → IslandWest(77,40)`，与入口 `IslandWest(77,39) → IslandFarmHouse(14,17)`
+    #    互为反演（出去落在门口站格 (77,40)、进来落在屋内 (14,17)），两边互相印证。
+    "IslandFarmHouse": [{"tile": (14, 18), "target": "IslandWest", "kind": "warp", "note": "姜岛小屋门口→姜岛农场(77,40)（/warps实测）"}],
     "QiNutRoom": [{"tile": None, "target": "IslandWest", "kind": "warp", "note": "核桃房门口→姜岛农场"}],
     "IslandFieldOffice": [{"tile": None, "target": "IslandNorth", "kind": "warp", "note": "办事处门口→火山入口区（2026-08-15补）"}],
     "IslandHut": [{"tile": None, "target": "IslandEast", "kind": "warp", "note": "雷欧小屋门口→丛林（2026-08-15补）"}],
@@ -1127,6 +1130,18 @@ BUILDING_DOORS = {
     #    门格：女 (2,3) / 男 (7,3)，都是站大厅 y=4 面朝上(0) 推。性别不符→checkAction 弹 DialogueBox → 报"门锁着"不硬闯。
     "BathHouse_WomensLocker": ("BathHouse_Entry", (2, 3)),
     "BathHouse_MensLocker":   ("BathHouse_Entry", (7, 3)),
+    # 🏝️ 姜岛小屋（2026-09-19 补，恒真机逮到"没推门就 warp 硬进"）：**此前这张表没有它**
+    #    ⇒ `_enter_building_door` 拿不到门格 → 直接 False → 走兜底 warp 硬闯进屋
+    #    （真机日志「⚠️推门没成 → 兜底warp 硬进」）。
+    #    门格来源=**问游戏**（`/tile_props?scan=Action&location=IslandWest`）：
+    #      `IslandWest(77,39) = Warp 14 17 IslandFarmHouse`
+    #    ⇒ 它**不是"门"、是个 warp 瓦片**（踩上去就传，不用 interact）——
+    #      `_enter_building_door` 走位到门格那一步就已经触发传送，函数里"若走位已触发进门就提前返回"正好接住。
+    #    ✅ 第二重印证（恒 2026-09-19 真机配合）：他站在 `IslandWest(77,40)` **面朝上(0)** 正对门
+    #      ⇒ (77,40)=**站位格**、(77,39)=**触发格**，与上面扫描一致。
+    #    ⚠️ `MAP_LINKS["IslandWest"]` 里记的 (77,40) 是**站位/出口落点**，**不是**触发格——
+    #      两张表用途不同（那边=先走到门口一带，这边=最后踩哪一格），别互相抄（09-17 差 1 行就是这么来的）。
+    "IslandFarmHouse": ("IslandWest", (77, 39)),
     "Tunnel":          ("Backwoods",(22, 31)),
     "MermaidHouse":    ("BeachNightMarket", (58, 32)),   # 🎇 美人鱼船门（节日限定冬15-17）
     "Submarine":       ("BeachNightMarket", (5, 35)),    # 🎇 钓鱼潜艇门（节日限定冬15-17）

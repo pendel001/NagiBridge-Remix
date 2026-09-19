@@ -4266,7 +4266,12 @@ public class ModEntry : Mod
                         && !(n is Pet) && !(n is Horse) && !(n is Junimo) && !(n is Child))
             .Select(n => new
             {
-                name = n.Name,
+                name = n.Name,                    // 内部英文名（Krobus）——用于 /find_npc 之类的内部查询
+                // 🙋 2026-09-19 恒：心跳报"在跟**某人**搭话"没名字，要求按面朝格认人。
+                //    显示名一律走 `getName()`（**displayName 优先 ⇒ 中文"科罗布斯"**），
+                //    与说话人那条链（`Dialogue.speaker.getName()`）用的是同一套，别再单开一个源。
+                //    没有这一行时 Python 只能拿内部英文名，或每次去 `/find_npc` 现换（多一枪 HTTP）。
+                displayName = n.getName(),
                 x = n.TilePoint.X,
                 y = n.TilePoint.Y
             }).ToList();
@@ -4514,6 +4519,12 @@ public class ModEntry : Mod
                 isMoving = _pathQueue != null && _pathQueue.Count > 0,
                 stationarySeconds = (int)_stationarySeconds,
                 isInBed = farmer.isInBed.Value,   // 🧾 等睡/纯聊天环节检测用（2026-08-17 恒）
+                // 🆕 2026-09-19：**"真的登记了睡觉就绪吗"**——`isInBed` 只是"脚踩床格"（清早刚醒就成立、
+                //    白天路过床格也成立），分不出「要睡」和「站在床边发呆」。这个字段才是那层语义：
+                //    `ready=true` ⇒ 这个人**按过床/爬了床、就绪已上报**。等睡检测、凌晨兜底、姜岛"挤不挤床"
+                //    全用它；读**对方**睡没睡就读**对方端口**的 /state（State 是"本机玩家"的）。
+                //    详见 ReadSleepReady() 的 docstring。
+                sleepReady = ReadSleepReady(),
                 festivalScore = farmer.festivalScore,   // 🥚 蛋蛋节捡蛋进度（festival eggrun 用，2026-08-17）
                 voucherPending = Game1.player.stats.Get("specialOrderPrizeTickets"),   // 🎟️ 特别订单领奖箱**待领券数**（>0=有气泡可拿，2026-08-29 恒反编译 GameLocation "SpecialOrdersPrizeTickets"）
                 prizeTickets = farmer.Items.CountId("PrizeTicket"),   // 🎟️ 手头兑奖券数量（兑奖机 mainButton 兑换用）
@@ -4864,34 +4875,51 @@ public class ModEntry : Mod
         var results = new List<Dictionary<string, object?>>();
         if (name.Length > 0)
         {
-            foreach (var loc in Game1.locations)
+            // ⚠️ **必须**走 `Utility.ForEachLocation`，**不能** `foreach (var loc in Game1.locations)`：
+            //    `Game1.locations` 只有**顶层地图**，而**农场建筑的室内**（cabin / barn / coop / shed）
+            //    是懒创建、挂在 `building.indoors.Value` 上的 **instanced interior**，
+            //    压根不在 `Game1.locations` 里（`Utility.cs:348` 的游戏原版写法会再走一遍
+            //    `ForEachInstancedInterior`）。
+            //    漏掉它的后果非常具体：**和离线玩家结婚、搬进对方 cabin 的村民一个都查不到**
+            //    —— 2026-09-19 真机就是：阿比盖尔/艾米丽/海莉（全是结婚候补）在房主端全图查无此人。
+            //    城镇那些 SeedShop/ScienceHouse 能查到，是因为它们是**静态地点**、本来就在顶层，
+            //    所以这个洞一直很隐蔽。
+            //    `includeGenerated: true` 再补上 `MineShaft.activeMines` / `VolcanoDungeon.activeLevels`
+            //    （矿井/火山当前层同样是"不在顶层"的地点）。
+            Utility.ForEachLocation(loc =>
             {
-                if (loc?.characters == null) continue;
-                foreach (var n in loc.characters)
+                if (loc?.characters != null)
                 {
-                    var en = n.Name ?? "";
-                    var zh = n.displayName ?? "";
-                    bool hit = en.Equals(name, StringComparison.OrdinalIgnoreCase)
-                        || zh.Equals(name)
-                        || en.Contains(name, StringComparison.OrdinalIgnoreCase)
-                        || zh.Contains(name);
-                    if (!hit) continue;
-                    results.Add(new Dictionary<string, object?>
+                    foreach (var n in loc.characters)
                     {
-                        ["name"] = en,
-                        ["displayName"] = zh,
-                        ["location"] = loc.Name,
-                        ["x"] = n.TilePoint.X,
-                        ["y"] = n.TilePoint.Y,
-                        ["facing"] = n.FacingDirection,
-                        ["isSleeping"] = n.isSleeping.Value,
-                        ["isVillager"] = n is NPC && !(n is StardewValley.Monsters.Monster),
-                        ["dialogue"] = n.CurrentDialogue?.Count > 0
-                            ? n.CurrentDialogue.Peek()?.getCurrentDialogue()?.Trim()
-                            : null
-                    });
+                        var en = n.Name ?? "";
+                        var zh = n.displayName ?? "";
+                        bool hit = en.Equals(name, StringComparison.OrdinalIgnoreCase)
+                            || zh.Equals(name)
+                            || en.Contains(name, StringComparison.OrdinalIgnoreCase)
+                            || zh.Contains(name);
+                        if (!hit) continue;
+                        results.Add(new Dictionary<string, object?>
+                        {
+                            ["name"] = en,
+                            ["displayName"] = zh,
+                            ["location"] = loc.Name,
+                            // ⚠️ cabin 的 `Name` 全都叫 "Cabin"（三间一模一样的名字），
+                            //    要去那儿找人就非 `uniqueName`（Cabin<guid>）不可 —— 顺手带上。
+                            ["locUnique"] = loc.NameOrUniqueName,
+                            ["x"] = n.TilePoint.X,
+                            ["y"] = n.TilePoint.Y,
+                            ["facing"] = n.FacingDirection,
+                            ["isSleeping"] = n.isSleeping.Value,
+                            ["isVillager"] = n is NPC && !(n is StardewValley.Monsters.Monster),
+                            ["dialogue"] = n.CurrentDialogue?.Count > 0
+                                ? n.CurrentDialogue.Peek()?.getCurrentDialogue()?.Trim()
+                                : null
+                        });
+                    }
                 }
-            }
+                return true;   // ⚠️ 返回 false 会**中止整个遍历**（不是"跳过这个"），必须恒 true
+            }, includeInteriors: true, includeGenerated: true);
         }
         return new { ok = true, name, count = results.Count, npcs = results };
     }
@@ -7435,6 +7463,57 @@ public class ModEntry : Mod
                         bedLoc = FindPlayerBed(f).locName
                     }).ToList();
 
+                // 🏝️ action="beds"：列出**当前场景**所有床 + 每张床"哪几格踩上去 isInBed 成立" + 谁躺在上头。
+                //    2026-09-19 恒（姜岛）：姜岛小屋是**大通铺**——`IslandFarmHouse.InitializeBeds()` 按人数
+                //    铺 1~N 张床，**没有任何"谁归哪张床"的绑定**（该函数里逐个 Add，从不记归属）。
+                //    ⇒ 大陆那套"找某人的床"(FindPlayerBed)在岛上**根本没有对应物**，只能反过来：
+                //      ① 想跟谁挤 → 用**他此刻躺的格子**当目标（人就是床的坐标，见下面 sleeper 字段）；
+                //      ② 别人没躺 / 睡自己 → 从床表里挑一张空床。
+                //    ⚠️ 床格坐标一律**问游戏**（`doesTileHaveProperty(...,"Bed","Back")` = `isInBed` 内部那一句），
+                //      不按宽高推算——单人床/双人床/上铺各代间距不同，写死宽高必错。
+                if (action == "beds")
+                {
+                    var here = Game1.player.currentLocation;
+                    var mates = Game1.getAllFarmers()
+                        .Where(f => f.isActive() && f.currentLocation == here).ToList();
+                    var bedList = new List<object>();
+                    foreach (var bed in here.furniture.OfType<StardewValley.Objects.BedFurniture>())
+                    {
+                        if (IsChildBed(bed)) continue;   // 儿童床不可睡（同 FindPlayerBed 的口径）
+                        var tiles = BedSleepTiles(here, bed);
+                        string? sleeper = null;
+                        foreach (var f in mates)
+                        {
+                            if (tiles.Any(t => t.Item1 == f.TilePoint.X && t.Item2 == f.TilePoint.Y))
+                            { sleeper = f.Name; break; }
+                        }
+                        var spot = bed.GetBedSpot();
+                        bedList.Add(new
+                        {
+                            x = (int)bed.TileLocation.X, y = (int)bed.TileLocation.Y,
+                            spotX = spot.X, spotY = spot.Y,      // 游戏自己会让躺下的人落在这一格（ShiftPositionForBed）
+                            tiles = tiles.Select(t => new[] { t.Item1, t.Item2 }).ToList(),
+                            sleeper                               // 谁躺在这张床上（null=空床）
+                        });
+                    }
+                    tcs.SetResult(new
+                    {
+                        ok = true, action = "beds",
+                        loc = here.NameOrUniqueName,
+                        // ⚠️ 按名字判而不是按类型 `is IslandFarmHouse`——少一处对游戏类型名的硬依赖
+                        //   （地图唯一名就是 "IslandFarmHouse"，`locations.py` 里也是这么写的）。
+                        isIsland = here.NameOrUniqueName == "IslandFarmHouse" || here.Name == "IslandFarmHouse",
+                        beds = bedList,
+                        me = new { name = Game1.player.Name, x = Game1.player.TilePoint.X, y = Game1.player.TilePoint.Y },
+                        here = mates.Select(f => new
+                        {
+                            name = f.Name, x = f.TilePoint.X, y = f.TilePoint.Y,
+                            inBed = f.isInBed.Value, isMain = f.IsMainPlayer
+                        }).ToList()
+                    });
+                    return;
+                }
+
                 // 解析目标玩家：默认房主(小恒)，或按 player 名字指定（如 DS 自己的名字 → 睡自己小屋的床）。
                 // ⚠️ 2026-09-19 恒：名字**必须校验**——原实现 `if (found != null) targetPlayer = found;`
                 //    查无此人时**不报错**、静默保持默认(=房主) ⇒ `sleep who=打错的名字` 实为爬房主的床，
@@ -7465,6 +7544,19 @@ public class ModEntry : Mod
                 //   不再只支持"睡自家"。自己=小屋（按 indoors 匹配）/ 房主=Farmhouse（按建筑类型匹配），
                 //   两条分支都在 FindHomeDoor 里，动态定位、不写死坐标。
                 var homeDoor = FindHomeDoor(targetPlayer);
+
+                // 🏝️ 显式床坐标覆盖（2026-09-19，姜岛大通铺专用）：传了 bed_x/bed_y 就**不听 FindPlayerBed**
+                //    —— 那两个值来自同一个进程刚回过的 `action="beds"`（床表里的 `x`/`y`，即家具 TileLocation）。
+                //    ⚠️ 只在**当前场景**里认（姜岛的床没有"谁的"这一说；跨图那张床是另一回事，
+                //      调用方先 map_go 进屋再传，见 Python 侧 `_island_plan`）。
+                var bedOvX = GetParamOr(p, "bed_x", int.MinValue);
+                var bedOvY = GetParamOr(p, "bed_y", int.MinValue);
+                if (bedOvX != int.MinValue && bedOvY != int.MinValue)
+                {
+                    bedLoc = Game1.player.currentLocation?.NameOrUniqueName ?? bedLoc;
+                    bedX = bedOvX;
+                    bedY = bedOvY;
+                }
 
                 if (action == "locate")
                 {
@@ -7526,9 +7618,14 @@ public class ModEntry : Mod
                     farmer.isInBed.Value = true;
                 }
                 farmer.sleptInTemporaryBed.Value = false;
-                if (targetPlayer != farmer)
+                // 广播文案：`msg` 给了就用它（姜岛那套彩蛋文案在 Python 侧，跟其它文游文案放一起）；
+                // `quiet=true` 则一句都不发（姜岛大通铺"随便找张床睡"不是彩蛋，见 Python `_island_plan`）。
+                // 都没有 → 老行为：只有**爬别人的床**才提示，睡自己家不吭声。
+                var crawlMsg = GetParamOr(p, "msg", "");
+                if (!GetParamOr(p, "quiet", false))
                 {
-                    Broadcast($"<{aiName}>爬上了<{masterName}>的床！");
+                    if (!string.IsNullOrEmpty(crawlMsg)) Broadcast(crawlMsg);
+                    else if (targetPlayer != farmer) Broadcast($"<{aiName}>爬上了<{masterName}>的床！");
                 }
 
                 tcs.SetResult(new
@@ -7567,6 +7664,33 @@ public class ModEntry : Mod
         {
             return false;
         }
+    }
+
+    /// <summary>
+    /// 一张床的"踩上去 `isInBed` 就成立"的格子集合。
+    ///
+    /// ⚠️ **判据直接问游戏，不按宽高推算**：`Farmer.cs:7553` 里
+    ///   `isInBed = currentLocation.doesTileHaveProperty(TilePoint.X, TilePoint.Y, "Bed", "Back") != null`，
+    ///   而 `GameLocation.doesTileHaveProperty` 会遍历家具调 `BedFurniture.DoesTileHaveProperty`
+    ///   （`GameLocation.cs:13169` → `BedFurniture.cs:494`），后者判的是
+    ///   `y == tileLocation.Y + 1 && x ∈ [tileLocation.X, tileLocation.X + getTilesWide())`。
+    ///   这里就调**同一句**去扫，游戏说哪格是床格就是哪格 —— 单人床/双人床/上铺的宽高差异
+    ///   全由 `getTilesWide()`（`boundingBox.Width / 64`）自己决定，不在这边猜。
+    /// 扫描范围取 (X-1 .. X+2) × (Y .. Y+3)：够覆盖已知所有床型，又不会扫到隔壁家具。
+    /// </summary>
+    private static List<(int, int)> BedSleepTiles(GameLocation loc, StardewValley.Objects.BedFurniture bed)
+    {
+        var outp = new List<(int, int)>();
+        try
+        {
+            int bx = (int)bed.TileLocation.X, by = (int)bed.TileLocation.Y;
+            for (int x = bx - 1; x <= bx + 2; x++)
+                for (int y = by; y <= by + 3; y++)
+                    if (loc.doesTileHaveProperty(x, y, "Bed", "Back") != null)
+                        outp.Add((x, y));
+        }
+        catch { /* 版本兼容：扫不到就返回空表（消费方按"没有可躺的格"处理） */ }
+        return outp;
     }
 
     /// <summary>
@@ -7891,6 +8015,65 @@ public class ModEntry : Mod
             }
         });
         return tcs.Task.GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// 🛏️ **本进程**"登记了睡觉就绪吗"——`ReadySynchronizer` 里 `"sleep"` 那条 check 的**本地** `State`。
+    ///
+    /// 【为什么非要有它】判断"这个人到底睡没睡"现有三个信号**单用都有洞**：
+    ///   · `isInBed` 的字面义只是"脚踩在床格上"（`Farmer.cs:7553`：脚下瓦片带 "Bed" 属性即成立）
+    ///     ⇒ **清早刚醒来那一秒就成立**，白天路过床格也成立 ⇒ 分不出「要睡」和「站着发呆」；
+    ///   · `ReadyCheckDialog` 只在屏**弹着的那段**在，撤了就绪 / 还没弹时都看不到；
+    ///   · `timeWentToBed` 是 `startSleep()` 里写的（`GameLocation.cs:11348`），但**写的是"上床那一刻"、
+    ///     不是"确认就绪那一刻"**（取消时还会被回调清回 0，`:11362`）⇒ 语义上差一层，不用它。
+    ///   ⚠️ **勘误 2026-09-19**：此处原写「我们自己的 /sleep、crawl_bed 都**绕过** `startSleep()`
+    ///     （直接 `SetLocalReady`）⇒ 恒为 0」——**那句是错的**。三条路都走
+    ///     `farmer.currentLocation.answerDialogueAction("Sleep_Yes", ...)`（本文件 `:7231`/`:7313`/`:7803`），
+    ///     而 `answerDialogueAction` 是个**无前置条件的 switch**（`GameLocation.cs:11569`），
+    ///     `case "Sleep_Yes": startSleep();`（`:12357`）⇒ `SetLocalReady("sleep", true)`（`:11351`）
+    ///     **游戏自己就调了**，`/sleep` 里那句 `DelayedAction.functionAfterDelay(...SetLocalReady...)` 只是补一刀。
+    ///     ⇒ **`sleepReady` 对本 mod 的流程确实会被点亮**（真机待验，见 CHANGELOG 09-19(77)）。
+    ///   本函数给的是"这个玩家**真的登记过**睡觉就绪"，正是 `isInBed` 想表达却表达不了的那一层。
+    ///
+    /// 【读什么】`Game1.netReady` 的私有字典 `ReadyChecks["sleep"]` 的 `State` 属性
+    ///   （`BaseReadyCheck.cs` 原注释：「The current local ready state of the check」；
+    ///    类型 internal ⇒ 反射读属性，非私有字段）。`ReadyState`：0=NotReady / 1=Ready / 2=Locked。
+    ///   ⚠️ **`state != NotReady` 才是"已登记"**，别拿 `isReady` 当它用：`isReady` 是"**全员**就绪"，
+    ///     在客户端只由房主的 `Finish` 置位 ⇒ 一个人先躺下时恒 false，拿它判会把先睡的那个判成没睡。
+    ///   字典里没有 "sleep" 这条（如新的一天 `Reset()` 清过、或还没人上床）→ 视为没登记。
+    ///
+    /// 【两端通用】房主进程读出来是**房主自己**的就绪，farmhand 进程读出来是 **farmhand 自己**的
+    ///   （`ServerReadyCheck` 与 `ClientReadyCheck` 的 `State` 都指"本机玩家"）。
+    ///   ⇒ 想知道**对方**睡没睡，读**对方端口**的 `/state`（姜岛"挤房主的床"就是这么判的）。
+    /// </summary>
+    private object ReadSleepReady()
+    {
+        try
+        {
+            var flags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
+                | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Static;
+            var sync = typeof(Game1).GetField("netReady", flags)?.GetValue(null);
+            var checks = sync?.GetType().GetField("ReadyChecks", flags)?.GetValue(sync)
+                         as System.Collections.IDictionary;
+            object? check = null;
+            if (checks != null && checks.Contains("sleep")) check = checks["sleep"];
+            object? Prop(string n) => check == null ? null
+                : check.GetType().GetProperty(n, flags)?.GetValue(check);
+            var state = Prop("State")?.ToString() ?? "NotReady";
+            return new
+            {
+                ready = state != "NotReady",                        // ★ 本机已登记睡眠就绪（Ready/Locked 都算）
+                state,                                              // NotReady / Ready / Locked
+                numberReady = (int)(Prop("NumberReady") ?? 0),
+                numberRequired = (int)(Prop("NumberRequired") ?? 0),
+                allReady = Game1.netReady.IsReady("sleep")           // 全员就绪（≠ ready，见 docstring）
+            };
+        }
+        catch (Exception ex)
+        {
+            // 老 DLL/游戏版本变化时，消费方按"读不到"处理（**别**当成"没睡"静默降级——Python 侧认 state 字段）
+            return new { ready = false, state = "unknown", error = ex.Message };
+        }
     }
 
     /// <summary>
