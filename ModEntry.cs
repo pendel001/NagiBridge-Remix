@@ -3309,7 +3309,7 @@ public class ModEntry : Mod
                 string? furnitureHere = null;
                 foreach (var f in loc.furniture)
                 {
-                    if (f != null && f.GetBoundingBox().Contains(px, py)) { furnitureHere = f.Name; break; }
+                    if (f != null && f.GetBoundingBox().Contains(px, py)) { furnitureHere = SafeDisplayName(f); break; }
                 }
 
                 bool picked = loc.LowPriorityLeftClick(px, py, Game1.player);
@@ -3317,7 +3317,13 @@ public class ModEntry : Mod
                 {
                     ok = true,
                     picked,
-                    furniture = target?.Name,
+                    // ⚠️ 2026-09-19（任务 #41）：这两个名字原先回**英文内部名** `f.Name`，
+                    //    而同 DLL 的兄弟端点 `/furniture` 用的是本地化 `SafeDisplayName`（"红色餐椅"）
+                    //    ⇒ 同一个东西，两个端点两个名字。统一到 SafeDisplayName。
+                    //    （Python 侧不拿它做匹配：`furnitureHere` 只当"这格有没有家具"的**真值**、
+                    //      名字只塞进中文句子；真名一直走 `/furniture` 前后 diff。改中文安全。）
+                    //    ⚠️ 它仍是**预测**不是事实——真拿走没有看 picked + diff。
+                    furniture = target == null ? null : SafeDisplayName(target),
                     furnitureHere,
                     tile = new { x = tx, y = ty },
                     playerTile = new { x = Game1.player.TilePoint.X, y = Game1.player.TilePoint.Y }
@@ -7260,13 +7266,67 @@ public class ModEntry : Mod
                 Building? targetBuilding = null;
                 string? buildingTypeMatched = null;
 
+                // 「这栋房子能不能养这种动物」——**只写一遍**，点名的和自动找的共用（原来是两处各判一次，
+                // 而点名那处**压根没判**，才出的事）。
+                bool TypeFits(string? bType)
+                {
+                    bType ??= "";
+                    if (requiredBuilding == "Coop" || requiredBuilding == "Big Coop"
+                        || requiredBuilding == "Deluxe Coop")
+                        return bType.IndexOf("Coop", StringComparison.OrdinalIgnoreCase) >= 0;
+                    // Barn / Big Barn / Deluxe Barn
+                    return bType.IndexOf("Barn", StringComparison.OrdinalIgnoreCase) >= 0;
+                }
+
+                string Occupy(Building b)
+                {
+                    if (b.indoors.Value is AnimalHouse h)
+                        return $"{h.animals.Count()}/{h.animalLimit.Value}";
+                    return "?";
+                }
+
                 if (!string.IsNullOrEmpty(buildingName))
                 {
                     // Try matching by building name or type
                     targetBuilding = farm.buildings.FirstOrDefault(b =>
                         (b.buildingType.Value?.IndexOf(buildingName, StringComparison.OrdinalIgnoreCase) >= 0) ||
                         (b.GetIndoorsName()?.IndexOf(buildingName, StringComparison.OrdinalIgnoreCase) >= 0));
-                    if (targetBuilding != null) buildingTypeMatched = targetBuilding.buildingType.Value;
+
+                    // ⚠️ 2026-09-19 恒真机（任务 #45）：这里原来**静默退回「自动找」**——
+                    //    名字打错/不存在时，人买了动物却落进别的棚，回包还一切正常（真机：
+                    //    `building="NoSuchBarnXYZ"` 和「棚满」回的是**同一句话**，从回包分不出来）。
+                    //    ⇒ 宁报错别兜底：点名的找不到就**明说**，并把农场真实有的建筑列出来。
+                    if (targetBuilding == null)
+                    {
+                        var avail = string.Join("、", farm.buildings.Where(b => b != null)
+                            .Select(b => b.buildingType.Value).Distinct());
+                        tcs.SetResult(new { ok = false,
+                            error = $"农场上没有叫「{buildingName}」的建筑，**没买**。现有的：{avail}" });
+                        return;
+                    }
+                    buildingTypeMatched = targetBuilding.buildingType.Value;
+
+                    // ⚠️ 2026-09-19 恒真机（任务 #45）：点名时**压根不校验类型** ——
+                    //    `Cow` + `building="Deluxe Coop"` 真把牛塞进鸡舍（实测，还扣了 1500g，
+                    //    鸡舍那格被占，恒只好手动卖掉）。点名的和自动找的必须**同一把尺子**。
+                    if (!TypeFits(buildingTypeMatched))
+                    {
+                        var avail = string.Join("、", farm.buildings.Where(b => b != null
+                                && TypeFits(b.buildingType.Value))
+                            .Select(b => $"{b.buildingType.Value}({Occupy(b)})").Distinct());
+                        tcs.SetResult(new { ok = false,
+                            error = $"「{buildingTypeMatched}」不是 {animalType} 该住的棚（需要 {requiredBuilding} 类）"
+                                  + $"——**没买、钱没动**。能住的：{(avail.Length > 0 ? avail : "农场上没有这类建筑")}" });
+                        return;
+                    }
+                    if (targetBuilding.indoors.Value is AnimalHouse hn && hn.animalLimit.Value > 0
+                        && hn.animals.Count() >= hn.animalLimit.Value)
+                    {
+                        tcs.SetResult(new { ok = false,
+                            error = $"「{buildingTypeMatched}」满了（{hn.animals.Count()}/{hn.animalLimit.Value}）——**没买、钱没动**。"
+                                  + $"先挪个位置（卖一只/盖新棚）再来" });
+                        return;
+                    }
                 }
 
                 if (targetBuilding == null)
@@ -7276,26 +7336,7 @@ public class ModEntry : Mod
                     {
                         if (b == null) continue;
                         var bType = b.buildingType.Value ?? "";
-                        // Check if this building type can house this animal
-                        bool typeMatch = false;
-                        if (requiredBuilding == "Coop")
-                            typeMatch = bType.IndexOf("Coop", StringComparison.OrdinalIgnoreCase) >= 0;
-                        else if (requiredBuilding == "Big Coop")
-                            typeMatch = bType.IndexOf("Coop", StringComparison.OrdinalIgnoreCase) >= 0;
-                        else if (requiredBuilding == "Deluxe Coop")
-                            typeMatch = bType.IndexOf("Deluxe Coop", StringComparison.OrdinalIgnoreCase) >= 0
-                                       || bType.IndexOf("Big Coop", StringComparison.OrdinalIgnoreCase) >= 0
-                                       || bType.IndexOf("Coop", StringComparison.OrdinalIgnoreCase) >= 0;
-                        else if (requiredBuilding == "Barn")
-                            typeMatch = bType.IndexOf("Barn", StringComparison.OrdinalIgnoreCase) >= 0;
-                        else if (requiredBuilding == "Big Barn")
-                            typeMatch = bType.IndexOf("Barn", StringComparison.OrdinalIgnoreCase) >= 0;
-                        else if (requiredBuilding == "Deluxe Barn")
-                            typeMatch = bType.IndexOf("Deluxe Barn", StringComparison.OrdinalIgnoreCase) >= 0
-                                       || bType.IndexOf("Big Barn", StringComparison.OrdinalIgnoreCase) >= 0
-                                       || bType.IndexOf("Barn", StringComparison.OrdinalIgnoreCase) >= 0;
-
-                        if (!typeMatch) continue;
+                        if (!TypeFits(bType)) continue;
 
                         if (b.indoors.Value is AnimalHouse house)
                         {
@@ -7311,7 +7352,13 @@ public class ModEntry : Mod
 
                 if (targetBuilding == null)
                 {
-                    tcs.SetResult(new { ok = false, error = $"No suitable building found for {animalType}. Need a {requiredBuilding} with free space." });
+                    // 报错要能当"下一步动作的输入"（恒 2026-09-19）：把**同类建筑 + 各自住没住满**摊开，
+                    // 而不是一句 "need a Barn with free space" 让 AI 干瞪眼。
+                    var same = farm.buildings.Where(b => b != null && TypeFits(b.buildingType.Value))
+                        .Select(b => $"{b.buildingType.Value}({Occupy(b)})").Distinct().ToList();
+                    tcs.SetResult(new { ok = false, error = same.Count == 0
+                        ? $"农场上没有能住 {animalType} 的建筑（需要 {requiredBuilding} 类）——先去木匠铺盖一间"
+                        : $"{animalType} 需要 {requiredBuilding} 类的空位，可这些都满了：{string.Join("、", same)}——卖一只或盖新棚再来" });
                     return;
                 }
 
@@ -10100,14 +10147,39 @@ public class ModEntry : Mod
                     if (!farmer.friendshipData.ContainsKey(npc.Name))
                         farmer.friendshipData[npc.Name] = new StardewValley.Friendship(0);
 
-                    int before = farmer.friendshipData.TryGetValue(npc.Name, out var f0) ? f0.Points : 0;
+                    // ⚠️ 2026-09-19 恒真机（任务 #46）：**先自己看一眼限额**。
+                    //    反编译 `NPC.tryToReceiveActiveObject`（NPC.cs:2398-2401）：「今天已送过」那条
+                    //    分支是 `drawObjectDialogue(...); return true;` —— **只弹台词、一点礼都没送**。
+                    //    光看返回值 ⇒ 报「送成功 +0」= 教科书级的"工具说成功但事没发生"。
+                    if (farmer.friendshipData[npc.Name].GiftsToday >= 1
+                        && item.QualifiedItemId != "(O)StardropTea")
+                    {
+                        tcs.SetResult(new { ok = false,
+                            error = $"今天已经给 {npc.Name} 送过礼物了（SDV 每天 1 次、每周 2 次）——物品没动，明天再来" });
+                        return;
+                    }
 
-                    // 从背包取 1 个，设为手持（ActiveObject），走真实送礼流程
+                    int before = farmer.friendshipData.TryGetValue(npc.Name, out var f0) ? f0.Points : 0;
+                    int giftsBefore = farmer.friendshipData[npc.Name].GiftsToday;
+
+                    // 从背包取 1 个，设为手持，走真实送礼流程
                     var giftOne = (StardewValley.Object)item.getOne();
                     item.Stack -= 1;
                     if (item.Stack <= 0) farmer.Items[idx] = null;
-                    var prevActive = farmer.ActiveObject;
-                    farmer.ActiveObject = giftOne;
+
+                    // ⚠️⚠️ 2026-09-19 恒真机事故：**加礼物到手，别再用 `farmer.ActiveObject = giftOne`**。
+                    //    它落到 `Farmer.ActiveItem` 的 setter，而 setter 写的是
+                    //    `addItemToInventory(value, CurrentToolIndex)` —— 塞的是**手持那一格**；
+                    //    那格**有东西且不可叠**时，`addItemToInventory` 会把原来那件**摘出来当返回值**，
+                    //    而 setter **把返回值丢了** ⇒ **当场销毁**。
+                    //    （真机：轮回手持 Galaxy Hammer，送礼那一下被钻石顶没了。）
+                    //    ⇒ 自己拿住手持格的原件、**直接写数组**放礼物（等价于 setter，但没有换出逻辑），
+                    //      送完（不管成没成）再把原件写回；`netItemStowed` 照 setter 手动清。
+                    int heldSlot = farmer.CurrentToolIndex;
+                    bool heldOk = heldSlot >= 0 && heldSlot < farmer.Items.Count;
+                    Item? heldSaved = heldOk ? farmer.Items[heldSlot] : null;
+                    if (heldOk) farmer.Items[heldSlot] = giftOne;
+                    farmer.netItemStowed.Value = false;
 
                     bool success;
                     try
@@ -10118,12 +10190,27 @@ public class ModEntry : Mod
                     {
                         success = false;
                     }
+
+                    // 🔧 立刻还原手持格（游戏收礼时 `reduceActiveItemByOne` 动的就是这一格）
+                    if (heldOk) farmer.Items[heldSlot] = heldSaved;
+
                     if (!success)
                     {
                         // 送礼被拒（本周满/今日已送/其他）→ 退回物品
-                        farmer.ActiveObject = prevActive;
                         farmer.addItemToInventory(giftOne);
                         tcs.SetResult(new { ok = false, error = $"{npc.Name} 拒收了礼物（可能本周已送满或今天已送过）" });
+                        return;
+                    }
+
+                    // ⚠️ 再兜一道：`tryToReceiveActiveObject` 另有分支也是"只弹台词、return true、不送礼"
+                    //    （如 RejectGift_Divorced）。真送成功 → `receiveGift` 里 `GiftsToday++`（NPC.cs:4929）
+                    //    ⇒ **没 +1 就是没真送**，如实报并把礼物退回，别报"成功"。
+                    int giftsAfter = farmer.friendshipData.TryGetValue(npc.Name, out var fg) ? fg.GiftsToday : giftsBefore;
+                    if (giftsAfter <= giftsBefore)
+                    {
+                        farmer.addItemToInventory(giftOne);
+                        tcs.SetResult(new { ok = false,
+                            error = $"{npc.Name} 没收下（游戏没记账：今天已送过或关系已断），礼物已退回，没白花" });
                         return;
                     }
 
@@ -10156,12 +10243,17 @@ public class ModEntry : Mod
                         return;
                     }
 
-                    // 从背包取 1 个，设为手持（ActiveObject）
+                    // 从背包取 1 个，设为手持
                     var giftOne = (StardewValley.Object)item.getOne();
                     item.Stack -= 1;
                     if (item.Stack <= 0) farmer.Items[idx] = null;
-                    var prevActive = farmer.ActiveObject;
-                    farmer.ActiveObject = giftOne;
+                    // ⚠️ 同 NPC 那条路：**别用 `farmer.ActiveObject = giftOne`**（会把手持格里原来的
+                    //    东西摘出来销毁，见上面 NPC 分支那段注释 / 任务 #46）。
+                    int heldSlot = farmer.CurrentToolIndex;
+                    bool heldOk = heldSlot >= 0 && heldSlot < farmer.Items.Count;
+                    Item? heldSaved = heldOk ? farmer.Items[heldSlot] : null;
+                    if (heldOk) farmer.Items[heldSlot] = giftOne;
+                    farmer.netItemStowed.Value = false;
 
                     // 站到目标下方一格，面朝目标（面前格 = 目标所在格）
                     var tt = targetFarmer.TilePoint;
@@ -10178,7 +10270,7 @@ public class ModEntry : Mod
                         farmer);
                     if (!triggered)
                     {
-                        farmer.ActiveObject = prevActive;
+                        if (heldOk) farmer.Items[heldSlot] = heldSaved;   // 还原手持格（别走 setter）
                         farmer.addItemToInventory(giftOne);
                         tcs.SetResult(new { ok = false, error = "没触发送礼交互（目标不在面前或不可送）" });
                         return;
@@ -10204,7 +10296,7 @@ public class ModEntry : Mod
                         if (!yesClicked)
                         {
                             var f2 = Game1.player;
-                            f2.ActiveObject = prevActive;
+                            if (heldOk) f2.Items[heldSlot] = heldSaved;   // 还原手持格（别走 setter）
                             f2.addItemToInventory(giftOne);
                             tcs.SetResult(new { ok = false, error = "送礼对话框未能确认" });
                             return;
@@ -12533,7 +12625,26 @@ public class ModEntry : Mod
                             bought++;
                         }
                     }
-                    tcs.SetResult(new { ok = true, clicked = "shop_item", item = item, quantity = bought });
+                    // ⚠️ 2026-09-19 恒真机（任务 #49）：这里原来**不管买没买到都回 ok:true**
+                    //    （`match == null` 直接 break、bought 还是 0，照样 `clicked:"shop_item"`）
+                    //    ⇒ Python 侧 `if r.get("ok"): 报"已购买 X"` = 又一个"工具说成功但事没发生"。
+                    //    ⇒ 一件都没成交 = **失败**；少买了 = 报明只到几件。
+                    if (bought <= 0)
+                    {
+                        tcs.SetResult(new { ok = false,
+                            error = $"商店里没买成「{item}」（一件都没成交，**钱没动**）"
+                                  + "——先 menu ops=read 看 shopItems 里的实际名字，别按印象传" });
+                    }
+                    else if (bought < qty)
+                    {
+                        tcs.SetResult(new { ok = true, clicked = "shop_item", item = item,
+                            quantity = bought,
+                            note = $"只要到 {bought}/{qty} 件（可能钱不够/库存不足/背包放不下）" });
+                    }
+                    else
+                    {
+                        tcs.SetResult(new { ok = true, clicked = "shop_item", item = item, quantity = bought });
+                    }
                     return;
                 }
 
@@ -12822,6 +12933,23 @@ public class ModEntry : Mod
                         menu.receiveLeftClick(clickX, clickY);
                         tcs.SetResult(new { ok = true, clicked = "position", x = clickX, y = clickY });
                     }
+                    return;
+                }
+
+                // ⚠️ 2026-09-19 恒真机（任务 #49）：**别把"没办成"静默兜底成"点屏幕正中"**。
+                //    现场：`/menu/click {option:0}` 打在**已经开着的 ShopMenu** 上 ——
+                //    `option` 那条分支只处理 DialogueBox，菜单不是对话就一路落到这儿 ⇒
+                //    中心点**正好压在商品行上** ⇒ **真买下一件 700g 的工作靴**（还进不了包，
+                //    卡在光标上），却回 `ok:true, clicked:"center"` ⇒ 调用方报"已购买 股骨x1"。
+                //    ⇒ 中心兜底**只在"没给任何具体目标"时**才合法（纯粹的"点一下"）。
+                //      给了 option/button/item/slot 却没命中任何分支 = **没办成**，如实报。
+                if (option >= 0 || button != "" || item != "" || slotIdx >= 0)
+                {
+                    tcs.SetResult(new { ok = false,
+                        error = $"{menu.GetType().Name} 上没有可点的目标（option={option} "
+                              + $"button='{button}' item='{item}' slot={slotIdx} 都没命中）"
+                              + "——**什么都没做，别当成完成**。对话选项先看 /menu 的 responses；"
+                              + "商店商品名照 shopItems 原文传" });
                     return;
                 }
 

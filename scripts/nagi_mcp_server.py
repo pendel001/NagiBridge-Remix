@@ -5554,11 +5554,32 @@ def chop_trees(area: str = "") -> str:
     return _with_state(f"🪓 砍树" + (f"（限定区域 {area}）" if area else "") + f"：\n{out[:600]}")
 
 
+# 🐄 玛妮牧场柜台——**买动物只有这一个入口**。
+# 2026-09-19 恒真机：「**居然是在家一键买的！还是去牧场柜台做做样子吧**」——
+# `/buy_animal` 是作弊端点（直接 new FarmAnimal 塞进建筑、跳过购买菜单），
+# 但**工具层得先让人走过去**，否则 AI 在自家炕上就能凭空添牲畜，既不拟人也没玛妮什么事。
+MARNIE_SHOP = "AnimalShop"
+MARNIE_COUNTER_POI = "玛妮牧场(柜台)"    # locations.py POI：map_go 落 (12,16) 并朝上（面向柜台）
+
+
+def _im_at_marnie() -> bool:
+    """我**真的**站在玛妮牧场店里吗 —— 读游戏状态（`/state.location.name`）。
+    ⚠️ 判据一律放**游戏状态**，不放导航回包自述：门锁着/半路停下时，导航那边照样有话说
+       （本项目反复踩的「工具说到了」≠「真到了」）。读不到就返回 False，不猜。"""
+    try:
+        return (api.state().get("location") or {}).get("name", "") == MARNIE_SHOP
+    except Exception:
+        return False
+
+
 @mcp.tool()
 def buy_animal(animal_type: str, name: str, building: str = "") -> str:
-    """🐔 从玛妮那里购买动物 — 直接入住建筑，无需UI操作
-    支持所有常见家畜家禽，自动找有空位的建筑。
-    送货上门，即买即用。
+    """🐔 去玛妮牧场柜台买动物（**先走过去**再下单，不是在家一键买）
+    支持: White Chicken / Brown Chicken / Duck / Rabbit / Cow / Goat / Sheep /
+          Pig / Ostrich / Golden Chicken
+    动物直接入住建筑（不弹购买菜单），自动挑有空位的同类建筑。
+    ⚠️ 会真的走到森林·玛妮牧场的柜台格 (12,16) 才买；柜台 **9:00~18:00** 营业
+       （周一/周二休息）—— 门锁着就**不买**、钱不动，并告诉你下一步。
 
     Args:
         animal_type: 动物类型 — White Chicken | Brown Chicken | Duck | Rabbit |
@@ -5566,15 +5587,35 @@ def buy_animal(animal_type: str, name: str, building: str = "") -> str:
         name: 给动物取的名字
         building: 建筑名称（可选，不填自动选有空位的匹配建筑）
     """
+    # ① 先走到柜台。⚠️ 判据是**真的在 AnimalShop 里**，不是导航回包印了 ✅
+    #    （导航"说到了"和"真到了"是两码事：门锁着、半路停下，回包都照样有话说）。
+    if not _im_at_marnie():
+        try:
+            nav_msg = navigation.go_to(MARNIE_COUNTER_POI)
+        except Exception as e:
+            nav_msg = f"导航出错: {e}"
+        if not _im_at_marnie():
+            # 宁报错别兜底：**没到柜台就不买**，绝不退回"在家一键买"。
+            # 报错必须给下一步（恒 2026-09-19）：写清重试的同一条命令。
+            return _with_state(
+                f"❌ 走不到玛妮牧场柜台，**没买**（{animal_type}「{name}」还在玛妮那儿，钱没动）。\n"
+                f"   导航说：{nav_msg.split('╌')[0].strip()}\n"
+                f"   ⏰ 柜台营业 **9:00~18:00**（周一/周二休息）—— 门锁着就只能等开门。\n"
+                f"   开门后照原样重来一次即可："
+                f"farm(ops=\"买动物\", kw={{\"animal_type\": \"{animal_type}\", \"name\": \"{name}\"}})"
+            )
+    # ② 站到柜台前了，才下单
     try:
         r = api.buy_animal(animal_type, name, building)
         if r.get("ok"):
             return _with_state(
-                f"🐔 购买成功！\n"
+                f"🐔 购买成功！（在玛妮柜台前）\n"
                 f"   种类: {r['animal_type']}\n"
                 f"   名字: {r['name']}\n"
                 f"   💰 花费: {r['price']}g\n"
-                f"   🏠 入住: {r.get('building_name', r['building'])}\n"
+                # ⚠️ 优先报**建筑类型**（"Deluxe Barn"）：`building_name` 是室内唯一名
+                #    （"Barn7806461c-…"），给 AI 看没意义（C# 那侧的口径问题记在任务 #41）
+                f"   🏠 入住: {r.get('building') or r.get('building_name', '?')}\n"
                 f"   🐄 当前: {r['total_animals']}/{r['animal_limit']} 只"
             )
         else:
@@ -8283,7 +8324,7 @@ def bundle_kb(query: str = "") -> str:
 
 @mcp.tool()
 def farm(ops: str = "", kw: dict | None = None) -> str:
-    """🌾 农活域（农场/温室/姜岛）。till 锄地 / plant 种(可带 layout 按洒水器布局) / water 浇地 / harvest 收 / fertilize 施化肥 / clear 清杂草石头树桩 / collect 收机器(一键只收,不走路) / building 一屋收放(拟人走) / chop 砍树。动物：animals 摸+收 / 喂水 宠物碗 / milk 挤奶剪毛。全 ops → help(farm)。⚠️带尺寸 op(till/plant/clear/fertilize)：**x/y 必填**（不传直接报错，不再兜底成"玩家面向格"）；rows×length 缺省只做 1 格，要多大自己传。animal water 用 喂水，water=浇地。💡**多 op 一次调用共用一份 kw**（如 ops="till plant"），各自只吃自己认识的参数、属于别人的会**点名忽略**。"""
+    """🌾 农活域（农场/温室/姜岛）。till 锄地 / plant 种(可带 layout 按洒水器布局) / water 浇地 / harvest 收 / fertilize 施化肥 / clear 清杂草石头树桩 / collect 收机器(一键只收,不走路) / building 一屋收放(拟人走) / chop 砍树。动物：animals 摸+收 / 喂水 宠物碗 / milk 挤奶剪毛 / **买动物**(会先走到玛妮柜台再下单，柜台 9:00~18:00 才开)。全 ops → help(farm)。⚠️带尺寸 op(till/plant/clear/fertilize)：**x/y 必填**（不传直接报错，不再兜底成"玩家面向格"）；rows×length 缺省只做 1 格，要多大自己传。animal water 用 喂水，water=浇地。💡**多 op 一次调用共用一份 kw**（如 ops="till plant"），各自只吃自己认识的参数、属于别人的会**点名忽略**。"""
     op_list = [o for o in re.split(r"[\s,，]+", (ops or "").strip()) if o]
     if not op_list:
         return _with_state("❌ ops 为空（如 farm(ops=\"till plant water\")）")
@@ -12032,6 +12073,31 @@ def _stand_near(tx: int, ty: int):
     return None
 
 
+def _stand_near_or_around(tx: int, ty: int, r: int = 2):
+    """跟人说话时该站哪：**先四正邻**（最自然）；四邻全站不进去（柜台/家具围着）就退到
+    **半径 r 内离他最近的可站格** —— 隔着柜台跟人说话是真事（玛妮就站在柜台后面）。
+
+    ⚠️ 2026-09-19 恒真机（任务 #47）：`gift_npc` 原来**盲取「NPC 正下方那格」`(x, y+1)`**，
+       而玛妮那格正是**柜台**；再叠上 `walk_natural` 走不到就 `/position` 瞬移的兜底
+       ⇒ **人闪进柜台里站着**（恒：「站进柜台里了！这个不太好」）。
+    ⚠️ 这一族**已经踩过三次**（`(tx,ty-1)` 锄地站位、2026-09-13 节日搭话 `(tx,ty+1)` 飘水里、
+       这次送礼）—— **别再写 `(x, y±1)` 这种盲取**，一律走这里。
+
+    判据一律问游戏（`/passable_rect` = 寻路同款 IsTilePassable），**不放调用方猜**。
+    一个能站的都没有 ⇒ 返回 None，调用方**如实报、别硬瞬移**（恒：「宁报错别兜底」）。
+    """
+    near = _stand_near(tx, ty)
+    if near:
+        return near
+    ok = api.walk_ok_tiles(tx - r, ty - r, tx + r, ty + r)
+    if not ok:
+        return None
+    cand = [p for p in ok if p != (tx, ty)]   # 他自己站的那格不算（`/passable_rect` 会把它算进来）
+    if not cand:
+        return None
+    return min(cand, key=lambda p: abs(p[0] - tx) + abs(p[1] - ty))
+
+
 def _decor_rooms(d: dict, kind: str) -> dict:
     """`/decor` 回包里的 floors/walls（按房号）。kind: 'floor'|'wall'。"""
     return d.get("floors" if kind == "floor" else "walls") or {}
@@ -14126,7 +14192,40 @@ def gift_npc(npc_name: str, item_name: str) -> str:
                 fr2 = api.find_npc(npc_name)   # 人可能移动了，重查一次走位
                 if fr2.get("npcs"):
                     n = fr2["npcs"][0]
-            api.walk_natural(int(n.get("x", 0)), int(n.get("y", 0)) + 1)
+            # 🚶 站哪：**问游戏**（四正邻 → 半径 2 内最近的可站格），**只决策一次、只走一趟**。
+            #    ⚠️ 原来写死 `(x, y+1)`（NPC 正下方）—— 玛妮那格正是**柜台**，再叠
+            #    `walk_natural`（**已弃用**，走 `/move` 且**走不到就 `/position` 瞬移兜底**）
+            #    ⇒ 人**闪进柜台里**站着（恒 2026-09-19：「站进柜台里了！这个不太好」）。
+            #    同族坑见过三次，详见 `_stand_near_or_around` 的注释。
+            nx_, ny_ = int(n.get("x", 0)), int(n.get("y", 0))
+            stand = _stand_near_or_around(nx_, ny_)
+            if not stand:
+                # 宁报错别兜底：站不过去就**别送**，也别硬瞬移过去装样子
+                return (f"❌ 走不到「{nname}」身边：他周围没有能站的格（柜台/家具/别人占着）。\n"
+                        f"   **没送，东西还在我包里。**\n"
+                        f"   👉 换个时间或等他挪个地方再来；手递手不方便时可以 "
+                        f"social(ops=\"hand\", kw={{\"npc_name\": \"{npc_name}\", \"item_name\": \"{item_name}\"}})"
+                        f" 放到他脚边（磁吸会自己收）")
+            sx, sy = stand
+            try:
+                # 走路统一 `/walk_to`（拟人），到位后再 `/position` **对正到挑好的那格**
+                # （落点偏一格是已知坑；这格是**问过游戏能站**的，对正不会把人放上障碍）
+                api.walk_to_coord(nloc or api.current_location(), sx, sy)
+                _dl = time.time() + 8
+                while time.time() < _dl:
+                    ax, ay = api.player_tile()
+                    if abs(ax - sx) + abs(ay - sy) <= 1:
+                        break
+                    time.sleep(0.2)
+                api.position(sx, sy)
+                time.sleep(0.25)
+                api.face_toward(nx_, ny_)   # 面向他（隔着柜台也得看着人说话）
+            except Exception:
+                pass
+            ax, ay = api.player_tile()
+            if abs(ax - sx) + abs(ay - sy) > 1:
+                return (f"❌ 没走到「{nname}」身边（挑好的站位 ({sx},{sy})，人停在 ({ax},{ay})）。\n"
+                        f"   **没送，东西还在我包里** —— 别当已经送出去了")
         r = api._post("/gift", {"target": npc_name, "item": item_name})
         if not r.get("ok"):
             return f"送礼失败: {r.get('error', r)}"
@@ -14615,16 +14714,31 @@ def _wait_warp(location: str, timeout: float = 8.0) -> bool:
 
 
 def _select_option(opt: int, target: str = "ShopMenu", tries: int = 4) -> bool:
-    """选对话框选项，带重试（对话按钮异步构建，常要试几次才生效）。"""
+    """选对话框选项，带重试（对话按钮异步构建，常要试几次才生效）。
+
+    ⚠️ 2026-09-19 恒真机（任务 #49）：**必须"先查后点"**。原版是先点一次再查，而
+       `/interact` **有时直接就开 ShopMenu**（不走"想要什么？"那个对话）⇒ 那一下 `option=0`
+       **打在商店上**：C# 找不到可点的选项就兜底点屏幕正中，正中**压在商品行上**
+       ⇒ **真买下一件 700g 的工作靴**（还进不了包、卡在光标上），回包却是 `ok:true`。
+    ⇒ 现在：①**先查**，已经是目标菜单就**一下都不点**；②点完再查，一旦菜单不再是
+       对话（变成别的东西）就**停手**，免得越点越坏。
+    """
+    def _now() -> str:
+        try:
+            return api._get("/menu").get("type") or ""
+        except Exception:
+            return ""
+
+    if _now() == target:
+        return True                      # ① 已经开着 ⇒ 一下都别点（点了就是在买东西）
     for _ in range(tries):
+        cur = _now()
+        if cur and cur != "DialogueBox":
+            break                        # ② 已经不是对话了 ⇒ 停手（别对着商店继续点）
         api.menu_click(option=opt)
         time.sleep(0.8)
-        try:
-            m = api._get("/menu")
-            if m.get("type") == target:
-                return True
-        except Exception:
-            pass
+        if _now() == target:
+            return True
     return False
 
 
@@ -14650,10 +14764,44 @@ def _parse_want(want: str):
     return out
 
 
+def _walk_to_shop(loc: str, x: int, y: int, label: str, hint: str = "") -> str:
+    """**走过去**开店门（跨图 map_go + 同图 walk_to），到了才让调用方开菜单。
+    成功返回 ""，失败返回一句给人看的错误（调用方直接 return 它）。
+
+    ⚠️ 2026-09-19 恒真机（任务 #48）：「**是warp过去的，好像有点不对**」——
+       `_marlon_shop_flow` / `_guild_reward_flow` / `_qi_shop_flow` 头一句都是
+       `api.warp(...)`，可 `shop_visit` 的 docstring 写的是「**导航**到店」。
+       ⇒「真实菜单交互」只兑现了**买**那一半，**走过去**那半压根没有，文档还货不对板。
+    ⚠️ 判据放**游戏状态**（人真的在那张图），不放导航回包自述；走不到就**别开菜单**、如实报。
+    """
+    try:
+        cur = (api.state().get("location") or {}).get("name", "")
+        if cur != loc:
+            _nav = map_go(loc)
+            cur = (api.state().get("location") or {}).get("name", "")
+            if cur != loc:
+                return (f"❌ 走不到{label}（现在在 {cur or '?'}），**没开菜单**。\n"
+                        f"   导航说：{str(_nav).split('╌')[0].strip()}\n"
+                        + (f"   {hint}\n" if hint else ""))
+        # 同图走到柜台前（真走，不瞬移）
+        api.walk_to_coord(loc, x, y)
+        _dl = time.time() + 8
+        while time.time() < _dl:
+            _p = api.state().get("player") or {}
+            if abs(int(_p.get("x", -9)) - x) + abs(int(_p.get("y", -9)) - y) <= 1:
+                break
+            time.sleep(0.2)
+        return ""
+    except Exception as e:
+        return f"❌ 去{label}的路上出错：{e}（**没开菜单**）"
+
+
 def _marlon_shop_flow(which: str, want: str) -> str:
-    """马龙武器店 / 物品恢复服务（真实菜单交互，不用 /buy 作弊）。"""
-    api.warp("AdventureGuild", 5, 13)
-    _wait_warp("AdventureGuild")
+    """马龙武器店 / 物品恢复服务（真实菜单交互 + **真的走过去**，不用 /buy 作弊）。"""
+    _err = _walk_to_shop("AdventureGuild", 5, 13, "马龙武器店",
+                         "⏰ 探险家公会 **14:00~2:00** 开门（周四休）；开门后照原样重来即可")
+    if _err:
+        return _with_state(_err)
     api._post("/interact", {"x": 5, "y": 12})  # 柜台交互
     time.sleep(1.2)
     if not _select_option(1 if which == "recovery" else 0):  # "想要什么？" → 商店/恢复
@@ -14670,23 +14818,48 @@ def _marlon_shop_flow(which: str, want: str) -> str:
             lines.append(f"  {s.get('name')} {s.get('price')}g")
         return "\n".join(lines)
     # 真实购买：一次调用买多样（'木剑×2, 木锤'），每样内部循环买 N 个再关店
+    # ⚠️ 2026-09-19 恒真机（任务 #49）：**判据放游戏状态，不放工具自述**。
+    #    这里曾经只看 `r.get("ok")` 就报"已购买 X" —— 而实测那次 `ok:true` 其实
+    #    **一件都没买成**（钱却少 700g：被 `_select_option` 多点的那个"中心兜底点击"
+    #    在商店里买下了一件工作靴）。⇒ 买前买后各量一次**钱和背包**，按**真实差额**报。
+    try:
+        _st0 = api.state()
+        _money0 = (_st0.get("player") or {}).get("money")
+        _inv0 = [i.get("name") for i in (_st0.get("inventory") or [])]
+    except Exception:
+        _money0, _inv0 = None, []
     want_items = _parse_want(want)
     bought = []
     for name, qty in want_items:
         r = api.menu_click(item=name, quantity=qty)
         time.sleep(0.3)
         if r.get("ok"):
-            bought.append(f"{name}x{qty}")
+            _got = r.get("quantity") or qty
+            bought.append(f"{name}x{_got}" + (f"（{r['note']}）" if r.get("note") else ""))
         else:
-            bought.append(f"{name}(失败)")
+            bought.append(f"{name}(没买成: {r.get('error') or '?'})")
     _menu_close()  # 关菜单（先清光标再关，防 readyToClose 卡住）
-    return f"✅ 已从{label}购买/找回: {', '.join(bought)}"
+    # 🔍 回读复核：钱掉了多少、包里真多了什么
+    try:
+        _st1 = api.state()
+        _money1 = (_st1.get("player") or {}).get("money")
+        _inv1 = [i.get("name") for i in (_st1.get("inventory") or [])]
+        _spent = (_money0 - _money1) if (_money0 is not None and _money1 is not None) else None
+        _gained = [n for n in _inv1 if n not in _inv0]
+        _check = (f"\n   💰 实际扣 {_spent}g｜🎒 真进包：{'、'.join(_gained) if _gained else '**什么都没有**'}")
+        if _gained == [] and (_spent or 0) > 0:
+            _check += "  ⚠️ **花了钱但没进包** —— 别当成买到了，先 check ops=backpack 数一遍"
+    except Exception:
+        _check = "\n   ⚠️ 回读失败（读不到钱/背包）——**以背包实物为准**，别信上面那行"
+    return f"✅ 已从{label}购买/找回: {', '.join(bought)}{_check}"
 
 
 def _guild_reward_flow() -> str:
-    """吉尔讨伐奖励领取（真实菜单：对话 + ItemGrabMenu 槽位点击）。"""
-    api.warp("AdventureGuild", 12, 13)
-    _wait_warp("AdventureGuild")
+    """吉尔讨伐奖励领取（真实菜单：对话 + ItemGrabMenu 槽位点击 + **真的走过去**）。"""
+    _err = _walk_to_shop("AdventureGuild", 12, 13, "吉尔那儿",
+                         "⏰ 探险家公会 **14:00~2:00** 开门（周四休）")
+    if _err:
+        return _with_state(_err)
     api.face(0)
     time.sleep(0.3)
     api.interact()
@@ -14717,9 +14890,11 @@ def _guild_reward_flow() -> str:
 
 
 def _qi_shop_flow(want: str) -> str:
-    """齐钻核桃房商店（真实注册机交互，不用数据层作弊）。"""
-    api.warp("QiNutRoom", 7, 7)
-    _wait_warp("QiNutRoom")
+    """齐钻核桃房商店（真实注册机交互 + **真的走过去**，不用数据层作弊）。"""
+    _err = _walk_to_shop("QiNutRoom", 7, 7, "齐钻核桃房",
+                         "（在姜岛，得先上岛；跨海要有船票/图腾）")
+    if _err:
+        return _with_state(_err)
     api._post("/interact", {"x": 11, "y": 3})  # 注册机 (11,3)
     time.sleep(1.2)
     m = api._get("/menu")

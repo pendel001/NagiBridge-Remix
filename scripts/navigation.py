@@ -637,7 +637,7 @@ def walk_to(poi_name: str = "", x: int = None, y: int = None) -> str:
                 base = go.split(_STATE_SEP)[0] if _STATE_SEP in go else go
                 return _with_state(base + face_log)
         # 🏠 动态别名（回家 / 自己小屋 / 我的小屋）→ 走**同进程**的 go_to()，别丢给子进程。
-        #    go_to() 认得这些别名（回家=`_go_home()` 全流程进屋到床边；裸"小屋"=`_nav_home_door()` 只到门口），
+        #    go_to() 认得这些别名（回家=`_go_home(door_only=True)` **推门进屋就停**；裸"小屋"=`_nav_home_door()` 只到门外），
         #    而且它用 `api`（= AI 端口 7843）—— 子进程那条路默认打 7842 房主，见下面 ⚠️。
         if any(k in poi_name for k in ("回家", "自己小屋", "我的小屋")):
             return go_to(poi_name)
@@ -853,9 +853,16 @@ def _go_island_house() -> tuple[bool, str]:
                    f"也可以自己 `map go 姜岛小屋` 走过去，再喊一次 sleep（who 照样要传）")
 
 
-def _go_home(who: str = "") -> tuple[bool, str]:
-    """回家：走到「谁的床」那个屋的门口（Farm 外立面）→ 互动进门 → 走到床边。
+def _go_home(who: str = "", door_only: bool = False) -> tuple[bool, str]:
+    """回家：走到「谁的床」那个屋的门口（Farm 外立面）→ 互动进门 →（默认再）走到床边。
     `who` 空 = 自己；传别人名字 = 去那个人的屋子/床边（爬床彩蛋那套）。
+    `door_only=True` ⇒ **推门进屋就收工**，不往床边走。
+
+    ⚠️ 2026-09-19 恒：「现在回家怎么默认都是会床边了呀。**推门就够了哇**」
+       ⇒ AI 说「回家/去小屋」多半只是要**进屋**（避雨、拿东西、进室内场景），不是要睡觉。
+         一路走到床边既绕又莫名（人无端站到床前）。
+         `go_to("回家")` 已改走 `door_only=True`；**要躺床请点名「自己小屋(床)」或走 sleep**
+         （那条自己会到床边，见 `_aim_sleep_home`）。
 
     出门不能自动化（walk_to 不肯踩上传送格），所以回家只做"进门"；
     出门用 /warp 传门外（见 go_to 兜底逻辑）。
@@ -901,9 +908,9 @@ def _go_home(who: str = "") -> tuple[bool, str]:
             return (api._post("/crawl_bed", {"action": "locate", "player": who}).get("curLoc")
                     or "?")
 
-        # ‑ 已在床所在场景 → 直接去床边
+        # ‑ 已在床所在场景 → 直接去床边（door_only 就是"已经在家了"，一步不用走）
         if _cur() == bed_loc:
-            return _go_to_bed(bed_loc, bx, by)
+            return (True, f"🏠 已经在家了（{bed_loc}）") if door_only else _go_to_bed(bed_loc, bx, by)
 
         # 1. 走到那栋屋子门口（Farm 外立面）
         #    🚪 人在别的图（镇上/别人屋里）时，`_walk_on_map` 先 map_go 回农场再走——
@@ -946,7 +953,9 @@ def _go_home(who: str = "") -> tuple[bool, str]:
             return False, (f"⚠️ 进{who}家失败（人还在 {_cur()}）——门可能锁着/被挡/在菜单里；"
                            f"门在 {door['location']} ({door['x']},{door['y']})")
 
-        # 3. 到床边
+        # 3. 到床边（`door_only` 就在这儿收工：已经站在屋里了）
+        if door_only:
+            return True, f"🏠 已进{who}家（推门进屋，没往床边走）"
         return _go_to_bed(bed_loc, bx, by)
     except Exception as e:
         return False, f"❌ 回家失败: {e}"
@@ -1092,12 +1101,15 @@ def go_to(place: str) -> str:
         place: 目的地名称（建筑或 POI）
     """
     try:
-        # 回家/自己小屋 → 完整走门流程（走到门口→互动进门→走到床）
+        # 回家/自己小屋 → 走门流程（走到门口→互动进门→**推门进屋就停**）
         # ⚠️ 2026-09-05 恒：裸"小屋"也算自家（排除女巫/巫师/魔法/神殿，那些是真女巫小屋）
         _pl = str(place or "").lower()
         _excl = ("女巫", "巫师", "魔法", "神殿", "witch")
         if "回家" in _pl and not any(k in _pl for k in _excl):
-            _ok, _m = _go_home()       # 明确"回家"→进屋到床边
+            # ⚠️ 2026-09-19 恒：「现在回家怎么默认都是会床边了呀。**推门就够了哇**」
+            #    ⇒ 「回家」= 进到屋里就收工；**要躺床请点名「自己小屋(床)」或走 sleep**
+            #      （sleep 自己会到床边，那条走的是 `_aim_sleep_home` 里的 `_go_home()` 全流程）。
+            _ok, _m = _go_home(door_only=True)
             return _with_state(_m)
         if any(k in _pl for k in ("小屋", "cabin")) \
                 and not any(k in _pl for k in _excl):
@@ -2575,12 +2587,12 @@ def map_go(destination: str = "", npc: str = "") -> str:
         _NAV_LAST.update(_nr)
     _NAV_FAILED["v"] = False
     # 🏠 自家小屋拦截（2026-09-05 恒：裸"小屋"被 SCENE_NAME_ALIAS 的"女巫小屋/巫师小屋"子串劫持
-    #   → 误导航去 WitchHut（AI 说"去小屋"走到女巫小屋，找不到自家门）。"去小屋/进小屋/回家/我家"统一走回家进屋到床。
+    #   → 误导航去 WitchHut（AI 说"去小屋"走到女巫小屋，找不到自家门）。"去小屋/进小屋/回家/我家"统一走回家**进屋**。
     #   ⚠️ 排除"女巫/巫师/魔法/神殿"——那些是真女巫小屋，别劫持。）
     _hp = str(destination or "").lower()
     _excl = ("女巫", "巫师", "魔法", "神殿", "witch")
     if "回家" in _hp and not any(k in _hp for k in _excl):
-        return go_to("回家")          # 明确"回家"→进屋到床边
+        return go_to("回家")          # 明确"回家"→推门进屋就停（要躺床走 sleep / 点名"小屋(床)"）
     if ("小屋" in _hp or "我的家" in _hp or _hp == "家" or "cabin" in _hp) \
             and not any(k in _hp for k in _excl):
         return _nav_home_door()       # "进小屋/cabin"→只导航到门口（进屋交给 AI interact_at）
