@@ -2,11 +2,8 @@
 开垦skill：扫描区域 → 粗清(move_to) → 重扫 → 精补(warp)
 
 用法:
-    python clear_area.py <x1> <y1> <x2> <y2> [options]
-
-参数:
-    x1,y1  左上角坐标
-    x2,y2  右下角坐标
+    python clear_area.py <x1> <y1> <x2> <y2> [options]      # 4 个数 = 矩形
+    python clear_area.py <cx> <cy> <r>          [options]      # 3 个数 = 圆形（圆心 + 半径）
 
 选项:
     --port PORT   NagiBridge端口（默认 7842）
@@ -14,6 +11,10 @@
 
 示例:
     python clear_area.py 50 20 70 30 --port 7842
+    python clear_area.py 60 25 8    --port 7842   # 以 (60,25) 为圆心、半径 8 的圆
+
+⚠️ **清场建议用圆形、且比田块外扩 2~3 格**（恒 2026-09-19）：只清方正一块的话，
+   四角还是草窝，**田边的杂草很快会长进田里、把作物顶掉**。
 """
 
 import argparse
@@ -21,17 +22,27 @@ import os
 import time
 from collections import defaultdict
 
+import area_spec
+
 parser = argparse.ArgumentParser()
-parser.add_argument("x1", type=int)
-parser.add_argument("y1", type=int)
-parser.add_argument("x2", type=int)
-parser.add_argument("y2", type=int)
+parser.add_argument("coords", nargs="+", type=int,
+                    help="4 个数=矩形 x1 y1 x2 y2；3 个数=圆形 圆心x 圆心y 半径")
 parser.add_argument("--port", type=int, default=7842)
 parser.add_argument("--hits", type=int, default=2)
 # 🪓 放行名单（恒 2026-09-12）：同 chop_trees —— 默认只清橡/枫/松，特殊树受保护
 #    （不然"清一块地"顺手就把蘑菇树/桃花心木铲了）。由 settings 域的 `chop` 设置经服务器传进来。
 parser.add_argument("--allow", default="", help="放行的特殊树种（名字/树号，逗号分隔；none/all）")
 args = parser.parse_args()
+
+# 🍥 区域写法：4 个数=矩形 / 3 个数=圆（见 area_spec.py）。**个数不对直接报错退出**，
+#    不兜底猜形状——猜错会跑去清错地方（宁报错别兜底）。
+try:
+    _AREA = area_spec.parse(args.coords)
+except ValueError as e:
+    print(f"❌ 区域参数错：{e}")
+    raise SystemExit(2)
+# 兼容老代码里的 args.x1..y2 引用（外接矩形）
+args.x1, args.y1, args.x2, args.y2 = area_spec.bounds(_AREA)
 
 os.environ["NAGI_URL"] = f"http://localhost:{args.port}"
 import stardew_api as api
@@ -114,9 +125,8 @@ def stamina_ok():
 
 
 def scan_area():
-    cx = (args.x1 + args.x2) // 2
-    cy = (args.y1 + args.y2) // 2
-    radius = max(args.x2 - args.x1, args.y2 - args.y1) // 2 + 5
+    cx, cy = area_spec.center(_AREA)
+    radius = area_spec.reach(_AREA) + 5      # 从中心到最远格 + 余量
 
     if api.current_location() == "Farm":
         api._post("/position", {"x": cx, "y": cy})
@@ -129,7 +139,7 @@ def scan_area():
     _SKIPPED_PASS.clear()
     for t in data.get("tiles", []):
         x, y = t["x"], t["y"]
-        if x < args.x1 or x > args.x2 or y < args.y1 or y > args.y2:
+        if not area_spec.contains(_AREA, x, y):
             continue
 
         name = tile_target_name(t)
@@ -181,6 +191,33 @@ def stand_for_target(x, y, use_position):
     time.sleep(0.1)
 
 
+# 🔁 挥完一下之后的重扫半径。**镰刀/镐/斧都是"范围动作"**：一挥能顺手清掉身边一片
+#    （Iridium Scythe 尤其大），所以挥完该**重扫一次**、把"顺带清掉"的格子从待办里划掉，
+#    直接挪到下一个**还有草**的地方 —— 而不是按老样子一格格挪过去对着空地挥
+#    （恒 2026-09-19：「除草的话因为镰刀是范围的，不需要一格格挪……挪到挥舞之后
+#      下一个有草的地方比较好」）。
+_SWEEP_R = 4
+
+
+def _sweep_alive(radius=_SWEEP_R):
+    """挥完重扫身边：`{(x,y): 目标名}`（判据=`tile_target_name`，**问游戏**、不猜范围）。
+
+    扫描失败返回 `None` —— 调用方**别剪**待办（宁可多走一格，也别把没清的格子误划掉）。
+    """
+    try:
+        data = api.surroundings(radius)
+    except Exception:
+        return None
+    out = {}
+    for t in data.get("tiles", []):
+        nm = tile_target_name(t)
+        if nm:
+            out[(t["x"], t["y"])] = nm
+    for k, v in _SKIPPED_PASS.items():      # 重扫也会撞见受保护树种，合并进总账（同 scan_area 的"取最大值防灌水"）
+        _SKIPPED_SEEN[k] = max(_SKIPPED_SEEN.get(k, 0), v)
+    return out
+
+
 def clear_pass(targets, use_warp=False):
     by_tool = defaultdict(list)
     for x, y, tool, name, hits in targets:
@@ -198,7 +235,10 @@ def clear_pass(targets, use_warp=False):
         api.select(tool)
         time.sleep(0.15)
 
-        for x, y, name, hits in items:
+        _trimmed_total = 0
+        i = 0
+        while i < len(items):
+            x, y, name, hits = items[i]
             if not stamina_ok():
                 return cleared
 
@@ -221,6 +261,32 @@ def clear_pass(targets, use_warp=False):
             cleared += 1
             if cleared % 20 == 0:
                 api.log(f"  {cleared} cleared...")
+
+            i += 1
+            if i >= len(items):
+                break
+            # 🔁 范围动作：挥完重扫，把**这一挥顺带清掉**的格子从待办里划掉（人不会一格格挪过去）。
+            #    只剪**这趟重扫看得见**的那圈：更远的目标这趟扫不到，剪了会漏清。
+            alive = _sweep_alive()
+            if alive is None:
+                continue
+            keep = []
+            for t in items[i:]:
+                if (t[0] - x) ** 2 + (t[1] - y) ** 2 > _SWEEP_R ** 2:
+                    keep.append(t)                       # 太远：这次重扫看不到，别误删
+                elif alive.get((t[0], t[1])) == t[2]:
+                    keep.append(t)                       # 还在，接着清
+                else:
+                    _trimmed_total += 1                  # 已经被顺手清掉了 ⇒ 不用再挪过去
+            if _trimmed_total:
+                items = items[:i] + keep
+
+        if _trimmed_total:
+            api.log(f"  ↩ {tool}: 顺手清掉 {_trimmed_total} 格，省下 {_trimmed_total} 次挪位"
+                    f"（范围动作，挥完重扫划线）")
+            # 这些格**也是这一趟清掉的**（只是没为它们单独挥一下）⇒ 计数算进去，
+            # 别让"cleared N"看着像漏了（真机：17 格只挥 4 下，日志却报 cleared 4）。
+            cleared += _trimmed_total
 
     return cleared
 
@@ -261,7 +327,7 @@ def _pickup_drops():
 
 
 def run():
-    api.log(f"=== clear area: ({args.x1},{args.y1})-({args.x2},{args.y2}) ===")
+    api.log(f"=== clear area: {area_spec.describe(_AREA)} ===")
     api.log(f"🌳 放行: {tt.allow_label(_ALLOW)}"
             + ("" if _ALLOW else "（特殊树种受保护；要清用 settings chop 蘑菇树,桃花心木 …）"))
     inv_before = inventory_counts()

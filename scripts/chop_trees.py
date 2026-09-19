@@ -11,11 +11,23 @@ parser.add_argument("--port", type=int, default=7842)
 #    一律受保护。值由 settings 域的 `chop` 设置经服务器传进来；手工跑脚本时也可直接
 #    `--allow 蘑菇树,桃花心木`。⚠️ 放行值认不出来会**直接报错退出**，不静默当空（宁报错别兜底）。
 parser.add_argument("--allow", default="", help="放行的特殊树种（名字/树号，逗号分隔；none/all）")
+# 🍥 限定区域（恒 2026-09-19）：4 个数=矩形 x1,y1,x2,y2；3 个数=圆 圆心x,y,半径（见 area_spec.py）。
+#    留空 = 老行为（找身边的树）。⚠️ 脚本原来**没有这个参数**，而 MCP 那侧一直在把 `area` 原样塞进
+#    命令行 ⇒ 传任何值都是 `unrecognized arguments` + exit 2（"域 op 断档"，2026-09-19 真机逮到）。
+parser.add_argument("--area", default="",
+                    help="限定区域：4 个数=矩形 x1,y1,x2,y2；3 个数=圆 圆心x,y,半径")
 args = parser.parse_args()
 
 os.environ["NAGI_URL"] = f"http://localhost:{args.port}"
 import stardew_api as api
 import tree_types as tt
+import area_spec
+
+try:
+    _AREA = area_spec.parse_str(args.area) if args.area else None
+except ValueError as e:
+    print(f"❌ --area 参数错：{e}")
+    raise SystemExit(2)
 
 _ALLOW, _ALLOW_ERR = tt.parse_allow(args.allow)
 if _ALLOW_ERR:
@@ -63,6 +75,11 @@ def find_trees(radius=20):
         terrain = t.get("terrain", "")
         obj = t.get("object", "")
         dist = abs(t["x"] - px) + abs(t["y"] - py)
+
+        # 🍥 限定区域时，框外的树/树枝/大木桩**一律不看**（连"受保护跳过"都不计——
+        #    那不是"看见了没砍"，是压根不在这趟活的范围内）。
+        if _AREA is not None and not area_spec.contains(_AREA, t["x"], t["y"]):
+            continue
 
         if terrain.startswith("Tree:"):
             ttype = tt.tree_type_of(terrain)
@@ -194,6 +211,34 @@ def chop_target(tx, ty, target_type):
     return "chopped"
 
 
+def _goto_area():
+    """有 `--area` 时先走到区域里能站的格。
+
+    ⚠️ 脚本原来只在**身边**（`surroundings` 半径 20）找树 —— 指定了一片远处的林子却不先过去的话，
+    会一棵都找不到，还报 "No more trees nearby"，看着像"那片没树"（假阴性）。
+    落脚点挑**区域内离中心最近的能站格**（`/passable_rect` 说了算，别硬闪到树上）。
+    """
+    if _AREA is None:
+        return
+    x1, y1, x2, y2 = area_spec.bounds(_AREA)
+    tiles = area_spec.tiles(_AREA)
+    try:
+        wk = api.walk_ok_tiles(x1 - 1, y1 - 1, x2 + 1, y2 + 1)
+        pk = api.stand_near(tiles, wk, *area_spec.center(_AREA)) if tiles else None
+    except Exception:
+        pk = None
+    if pk:
+        api.log(f"→ 先走到区域内 ({pk[0]},{pk[1]})（区域 {area_spec.describe(_AREA)}）")
+        _ensure_at(pk[0], pk[1])
+
+
+def _search_radius():
+    """找树的扫描半径：没限定区域就用老的 20；限定了就按区域大小来（别够不着边）。"""
+    if _AREA is None:
+        return 20
+    return min(30, max(20, area_spec.reach(_AREA) + 3))
+
+
 def run():
     axe_name = "Axe"
     for item in api.state().get("inventory", []):
@@ -211,10 +256,14 @@ def run():
     wood_before = sum(i["stack"] for i in inv if i and i["name"] == "Wood")
     api.log(f"Wood before: {wood_before}")
 
+    if _AREA is not None:
+        api.log(f"🍥 限定区域：{area_spec.describe(_AREA)}")
+        _goto_area()
+
     _skipped_seen = {}
     chopped = 0
     for attempt in range(args.count):
-        trees, skipped = find_trees()
+        trees, skipped = find_trees(_search_radius())
         for k, v in skipped.items():          # 累计"看见过但没砍"的（同一棵会重复出现，取最大值）
             _skipped_seen[k] = max(_skipped_seen.get(k, 0), v)
         if not trees:

@@ -65,12 +65,12 @@
 
 | op | 参数（括号内=默认值） | 说明 |
 |---|---|---|
-| `till` / `clear` | **`x`,`y`（必填，不传直接报错）** `rows`(1) `length`(1) `direction`("horizontal")；till 另有 `x1,y1,x2,y2` / `layout`(0) | 锄地 / 清杂草石树桩 |
+| `till` / `clear` | **`x`,`y`（必填，不传直接报错）** `rows`(1) `length`(1) `direction`("horizontal")；till 另有 `x1,y1,x2,y2` / `layout`(0)；clear 另有 `x1,y1,x2,y2` / `radius`(0=圆形) / `margin`(2) | 锄地 / 清杂草石树桩（clear **默认往外多清 2 格**，防田边杂草长进田里）|
 | `plant` | `seed_name`(必填) `x`,`y`(必填) `rows` `length` `direction` **或** `x1,y1,x2,y2`；`layout`(0) `direct`(False) `trellis`(False) | 播种（跳过已种/设施格；带 `layout` 就按洒水器布局种）|
 | `fertilize` | `fertilizer_name`(必填) `x`,`y` `rows` `length` `direction` | 撒化肥 |
 | `water` / `harvest`(15) / `scythe`(15) | `radius` | 浇水无参 / 收 / 镰刀收 |
 | `plot` | `x`(-1) `y`(-1) `radius`(15) `all_plots`(False) | 连通域规划（不传 x/y=以自己为心）|
-| `chop` | `area`("") | 砍树 |
+| `chop` | `area`("") —— 值写「几个数」：**4 个数=矩形两角 / 3 个数=圆心+半径** | 砍树（限定区域时会先走过去再找）|
 | `collect` / `load` | `machine_type`("") `location`("") ／ `item`(必填) | 收机器 / 往机器放料 |
 | `building` | `location`(必填) `item`("") `machine_type`("") | 一屋收放（`item` 留空=只收不放）|
 | `place` / `break` | `name`,`x`,`y` ／ `x`,`y`(必填) `steps`(1) `radius`(0) | 同 `scene` 同名 op |

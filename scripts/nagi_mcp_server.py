@@ -4177,10 +4177,15 @@ def clear_area(x1: int, y1: int, x2: int, y2: int) -> str:
         x1, y1: 区域左上角坐标
         x2, y2: 区域右下角坐标
     """
+    return _clear_area_run([str(x1), str(y1), str(x2), str(y2)],
+                           f"区域 ({x1},{y1})-({x2},{y2})")
+
+
+def _clear_area_run(args_list, desc: str) -> str:
+    """跑 `clear_area.py` 并包一层（区域描述由调用方给——矩形/圆形的说法不一样）。"""
     warp_log = _warp_home_if_needed("Farm")
-    args_list = [str(x1), str(y1), str(x2), str(y2), "--allow", _chop_allow_arg()]
-    out = _run_script("clear_area", args_list, timeout=120)
-    return _with_state(f"{warp_log}🧹 清理区域 ({x1},{y1})-({x2},{y2}):\n{out[:600]}")
+    out = _run_script("clear_area", args_list + ["--allow", _chop_allow_arg()], timeout=120)
+    return _with_state(f"{warp_log}🧹 清理 {desc}:\n{out[:600]}")
 
 
 # ── 化肥知识 ──
@@ -4281,6 +4286,7 @@ def apply_fertilizer(fertilizer_name: str, x: int = -1, y: int = -1,
     # ⚠️ 先定位到田块中心再扫——不然目标超出扫描半径会被误判"没锄地"（2026-08-13 实测坑）
     # ⚠️ 异种化肥=占用（SDV 不允许已施肥的地改施别的化肥，实测覆盖不生效），跳过并提示
     do, skip, occupied, not_tilled = [], [], [], []
+    _blocked_f = {}    # 🌿 没锄的格里，还把"被什么挡着"分出来（恒：地格上有杂草）
     # 🦶 2026-09-19：站田心扫描**要挑能站的格**——原来写死田心，田心正好是洒水器/箱子格时
     #    人就被闪上去了（恒真机："踩到洒水器了"）。挑不出能站的格就**原地扫**。
     _fcx = x + dx * length // 2 + rdx * rows // 2
@@ -4301,6 +4307,10 @@ def apply_fertilizer(fertilizer_name: str, x: int = -1, y: int = -1,
             t = tiles.get((tx, ty), {})
             if t.get("terrain") != "HoeDirt":
                 not_tilled.append((tx, ty))
+                _lab, _cl = _tile_obstacle(t)
+                if _lab:
+                    _blocked_f.setdefault("clear" if _cl else "facility",
+                                          []).append((tx, ty, _lab))
                 continue
             fert = _norm_fert(t.get("fert"))
             if fert is None:
@@ -4385,6 +4395,9 @@ def apply_fertilizer(fertilizer_name: str, x: int = -1, y: int = -1,
     if not_tilled:
         lines.append(f"  ⚠️ 没锄地跳过 {len(not_tilled)} 格: {not_tilled[:8]}{'…' if len(not_tilled)>8 else ''}"
                      f"（先 `farm ops=\"till\"` 锄好再撒；想一次说完就 `farm ops=\"till fertilize\"`，一份 kw 共用）")
+        # 🌿 恒 2026-09-19：这些格"没锄"背后往往**有草/杂物挡着** —— 那个不先说清，
+        #    AI 会一直 till、一直失败（真机：报告只说"缺失 13 格"，没人告诉它先割草）。
+        lines.extend(_obstacle_lines(_blocked_f, verb="撒"))
     return _with_state(f"{warp_log}\n" + "\n".join(lines))
 
 
@@ -5291,11 +5304,17 @@ def chop_trees(area: str = "") -> str:
     （`settings chop 蘑菇树,桃花心木`；收回 `settings chop none`；全放行 `settings chop all` 慎用）。
 
     Args:
-        area: 区域（留空则自动找附近的树）
+        area: 限定区域 —— **4 个数 = 矩形 `x1,y1,x2,y2`；3 个数 = 圆 `圆心x,y,半径`**
+              （如 `"40,11,45,25"` / `"42,17,4"`；逗号空格都认）。留空 = 老行为（找身边半径 20 内的树）。
     """
-    args_list = (area.split() if area else []) + ["--allow", _chop_allow_arg()]
+    # ⚠️ 2026-09-19 修：原来把 `area` **原样当命令行参数**塞给脚本，可脚本**根本没有位置参数**
+    #    ⇒ 传任何值都是 `unrecognized arguments` + 退出码 2（"域 op 断档"：文档写着支持、实际必崩）。
+    #    现在走 `--area`，脚本那侧认 4 个数=矩形 / 3 个数=圆（见 area_spec.py），并且会**先走过去**再找。
+    args_list = ["--allow", _chop_allow_arg()]
+    if area:
+        args_list = ["--area", str(area)] + args_list
     out = _run_script("chop_trees", args_list, timeout=120)
-    return _with_state(f"🪓 砍树：\n{out[:600]}")
+    return _with_state(f"🪓 砍树" + (f"（限定区域 {area}）" if area else "") + f"：\n{out[:600]}")
 
 
 @mcp.tool()
@@ -7269,8 +7288,9 @@ _FARM_SIBLING_KW = frozenset({
     "layout", "hoe_level", "x1", "y1", "x2", "y2",
     # 化肥 / 机器 / 建筑
     "fertilizer_name", "machine_type", "location", "item", "count",
-    # 动物 / 宠物 / 放置 / 砍收
+    # 动物 / 宠物 / 放置 / 砍收 / 清场
     "animal_type", "building", "name", "include_petted", "area", "steps", "radius", "all_plots",
+    "margin",     # clear 的"外扩几格"（恒 2026-09-19：默认帮 AI 往外多清 2 格）
 })
 
 
@@ -7324,6 +7344,91 @@ def _snake_tiles(tiles):
             xs.reverse()
         out.extend((tx, ty) for tx in xs)
     return out
+
+
+# ═══════════════════════════════════════════
+#  🌿 「这格为什么动不了」—— till / plant / fertilize 三个 op 共用的一份判据
+# ═══════════════════════════════════════════
+# 恒 2026-09-19：「**地格上有杂草！**记得做相关检测和报告让 ai 除草再耕种所选区域啦」
+# 起因：把一块长草的地丢给 till，报告只有「缺失 13 格（被杂物/水挡？）」+ `(69,21) Grass·地图没标可耕`
+#   ① `Grass` 是**内部类型名**，AI 看不出"那是草、该拿镰刀"；
+#   ② 「地图没标可耕」更是**误报**：真机对照 —— `(71,18)` 锄成了、(69,21) 没锄成，两格地图属性
+#      **逐字节相同**（`Diggable:T / Type:Dirt`）。`diggable` 字段的真身是
+#      `Diggable 属性 && !IsTileBlockedBy(...)`（ModEntry `BuildSurroundings`），**草/物件挡着也会 false**
+#      ⇒ 拿它当"可耕"就会对着长草的地喊"不可耕"，AI 只能干瞪眼；
+#   ③ 真因果：**草占着 terrainFeature 那个槽** ⇒ 先割掉才锄得出 HoeDirt。
+#      真机链路验过：`clear(69,21)` 割草 → `till(69,21)` **1/1 成功**。
+#
+# 判据**全部来自 `/surroundings` 的字段**（terrain/object/resource/largeTerrain），不另立名单：
+#   · "清得掉"那几种 = **与 `clear_area.py` 的 `TOOL_MAP` 对齐**（那脚本才是"能清什么"的真相源：
+#     杂草/草→镰刀、石头→镐、树枝/树桩→斧）。**改那边这里要跟着改**。
+#   · 其余带 object 的（洒水器/箱子/机器/稻草人/火把）= **设施，别清**。`clear` 的 TOOL_MAP 里
+#     没有它们（不会被误铲），但 AI 看见"有东西挡着"很容易自己去敲 ⇒ 报告必须**分开说**。
+_CLEARABLE_OBJ = {"Weeds": "🌿 杂草", "Grass": "🌿 草", "Stone": "🪨 石头",
+                  "Twig": "🪵 树枝", "Weed": "🌿 杂草"}
+_CLEARABLE_RES = {"LargeStump": "🪵 大木桩", "LargeLog": "🪵 大圆木",
+                  "LargeBoulder": "🪨 大石头", "MeteoriteOre": "☄️ 陨石"}
+
+
+def _tile_obstacle(info):
+    """一格 `/surroundings` 数据 → `(中文标签, 能不能交给 farm ops="clear" 清掉)`。
+
+    已锄好的地/已长作物的格 → `(None, False)`（那两种不是"障碍"，各有各的处理路径）。
+    看不出是什么但确实挡路 → 返回**如实说"不知道"**的标签（别硬编个名字骗 AI）。
+    """
+    if not isinstance(info, dict):
+        return (None, False)
+    ter = str(info.get("terrain") or "")
+    obj = str(info.get("object") or "")
+    res = str(info.get("resource") or "")
+    large = str(info.get("largeTerrain") or "")
+    if ter == "HoeDirt" or info.get("crop"):
+        return (None, False)                       # 已锄/已种 = 不是障碍
+    if ter.startswith("Tree:"):
+        return ("🌳 树（斧头）", True)
+    if ter == "Grass":
+        return ("🌿 草", True)
+    if obj in _CLEARABLE_OBJ:
+        return (_CLEARABLE_OBJ[obj], True)
+    if res in _CLEARABLE_RES:
+        return (_CLEARABLE_RES[res], True)
+    if obj:
+        return (f"🏗️ 设施·{obj}", False)            # 洒水器/箱子/机器…**别清**
+    if res:
+        return (f"🏗️ {res}", False)
+    if large:
+        return (f"🌳 {large}", False)
+    if info.get("isWater") or info.get("water") is True:
+        return ("💧 水", False)
+    if info.get("passable") is False:
+        return ("🚧 挡路（看不出是什么，拿 /dump_tile 细查）", False)
+    return (None, False)
+
+
+def _obstacle_lines(blocked, verb="锄") -> list:
+    """`{类别: [(x,y,标签)]}` → 给 AI 看的几行（till/plant/fertilize 共用措辞）。
+
+    ⚠️ 措辞要点：**说清下一步该敲哪个 op**，别只报"缺失 N 格"（恒：那样 AI 只能干瞪眼）。
+    """
+    lines = []
+    _coords = lambda lst, n=8: " ".join(f"({x},{y})" for x, y, _ in lst[:n]) + ("…" if len(lst) > n else "")
+    clear_t = blocked.get("clear") or []
+    if clear_t:
+        _names = "、".join(sorted({lab for _, _, lab in clear_t}))
+        lines.append(f"  🌿 {len(clear_t)} 格被杂物挡着（{_names}）: {_coords(clear_t)}")
+        lines.append("     → **先清一遍**：`farm ops=\"clear\"`（同一套 x,y,rows,length 坐标；"
+                     "草/杂草走镰刀、石头走镐、树枝树桩走斧；**会自动往外多清 2 格**，不用自己放大）。"
+                     "清完再" + verb + "就成（真机验过这条链：割草 → 锄地 1/1）")
+    fac_t = blocked.get("facility") or []
+    if fac_t:
+        _names = "、".join(sorted({lab.split("·", 1)[-1] for _, _, lab in fac_t}))
+        lines.append(f"  🏗️ {len(fac_t)} 格是**设施**（{_names}）: {_coords(fac_t)}")
+        lines.append("     → ⛔ **别清**（洒水器/箱子/机器会跟着被收走）；那是规划该绕开的格")
+    unt_t = blocked.get("untilled") or []
+    if unt_t:
+        lines.append(f"  🌱 {len(unt_t)} 格还没锄地: {_coords(unt_t)}"
+                     " → 先 `farm ops=\"till\"`（一次说完也行：`farm ops=\"till plant\"`，**一份 kw 共用**）")
+    return lines
 
 
 def _farm_till(x: int = -1, y: int = -1, rows: int = 1, length: int = 1,
@@ -7471,24 +7576,44 @@ def _farm_till(x: int = -1, y: int = -1, rows: int = 1, length: int = 1,
         lines.append(_ig_note)
     lines.append(f"  ✅ {len(tilled)}/{len(tile_list)} 锄出")
     if missing:
-        lines.append(f"  ⚠️ 缺失 {len(missing)} 格（被杂物/水挡？）:")
         _no_stand = set(no_stand)
+        _blocked, _other = {}, []
+        for mx, my in missing:
+            label, cleanable = _tile_obstacle(tiles.get((mx, my), {}))
+            if label and cleanable:
+                _blocked.setdefault("clear", []).append((mx, my, label))
+            elif label:
+                _blocked.setdefault("facility", []).append((mx, my, label))
+            else:
+                _other.append((mx, my))
+        lines.append(f"  ⚠️ 缺失 {len(missing)} 格:")
         for mx, my in missing[:10]:
             info = tiles.get((mx, my), {})
-            what = info.get('object') or info.get('resource') or info.get('terrain') or '裸地'
+            label, _cl = _tile_obstacle(info)
+            what = label or (info.get('object') or info.get('resource')
+                             or info.get('terrain') or '裸地')
             # 🆕 2026-09-17 恒：「报错加报目标格障碍物」——把"这格压根不可耕"和
             #    "可耕但被挡"分开说，否则一片草地只会得到一句没头没脑的"缺失 N 格"。
             #    ⚠️ HoeDirt 还要报不可耕就是误报（已翻的地不带 diggable 字段，真机实测）。
             # 🆕 2026-09-19：再加一条"**四邻没处站**"——那是站位问题不是地的问题，
             #    不写清楚 AI 只会盯着这格发呆（原本这里只会说"裸地"，看着像工具失灵）。
+            # 🆕 2026-09-19（恒「**地格上有杂草**」）：这句 "地图没标可耕" 原来**对草格是误报** ——
+            #    `diggable` 那个字段 = `Diggable 属性 && !IsTileBlockedBy(...)`，**草/物件挡着也会 false**；
+            #    真机对照：地图属性逐字节相同的两格，一格锄成了一格没锄成（差别就是那格长着草）。
+            #    ⇒ 只有"**看不出任何障碍**、地图又没标可耕"才说这句，有障碍的交给下面分类说。
             marks = []
             if (mx, my) in _no_stand:
                 marks.append("四邻没处站")
-            if not info.get('diggable') and info.get('terrain') != 'HoeDirt':
+            if not label and not info.get('diggable') and info.get('terrain') != 'HoeDirt':
                 marks.append("地图没标可耕")
             if marks:
                 what = f"{what}·{'、'.join(marks)}"
             lines.append(f"    ({mx},{my}) {what}")
+        lines.extend(_obstacle_lines(_blocked, verb="锄"))
+        if _other:
+            lines.append(f"  ❔ 另 {len(_other)} 格看不出障碍也没锄成（地图没标可耕地/被水挡？）: "
+                         + " ".join(f"({mx},{my})" for mx, my in _other[:8])
+                         + ("…" if len(_other) > 8 else ""))
     return "\n".join(lines)
 
 
@@ -7598,11 +7723,28 @@ def _farm_plant(seed_name: str = "", seed: str = "", x: int = -1, y: int = -1, r
         return _with_state(f"❌ 目标田块 ({rx1},{ry1})-({rx2},{ry2}) 不在当前地图（现在在 {cur}）"
                            f"——一个动作都没做。请先用 map go 到那块地所在的图。")
     planted_crop = {pt for pt in plant_tiles if tiles.get(pt, {}).get("crop")}
-    planted_obj = {pt for pt in plant_tiles if tiles.get(pt, {}).get("object")}
-    do_tiles = [pt for pt in plant_tiles if pt not in planted_crop and pt not in planted_obj]
+    # 🆕 2026-09-19（恒「**地格上有杂草**」）：跳过的不再只有"已种/被设施占"两种 —— 还要认出
+    #    **杂草挡着**（→ 先 clear）、**压根没锄**（→ 先 till）。原来看见 object 才算"被占"，
+    #    长草的格（没有 object，只有 terrain=Grass）就一路走到"逐格种 → 被游戏拒绝"，
+    #    最后拿季节当解释；真机实测那 10 格的真因**全是没锄/有草**，跟季节无关。
+    _blocked = {}
+    do_tiles = []
+    for pt in plant_tiles:
+        if pt in planted_crop:
+            continue
+        info = tiles.get(pt, {})
+        label, cleanable = _tile_obstacle(info)
+        if label:
+            _blocked.setdefault("clear" if cleanable else "facility",
+                                []).append((pt[0], pt[1], label))
+        elif info.get("terrain") != "HoeDirt":
+            _blocked.setdefault("untilled", []).append((pt[0], pt[1], "🌱 还没锄"))
+        else:
+            do_tiles.append(pt)
     if not do_tiles:
-        return _with_state(f"{warp_log}🌱 {len(plant_tiles)} 格无需种"
-                           f"（已有作物 {len(planted_crop)}、被设施占 {len(planted_obj)}）")
+        _msg = [f"{warp_log}🌱 {len(plant_tiles)} 格**没一格种得了**（已有作物 {len(planted_crop)}）"]
+        _msg.extend(_obstacle_lines(_blocked, verb="种"))
+        return _with_state("\n".join(_msg))
 
     # ── 6. 站位格（共用件；四邻全占则如实报缺失、不瞬移）──
     _walk_ok = api.walk_ok_tiles(rx1 - 1, ry1 - 1, rx2 + 1, ry2 + 1)
@@ -7674,9 +7816,7 @@ def _farm_plant(seed_name: str = "", seed: str = "", x: int = -1, y: int = -1, r
                      f"（游戏没说拒，但也没长出 crop——用 dump_tile 看那一格）")
     if planted_crop:
         lines.append(f"  ⏭ 跳过 {len(planted_crop)} 格（已有作物）")
-    if planted_obj:
-        lines.append(f"  ⏭ 跳过 {len(planted_obj)} 格（被设施/物件占："
-                     + " ".join(f"({x},{y})" for x, y in sorted(planted_obj)[:6]) + "）")
+    lines.extend(_obstacle_lines(_blocked, verb="种"))
     if no_stand:
         lines.append(f"  ⚠️ 没种 {len(no_stand)} 格（**四邻没处站**）: "
                      + " ".join(f"({x},{y})" for x, y in no_stand[:10]))
@@ -7686,17 +7826,58 @@ def _farm_plant(seed_name: str = "", seed: str = "", x: int = -1, y: int = -1, r
 
 
 def _farm_clear(x: int = -1, y: int = -1, rows: int = 1, length: int = 1,
-                direction: str = "horizontal", **extra) -> str:
-    """清杂草/石头（按 x,y,rows,length 给；x/y 必填）。
-    ⚠️ 2026-09-10 恒：**x/y 必填**（缺坐标不再兜底成"玩家面向格"）；尺寸默认 1×1 不擅扩。
-    ⚠️ 2026-09-19 更正：docstring 原写"或 x1,y1,x2,y2 都行"，但**签名里根本没有** x1..y2 —— 改成事实。"""
+                direction: str = "horizontal", x1: int = -1, y1: int = -1,
+                x2: int = -1, y2: int = -1, radius: int = 0, margin: int = 2,
+                **extra) -> str:
+    """🧹 清杂草/石头/树枝/树桩（`clear_area` 那个 skill 的域 op 入口）。
+
+    坐标**和 till/plant 同一套**（三选一）：
+      · `x,y,rows,length,direction` —— 起点 + 尺寸
+      · `x1,y1,x2,y2`               —— 直接给矩形两角（2026-09-19 补上：docstring 早就这么写，
+                                       实现里一直没有 ⇒ 传了会被当"兄弟参数"静默忽略）
+      · `radius=N`（配 `x,y`）      —— **圆形**：以 (x,y) 为圆心、半径 N
+
+    🍥 **默认自动外扩 `margin=2` 格**（恒 2026-09-19：「**你直接帮忙清理 ai 选的范围大两格半径
+       就好了，成功再跟它说**」）—— 只清方正一块的话四角还是草窝，**田边的杂草很快就会长进
+       田里、把作物顶掉**。所以按你给的坐标算、实际清的是**外扩 2 格那一圈**，收工时会写明
+       实际范围。不想外扩就 `margin=0`。
+
+    ⚠️ `x/y` 必填（或给 `x1..y2`）：缺坐标不再兜底成"玩家面向格"（恒 2026-09-10）；
+       尺寸默认 1×1 不擅自扩。
+    """
     length, err, ignored = _farm_kw_norm(x, y, rows, length, direction, extra, _FARM_SIBLING_KW)
-    if err: return err
-    xy, err = _farm_require_xy(x, y)
-    if err: return err
-    x, y = xy
-    x1, y1, x2, y2 = _farm_rect(x, y, rows, length, direction)
-    out = clear_area(x1, y1, x2, y2)
+    if err:
+        return err
+    _m = max(0, int(margin or 0))
+    try:
+        _r = int(radius or 0)
+    except (TypeError, ValueError):
+        return f"❌ radius 要是个数（半径几格），收到 {radius!r}"
+    if _r < 0:
+        return f"❌ radius 不能是负数，收到 {_r}"
+    if _r > 0:
+        xy, err = _farm_require_xy(x, y)
+        if err:
+            return err
+        x, y = xy
+        _rr = _r + _m
+        desc = (f"圆形 圆心({x},{y}) 半径{_r} → **实际半径 {_rr}**（自动外扩 {_m} 格）"
+                if _m else f"圆形 圆心({x},{y}) 半径{_r}")
+        out = _clear_area_run([str(x), str(y), str(_rr)], desc)
+    else:
+        if min(x1, y1, x2, y2) >= 0:
+            rx1, ry1 = min(x1, x2), min(y1, y2)
+            rx2, ry2 = max(x1, x2), max(y1, y2)
+        else:
+            xy, err = _farm_require_xy(x, y)
+            if err:
+                return err
+            x, y = xy
+            rx1, ry1, rx2, ry2 = _farm_rect(x, y, rows, length, direction)
+        ax1, ay1, ax2, ay2 = rx1 - _m, ry1 - _m, rx2 + _m, ry2 + _m
+        desc = (f"矩形 ({rx1},{ry1})-({rx2},{ry2}) → **实际 ({ax1},{ay1})-({ax2},{ay2})**"
+                f"（自动外扩 {_m} 格）" if _m else f"矩形 ({rx1},{ry1})-({rx2},{ry2})")
+        out = _clear_area_run([str(ax1), str(ay1), str(ax2), str(ay2)], desc)
     _ig = _ignored_note(ignored)
     return f"{out}\n{_ig}" if _ig else out
 
@@ -12361,7 +12542,7 @@ _SETTINGS_DISPATCH = {
 # 📖 详细域指引（2026-08-22：docstring 精简后，深度/坑靠 help 查，不丢细节）
 _DOMAIN_GUIDES = {
 "check": "查询域，what=...：status(完整状态) backpack(逐格价值/星级) worn(穿戴) machines(全场机器清单) mine(下矿进度) silo(干草) mastery(精通) buildings(木匠建筑) quest(开任务日志) chests(当前图箱) storage(箱子网络) look(环视周围) profile(我的技能等级+职业分支,如是否 Luremaster 蟹笼免饵) role(端口↔角色确认:我是谁/恒是谁)。⚠️查概览用 status，查逐格用 backpack，别都调浪费 token。📌profile/role 2026-09-11 从顶层工具收编进来（原来直接叫 profile()/which_role()，现在一律走 check）。📐这个域的参数叫 **what**，**不是 ops**。带参的只有两个: chests(chest=N 看第N个箱) / look(radius=10 环视半径)；其余(status/backpack/worn/machines/mine/silo/mastery/buildings/quest/storage/profile/role)**全无参**。⚠️查概览用 status、查逐格用 backpack，别都调一遍浪费 token。",
-"farm": "农活域(🌱必走，别手动挥工具组合，用域 ops)：till(锄地) plant(种,跳过已种;带 layout 就按洒水器布局种) water(浇,自动跳雨+水壶没水先装满) harvest(收) scythe(镰刀收蒜/花/茶) fertilize(化肥) clear(清杂草石树桩) plot(连通域规划) plan(方形规划,纯算格) chop(砍树)。⚠️**锄地/播种各只有一个实现**：锄地=`till`（`hoe`/`布局锄`/`tillfield`/`蓄力锄` 都是它的别名）、播种=`plant`（`sow`/`plantlayout`/`播种规划` 都是它的别名）；⛔ `till_plant` 已退役——要锄+种写 `ops=\"till plant\"`。 clearground(清单格) collect(一键收机器:只收不放,全农场瞬收不走路) load(放原料) building(一屋收放:拟人走进去收+放料,item留空=只收不放) break(拆/敲同scene,镐子敲可破物/翻已耕地) place(放置/播种同scene) pond/pond_add/pond_feed/pond_collect/pond_fish(鱼塘)。⚠️漏格DLL自动补；高级工具蓄力用 tool_area(别用/tool)。只在 Farm/温室/姜岛。带参 op(plant 的 seed_name、till/clear 的 x/y/rows、fertilize 的 fertilizer_name、place 的 name、building 的 location、collect 的 machine_type、pond_add 的 item)→ kw={'参数名':值}。🐄动物(2026-09-02 care域并入farm): animals(摸+收) 喂水/碗(宠物水,🌧️雨天自动跳过——雨会把碗填满) milk(挤奶剪毛) buy(买动物,豁免建议) doors(关门) hay(干草) pet(猫狗) petwalk(拟人摸) 畜舍/这间(这间屋动物) statue(祈福)——⚠️farm water=浇地,动物水用 喂水; farm building=机器收放,这屋动物用 畜舍。📐参数键名: till/clear/plant/fertilize 都是 x,y(**必填**),rows,length,direction（till/plant 也可用 x1,y1,x2,y2 直接给矩形两角）；plant 另有 seed_name,layout,direct,trellis；harvest/scythe=radius；plot=x,y,radius,all_plots；chop=area；collect=machine_type,location；load=item,machine_type,location；building=location,item,machine_type；place=name,x,y；break=x,y,steps,radius；pond_add=item+x,y（pond_feed/collect/fish 只要 x,y）；buy=animal_type,name,building；petwalk=include_petted；hay=dry_run。⚠️direction 只认 horizontal(默认)/vertical 两个值,别写'横'/'竖'。💡大田洒水器布局(可选,纯自动化建议)：要按洒水器留格/留走道就 plan→till→plant 三件套——plan(x1,y1,x2,y2,layout=0,hoe_level=-1,trellis=False) **纯算格不动机器**先看要锄/种哪些; till(x1,y1,x2,y2,layout=0) 按布局锄; plant(x1,y1,x2,y2,seed_name,**layout**) 按布局种（layout=0 整块/1 初级十字/2 高级/3 铱；direct=True 瞬移快、默认走位拟人）。想一次说完就 `ops=\"till plant\"`（**一份 kw 共用**，锄地会自动点名忽略 seed_name）。**layout 四档**: 0=标准整块(不预留洒水器,锄法蛇形逐格走位,任何锄头等级都行) 1=初级(十字稀疏,每台覆盖上下左右4格;锄法=精确锄每台4格,**与锄头等级无关**) 2=高级(优质,田宽高先裁成**3的倍数**,每3×3中心1台覆盖8格,整块蓄力锄) 3=铱(裁成**5的倍数**,每5×5中心1台覆盖24格;⚠️爬架作物不适用)。hoe_level: 0→1格 1→3线 2→5线 3→3×3 4→6×3,-1=自动读手持。trellis=True=爬架作物(啤酒花/青豆/葡萄,不可通过格)⇒自动**种2留1**留走道让AI能进田浇收。只管种不摆洒水器就直接 plant,不用 plan 那套。⚠️已知限制: layout 0/2/3 碰上金/铱锄(hoe_level>=3)会报**0处锄地站位**并自打一行'落点未实测校准,暂不规划蓄力站位'——**那是刻意不猜不是出错**; layout 1 不吃蓄力站位不受影响。",
+"farm": "农活域(🌱必走，别手动挥工具组合，用域 ops)：till(锄地) plant(种,跳过已种;带 layout 就按洒水器布局种) water(浇,自动跳雨+水壶没水先装满) harvest(收) scythe(镰刀收蒜/花/茶) fertilize(化肥) clear(清杂草石树桩;坐标同 till，也可 `radius=N` 走**圆形**；**会自动往外多清 2 格**——田边的杂草会长进田里把作物顶掉，不用自己放大) plot(连通域规划) plan(方形规划,纯算格) chop(砍树)。⚠️**锄地/播种各只有一个实现**：锄地=`till`（`hoe`/`布局锄`/`tillfield`/`蓄力锄` 都是它的别名）、播种=`plant`（`sow`/`plantlayout`/`播种规划` 都是它的别名）；⛔ `till_plant` 已退役——要锄+种写 `ops=\"till plant\"`。 clearground(清单格) collect(一键收机器:只收不放,全农场瞬收不走路) load(放原料) building(一屋收放:拟人走进去收+放料,item留空=只收不放) break(拆/敲同scene,镐子敲可破物/翻已耕地) place(放置/播种同scene) pond/pond_add/pond_feed/pond_collect/pond_fish(鱼塘)。⚠️漏格DLL自动补；**缺的格会被点名「被什么挡着」**（🌿草/杂草/🪨石头/🪵树枝→**先 `clear` 清一遍再 till/plant**；🏗️洒水器/箱子等设施→⛔别清、那是规划该绕开的格）——草占着地格时锄头是锄不出 HoeDirt 的，别对着「缺失N格」发呆；高级工具蓄力用 tool_area(别用/tool)。只在 Farm/温室/姜岛。带参 op(plant 的 seed_name、till/clear 的 x/y/rows、fertilize 的 fertilizer_name、place 的 name、building 的 location、collect 的 machine_type、pond_add 的 item)→ kw={'参数名':值}。🐄动物(2026-09-02 care域并入farm): animals(摸+收) 喂水/碗(宠物水,🌧️雨天自动跳过——雨会把碗填满) milk(挤奶剪毛) buy(买动物,豁免建议) doors(关门) hay(干草) pet(猫狗) petwalk(拟人摸) 畜舍/这间(这间屋动物) statue(祈福)——⚠️farm water=浇地,动物水用 喂水; farm building=机器收放,这屋动物用 畜舍。📐参数键名: till/clear/plant/fertilize 都是 x,y(**必填**),rows,length,direction（till/plant 也可用 x1,y1,x2,y2 直接给矩形两角）；plant 另有 seed_name,layout,direct,trellis；harvest/scythe=radius；plot=x,y,radius,all_plots；chop=area(**值写几个数**：4 个数=矩形两角 / 3 个数=圆心+半径，逗号空格都认)；collect=machine_type,location；load=item,machine_type,location；building=location,item,machine_type；place=name,x,y；break=x,y,steps,radius；pond_add=item+x,y（pond_feed/collect/fish 只要 x,y）；buy=animal_type,name,building；petwalk=include_petted；hay=dry_run。⚠️direction 只认 horizontal(默认)/vertical 两个值,别写'横'/'竖'。💡大田洒水器布局(可选,纯自动化建议)：要按洒水器留格/留走道就 plan→till→plant 三件套——plan(x1,y1,x2,y2,layout=0,hoe_level=-1,trellis=False) **纯算格不动机器**先看要锄/种哪些; till(x1,y1,x2,y2,layout=0) 按布局锄; plant(x1,y1,x2,y2,seed_name,**layout**) 按布局种（layout=0 整块/1 初级十字/2 高级/3 铱；direct=True 瞬移快、默认走位拟人）。想一次说完就 `ops=\"till plant\"`（**一份 kw 共用**，锄地会自动点名忽略 seed_name）。**layout 四档**: 0=标准整块(不预留洒水器,锄法蛇形逐格走位,任何锄头等级都行) 1=初级(十字稀疏,每台覆盖上下左右4格;锄法=精确锄每台4格,**与锄头等级无关**) 2=高级(优质,田宽高先裁成**3的倍数**,每3×3中心1台覆盖8格,整块蓄力锄) 3=铱(裁成**5的倍数**,每5×5中心1台覆盖24格;⚠️爬架作物不适用)。hoe_level: 0→1格 1→3线 2→5线 3→3×3 4→6×3,-1=自动读手持。trellis=True=爬架作物(啤酒花/青豆/葡萄,不可通过格)⇒自动**种2留1**留走道让AI能进田浇收。只管种不摆洒水器就直接 plant,不用 plan 那套。⚠️已知限制: layout 0/2/3 碰上金/铱锄(hoe_level>=3)会报**0处锄地站位**并自打一行'落点未实测校准,暂不规划蓄力站位'——**那是刻意不猜不是出错**; layout 1 不吃蓄力站位不受影响。",
 "mine": "下矿域(⚒️ 矿井/头骨/火山)：go(去挖矿:mode=rush冲层/farm刷矿,start起始层,target目标层,ore,cycles圈数) progress(进度) bomb_status/bomb_plan/bomb_place/bomb_collect/bomb_ladder/bomb_retreat(单步炸,**都要 bomb_ 前缀**) bomb_mine(自动) bomb_volcano(火山) organize(整理背包)。🔁**刷矿=mode=go(mode=farm)**：定点刷指定矿→ore=Copper铜(21层)/Iron铁(41层)/Gold金(71层)；**煤靠 farm 铁层(41)顺手清尘埃精灵/蝙蝠掉**（不是 ore 选项，跑 auto 内部刷）。🏃下矿=mode=go(mode=rush,start可选≤电梯上限+5倍数,target默认120)。⚠️无镐/血低硬拦；梯子 /ladder+confirm。⚠️bomb_mine 没炸弹+host在同矿井→自动转【内部】协同(跟随host+帮忙敲矿/打怪)不撤退出矿(bomb_escort 不对外暴露、AI 不主动启用)；bomb_retreat 结束协同+停脚本+脱离矿井回门口。⚠️接「深处的危险」重置电梯→起始层动态从1起(内置脚本自动读，不暴露工具)；刷矿目标层不可直达会上报，需先冲层带回或改浅层。📐带参速查: go(mode=rush冲层/farm刷矿, start起始层, target目标层, ore=Copper铜/Iron铁/Gold金, cycles圈数, hp_threshold, food_sta, food_hp, resume) bomb_plan(radius,min_covered,top) bomb_place(x,y **必填**) bomb_collect(max_items) bomb_mine(target,bomb,min_covered,follow_host,lead,autodrop,one_floor) bomb_volcano(bomb,min_covered,hp_threshold,max_minutes,poll) organize(disable,reset)。💣bomb 三个取值 'Cherry Bomb'樱桃/'Bomb'黑/'Mega Bomb'超级——**点名的包里没有就按 黑>超级>樱桃 自动换成有的**(不会误报没炸弹)；范围 樱桃=边长7十字 / 黑=11x11方块 / 超级=15x15方块，⚠️黑和超级**会炸伤自己**(实测黑掉3血)。⚠️bomb_volcano **要求 host 已在矿/火山里**才放行(火山瓦片没法程序化换层)。⚠️bomb_mine one_floor=True=逐层模式(同步,只跑一层出摘要,不撤退)；**默认冲层模式=异步后台跑,推荐**。💡出发前占位物(恒2026-08-23)：提前放1个可堆叠物(铱矿/铱锭/五彩碎片)在包，满包时同种战利品自动堆叠吸附、少触发满包停；别拿银河之魂这类带死亡会丢的稀有物当占位。",
 "cabin": "小屋引导域(🏠 FarmHouse/Cabin/岛屋；不传=扫屋)：enum(扫**本屋**查待收) collect(收**本屋**机器;要全农场→farm collect) statue(雕像) furniture(扫家具) interact(点家具,tile_x/tile_y) pickup(拿起家具,tile_x/tile_y) cook(做饭,recipe_name) sleep(睡觉,who=谁床：不传/房主名=睡房主床一起睡,传自己名=睡自己床) cook(做饭,recipe_name,count) place/break(同scene)。📐参数键名: interact/pickup=**tile_x,tile_y(不是x,y)** cook=recipe_name,count sleep=who place=name,x,y break=x,y,steps,radius；enum/collect/statue/furniture 无参。kw={'参数名':值}。",
 "social": "社交域：chat(搭话,name=NPC名) gift(送礼,npc_name/item_name) give(送玩家物品,手持右键正式赠予,一次一个要等同意) hand(递给玩家,走过去丢他脚边,磁吸自动收,可整叠) send(发消息,message) emote(表情,name) friendship(查好感,npc_name) movie(影院,npc)。📐参数键名: chat=name / gift=npc_name+item_name / give=player_name+item_name / hand=player_name+item_name+count(0=整叠) / send=message / emote=name(默认爱心) / friendship=name / movie=npc。⚠️**give vs hand**：give=面对面正式赠予(手持右键,一次一个,要等同意)；hand=走过去丢他脚边(磁吸自动收,**可整叠**)——想整叠给/对方不在手边就用 hand。kw={'参数名':值}。",
