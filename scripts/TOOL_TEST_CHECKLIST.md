@@ -1,6 +1,6 @@
 # 🧪 全工具测试清单（2026-09-11 生成）
 
-> **514 行 = 189 个后端函数**（抄自各域 dispatch，非文档）｜✅ 413 行 / **164 函数** ｜❌ 0 ｜⏭ 没条件测 34 行 / 9 函数｜**待测 16 函数**｜T1 自动 103 ｜T2 摆场 209 ｜T3 副作用 161 ｜⏭ 当期不可用 41
+> **517 行 = 189 个后端函数**（抄自各域 dispatch，非文档）｜✅ 419 行 / **165 函数** ｜❌ 0 ｜⏭ 没条件测 34 行 / 9 函数｜**待测 15 函数**｜T1 自动 103 ｜T2 摆场 212 ｜T3 副作用 161 ｜⏭ 当期不可用 41
 
 > 用法：跑测试（任何渠道，只要走 :8000 的 MCP）→ `python gen_tool_checklist.py --from-log` 自动打勾。
 > 判定规则见脚本头部；**⚠️ op「」= 参数被静默丢掉 ⇒ 不算 ✅**（也不算 ❌ —— 那一下压根没执行，当"没有证据"跳过，本行沿用上一轮结论）；真报错才 ❌。
@@ -13,7 +13,7 @@
 
 | op | 层 | 参数 | 判定 | 证据 |
 |---|---|---|---|---|
-| `backpack` | T1 自动 |  | ✅ | `session_log:1201` |
+| `backpack` | T1 自动 |  | ✅ | `session_log:1438` |
 | `building` | T1 自动 |  | ✅ | `session_log:455` |
 | `building_list` ≡`building` | T1 自动 |  | ✅ | ← 同 `check:building`〔building_list〕 |
 | `buildings` ≡`building` | T1 自动 |  | ✅ | `session_log:15` |
@@ -31,7 +31,7 @@
 | `quests` ≡`quest` ⇄`menu:journal` | T2 摆场 |  | ✅ | ← 同 `menu:journal`〔open_questlog〕 |
 | `ready` | T1 自动 |  | ✅ | `session_log:912` |
 | `ready_state` ≡`ready` | T1 自动 |  | ✅ | ← 同 `check:ready`〔check_ready_state〕 |
-| `role` | T1 自动 |  | ✅ | `session_log:1358` |
+| `role` | T1 自动 |  | ✅ | `session_log:1443` |
 | `silo` ≡`hay` | T1 自动 |  | ✅ | `session_log:1364` |
 | `status` | T1 自动 |  | ✅ | `session_log:1242` |
 | `storage` | T1 自动 |  | ✅ | `session_log:623` |
@@ -152,21 +152,23 @@
 | `整理背包` ≡`organize` | T2 摆场 |  | ✅ | ← 同 `mine:organize`〔bomb_organize〕 |
 | `进度` ≡`progress` ⇄`check:mine` | T1 自动 |  | ✅ | ← 同 `mine:progress`〔check_mine_progress〕 |
 
-## `cabin`（27）
+## `cabin`（30）
 
 | op | 层 | 参数 | 判定 | 证据 |
 |---|---|---|---|---|
 | `break` ⇄`farm:break` | T3 副作用 | radius, steps | ✅ | `session_log:287` |
 | `collect` | T2 摆场 |  | ✅ | `session_log:628` |
 | `cook` | T3 副作用 | recipe_name | ✅ | `session_log:445` |
+| `decor` ⇄`scene:decor` | T2 摆场 |  | ✅ | `session_log:1428` |
 | `enum` | T2 摆场 |  | ✅ | `session_log:627` |
-| `furniture` ⇄`scene:furniture` | T1 自动 |  | ✅ | `session_log:630` |
+| `furniture` ⇄`scene:furniture` | T1 自动 |  | ✅ | `session_log:1445` |
 | `interact` ⇄`scene:at` | T2 摆场 | tile_x, tile_y | ✅ | `session_log:631` |
-| `pickup` ⇄`scene:pickup` | T2 摆场 | tile_x, tile_y | ✅ | `session_log:281` |
-| `place` ⇄`farm:place` | T3 副作用 |  | ✅ | `session_log:290` |
+| `pickup` ⇄`scene:pickup` | T2 摆场 | tile_x, tile_y | ✅ | `session_log:1444` |
+| `place` ⇄`farm:place` | T3 副作用 |  | ✅ | `session_log:1439` |
 | `sleep` ⇄`daily:sleep` | T3 副作用 | who | ✅ | ← 同 `daily:sleep`〔go_sleep〕 |
 | `statue` ⇄`farm:statue` | T2 摆场 |  | ✅ | `session_log:629` |
 | `做饭` ≡`cook` | T3 副作用 |  | ✅ | ← 同 `cabin:cook`〔cook〕 |
+| `可铺` ≡`decor` ⇄`scene:decor` | T2 摆场 |  | ✅ | ← 同 `cabin:decor`〔decor_report〕 |
 | `家具` ≡`furniture` ⇄`scene:furniture` | T1 自动 |  | ✅ | ← 同 `cabin:furniture`〔scan_furniture〕 |
 | `引导` ≡`enum` | T2 摆场 |  | ✅ | ← 同 `cabin:enum`〔_cabin_enum〕 |
 | `拆` ≡`break` ⇄`farm:break` | T3 副作用 |  | ✅ | ← 同 `farm:break`〔break_tile〕 |
@@ -182,6 +184,7 @@
 | `睡` ≡`sleep` ⇄`daily:sleep` | T3 副作用 |  | ✅ | ← 同 `daily:sleep`〔go_sleep〕 |
 | `睡觉` ≡`sleep` ⇄`daily:sleep` | T3 副作用 |  | ✅ | ← 同 `daily:sleep`〔go_sleep〕 |
 | `祈福` ≡`statue` ⇄`farm:statue` | T2 摆场 |  | ✅ | ← 同 `cabin:statue`〔blessing_statue〕 |
+| `装修` ≡`decor` ⇄`scene:decor` | T2 摆场 |  | ✅ | ← 同 `cabin:decor`〔decor_report〕 |
 | `雕像` ≡`statue` ⇄`farm:statue` | T2 摆场 |  | ✅ | ← 同 `cabin:statue`〔blessing_statue〕 |
 
 ## `social`（17）
@@ -213,7 +216,7 @@
 | `at` ⇄`cabin:interact` | T2 摆场 | tile_x, tile_y | ✅ | `session_log:1238` |
 | `berry` | T3 副作用 |  | ⏭ 没条件测 | `session_log:1189` 农场没有结果的浆果灌木（春25 早过树莓季春15-18）⇒ 摇的动作没发生；需在浆果季再验 |
 | `break` ⇄`farm:break` | T3 副作用 | radius, steps | ✅ | `session_log:288` |
-| `decor` | T2 摆场 |  |  |  |
+| `decor` ⇄`cabin:decor` | T2 摆场 |  | ✅ | 真机 09-19(81) 于 IslandFarmHouse：`cabin`/`scene` 域都调通；**两端(7842/7843)各读一次逐项一致**（4 地板房+5 墙房，applied/格数/bbox/tiles 全同），且与反编译 `IslandFarmHouse` 构造硬编码的 9 句 `SetFloor/SetWallpaper` 一一对上 |
 | `drop` | T3 副作用 | items | ✅ | `session_log:1374` |
 | `face` | T2 摆场 | direction | ✅ | `session_log:1257` |
 | `forge_help` | T2 摆场 |  | ✅ | `session_log:312` |
@@ -226,7 +229,7 @@
 | `maze_walk` ⇄`map:walk_multi` | T2 摆场 | location, max_seg, max_wait, waypoints | ✅ | `session_log:715` |
 | `moss` | T3 副作用 | dry_run, radius, rounds, target_max | ✅ | `session_log:1191` |
 | `pan` | T2 摆场 | dry_run, radius, timeout | ✅ | `session_log:1176` |
-| `pickup` ⇄`cabin:pickup` | T2 摆场 | tile_x, tile_y | ✅ | ← 同 `cabin:pickup`〔furniture_pickup〕 |
+| `pickup` ⇄`cabin:pickup` | T2 摆场 | tile_x, tile_y | ✅ | ⚠️ 原判定是 `--from-log` **自动打的**（只证明"调用没报错"，不算验过）；**09-19 真机补**：隔 15 格拿起(`/furniture` 19→18、背包 11→12) ＋ 放回(18→19、原地)，空格子点名「这格没有家具」＋列就近家具（CHANGELOG 82） |
 | `pickup_scene` | T3 副作用 | max_items | ✅ | `session_log:831` |
 | `place` ⇄`farm:place` | T3 副作用 |  | ⏭ 没条件测 | `session_log:307` 要一块能放的地皮 + 可放置物 |
 | `rock` | T3 副作用 | break_stone, dig, max_break, radius | ✅ | `session_log:1185` |
@@ -240,7 +243,7 @@
 | `丢` ≡`drop` | T3 副作用 |  | ✅ | ← 同 `scene:drop`〔drop_item〕 |
 | `分段` ≡`maze_seg` | T2 摆场 |  | ✅ | ← 同 `scene:maze_seg`〔_maze_seg_view〕 |
 | `可坐` ≡`seats` | T1 自动 |  | ✅ | ← 同 `scene:seats`〔seats〕 |
-| `可铺` ≡`decor` | T2 摆场 |  |  |  |
+| `可铺` ≡`decor` ⇄`cabin:decor` | T2 摆场 |  | ✅ | ← 同 `cabin:decor`〔decor_report〕 |
 | `坐` ≡`sit` | T2 摆场 |  | ✅ | ← 同 `scene:sit`〔sit〕 |
 | `坐下` ≡`sit` | T2 摆场 |  | ✅ | ← 同 `scene:sit`〔sit〕 |
 | `家具` ≡`furniture` ⇄`cabin:furniture` | T1 自动 |  | ✅ | ← 同 `cabin:furniture`〔scan_furniture〕 |
@@ -272,7 +275,7 @@
 | `绿雨` ≡`moss` | T3 副作用 |  | ✅ | ← 同 `scene:moss`〔moss_run〕 |
 | `翻垃圾桶` ≡`garbage` | T2 摆场 |  | ✅ | ← 同 `scene:garbage`〔trash_run〕 |
 | `翻桶` ≡`garbage` | T2 摆场 |  | ✅ | ← 同 `scene:garbage`〔trash_run〕 |
-| `装修` ≡`decor` | T2 摆场 |  |  |  |
+| `装修` ≡`decor` ⇄`cabin:decor` | T2 摆场 |  | ✅ | ← 同 `cabin:decor`〔decor_report〕 |
 | `走迷宫` ≡`maze_walk` ⇄`map:walk_multi` | T2 摆场 |  | ✅ | ← 同 `map:walk_multi`〔_maze_walk〕 |
 | `起身` ≡`stand` | T2 摆场 |  | ✅ | ← 同 `scene:stand`〔stand〕 |
 | `转身` ≡`face` | T2 摆场 |  | ✅ | ← 同 `scene:face`〔face〕 |
@@ -397,9 +400,9 @@
 | `heartbeat` | T3 副作用 | minutes | ✅ | `session_log:692` |
 | `lie_bed` | T3 副作用 | who | ✅ | `session_log:1273` |
 | `pause` | T3 副作用 | out_of_focus | ✅ | `session_log:342` |
-| `peek` | T2 摆场 |  | ✅ | `session_log:706` |
+| `peek` | T2 摆场 |  | ✅ | `session_log:1411` |
 | `settle` | T3 副作用 |  | ⏭ 没条件测 | `session_log:687` 要正在弹着的过夜结算菜单（且停在汇总页） |
-| `sleep` ⇄`cabin:sleep` | T3 副作用 | who | ✅ | `session_log:1269` |
+| `sleep` ⇄`cabin:sleep` | T3 副作用 | who | ✅ | `session_log:1402` |
 | `wb_clear` | T3 副作用 |  | ✅ | `session_log:641` |
 | `wb_pin` | T3 副作用 | content | ✅ | `session_log:331` |
 | `wb_read` | T3 副作用 |  | ✅ | `session_log:642` |
@@ -427,12 +430,12 @@
 
 | op | 层 | 参数 | 判定 | 证据 |
 |---|---|---|---|---|
-| `go` | T2 摆场 | destination | ✅ | `session_log:1376` |
+| `go` | T2 摆场 | destination | ✅ | `session_log:1397` |
 | `lookup` | T1 自动 | location | ✅ | `session_log:1103` |
-| `npc` | T2 摆场 |  | ✅ | `session_log:650` |
+| `npc` | T2 摆场 |  | ✅ | `session_log:1415` |
 | `query` | T1 自动 | function | ✅ | `session_log:611` |
 | `unlocks` | T2 摆场 |  | ✅ | `session_log:582` |
-| `walk` | T2 摆场 | poi_name | ✅ | `session_log:1321` |
+| `walk` | T2 摆场 | poi_name | ✅ | `session_log:1382` |
 | `walk_multi` ⇄`scene:maze_walk` | T2 摆场 | location, max_seg, max_wait, waypoints | ✅ | `session_log:720` |
 | `warp_safe` | T2 摆场 |  | ✅ | `session_log:927` |
 | `反查` ≡`query` | T1 自动 |  | ✅ | ← 同 `map:query`〔map_query〕 |

@@ -657,9 +657,33 @@ def sell(name=None, sell_all=False):
     return _post("/sell", data)
 
 
-def key(k, count=1, hold=0):
-    """模拟按键。hold>0 时长按（走到边缘/传送瓦片用，如 400ms）。"""
-    return _post("/key", {"key": k, "count": count, "hold": hold})
+# 🎹 C# `/key` 里"**直调游戏函数、不发真实键盘事件**"的那几个键（ModEntry.cs:8857+）：
+#    confirm/action → Game1.pressActionButton(...)
+#    ok             → 菜单 receiveLeftClick(okButton)
+#    cancel/back    → receiveKeyPress(Escape) / pressUseToolButton()
+#    skip/escape    → event.skipEvent() / receiveKeyPress(Escape)
+#    menu           → receiveKeyPress(Escape) / new GameMenu()
+# 这些**不依赖真实按键**，所以"发键前抢前台"对它们毫无必要，只会顶掉恒的窗口。
+_DIRECT_CALL_KEYS = {"confirm", "action", "ok", "cancel", "back", "skip", "escape", "menu"}
+
+
+def key(k, count=1, hold=0, nofocus=None):
+    """模拟按键。hold>0 时长按（走到边缘/传送瓦片用，如 400ms）。
+
+    ⚠️ nofocus（2026-09-19 恒）：**默认 None＝自动**，按"这条路到底发不发真实键盘事件"判：
+      · `_DIRECT_CALL_KEYS` 里的键 ⇒ **不抢前台** —— C# 那边是直调游戏函数，抢前台纯属多余，
+        却会**把恒的星露谷窗口顶到最前**（恒："刚刚你动到我的窗口了好像"）。
+        而 `SetForegroundWindow` **成不成功全看 Windows 给不给**（恒正在打字时通常被拒），
+        所以这件事一直是**时灵时不灵**的。
+      · 其余键（down/up/space/enter/字母/数字/F1-12）⇒ **照旧抢** —— 那些分支 C# 确实会
+        `keybd_event` 发真实按键，不抢前台那发键就会落到**当前真正前台的窗口**（可能是恒的），
+        比顶他一下更糟。
+      · `hold>0`（长按）→ 也走"抢"，因为长按本来就靠真实按键事件。
+    需要时显式传 True/False 覆盖。
+    """
+    if nofocus is None:
+        nofocus = (str(k).lower() in _DIRECT_CALL_KEYS) and hold == 0
+    return _post("/key", {"key": k, "count": count, "hold": hold, "nofocus": nofocus})
 
 
 def wait_tool_animation(seconds=0.6):

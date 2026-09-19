@@ -1923,16 +1923,22 @@ def _obelisk_plan(dest: str, cur: str):
     return None
 
 
-def _obelisk_go(building, landing: str, label: str) -> tuple:
+def _obelisk_go(building, landing: str, label: str, from_loc: str = "Farm", expect_land=None) -> tuple:
     """站到图腾柱下方 → 朝上 → key confirm 传送（⚠️ 必须 confirm，interact/右键不触发）。
-    返回 (是否离开农场/到达落点, 日志)。"""
+    返回 (是否离开 from_loc/到达落点, 日志)。
+
+    `from_loc`（2026-09-19 恒）：**从哪根图上点火**。默认 "Farm"＝主农场那几根出岛柱；
+      姜岛那根（IslandWest→Farm）传 "IslandWest" —— 原来这里**硬编码 "Farm"**，
+      所以姜岛那根接不上（这正是 #28 的一半）。站位算法不变：
+      `sx = x + w//2, sy = y + h//2 + 1`（反编译 IslandWest.cs:160 的 perch 就是 `Point(72,37)`，
+      用扫描得到的 (71,36,3x1) 算出来正好是它）。"""
     try:
         bx, by = int(building["x"]), int(building["y"])
         w = int(building.get("width") or 3)
         h = int(building.get("height") or 2)
         sx, sy = bx + w // 2, by + h // 2 + 1    # 柱底中部（站柱下 1 格朝上）
         _dismount_if_riding()
-        _snap_stand("Farm", sx, sy)
+        _snap_stand(from_loc, sx, sy)
         time.sleep(0.3)
         api._post("/face", {"direction": 0})
         time.sleep(0.3)
@@ -1943,23 +1949,53 @@ def _obelisk_go(building, landing: str, label: str) -> tuple:
                 time.sleep(0.5)
                 try:
                     cur = api.state().get("location", {}).get("name", "")
-                    if cur and cur != "Farm":
+                    if cur and cur != from_loc:
                         break
                 except Exception:
                     pass
             try:
-                if api.state().get("location", {}).get("name", "") != "Farm":
+                if api.state().get("location", {}).get("name", "") != from_loc:
                     break
             except Exception:
                 pass
         cur = api.state().get("location", {}).get("name", "") or landing
-        ok = cur != "Farm"
+        ok = cur != from_loc
+        if not ok:
+            # ⚠️ 2026-09-19 恒：失败必须**把现场带出来**（"判据要能被看见"）。
+            #    原来这里只回 `🗼 xxx → Farm`，等于什么都没说；而"人站在哪格、朝哪边、
+            #    停没停"正是区分「站位偏了 / 朝向不对 / 压根没触发」的唯一线索。
+            #    （上层 `_try_transport` 原来还会把这句话整个丢掉 —— 那个也一并修了。）
+            _why = "读不到玩家位置"
+            try:
+                _p = api.state().get("player", {}) or {}
+                _px, _py, _pf = _p.get("x"), _p.get("y"), _p.get("facingDirection")
+                _why = f"人在 ({_px},{_py}) 朝 {_pf}"
+                _dev = []
+                if (_px, _py) != (sx, sy):
+                    _dev.append(f"⚠️ **站位对不上**（期望 ({sx},{sy})）")
+                if _pf is not None and _pf != 0:
+                    _dev.append("⚠️ **朝向不是朝上(0)**")
+                if _p.get("isMoving"):
+                    _dev.append("⚠️ **还在移动**（走位没停稳就被按了）")
+                if _dev:
+                    _why += "，" + "，".join(_dev)
+                else:
+                    # 🎯 2026-09-19 恒 —— 这是被今天一整轮排查逼出来的：**排除项也要说出来**。
+                    #    站位/朝向/静止全对却还是没起来 ⇒ 问题**不在"人站哪"**。今天大半轮就耗在
+                    #    怀疑站位上（walk_to 假 ok、16px、异步打架…查了个遍），而消息本可以一句话免掉。
+                    _why += ("（站位、朝向、静止**都对得上** ⇒ 排除这几项，"
+                             "问题在「按了 confirm 但前面那格没触发交互」）")
+            except Exception:
+                pass
+            return False, f"🗼 {label} 试了但没起来：{_why} ⇒ 落回常规路径"
         # 🎯 落点自检（2026-09-12 恒给的锚点）：落点是**写死在游戏里**的（Building.cs:1011），
         #    真落点对不上 ⇒ 要么游戏改了、要么这一跳根本不是那根柱子 —— 这种"悄悄不对"得自己冒出来，
         #    别等人踩到才发现。差 >3 格才提（落点附近可能有碰撞微调/被顶开一格，别刷噪音）。
         try:
-            exp = next((v["land"] for v in OBELISK_TARGETS.values()
-                        if v["dest"] == cur and v.get("land")), None)
+            # `expect_land`：表里查不到时用调用方给的期望落点（姜岛那根落 Farm(48,7)，
+            #   不在 OBELISK_TARGETS 里，靠这个参数照样能自检）。
+            exp = expect_land or next((v["land"] for v in OBELISK_TARGETS.values()
+                                       if v["dest"] == cur and v.get("land")), None)
             if ok and exp:
                 p = api.state().get("player", {})
                 ax, ay = p.get("x"), p.get("y")
@@ -1973,6 +2009,79 @@ def _obelisk_go(building, landing: str, label: str) -> tuple:
         return ok, f"🗼 {label} → {cur}"
     except Exception as e:
         return False, f"🗼 {label} 失败({e})"
+
+
+# ═══════════════════════════════════════════
+#  🏝️ 姜岛 → 大陆：坐船 vs 姜岛那根农场柱（恒 2026-09-19 拍板）
+# ═══════════════════════════════════════════
+ISLAND_FARM_OBELISK_ACTION = "FarmObelisk"   # IslandWest Buildings 层的 Action 名
+ISLAND_BOAT_DOCK = (17, 44)                  # 码头返航触发格（locations.py:754，`/warps` 实测）
+ISLAND_OBELISK_LAND = (48, 7)                # 柱落点 Farm(48,7)（locations.py:419，游戏里写死）
+
+
+def _island_farm_obelisk_rect():
+    """动态定位姜岛那根"农场柱"的占位 → building dict / None。
+
+    ⚠️ **这只是几何，不是"解锁了没"** —— 地图静态层**锁着也扫得到**
+       （我 2026-09-19 一开始拿它当解锁判据，被恒当场纠正）。解锁与否看 `/unlocks.farmObelisk`。"""
+    try:
+        d = api._get("/tile_props", {"scan": "Action", "location": "IslandWest"})
+    except Exception:
+        return None
+    hits = [h for h in (d.get("hits") or [])
+            if h.get("layer") == "Buildings" and h.get("value") == ISLAND_FARM_OBELISK_ACTION]
+    if not hits:
+        return None
+    xs = [int(h["x"]) for h in hits]
+    ys = [int(h["y"]) for h in hits]
+    return {"type": ISLAND_FARM_OBELISK_ACTION, "x": min(xs), "y": min(ys),
+            "width": max(xs) - min(xs) + 1, "height": max(ys) - min(ys) + 1}
+
+
+def _unlock_unlocked(key: str):
+    """查 `/unlocks.<key>.unlocked`。**读不到 → None（不猜）**。"""
+    try:
+        v = ((api.unlock_status() or {}).get("unlocks") or {}).get(key)
+        return None if v is None else bool(v.get("unlocked"))
+    except Exception:
+        return None
+
+
+def _island_return_plan(cur: str, dest: str, pos=None):
+    """🏝️ 姜岛 → 大陆：坐船 vs 走姜岛那根农场柱，**比总路程**（恒 2026-09-19 拍板的口径）。
+
+    总段数 = 走出发口 + 1(交通) + 落点续走；**严格更少者胜**；打平比"人→出发口"的**地图内距离**
+    （照抄 `_minecart_walk_plan` 那把尺子，别自创第二种量法）。
+
+    返回 `(building, 说明)` ＝ 走柱子；返回 `None` ＝ 走船/按原路。
+    前提：`/unlocks.farmObelisk` 已解锁 —— **读不到就保守走船**（不猜、不硬闯）。
+    """
+    if _unlock_unlocked("farmObelisk") is not True:
+        return None                                   # 没解锁 / 打听不到 → 柱子不进候选
+    ob = _island_farm_obelisk_rect()
+    if not ob:
+        return None                                   # 解锁了却扫不到占位 → 交回原路
+    try:
+        boat_seg = (len(_map_bfs(cur, "IslandSouth") or []) + 1
+                    + len(_map_bfs("FishShop", dest) or []))
+        obel_seg = (len(_map_bfs(cur, "IslandWest") or []) + 1
+                    + len(_map_bfs("Farm", dest) or []))
+    except Exception:
+        return None
+    if obel_seg > boat_seg:
+        return None                                   # 船更省 → 原路
+    if obel_seg == boat_seg:
+        # 段数打平 → 比"人→出发口"的地图内距离。**只在人已经站在某个出发图上时才有意义**；
+        # 两个都不在（或柱子不更近）⇒ 保守走船。
+        ob_stand = (ob["x"] + int(ob.get("width") or 3) // 2,
+                    ob["y"] + int(ob.get("height") or 2) // 2 + 1)
+        d_ob = (abs(pos[0] - ob_stand[0]) + abs(pos[1] - ob_stand[1])) \
+            if (pos and cur == "IslandWest") else None
+        d_boat = (abs(pos[0] - ISLAND_BOAT_DOCK[0]) + abs(pos[1] - ISLAND_BOAT_DOCK[1])) \
+            if (pos and cur == "IslandSouth") else None
+        if d_ob is None or d_boat is None or d_ob >= d_boat:
+            return None
+    return ob, f"🏝️ 姜岛回大陆：船 {boat_seg} 段 vs 柱 {obel_seg} 段 → 走柱"
 
 
 def _cart_closer_than_walk(pos, stn, direct):
@@ -2174,15 +2283,27 @@ def _try_transport(dest: str, cur: str):
             except Exception:
                 nxt = landing
             return nxt, log
+        # ⚠️ 2026-09-19 恒：**失败别静默**。原来是 `return None, ""` —— 把 `_obelisk_go`
+        #    辛苦写出来的失败原因整个丢掉，`map_go` 回包里**看不出"试了柱子但没成"**，
+        #    恒只能在游戏里肉眼看见"站在柱子前站了一会儿，然后改常规走路"。
+        #    失败时第二个返回值不再是空串；调用方一律按 `if land:` 判成功，不受影响。
+        return None, log
     return None, ""
 
 
-def _map_go_walk(path, destination: str, dest: str, lead_log: str = "", npc_target=None, npc0=None, mine_hint: str = "") -> str:
+def _map_go_walk(path, destination: str, dest: str, lead_log: str = "", npc_target=None, npc0=None, mine_hint: str = "", note_log: str = "") -> str:
     """执行 BFS 路径逐段走路（map_go 与交通续走共用；2026-08-16 抽取）。
-    lead_log: 交通节点成功日志（前缀显示）。"""
+    lead_log: 交通节点成功日志（前缀显示）。
+    note_log: 开跑前就要说出口的**坏消息**（如"图腾柱试了没起来"）。
+    ⚠️ 2026-09-19 恒：这类话**必须挂进 `log`**，不能挂 `mine_hint` —— 后者只在 `:2356`
+       那条"**走完全程**"的返回路径上渲染，中途早退（门锁 / 某段失败 / 提前 return）
+       就整个丢掉，等于没说。第一次改我就挂错了地方，被自己这趟 FishShop 门锁复现打脸。
+       （`mine_hint` 的矿车提示有同样毛病，留作后续。）"""
     log = [f"🗺️ 导航 {path[0][0]} → {dest}（{len(path)} 段）"]
     if lead_log:
         log.insert(0, lead_log)
+    if note_log:
+        log.append(note_log)
     for i, (frm, nxt, link) in enumerate(path):
         kind = link["kind"]
         icon = "🟢" if kind == "warp" else "🚪"
@@ -2591,6 +2712,30 @@ def map_go(destination: str = "", npc: str = "") -> str:
             if not path:
                 return _with_state(f"{tlog}，但从 {cur} 到 {dest} 缺地图链接（先手动到 {cur} 再走）")
             return _map_go_walk(path, destination, dest, lead_log=tlog, npc_target=_npc_target, npc0=_npc0, mine_hint=_mine_hint)
+        # ⚠️ 2026-09-19 恒：柱子**试了但没成** → 这句必须跟着走路日志一起冒出来，别让人只能靠
+        #    肉眼在游戏里发现（原来这里**什么都没有**）。挂 `note_log` **不是** `mine_hint` ——
+        #    后者中途早退就丢了（教训见 `_map_go_walk` docstring）。
+        _tnote = tlog or ""
+        # 2.55 🏝️ 2026-09-19 恒：**姜岛 → 大陆：船 vs 姜岛那根农场柱，比总路程**。
+        #   原来 BFS 只会走船（IslandSouth→FishShop），柱子**解锁了也从没进过候选**——
+        #   `_obelisk_plan` 第一行 `if cur != "Farm": return None` 把它挡在门外（不是比输，是没参赛）。
+        if cur in ISLAND_MAPS and dest not in ISLAND_MAPS:
+            _ip = _island_return_plan(cur, dest, _pos)
+            if _ip:
+                _ob, _why = _ip
+                _iok, _ilog = _obelisk_go(_ob, "Farm", "姜岛农场柱(→农场)",
+                                          from_loc="IslandWest", expect_land=ISLAND_OBELISK_LAND)
+                if _iok:
+                    if dest == "Farm":
+                        return _with_state(f"{_why}\n{_ilog} → 到达 Farm" + _mine_entry_reminder("Farm"))
+                    _p2 = _map_bfs("Farm", dest)
+                    if not _p2:
+                        return _with_state(f"{_why}\n{_ilog}，但从 Farm 到 {dest} 缺地图链接")
+                    return _map_go_walk(_p2, destination, dest, lead_log=_why + "\n" + _ilog,
+                                        npc_target=_npc_target, npc0=_npc0,
+                                        mine_hint=_mine_hint, note_log=_tnote)
+                # 柱子没起来 → **别静默**，把原因带进下面的走路日志（今天刚修的那条通道）
+                _tnote = (_tnote + "\n" if _tnote else "") + _ilog
         # 2.5b ⚠️ 2026-09-07 恒：矿车"就近段数比较"（任何起点，含非农场）。替代原"有车坐矿车"：
         #   dest 在矿车网络时，矿车总段数严格少于纯走才坐；打平比"首段地图内距离"。
         if dest in MINE_CART_TO and not _minecart_dead_now():
@@ -2610,7 +2755,8 @@ def map_go(destination: str = "", npc: str = "") -> str:
         if not path:
             return _with_state(f"🗺️ 知识库没找到从 {cur} 到 {dest} 的路径（缺地图链接）")
         # 4. 逐段执行（恒 2026-08-13 多段走路：走到出口瓦片 → 传送到下一图入口(ARRIVE) → 继续走）
-        return _map_go_walk(path, destination, dest, npc_target=_npc_target, npc0=_npc0, mine_hint=_mine_hint)
+        return _map_go_walk(path, destination, dest, npc_target=_npc_target, npc0=_npc0,
+                            mine_hint=_mine_hint, note_log=_tnote)
     except Exception as e:
         return _with_state(f"❌ {e}")
 

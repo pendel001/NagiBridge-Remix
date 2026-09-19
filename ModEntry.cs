@@ -19472,6 +19472,10 @@ public class ModEntry : Mod
                 //   nws.parrotPlatformsUnlocked（NetList<int>，已解锁平台索引）+ 各岛 GameLocation.parrotPlatforms。
                 //   ⚠️ 不是 FarmerTeam.parrotUpgradesDone（之前猜错）。
                 bool parrotExpress = false;
+                // 🆕 2026-09-19 恒：**直接读游戏自己的完成判据**（下面那套反射扫法一直在误报，见下方长注释）
+                bool farmObeliskUnlocked = false;      // 姜岛→农场图腾柱
+                bool parrotPlatformsDirect = false;    // 岛内鹦鹉特快
+                string farmObeliskDiag = "not-read";
                 var parrotUpgradesRaw = new List<int>();
                 string parrotDiag = "not-read";
                 var parrotMembers = new List<string>();
@@ -19550,8 +19554,46 @@ public class ModEntry : Mod
                         catch { }
                     }
 
-                    parrotExpress = parrotUpgradesRaw.Any(v => v > 0);
-                    if (parrotUpgradesRaw.Count == 0) parrotDiag = "no-platforms-unlocked";
+                    // ⚠️⚠️ 2026-09-19 恒：**判定换掉了** —— 上面这套反射扫法**一直在误报**，两处都错：
+                    //   ① `nws.ParrotPlatformsUnlocked` 其实是 **NetBool**（反编译 IslandWest.cs:179
+                    //      `Game1.netWorldState.Value.ParrotPlatformsUnlocked = true;`），
+                    //      而这里拿 `GetProperty("Count")` 当**列表**读 ⇒ 永远 0
+                    //      （诊断里就是 `nws.parrotPlatformsUnlocked=0`，首选路径**永远读空**）。
+                    //   ② 兜底去扫各岛 `location.parrotPlatforms` —— 那是**度假村/港口平台**，
+                    //      跟鹦鹉特快/图腾柱不是一回事；而且它吐的是"**已解锁平台索引**"，
+                    //      判据 `Any(v => v > 0)` 把**合法的索引 0** 当成"没解锁"
+                    //      （本档 `IslandSouth.parrotPlatforms=1:[0]` ⇒ 误判成 false）。
+                    //   ⇒ 恒：「金核桃早全收集了、图腾柱很久很久前就解锁了，却报未解锁。」
+                    //   ⇒ 改成读**游戏自己的完成判据**（IslandWest.cs:160-165 那个 ParrotUpgradePerch：
+                    //      站位 Point(72,37)、需 20 金核桃、前置邮件 Island_UpgradeHouse_Mailbox）：
+                    //        · 姜岛→农场图腾柱 = `IslandWest.farmObelisk`（public readonly NetBool）
+                    //        · 岛内鹦鹉特快   = `nws.ParrotPlatformsUnlocked`（**bool**，不是列表）
+                    //   上面的反射结果**保留但只当诊断看**（`parrotUpgradesRaw`/`parrotMembers`），
+                    //   **不再参与判定** —— 恒：别把诊断当判据。
+                    try
+                    {
+                        var iw = Game1.getLocationFromName("IslandWest") as IslandWest;
+                        if (iw != null)
+                        {
+                            farmObeliskUnlocked = iw.farmObelisk.Value;
+                            // ⚠️ 2026-09-19 恒：**成功也要写诊断** —— 原先成功时不更新这个串，
+                            //    于是明明读到了 true 却显示 `not-read`，"诊断在骗人"（恒最烦这类）。
+                            //    现在能一眼看出：读到了什么、以及有没有靠邮件兜底（`+mail`）。
+                            farmObeliskDiag = "IslandWest.farmObelisk=" + farmObeliskUnlocked;
+                        }
+                        else farmObeliskDiag = "no-IslandWest";
+                    }
+                    catch (Exception ex) { farmObeliskDiag = "err:" + ex.GetType().Name; }
+                    // 🛡️ 邮件兜底：完成时 `addMailForTomorrow("Island_W_Obelisk", sendToEveryone:true)`
+                    //    ⇒ 次日进邮件。**跨客户端更稳** —— `farmObelisk` 是**地图上的** NetField，
+                    //    farmhand 没进过 IslandWest 可能读不到（"读全局状态≠读地图上的"，CHANGELOG 09-11）。
+                    if (!farmObeliskUnlocked && Has("Island_W_Obelisk"))
+                    { farmObeliskUnlocked = true; farmObeliskDiag += "+mail"; }
+                    try { parrotPlatformsDirect = Game1.netWorldState.Value.ParrotPlatformsUnlocked; }
+                    catch (Exception ex) { farmObeliskDiag += "|plat-err:" + ex.GetType().Name; }
+                    parrotExpress = farmObeliskUnlocked || parrotPlatformsDirect;
+                    parrotDiag = $"direct:farmObelisk={farmObeliskUnlocked}({farmObeliskDiag}),"
+                               + $"platforms={parrotPlatformsDirect}|reflection:{parrotDiag}";
                 }
                 catch (Exception ex) { parrotDiag = "err:" + ex.GetType().Name; }
                 var unlocks = new Dictionary<string, object>
@@ -19572,6 +19614,10 @@ public class ModEntry : Mod
                     ["witchSwamp"] = new { unlocked = Has("HasDarkTalisman"), how = "完成黑暗护身符任务（法师）" },
                     ["townKey"] = new { unlocked = Has("HasTownKey"), how = "完成小镇钥匙任务（任意时段进居民家）" },
                     ["forestMagic"] = new { unlocked = Has("Lewis_cc_Begin") || Has("ccIntro"), how = "森林魔法（献祭功能解锁）" },
+                    // 🆕 2026-09-19 恒：**单列一个 `farmObelisk`** —— 比复用 `parrotExpress` 精确，
+                    //    给"姜岛→农场走图腾柱"那条导航用（那个只认这根柱子，跟岛内特快是两码事）。
+                    ["farmObelisk"] = new { unlocked = farmObeliskUnlocked,
+                        how = "姜岛→农场图腾柱：喂 20 金核桃给 IslandWest(72,37) 的鹦鹉（前置=先修睡觉小屋）" },
                     ["parrotExpress"] = new { unlocked = parrotExpress, how = "喂金核桃给岛上鹦鹉解锁快捷（姜岛→农场图腾/岛内传送）" },
                     // 🌋 火山近路（2026-09-12 恒：「第一次闯关到10层之后来这里踩机关，之后才可以从入口层直接到火山顶」）
                     //   反编译定论（decomp/full/StardewValley.Locations/Caldera.cs:106 + DwarfGate.cs:121）：

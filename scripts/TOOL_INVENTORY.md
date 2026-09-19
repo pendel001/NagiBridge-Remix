@@ -129,7 +129,7 @@
   ⚠️ 黑和超级**会炸伤自己**：实测黑弹掉 3 血（可接受），超级更大更痛。
 
 ### `cabin(ops)` — 小屋引导 **只在 小屋/农场屋里**　不传=扫屋
-`enum`(扫屋待收) `collect`(收机器) `statue`(雕像) `furniture`(扫家具) `interact`(点家具) `pickup`(拿起家具) `place`/`break`(放置/拆) `sleep`(睡觉) `cook`(做饭)
+`enum`(扫屋待收) `collect`(收机器) `statue`(雕像) `furniture`(扫家具) `decor`(🪵地板/墙纸真值表) `interact`(点家具) `pickup`(拿起家具) `place`/`break`(放置/拆) `sleep`(睡觉) `cook`(做饭)
 
 **📐 `cabin` 参数速查**
 
@@ -140,7 +140,7 @@
 | `sleep` | `who`（**必填**） | 传自己名 = 睡自己床；传别人名 = 睡那个人的床（一起睡 + 🌹彩蛋）。**传对名字就不用先回家**——不在那栋屋会自动走过去。名字写错 → 报错并列出可选名。🏝️ **在姜岛是另一套**（大通铺、没有"谁的床"）：传**正躺在床上的别人** = 挤他那张（姜岛版彩蛋）；传自己 / 那人还没躺 = 挑一张空床**安静睡** |
 | `place` / `break` | 同 `scene` 同名 op | `name`,`x`,`y` ／ `x`,`y`,`steps`,`radius` |
 
-> 其余（`enum`/`collect`/`statue`/`furniture`）**无参**。
+> 其余（`enum`/`collect`/`statue`/`furniture`/`decor`）**无参**。
 
 ### `social(ops)` — 社交
 `chat`(跟NPC搭话) `gift`(送礼物) `give`(给物品玩家·手持右键正式赠予) `hand`(递给玩家·走过去丢他脚边·磁吸自动收·可整叠) `send`(发聊天消息) `emote`(表情) `friendship`(查好感) `movie`/`snack`(电影院知识)
