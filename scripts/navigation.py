@@ -359,8 +359,7 @@ def _via_step(frm: str, vx: int, vy: int) -> bool:
     # ① **直接 walk_to**（2026-09-10 恒："现在精准了，去换衣服应该不用来回蹭一下换衣间了吧"）。
     #    走位落点精度修好之后（见 CHANGELOG「走位落点精度」），`/walk_to` 已经能**精确收在目标格**，
     #    一步到位即可 —— 不用再"先站邻格再 /move 走最后一格"那套来回蹭。
-    api._post("/walk_to", {"location": frm, "x": vx, "y": vy})
-    _wait_arrival(frm, vx, vy, timeout=25)
+    _walk_and_wait(frm, vx, vy, timeout=25)
     if _ai_pos() == (vx, vy):
         return True
     # ② 兜底（老办法，只在 ① 落偏时才用）：邻格 → /move 走最后一格
@@ -369,8 +368,7 @@ def _via_step(frm: str, vx: int, vy: int) -> bool:
         if _ai_pos() == (vx, vy):
             return True
         if _ai_pos() != (ax, ay):
-            api._post("/walk_to", {"location": frm, "x": ax, "y": ay})
-            _wait_arrival(frm, ax, ay, timeout=20)
+            _walk_and_wait(frm, ax, ay, timeout=20)
         if _ai_pos() != (ax, ay):
             continue                      # 这个邻格站不上去，换下一个
         for _ in range(4):                # 最多纠偏 4 次
@@ -547,7 +545,12 @@ def _walk_to_coord(x: int, y: int) -> str:
         return _with_state(f"❌ 走位请求失败: {e}")
     if isinstance(r, dict) and r.get("ok") is False:
         return _with_state(f"❌ 走不过去 ({x},{y})：{r.get('error') or r}")
-    arrived = _wait_arrival(loc_before, x, y, timeout=30)
+    # ⚠️ 等**游戏回包里的**坐标：`/walk_to` 会把站不住的目标格就近改掉
+    #    （`ModEntry.cs:19782`，详见 `_walk_and_wait`）。等我们请求的那个 ⇒ 必然是满 30s 超时。
+    #    落点对不上照旧由下面那句「已到 (x,y) 附近，实际站在…」如实说 —— 判据一个字没放宽。
+    _d = ((r or {}).get("destination") or {}) if isinstance(r, dict) else {}
+    _ax, _ay = _d.get("x", x), _d.get("y", y)
+    arrived = _wait_arrival(loc_before, _ax, _ay, timeout=30)
     # ⚠️ 踩上去型的传送点（地图上 `TouchAction: Warp …`，例如小屋地下室楼梯 (19,35)）是
     #    **踩上去的下一 tick** 才换图 —— 刚落到格子上就立刻读，会读到"还没换图" ⇒ **漏判**。
     #    2026-09-11 真机就是这么漏的：走 Cabin(19,35) 返回「🚶 已到 (19,35)」，
@@ -950,20 +953,97 @@ def _go_home(who: str = "") -> tuple[bool, str]:
 
 
 def _wait_arrival(target_loc: str, target_x: int, target_y: int, timeout: int = 30) -> bool:
-    """轮询等 walk_to 到达（含跨地图自动寻路）。"""
-    deadline = time.time() + timeout
+    """轮询等 walk_to 到达（含跨地图自动寻路）。⚠️ 传**游戏回包里的**坐标，见 `_walk_and_wait`。
+
+    🩺 **慢就出声**（2026-09-19）：这个循环判据三条（名字对 / ≤2 格 / 不在移动），任一不满足
+      就干等满 timeout —— 而调用方多半把返回值丢掉、**等完照样往下走**。
+      `TimeOut` 一旦跑满，症状就是恒说的"谜之停顿"。所以**超过 3 秒就 print 一行**：
+      哪张图、哪个格、等了多久、成没成、以及**当时人到底在哪**（一眼看出是哪条判据不满足）。
+      常态下这些等待都是 1~2 秒 ⇒ 不打印；**打印了就是有事**，别当噪音忽略。
+    """
+    _t0 = time.time()
+    deadline = _t0 + timeout
+    _off = 0
     while time.time() < deadline:
         try:
             s = api.state()
-            if s.get("location", {}).get("name") == target_loc:
+            _l = s.get("location", {}).get("name")
+            if _l == target_loc:
+                _off = 0
                 px, py = s.get("player", {}).get("x"), s.get("player", {}).get("y")
                 if px is not None and py is not None:
                     if abs(px - target_x) <= 2 and abs(py - target_y) <= 2 and not s.get("player", {}).get("isMoving"):
                         return True
+            elif _l:
+                # 🚪➡️🟢 人**已经不在目标图了** —— 多半是走位途中踩上了 warp 格/门瓦片，
+                #    被**游戏自己**送走了（`_walk_trigger_warp` 特意避开 warp 格，但出口那一片
+                #    常常挨着门/桥）。这时"名字对得上"这条判据**定义上永远不会成立**，
+                #    再等只能干等满 timeout。实测：BusStop 走去 Town 出口，人已被送到 Town(0,54)，
+                #    这里还在等「BusStop (44,22)」⇒ **白等 27 秒**（恒 2026-09-19「到town也超长延迟了」）。
+                # ⚠️ 连续 3 次（≈2.4s）才算 —— 单次读到空串/抖动不算数，别把正常走位误判成"走了"。
+                _off += 1
+                if _off >= 3:
+                    _dt = time.time() - _t0
+                    print(f"[walk-left] 等「{target_loc} ({target_x},{target_y})」时人已离开该图"
+                          f"（现在 {_l}）—— 提前 {_dt:.1f}s 收工（目标已作废）", flush=True)
+                    return False
         except Exception:
             pass
         time.sleep(0.8)
+    try:
+        _s = api.state()
+        _where = (f"人在 {(_s.get('location') or {}).get('name')} "
+                  f"({(_s.get('player') or {}).get('x')},{(_s.get('player') or {}).get('y')}) "
+                  f"moving={( _s.get('player') or {}).get('isMoving')}")
+    except Exception:
+        _where = "读不到位置"
+    print(f"[walk-slow] 等「{target_loc} ({target_x},{target_y})」满 {timeout}s 没到 —— {_where}",
+          flush=True)
     return False
+
+
+def _walk_and_wait(loc: str, x: int, y: int, timeout: int = 25):
+    """`/walk_to` 到 (loc,x,y) 并等人**真的站定**。返回 `(是否到位, 说明)`。
+
+    ⚠️ 2026-09-19 恒真机（「谜之停顿了至少20s才warp」）—— 本函数存在的**唯一**理由：
+
+      `/walk_to` 对**站不住的目标格**会「就近改到最近可走格」，并把**改后**的坐标放进
+      回包 `destination`（`ModEntry.cs:19782-19800`，注释原话就是"并在返回里注明 adjusted"）。
+
+      而原先 15 处写法全都是 `/walk_to` 完就 `_wait_arrival(我们自己那个坐标)`，
+      **回包整个扔掉** ⇒ 一旦被调整，`_wait_arrival` 的 ±2 容差就**永远满足不了**
+      ⇒ 干等满整个 timeout，**再照样往下走**（返回值多半还被丢）＝ 纯浪费 + 谎报到达。
+
+      🔬 真机实测（`_tmp_navprobe.py` 秒表 + `/walk_to` 回包三方对齐）：
+        `IslandSouth` 码头出口格 `(17,44)` **站不住** → 游戏改到 `(20,44)`（差 3 格）
+        ⇒ 轮回在原地**干站 25.1 秒**（isMoving 全程 0，排除了"卡在移动中"那个嫌疑）
+        ⇒ 才终于 `/warp`。恒的原话：「就跟超时兜底一样」。
+
+    ⇒ **等回包里的 `destination`，不是等我们自己请求的那个坐标。**
+      这不是"放宽容差"那种兜底 —— 是**换成语义上就对的数源**：那个数本来就是游戏
+      告诉我们"我实际去了哪"。容差 ±2 一个字没动。
+
+    **返回契约**：`(ok, note)`
+      · `ok=True`  → `note` 是 ""，或"目标被调整"的提示（`（⚠️ (x,y) 站不住，游戏就近改到 (ax,ay)）`）
+      · `ok=False` → `note` **一定是可直接展示的失败原因**，调用方 `return note` 就行，别再自己编。
+    """
+    try:
+        r = api._post("/walk_to", {"location": loc, "x": x, "y": y})
+    except Exception as e:
+        return False, f"walk_to 出错: {e}"
+    if not r.get("ok"):
+        return False, f"寻路失败: {r.get('error', r)}"
+    d = r.get("destination") or {}
+    ax, ay = d.get("x", x), d.get("y", y)
+    note = ""
+    if (ax, ay) != (x, y):
+        note = f"（⚠️ ({x},{y}) 站不住，游戏就近改到 ({ax},{ay})）"
+        print(f"[walk-adjust] {loc} 请求 ({x},{y}) → 实际 ({ax},{ay})", flush=True)
+    if _wait_arrival(loc, ax, ay, timeout=timeout):
+        return True, note
+    # ⚠️ 超时原因里写**我们真正等的那个格**（ax,ay），不是请求的那个 —— 否则排查时被带偏
+    _to = f"走位超时没到（{loc} {ax},{ay}）"
+    return False, (note + _to) if note else _to
 
 
 def _walk_on_map(loc: str, x: int, y: int, timeout: int = 35) -> str:
@@ -989,11 +1069,9 @@ def _walk_on_map(loc: str, x: int, y: int, timeout: int = 35) -> str:
         if cur != loc:
             # 到不了目标图：如实报，不做跨图瞬移（宁报错别兜底）
             return f"到不了 {loc}（现在在 {cur or '?'}）——先 map go {loc}"
-    r = api._post("/walk_to", {"location": loc, "x": x, "y": y})
-    if not r.get("ok"):
-        return f"寻路失败: {r.get('error', r)}"
-    if not _wait_arrival(loc, x, y, timeout=timeout):
-        return f"走位超时没到（{loc} {x},{y}）"
+    _ok, _note = _walk_and_wait(loc, x, y, timeout=timeout)
+    if not _ok:
+        return _note
     return ""
 
 
@@ -1171,14 +1249,16 @@ def _enter_building_door(loc: str) -> bool:
             # 先到门口所在的地图（一般就在当前图；不在就走 MAP_LINKS 到门口那张图）
             return False
         # /walk_to 到门口瓦片（用户实测 2026-08-13：Saloon 门在 Town(45,71)，不是 dy+1）→ 精确点门瓦片开门
-        r = api._post("/walk_to", {"location": out_map, "x": dx, "y": dy})
-        if not r.get("ok"):
-            return False
-        if not _wait_arrival(out_map, dx, dy, timeout=25):
-            return False
-        # 若走位已触发进门（走到门瓦片上可能直接传），提前返回
+        _wok = _walk_and_wait(out_map, dx, dy, timeout=25)[0]
+        # 若走位已触发进门（走到门瓦片上可能直接传），提前返回。
+        # ⚠️ 这步必须在 `if not _wok` **之前** —— 人踩上门瓦片、被游戏自己送进屋时，
+        #    `_wait_arrival` 会因"人已离开该图"**如实**报失败，可我们**明明已经进屋了**
+        #    （修 2026-09-19 那个"提前收工"时一并发现的顺序问题）。
+        #    判据是**进没进屋**，不是"站没站到门口那一格" —— 别拿代理指标当结论。
         if api.state().get("location", {}).get("name", "") == loc:
             return True
+        if not _wok:
+            return False
         # ‑ 2026-09-05 修：直接精确点门瓦片 interact_at（对角/不贴脸，不依赖面朝——
         #   walk_to 有 ±2 容差会停偏、面朝可能歪 → 旧"面朝上+/interact(面前格)"会打歪）。
         #   ⚠️ 不做通用"站门下方(dy+1)"——Saloon 门实测在 Town(45,71)，并非 dy+1。
@@ -1292,9 +1372,7 @@ def _ticket_travel(frm: str, nxt: str, tkt: dict) -> bool:
         sx, sy = tkt.get("stand", (mx, my))
         face = tkt.get("face", 0)
         # 1. 走到站位（机子下方/面前）
-        r = api._post("/walk_to", {"location": frm, "x": sx, "y": sy})
-        if r.get("ok"):
-            _wait_arrival(frm, sx, sy, timeout=15)
+        _walk_and_wait(frm, sx, sy, timeout=15)
         # ⚠️ 精确对齐站位（±2容差可能差1格→交互打偏；巴士站 walk_to 不可靠）→ 必须站到位
         try:
             p = api.state().get("player", {})
@@ -1388,8 +1466,7 @@ def _exit_farm_building(frm: str, nxt: str) -> bool:
         # walk_to 走到门前可走格（自然走路；BFS 失败则内部退化为临近可站落点，不飞墙外）
         if approach:
             try:
-                api._post("/walk_to", {"location": frm, "x": approach[0], "y": approach[1]})
-                _wait_arrival(frm, approach[0], approach[1], timeout=20)
+                _walk_and_wait(frm, approach[0], approach[1], timeout=20)
             except Exception:
                 pass
         # 面向门（warp 瓦片方向）再显式 /warp 出门（落点用游戏原生 targetX/targetY）
@@ -1465,10 +1542,9 @@ def _walk_trigger_warp(frm: str, nxt: str, ex: int, ey: int, wx: int, wy: int, e
     except Exception:
         dist = 20
     walk_timeout = min(max(25, int(dist * 0.5) + 10), 60)
-    r = api._post("/walk_to", {"location": frm, "x": bx, "y": by})
-    if not r.get("ok"):
-        return False
-    _wait_arrival(frm, bx, by, timeout=walk_timeout)
+    # ⚠️ 等**回包里的那个坐标** —— `/walk_to` 会把"站不住"的出口格就近改掉（码头 (17,44)→(20,44)
+    #    就是这一条让轮回白站了 25 秒）。详见 `_walk_and_wait`。
+    _walk_and_wait(frm, bx, by, timeout=walk_timeout)
     # 2. 人到位置了 → /warp 下一图入口
     # ⚠️ 2026-08-23 恒：赌场这类「建筑室内」（Club/SandyHouse 内室）普通 /warp 进不去
     #    （Game1.warpFarmer 对建筑内部切不动）→ 回退 /warp_into（同步直切 currentLocation）。
@@ -1890,9 +1966,7 @@ def _dismount_if_riding() -> None:
 def _snap_stand(loc: str, sx: int, sy: int) -> None:
     """walk_to 到站位 + 精确对位（±2 容差可能差 1 格 → 交互/confirm 打偏）。"""
     try:
-        r = api._post("/walk_to", {"location": loc, "x": sx, "y": sy})
-        if r.get("ok"):
-            _wait_arrival(loc, sx, sy, timeout=15)
+        _walk_and_wait(loc, sx, sy, timeout=15)
         p = api.state().get("player", {})
         if (p.get("x"), p.get("y")) != (sx, sy):
             api._post("/position", {"x": sx, "y": sy})
@@ -2233,8 +2307,7 @@ def _minecart_route_go(walk_path, sname, stn, ds, cart_target, final_dest,
     body = prefix
     if final_dest and final_dest in locations.POI and locations.POI[final_dest].get("map") == cart_target:
         poi = locations.POI[final_dest]
-        api._post("/walk_to", {"location": cart_target, "x": poi["pos"][0], "y": poi["pos"][1]})
-        _wait_arrival(cart_target, poi["pos"][0], poi["pos"][1], timeout=20)
+        _walk_and_wait(cart_target, poi["pos"][0], poi["pos"][1], timeout=20)
         face_log = _apply_poi_stand_face(final_dest)
         body += f" → 到达 {destination}（{poi['pos']}）{face_log}"
     else:
@@ -2410,8 +2483,7 @@ def _map_go_walk(path, destination: str, dest: str, lead_log: str = "", npc_targ
             #       再 api.warp 跳过去。否则从远处瞬移、收尾 BFS 乱传。落地格优先 link['arrive'] > ARRIVE。
             stand = link.get("stand")
             if stand:
-                api._post("/walk_to", {"location": frm, "x": stand[0], "y": stand[1]})
-                _wait_arrival(frm, stand[0], stand[1], timeout=20)
+                _walk_and_wait(frm, stand[0], stand[1], timeout=20)
             ar = link.get("arrive") or locations.ARRIVE.get(nxt)
             if ar:
                 api.warp(nxt, ar[0], ar[1])
@@ -2444,8 +2516,7 @@ def _map_go_walk(path, destination: str, dest: str, lead_log: str = "", npc_targ
     elif destination in locations.POI:
         poi = locations.POI[destination]
         if poi.get("map") == dest:
-            api._post("/walk_to", {"location": dest, "x": poi["pos"][0], "y": poi["pos"][1]})
-            _wait_arrival(dest, poi["pos"][0], poi["pos"][1], timeout=20)
+            _walk_and_wait(dest, poi["pos"][0], poi["pos"][1], timeout=20)
             # 2026-08-16 恒：POI 结构化站位+朝向（宠物水碗朝右/柜台朝上；幂等，walk_to 双调无害）
             face_log = _apply_poi_stand_face(destination)
             door_log = _step_into_building(dest, poi["pos"])   # 🔑 一键开门：落点是建筑门瓦片→推门进屋
@@ -2595,8 +2666,7 @@ def map_go(destination: str = "", npc: str = "") -> str:
                 if _cur != loc:
                     # 到不了目标图：**如实报**，不做跨图瞬移（宁报错别兜底）
                     return _with_state(f"❌ 到不了 {loc}（现在在 {_cur or '?'}）——先 map go {loc} 走过去")
-                api._post("/walk_to", {"location": loc, "x": x, "y": y})
-                _wait_arrival(loc, x, y, timeout=35)
+                _walk_and_wait(loc, x, y, timeout=35)
                 return _with_state(f"🗺️ 已到「{destination}」门口 ({loc} {x},{y}){_pre}（建筑门，进屋用 interact）")
             return _with_state(f"🗺️ 知识库没有「{dest}」的地点链接（试试 SeedShop/Town/Mine…）")
         # ⚠️ 未解锁地点拦截（2026-08-14 #13）
@@ -2621,8 +2691,7 @@ def map_go(destination: str = "", npc: str = "") -> str:
             # 已在目标地点：若指定了 POI 且 POI 就在本图，仍走到 POI 精确位置
             if destination in locations.POI and locations.POI[destination].get("map") == dest:
                 poi = locations.POI[destination]
-                api._post("/walk_to", {"location": dest, "x": poi["pos"][0], "y": poi["pos"][1]})
-                _wait_arrival(dest, poi["pos"][0], poi["pos"][1], timeout=20)
+                _walk_and_wait(dest, poi["pos"][0], poi["pos"][1], timeout=20)
                 # ⚠️ 2026-08-23 恒：已在目标图(如已在 Club)时也要 _apply_poi_stand_face——
                 #    walk_to 有 ±2 容差可能停偏1格、且不设 face，interact 会打到错误瓦片。
                 #    与另两条 POI 终止路径(transport/BFS)一致：position 瞬移到 stand + 设朝向。
@@ -2657,9 +2726,7 @@ def map_go(destination: str = "", npc: str = "") -> str:
                 _poi_here = locations.POI.get(destination) if destination in locations.POI else None
                 if _poi_here and _poi_here.get("map") == "Farm":
                     _ppx = api.state().get("player", {})      # 出屋瞬间的落点（写进日志，别读走完之后的）
-                    api._post("/walk_to", {"location": "Farm",
-                                           "x": _poi_here["pos"][0], "y": _poi_here["pos"][1]})
-                    _wait_arrival("Farm", _poi_here["pos"][0], _poi_here["pos"][1], timeout=30)
+                    _walk_and_wait("Farm", _poi_here["pos"][0], _poi_here["pos"][1], timeout=30)
                     _face_after = _apply_poi_stand_face(destination)
                     _door_after = _step_into_building("Farm", _poi_here["pos"])
                     return _with_state(
@@ -2700,8 +2767,7 @@ def map_go(destination: str = "", npc: str = "") -> str:
                 # 直达 → 若 destination 是 POI 在本图，走到 POI 精确位
                 if destination in locations.POI and locations.POI[destination].get("map") == dest:
                     poi = locations.POI[destination]
-                    api._post("/walk_to", {"location": dest, "x": poi["pos"][0], "y": poi["pos"][1]})
-                    _wait_arrival(dest, poi["pos"][0], poi["pos"][1], timeout=20)
+                    _walk_and_wait(dest, poi["pos"][0], poi["pos"][1], timeout=20)
                     face_log = _apply_poi_stand_face(destination)
                     door_log = _step_into_building(dest, poi["pos"])   # 🔑 一键开门：落点=门瓦片→推门进屋
                     return _with_state(f"{tlog} → 到达 {destination}（{poi['pos']}）{face_log}{door_log}" + _mine_entry_reminder(dest))

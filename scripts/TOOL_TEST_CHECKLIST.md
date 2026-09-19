@@ -231,11 +231,11 @@
 | `pan` | T2 摆场 | dry_run, radius, timeout | ✅ | `session_log:1176` |
 | `pickup` ⇄`cabin:pickup` | T2 摆场 | tile_x, tile_y | ✅ | ⚠️ 原判定是 `--from-log` **自动打的**（只证明"调用没报错"，不算验过）；**09-19 真机补**：隔 15 格拿起(`/furniture` 19→18、背包 11→12) ＋ 放回(18→19、原地)，空格子点名「这格没有家具」＋列就近家具（CHANGELOG 82） |
 | `pickup_scene` | T3 副作用 | max_items | ✅ | `session_log:831` |
-| `place` ⇄`farm:place` | T3 副作用 |  | ⏭ 没条件测 | `session_log:307` 要一块能放的地皮 + 可放置物 |
+| `place` ⇄`farm:place` | T3 副作用 |  | ✅ | 🪵 **地板/墙纸全链 09-19 真机验过**（IslandFarmHouse）：正铺地板 `applied 48→0` / 正铺墙纸 `87→0`（**两端 7842/7843 逐项一致**、背包各 −1）＋ 故意拿地板点**墙格** ⇒ 点名「这格是**墙格**」+ 列各房可铺格 + 给可照抄 op，且**不消耗、applied 一点没变** ＋ 直接打 `/use` 的**对照组**证明守门是承重的（游戏自己只回 `Cannot place 'Flooring' here`、不说为什么）＋ 非装修图(IslandSouth) 拒绝且不消耗 ＋ 非地板/墙纸**不误拦**（树液走物品门）＋ 铺完**还原 9 个值全回原样**。⚠️ **仍然没验的**：地皮上放**箱子/机器**那一路（`session_log:307` 原本要的那块地皮）。⚠️ 已知缺口见 `select` 行 |
 | `rock` | T3 副作用 | break_stone, dig, max_break, radius | ✅ | `session_log:1185` |
 | `rummage` ≡`garbage` | T2 摆场 |  | ✅ | ← 同 `scene:garbage`〔trash_run〕 |
 | `seats` | T1 自动 | radius | ✅ | `session_log:845` |
-| `select` | T3 副作用 |  | ✅ | `session_log:1258` |
+| `select` | T3 副作用 |  | ✅ | `session_log:1258`；⚠️ **09-19 真机坐实一个缺口**：它按 **Name/DisplayName** 精确匹配取**第一个** ⇒ 地板/墙纸这类「**同名多款**」（`(FL)0`/`(FL)1` 显示名**都是**「地板」，游戏自己起的，见 `Wallpaper.cs:58`）**永远只会选中 slot 靠前那款**，想铺特定一款办不到（实测：同背包装两张地板，铺掉的必是先出现的那张）。`/state` 已经给了 `itemId`+`slotIndex`、`/drop` 已经认 QualifiedItemId —— **唯独 `/select` 不认**，缺的就这一环 |
 | `sit` | T2 摆场 | face | ✅ | `session_log:646` |
 | `spot` | T3 副作用 |  | ✅ | `session_log:1362` |
 | `stand` | T2 摆场 |  | ✅ | `session_log:647` |

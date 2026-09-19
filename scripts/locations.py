@@ -751,7 +751,12 @@ MAP_LINKS = {
         {"tile": (0, 11), "target": "IslandWest", "kind": "warp", "note": "西桥头→姜岛农场(105,41)"},
         {"tile": (36, 12), "target": "IslandEast", "kind": "warp", "note": "东桥头→丛林/度假村(0,46)"},
         {"tile": (18, 0), "target": "IslandNorth", "kind": "warp", "arrive": (36, 89), "note": "北边小路站格(18,0)→/warp 火山入口区(36,89)。原出口(18,-1) y=-1 边界外"},
-        {"tile": (17, 44), "target": "FishShop", "kind": "warp", "note": "码头→坐船返航直达鱼店(4,4)（/warps实测）"},
+        # ⚠️ `tile` 必须是**站得住的格**（本表契约：`_map_go_walk` 拿它当"走到这再 /warp"的出口站格）。
+        #    原标 `(17,44)` —— 那是 `/warps` 报的 **warp 触发格本身，站不住**：`/walk_to` 会把它
+        #    就近改到 `(20,44)`，而旧代码仍在等 `(17,44)`（差 3 格 > `_wait_arrival` 的 ±2 容差）
+        #    ⇒ **每次返航白站 25 秒**才 warp（恒 2026-09-19：「谜之停顿了至少20s才warp」）。
+        #    `(20,44)` 是游戏自己算出的"最近可走格"，实测站得住、返航正常（CHANGELOG 09-19(85)）。
+        {"tile": (20, 44), "target": "FishShop", "kind": "warp", "note": "码头→坐船返航直达鱼店(4,4)（站格 20,44；warp 触发格 17,44 站不住）"},
     ],
     "IslandWest": [
         {"tile": (106, 41), "target": "IslandSouth", "kind": "warp", "note": "东桥→IslandSouth(0,11)（/warps实测）"},

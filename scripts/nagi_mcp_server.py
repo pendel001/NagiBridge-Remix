@@ -11999,7 +11999,9 @@ def _decor_place_check(name: Optional[str], x: int, y: int) -> str:
             # ⚠️ 文案**不写死域名**：`place`/`decor` 在 scene/farm/cabin 三个域都有，
             #    而这个函数是被哪一路调进来的只有调用方知道 —— 写死 "scene ops=…" 会让
             #    站在屋里（cabin 域）的 AI 以为自己要换个域。
-            f"👉 改成：ops=place kw={{name:\"{disp}\", x:…, y:…}}（本域就有）"
+            # ⚠️ 回显**限定 id**（`(FL)1`），不是显示名「地板」——
+            #    同名多款只有编号分得开，照「地板」做会**又踩回同名坑**（#13）。
+            f"👉 改成：ops=place kw={{name:\"{qid or disp}\", x:…, y:…}}（本域就有）"
             f"（或先看全表：ops=decor）")
 
 
@@ -13946,10 +13948,20 @@ def give_item(player_name: str, item_name: str) -> str:
 
 
 def _inv_entries(st: dict, item_name: str) -> list:
-    """背包里匹配某物品的条目（中文显示名 / 英文内部名都认）。"""
+    """背包里匹配某物品的条目（中文显示名 / 英文内部名 / **限定 id** 都认）。
+
+    🪵 2026-09-19（#13 收口时一并发现）：**必须也认 `itemId`**。
+    地板/墙纸这类「**同名多款**」只有编号能区分 —— `(FL)0` 与 `(FL)1` 的 `Name` 都是 `Flooring`、
+    显示名都是「地板」（`Wallpaper.cs:58`）。不认 id 的话 `place name="(FL)1"` 在这里
+    **一条都匹配不到** ⇒ `_decor_place_check` 拿不到 qid ⇒ **直接放行走原路** ⇒
+    「点错格会点名告诉你」这道守卫**静默失效**（而 C# 的 `/select` 已经认 id 了，
+    **两边口径必须一致**，否则守卫只在按名字调时才在）。
+    """
     low = (item_name or "").lower()
     return [i for i in (st.get("inventory") or [])
-            if i.get("name") and low in ((i.get("name") or "").lower(), (i.get("displayName") or "").lower())]
+            if i.get("name") and low in ((i.get("name") or "").lower(),
+                                         (i.get("displayName") or "").lower(),
+                                         str(i.get("itemId") or "").lower())]
 
 
 def _count_in_inventory(st: dict, item_name: str) -> int:

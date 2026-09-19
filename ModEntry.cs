@@ -3687,6 +3687,16 @@ public class ModEntry : Mod
         var x = GetParam<int>(p, "x");
         var y = GetParam<int>(p, "y");
         bool allowWater = GetParamOr(p, "allowWater", false);
+        // 🔍 2026-09-19 恒「要不要多一层保底，微调出入口的落点」：
+        //    加**可选 `location`** —— 让人**不在那张图**时也能问"这格站得住吗"。
+        //    动机：`MAP_LINKS`/`BUILDING_DOORS`/`ARRIVE`/`POI` 合计数百个落点，全是从 `/warps`
+        //    抄来或人肉校准的，**谁都没验过"站得住吗"** —— 而"站不住"正是"谜之停顿"的第一处根因
+        //    （码头 `(17,44)` 站不住 → 游戏就近改到 `(20,44)` → 老的 ±2 容差永远等不到 → 白等 25s）。
+        //    有它才能**一次扫完**全部落点，不用把角色逐张图跑一遍。
+        //    ✅ 旧行为**一个字没变**：不传 location = 当前图（所有老调用方不用改）。
+        //    ⚠️ 只对**顶层地点**可靠：cabin/棚屋的**室内是 instanced interior**、不在 `Game1.locations`
+        //       里，`getLocationFromName` 找不到 ⇒ **如实报错**（恒：「宁报错别兜底」，别偷偷换成当前图）。
+        var locName = GetParamOr(p, "location", "");
 
         if (!Context.IsWorldReady)
             throw new InvalidOperationException("World not ready");
@@ -3697,6 +3707,17 @@ public class ModEntry : Mod
             try
             {
                 var loc = Game1.player.currentLocation;
+                if (!string.IsNullOrEmpty(locName))
+                {
+                    var want = Game1.getLocationFromName(locName);
+                    if (want == null)
+                    {
+                        tcs.SetResult(new { ok = false,
+                            error = $"找不到地点 '{locName}'（顶层地点表里没有；cabin/棚屋的室内是 instanced interior，查不到）" });
+                        return;
+                    }
+                    loc = want;
+                }
                 // 🪙 2026-08-29：allowWater=true 时水格也报可走(淘金/蟹笼立项逻辑走位时放行近水格)
                 bool passable = IsTilePassable(loc, new Point(x, y), allowWater);
                 tcs.SetResult(new { ok = true, passable, x, y, location = loc.Name });
@@ -6277,11 +6298,20 @@ public class ModEntry : Mod
             var farmer = Game1.player;
             var idx = -1;
             // 精确匹配优先（Name/DisplayName）——避免 "Salad" 误匹配 "Fruit Salad"（2026-08-08 修复）
+            // 🪵 2026-09-19 恒真机（任务 #13）：**再补 `QualifiedItemId`**。
+            //    地板/墙纸这类「**同名多款**」物品，`Name` 恒为 "Flooring"/"Wallpaper"
+            //    （游戏自己起的，`Wallpaper.cs:58`）、`DisplayName` 恒为「地板」「墙纸」——
+            //    **只差 itemId**。而本函数精确匹配取**第一个** ⇒ 背包里同时有两款时，
+            //    **永远只会选中 slot 靠前那款**，想铺特定一款**做不到**。
+            //    我自己在还原装修时就被它绊了一跤：想铺 `(FL)48`，可 `(FL)1` 在更靠前的槽，
+            //    最后只能先把 `(FL)1` `/drop` 掉才铺得成。
+            //    `/state` 早就给了 `itemId`、`/drop` 早就认 QualifiedItemId —— **唯独这里不认**，缺的就这一环。
             for (int i = 0; i < farmer.Items.Count; i++)
             {
                 if (farmer.Items[i] != null &&
                     (farmer.Items[i].Name.Equals(name, StringComparison.OrdinalIgnoreCase)
-                     || farmer.Items[i].DisplayName.Equals(name, StringComparison.OrdinalIgnoreCase)))
+                     || farmer.Items[i].DisplayName.Equals(name, StringComparison.OrdinalIgnoreCase)
+                     || (farmer.Items[i].QualifiedItemId ?? "").Equals(name, StringComparison.OrdinalIgnoreCase)))
                 {
                     idx = i;
                     break;
@@ -20290,6 +20320,28 @@ public class ModEntry : Mod
         // Use the game's built-in passability check（只查地图图层，不查家具/物体）
         var tileVec = new Vector2(tile.X, tile.Y);
         if (!location.isTilePassable(tileVec)) return false;
+
+        // 🧱 2026-09-19 恒「房子的贴图本是不能走的，建筑有一个固定的占位方形，可导航直接穿过贴图往面内走了」：
+        //    **建筑占位**以前一个字都没查。而走位是 `ModEntry.cs:2110/2114` **直接改 `farmer.Position`**
+        //    硬推过去（本文件 :2120 的注释自陈 "direct position manipulation bypasses …"）⇒
+        //    **尺子说能走，角色就真的能穿过去**，游戏自己的碰撞根本没机会介入。
+        //    判据照抄游戏（`GameLocation.cs:7419` 的 `CollisionMask.Buildings` 分支），它有两个口径：
+        //      · 移动者**尊重可通行性**  ⇒ `!building.isTilePassable(tile)`
+        //      · 其它（忽略可通行性）⇒ `!building.occupiesTile(tile)`（**粗暴整块方框**）
+        //    这里取 **`isTilePassable`** —— 它 =「方框 ∩ 建筑自己的逐格属性图」（`Building.cs:2105`），
+        //    **永远不会比整块方框更严**（框外恒 true），把细化交给游戏自己的数据。
+        //    ⚠️ 特意**不**用 `occupiesTile`：那是整块方框、会把"走到门口那一格"也一起堵死，
+        //       而门口那格恰恰是 `BUILDING_DOORS` 的落点。
+        //    ⚠️ 只管**占位方形**：精灵画到方框外的格（屋顶/墙面外伸）游戏自己也允许站，不在此列。
+        try
+        {
+            foreach (var b in location.buildings)
+            {
+                if (b != null && !b.isMoving && !b.isTilePassable(tileVec))
+                    return false;
+            }
+        }
+        catch { }
 
         // 💧 2026-08-29 恒拍板：默认(allowWater=false)水格不可站——SDV 地图层把水边/浅水标成 passable=true，
         //    但玩家站上去半身浸水、不拟人。普通走位保持排除水格；淘金/蟹笼把 allowWater=true(或走位时 _walkAllowWater)
