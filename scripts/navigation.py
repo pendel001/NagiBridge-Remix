@@ -848,11 +848,11 @@ def _go_home() -> str:
             return _go_to_bed(bed_loc, bx, by)
 
         # 1. 走到自家门口（Farm 外立面）
-        r = api._post("/walk_to", {"location": door["location"], "x": door["x"], "y": door["y"]})
-        if not r.get("ok"):
-            return _with_state(f"❌ 去门口失败: {r.get('error', r)}")
-        if not _wait_arrival(door["location"], door["x"], door["y"], timeout=35):
-            return _with_state("⚠️ 走到门口超时")
+        #    🚪 人在别的图（镇上/别人屋里）时，`_walk_on_map` 先 map_go 回农场再走——
+        #       原来直接拿 Farm 坐标 walk_to = 跨图瞬移（恒 2026-09-19 抓的"飞"同款）。
+        _err = _walk_on_map(door["location"], door["x"], door["y"], timeout=35)
+        if _err:
+            return _with_state(f"❌ 去门口失败: {_err}")
 
         # 2. 若已在门外 → 下马 + 站门口正下方(门在正上) + 面朝门 + /interact 触发 checkAction
         if _cur() != bed_loc:
@@ -898,6 +898,37 @@ def _wait_arrival(target_loc: str, target_x: int, target_y: int, timeout: int = 
     return False
 
 
+def _walk_on_map(loc: str, x: int, y: int, timeout: int = 35) -> str:
+    """**同图**走位到 (loc, x, y)。返回 `""` = 到了；否则一句**能直接照做**的失败原因。
+
+    ⚠️ 2026-09-19 恒真机（「这里又是直接从畜棚**飞**到农场再走到鸡舍了」）：
+    `/walk_to` 的 `location` 一旦**不是当前图**，就是**跨图瞬移**（不是寻路）。
+    所以这个口子先确认人在不在 `loc`：不在就先交给 `map_go` 正常走过去，再走最后一段。
+    ⇒ 凡是"拿着别图坐标直接 walk_to"的地方，都该走这个函数，别各自裸写。
+    （审计时全文件扫过一遍：其余 `/walk_to` 站点传的都是**当前图**的 `frm/loc`，
+      或上游有 `cur == X` 守卫；`go_to` / `_go_home` 这两处是真漏的，已收编。）
+    """
+    try:
+        cur = (api.state().get("location") or {}).get("name", "") or ""
+    except Exception:
+        cur = ""
+    if cur and cur != loc:
+        map_go(loc)
+        try:
+            cur = (api.state().get("location") or {}).get("name", "") or ""
+        except Exception:
+            cur = ""
+        if cur != loc:
+            # 到不了目标图：如实报，不做跨图瞬移（宁报错别兜底）
+            return f"到不了 {loc}（现在在 {cur or '?'}）——先 map go {loc}"
+    r = api._post("/walk_to", {"location": loc, "x": x, "y": y})
+    if not r.get("ok"):
+        return f"寻路失败: {r.get('error', r)}"
+    if not _wait_arrival(loc, x, y, timeout=timeout):
+        return f"走位超时没到（{loc} {x},{y}）"
+    return ""
+
+
 @_stuck_track
 def go_to(place: str) -> str:
     """📍 自动导航到任意地点（多地图寻路：走→出口→传送→走→…目的地）
@@ -936,12 +967,12 @@ def go_to(place: str) -> str:
             return map_go(place)
 
         loc, x, y = target
-        r = api._post("/walk_to", {"location": loc, "x": x, "y": y})
-        if not r.get("ok"):
-            return _with_state(f"❌ 寻路失败: {r.get('error', r)}")
-        if _wait_arrival(loc, x, y, timeout=35):
-            return _with_state(f"🚶 已到「{place}」({loc} {x},{y})")
-        return _with_state(f"⚠️ 导航超时，目标「{place}」({loc} {x},{y})")
+        # 🚪 人在别的图（比如在畜棚里说 go_to 鸡舍）→ `_walk_on_map` 会先 map_go 过去再走，
+        #    绝不再"拿着 Farm 坐标 walk_to"跨图瞬移（恒 2026-09-19 抓的"飞"）。
+        _err = _walk_on_map(loc, x, y, timeout=35)
+        if _err:
+            return _with_state(f"❌ 没到「{place}」({loc} {x},{y})：{_err}")
+        return _with_state(f"🚶 已到「{place}」({loc} {x},{y})")
     except Exception as e:
         return _with_state(f"❌ {e}")
 
@@ -2538,11 +2569,10 @@ def _nav_home_door() -> str:
         door = api.state().get("player", {}).get("homeDoor")
         if not door:
             return _with_state("❌ 拿不到 homeDoor（需要新DLL）")
-        r = api._post("/walk_to", {"location": door["location"], "x": door["x"], "y": door["y"]})
-        if not r.get("ok"):
-            return _with_state(f"❌ 去自家门口失败: {r.get('error', r)}")
-        if _wait_arrival(door["location"], door["x"], door["y"], timeout=35):
-            return _with_state(f"🏠 已到自家小屋门口 ({door['location']} {door['x']},{door['y']})——进屋 interact_at 门；睡觉用 sleep(自动回屋)")
-        return _with_state("⚠️ 到自家门口超时")
+        # 🚪 同 _go_home：人在别的图时先 map_go 回农场，别拿外图坐标 walk_to（= 跨图瞬移）
+        _err = _walk_on_map(door["location"], door["x"], door["y"], timeout=35)
+        if _err:
+            return _with_state(f"❌ 没到自家门口: {_err}")
+        return _with_state(f"🏠 已到自家小屋门口 ({door['location']} {door['x']},{door['y']})——进屋 interact_at 门；睡觉用 sleep(自动回屋)")
     except Exception as e:
         return _with_state(f"❌ {e}")
