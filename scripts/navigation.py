@@ -2351,9 +2351,29 @@ def map_go(destination: str = "", npc: str = "") -> str:
             t = _resolve_place(destination)
             if t:
                 loc, x, y = t
+                # 🚪 2026-09-19 恒真机（「这里又是直接从畜棚**飞**到农场再走到鸡舍了」）：
+                #    人在**室内**时不能直接拿外图坐标 `walk_to` —— `/walk_to` 带别图的 location
+                #    是**跨图瞬移**，人就"飞"出去了。正确姿势是**先正常走出门**：
+                #    `_exit_farm_building` 本来就通用（自己读 `/map` 的原生出口 warp + 走到门邻格再 /warp），
+                #    只是这条兜底分支**没叫它**。
+                #    （2026-09-16 修过 `map go Farm` 的同类问题，这里漏了同一个洞。）
+                _cur = (api.state().get("location") or {}).get("name", "") or ""
+                _pre = ""
+                if _cur and _cur != loc:
+                    if _interior_to_farm(_cur) and _exit_farm_building(_cur, "Farm"):
+                        _pre = f"（先从 {_cur} 走到出口出去）"
+                        _cur = (api.state().get("location") or {}).get("name", "") or ""
+                    if _cur != loc:
+                        # 出了屋还不在目标图（目标在别的图）⇒ 交给正常地图导航过去，别跨图 walk_to。
+                        # 判据=**回读当前图**，不看 map_go 的文案（文案格式会变，靠它判成败迟早漂）。
+                        map_go(loc)
+                        _cur = (api.state().get("location") or {}).get("name", "") or ""
+                if _cur != loc:
+                    # 到不了目标图：**如实报**，不做跨图瞬移（宁报错别兜底）
+                    return _with_state(f"❌ 到不了 {loc}（现在在 {_cur or '?'}）——先 map go {loc} 走过去")
                 api._post("/walk_to", {"location": loc, "x": x, "y": y})
                 _wait_arrival(loc, x, y, timeout=35)
-                return _with_state(f"🗺️ 已到「{destination}」门口 ({loc} {x},{y})（建筑门，进屋用 interact）")
+                return _with_state(f"🗺️ 已到「{destination}」门口 ({loc} {x},{y}){_pre}（建筑门，进屋用 interact）")
             return _with_state(f"🗺️ 知识库没有「{dest}」的地点链接（试试 SeedShop/Town/Mine…）")
         # ⚠️ 未解锁地点拦截（2026-08-14 #13）
         _lock = _map_go_unlock_check(dest)

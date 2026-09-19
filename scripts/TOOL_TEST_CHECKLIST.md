@@ -1,6 +1,6 @@
 # 🧪 全工具测试清单（2026-09-11 生成）
 
-> **511 行 = 188 个后端函数**（抄自各域 dispatch，非文档）｜✅ 406 行 / **161 函数** ｜❌ 0 ｜⏭ 没条件测 37 行 / 10 函数｜**待测 17 函数**｜T1 自动 103 ｜T2 摆场 206 ｜T3 副作用 161 ｜⏭ 当期不可用 41
+> **514 行 = 189 个后端函数**（抄自各域 dispatch，非文档）｜✅ 413 行 / **164 函数** ｜❌ 0 ｜⏭ 没条件测 34 行 / 9 函数｜**待测 16 函数**｜T1 自动 103 ｜T2 摆场 209 ｜T3 副作用 161 ｜⏭ 当期不可用 41
 
 > 用法：跑测试（任何渠道，只要走 :8000 的 MCP）→ `python gen_tool_checklist.py --from-log` 自动打勾。
 > 判定规则见脚本头部；**⚠️ op「」= 参数被静默丢掉 ⇒ 不算 ✅**（也不算 ❌ —— 那一下压根没执行，当"没有证据"跳过，本行沿用上一轮结论）；真报错才 ❌。
@@ -31,8 +31,8 @@
 | `quests` ≡`quest` ⇄`menu:journal` | T2 摆场 |  | ✅ | ← 同 `menu:journal`〔open_questlog〕 |
 | `ready` | T1 自动 |  | ✅ | `session_log:912` |
 | `ready_state` ≡`ready` | T1 自动 |  | ✅ | ← 同 `check:ready`〔check_ready_state〕 |
-| `role` | T1 自动 |  | ✅ | `session_log:1340` |
-| `silo` ≡`hay` | T1 自动 |  | ✅ | `session_log:13` |
+| `role` | T1 自动 |  | ✅ | `session_log:1358` |
+| `silo` ≡`hay` | T1 自动 |  | ✅ | `session_log:1364` |
 | `status` | T1 自动 |  | ✅ | `session_log:1242` |
 | `storage` | T1 自动 |  | ✅ | `session_log:623` |
 | `worn` | T1 自动 |  | ✅ | `session_log:466` |
@@ -58,14 +58,14 @@
 | `break` ⇄`cabin:break` | T3 副作用 | radius, steps | ✅ | `session_log:289` |
 | `building` | T2 摆场 | location, machine_type | ✅ | `session_log:1063` |
 | `buy` | T3 副作用 | animal_type, building |  |  |
-| `chop` | T2 摆场 | area, x1,y1,x2,y2, 圆心x,y,半径 | ✅ | `session_log:1352` |
-| `clear` | T2 摆场 | direction, layout, length, margin, radius, rows, x1,y1,x2,y2 | ✅ | `session_log:1351` |
+| `chop` | T2 摆场 | area | ✅ | `session_log:1352` |
+| `clear` | T2 摆场 | direction, layout, length, margin, radius, rows, x1,y1,x2,y2 | ✅ | `session_log:1353` |
 | `clearground` | T2 摆场 |  | ✅ | `session_log:1182` |
-| `collect` | T2 摆场 | location, machine_type | ✅ | `session_log:1094` |
+| `collect` | T2 摆场 | location, machine_type | ✅ | `session_log:1354` |
 | `doors` | T2 摆场 |  | ✅ | `session_log:1003` |
 | `fertilize` | T2 摆场 | direction, fertilizer_name, length, rows | ✅ | `session_log:1344` |
 | `harvest` | T2 摆场 | radius | ✅ | `session_log:1177` |
-| `hay` | T2 摆场 | dry_run | ✅ | `session_log:1004` |
+| `hay` | T2 摆场 | dry_run | ✅ | `session_log:1367` |
 | `hoe` | T2 摆场 |  | ✅ | `session_log:1324` |
 | `load` | T2 摆场 | location, machine_type | ✅ | `session_log:1097` |
 | `milk` | T2 摆场 |  | ⏭ 没条件测 | `session_log:1186` 鸡舍/畜棚都装了**自动采集器**（工具如实报"产物已自动收集、不用挤奶"）⇒ 挤奶动作没被执行；需手动收产物的档 |
@@ -192,8 +192,8 @@
 | `emote` | T3 副作用 |  | ✅ | `session_log:1173` |
 | `friendship` | T1 自动 |  | ✅ | `session_log:1302` |
 | `gift` | T3 副作用 | item_name, npc_name |  |  |
-| `give` | T3 副作用 | item_name, player_name |  |  |
-| `hand` | T3 副作用 | item_name, player_name |  |  |
+| `give` | T3 副作用 | item_name, player_name | ✅ | `session_log:1357` |
+| `hand` | T3 副作用 | item_name, player_name | ✅ | `session_log:1355` |
 | `movie` | T2 摆场 | npc |  |  |
 | `send` | T3 副作用 | message | ✅ | `session_log:698` |
 | `snack` | T2 摆场 |  |  |  |
@@ -201,18 +201,19 @@
 | `好感` ≡`friendship` | T1 自动 |  | ✅ | ← 同 `social:friendship`〔check_friendship〕 |
 | `搭话` ≡`chat` | T2 摆场 |  | ✅ | ← 同 `social:chat`〔chat_npc〕 |
 | `电影` ≡`movie` | T2 摆场 |  |  |  |
-| `给` ≡`give` | T3 副作用 |  |  |  |
+| `给` ≡`give` | T3 副作用 |  | ✅ | ← 同 `social:give`〔give_item〕 |
 | `送礼` ≡`gift` | T3 副作用 |  |  |  |
-| `递给` ≡`hand` | T3 副作用 |  |  |  |
+| `递给` ≡`hand` | T3 副作用 |  | ✅ | ← 同 `social:hand`〔hand_item〕 |
 | `零食` ≡`snack` | T2 摆场 |  |  |  |
 
-## `scene`（70）
+## `scene`（73）
 
 | op | 层 | 参数 | 判定 | 证据 |
 |---|---|---|---|---|
 | `at` ⇄`cabin:interact` | T2 摆场 | tile_x, tile_y | ✅ | `session_log:1238` |
 | `berry` | T3 副作用 |  | ⏭ 没条件测 | `session_log:1189` 农场没有结果的浆果灌木（春25 早过树莓季春15-18）⇒ 摇的动作没发生；需在浆果季再验 |
 | `break` ⇄`farm:break` | T3 副作用 | radius, steps | ✅ | `session_log:288` |
+| `decor` | T2 摆场 |  |  |  |
 | `drop` | T3 副作用 | items | ✅ | `session_log:784` |
 | `face` | T2 摆场 | direction | ✅ | `session_log:1257` |
 | `forge_help` | T2 摆场 |  | ✅ | `session_log:312` |
@@ -233,12 +234,13 @@
 | `seats` | T1 自动 | radius | ✅ | `session_log:845` |
 | `select` | T3 副作用 |  | ✅ | `session_log:1258` |
 | `sit` | T2 摆场 | face | ✅ | `session_log:646` |
-| `spot` | T3 副作用 |  | ⏭ 没条件测 | `session_log:1187` 农场当前没有蚯蚓点/远古斑点（工具如实报"没有斑点"）⇒ 挖的动作没发生；需有斑点的地图/日子 |
+| `spot` | T3 副作用 |  | ✅ | `session_log:1362` |
 | `stand` | T2 摆场 |  | ✅ | `session_log:647` |
 | `use` | T3 副作用 |  | ✅ | `session_log:1254` |
 | `丢` ≡`drop` | T3 副作用 |  | ✅ | ← 同 `scene:drop`〔drop_item〕 |
 | `分段` ≡`maze_seg` | T2 摆场 |  | ✅ | ← 同 `scene:maze_seg`〔_maze_seg_view〕 |
 | `可坐` ≡`seats` | T1 自动 |  | ✅ | ← 同 `scene:seats`〔seats〕 |
+| `可铺` ≡`decor` | T2 摆场 |  |  |  |
 | `坐` ≡`sit` | T2 摆场 |  | ✅ | ← 同 `scene:sit`〔sit〕 |
 | `坐下` ≡`sit` | T2 摆场 |  | ✅ | ← 同 `scene:sit`〔sit〕 |
 | `家具` ≡`furniture` ⇄`cabin:furniture` | T1 自动 |  | ✅ | ← 同 `cabin:furniture`〔scan_furniture〕 |
@@ -246,10 +248,10 @@
 | `拆` ≡`break` ⇄`farm:break` | T3 副作用 |  | ✅ | ← 同 `farm:break`〔break_tile〕 |
 | `拾起` ≡`pickup` ⇄`cabin:pickup` | T2 摆场 |  | ✅ | ← 同 `cabin:pickup`〔furniture_pickup〕 |
 | `拿` ≡`select` | T3 副作用 |  | ✅ | ← 同 `scene:select`〔select_item〕 |
-| `挖斑点` ≡`spot` | T3 副作用 |  | ⏭ 没条件测 | ← 同 `scene:spot`〔spot_run〕 |
+| `挖斑点` ≡`spot` | T3 副作用 |  | ✅ | ← 同 `scene:spot`〔spot_run〕 |
 | `挖石` ≡`rock` | T3 副作用 |  | ✅ | ← 同 `scene:rock`〔rock_dig〕 |
 | `挖矿点` ≡`rock` | T3 副作用 |  | ✅ | ← 同 `scene:rock`〔rock_dig〕 |
-| `挖蚯蚓` ≡`spot` | T3 副作用 |  | ⏭ 没条件测 | ← 同 `scene:spot`〔spot_run〕 |
+| `挖蚯蚓` ≡`spot` | T3 副作用 |  | ✅ | ← 同 `scene:spot`〔spot_run〕 |
 | `挥` ≡`use` | T3 副作用 |  | ✅ | ← 同 `scene:use`〔use_tool〕 |
 | `捡物` ≡`pickup_scene` | T3 副作用 |  | ✅ | ← 同 `scene:pickup_scene`〔pickup_scene〕 |
 | `捡采集` ≡`pickup_scene` | T3 副作用 |  | ✅ | ← 同 `scene:pickup_scene`〔pickup_scene〕 |
@@ -270,6 +272,7 @@
 | `绿雨` ≡`moss` | T3 副作用 |  | ✅ | ← 同 `scene:moss`〔moss_run〕 |
 | `翻垃圾桶` ≡`garbage` | T2 摆场 |  | ✅ | ← 同 `scene:garbage`〔trash_run〕 |
 | `翻桶` ≡`garbage` | T2 摆场 |  | ✅ | ← 同 `scene:garbage`〔trash_run〕 |
+| `装修` ≡`decor` | T2 摆场 |  |  |  |
 | `走迷宫` ≡`maze_walk` ⇄`map:walk_multi` | T2 摆场 |  | ✅ | ← 同 `map:walk_multi`〔_maze_walk〕 |
 | `起身` ≡`stand` | T2 摆场 |  | ✅ | ← 同 `scene:stand`〔stand〕 |
 | `转身` ≡`face` | T2 摆场 |  | ✅ | ← 同 `scene:face`〔face〕 |
@@ -424,7 +427,7 @@
 
 | op | 层 | 参数 | 判定 | 证据 |
 |---|---|---|---|---|
-| `go` | T2 摆场 | destination | ✅ | `session_log:1322` |
+| `go` | T2 摆场 | destination | ✅ | `session_log:1368` |
 | `lookup` | T1 自动 | location | ✅ | `session_log:1103` |
 | `npc` | T2 摆场 |  | ✅ | `session_log:650` |
 | `query` | T1 自动 | function | ✅ | `session_log:611` |

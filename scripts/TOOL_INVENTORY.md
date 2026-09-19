@@ -174,7 +174,7 @@
 | `berry` / `spot` / `moss` | 摇浆果 / 挖斑点蚯蚓 / 绿雨搜刮苔藓 |
 | `rock` | 室外镐击（采石场/挖掘场/蚌矿场敲可破物：骨/黏土/蚌/矿点/宝石/煤/放射矿，只跳普通石；dig=false 只扫） |
 | `forge_help` | 锻造台附魔攻略（台子：本图 Mini-Forge 优先，没有才去火山 Caldera） |
-| `drop` / `furniture` | 丢背包物品 / 扫家具 |
+| `drop` / `furniture` / `decor` | 丢背包物品 / 扫家具 / **🪵 地板墙纸真值表**（这间屋哪些格能铺 + 现在铺的什么；地板点**地板格**、墙纸点**靠墙那圈墙格**，点错游戏静默不理）|
 | `pan`(:dry_run,radius=3,timeout=20) / `maze` / `maze_seg` / `maze_walk` | 淘金 / 迷宫视图 / 走法链 / 走迷宫（⚠️通用多段走位,主门牌= `map walk_multi`/`闲逛`）|
 
 **📐 `scene` 参数速查**
@@ -194,7 +194,8 @@
 | `garbage` | `loc`("") `pos`("") `wait`(1.0) `dry_run`(False) | 翻垃圾桶；`dry_run=True` 只报位置 |
 | `pan` | `dry_run`(False) `radius`(3) `timeout`(20) | 淘金 |
 | `drop` | `name` `count`(1) `items` | 丢背包物品（直接消失不落地）：一种用 name+count；**多种一次丢**用 items=逗号分隔（每项可跟 :数量，如 `items=木头,石头:3`）。⚠️ 名字口径=check backpack 里显示的；菜单开着时别丢（满包菜单会持背包快照，关时写回） |
-| `place` | `name`,`x`,`y` | |
+| `place` | `name`,`x`,`y` | 🪵 放**地板/墙纸**时只能点**地板格/墙格**（点错游戏静默不理）→ 点错会直接告诉你「这格其实是墙不是地板」并给出能铺的格；拿不准先 `decor` |
+| `decor` | 无参 | 🪵 当前图的地板格/墙格清单 + 每间房现在铺的什么（**认房间不认格**）|
 | `break` | `x`,`y`（必填）`steps`(1) `radius`(0) | `radius>0`=方圆若干格 |
 | `maze` / `maze_seg` | `radius`(14/15) `gx` `gy` | 迷宫视图 / 走法链 |
 | `maze_walk` | `waypoints`（"x,y x,y …"）`location`(None) `max_wait`(18) `max_seg`(200) | ⚠️ **它其实是通用多段走位**，主门牌 2026-09-12 已挪到 **`map walk_multi`/`闲逛`**；此处保留旧名为兼容 |

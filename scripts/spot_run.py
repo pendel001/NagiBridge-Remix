@@ -1,16 +1,28 @@
 """
 🪱 spot_run.py — 挖当前场景所有斑点（蚯蚓点 + 远古斑点 + 姜点）
 
-原理（2026-08-17 恒+实测）：
-- 蚯蚓点 Artifact Spot = object (O)590：digUpArtifactSpot 挖，出古物/矿物/种子
-- 远古斑点 SeedSpot = object (O)SeedSpot"远古斑点"：必须真实锄地（tool_area till）才触发，
-  出季节作物种子（春=胡萝卜种子）。till_area 直接改地块/checkAction/digUpArtifactSpot 都挖不了它。
+原理（2026-08-17 恒+实测；**2026-09-19 反编译订正**）：
+- 两种斑点，**中文显示名都叫「远古斑点」**（别按中文名分，看内部 id）：
+    · `(O)590` 内部名 **Artifact Spot** —— 宝藏图腾撒的就是它（`Object.cs:3265`）
+    · `(O)SeedSpot` 内部名 **Seed Spot** —— 地图随机/山湖那种（`GameLocation.cs:15233`、
+      `Mountain.cs:272`）。⚠️ 工程里老把它俩混着叫，跟恒对话时**说内部名**最保险。
+  **两者挖法相同、而且那是唯一一条路**：`Hoe.DoFunction` → 锄头挥中物件 →
+  `Object.performToolAction(Hoe)`（`Object.cs:1310-1337`）→ `digUpArtifactSpot(...)`
+  + `makeHoeDirt(ignoreChecks: true)` + `objects.Remove(...)`。
+  ⚠️ **在此之前这个脚本一个斑点都挖不动**：`/tool_area` 的 till 过滤是
+  「格上有物件 ⇒ 整格跳过」（防锄到箱子/洒水器），可**斑点自己就是那个物件**
+  ⇒ 恒真机叫出的 15 个斑点全报 `No diggable tiles nearby`。C# 侧已加 `IsDiggableSpot`
+  例外（斑点格放行，另走 `isTilePassable`）；**这是 C# 改动，要重启游戏才生效**。
 - 姜点 = HoeDirt 上的 forageCrop 类型"2"（crop.forageCrop + whichForageCrop=="2"），
-  锄它 crop.hitWithHoe() 出姜。同 tool_area till。surroundings 报 forageCrop="2"。
+  锄它 `Crop.hitWithHoe()`（`Crop.cs:470-482`）出姜 `(O)829`，作物没了、HoeDirt 留着。
+  ⚠️ 它卡的是**第二道门**：`IsTileBlockedBy` 连"可通行的 HoeDirt"也算挡路
+  （我们传 `ignorePassables=None` ⇒ `GameLocation.cs:7405` 前半句恒真）——
+  同期加了 `IsGingerTile` 例外。surroundings 报 forageCrop="2"。
 - 全部靠锄头；AI 背包没锄头就不挖（状态注入也不报）。
 
-流程：扫 surroundings 找 (O)590 + (O)SeedSpot + forageCrop="2" → 检查锄头 → 逐格复用 tool_area till
-（脚本自己从 surroundings 算坐标，构造单格矩形，不靠 AI 报坐标）→ 循环到挖完。
+流程：扫 surroundings 找 (O)590 + (O)SeedSpot + forageCrop="2" → 检查锄头 →
+**逐格：走到四邻之一 → 面朝它 → `/tool` 挥一下（不蓄力）→ 回读那格确认**（脚本自己算坐标，
+不靠 AI 报）→ 循环到扫不出斑点为止。判据是**回读游戏状态**，不是工具回包的 ok。
 
 用法:
   python spot_run.py                    # 挖当前场景全部斑点
@@ -88,16 +100,155 @@ def main():
                 spots.append((t["x"], t["y"], "姜"))
         return spots, loc
 
-    def dig_one(x, y):
-        """复用耕地 tool_area till 单格（走位+蓄力+挥锄，脚本自动算矩形坐标）。
-        返回 (ok, 信息)。"""
+    # 🥢 四邻站位 → 面朝目标的方向（0上1右2下3左）。**只用正四向**：
+    #    对角站位要靠 getGeneralDirectionTowards 猜朝向，容易面错格。
+    _STANDBY = ((0, -1, 2), (0, 1, 0), (-1, 0, 1), (1, 0, 3))
+
+    def _tile_at(x, y):
+        """回读一格（判据用；失败返回 None）。"""
         try:
-            r = requests.post(f"{base}/tool_area",
-                              json={"operation": "till", "x1": x, "y1": y, "x2": x, "y2": y},
-                              timeout=40).json()
-            return r.get("ok", False), r
-        except Exception as e:
-            return False, str(e)
+            d = requests.get(f"{base}/surroundings", params={"radius": 2}, timeout=10).json()
+        except Exception:
+            return None
+        for t in d.get("tiles", []):
+            if t.get("x") == x and t.get("y") == y:
+                return t
+        return None
+
+    def _dug(x, y):
+        """这格挖成了吗 —— **回读游戏状态**，不看工具自报。"""
+        t = _tile_at(x, y)
+        if t is None:
+            return False
+        if t.get("objId") in SPOT_IDS:
+            return False              # 斑点还在
+        if t.get("forageCrop") == "2":
+            return False              # 姜还在
+        return True
+
+    def _me():
+        """我现在的格子 (x,y)；读不到返回 None。"""
+        try:
+            p = requests.get(f"{base}/state", timeout=10).json().get("player") or {}
+            return (int(p.get("x", -9)), int(p.get("y", -9)))
+        except Exception:
+            return None
+
+    def _face_toward(face_dir):
+        try:
+            requests.post(f"{base}/face", json={"direction": face_dir}, timeout=8)
+            time.sleep(0.2)
+            return True
+        except Exception:
+            return False
+
+    def _walk_exact(sx, sy):
+        """把小人**正好**放到 (sx,sy) 这一格上（走一趟 + 必要时一次校正）。
+
+        ⚠️ 2026-09-19 恒真机（「**朝向有时不是很准**」）：单挥只命中**面朝的那一格**，
+        而这游戏按**像素**算朝向格（`GetToolLocation()` = 包围盒边缘 ± 48~64px）。
+        小人骑在瓦片边界上，同样的"面朝下"会四舍五入到**隔壁列/行** ⇒ 对着空气挥。
+        已知 `/walk_to` 与 `/position` 落点差 16px（CHANGELOG 09-10「走位落点精度」：
+        `walk_to` 落 `y*64-32`、`position` 落 `y*64`）—— 差这一截就够挥空。
+        ⇒ 走一趟（拟人），**回读确认**；不是正好那格就 `/position` 校正**一次**。
+        ⚠️ 只校正一次：原来写成 3 轮循环，恒当场看见「**左跑一下右跑一下很傻**」。
+        """
+        cur = _me()
+        if cur == (sx, sy):
+            return True                                   # 已经站着了，别动
+        try:
+            requests.post(f"{base}/walk_to", json={"x": sx, "y": sy, "location": loc}, timeout=20)
+            time.sleep(0.6)
+        except Exception:
+            pass
+        if _me() == (sx, sy):
+            return True
+        try:
+            requests.post(f"{base}/position", json={"x": sx, "y": sy}, timeout=10)
+            time.sleep(0.35)
+        except Exception:
+            return False
+        return _me() == (sx, sy)
+
+    def _snap(sx, sy):
+        """**原地贴正**：把像素坐标对齐到格子中心（`/position` 写 `x*64`）。
+        人在同一格上也可能"骑在瓦片边界"，`GetToolLocation()` 便会四舍五入到隔壁 ⇒ 挥空。
+        只在这一下**挥空之后**才用（同一个格子，看不出位移，但朝向就准了）。"""
+        try:
+            requests.post(f"{base}/position", json={"x": sx, "y": sy}, timeout=10)
+            time.sleep(0.25)
+            return True
+        except Exception:
+            return False
+
+    def _stand_and_face(x, y, k=0, snap=False):
+        """站到 (x,y) 的四邻之一并面朝它。成功返回站位，失败 None。
+
+        ⚠️ 2026-09-19 恒真机（「**能不能走邻近格，左跑一下右跑一下很傻**」）：
+        原来固定按 上→下→左→右 的顺序找站位，挖完一个还得**横穿整块地**去下一个的"上面那格"。
+        可挖斑点是一圈一圈来的 —— 人**多半本来就站在某个能站的邻格上**。
+        ⇒ 现在：①**已经在能站的邻格上就原地转身挥**（一步不走）；
+              ②否则**挑离自己最近的那个邻格**走一趟。`k`=重试时换起点方向（别在同一坏站位反复挥）。
+        """
+        cur = _me() or (10 ** 9, 10 ** 9)
+        cands = []
+        for i in range(4):
+            dx, dy, face_dir = _STANDBY[(i + k) % 4]
+            sx, sy = x + dx, y + dy
+            try:
+                if not requests.post(f"{base}/passable", json={"x": sx, "y": sy},
+                                     timeout=8).json().get("passable"):
+                    continue
+            except Exception:
+                continue
+            # 距离只用来排序：已在脚下 = 距离 0，最优先
+            cands.append((abs(sx - cur[0]) + abs(sy - cur[1]), sx, sy, face_dir))
+        if not cands:
+            return None
+        cands.sort(key=lambda c: c[0])
+        for _, sx, sy, face_dir in cands:
+            if (sx, sy) == cur:                            # ① 就站在这格上：转身即可（一步不走）
+                if snap:
+                    _snap(sx, sy)
+                return (sx, sy) if _face_toward(face_dir) else None
+        for _, sx, sy, face_dir in cands:                  # ② 挑最近的那格走一趟
+            if _walk_exact(sx, sy) and _face_toward(face_dir):
+                return (sx, sy)
+        return None
+
+    def dig_one(x, y):
+        """**走到旁边 → 面朝它 → 挥一下**（不蓄力），再回读那格确认挖成了。
+
+        ⚠️ 2026-09-19 恒真机改（原来复用 `/tool_area till` 单格矩形）：那条路是给**整块田**
+        设计的**蓄力横扫**（铱锄头 power4 一次挥 18 格），拿来挖单格斑点两头不讨好 ——
+        ①**挖不动**：蓄力释放的落点由挥击动画按当时的 `GetToolLocation()` 算，站位/朝向一偏，
+           实际命中的就不是目标格（真机 16 个斑点只中了 2 个，工具却每条都打了 ✓）；
+        ②**白烧体力**：每挥 18 格，实测 7 下从 474 掉到 362。
+        单格就单挥（power0 只命中面朝那一格），跟真人蹲下挖一铲是一个道理。
+        判据是**回读那一格**（斑点没了/姜没了），不是工具说了什么。
+        """
+        if _dug(x, y):
+            return True, "本来就没了"
+        try:
+            requests.post(f"{base}/select", json={"name": "Hoe"}, timeout=8)
+        except Exception:
+            pass
+        # 挥空就**换个站位重来**（不是原地再挥一次——原地挥一百下还是那个错朝向）
+        last = ""
+        for attempt in range(3):
+            # attempt 0 最省事（多半原地转身就挥）；挥空了才贴正像素、再不行才换邻格
+            stand = _stand_and_face(x, y, k=attempt, snap=(attempt > 0))
+            if not stand:
+                return False, (last or "四邻") + "：四邻没有能站定的格（水/设施挡着/走不过去）"
+            last = f"站{stand}"
+            try:
+                requests.post(f"{base}/tool", json={}, timeout=20)
+            except Exception as e:
+                return False, f"挥击失败: {e}"
+            time.sleep(0.7)
+            if _dug(x, y):
+                return True, f"{last}挥中"
+        return False, f"{last} 换了 3 个站位都没挥中（回读那格斑点/姜还在）"
 
     # ── 锄头检查（没锄头不挖）──
     if not has_hoe():
@@ -109,33 +260,41 @@ def main():
         log(f"🎉 {loc or '当前场景'}没有斑点（蚯蚓点/远古斑点）")
         return
 
+    total0 = len(spots)
     log(f"🪱 {loc} 找到 {len(spots)} 个斑点: {[(x, y, n) for x, y, n in spots]}")
     if args.dry_run:
         log("--dry-run：不挖")
         return
 
-    done = set()
-    total = 0
+    dug = failed = 0
     for _ in range(args.rounds):
         spots, loc = scan_spots()
         if not spots:
             break
         for x, y, name in spots:
-            if (x, y) in done:
-                continue
             ok, info = dig_one(x, y)
             if ok:
-                log(f"  · 挖 ({x},{y}) {name} ✓")
+                dug += 1
+                log(f"  · 挖 ({x},{y}) {name} ✓ {info}")
             else:
-                log(f"  · 挖 ({x},{y}) {name} ⚠️ {str(info)[:120]}")
-            done.add((x, y))
-            total += 1
-            time.sleep(0.5)
+                failed += 1
+                log(f"  · 挖 ({x},{y}) {name} ⚠️ {info}")
+            time.sleep(0.4)
+        # 一轮下来一个都没挖成（水/设施围着之类）⇒ 别空转下一轮，如实报
+        if dug == 0 and failed:
+            break
 
-    if total:
-        log(f"✅ 挖完 {total} 个斑点。蚯蚓点出古物/矿物/种子，远古斑点出季节作物种子（掉落吸附进包）")
+    # ⚠️ 收工按**真剩几个**报，别按"挥了几次/失败几次"——重试成功的会各算一次 ⚠️，
+    #    上一条版本就闹过"13 个全挖完了，汇总却写另有 6 个没挖动"的笑话。
+    left, _ = scan_spots()
+    done_n = total0 - len(left)
+    if done_n:
+        log(f"✅ 挖成 {done_n}/{total0} 个斑点"
+            + (f"；还剩 {len(left)} 个没挖动：{[(a, b) for a, b, _ in left]}（看上面每行 ⚠️ 的原因）"
+               if left else "")
+            + "。蚯蚓点出古物/矿物/种子，远古斑点出季节作物种子（掉落吸附进包）")
     else:
-        log("⚠️ 没有挖到任何斑点")
+        log(f"⚠️ 一个都没挖成（共 {total0} 个）——看上面每行的原因")
 
 
 if __name__ == "__main__":

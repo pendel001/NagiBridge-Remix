@@ -2582,6 +2582,7 @@ public class ModEntry : Mod
                 "/interact" => HandleInteract(ctx),
                 "/furniture_pickup" => HandleFurniturePickup(ctx),
                 "/furniture" => HandleFurniture(ctx),
+                "/decor" => HandleDecor(),   // 🪵 地板/墙纸真值表（哪些格能铺 + 现在铺的什么）
                 "/sittable" => HandleSittable(ctx),   // 🪑 诊断：附近可坐物(家具椅子+地图座椅 MapSeat)
                 "/passable" => HandlePassable(ctx),
                 "/passable_rect" => HandlePassableRect(ctx),
@@ -3410,6 +3411,88 @@ public class ModEntry : Mod
     }
 
     /// <summary>
+    /// GET /decor — 这间屋子**能往哪儿铺**、现在铺的是什么（地板/墙纸的真值表）。
+    ///
+    /// 反编译定论（2026-09-19，`Wallpaper.cs:159-204`）：地板/墙纸**不是**找个空格就能放——
+    /// `placementAction` 先看 `location is DecoratableLocation`，再拿你点的那一格问
+    /// `GetFloorID(x,y)` / `GetWallpaperID(x,y)` 要房间号；**要不到就静默 `return false`**
+    /// （什么都没发生、物品也不消耗）。而 `floorTiles` / `wallpaperTiles` 是**地图数据**
+    /// （`FarmHouse` 构造时 `ReadWallpaperAndFloorTileData()` 读的，`DecoratableLocation.cs:114-241`），
+    /// AI 那边完全看不到 ⇒ 恒那句「AI 很可能分不清哪里是地板哪里是墙」是**确有其事**，
+    /// 不是猜的。这个端点就是把那两张表原样摊出来。
+    ///
+    /// 铺哪儿由 `SetFloor(id, roomID)` / `SetWallpaper(id, roomID)` 决定 —— **认房间不认格**
+    /// （点该房间任意一格，效果一样），所以挑格时房里的哪格都行。
+    /// ⚠️ `appliedFloor` / `appliedWallpaper` 是 NetField：farmhand **没进过这张图**时可能读到空
+    ///    （同 09-11「读全局状态≠读地图上的」那条）。只有 `floorTiles` / `wallpaperTiles`
+    ///    （纯地图数据、构造函数里读的）两边都恒准。
+    /// </summary>
+    private object HandleDecor()
+    {
+        if (!Context.IsWorldReady)
+            throw new InvalidOperationException("World not ready");
+
+        var tcs = new TaskCompletionSource<object>();
+        EnqueueMainThread(() =>
+        {
+            try
+            {
+                var loc = Game1.player.currentLocation;
+                if (loc is not DecoratableLocation dec)
+                {
+                    tcs.SetResult(new
+                    {
+                        ok = true,
+                        location = loc.Name,
+                        decoratable = false,
+                        hint = $"{loc.Name} 不是可装修场景——地板/墙纸只能铺在农舍/小屋/棚屋这类室内"
+                    });
+                    return;
+                }
+
+                static Dictionary<string, object?> PackRooms(
+                    Dictionary<string, List<Microsoft.Xna.Framework.Vector3>> tiles,
+                    Dictionary<string, string> applied)
+                {
+                    var rooms = new Dictionary<string, object?>();
+                    foreach (var kv in tiles)
+                    {
+                        var list = kv.Value;
+                        if (list == null || list.Count == 0) continue;
+                        rooms[kv.Key] = new
+                        {
+                            room = kv.Key,
+                            applied = applied.TryGetValue(kv.Key, out var a) ? a : null,
+                            count = list.Count,
+                            bbox = new[] { (int)list.Min(v => v.X), (int)list.Min(v => v.Y),
+                                           (int)list.Max(v => v.X), (int)list.Max(v => v.Y) },
+                            tiles = list.Select(v => new[] { (int)v.X, (int)v.Y }).ToList()
+                        };
+                    }
+                    return rooms;
+                }
+
+                tcs.SetResult(new
+                {
+                    ok = true,
+                    location = loc.Name,
+                    decoratable = true,
+                    floors = PackRooms(dec.floorTiles,
+                        dec.appliedFloor.Pairs.ToDictionary(p => p.Key, p => p.Value)),
+                    walls = PackRooms(dec.wallpaperTiles,
+                        dec.appliedWallpaper.Pairs.ToDictionary(p => p.Key, p => p.Value)),
+                    hint = "铺地板/墙纸认**房间**不认格（点该房间任意一格效果一样）；tiles 里是 [x,y]。"
+                });
+            }
+            catch (Exception ex)
+            {
+                tcs.SetResult(new { ok = false, error = ex.Message });
+            }
+        });
+        return tcs.Task.GetAwaiter().GetResult();
+    }
+
+    /// <summary>
     /// GET /sittable?radius=7  — 扫玩家附近**能坐的**东西（椅子/长凳/沙发/钢琴 + 地图座椅）。
     /// 反编译定论（2026-09-10）：能坐 = 两类，都经 GameLocation.checkAction → who.BeginSitting：
     ///   ① 家具 Furniture.GetSeatCapacity() > 0 —— furniture_type 0=chair/1=bench/2=couch/3=armchair，
@@ -4222,6 +4305,11 @@ public class ModEntry : Mod
                     {
                         ["name"] = i.Name,
                         ["displayName"] = i.DisplayName,
+                        // 🪵 2026-09-19：补 **限定物品 id**（`(FL)0` 地板 / `(WP)0` 墙纸 / `(O)590` 斑点…）。
+                        //    病根：地板/墙纸这类「同名多款」的物品，`Name` 只会是 "Flooring"/"Wallpaper"
+                        //    （游戏自己就这么起的，见 Wallpaper.cs:58），AI 光看名字分不清是哪一款、
+                        //    也认不出"这玩意儿是拿来铺的"。给真 id 就能按**游戏自己的类型**判，不用猜名字。
+                        ["itemId"] = i.QualifiedItemId,
                         ["stack"] = i.Stack,
                         ["category"] = i.getCategoryName(),
                         ["catNum"] = i.Category,
@@ -6222,6 +6310,56 @@ public class ModEntry : Mod
     }
 
     /// <summary>
+    /// 🪱 这一格上躺的是不是「远古斑点 / 种子斑点」——锄头**唯一被允许**去锄的"有物件的格"。
+    ///
+    /// 反编译定论（2026-09-19，`Object.cs:1310-1337`）：挖斑点的**唯一路径**是
+    /// 锄头真挥中那个物件 → `Object.performToolAction(Hoe)` → `digUpArtifactSpot(...)`
+    /// + `makeHoeDirt(ignoreChecks: true)` + `objects.Remove(...)`。
+    /// （`Object.cs:1310` 的判据就是这两个 id，逐字照抄。）
+    ///
+    /// ⚠️ 为什么需要这个例外：`/tool_area` 的 till 过滤历来是「**格上有物件 ⇒ 整格跳过**」
+    ///    （2026-09-03 恒：防锄到箱子/洒水器，锄了就跟着被收走）——这条规矩对箱子是对的，
+    ///    但**斑点自己就是那个物件**，于是被自己脚下的东西挡在门外。
+    ///    真机症状：宝藏图腾叫出 15 个斑点，`farm ops=spot` 一个都挖不动，全报
+    ///    「No diggable tiles nearby」（恒 2026-09-19）。
+    /// </summary>
+    private static bool IsDiggableSpot(StardewValley.Object o)
+        => o != null && (o.QualifiedItemId == "(O)590" || o.QualifiedItemId == "(O)SeedSpot");
+
+    /// <summary>
+    /// 🎯 till 目标格的两道门 + **斑点例外**（2026-09-19）。
+    /// 普通格：`Diggable` 属性 + 无物件 + 不被挡（原逻辑，一个字没动）。
+    /// 斑点格：物件就是斑点本身 ⇒ 只要求地图层可走（对齐 `Hoe.cs:106` 的 `isTilePassable`）。
+    /// </summary>
+    private static bool IsTillTarget(GameLocation loc, int x, int y)
+    {
+        var vec = new Vector2(x, y);
+        if (loc.objects.TryGetValue(vec, out var so) && IsDiggableSpot(so))
+            return loc.isTilePassable(new Location(x, y), Game1.viewport);   // 斑点格：物件=斑点本身
+        if (IsGingerTile(loc, vec)) return true;                              // 姜点：锄头挥它 = 收姜
+        if (loc.doesTileHaveProperty(x, y, "Diggable", "Back") == null) return false;
+        return !loc.objects.ContainsKey(vec)
+            && !loc.IsTileBlockedBy(vec, ~(StardewValley.CollisionMask.Characters | StardewValley.CollisionMask.Farmers));
+    }
+
+    /// <summary>
+    /// 🫚 姜点：**已经翻好的地（HoeDirt）上长着 forageCrop="2" 的作物**——锄头挥它 = 收姜。
+    ///
+    /// 反编译（2026-09-19）：`HoeDirt.performToolAction` 的 Hoe 分支（`HoeDirt.cs:758`）
+    /// → `Crop.hitWithHoe`（`Crop.cs:470-482`）：只有 `forageCrop && whichForageCrop == "2"`
+    /// 才出 `(O)829` 姜 + `destroyCrop`；**作物没了、HoeDirt 留着**（performToolAction 返回 false）。
+    ///
+    /// ⚠️ 为什么姜点也会被挡：它没有物件，卡的是**第二道门**。`IsTileOccupiedBy`（`GameLocation.cs:7405`）
+    ///    对 terrainFeatures 的判定是 `!ignorePassables.HasFlag(TerrainFeatures) || !tf.isPassable()`——
+    ///    我们传的 `ignorePassables = None` ⇒ **前半句恒真** ⇒ 连"可通行的 HoeDirt"也算挡路
+    ///    （这正是工程里那条老观察「已翻的地不带 diggable 字段」的真身）。
+    ///    所以姜点跟斑点一样，得在过滤器里显式放行，不能指望两道门放它过。
+    /// </summary>
+    private static bool IsGingerTile(GameLocation loc, Vector2 vec)
+        => loc.terrainFeatures.TryGetValue(vec, out var tf) && tf is HoeDirt d
+           && d.crop != null && d.crop.forageCrop.Value && d.crop.whichForageCrop.Value == "2";
+
+    /// <summary>
     /// 🧊 攒「这间厨房能用的**额外材料源**」—— **照抄游戏自己的 `ActivateKitchen`**
     /// （`GameLocation.cs:8184-8201`）：①地图自带冰箱 `GetFridge()`（房子升级过才有）
     /// ②`objects` 里所有 `fridge.Value` 的小冰柜。
@@ -6631,9 +6769,20 @@ public class ModEntry : Mod
         {
             case Hoe:
                 if (tf is HoeDirt)
+                {
+                    // 🫚 姜点：HoeDirt 上长着 forageCrop=2 的作物——锄头正好是收姜的工具，
+                    //    别按"地已经锄过了"挡回去（见 IsGingerTile）。
+                    if (IsGingerTile(loc, tileVec)) return null;
                     return "Tile already tilled";
+                }
+                // 🪱 2026-09-19：斑点格例外——物件就是斑点本身，锄头正是挖它的工具（见 IsDiggableSpot）。
+                //    也不要求 Diggable：游戏那条路走 makeHoeDirt(ignoreChecks: true)。
                 if (hasObj)
-                    return $"Tile blocked by object: {loc.objects[tileVec].Name}";
+                {
+                    if (!IsDiggableSpot(loc.objects[tileVec]))
+                        return $"Tile blocked by object: {loc.objects[tileVec].Name}";
+                    return null;
+                }
                 if (!diggable)
                     return "Tile is not diggable";
                 return null;
@@ -16009,10 +16158,9 @@ public class ModEntry : Mod
                     for (int x = Math.Min(x1, x2); x <= Math.Max(x1, x2); x++)
                         for (int y = Math.Min(y1, y2); y <= Math.Max(y1, y2); y++)
                         {
-                            var vec = new Vector2(x, y);
-                            if (loc.doesTileHaveProperty(x, y, "Diggable", "Back") != null
-                                && !loc.objects.ContainsKey(vec)
-                                && !loc.IsTileBlockedBy(vec, ~(StardewValley.CollisionMask.Characters | StardewValley.CollisionMask.Farmers)))
+                            // 🪱 2026-09-19：两道门收敛进 IsTillTarget，并补上**斑点例外**
+                            //    （斑点自己就是物件，原先被"有物件就跳过"整格排除 → 一个都挖不动）
+                            if (IsTillTarget(loc, x, y))
                                 targetTiles.Add((x, y));
                         }
                 }
@@ -16032,9 +16180,8 @@ public class ModEntry : Mod
                             else
                             {
                                 // ⚠️ 2026-09-10 恒："加强认定"——自动检测分支同样补第二道门（理由见矩形分支）
-                                if (!loc.terrainFeatures.ContainsKey(vec) && !loc.objects.ContainsKey(vec)
-                                    && loc.doesTileHaveProperty(cx, cy, "Diggable", "Back") != null
-                                    && !loc.IsTileBlockedBy(vec, ~(StardewValley.CollisionMask.Characters | StardewValley.CollisionMask.Farmers)))
+                                // 🪱 2026-09-19：同矩形分支，改走 IsTillTarget（含斑点例外）
+                                if (!loc.terrainFeatures.ContainsKey(vec) && IsTillTarget(loc, cx, cy))
                                     targetTiles.Add((cx, cy));
                             }
                         }
@@ -16193,11 +16340,24 @@ public class ModEntry : Mod
                 foreach (var (tx, ty) in _toolAreaTargets)
                 {
                     var vec = new Vector2(tx, ty);
-                    bool isMissing = operation == "till"
-                        ? (!loc.terrainFeatures.ContainsKey(vec) && !loc.objects.ContainsKey(vec)
-                           && loc.doesTileHaveProperty(tx, ty, "Diggable", "Back") != null)
-                        : (loc.terrainFeatures.TryGetValue(vec, out var tf) && tf is HoeDirt dirt
-                           && dirt.crop != null && dirt.state.Value == 0);
+                    bool isMissing;
+                    if (operation == "till")
+                    {
+                        bool hasDirt = loc.terrainFeatures.TryGetValue(vec, out var ttf) && ttf is HoeDirt;
+                        // 🪱 2026-09-19：斑点格锄成后会「斑点了、HoeDirt 生」；**只剩斑点没土 = 这锄没成**，
+                        //    要如实报出来（旧逻辑「有物件就当不缺」会把没挖成的斑点粉饰成成功）。
+                        bool spotLeft = loc.objects.TryGetValue(vec, out var so) && IsDiggableSpot(so);
+                        // 🫚 姜点锄成后「姜收了、HoeDirt 还在」⇒ 判据是**姜还在不在**，不是有没有土
+                        bool gingerLeft = IsGingerTile(loc, vec);
+                        isMissing = gingerLeft || (!hasDirt && (spotLeft
+                            || (!loc.objects.ContainsKey(vec)
+                                && loc.doesTileHaveProperty(tx, ty, "Diggable", "Back") != null)));
+                    }
+                    else
+                    {
+                        isMissing = loc.terrainFeatures.TryGetValue(vec, out var tf) && tf is HoeDirt dirt
+                            && dirt.crop != null && dirt.state.Value == 0;
+                    }
                     if (isMissing)
                         missing.Add((tx, ty, MissingReason(loc, tx, ty)));
                 }
@@ -16211,6 +16371,12 @@ public class ModEntry : Mod
     /// <summary>漏格报错原因：四向邻格被什么挡（object/terrain/地图外）。</summary>
     private static string MissingReason(GameLocation loc, int tx, int ty)
     {
+        // 🪱🫚 2026-09-19：先看**这一格自己**——斑点/姜没挖成的原因就在格上，别去数四邻
+        var self = new Vector2(tx, ty);
+        if (loc.objects.TryGetValue(self, out var selfObj) && IsDiggableSpot(selfObj))
+            return $"格上还有{selfObj.DisplayName}，这一锄没挖成";
+        if (IsGingerTile(loc, self))
+            return "这格的姜还在，没收到";
         var parts = new List<string>();
         var dirs = new (int dx, int dy, string name)[] { (0, -1, "上"), (0, 1, "下"), (-1, 0, "左"), (1, 0, "右") };
         foreach (var (dx, dy, name) in dirs)

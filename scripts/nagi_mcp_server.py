@@ -2018,7 +2018,7 @@ def _forage_summary(is_green_rain: bool = None) -> str:
         show_moss = is_green_rain or _moss_cfg.get("expose_all_days", False)
         # 采集/挖掘分类统计（2026-08-17 恒：浆果灌木/斑点/姜/大葱/苔藓树全接入）
         berry_bushes = 0    # 🍓 灌木季节结果（摇）
-        spot_count = 0      # 🪱 蚯蚓点590 + 远古斑点SeedSpot（锄）
+        spot_count = 0      # 🪱 斑点 (O)590 Artifact Spot + (O)SeedSpot Seed Spot（锄；俩中文名都叫「远古斑点」）
         ginger_count = 0    # 🫚 姜点 forageCrop="2"（锄，hitWithHoe）
         onion_count = 0     # 🌱 大葱 forageCrop="1" 成熟可收（摘）
         truffle_count = 0   # 🍄 猪产松露（放在 loc.Objects 的 (O)430，isPassable()=false，不靠 passable 判）
@@ -5983,14 +5983,19 @@ def berry_run() -> str:
 @mcp.tool()
 def spot_run() -> str:
     """🪱 挖当前场景所有斑点 + 姜点（scene 域）
-    自动：扫 surroundings 找 (O)590 蚯蚓点 + (O)SeedSpot 远古斑点 + forageCrop="2" 姜点 →
+    自动：扫 surroundings 找 (O)590 Artifact Spot + (O)SeedSpot Seed Spot + forageCrop="2" 姜点
+    （⚠️ `(O)590` 和 `(O)SeedSpot` 的**中文显示名都叫「远古斑点」**，别按中文名分家）→
     检查锄头 → 逐格复用耕地 tool_area till（脚本自己算坐标，不靠 AI 报）→ 循环到挖完。
     蚯蚓点出古物/矿物/种子；远古斑点出季节作物种子；姜点出姜。掉落吸附进包。
 
     注意：没带锄头不挖（状态注入也不报）。用法：scene ops=spot / 挖斑点 / 挖蚯蚓
     """
-    out = _run_script("spot_run", timeout=120)
-    return _with_state(f"🪱 挖斑点/姜报告：\n{out[:600]}")
+    # ⚠️ 2026-09-19：原来 `out[:600]` 只截**头**，16 个斑点时正好把最后的
+    #    「✅ 挖成 N 个 / 为什么没挖动」汇总切掉 —— 而那行才是 AI 下一步要读的东西。
+    #    改成"留头也留尾"，中间省略。
+    out = _run_script("spot_run", timeout=300)
+    txt = out if len(out) <= 1200 else out[:500] + "\n…（中间略）…\n" + out[-700:]
+    return _with_state(f"🪱 挖斑点/姜报告：\n{txt}")
 
 
 @mcp.tool()
@@ -9121,6 +9126,7 @@ def scene(ops: str = "", kw: dict | None = None) -> str:
         "drop": drop_item, "丢": drop_item,
         "furniture": scan_furniture, "家具": scan_furniture,
         "place": place_item, "放": place_item, "放置": place_item,
+        "decor": decor_report, "装修": decor_report, "可铺": decor_report,   # 🪵 地板/墙纸真值表
         "break": break_tile, "拆": break_tile, "敲": break_tile, "敲击": break_tile,
         "maze": _maze_view, "迷宫": _maze_view,
         "maze_seg": _maze_seg_view, "迷宫链": _maze_seg_view, "分段": _maze_seg_view,
@@ -11579,11 +11585,119 @@ def _stand_near(tx: int, ty: int):
     return None
 
 
+def _decor_rooms(d: dict, kind: str) -> dict:
+    """`/decor` 回包里的 floors/walls（按房号）。kind: 'floor'|'wall'。"""
+    return d.get("floors" if kind == "floor" else "walls") or {}
+
+
+def _decor_examples(rooms: dict, n: int = 3) -> str:
+    """屋里能铺的格，按房间举例（认房间不认格，所以同一间挑哪格都行）。"""
+    out = []
+    for rid in sorted(rooms.keys(), key=lambda s: str(s)):
+        r = rooms[rid] or {}
+        tiles = (r.get("tiles") or [])[:n]
+        pts = " ".join(f"({t[0]},{t[1]})" for t in tiles)
+        out.append(f"room={rid} 共 {r.get('count')} 格，例：{pts}")
+    return "；".join(out)
+
+
+def _decor_place_check(name: Optional[str], x: int, y: int) -> str:
+    """🪵 要放的是地板/墙纸吗？是的话先对 `/decor` 表 —— 格不对就**明说该点哪**。
+
+    （恒 2026-09-19：「AI 很可能分不清哪里是地板哪里是墙」。）
+    反编译：`Wallpaper.placementAction`（`Wallpaper.cs:159-204`）在
+    `GetFloorID/GetWallpaperID` 取不到房间号时**静默 return false** ——
+    游戏什么都不会发生、物品也不消耗，但回包只会给一句 "Cannot place"，
+    AI 拿着它只能瞎试下一格。这里替它把"该点哪"摆出来。
+
+    返回 ""（不是地板墙纸 / 查不到 / 这格本来就对）或一段可直接照做的拒绝文案。
+    """
+    if x is None or y is None:
+        return ""
+    try:
+        st = api.state()
+    except Exception:
+        return ""
+    look = name
+    if not look:
+        look = (st.get("player") or {}).get("currentItem") or ""
+    if not look:
+        return ""
+    ent = _inv_entries(st, look)
+    qid = next((str(e.get("itemId") or "") for e in ent), "")
+    if not (qid.startswith("(FL)") or qid.startswith("(WP)")):
+        return ""                                    # 不是地板/墙纸，走原路
+    want = "floor" if qid.startswith("(FL)") else "wall"
+    label = "地板" if want == "floor" else "墙纸"
+    disp = next((e.get("displayName") or e.get("name") or look for e in ent), look)
+    try:
+        d = api._ai_get("/decor")
+    except Exception:
+        return ""
+    if not d.get("ok") or not d.get("decoratable"):
+        return (f"❌ 「{disp}」铺不了：{d.get('location', '这里')} 不是可装修场景"
+                f"（地板/墙纸只能铺在农舍/小屋/棚屋这类室内）。**物品没消耗、没动过。**")
+    rooms = _decor_rooms(d, want)
+    if any([x, y] in (r.get("tiles") or []) for r in rooms.values()):
+        return ""                                    # 这格本来就对
+    other_kind = "wall" if want == "floor" else "floor"
+    other_label = "墙格" if want == "floor" else "地板格"
+    other_rooms = _decor_rooms(d, other_kind)
+    in_other = any([x, y] in (r.get("tiles") or []) for r in other_rooms.values())
+    # 🎯 恒担心的那句就在这儿：告诉他"这格其实是墙不是地板"
+    why = (f"——这格是**{other_label}**（它铺的是{'墙纸' if want == 'floor' else '地板'}），"
+           if in_other else "——这格既不是地板格也不是墙格。")
+    if not rooms:
+        return (f"❌ 「{disp}」铺不了 @({x},{y})：这间屋子的清单里**一格都没有**可铺的位置。"
+                f"**物品没消耗。**")
+    return (f"❌ 「{disp}」铺不了 @({x},{y})：这格不是{label}格{why}**物品没消耗、没动过。**\n"
+            f"🧱 能铺的{label}格（**认房间不认格**，同一间随便挑一格都行）：{_decor_examples(rooms)}\n"
+            f"👉 改成：scene ops=place kw={{name:\"{disp}\", x:…, y:…}}"
+            f"（或先看全表：scene ops=decor）")
+
+
+def decor_report() -> str:
+    """🪵 这间屋子能往哪儿铺地板/墙纸（scene 域，2026-09-19 恒）
+
+    地板/墙纸**只认装饰房间的格子**：地板点地板格、墙纸点靠墙那圈墙格，点错了游戏**静默不理**。
+    这里把游戏自己的真值表（`DecoratableLocation.floorTiles/wallpaperTiles`）摊开给你挑。
+    **认房间不认格** —— 同一间房随便挑一格，效果一样。
+    """
+    try:
+        d = api._ai_get("/decor")
+    except Exception as e:
+        return _with_state(f"❌ 查不到装修信息: {e}")
+    if not d.get("ok"):
+        return _with_state(f"❌ 查不到装修信息: {d.get('error', '未知')}")
+    loc = d.get("location", "?")
+    if not d.get("decoratable"):
+        return _with_state(f"🪵 {loc} 不能铺地板/墙纸——{d.get('hint', '')}")
+    lines = [f"🪵 {loc} 可铺："]
+    for kind, icon, label in (("floor", "🧱", "地板"), ("wall", "🖼️", "墙纸")):
+        rooms = _decor_rooms(d, kind)
+        if not rooms:
+            lines.append(f"  {icon} {label}：这间屋子没有可铺的{label}格")
+            continue
+        lines.append(f"  {icon} {label}（认房间不认格）：")
+        for rid in sorted(rooms.keys(), key=lambda s: str(s)):
+            r = rooms[rid] or {}
+            tiles = (r.get("tiles") or [])[:3]
+            pts = " ".join(f"({t[0]},{t[1]})" for t in tiles)
+            cur = r.get("applied")
+            lines.append(f"    room={rid} 现在={cur if cur is not None else '?'} "
+                         f"共 {r.get('count')} 格，例：{pts}")
+    lines.append("👉 铺：scene ops=place kw={name:\"地板\", x:…, y:…}（背包里显示名是「地板」/「壁纸」）")
+    return _with_state("\n".join(lines))
+
+
 @mcp.tool()
 def place_item(name: Optional[str] = None, x: Optional[int] = None, y: Optional[int] = None) -> str:
     """🪧 放置物品/播种（把背包物品放到指定格：落地/种树；scene 域）
     流程：select(name) → /use{x,y} → placementAction 放地上（箱子/机器/蟹笼）或种下（树种/作物种子）。
     ⚠️ **只能放可放置/可种物**（箱子、机器、蟹笼、树种、作物种子等）；书/纸条等不可放置物会失败且**不消耗**（安全，不会丢地上收不回）。
+    🪵 **地板/墙纸是特例**：只能点在**装饰房间的格**上——地板要点**地板格**、墙纸要点**靠墙那圈墙格**，
+       点错了游戏**静默不理**（连错在哪都不说）。拿不准先 `scene ops=decor` 看这间屋子能铺哪；
+       点错时本工具会直接告诉你"这格其实是墙不是地板"并给出能铺的格。
 
     Args:
         name: 物品英文名（Chest / Keg / Maple Seed / Crab Pot …），不传则用当前手上物
@@ -11600,6 +11714,10 @@ def place_item(name: Optional[str] = None, x: Optional[int] = None, y: Optional[
                     f"❌ 背包里没有「{name}」: {sr.get('error', '未找到')}（没放置、没挥工具、没消耗）")
             time.sleep(0.2)
         if x is not None and y is not None:
+            # 🪵 地板/墙纸先对表：点错格游戏是**静默不理**，别让 AI 拿着"Cannot place"瞎试
+            _decor_msg = _decor_place_check(name, int(x), int(y))
+            if _decor_msg:
+                return _with_state(_decor_msg)
             r = api._post("/use", {"x": int(x), "y": int(y), "force": True})
         else:
             r = api.use_item(force=True)
@@ -12545,8 +12663,8 @@ _DOMAIN_GUIDES = {
 "farm": "农活域(🌱必走，别手动挥工具组合，用域 ops)：till(锄地) plant(种,跳过已种;带 layout 就按洒水器布局种) water(浇,自动跳雨+水壶没水先装满) harvest(收) scythe(镰刀收蒜/花/茶) fertilize(化肥) clear(清杂草石树桩;坐标同 till，也可 `radius=N` 走**圆形**；**会自动往外多清 2 格**——田边的杂草会长进田里把作物顶掉，不用自己放大) plot(连通域规划) plan(方形规划,纯算格) chop(砍树)。⚠️**锄地/播种各只有一个实现**：锄地=`till`（`hoe`/`布局锄`/`tillfield`/`蓄力锄` 都是它的别名）、播种=`plant`（`sow`/`plantlayout`/`播种规划` 都是它的别名）；⛔ `till_plant` 已退役——要锄+种写 `ops=\"till plant\"`。 clearground(清单格) collect(一键收机器:只收不放,全农场瞬收不走路) load(放原料) building(一屋收放:拟人走进去收+放料,item留空=只收不放) break(拆/敲同scene,镐子敲可破物/翻已耕地) place(放置/播种同scene) pond/pond_add/pond_feed/pond_collect/pond_fish(鱼塘)。⚠️漏格DLL自动补；**缺的格会被点名「被什么挡着」**（🌿草/杂草/🪨石头/🪵树枝→**先 `clear` 清一遍再 till/plant**；🏗️洒水器/箱子等设施→⛔别清、那是规划该绕开的格）——草占着地格时锄头是锄不出 HoeDirt 的，别对着「缺失N格」发呆；高级工具蓄力用 tool_area(别用/tool)。只在 Farm/温室/姜岛。带参 op(plant 的 seed_name、till/clear 的 x/y/rows、fertilize 的 fertilizer_name、place 的 name、building 的 location、collect 的 machine_type、pond_add 的 item)→ kw={'参数名':值}。🐄动物(2026-09-02 care域并入farm): animals(摸+收) 喂水/碗(宠物水,🌧️雨天自动跳过——雨会把碗填满) milk(挤奶剪毛) buy(买动物,豁免建议) doors(关门) hay(干草) pet(猫狗) petwalk(拟人摸) 畜舍/这间(这间屋动物) statue(祈福)——⚠️farm water=浇地,动物水用 喂水; farm building=机器收放,这屋动物用 畜舍。📐参数键名: till/clear/plant/fertilize 都是 x,y(**必填**),rows,length,direction（till/plant 也可用 x1,y1,x2,y2 直接给矩形两角）；plant 另有 seed_name,layout,direct,trellis；harvest/scythe=radius；plot=x,y,radius,all_plots；chop=area(**值写几个数**：4 个数=矩形两角 / 3 个数=圆心+半径，逗号空格都认)；collect=machine_type,location；load=item,machine_type,location；building=location,item,machine_type；place=name,x,y；break=x,y,steps,radius；pond_add=item+x,y（pond_feed/collect/fish 只要 x,y）；buy=animal_type,name,building；petwalk=include_petted；hay=dry_run。⚠️direction 只认 horizontal(默认)/vertical 两个值,别写'横'/'竖'。💡大田洒水器布局(可选,纯自动化建议)：要按洒水器留格/留走道就 plan→till→plant 三件套——plan(x1,y1,x2,y2,layout=0,hoe_level=-1,trellis=False) **纯算格不动机器**先看要锄/种哪些; till(x1,y1,x2,y2,layout=0) 按布局锄; plant(x1,y1,x2,y2,seed_name,**layout**) 按布局种（layout=0 整块/1 初级十字/2 高级/3 铱；direct=True 瞬移快、默认走位拟人）。想一次说完就 `ops=\"till plant\"`（**一份 kw 共用**，锄地会自动点名忽略 seed_name）。**layout 四档**: 0=标准整块(不预留洒水器,锄法蛇形逐格走位,任何锄头等级都行) 1=初级(十字稀疏,每台覆盖上下左右4格;锄法=精确锄每台4格,**与锄头等级无关**) 2=高级(优质,田宽高先裁成**3的倍数**,每3×3中心1台覆盖8格,整块蓄力锄) 3=铱(裁成**5的倍数**,每5×5中心1台覆盖24格;⚠️爬架作物不适用)。hoe_level: 0→1格 1→3线 2→5线 3→3×3 4→6×3,-1=自动读手持。trellis=True=爬架作物(啤酒花/青豆/葡萄,不可通过格)⇒自动**种2留1**留走道让AI能进田浇收。只管种不摆洒水器就直接 plant,不用 plan 那套。⚠️已知限制: layout 0/2/3 碰上金/铱锄(hoe_level>=3)会报**0处锄地站位**并自打一行'落点未实测校准,暂不规划蓄力站位'——**那是刻意不猜不是出错**; layout 1 不吃蓄力站位不受影响。",
 "mine": "下矿域(⚒️ 矿井/头骨/火山)：go(去挖矿:mode=rush冲层/farm刷矿,start起始层,target目标层,ore,cycles圈数) progress(进度) bomb_status/bomb_plan/bomb_place/bomb_collect/bomb_ladder/bomb_retreat(单步炸,**都要 bomb_ 前缀**) bomb_mine(自动) bomb_volcano(火山) organize(整理背包)。🔁**刷矿=mode=go(mode=farm)**：定点刷指定矿→ore=Copper铜(21层)/Iron铁(41层)/Gold金(71层)；**煤靠 farm 铁层(41)顺手清尘埃精灵/蝙蝠掉**（不是 ore 选项，跑 auto 内部刷）。🏃下矿=mode=go(mode=rush,start可选≤电梯上限+5倍数,target默认120)。⚠️无镐/血低硬拦；梯子 /ladder+confirm。⚠️bomb_mine 没炸弹+host在同矿井→自动转【内部】协同(跟随host+帮忙敲矿/打怪)不撤退出矿(bomb_escort 不对外暴露、AI 不主动启用)；bomb_retreat 结束协同+停脚本+脱离矿井回门口。⚠️接「深处的危险」重置电梯→起始层动态从1起(内置脚本自动读，不暴露工具)；刷矿目标层不可直达会上报，需先冲层带回或改浅层。📐带参速查: go(mode=rush冲层/farm刷矿, start起始层, target目标层, ore=Copper铜/Iron铁/Gold金, cycles圈数, hp_threshold, food_sta, food_hp, resume) bomb_plan(radius,min_covered,top) bomb_place(x,y **必填**) bomb_collect(max_items) bomb_mine(target,bomb,min_covered,follow_host,lead,autodrop,one_floor) bomb_volcano(bomb,min_covered,hp_threshold,max_minutes,poll) organize(disable,reset)。💣bomb 三个取值 'Cherry Bomb'樱桃/'Bomb'黑/'Mega Bomb'超级——**点名的包里没有就按 黑>超级>樱桃 自动换成有的**(不会误报没炸弹)；范围 樱桃=边长7十字 / 黑=11x11方块 / 超级=15x15方块，⚠️黑和超级**会炸伤自己**(实测黑掉3血)。⚠️bomb_volcano **要求 host 已在矿/火山里**才放行(火山瓦片没法程序化换层)。⚠️bomb_mine one_floor=True=逐层模式(同步,只跑一层出摘要,不撤退)；**默认冲层模式=异步后台跑,推荐**。💡出发前占位物(恒2026-08-23)：提前放1个可堆叠物(铱矿/铱锭/五彩碎片)在包，满包时同种战利品自动堆叠吸附、少触发满包停；别拿银河之魂这类带死亡会丢的稀有物当占位。",
 "cabin": "小屋引导域(🏠 FarmHouse/Cabin/岛屋；不传=扫屋)：enum(扫**本屋**查待收) collect(收**本屋**机器;要全农场→farm collect) statue(雕像) furniture(扫家具) interact(点家具,tile_x/tile_y) pickup(拿起家具,tile_x/tile_y) cook(做饭,recipe_name) sleep(睡觉,who=谁床：不传/房主名=睡房主床一起睡,传自己名=睡自己床) cook(做饭,recipe_name,count) place/break(同scene)。📐参数键名: interact/pickup=**tile_x,tile_y(不是x,y)** cook=recipe_name,count sleep=who place=name,x,y break=x,y,steps,radius；enum/collect/statue/furniture 无参。kw={'参数名':值}。",
-"social": "社交域：chat(搭话,name=NPC名) gift(送礼,npc_name/item_name) give(送玩家物品,手持右键正式赠予,一次一个要等同意) hand(递给玩家,走过去丢他脚边,磁吸自动收,可整叠) send(发消息,message) emote(表情,name) friendship(查好感,npc_name) movie(影院,npc)。📐参数键名: chat=name / gift=npc_name+item_name / give=player_name+item_name / hand=player_name+item_name+count(0=整叠) / send=message / emote=name(默认爱心) / friendship=name / movie=npc。⚠️**give vs hand**：give=面对面正式赠予(手持右键,一次一个,要等同意)；hand=走过去丢他脚边(磁吸自动收,**可整叠**)——想整叠给/对方不在手边就用 hand。kw={'参数名':值}。",
-"scene": "场景交互域(点东西/工具/转身/捡/坐)：at(tile_x,tile_y)(点指定格/柜台) interact(点面前) use(挥工具) face(转向0上1右2下3左) select(拿手上) sit(x,y[,face])(**坐椅子**:自动走到座位旁再坐,上不了会明确报错;状态条「🪑 可交互：sit(x,y)」给坐标;可选 face=坐下朝向0上1右2下3左,**只对「朝向来自坐下那刻面朝方向」的座位生效**(反编译:stool 类/opposite 长椅/名字带Stool的家具),其它写死——吃不吃由端点回的 face 字段说了算,不生效会在回报里点名) stand(**起身**:坐着时用,没坐着明确报错,带动画+轮询确认) seats(radius=12)(扫附近能坐的椅子/长凳/沙发,✋=可改朝向) pickup(拿起家具) pickup_scene(捡当前场景物) berry(摇浆果) spot(挖蚯蚓点) moss(绿雨搜苔藓) rock(室外镐击:敲当前图可破物,采石场/挖掘场/蚌矿场跳普通石,dig/dry,battle-free) garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物:一种 name+count / 多种 items=逗号分隔) furniture(扫家具) place(放置/播种:name=物品名,x/y=目标格→箱子/树种/蟹笼落地或种下,只放可放置物) break(拆/敲:x,y=目标格,steps=挥击次,radius=方圆→镐子敲石头/翻已耕地,跳过箱子/容器格) maze(迷宫视图r半径,gx/gy目标格→ASCII棋盘#墙.可走P自己G目标) maze_seg(走法链gx,gy目标→拆直走廊列表+拼「左/右上/下走到(x,y)」多段链,AI按段walk_to) maze_walk(走迷宫 waypoints=「x,y x,y…」依次walk_to;⚠️**它其实是通用多段走位,主门牌已挪到 `map walk_multi/闲逛`**(闲逛遛弯/绕人转圈/泳池绕圈游),此处保留旧名为兼容) pan(淘金/淘盘:本图水下闪光点→岸边走位面水→铜锅淘金收掉落) front/rummage(分别是interact/garbage的别名)。📌**坐着想起来：scene stand**（2026-09-11 起有正门，别再拿 at 猜一个够得着的格子——那条路会静静失败）。📐带参速查(键名必须=下面这些,**写错会被静默丢掉、不报错**): at(tile_x,tile_y) **⚠️是 tile_x/tile_y 不是 x/y** / pickup(tile_x,tile_y **同 at 用 tile_**) / use(name) / face(direction 0上1右2下3左) / select(name) / sit(x,y,face) / seats(radius=12) / pickup_scene(max_items=30) / moss(radius,target_max,rounds,dry_run) / rock(dig,radius,max_break,break_stone) / garbage(loc,pos,wait,dry_run) / pan(dry_run,radius,timeout) / drop(name,count,items=多种一起丢) / place(name,x,y) / break(x,y,steps,radius) / maze(radius,gx,gy) / maze_seg(gx,gy,radius) / maze_walk(waypoints,location,max_wait,max_seg)。kw={'参数名':值}。",
+"social": "社交域：chat(搭话,name=NPC名) gift(送礼,npc_name/item_name) give(送玩家物品,手持右键正式赠予,一次一个要等同意) hand(递给玩家,走过去丢他脚边,磁吸自动收,可整叠) send(发消息,message) emote(表情,name) friendship(查好感,npc_name) movie(影院,npc)。📐参数键名: chat=name / gift=npc_name+item_name / give=player_name+item_name / hand=player_name+item_name+count(0=整叠) / send=message / emote=name(默认爱心) / friendship=name / movie=npc。⚠️**give vs hand**：give=面对面正式赠予(手持右键,一次一个)——**它发的是「赠送提议」,对方点同意东西才过去**(没点会退回;回报会明说「等他点同意」,看到这句别当成已经送到)；hand=走过去丢他脚边(磁吸自动收,**可整叠**,不用对方操作)——想整叠给/对方不在手边就用 hand。kw={'参数名':值}。",
+"scene": "场景交互域(点东西/工具/转身/捡/坐)：at(tile_x,tile_y)(点指定格/柜台) interact(点面前) use(挥工具) face(转向0上1右2下3左) select(拿手上) sit(x,y[,face])(**坐椅子**:自动走到座位旁再坐,上不了会明确报错;状态条「🪑 可交互：sit(x,y)」给坐标;可选 face=坐下朝向0上1右2下3左,**只对「朝向来自坐下那刻面朝方向」的座位生效**(反编译:stool 类/opposite 长椅/名字带Stool的家具),其它写死——吃不吃由端点回的 face 字段说了算,不生效会在回报里点名) stand(**起身**:坐着时用,没坐着明确报错,带动画+轮询确认) seats(radius=12)(扫附近能坐的椅子/长凳/沙发,✋=可改朝向) pickup(拿起家具) pickup_scene(捡当前场景物) berry(摇浆果) spot(挖蚯蚓点) moss(绿雨搜苔藓) rock(室外镐击:敲当前图可破物,采石场/挖掘场/蚌矿场跳普通石,dig/dry,battle-free) garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物:一种 name+count / 多种 items=逗号分隔) decor(🪵地板/墙纸真值表:这间屋哪些格能铺+现在铺的什么,**铺前先查这**) furniture(扫家具) place(放置/播种:name=物品名,x/y=目标格→箱子/树种/蟹笼落地或种下,只放可放置物;🪵**地板/墙纸是特例**——只能点在**地板格**(地板)/**靠墙那圈墙格**(墙纸)上,点错游戏**静默不理**;点错时回报会直接告诉你「这格其实是墙不是地板」并给出能铺的格) break(拆/敲:x,y=目标格,steps=挥击次,radius=方圆→镐子敲石头/翻已耕地,跳过箱子/容器格) maze(迷宫视图r半径,gx/gy目标格→ASCII棋盘#墙.可走P自己G目标) maze_seg(走法链gx,gy目标→拆直走廊列表+拼「左/右上/下走到(x,y)」多段链,AI按段walk_to) maze_walk(走迷宫 waypoints=「x,y x,y…」依次walk_to;⚠️**它其实是通用多段走位,主门牌已挪到 `map walk_multi/闲逛`**(闲逛遛弯/绕人转圈/泳池绕圈游),此处保留旧名为兼容) pan(淘金/淘盘:本图水下闪光点→岸边走位面水→铜锅淘金收掉落) front/rummage(分别是interact/garbage的别名)。📌**坐着想起来：scene stand**（2026-09-11 起有正门，别再拿 at 猜一个够得着的格子——那条路会静静失败）。📐带参速查(键名必须=下面这些,**写错会被静默丢掉、不报错**): at(tile_x,tile_y) **⚠️是 tile_x/tile_y 不是 x/y** / pickup(tile_x,tile_y **同 at 用 tile_**) / use(name) / face(direction 0上1右2下3左) / select(name) / sit(x,y,face) / seats(radius=12) / pickup_scene(max_items=30) / moss(radius,target_max,rounds,dry_run) / rock(dig,radius,max_break,break_stone) / garbage(loc,pos,wait,dry_run) / pan(dry_run,radius,timeout) / drop(name,count,items=多种一起丢) / place(name,x,y) / decor(无参) / break(x,y,steps,radius) / maze(radius,gx,gy) / maze_seg(gx,gy,radius) / maze_walk(waypoints,location,max_wait,max_seg)。kw={'参数名':值}。",
 "menu": "菜单/界面域(开→看→点)：read(看菜单) advance(推进剧情/对话,一句句) **skip(整段跳过剧情/事件,事件 skippable=true 才跳得动)** click(option/item/button/xy 点;action=claim领/action=discard丢桶腾格;slot=序号领指定格) key(ok/esc/数字按键) cancel(关弹窗/撤就绪) shop(逛店) sell(卖商店) bin(投出货箱) craft(合成) recipes(菜谱) craftables(配方) forge(锻造) geode/geodes(砸晶球) customize(捏人) bundle(献祭缺口·**只读存档不走路**) bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读消耗品:书/秘密纸条/日记残页,统一走右键读 name=物品名) levelup_choose(技能升级职业选择 5/10级:不带参读左右选项,side=left/right 或 profession=职业id 定分支;普通升级自会确认OK) number(数量输入:展览会兑换台/转盘押注 NumberSelectionMenu) minigame(赌场小游戏点按钮 action=hit/stand/bet10/…) minigame_state(读牌面/转盘) display_fill(农展台放满 items='钻石,山羊奶酪') display_takeback(收好) journal(开任务日志→menu read 读卡,翻页=click(button=forward/back),领奖励=click(button=rewardBox)) know(查特别订单详情/知识库SPECIAL_ORDERS,如menu know 岛屿食材;2026-09-02 task域退役并入menu)。📐参数键名: click=option,button,x,y,item,right,quantity,action,real,slot,category(**action=claim领 / discard丢桶腾格**;button 用按钮名 ok/upperRightCloseButton/forward/back/rewardBox/mainButton) / key=key,count,hold / number=value,confirm / shop=place,want / sell=name,count(-1=全卖) / bin=name,sell_all / craft=item_name,count / forge=item1,item2,mode,target / geodes=count / customize=name,farmname,favorite / bundle=area / bundle_kb=query / read_book=name / levelup_choose=side,profession(**不带参=只读当前左右选项**,供配 check(what=profile) 分析后再决定) / minigame=action,x,y / display_fill=items。⚠️cook(做饭)**不在 menu 在 cabin**。🚫满包接鱼/领箱:原 claim_swap(替换领取)已退役→**click action=discard 丢桶腾格(回收返金)+action=claim 领取(或用 slot 领指定格;不想要直接 button=ok 关掉)**。🧾关闭菜单一律 click(button=upperRightCloseButton)（ItemGrabMenu/交付容器用 button=ok 确认才关）；订单交付容器(QuestContainerMenu)=点背包对应物品格(见slots的坐标)→放进→点 button=ok 结算；任务日志领钱=点击已完成的有钱任务卡后 click(button=rewardBox)；兑奖机兑换=click(button=mainButton)；特别订单领奖链=日志领钱(上面)→社区板旁领奖箱(60,93)拿兑奖券→刘易斯家兑奖机(mainButton)兑换。",
 "storage": "箱子域：view(看箱,box=N看单箱全清单) store(存:what/items限定存哪些,名可带xN数量只存那N份,留空=归位只存已有同类堆,target指定箱/all=True全存腾空间) take(取:x,y+name单箱 或 items批量) find(模糊查哪箱有某物) default(设/清默认箱 clear=清) tag(改名,可带color改色)。📐参数键名(view=box / store=what,items,target,keepTools默认True,all / take=items 或 x+y+name+count默认999 / find=name / default=x,y,clear / tag=tag,target**必填**,color)。🤖存取统一走位：store/take都会先走到相关箱旁(批量只走到第一个),不区分拟人/原子,别靠编号逐箱翻。⭐每个箱子前自动带【类目标签】(内容过半归类):矿/古物/鱼/种子/作物/农产/建材/料理/装备——AI按标签定位箱,找东西用find。⚠️改色别染纯#000000(=默认木纹,识别成未染色);要黑箱用暗灰#303030。",
 "daily": "过日子域：sleep(睡觉) eat(吃食物回血体力,name/item_name) wear(穿/脱衣物,name/slot/hand) lie_bed(躺床不过夜) settle(确认过夜结算) heartbeat(心跳间隔,minutes) pause(后台不暂停,out_of_focus) peek(看恒干嘛) whiteboard(写白板,content) wb_read/wb_pin/wb_clear。📐参数键名: sleep/lie_bed=who eat=name,item_name wear=name,slot,hand(**hand 仅戒指**:1/left 或 2/right,或传「要换掉的那枚戒指名」自动找手) heartbeat=minutes pause=out_of_focus whiteboard/wb_pin=content appearance=hair,hair_color,skin,shirt,pants,hat,acc,eye_color,pants_color；settle/peek/wb_read/wb_clear 无参。kw={'参数名':值}。📌sleep/lie_bed 的 who：不传或传房主名=睡房主床(一起睡+🌹彩蛋)；传自己名字=睡自己床。lie_bed 只躺不睡，想离开随时 walk_to 走离床格即可。⚠️睡别人床/协作前先 check(what=\"role\") 确认端口↔角色（端口按启动顺序分配，重启可能翻转，认错角色=挪了恒的人）。",
@@ -13432,20 +13550,50 @@ def gift_npc(npc_name: str, item_name: str) -> str:
 
 @mcp.tool()
 def give_item(player_name: str, item_name: str) -> str:
-    """🎁 送物品给另一位玩家（物品转移）
+    """🎁 送物品给另一位玩家（正式赠予，一次一个）
     SDV 里玩家之间没有好感度条，本质是把物品从自己的背包转到对方背包。
+    ⚠️ 走的是**赠送提议**：对方点同意东西才真过去。**这一下要等几秒，是正常的、不是卡住**
+       （拟人节拍 5 秒 + 等对方点头）。回包会明说「他收下了」还是「还在等他点同意」——
+       看到后者**别当成已经送到**，也别重复发（重复发只是再发一次提议）。
+    💡 想**整叠一次给、不用对方操作**：用 hand（走过去丢他脚边，磁吸自动收）。
 
     Args:
         player_name: 目标玩家的角色名（用 /state 的 otherPlayers 或名单）
         item_name: 背包里的物品名
     """
     try:
+        _t0 = time.time()
+        try:
+            _had = _count_in_inventory(api.state(), item_name)
+        except Exception:
+            _had = 0
+        # ⏱️ 拟人节拍（恒 2026-09-19：「**第一次询和送礼请求发送成功之间隔五秒**（等接受礼物要时间）」）
+        _gift_pace(_t0)
         r = api._post("/gift", {"target": player_name, "item": item_name})
         if not r.get("ok"):
-            return f"赠送失败: {r.get('error', r)}"
-        return f"已送 {r.get('item')} 给 {r.get('target')} 🎁"
+            return _with_state(f"赠送失败: {r.get('error', r)}")
+        # ⚠️ 2026-09-19 恒真机测出：玩家之间送礼走的是 **SendProposal**。
+        #    回包 `action=gift_proposal_sent` =「提议已发出，**等对方点同意**」——东西这时候
+        #    还**没到他包里**。旧代码不看这个字段，一律印「已送 X 给 Y 🎁」⇒ 对方不点同意
+        #    也照样报成功（教科书级的"工具说成功但事没发生"）。见 CHANGELOG 2026-09-19。
+        if r.get("action") == "gift_proposal_sent":
+            # ⏱️ 发出去 ≠ 送到：**接受礼物是要时间的**（恒同日）。等一会儿再回读自己背包——
+            #    东西真走了才算送到；没走就如实说"还在等他点同意"。
+            if _had > 0:
+                for _ in range(_GIFT_ACCEPT_WAIT):
+                    time.sleep(1.0)
+                    try:
+                        if _count_in_inventory(api.state(), item_name) < _had:
+                            return _with_state(
+                                f"🎁 {r.get('target')} 收下了「{r.get('item')}」，东西已经过去了 ✅")
+                    except Exception:
+                        break
+            return _with_state(
+                f"🎁 赠送提议已发给 {r.get('target')}——**还在等他点同意**（东西暂时还在我包里，"
+                f"他不点会自动退回）。别当成已经送到。")
+        return _with_state(f"已送 {r.get('item')} 给 {r.get('target')} 🎁")
     except Exception as e:
-        return f"赠送失败: {e}"
+        return _with_state(f"赠送失败: {e}")
 
 
 def _inv_entries(st: dict, item_name: str) -> list:
@@ -13458,6 +13606,24 @@ def _inv_entries(st: dict, item_name: str) -> list:
 def _count_in_inventory(st: dict, item_name: str) -> int:
     """背包里某物品的总数。"""
     return sum(int(i.get("stack") or 0) for i in _inv_entries(st, item_name))
+
+
+# ⏱️ 玩家之间送礼的节拍（恒 2026-09-19）：
+#    「**第一次询和送礼请求发送成功之间隔五秒**（等接受礼物要时间）」——
+#    人不会一照面就把东西塞过去。`hand` 贴脸时走位循环会瞬间 `break`、`give` 更是直接闪现，
+#    所以这里立一个**下限**而不是凭空加睡眠。
+_GIFT_PACE = 5.0
+
+#    发出去之后等对方点头的轮数（每秒 1 轮）——「接受礼物要时间」，别发完立刻宣告成功。
+_GIFT_ACCEPT_WAIT = 6
+
+
+def _gift_pace(t0: float) -> None:
+    """补足「从 `t0`（本次送礼开始）到现在」到 `_GIFT_PACE` 秒的**差额**。
+    走位/找东西已经花掉 5 秒以上就一秒都不多睡（不为了凑数空转）。"""
+    left = _GIFT_PACE - (time.time() - t0)
+    if left > 0:
+        time.sleep(left)
 
 
 def _stand_tile_near(tx: int, ty: int, mx: int, my: int):
@@ -13482,6 +13648,8 @@ def hand_item(player_name: str, item_name: str, count: int = 0) -> str:
     """🤲 走到对方身边，把物品**丢在对方脚边**——磁吸会自动进对方背包，可以整叠，不用等对方点同意。
     和 give 的分工：give 是正式赠予（手持右键，一次一个、要等对方点同意）；hand 是"递过去"，
     适合一次给一大批。会先走近再丢，丢完停一下确认对方真收下了（没接住会如实说明，不谎报）。
+    ⏱️ **全过程 ≥5 秒是设计好的**（拟人节拍：第一次问询到递出手之间要有个来回，恒 2026-09-19）
+    ——别以为卡住了；对方在动的话还会更久（每轮都重读他的位置）。
 
     Args:
         player_name: 目标玩家名（用 /state 的 otherPlayers）
@@ -13489,6 +13657,7 @@ def hand_item(player_name: str, item_name: str, count: int = 0) -> str:
         count: 丢几个（默认 0 = 整叠）
     """
     try:
+        _t0 = time.time()   # ⏱️ 拟人节拍起点（见 _gift_pace）
         st = api.state()
         me = st.get("player") or {}
         my_name = me.get("name") or ""
@@ -13558,6 +13727,10 @@ def hand_item(player_name: str, item_name: str, count: int = 0) -> str:
                 time.sleep(0.5)
         except Exception:
             break
+
+    # ⏱️ 拟人节拍：第一轮询问 → 递出手里这叠，中间至少隔 5 秒（恒 2026-09-19）。
+    #    贴脸时上面那圈走位 `gap <= 2` 会**立刻 break**，一照面就丢显得很机械。
+    _gift_pace(_t0)
 
     # 丢之前**最后确认一次**距离（他会动；闪现也可能没落对）：太远就**不递**，
     # 绝不把东西丢在够不着的地方（恒 2026-09-11 拍板）。
