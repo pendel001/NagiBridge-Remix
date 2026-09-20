@@ -4,6 +4,7 @@
 且完全不需要游戏在场就能验。跑法：PYTHONIOENCODING=utf-8 python scripts/_sit_selftest.py
 """
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -309,9 +310,19 @@ print()
 print("── 断档纪律（引导文案不许再教旧姿势）──")
 _here = os.path.dirname(os.path.abspath(__file__))
 _src = open(os.path.join(_here, "nagi_mcp_server.py"), encoding="utf-8").read()
+# ⚠️ 2026-09-20：旧判据是裸子串 `"任意一格" not in _src` —— **假红**。
+#    家具那边有一句「大件只报左上角那格，但点它覆盖的**任意一格**都行」（讲的是大件家具点哪格），
+#    跟"起身"毫无关系，却把这条一直顶成 ❌（恒那条"**别把红的检查记成既有误报长期跳过**"正是治这个）。
+#    改成只抓**旧姿势本身**的几种写法 —— 照样逮得住 `scene at 任意格` / `随便 at 任意一格`。
+_OLD_STAND_PAT = re.compile(
+    r"scene\s+at[^。\n]{0,12}任意[一]?格"                    # ｜起身 = scene at 任意格
+    r"|(?<![A-Za-z])at[^。\n]{0,4}任意[一]?格"               # 随便 at 任意一格
+    r"|(?:scene\s+at[^。\n]{0,20}起身|起身[^。\n]{0,20}scene\s+at)"   # 同句里"起身"与 scene at 同现
+)
+_m = _OLD_STAND_PAT.search(_src)
 check("全库不再教「scene at…任意一格」起身",
-      "scene at 任意格" not in _src and "任意一格" not in _src,
-      "→ 有残留 ⇒ AI 照旧调 at，新 op 等于白做")
+      not _m,
+      f"→ 有残留 ⇒ AI 照旧调 at，新 op 等于白做（命中: {_m.group(0)!r}）" if _m else "")
 check("scene docstring 提了 stand", "stand(起身)" in _src, "→ 域描述没提")
 check("help(scene) 提了 stand", "stand(**起身**" in _src, "→ _DOMAIN_GUIDES 没提")
 check("动态枚举文案已换成 stand", "起身 = scene stand" in _src, "→ 状态条那行没改")

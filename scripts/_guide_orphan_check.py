@@ -45,7 +45,6 @@ _ALLOW = {
     "check",         # 指南里常写 check(what="profile") 跨域引用
     "settings",      # "旧配置 settings(setting='async'…)" 讲的是旧调用路径
     "script",        # "如 script(ops='continue', kw={job_id})" 举例
-    "tool_area",     # farm 指南提的 raw 端点（非 AI 可调 op），历史遗留行文
     "claim_swap",    # 已退役，指南里明确标注"(已退役)"
     "which_role",    # check 指南讲"原顶层 which_role()"的来历
     "horizontal",    # ⚠️ 是 direction 的**取值**不是 op——farm 指南写"horizontal(默认)/vertical"

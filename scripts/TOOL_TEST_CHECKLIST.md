@@ -9,6 +9,17 @@
 > `minigame`/`minigame_state`/`小游戏`/`小游戏状态`/`赌场` 共 11 行）。**汇总数照旧没动** —— 上面那条"先修生成器
 > 再重算"的前提没变，我不想在生成器还漂的时候手搓一个数字进表。**待测函数净减 5**（`go_mining`/`movie`/`snack`/
 > `minigame_click`/`minigame_state`），其中 `minigame_state` 是**清掉一个过期的 `⏭ 没条件测`**（本轮真进赌场了）。
+> ⚠️ **2026-09-20 深夜再手改 4 行**（`menu:forge`/`锻造` + `fish:crab_bait`/`放饵`，全是 `⏭ → ✅` 真机验掉；
+> 见 CHANGELOG (103)）。**汇总数照旧没动**（同上，生成器还漂）。**待测函数净减 2**。
+> 📋 同批盘点：**剩下的 `⏭` 基本全卡季节/节日**（`menu:number` 只有秋16 展销会弹、`display_fill/takeback` 秋16 展位、
+> `scene:berry` 浆果季、`farm:milk` 装了自动采集器、`menu:donate` 博物馆满），`menu:levelup_choose` 要真升级；
+> **恒 09-20 拍板"黄色红色不必测"**。另三行 `farm:buy`/`mine:rush`/`festival:捡` 是**假缺口**（`≡⇄` 别名传播没打勾，函数本身已有结论）。
+> ⚠️ **2026-09-20 第二轮"回滚体检"（原语烟囱）—— 判定列 0 行增绿，1 行翻红。** 恒拍板**不重跑 189 全量**，
+> 改成挑 6 个**共用 C# 原语**（`/state` `/menu` `/walk_to` `/interact` `/use` `/passable`）各找一个**已验工具**跑通
+> ⇒ **6/6 全绿**；两个"改过的共享面"（`navigation.py:1372` 售票「是」/ `:2254` 矿车目的站）也全绿
+> ⇒ **原语绿 = 地基没塌，但【不等于】某条 op 绿**（靠原语反推叶子是倒着推，**不记进表**，所以判定列没加绿）。
+> 🔴 红是红项自己挣的：`social:give` 真机翻案 → ❌（原 `session_log:1357` 那条 ✅ 是**只看"送没送到"**，没看副作用）。
+> 🔧 **待办**：修 `give` 成功分支的手持格写回（方案见 CHANGELOG (104)④），修完**复验这一行**。
 
 > 用法：跑测试（任何渠道，只要走 :8000 的 MCP）→ `python gen_tool_checklist.py --from-log` 自动打勾。
 > 判定规则见脚本头部；**⚠️ op「」= 参数被静默丢掉 ⇒ 不算 ✅**（也不算 ❌ —— 那一下压根没执行，当"没有证据"跳过，本行沿用上一轮结论）；真报错才 ❌。
@@ -203,7 +214,7 @@
 | `emote` | T3 副作用 |  | ✅ | `session_log:1173` |
 | `friendship` | T1 自动 |  | ✅ | `session_log:1302` |
 | `gift` | T3 副作用 | item_name, npc_name | ✅ | 真机 09-19：送礼正路(台词+好感+周/日计数+背包)/手持非空不毁物/今天已送过被拦/背包没这件/NPC 不存在 — 见 CHANGELOG 92② |
-| `give` | T3 副作用 | item_name, player_name | ✅ | `session_log:1357` |
+| `give` | T3 副作用 | item_name, player_name | ❌ | 真机 09-20 第二轮（同图）：**东西送得到，但手持那一格连东西带格一起被顶掉** —— 成功分支 `ModEntry.cs:10468` **从不写回 `heldSaved`**（只在失败分支 `10437`/`10463` 还原）；实测 破损CD x2 蒸发、背包 35→34 格、该格变空。另：**不同图时先把人挪到"对方坐标在本图的位置"再失败**（`give` 假设两人同图）。见 CHANGELOG (104)④ |
 | `hand` | T3 副作用 | item_name, player_name | ✅ | `session_log:1355` |
 | `movie` | T2 摆场 | npc | ✅ | `session_log:1631,1634` 无参出全表；npc=阿比盖尔 走 `_movie_npc_plan`（喜爱 +100、糖冰棍 +50）两条分支都对 |
 | `send` | T3 副作用 | message | ✅ | `session_log:698` |
@@ -212,7 +223,7 @@
 | `好感` ≡`friendship` | T1 自动 |  | ✅ | ← 同 `social:friendship`〔check_friendship〕 |
 | `搭话` ≡`chat` | T2 摆场 |  | ✅ | ← 同 `social:chat`〔chat_npc〕 |
 | `电影` ≡`movie` | T2 摆场 |  | ✅ | ← 同 `social:movie`〔movie〕 |
-| `给` ≡`give` | T3 副作用 |  | ✅ | ← 同 `social:give`〔give_item〕 |
+| `给` ≡`give` | T3 副作用 |  | ❌ | ← 同 `social:give`〔give_item〕，见 CHANGELOG (104)④ |
 | `送礼` ≡`gift` | T3 副作用 |  | ✅ | ← 同 `social:gift`〔gift_npc〕；站位另验（恒目视「走过去的，拐进柜台里，很自然」）见 CHANGELOG 92③ |
 | `递给` ≡`hand` | T3 副作用 |  | ✅ | ← 同 `social:hand`〔hand_item〕 |
 | `零食` ≡`snack` | T2 摆场 |  | ✅ | ← 同 `social:snack`〔snack〕 |
@@ -311,7 +322,7 @@
 | `display_fill` ⇄`festival:display_fill` | T3 副作用 | items |  |  |
 | `display_takeback` ⇄`festival:display_takeback` | T3 副作用 |  |  |  |
 | `donate` | T3 副作用 |  | ⏭ 没条件测 | `session_log:567` 要一座还真缺东西的博物馆（当前 95/95 全齐，没东西可捐）；✅ 但「满馆调用无副作用」已真机验收（不删展品/不吃背包物） |
-| `forge` | T3 副作用 | item1, item2, mode, target | ⏭ 没条件测 | `session_log:577` 要背包里有火山晶石（Cinder Shard）才能走完合成；✅ 但「有晶石时完整跑通」已真机验收（产出 Combined Ring），「缺料拒绝」本次也验了（报 20 ✓、戒指原样退回） |
+| `forge` | T3 副作用 | item1, item2, mode, target | ✅ | 真机 09-20：**小屋迷你锻造台**（`Mini-Forge` Cabin(29,23)，**没去火山**）一条龙全通 —— 开台→`/forge_set` 放料→`combine`→领结果→**菜单干净关掉**(`activeMenu:None`)；`Glow Ring`+`Ruby Ring` → **`Combined Ring`「组合:Glow Ring+Ruby Ring」**（发光 + +10%攻击 两条属性都继承）；**晶石 30→10（扣 20，吻合 `GetForgeCost`）**。见 CHANGELOG (103)① |
 | `geode` | T3 副作用 |  | ✅ | `session_log:555` |
 | `geodes` | T3 副作用 |  | ✅ | `session_log:556` |
 | `journal` ⇄`check:quest` | T2 摆场 |  | ✅ | `session_log:690` |
@@ -372,7 +383,7 @@
 | `选职业` ≡`levelup_choose` | T3 副作用 |  |  |  |
 | `逛店` ≡`shop` | T2 摆场 |  | ✅ | ← 同 `menu:shop`〔shop_visit〕 |
 | `配方` ≡`craftables` | T1 自动 |  | ✅ | ← 同 `menu:craftables`〔list_craftables〕 |
-| `锻造` ≡`forge` | T3 副作用 |  | ⏭ 没条件测 | ← 同 `menu:forge`〔forge〕 |
+| `锻造` ≡`forge` | T3 副作用 |  | ✅ | ← 同 `menu:forge`〔forge〕，见 CHANGELOG (103)① |
 
 ## `storage`（20）
 
@@ -522,7 +533,7 @@
 |---|---|---|---|---|
 | `bobber` | T2 摆场 | style | ✅ | `session_log:523` |
 | `crab` | T1 自动 |  | ✅ | `session_log:849` |
-| `crab_bait` | T2 摆场 | bait | ⏭ 没条件测 | `session_log:537` 要背包里有鱼饵（先去威利鱼店买 Bait） |
+| `crab_bait` | T2 摆场 | bait | ✅ | 真机 09-20 **A/B 对照**：A 面先 `crab_collect` 清饵 ⇒ `/crab_pots` 4 只 `bait` 全 `None`（坐实反编译 `CrabPot.cs:312` 收笼清饵）；B 面 `crab_bait` ⇒ `✓(20,20)(20,21)(22,23)` **3/3**、回读 `bait='鱼饵'`、**背包饵 20→17（正好扣 3，一笼一颗）**。🎯 `(42,1)` 在半径 20 外 ⇒ **如实报 3/3 不冒充 4**；挪近再调 `1/1 ✓`、饵 17→16（**扫描跟着人走**）。收工 4/4 全挂回。见 CHANGELOG (103)② |
 | `crab_collect` | T2 摆场 |  | ✅ | `session_log:539` |
 | `crab_diag` | T2 摆场 | location | ✅ | `session_log:538` |
 | `crab_place` | T2 摆场 | bait, radius | ✅ | `session_log:532` |
@@ -537,7 +548,7 @@
 | `找水` ≡`crab_water` | T2 摆场 |  | ✅ | ← 同 `fish:crab_water`〔_crab_water_report〕 |
 | `收笼` ≡`crab_collect` | T2 摆场 |  | ✅ | ← 同 `fish:crab_collect`〔_crab_collect〕 |
 | `放笼` ≡`crab_place` | T2 摆场 |  | ✅ | ← 同 `fish:crab_place`〔_crab_place〕 |
-| `放饵` ≡`crab_bait` | T2 摆场 |  | ⏭ 没条件测 | ← 同 `fish:crab_bait`〔_crab_bait〕 |
+| `放饵` ≡`crab_bait` | T2 摆场 |  | ✅ | ← 同 `fish:crab_bait`〔_crab_bait〕，见 CHANGELOG (103)② |
 | `查` ≡`info` | T1 自动 |  | ✅ | ← 同 `fish:info`〔_fish_info〕 |
 | `样式` ≡`bobber` | T2 摆场 |  | ✅ | ← 同 `fish:bobber`〔bobber_style〕 |
 | `浮漂` ≡`bobber` | T2 摆场 |  | ✅ | ← 同 `fish:bobber`〔bobber_style〕 |

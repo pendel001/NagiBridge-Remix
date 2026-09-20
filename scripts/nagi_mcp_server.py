@@ -1536,17 +1536,14 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
     if _bh:
         lines.append(f"  {_bh}")
 
-    # 🛠️ 动态工具检测（2026-08-14 #13）：本图可用的地点绑定域（farm/mine/cabin）——帮 AI 知道调哪些域
-    try:
-        _dom = _domains_here(loc_name)
-        if _sitting_now:
-            pass                                   # 🪑 坐着：世界动作全锁，可用域枚举是噪音 → 收掉
-        elif _dom:
-            lines.append(f"  🛠️ 可用域: {'/'.join(_dom)}")
-        elif loc_name not in ("Farm", "FarmHouse", "Cabin", "Backwoods", "Tunnel", "Mine", "SkullCave"):
-            lines.append("  🛠️ 本图 farm/mine/cabin 不适用")
-    except Exception:
-        pass
+    # 🛠️ 2026-09-20 恒：「可用域和不可用域提醒，留一个就够了，留**不推荐用的**那个」
+    #    ⇒ **状态条这行整条撤掉**（`🛠️ 可用域: X` 与 `🛠️ 本图 …不适用` 两个分支一起去）。
+    #    为什么留 💡 而撤这行：
+    #      ① 这行**每次调用都占位**，💡 只在真调错域时才冒头（省 token 的那头）；
+    #      ② AI 站在农场时 `📍 Farm (x,y)` 已经把位置说了，`可用域: farm` 是同一件事的第二遍；
+    #      ③ 负向那半骂得还不如 💡 清楚 —— 💡 会点名**去哪**（`mine 通常在Mine做 → map go Mine`），
+    #         正合"报错必须给下一步"。
+    #    ⚠️ 别顺手加回来。真想让 AI 提前知道"本图能干吗"，把话写进**对应域的报错**里（见下条），别挂状态条。
 
     # 🛋️ 计划模式已退役（2026-08-17）：_plan_status_line 只剩 🌙 兜底睡觉进行中提示
     _ps = _plan_status_line()
@@ -4144,7 +4141,7 @@ def plot_plan(x: int = -1, y: int = -1, radius: int = 15, all_plots: bool = Fals
                 lines.extend(glyphs[1:])
             if scatter:
                 lines.append(f"  ⚪ 孤立散点（单格杂草/树，可 farm ops=clear 顺路清）: {len(scatter)} 处")
-            lines.append('  💡 要单块详细 → plot_plan(x, y)（默认聚焦中心那块）')
+            lines.append('  💡 要单块详细 → farm plot x=.. y=..（默认聚焦中心那块）')
             return _with_state("\n".join(lines))
 
         # 默认：聚焦包含中心（或最近）的连通域——一块地一块地规划
@@ -4159,7 +4156,7 @@ def plot_plan(x: int = -1, y: int = -1, radius: int = 15, all_plots: bool = Fals
         lines = [f"🗺️ 地皮规划 @({x},{y}) r={radius}（中心地块）"]
         lines.extend(plot_glyphs(cells))
         lines.append('  💡 接 farm ops="clear" 清杂 → till 锄 → plant 种 → water 浇；'
-                     '要全部地块 → plot_plan(x, y, all_plots=True)')
+                     '要全部地块 → farm plot x=.. y=.. all_plots=True')
         return _with_state("\n".join(lines))
     except Exception as e:
         return _with_state(f"❌ plot_plan 失败: {e}")
@@ -7047,7 +7044,7 @@ def settings_status() -> str:
     lines.append(f"  📤 会话导出: {SESSION_CFG['export_format']} / auto={SESSION_CFG['auto_export']} / npc={SESSION_CFG['include_npc']}")
     lines.append(f"  🖱️ 失焦暂停: 关（后台完整运行）")
     lines.append("  🔧 退役工具: " + (", ".join(sorted(_retired_tools)) if _retired_tools else "无"))
-    lines.append("💡 一次性工具（捏脸等）用完 settings_retire 退役；settings_reactivate 召回")
+    lines.append("💡 一次性工具（捏脸等）用完 settings retire 退役；settings reactivate 召回")
     return _with_state("\n".join(lines))
 
 
@@ -7520,7 +7517,8 @@ def _ops_run(ops_str: str, dispatch: dict, kw: dict) -> str:
 
 # ═══════════════════════════════════════════
 #  🗺️ 动态工具检测（2026-08-14 #13，map 联动·修正版）
-#  不拦 AI，只建议：状态条报"本图可用域" + 域工具在错地方时返回建议行（照跑）。
+#  不拦 AI，只建议：**域工具在错地方时返回建议行**（照跑）。
+#  ⚠️ 2026-09-20：以前还有"状态条报本图可用域"那条路，恒拍板两处留一处 ⇒ 状态条那行已撤，只留 💡。
 #  未解锁地点由 map_go 单独拦截（见 LOCKED_MAPS + /unlocks）。
 # ═══════════════════════════════════════════
 
@@ -7529,8 +7527,8 @@ DOMAIN_HOME = {
     # ⚠️ 2026-08-15 恒：温室/姜岛农场也是 farm 适用区（之前只认 Farm，温室给错建议）
     # 🐄 2026-09-16 恒：畜棚/鸡舍内部**本来就是 farm 的工作场所** —— hay 加干草（饲料槽是畜棚
     #    自带的，棚外没有）、喂水 宠物碗、畜舍 摸动物，全都只能在棚内做。以前不在表里 ⇒ 棚内调
-    #    farm 会吃到「💡 当前在Deluxe Barn，farm通常在Farm做；可先 map go Farm」的**反建议**
-    #    （饲料槽那事就是这么被拱出来的），状态条也只显示「🛠️ 可用域: cabin」。
+    #    farm 会吃到「💡 farm 通常在Farm做 → map go Farm」的**反建议**
+    #    （饲料槽那事就是这么被拱出来的）。
     #    ⚠️ 必须列**全名**：`_is_domain_applicable` 的前缀匹配是 `cur.startswith(p)`，而
     #       "Deluxe Barn" 的限定词在**前面** ⇒ 往 DOMAIN_PREFIX 塞 "Barn" 压根匹配不上
     #       （2026-09-16 第一版就栽在这：doors 测全绿、这条建议却纹丝不动）。矿洞能用前缀
@@ -7600,12 +7598,8 @@ def _domain_advice(domain: str, ops_str: str) -> str:
         except Exception:
             pass
     home = DOMAIN_HOME[domain][0]
-    return f"💡 当前在{cur}，{domain}通常在{home}做；可先 map go {home}"
-
-
-def _domains_here(cur: str) -> list:
-    """当前地图适用的地点绑定域列表（farm/care/mine；供状态条"🛠️ 可用域"）。"""
-    return [d for d in DOMAIN_HOME if _is_domain_applicable(d, cur)]
+    # ⚠️ 别在这里重复报 `cur`：状态条那行 `📍 {loc} (x,y)` 已经在 AI 眼皮底下了（2026-09-20 恒：能省则省）。
+    return f"💡 {domain} 通常在{home}做 → map go {home}"
 
 
 def _farm_require_xy(x: int, y: int):
@@ -9335,7 +9329,7 @@ def _fish_info(location: str) -> str:
         for f in k["fish"]:
             cond = f"{f['season']}" + (f" · {f['weather']}" if f["weather"] else "")
             lines.append(f"  · {f['name']}（{cond}）")
-        lines.append("💡 去钓用 fish go location=... ")
+        lines.append("💡 去钓用 fish go location=...")
         return "\n".join(lines)
     except Exception as e:
         return f"❌ 查鱼失败: {e}"
@@ -11529,9 +11523,11 @@ def _festival_strength(delay: int = 400) -> str:
             time.sleep(0.4)
         if not result:
             return f"🔨 已挥锤 delay={delay}ms，但结果对话没读到（可能时序/已点掉）"
+        # ⚠️ 「别只往单峰收缩」的用意是恒 2026-08-23 那句"保留乐趣，只点机制不教策略"——
+        #    那是给我们的备注，**别写进 AI 看的回包**。
         return (f"🔨 {result}（delay={delay}ms）"
                 f"\n💡 结果每局有随机(速度3/4)；进度条**循环震荡**，高点和低谷约每1s交替——可多试几个delay先看出波形，"
-                f"再奔着高点去，别只往单峰收缩（2026-08-23 恒：保留乐趣，只点机制不教策略）")
+                f"再奔着高点去，别只往单峰收缩")
     except Exception as e:
         return f"❌ {e}"
 
@@ -11853,7 +11849,7 @@ def confirm_settlement() -> str:
             pass
         # 🚫 计划模式已退役（2026-08-17 恒）：不再有"明日计划"段——规划只走白板（whiteboard_write）。
         #    原 plan_extra 段已移除（存档见 _plan_* 代码）。
-        return _with_state(f"🧾 已确认过夜结算，和{_host_name()}一起进入新的一天！{wb_extra}\n💡 复盘白板→结合晨报→白板记今天计划（whiteboard_write）")
+        return _with_state(f"🧾 已确认过夜结算，和{_host_name()}一起进入新的一天！{wb_extra}\n💡 复盘白板→结合晨报→白板记今天计划（daily 白板）")
     except Exception as e:
         return _with_state(f"❌ {e}")
 
@@ -13353,7 +13349,7 @@ _SETTINGS_DISPATCH = {
 # 📖 详细域指引（2026-08-22：docstring 精简后，深度/坑靠 help 查，不丢细节）
 _DOMAIN_GUIDES = {
 "check": "查询域，what=...：status(完整状态) backpack(逐格价值/星级) worn(穿戴) machines(全场机器清单) mine(下矿进度) silo(干草) mastery(精通) buildings(木匠建筑) quest(开任务日志) chests(当前图箱) storage(箱子网络) look(环视周围) profile(我的技能等级+职业分支,如是否 Luremaster 蟹笼免饵) role(端口↔角色确认:我是谁/恒是谁)。⚠️查概览用 status，查逐格用 backpack，别都调浪费 token。📌profile/role 2026-09-11 从顶层工具收编进来（原来直接叫 profile()/which_role()，现在一律走 check）。📐这个域的参数叫 **what**，**不是 ops**。带参的只有两个: chests(chest=N 看第N个箱) / look(radius=10 环视半径)；其余(status/backpack/worn/machines/mine/silo/mastery/buildings/quest/storage/profile/role)**全无参**。⚠️查概览用 status、查逐格用 backpack，别都调一遍浪费 token。",
-"farm": "农活域(🌱必走，别手动挥工具组合，用域 ops)：till(锄地) plant(种,跳过已种;带 layout 就按洒水器布局种) water(浇,自动跳雨+水壶没水先装满) harvest(收) scythe(镰刀收蒜/花/茶) fertilize(化肥) clear(清杂草石树桩;坐标同 till，也可 `radius=N` 走**圆形**；**会自动往外多清 2 格**——田边的杂草会长进田里把作物顶掉，不用自己放大) plot(连通域规划) plan(方形规划,纯算格) chop(砍树)。⚠️**锄地/播种各只有一个实现**：锄地=`till`（`hoe`/`布局锄`/`tillfield`/`蓄力锄` 都是它的别名）、播种=`plant`（`sow`/`plantlayout`/`播种规划` 都是它的别名）；⛔ `till_plant` 已退役——要锄+种写 `ops=\"till plant\"`。 clearground(清单格) collect(一键收机器:只收不放,全农场瞬收不走路) load(放原料) building(一屋收放:拟人走进去收+放料,item留空=只收不放) break(拆/敲同scene,镐子敲可破物/翻已耕地) place(放置/播种同scene) pond/pond_add/pond_feed/pond_collect/pond_fish(鱼塘)。⚠️漏格DLL自动补；**缺的格会被点名「被什么挡着」**（🌿草/杂草/🪨石头/🪵树枝→**先 `clear` 清一遍再 till/plant**；🏗️洒水器/箱子等设施→⛔别清、那是规划该绕开的格）——草占着地格时锄头是锄不出 HoeDirt 的，别对着「缺失N格」发呆；高级工具蓄力用 tool_area(别用/tool)。只在 Farm/温室/姜岛。带参 op(plant 的 seed_name、till/clear 的 x/y/rows、fertilize 的 fertilizer_name、place 的 name、building 的 location、collect 的 machine_type、pond_add 的 item)→ kw={'参数名':值}。🐄动物(2026-09-02 care域并入farm): animals(摸+收) 喂水/碗(宠物水,🌧️雨天自动跳过——雨会把碗填满) milk(挤奶剪毛) buy(买动物,豁免建议) doors(关门) hay(干草) pet(猫狗) petwalk(拟人摸) 畜舍/这间(这间屋动物) statue(祈福)——⚠️farm water=浇地,动物水用 喂水; farm building=机器收放,这屋动物用 畜舍。📐参数键名: till/clear/plant/fertilize 都是 x,y(**必填**),rows,length,direction（till/plant 也可用 x1,y1,x2,y2 直接给矩形两角）；plant 另有 seed_name,layout,direct,trellis；harvest/scythe=radius；plot=x,y,radius,all_plots；chop=area(**值写几个数**：4 个数=矩形两角 / 3 个数=圆心+半径，逗号空格都认)；collect=machine_type,location；load=item,machine_type,location；building=location,item,machine_type；place=name,x,y；break=x,y,steps,radius；pond_add=item+x,y（pond_feed/collect/fish 只要 x,y）；buy=animal_type,name,building；petwalk=include_petted；hay=dry_run。⚠️direction 只认 horizontal(默认)/vertical 两个值,别写'横'/'竖'。💡大田洒水器布局(可选,纯自动化建议)：要按洒水器留格/留走道就 plan→till→plant 三件套——plan(x1,y1,x2,y2,layout=0,hoe_level=-1,trellis=False) **纯算格不动机器**先看要锄/种哪些; till(x1,y1,x2,y2,layout=0) 按布局锄; plant(x1,y1,x2,y2,seed_name,**layout**) 按布局种（layout=0 整块/1 初级十字/2 高级/3 铱；direct=True 瞬移快、默认走位拟人）。想一次说完就 `ops=\"till plant\"`（**一份 kw 共用**，锄地会自动点名忽略 seed_name）。**layout 四档**: 0=标准整块(不预留洒水器,锄法蛇形逐格走位,任何锄头等级都行) 1=初级(十字稀疏,每台覆盖上下左右4格;锄法=精确锄每台4格,**与锄头等级无关**) 2=高级(优质,田宽高先裁成**3的倍数**,每3×3中心1台覆盖8格,整块蓄力锄) 3=铱(裁成**5的倍数**,每5×5中心1台覆盖24格;⚠️爬架作物不适用)。hoe_level: 0→1格 1→3线 2→5线 3→3×3 4→6×3,-1=自动读手持。trellis=True=爬架作物(啤酒花/青豆/葡萄,不可通过格)⇒自动**种2留1**留走道让AI能进田浇收。只管种不摆洒水器就直接 plant,不用 plan 那套。⚠️已知限制: layout 0/2/3 碰上金/铱锄(hoe_level>=3)会报**0处锄地站位**并自打一行'落点未实测校准,暂不规划蓄力站位'——**那是刻意不猜不是出错**; layout 1 不吃蓄力站位不受影响。",
+"farm": "农活域(🌱必走，别手动挥工具组合，用域 ops)：till(锄地) plant(种,跳过已种;带 layout 就按洒水器布局种) water(浇,自动跳雨+水壶没水先装满) harvest(收) scythe(镰刀收蒜/花/茶) fertilize(化肥) clear(清杂草石树桩;坐标同 till，也可 `radius=N` 走**圆形**；**会自动往外多清 2 格**——田边的杂草会长进田里把作物顶掉，不用自己放大) plot(连通域规划) plan(方形规划,纯算格) chop(砍树)。⚠️**锄地/播种各只有一个实现**：锄地=`till`（`hoe`/`布局锄`/`tillfield`/`蓄力锄` 都是它的别名）、播种=`plant`（`sow`/`plantlayout`/`播种规划` 都是它的别名）；⛔ `till_plant` 已退役——要锄+种写 `ops=\"till plant\"`。 clearground(清单格) collect(一键收机器:只收不放,全农场瞬收不走路) load(放原料) building(一屋收放:拟人走进去收+放料,item留空=只收不放) break(拆/敲同scene,镐子敲可破物/翻已耕地) place(放置/播种同scene) pond/pond_add/pond_feed/pond_collect/pond_fish(鱼塘)。⚠️漏格DLL自动补；**缺的格会被点名「被什么挡着」**（🌿草/杂草/🪨石头/🪵树枝→**先 `clear` 清一遍再 till/plant**；🏗️洒水器/箱子等设施→⛔别清、那是规划该绕开的格）——草占着地格时锄头是锄不出 HoeDirt 的，别对着「缺失N格」发呆。只在 Farm/温室/姜岛。带参 op(plant 的 seed_name、till/clear 的 x/y/rows、fertilize 的 fertilizer_name、place 的 name、building 的 location、collect 的 machine_type、pond_add 的 item)→ kw={'参数名':值}。🐄动物(2026-09-02 care域并入farm): animals(摸+收) 喂水/碗(宠物水,🌧️雨天自动跳过——雨会把碗填满) milk(挤奶剪毛) buy(买动物,豁免建议) doors(关门) hay(干草) pet(猫狗) petwalk(拟人摸) 畜舍/这间(这间屋动物) statue(祈福)——⚠️farm water=浇地,动物水用 喂水; farm building=机器收放,这屋动物用 畜舍。📐参数键名: till/clear/plant/fertilize 都是 x,y(**必填**),rows,length,direction（till/plant 也可用 x1,y1,x2,y2 直接给矩形两角）；plant 另有 seed_name,layout,direct,trellis；harvest/scythe=radius；plot=x,y,radius,all_plots；chop=area(**值写几个数**：4 个数=矩形两角 / 3 个数=圆心+半径，逗号空格都认)；collect=machine_type,location；load=item,machine_type,location；building=location,item,machine_type；place=name,x,y；break=x,y,steps,radius；pond_add=item+x,y（pond_feed/collect/fish 只要 x,y）；buy=animal_type,name,building；petwalk=include_petted；hay=dry_run。⚠️direction 只认 horizontal(默认)/vertical 两个值,别写'横'/'竖'。💡大田洒水器布局(可选,纯自动化建议)：要按洒水器留格/留走道就 plan→till→plant 三件套——plan(x1,y1,x2,y2,layout=0,hoe_level=-1,trellis=False) **纯算格不动机器**先看要锄/种哪些; till(x1,y1,x2,y2,layout=0) 按布局锄; plant(x1,y1,x2,y2,seed_name,**layout**) 按布局种（layout=0 整块/1 初级十字/2 高级/3 铱；direct=True 瞬移快、默认走位拟人）。想一次说完就 `ops=\"till plant\"`（**一份 kw 共用**，锄地会自动点名忽略 seed_name）。**layout 四档**: 0=标准整块(不预留洒水器,锄法蛇形逐格走位,任何锄头等级都行) 1=初级(十字稀疏,每台覆盖上下左右4格;锄法=精确锄每台4格,**与锄头等级无关**) 2=高级(优质,田宽高先裁成**3的倍数**,每3×3中心1台覆盖8格,整块蓄力锄) 3=铱(裁成**5的倍数**,每5×5中心1台覆盖24格;⚠️爬架作物不适用)。hoe_level: 0→1格 1→3线 2→5线 3→3×3 4→6×3,-1=自动读手持。trellis=True=爬架作物(啤酒花/青豆/葡萄,不可通过格)⇒自动**种2留1**留走道让AI能进田浇收。只管种不摆洒水器就直接 plant,不用 plan 那套。⚠️已知限制: layout 0/2/3 碰上金/铱锄(hoe_level>=3)会报**0处锄地站位**并自打一行'落点未实测校准,暂不规划蓄力站位'——**那是刻意不猜不是出错**; layout 1 不吃蓄力站位不受影响。",
 "mine": "下矿域(⚒️ 矿井/头骨/火山)：go(去挖矿:mode=rush冲层/farm刷矿,start起始层,target目标层,ore,cycles圈数) progress(进度) bomb_status/bomb_plan/bomb_place/bomb_collect/bomb_ladder/bomb_retreat(单步炸,**都要 bomb_ 前缀**) bomb_mine(自动) bomb_volcano(火山) organize(整理背包)。🔁**刷矿=mode=go(mode=farm)**：定点刷指定矿→ore=Copper铜(21层)/Iron铁(41层)/Gold金(71层)；**煤靠 farm 铁层(41)顺手清尘埃精灵/蝙蝠掉**（不是 ore 选项，跑 auto 内部刷）。🏃下矿=mode=go(mode=rush,start可选≤电梯上限+5倍数,target默认120)。⚠️无镐/血低硬拦；梯子 /ladder+confirm。⚔️贴身(3×3)自卫=游戏自己每 tick 挥刀(go/bomb_mine/bomb_escort/bomb_volcano 四个脚本都自开自关,**只转向不移动**;手上是锤子且冷却好了会重砸6×6)；2格外的怪仍靠脚本扫描,别站桩。🍽️**自定义吃食(2026-09-20)**：go/bomb_mine/bomb_volcano 都可传 food_hp/food_sta=**逗号分隔、靠前的先吃**(如 food_hp=「奶酪,鱼肉卷」)。血低只看 food_hp、体力低只看 food_sta(**两张表分开别混**)。点名后就只在这几样里挑——**防止自动挑把你留着卖的吃了**(山羊奶酪最典型)；整串都没货会明确报一句再退回自动挑。⚠️bomb_mine 没炸弹+host在同矿井→自动转【内部】协同(跟随host+帮忙敲矿/打怪)不撤退出矿(bomb_escort 不对外暴露、AI 不主动启用)；bomb_retreat 结束协同+停脚本+脱离矿井回门口。⚠️接「深处的危险」重置电梯→起始层动态从1起(内置脚本自动读，不暴露工具)；刷矿目标层不可直达会上报，需先冲层带回或改浅层。📐带参速查: go(mode=rush冲层/farm刷矿, start起始层, target目标层, ore=Copper铜/Iron铁/Gold金, cycles圈数, hp_threshold, food_sta, food_hp, resume) bomb_plan(radius,min_covered,top) bomb_place(x,y **必填**) bomb_collect(max_items) bomb_mine(target,bomb,min_covered,follow_host,lead,autodrop,one_floor,food_hp,food_sta) bomb_volcano(bomb,min_covered,hp_threshold,max_minutes,poll,food_hp,food_sta) organize(disable,reset)。💣bomb 三个取值 'Cherry Bomb'樱桃/'Bomb'黑/'Mega Bomb'超级——**点名的包里没有就按 黑>超级>樱桃 自动换成有的**(不会误报没炸弹)；范围 樱桃=边长7十字 / 黑=11x11方块 / 超级=15x15方块，⚠️黑和超级**会炸伤自己**(实测黑掉3血)。⚠️bomb_volcano **要求 host 已在矿/火山里**才放行(火山瓦片没法程序化换层)。⚠️bomb_mine one_floor=True=逐层模式(同步,只跑一层出摘要,不撤退)；**默认冲层模式=异步后台跑,推荐**。💡出发前占位物(恒2026-08-23)：提前放1个可堆叠物(铱矿/铱锭/五彩碎片)在包，满包时同种战利品自动堆叠吸附、少触发满包停；别拿银河之魂这类带死亡会丢的稀有物当占位。",
 "cabin": "小屋引导域(🏠 FarmHouse/Cabin/岛屋；不传=扫屋)：enum(扫**本屋**查待收) collect(收**本屋**机器;要全农场→farm collect) statue(雕像) furniture(扫家具) interact(点家具,tile_x/tile_y) pickup(拿起家具,tile_x/tile_y) cook(做饭,recipe_name) sleep(睡觉,**who=谁床必填**：传自己名=睡自己床,传别人名=睡那个人的床/一起睡；不在那栋屋会自动走过去；🏝️姜岛例外=共用小屋大通铺) cook(做饭,recipe_name,count) place/break(同scene) decor(🪵**地板/墙纸真值表**——这屋哪些格能铺+现在铺的什么,**铺之前先查这**;铺地板点**地板格**、铺墙纸点**靠墙那圈墙格**,点错游戏**静默不理**)。📐参数键名: interact/pickup=**tile_x,tile_y(不是x,y)** cook=recipe_name,count sleep=who place=name,x,y break=x,y,steps,radius；enum/collect/statue/furniture/decor 无参。kw={'参数名':值}。",
 "social": "社交域：chat(搭话,name=NPC名) gift(送礼,npc_name/item_name) give(送玩家物品,手持右键正式赠予,一次一个要等同意) hand(递给玩家,走过去丢他脚边,磁吸自动收,可整叠) send(发消息,message) emote(表情,name) friendship(查好感,npc_name) movie(影院,npc)。📐参数键名: chat=name / gift=npc_name+item_name / give=player_name+item_name / hand=player_name+item_name+count(0=整叠) / send=message / emote=name(默认爱心) / friendship=name / movie=npc。⚠️**give vs hand**：give=面对面正式赠予(手持右键,一次一个)——**它发的是「赠送提议」,对方点同意东西才过去**(没点会退回;回报会明说「等他点同意」,看到这句别当成已经送到)；hand=走过去丢他脚边(磁吸自动收,**可整叠**,不用对方操作)——想整叠给/对方不在手边就用 hand。kw={'参数名':值}。",
@@ -13660,7 +13656,7 @@ def scan_chests(chest: int = -1) -> str:
                 lines.append("  (空)")
             for i in items:
                 lines.append(f"  · {i['name']}x{i['count']}")
-            lines.append(f"💡 共 {len(items)} 种；其他箱子用 scan_chests(chest=N) 看")
+            lines.append(f"💡 共 {len(items)} 种；其他箱子用 check chests chest=N 看")
             return "\n".join(lines)
         # 摘要模式
         lines = [f"当前地图: {data['location']} | 共 {len(chests)} 个箱子（scan_chests(chest=N) 看单箱全清单；【类目标签】=内容过半自动归类）"]
@@ -13845,7 +13841,7 @@ def storage_find(name: str = "") -> str:
             lines.append(f"  · {tag}{nmtxt}@({c['x']},{c['y']}) {dname} x{cnt}")
         if len(lines) == 1:
             return f"❌ 当前场景没有箱子里有「{name}」——storage view 看看有哪些"
-        lines.append("  💡 取用：storage take items=\"……\")")
+        lines.append("  💡 取用：storage take items=\"……\"")
         return _with_state("\n".join(lines))
     except Exception as e:
         return f"查找失败: {e}"
@@ -14324,7 +14320,7 @@ def give_item(player_name: str, item_name: str) -> str:
                     try:
                         if _count_in_inventory(api.state(), item_name) < _had:
                             return _with_state(
-                                f"🎁 {r.get('target')} 收下了「{r.get('item')}」，东西已经过去了 ✅")
+                                f"🎁 {r.get('target')} 收下了「{r.get('item')}」✅")
                     except Exception:
                         break
             return _with_state(

@@ -621,7 +621,7 @@ def walk_to(poi_name: str = "", x: int = None, y: int = None) -> str:
         # ⚠️ 2026-09-03 恒：宠物碗浇水是"动作"不是"走位"——locations 明确 map walk 不扛浇水；
         #    AI 误用 walk 去宠物碗→BFS 找不到可直接站的落点→报 BFS failed/已到达但没动。直接引导走 farm 喂水。
         if any(k in poi_name for k in ("宠物碗", "水碗", "宠物水")):
-            return _with_state(f"💡 「{poi_name}」的正确姿势是 `farm ops=喂水`（自动定位所有碗灌满），不用 walk——")
+            return _with_state(f"💡 「{poi_name}」用 `farm ops=喂水`（自动定位所有碗灌满）")
         # 跨图 → 走 map_go 真实路径（不飞）：解析 POI 的目标图，不在当前图就转 map_go
         poi_map = None
         if poi_name in locations.POI:
