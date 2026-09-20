@@ -219,6 +219,72 @@ def set_pause(base_url=None, out_of_focus=True):
         return False, None
 
 
+def parse_food_list(raw):
+    """🍽️『奶酪,鱼肉卷, 沙拉』→ ['奶酪','鱼肉卷','沙拉']（2026-09-20 恒：自定义吃食）。
+
+    容忍用户/AI 手写的各种分隔与空白（全角逗号、顿号、分号、空格都当分隔）——
+    这类"看着传对了、其实没匹配上"的静默失败最难查（工具会当成"包里没有"，
+    然后一路降级到自动挑，**把点名的意图整个吃掉**）。
+    · `None` / 空串 → `[]`
+    · **单个名字 → `[名字]`**：故意兼容旧用法（以前 `--food-hp` 只收一个名字），
+      老调用方一个字都不用改。
+    · 已经是 list/tuple → 原样清洗（去空白、丢空项），方便内部调用。
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple)):
+        items = [str(x) for x in raw]
+    else:
+        s = str(raw)
+        for ch in ("，", "、", "；", ";", " "):
+            s = s.replace(ch, ",")
+        items = s.split(",")
+    return [x.strip() for x in items if x and x.strip()]
+
+
+def pick_food_by_priority(names, available):
+    """🕐 按**给定顺序**在背包里找第一个有的 → 返回名字；整张表都没货 → `None`。
+
+    这就是"优先级"的**全部**含义：表里靠前的先吃。
+    ⚠️ 匹配的是**物品名**（`/state` 的 `name`），跟 `select` 同一口径；
+       名字写错不会报错、只会静默跳过 —— 所以调用方在"整张表都没货"时**必须吭声**
+       （见 `BombMiner.eat_if_needed` 里那条 ⚠️ 日志）。
+    """
+    if not names:
+        return None
+    for n in names:
+        if n in available:
+            return n
+    return None
+
+
+def set_guard(base_url=None, on=True, weapon=None):
+    """🛡️ 开关 C# 侧的「贴身自动防御」（POST /guard，2026-09-20 恒）。
+
+    为什么必须搬到 C# 侧（症状：AI 挖矿被怪打了两三下才还手）：
+      Python 的自卫是**轮询** —— `retaliate_if_hit()` 挂在外层 while 每轮一次
+      （mine_run.py:1502），而一轮要敲最多 3 块石头、每块 1.5~4s ⇒ **HP 检查间隔 2~10 秒**；
+      怪物 1~2s 打一下 ⇒ 正好差 2~3 下，跟恒实测完全对上。
+      Python 侧无解：它 ~90% 的时间在 `time.sleep()` 里睡着（HTTP 其实不慢：/state 13ms、
+      /tool 26ms），没有任何"优先级"能叫醒一个睡着的进程。C# 的 OnUpdateTicked 每 tick 都醒着。
+
+    weapon：**点名要哪把**。`WeaponMixin.detect_weapon` 已经有唯一一套优先级，
+      传名字过去就够，别让 C# 再挑一套（两份必然漂移）。传 None = C# 自己挑。
+
+    ⚠️ 端点不存在（旧 DLL）时**静默失败** —— 形状照抄上面的 `set_pause`：
+      老 DLL 上跑新脚本不该直接炸，但返回 `(False, None)` 让调用方**自己决定要不要吭声**。
+    """
+    base = base_url or NAGI_URL
+    try:
+        body = {"on": bool(on)}
+        if weapon:
+            body["weapon"] = weapon
+        r = requests.post(f"{base}/guard", json=body, timeout=5).json()
+        return r.get("ok", False), r
+    except Exception:
+        return False, None
+
+
 def focus_game(base_url=None):
     """把游戏窗口切前台（SDV 后台失焦会暂停走位/拾取）。
     优先 /focus 端点（游戏进程自己切，最可靠），退回 ctypes 按进程名找窗口。"""
@@ -389,9 +455,45 @@ class WeaponMixin:
         self.select(self.bomb_type)
         return True
 
+    def guard_on(self, weapon=None):
+        """🛡️ 开贴身自动防御（C# 每 tick 找 3×3 内的怪并挥刀，**只转向+挥、不移动**）。
+        weapon 默认 = 本次 `detect_weapon()` 挑出来的那把。
+        ⚠️ 开不上就**明说**（宁报错别兜底）—— 不然脚本后面会假装有人保它。"""
+        if weapon is None:
+            if not self.weapon_name:
+                self.detect_weapon()
+            weapon = self.weapon_name
+        ok, r = set_guard(self.base, True, weapon)
+        self._guard_on = bool(ok)
+        if ok:
+            log(f"  🛡️ 贴身防御已开（武器：{(r or {}).get('weapon') or '自动挑'}）")
+        else:
+            why = (r or {}).get("error") or "端点不存在（旧 DLL？）"
+            log(f"  ⚠️ 贴身防御没开上（{why}）—— 本趟只有 Python 的受击回击，反应会晚 2~3 下")
+        return ok
+
+    def guard_off(self):
+        """🛡️ 关贴身自动防御。
+        ⚠️ 必须放 finally 里。**但 Windows 上被杀的子进程走不到 finally**
+           （`_bg_kill` = TerminateProcess）—— 那条路由 MCP 服务器补刀，见
+           nagi_mcp_server._bg_kill 里那段注释。"""
+        ok, r = set_guard(self.base, False)
+        self._guard_on = False
+        if ok:
+            log(f"  🛡️ 贴身防御已关（本趟共挥 {(r or {}).get('swings', '?')} 刀）")
+        return ok
+
     def retaliate_if_hit(self):
         """受击及时回击：HP 比上次低 → 回击两下（补刀）。不依赖扫描循环（动作后立即调用，减少回击延迟）。
-        锤子第一下能重砸就重砸（受击反击也吃重砸），第二下在冷却里自动平砍。2026-09-06 复用给 MineBot。"""
+        锤子第一下能重砸就重砸（受击反击也吃重砸），第二下在冷却里自动平砍。2026-09-06 复用给 MineBot。
+
+        🛡️ 2026-09-20：**C# 的 guard 开着时本函数退化成空操作** —— guard 在受击的**同一 tick**
+        就还手了，这里再砍两下 = 对着空气多挥 2 刀 + 2 次 HTTP（~360ms），还会把 guard 刚摆好的
+        朝向搅乱。
+        ⚠️ **但绝不删**：guard 没开上（旧 DLL / 没武器 / `--no-guard` / 手动单跑）时，
+        它是**唯一还活着的自卫**。"""
+        if getattr(self, "_guard_on", False):
+            return
         try:
             cur_hp = self.state().get("player", {}).get("health", 0)
         except Exception:
@@ -423,6 +525,13 @@ class BombMiner(WeaponMixin):
         self._floor_entrance = None    # 当前层入口梯子（逃出用）
         self._buff_track = {}          # buff 自跟踪 {"dish":{start,duration}, "drink":{...}}——重启不重复吃
         self._recover_streak = 0       # 连续吃了几次血还没回上去（"站着吃挨打"的收敛计数，见 unsafe_reason）
+        self._guard_on = False         # 🛡️ C# 侧贴身自动防御是否开上了（见 guard_on / retaliate_if_hit）
+        # 🍽️ 2026-09-20 恒：自定义吃食 —— **点名 + 优先级**（`--food-hp`/`--food-sta`）。
+        #    空 = 不点名（退回原来的"自动挑"，见 eat_if_needed）。
+        #    为什么要有它：自动挑按"回血量×10"打分，**会把想留着卖的山羊奶酪吃了**；
+        #    点了名就只在点名的几样里挑，靠前的先吃。
+        self.food_hp = []              # 回血：按优先级排的食物名列表
+        self.food_sta = []             # 体力：同上
 
     # ═══════════ 炸弹类型选择（黑>超级>樱桃，背包实际有才算数） ═══════════
 
@@ -733,7 +842,13 @@ class BombMiner(WeaponMixin):
     #   ⚠️ 吃东西的**目标线**（eat_recovery 的 target=60%）是另一回事，别跟这条混。
     #   ⚠️ 这条同时是"被怪打到死"的根治点：老代码撤退线是百分比、且与吃食线之间有 30~60%
     #      的死区，人在里面永远判"安全"→ 一直吃、一直挨打。
-    RETREAT_HP_ABS = 20
+    # ⚠️ 2026-09-20 恒：**20 → 35**（"20 可能太危险了，我看着心惊胆战的，加到 35 生命值撤吗？所有矿洞"）。
+    #    现场：真机一趟冲层打到 **14/180** 才撤（`撤退原因: 血量 14 < 20（危险线）`）——
+    #    20 这条线**成立**（确实把人捞出来了），但留给"反应过来"的余量只剩 20 点，
+    #    而困难矿井里一次受击/一脚炸弹轻松 20+ ⇒ 常常是"刚判危险就没了"。
+    #    35 留出约两下的缓冲，同时仍远低于 `EAT_RECOVER_MAX` 那条吃食线，不会互相打架。
+    #    ⚠️ **只动这一个常量**：下矿(mine_run) 有一份**镜像**，改一处必须同步另一处（两边都改了）。
+    RETREAT_HP_ABS = 35
     RETREAT_TOD = 2430
     EAT_RECOVER_MAX = 3   # 连吃这么多次仍没回上血 → 判"回不上来"，当撤退信号
 
@@ -761,7 +876,22 @@ class BombMiner(WeaponMixin):
         保留它只为不打断老调用方；真判据一律看 unsafe_reason()。"""
         return self.unsafe_reason() is None
 
-    def eat_if_needed(self, hp_threshold=40, sta_threshold=10):
+    def eat_if_needed(self, hp_threshold=40, sta_threshold=10, food_hp=None, food_sta=None):
+        """按需进食。`food_hp`/`food_sta` 传**列表（靠前的先吃）**或逗号串；空 = 不点名。
+
+        🕐 2026-09-20 恒「自定义吃食」的三条规矩（拍板原话见 CHANGELOG）：
+          ① **点名就在点名的里挑**：血低 → 只看 `food_hp` 那张表；体力低 → 只看 `food_sta`。
+             两张表分开是有意的 —— 同一个顺序表对两种需求不可能都对（奶酪补血、沙拉补体力，
+             合成一条「奶酪,沙拉」时体力低会先把奶酪吃了）。
+          ② **列表内降级**：表里靠前的没货就试下一项（这才是"优先级"的意义）。
+          ③ **整张表都没货 → 明确报一句，再退回自动挑**。理由：不吃饭会死
+             （恒当日刚确认"蟹子会碰掉血"），而吃错东西只是浪费 —— 保命优先。
+             ⚠️ **别把这条"降级"改成静默**：那样"我明明点名了"和"点名根本没生效"
+                在日志里长得一模一样（同族教训：`/passable_rect` 静默无视 location）。
+        """
+        hp_list = parse_food_list(food_hp) if food_hp is not None else list(self.food_hp)
+        sta_list = parse_food_list(food_sta) if food_sta is not None else list(self.food_sta)
+
         foods = self.detect_food()
         if not foods:
             return False
@@ -777,7 +907,29 @@ class BombMiner(WeaponMixin):
             return False
         hp_pct = (hp / max_hp * 100) if max_hp > 0 else 100
         sta_pct = (sta / max_sta * 100) if max_sta > 0 else 100
-        # 挑食（2026-09-06）：血低→回血量×10 主导；体力低→回体力加分；0回血重罚
+
+        # ── ① 点名优先 ──
+        if hp_list or sta_list:
+            hp_low = hp_pct < hp_threshold
+            want = hp_list if hp_low else sta_list
+            label = "回血" if hp_low else "体力"
+            pick = pick_food_by_priority(want, {f[0] for f in foods})
+            if pick:
+                try:
+                    if self.eat(pick):
+                        vals = next((f for f in foods if f[0] == pick), (pick, 0, 0))
+                        log(f"  🍽️ 吃了 {pick}（点名·{label} 体{vals[1]} 血{vals[2]}）")
+                        return True
+                except Exception as e:
+                    log(f"  ⚠️ 吃 {pick} 出错：{e}")
+            # ── ③ 整张表都没货（或吃失败）→ 吭一声，再退回自动挑 ──
+            if want:
+                log(f"  ⚠️ 点名的{label}食物一个都没吃上（表：{','.join(want)}）"
+                    f" —— 退回自动挑（想吃点名的那几样，请先确保它们在包里）")
+            else:
+                log(f"  ⚠️ 这次需要{label}，但没点过那类的名 —— 退回自动挑")
+
+        # ── 自动挑（老逻辑，2026-09-06）：血低→回血量×10 主导；体力低→回体力加分；0回血重罚 ──
         def _rank(f):
             name, ed, hpv = f
             score = 0

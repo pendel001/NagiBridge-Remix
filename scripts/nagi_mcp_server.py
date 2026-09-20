@@ -5642,8 +5642,14 @@ def go_mining(
        💡 想刷煤：farm Iron 铁层(41) 时会顺手清尘埃精灵/蝙蝠——它们掉煤（不是 ore 选项，内部自动刷）。
     两者都是「mine go」，用 **mode** 切换：mode=rush 下矿、mode=farm 刷矿。已打通的层别担心没得玩——设 start 挑层。
 
-    自动检测镐子级别算好敲击次数，不浪费体力。
-    附近有怪物自动切剑砍（贴脸/近身主动反击，不是站桩被磨死）。
+    敲矿是「敲一下→检查→没碎再敲」（`ROCK_MAX_BLOWS=8` 是**安全上限不是目标**，碎了当场停）；
+    ⚠️ 2026-09-20 更正：这里原来写「自动检测镐子级别算好敲击次数，不浪费体力」——**代码里没这回事**，
+    别照它推断行为（`pickaxe_level` 只进日志，没有任何行为消费它）。
+    附近有怪物自动切剑砍（贴脸/近身主动反击，不是站桩被磨死）——
+      ⚔️ 2026-09-20 起：**贴身（3×3 内）那一刀是游戏自己在每 tick 打的**（C# 侧 guard，脚本自开自关），
+      反应从"2~10 秒一次"缩到"同一帧"；**但它只转向+挥、不移动**。
+      ⚠️ 2 格以上（会射的蝙蝠/远程怪）仍靠脚本自己的扫描周期 —— **别站桩硬扛**。
+      ℹ️ 想对比效果可以 `--no-guard` 跑一趟（A/B 用）。
     背包有食物会自动吃（按需求：血低优先吃回血的，别再拿纯体力咖啡保命）。
 
     调用前请用 check(what="status") / daily(ops="peek") 确认带了镐子和剑、有食物、背包留 ≥10 格（满先用 storage(ops="store") 存箱子）。
@@ -5659,8 +5665,14 @@ def go_mining(
         cycles: 刷矿循环次数，仅 farm 模式（默认 5）
         hp_threshold: 血量低于此 % 吃食物（默认 30%）。⚠️ 这是**吃/兜底**线不是撤退线——
             **撤退看 HP<20 绝对值**（恒 2026-09-19："不到快死都可以跟着房主继续下"）
-        food_sta: 体力食物名称（如 Salad / Bread），不传就不吃
-        food_hp: 回血食物名称（如 Cheese / Fish Taco），不传则共用 food_sta
+        food_sta: 体力食物。**可以给一串、逗号分隔、靠前的先吃**（如 "沙拉,面包"）；单个名字照旧。
+                  不传 = 不由你点名，退回脚本自带的"自动挑"（按回血量×10 打分）。
+        food_hp:  回血食物。同样支持一串 + 优先级（如 "奶酪,鱼肉卷,沙拉"）。
+        🍽️ 为什么要能点名：自动挑会**把你留着卖的东西吃了**（山羊奶酪最典型）。
+           点名之后就只在这几样里挑：靠前的没货自动试下一项；**整串都没货**会明确报一句
+           （"点名的回血食物一个都没吃上"）再退回自动挑 —— 不会静默当成"点过名了"。
+           ⚠️ 两张表是**分开**的：血低只看 food_hp、体力低只看 food_sta，不会串。
+              所以"补血的"和"补体力的"要各写各的，别混在一串里。
         resume: 是否从已到达最深层恢复（默认 True，仅 rush 模式）
     """
     args_list = [
@@ -6082,7 +6094,8 @@ def bomb_retreat() -> str:
 @mcp.tool()
 def bomb_mine(target: int = 0, bomb: str = "Bomb", min_covered: int = 3,
               follow_host: bool = True, lead: int = 2, autodrop: int = 0,
-              one_floor: bool = False) -> str:
+              one_floor: bool = False,
+              food_hp: Optional[str] = None, food_sta: Optional[str] = None) -> str:
     """💣 自主炸矿（贪心炸弹下矿）
     每层贪心找覆盖最多岩体的点放炸弹，生存优先（血低吃/撤、没炸弹撤、卡死检测）。
     user 在矿里就一起冲层（目标层=user 层数±lead），user 同层打架就 position 增援只打 user 的对手。
@@ -6100,12 +6113,19 @@ def bomb_mine(target: int = 0, bomb: str = "Bomb", min_covered: int = 3,
         lead: 和 user 保持的层差（默认2）
         autodrop: 自动丢物（已退役），0=只规划不丢交AI手动整理（默认0）
         one_floor: 逐层模式，跑一层返回摘要不撤退（默认 False）
+        food_hp: 🍽️ 回血食物，**逗号分隔、靠前的先吃**（如 "奶酪,鱼肉卷"）；不传=自动挑
+        food_sta: 🍽️ 体力食物，同上（如 "沙拉,面包"）。两张表分开：血低只看 food_hp、体力低只看 food_sta。
+                  ⚠️ 点名的整串都没货时会**报一句再退回自动挑**（自动挑可能吃掉你留着卖的）。
     """
     _cur = api.state().get("location", {}).get("name", "")
     if not (_cur in ("Mine", "SkullCave") or _cur.startswith("UndergroundMine")):
         return _with_state(f"❌ 现在不在矿井/头骨矿洞里（{_cur}）——先 map_go 到矿井(✓)或头骨矿洞(121+)再炸（防瞬移/音乐乱）")
     args_list = [f"--target", str(target), f"--bomb", bomb,
                  f"--min-covered", str(min_covered)]
+    if food_hp:
+        args_list.extend(["--food-hp", food_hp])
+    if food_sta:
+        args_list.extend(["--food-sta", food_sta])
     if not follow_host:
         args_list.extend(["--follow-host", "0"])
     if lead != 2:
@@ -6170,7 +6190,8 @@ def bomb_escort(ore_radius: int = 7, cooldown: int = 20, max_minutes: Optional[i
 
 @mcp.tool()
 def bomb_volcano(bomb: str = "Bomb", min_covered: int = 3, hp_threshold: int = 30,
-                 max_minutes: Optional[int] = None, poll: float = 2.5) -> str:
+                 max_minutes: Optional[int] = None, poll: float = 2.5,
+                 food_hp: Optional[str] = None, food_sta: Optional[str] = None) -> str:
     """🌋 火山骑行炸矿（跟 user 换层）——**火山适配，需 user 陪同**
     ⚠️ 火山特殊瓦片无法程序化换层 → 要求 user(host) 已在矿井/火山里才放行（否则拦下请先 ask user 陪同）。
     跟在 user 身边（warp 换层跟上），同层清矿簇（贪心炸弹）、帮打怪。
@@ -6186,6 +6207,8 @@ def bomb_volcano(bomb: str = "Bomb", min_covered: int = 3, hp_threshold: int = 3
             （火山的撤退线是 HP<20 绝对值，恒 2026-09-19）
         max_minutes: 最多跟随分钟数（默认不限）
         poll: user位置轮询间隔秒（默认2.5）
+        food_hp: 🍽️ 回血食物，**逗号分隔、靠前的先吃**（如 "奶酪,鱼肉卷"）；不传=自动挑
+        food_sta: 🍽️ 体力食物，同上（如 "沙拉,面包"）。两张表分开：血低只看 food_hp、体力低只看 food_sta。
     """
     try:
         vg = _volcano_gate()
@@ -6196,6 +6219,10 @@ def bomb_volcano(bomb: str = "Bomb", min_covered: int = 3, hp_threshold: int = 3
             return _with_state(f"❌ 现在不在火山里（{_cur}）——先 map_go('火山入口') 到火山再炸（防瞬移/音乐乱）")
         args_list = [f"--bomb", bomb, f"--min-covered", str(min_covered),
                      f"--hp-threshold", str(hp_threshold)]
+        if food_hp:
+            args_list.extend(["--food-hp", food_hp])
+        if food_sta:
+            args_list.extend(["--food-sta", food_sta])
         _rem = _mine_entry_reminder(_cur)   # 今天第一次到火山入口层(VolcanoDungeon0)→叮咛
         if max_minutes:
             args_list.extend(["--max-minutes", str(max_minutes)])
@@ -7526,7 +7553,12 @@ DOMAIN_PREFIX = {
 # 免建议的 op：导航类（自己会导航）/ API 直操作
 DOMAIN_EXEMPT = {
     "mine": {"go", "去"},
-    "farm": {"buy", "买", "买动物"},   # 买动物去玛妮牧场不在农场，豁免建议（care 域 2026-09-02 并入 farm）
+    # ⚠️ 2026-09-20 恒拍板「**哪里都允许它清当前场景**」⇒ `clear`/`清`/`clearground`/`清格` 也豁免：
+    #    `clear_area` 已改成**就地清**（在哪张图就清哪张图的指定区域，见 clear_area.py 头注）。
+    #    不豁免的话，人在矿里清完还会收到「💡 可先 map go Farm」——**跟刚发生的事实打架**。
+    "farm": {"buy", "买", "买动物",          # 买动物去玛妮牧场不在农场（care 域 2026-09-02 并入 farm）
+             "clear", "清", "clearground", "清格"},
+
     "fish": {"go", "去", "钓", "fish"},
     "cabin": {"sleep", "睡", "睡觉"},   # sleep 自己会走过去（2026-09-19 起传谁的名字就走谁家）
 }
@@ -8171,6 +8203,10 @@ def _farm_clear(x: int = -1, y: int = -1, rows: int = 1, length: int = 1,
                 **extra) -> str:
     """🧹 清杂草/石头/树枝/树桩（`clear_area` 那个 skill 的域 op 入口）。
 
+    🧹 **在哪就在哪清**（恒 2026-09-20 拍板「哪里都允许它清当前场景」）：清的是**角色当前
+       所在那张图**的指定区域 —— 农场、矿井、野外都行，**不用先回农场**。
+       （以前不是这样：不在农场会被静默搬回农场、然后在农场的同名坐标上清场。）
+
     坐标**和 till/plant 同一套**（三选一）：
       · `x,y,rows,length,direction` —— 起点 + 尺寸
       · `x1,y1,x2,y2`               —— 直接给矩形两角（2026-09-19 补上：docstring 早就这么写，
@@ -8324,7 +8360,7 @@ def bundle_kb(query: str = "") -> str:
 
 @mcp.tool()
 def farm(ops: str = "", kw: dict | None = None) -> str:
-    """🌾 农活域（农场/温室/姜岛）。till 锄地 / plant 种(可带 layout 按洒水器布局) / water 浇地 / harvest 收 / fertilize 施化肥 / clear 清杂草石头树桩 / collect 收机器(一键只收,不走路) / building 一屋收放(拟人走) / chop 砍树。动物：animals 摸+收 / 喂水 宠物碗 / milk 挤奶剪毛 / **买动物**(会先走到玛妮柜台再下单，柜台 9:00~18:00 才开)。全 ops → help(farm)。⚠️带尺寸 op(till/plant/clear/fertilize)：**x/y 必填**（不传直接报错，不再兜底成"玩家面向格"）；rows×length 缺省只做 1 格，要多大自己传。animal water 用 喂水，water=浇地。💡**多 op 一次调用共用一份 kw**（如 ops="till plant"），各自只吃自己认识的参数、属于别人的会**点名忽略**。"""
+    """🌾 农活域（农场/温室/姜岛）。till 锄地 / plant 种(可带 layout 按洒水器布局) / water 浇地 / harvest 收 / fertilize 施化肥 / clear 清杂草石头树桩(**在哪就在哪清**，不必先回农场) / collect 收机器(一键只收,不走路) / building 一屋收放(拟人走) / chop 砍树。动物：animals 摸+收 / 喂水 宠物碗 / milk 挤奶剪毛 / **买动物**(会先走到玛妮柜台再下单，柜台 9:00~18:00 才开)。全 ops → help(farm)。⚠️带尺寸 op(till/plant/clear/fertilize)：**x/y 必填**（不传直接报错，不再兜底成"玩家面向格"）；rows×length 缺省只做 1 格，要多大自己传。animal water 用 喂水，water=浇地。💡**多 op 一次调用共用一份 kw**（如 ops="till plant"），各自只吃自己认识的参数、属于别人的会**点名忽略**。"""
     op_list = [o for o in re.split(r"[\s,，]+", (ops or "").strip()) if o]
     if not op_list:
         return _with_state("❌ ops 为空（如 farm(ops=\"till plant water\")）")
@@ -10874,9 +10910,17 @@ def _minigame_guide_hint() -> str:
         # ⚠️ 2026-08-26 恒：文案一律写**域形式**（menu minigame …）。
         #    以前写裸工具名 minigame_click(...)，而域模式下该工具已被隐藏 → AI 照提示调不存在的工具。
         if mg == "Slots":
-            return "🎰 老虎机：menu minigame action=bet10/bet100 下注 · action=done 退出 · menu read 看转盘"
+            # 🎲 恒 2026-09-20：「我希望 AI 自己加码赌着玩儿」——**明确把决定权交给它**，
+            #    否则它会一直 bet10（最保守），把这台机器玩成打卡。
+            return ("🎰 老虎机：menu minigame action=bet10/bet100 下注 · action=done 退出 · "
+                    "menu minigame_state 看转盘+盈亏。"
+                    "🎲 **玩多大你自己定**——赢了想加码上 bet100 就上，图个乐，不用问谁")
         if mg == "CalicoJack":
-            return "🃏 21点：menu minigame action=hit 加牌 · stand 停牌 · double 加倍 · quit 退出 · menu read 看牌面"
+            # ⚠️ 2026-09-20 真机验出来的：`double` **不是**中途加倍，是**结果屏的「再赌一把」**
+            #    （赢局才出现；牌局中途点它**静默无效、回包却照样报"已点"**）。原来写"double 加倍"会误导。
+            return ("🃏 21点：menu minigame action=hit 加牌 · stand 停牌 · quit 退出 · "
+                    "menu minigame_state 看牌面。"
+                    "⚠️ `double` 是**结果屏**上的「再赌一把」（赢局才出现、下注翻倍）；**牌局中途点它没反应**")
         return f"🎰 小游戏 {mg}：用 menu minigame action=... 操作（menu read 读现状）"
     except Exception:
         return ""
@@ -13306,7 +13350,7 @@ _SETTINGS_DISPATCH = {
 _DOMAIN_GUIDES = {
 "check": "查询域，what=...：status(完整状态) backpack(逐格价值/星级) worn(穿戴) machines(全场机器清单) mine(下矿进度) silo(干草) mastery(精通) buildings(木匠建筑) quest(开任务日志) chests(当前图箱) storage(箱子网络) look(环视周围) profile(我的技能等级+职业分支,如是否 Luremaster 蟹笼免饵) role(端口↔角色确认:我是谁/恒是谁)。⚠️查概览用 status，查逐格用 backpack，别都调浪费 token。📌profile/role 2026-09-11 从顶层工具收编进来（原来直接叫 profile()/which_role()，现在一律走 check）。📐这个域的参数叫 **what**，**不是 ops**。带参的只有两个: chests(chest=N 看第N个箱) / look(radius=10 环视半径)；其余(status/backpack/worn/machines/mine/silo/mastery/buildings/quest/storage/profile/role)**全无参**。⚠️查概览用 status、查逐格用 backpack，别都调一遍浪费 token。",
 "farm": "农活域(🌱必走，别手动挥工具组合，用域 ops)：till(锄地) plant(种,跳过已种;带 layout 就按洒水器布局种) water(浇,自动跳雨+水壶没水先装满) harvest(收) scythe(镰刀收蒜/花/茶) fertilize(化肥) clear(清杂草石树桩;坐标同 till，也可 `radius=N` 走**圆形**；**会自动往外多清 2 格**——田边的杂草会长进田里把作物顶掉，不用自己放大) plot(连通域规划) plan(方形规划,纯算格) chop(砍树)。⚠️**锄地/播种各只有一个实现**：锄地=`till`（`hoe`/`布局锄`/`tillfield`/`蓄力锄` 都是它的别名）、播种=`plant`（`sow`/`plantlayout`/`播种规划` 都是它的别名）；⛔ `till_plant` 已退役——要锄+种写 `ops=\"till plant\"`。 clearground(清单格) collect(一键收机器:只收不放,全农场瞬收不走路) load(放原料) building(一屋收放:拟人走进去收+放料,item留空=只收不放) break(拆/敲同scene,镐子敲可破物/翻已耕地) place(放置/播种同scene) pond/pond_add/pond_feed/pond_collect/pond_fish(鱼塘)。⚠️漏格DLL自动补；**缺的格会被点名「被什么挡着」**（🌿草/杂草/🪨石头/🪵树枝→**先 `clear` 清一遍再 till/plant**；🏗️洒水器/箱子等设施→⛔别清、那是规划该绕开的格）——草占着地格时锄头是锄不出 HoeDirt 的，别对着「缺失N格」发呆；高级工具蓄力用 tool_area(别用/tool)。只在 Farm/温室/姜岛。带参 op(plant 的 seed_name、till/clear 的 x/y/rows、fertilize 的 fertilizer_name、place 的 name、building 的 location、collect 的 machine_type、pond_add 的 item)→ kw={'参数名':值}。🐄动物(2026-09-02 care域并入farm): animals(摸+收) 喂水/碗(宠物水,🌧️雨天自动跳过——雨会把碗填满) milk(挤奶剪毛) buy(买动物,豁免建议) doors(关门) hay(干草) pet(猫狗) petwalk(拟人摸) 畜舍/这间(这间屋动物) statue(祈福)——⚠️farm water=浇地,动物水用 喂水; farm building=机器收放,这屋动物用 畜舍。📐参数键名: till/clear/plant/fertilize 都是 x,y(**必填**),rows,length,direction（till/plant 也可用 x1,y1,x2,y2 直接给矩形两角）；plant 另有 seed_name,layout,direct,trellis；harvest/scythe=radius；plot=x,y,radius,all_plots；chop=area(**值写几个数**：4 个数=矩形两角 / 3 个数=圆心+半径，逗号空格都认)；collect=machine_type,location；load=item,machine_type,location；building=location,item,machine_type；place=name,x,y；break=x,y,steps,radius；pond_add=item+x,y（pond_feed/collect/fish 只要 x,y）；buy=animal_type,name,building；petwalk=include_petted；hay=dry_run。⚠️direction 只认 horizontal(默认)/vertical 两个值,别写'横'/'竖'。💡大田洒水器布局(可选,纯自动化建议)：要按洒水器留格/留走道就 plan→till→plant 三件套——plan(x1,y1,x2,y2,layout=0,hoe_level=-1,trellis=False) **纯算格不动机器**先看要锄/种哪些; till(x1,y1,x2,y2,layout=0) 按布局锄; plant(x1,y1,x2,y2,seed_name,**layout**) 按布局种（layout=0 整块/1 初级十字/2 高级/3 铱；direct=True 瞬移快、默认走位拟人）。想一次说完就 `ops=\"till plant\"`（**一份 kw 共用**，锄地会自动点名忽略 seed_name）。**layout 四档**: 0=标准整块(不预留洒水器,锄法蛇形逐格走位,任何锄头等级都行) 1=初级(十字稀疏,每台覆盖上下左右4格;锄法=精确锄每台4格,**与锄头等级无关**) 2=高级(优质,田宽高先裁成**3的倍数**,每3×3中心1台覆盖8格,整块蓄力锄) 3=铱(裁成**5的倍数**,每5×5中心1台覆盖24格;⚠️爬架作物不适用)。hoe_level: 0→1格 1→3线 2→5线 3→3×3 4→6×3,-1=自动读手持。trellis=True=爬架作物(啤酒花/青豆/葡萄,不可通过格)⇒自动**种2留1**留走道让AI能进田浇收。只管种不摆洒水器就直接 plant,不用 plan 那套。⚠️已知限制: layout 0/2/3 碰上金/铱锄(hoe_level>=3)会报**0处锄地站位**并自打一行'落点未实测校准,暂不规划蓄力站位'——**那是刻意不猜不是出错**; layout 1 不吃蓄力站位不受影响。",
-"mine": "下矿域(⚒️ 矿井/头骨/火山)：go(去挖矿:mode=rush冲层/farm刷矿,start起始层,target目标层,ore,cycles圈数) progress(进度) bomb_status/bomb_plan/bomb_place/bomb_collect/bomb_ladder/bomb_retreat(单步炸,**都要 bomb_ 前缀**) bomb_mine(自动) bomb_volcano(火山) organize(整理背包)。🔁**刷矿=mode=go(mode=farm)**：定点刷指定矿→ore=Copper铜(21层)/Iron铁(41层)/Gold金(71层)；**煤靠 farm 铁层(41)顺手清尘埃精灵/蝙蝠掉**（不是 ore 选项，跑 auto 内部刷）。🏃下矿=mode=go(mode=rush,start可选≤电梯上限+5倍数,target默认120)。⚠️无镐/血低硬拦；梯子 /ladder+confirm。⚠️bomb_mine 没炸弹+host在同矿井→自动转【内部】协同(跟随host+帮忙敲矿/打怪)不撤退出矿(bomb_escort 不对外暴露、AI 不主动启用)；bomb_retreat 结束协同+停脚本+脱离矿井回门口。⚠️接「深处的危险」重置电梯→起始层动态从1起(内置脚本自动读，不暴露工具)；刷矿目标层不可直达会上报，需先冲层带回或改浅层。📐带参速查: go(mode=rush冲层/farm刷矿, start起始层, target目标层, ore=Copper铜/Iron铁/Gold金, cycles圈数, hp_threshold, food_sta, food_hp, resume) bomb_plan(radius,min_covered,top) bomb_place(x,y **必填**) bomb_collect(max_items) bomb_mine(target,bomb,min_covered,follow_host,lead,autodrop,one_floor) bomb_volcano(bomb,min_covered,hp_threshold,max_minutes,poll) organize(disable,reset)。💣bomb 三个取值 'Cherry Bomb'樱桃/'Bomb'黑/'Mega Bomb'超级——**点名的包里没有就按 黑>超级>樱桃 自动换成有的**(不会误报没炸弹)；范围 樱桃=边长7十字 / 黑=11x11方块 / 超级=15x15方块，⚠️黑和超级**会炸伤自己**(实测黑掉3血)。⚠️bomb_volcano **要求 host 已在矿/火山里**才放行(火山瓦片没法程序化换层)。⚠️bomb_mine one_floor=True=逐层模式(同步,只跑一层出摘要,不撤退)；**默认冲层模式=异步后台跑,推荐**。💡出发前占位物(恒2026-08-23)：提前放1个可堆叠物(铱矿/铱锭/五彩碎片)在包，满包时同种战利品自动堆叠吸附、少触发满包停；别拿银河之魂这类带死亡会丢的稀有物当占位。",
+"mine": "下矿域(⚒️ 矿井/头骨/火山)：go(去挖矿:mode=rush冲层/farm刷矿,start起始层,target目标层,ore,cycles圈数) progress(进度) bomb_status/bomb_plan/bomb_place/bomb_collect/bomb_ladder/bomb_retreat(单步炸,**都要 bomb_ 前缀**) bomb_mine(自动) bomb_volcano(火山) organize(整理背包)。🔁**刷矿=mode=go(mode=farm)**：定点刷指定矿→ore=Copper铜(21层)/Iron铁(41层)/Gold金(71层)；**煤靠 farm 铁层(41)顺手清尘埃精灵/蝙蝠掉**（不是 ore 选项，跑 auto 内部刷）。🏃下矿=mode=go(mode=rush,start可选≤电梯上限+5倍数,target默认120)。⚠️无镐/血低硬拦；梯子 /ladder+confirm。⚔️贴身(3×3)自卫=游戏自己每 tick 挥刀(go/bomb_mine/bomb_escort/bomb_volcano 四个脚本都自开自关,**只转向不移动**;手上是锤子且冷却好了会重砸6×6)；2格外的怪仍靠脚本扫描,别站桩。🍽️**自定义吃食(2026-09-20)**：go/bomb_mine/bomb_volcano 都可传 food_hp/food_sta=**逗号分隔、靠前的先吃**(如 food_hp=「奶酪,鱼肉卷」)。血低只看 food_hp、体力低只看 food_sta(**两张表分开别混**)。点名后就只在这几样里挑——**防止自动挑把你留着卖的吃了**(山羊奶酪最典型)；整串都没货会明确报一句再退回自动挑。⚠️bomb_mine 没炸弹+host在同矿井→自动转【内部】协同(跟随host+帮忙敲矿/打怪)不撤退出矿(bomb_escort 不对外暴露、AI 不主动启用)；bomb_retreat 结束协同+停脚本+脱离矿井回门口。⚠️接「深处的危险」重置电梯→起始层动态从1起(内置脚本自动读，不暴露工具)；刷矿目标层不可直达会上报，需先冲层带回或改浅层。📐带参速查: go(mode=rush冲层/farm刷矿, start起始层, target目标层, ore=Copper铜/Iron铁/Gold金, cycles圈数, hp_threshold, food_sta, food_hp, resume) bomb_plan(radius,min_covered,top) bomb_place(x,y **必填**) bomb_collect(max_items) bomb_mine(target,bomb,min_covered,follow_host,lead,autodrop,one_floor,food_hp,food_sta) bomb_volcano(bomb,min_covered,hp_threshold,max_minutes,poll,food_hp,food_sta) organize(disable,reset)。💣bomb 三个取值 'Cherry Bomb'樱桃/'Bomb'黑/'Mega Bomb'超级——**点名的包里没有就按 黑>超级>樱桃 自动换成有的**(不会误报没炸弹)；范围 樱桃=边长7十字 / 黑=11x11方块 / 超级=15x15方块，⚠️黑和超级**会炸伤自己**(实测黑掉3血)。⚠️bomb_volcano **要求 host 已在矿/火山里**才放行(火山瓦片没法程序化换层)。⚠️bomb_mine one_floor=True=逐层模式(同步,只跑一层出摘要,不撤退)；**默认冲层模式=异步后台跑,推荐**。💡出发前占位物(恒2026-08-23)：提前放1个可堆叠物(铱矿/铱锭/五彩碎片)在包，满包时同种战利品自动堆叠吸附、少触发满包停；别拿银河之魂这类带死亡会丢的稀有物当占位。",
 "cabin": "小屋引导域(🏠 FarmHouse/Cabin/岛屋；不传=扫屋)：enum(扫**本屋**查待收) collect(收**本屋**机器;要全农场→farm collect) statue(雕像) furniture(扫家具) interact(点家具,tile_x/tile_y) pickup(拿起家具,tile_x/tile_y) cook(做饭,recipe_name) sleep(睡觉,**who=谁床必填**：传自己名=睡自己床,传别人名=睡那个人的床/一起睡；不在那栋屋会自动走过去；🏝️姜岛例外=共用小屋大通铺) cook(做饭,recipe_name,count) place/break(同scene) decor(🪵**地板/墙纸真值表**——这屋哪些格能铺+现在铺的什么,**铺之前先查这**;铺地板点**地板格**、铺墙纸点**靠墙那圈墙格**,点错游戏**静默不理**)。📐参数键名: interact/pickup=**tile_x,tile_y(不是x,y)** cook=recipe_name,count sleep=who place=name,x,y break=x,y,steps,radius；enum/collect/statue/furniture/decor 无参。kw={'参数名':值}。",
 "social": "社交域：chat(搭话,name=NPC名) gift(送礼,npc_name/item_name) give(送玩家物品,手持右键正式赠予,一次一个要等同意) hand(递给玩家,走过去丢他脚边,磁吸自动收,可整叠) send(发消息,message) emote(表情,name) friendship(查好感,npc_name) movie(影院,npc)。📐参数键名: chat=name / gift=npc_name+item_name / give=player_name+item_name / hand=player_name+item_name+count(0=整叠) / send=message / emote=name(默认爱心) / friendship=name / movie=npc。⚠️**give vs hand**：give=面对面正式赠予(手持右键,一次一个)——**它发的是「赠送提议」,对方点同意东西才过去**(没点会退回;回报会明说「等他点同意」,看到这句别当成已经送到)；hand=走过去丢他脚边(磁吸自动收,**可整叠**,不用对方操作)——想整叠给/对方不在手边就用 hand。kw={'参数名':值}。",
 "scene": "场景交互域(点东西/工具/转身/捡/坐)：at(tile_x,tile_y)(点指定格/柜台) interact(点面前) use(挥工具) face(转向0上1右2下3左) select(拿手上) sit(x,y[,face])(**坐椅子**:自动走到座位旁再坐,上不了会明确报错;状态条「🪑 可交互：sit(x,y)」给坐标;可选 face=坐下朝向0上1右2下3左,**只对「朝向来自坐下那刻面朝方向」的座位生效**(反编译:stool 类/opposite 长椅/名字带Stool的家具),其它写死——吃不吃由端点回的 face 字段说了算,不生效会在回报里点名) stand(**起身**:坐着时用,没坐着明确报错,带动画+轮询确认) seats(radius=12)(扫附近能坐的椅子/长凳/沙发,✋=可改朝向) pickup(拿起家具) pickup_scene(捡当前场景物) berry(摇浆果) spot(挖蚯蚓点) moss(绿雨搜苔藓) rock(室外镐击:敲当前图可破物,采石场/挖掘场/蚌矿场跳普通石,dig/dry,battle-free) garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物:一种 name+count / 多种 items=逗号分隔) decor(🪵地板/墙纸真值表:这间屋哪些格能铺+现在铺的什么,**铺前先查这**) furniture(扫家具) place(放置/播种:name=物品名,x/y=目标格→箱子/树种/蟹笼落地或种下,只放可放置物;🪵**地板/墙纸是特例**——只能点在**地板格**(地板)/**靠墙那圈墙格**(墙纸)上,点错游戏**静默不理**;点错时回报会直接告诉你「这格其实是墙不是地板」并给出能铺的格) break(拆/敲:x,y=目标格,steps=挥击次,radius=方圆→镐子敲石头/翻已耕地,跳过箱子/容器格) maze(迷宫视图r半径,gx/gy目标格→ASCII棋盘#墙.可走P自己G目标) maze_seg(走法链gx,gy目标→拆直走廊列表+拼「左/右上/下走到(x,y)」多段链,AI按段walk_to) maze_walk(走迷宫 waypoints=「x,y x,y…」依次walk_to;⚠️**它其实是通用多段走位,主门牌已挪到 `map walk_multi/闲逛`**(闲逛遛弯/绕人转圈/泳池绕圈游),此处保留旧名为兼容) pan(淘金/淘盘:本图水下闪光点→岸边走位面水→铜锅淘金收掉落) front/rummage(分别是interact/garbage的别名)。📌**坐着想起来：scene stand**（2026-09-11 起有正门，别再拿 at 猜一个够得着的格子——那条路会静静失败）。📐带参速查(键名必须=下面这些,**写错会被静默丢掉、不报错**): at(tile_x,tile_y) **⚠️是 tile_x/tile_y 不是 x/y** / pickup(tile_x,tile_y **同 at 用 tile_**) / use(name) / face(direction 0上1右2下3左) / select(name) / sit(x,y,face) / seats(radius=12) / pickup_scene(max_items=30) / moss(radius,target_max,rounds,dry_run) / rock(dig,radius,max_break,break_stone) / garbage(loc,pos,wait,dry_run) / pan(dry_run,radius,timeout) / drop(name,count,items=多种一起丢) / place(name,x,y) / decor(无参) / break(x,y,steps,radius) / maze(radius,gx,gy) / maze_seg(gx,gy,radius) / maze_walk(waypoints,location,max_wait,max_seg)。kw={'参数名':值}。",
@@ -15721,11 +15765,62 @@ def menu_click(option: int = -1, button: str = "", x: int = -1, y: int = -1, ite
         return _with_state(f"❌ 点击失败: {e}")
 
 
+# 🎰 赌场币记账（恒 2026-09-20：「老虎机的结果有没有给 AI 说报酬」——**原来没有**）。
+# 原来只回 `余额{clubCoins}`，AI 得**自己记住上一次的数**才知道这局赢没赢 —— 而它没有记忆。
+# ⇒ 这里替它记：每次读到一个余额就报「较上次 ±N」，**把报酬直接说出来**。
+# ⚠️ 口径诚实：这是「**较上次读数**」的差，不是严格"本局"。点了 bet 但转盘还在滚时，
+#    差额就是**下注**（还没结算）；等滚完再读一次才是净盈亏。所以不写"本局赢"，写"较上次"。
+_CLUB_MEMO = {"v": None}
+
+
+def _wait_slots_settled(st, timeout=15.0):
+    """老虎机转盘还在滚就**等它停**再返回（恒 2026-09-20：「别报等待中，阻塞到有结果再返回给 AI」）。
+
+    ⚠️ 原来点了 bet 之后当场 return「🔄滚动中」，把"还没结算"甩给 AI ——
+    逼它再调一次 `minigame_state` 才看得到结果（多一次往返，而且那句"滚动中"很容易被读成"没中"）。
+    同 21 点 `stand` 那条路（那里早就在等结果屏了），这里补齐成**一次调用 = 一个完整答案**。
+    转盘实测 2~4s 停；给 15s 上限，真超时就把"还在滚"如实说出来（不假装成功）。
+    """
+    if not st.get("spinning"):
+        return st
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        time.sleep(0.4)
+        st2 = api.minigame_state()
+        if st2.get("minigame") != "Slots" or not st2.get("spinning"):
+            return st2
+    return st
+
+
+def _coins_note(now):
+    """补一句「较上次 ±N」；没有上一个读数就返回空（第一次读不出盈亏，别编）。
+
+    ⚠️ **只在赌场小游戏工具里调**（`minigame_click` / `minigame_state`），
+    **故意不接状态条**（`_minigame_activity` 那条 2s 刷新）：状态条每次工具调用都会被读，
+    接上去 memo 会被刷成"永远和上一毫秒比"⇒ 恒为 ±0，"较上次"就成了一句废话。
+    ⇒ 于是"较上次"=**"你上一次看这台机器之后"**，这才是 AI 真正想知道的那个差。
+    """
+    if now is None:
+        return ""
+    prev = _CLUB_MEMO["v"]
+    _CLUB_MEMO["v"] = now
+    if prev is None:
+        return "（首读，暂无对比）"
+    d = now - prev
+    if d > 0:
+        return f"（较上次 **+{d}** 🎉）"
+    if d < 0:
+        return f"（较上次 {d}）"
+    return "（较上次 ±0）"
+
+
 @mcp.tool()
 def minigame_click(action: str = "", x: int = -1, y: int = -1) -> str:
     """🎰 赌场小游戏（老虎机 Slots / 21点 CalicoJack）点按钮
     ⚠️ 游戏原生 Minigame（Game1.currentMinigame），**不是 activeClickableMenu**——/menu/click 对它无效，必须用这个。
     进入小游戏：bet 用 `scene ops=interact 赌场...` 开对话 → /menu click(option=0 开始) 进牌局 → 本工具点按钮。
+    🎲 **玩多大你自己定**（恒 2026-09-20：「我希望 AI 自己加码赌着玩儿」）——赢了可以自己上 bet100 接着玩，
+       当娱乐、图个乐，不用等谁批准；输光了就 done/quit 收手，别追。回包会报「较上次 ±N」帮你记账。
 
     Args:
         action: 语义点名（推荐）——老虎机: bet10/bet100/done(退出)；21点: hit(加牌)/stand(停牌)/double/play_again/quit(退出)
@@ -15756,7 +15851,12 @@ def minigame_click(action: str = "", x: int = -1, y: int = -1) -> str:
                     won = "· ✅你赢了" if st.get("playerWon") else ("· ❌庄家赢" if st.get("showingResultsScreen") else "")
                     state = f" 玩家{st.get('playerCards')} 庄家{st.get('dealerCards')} 下注{st.get('currentBet')}{won}"
                 elif st.get("minigame") == "Slots":
-                    state = f" 组合{st.get('slots')} 余额{st.get('clubCoins')}" + (" 🔄滚动" if st.get('spinning') else "")
+                    # 🎰 转盘还在滚 → **在这里等停**，别把"等待中"甩给 AI（恒 2026-09-20）。
+                    st = _wait_slots_settled(st)
+                    state = (f" 转盘{st.get('slots')} 余额{st.get('clubCoins')}🟣"
+                             f"{_coins_note(st.get('clubCoins'))}"
+                             # 只有**真超时**才走到这句（正常都已经停了）
+                             + ("（⚠️ 等了 15s 还在滚，按现状先回）" if st.get('spinning') else ""))
             except Exception:
                 pass
             return _with_state(f"🎰 已点 {r.get('clicked', '')}（{action or f'{x},{y}'}）· {r.get('minigame', '')}{state}")
@@ -15771,6 +15871,8 @@ def minigame_state() -> str:
     ⚠️ 游戏原生 Minigame 需用这个（/menu 读不到）。点按钮用 minigame_click，本工具读现状。
     CalicoJack(21点)：playerCards=玩家点数 / dealerUp=庄家明牌 / currentBet=下注 / showingResultsScreen=结果屏 / playerWon=是否赢；
     Slots(老虎机)：slots=3转盘组合 / clubCoins=余额 / spinning=滚动中 / payoutModifier=赔率。
+    ⚠️ 2026-09-20 恒：「别报等待中，阻塞到有结果再返回」——
+       转盘还在滚时**这里会等到停**再回（不是当场甩一句"滚动中"），所以拿到的 `spinning` 正常都是 false。
     """
     try:
         _ensure_background()
@@ -15785,7 +15887,10 @@ def minigame_state() -> str:
             res = "结果屏" if st.get("showingResultsScreen") else "牌局中"
             return _with_state(f"🎰 21点（{res}）· 玩家牌{pc} · 庄家明牌{du} · 下注{bet}🟣" + (" ・ 你赢了!" if st.get('playerWon') else ""))
         if mg == "Slots":
-            return _with_state(f"🎰 老虎机 · 转盘{st.get('slots')} · 余额{st.get('clubCoins')}🟣 · 赔率{st.get('payoutModifier')}" + (" 🔄滚动中" if st.get('spinning') else ""))
+            st = _wait_slots_settled(st)      # 还在滚就等停（恒 2026-09-20：别报"等待中"）
+            return _with_state(f"🎰 老虎机 · 转盘{st.get('slots')} · 余额{st.get('clubCoins')}🟣"
+                               f"{_coins_note(st.get('clubCoins'))} · 赔率{st.get('payoutModifier')}"
+                               + ("（⚠️ 等了 15s 还在滚，按现状先回）" if st.get('spinning') else ""))
         return _with_state(f"🎰 小游戏 {mg}")
     except Exception as e:
         return _with_state(f"❌ 读小游戏失败: {e}")
@@ -16831,6 +16936,22 @@ def _bg_kill(job):
                     time.sleep(0.3)
             except Exception:
                 pass
+    except Exception:
+        pass
+    # 🛡️ 2026-09-20 恒：矿类脚本先 `/guard off` 再杀 —— **跟上面 fishbot 那个坑是同一个形状**：
+    #    Windows 上 `terminate()` = `TerminateProcess` ⇒ 子进程**没有信号处理器、没有 atexit、
+    #    finally 一行都不跑**（`mine_run` 里那个 `finally: bot.guard_off()` **永远等不到**）。
+    #    不补这一刀 = 脚本停了、C# 侧 guard 还开着 ⇒ 小人站在原地**自动砍路过的一切**，
+    #    而且没有任何 Python 侧的东西记得去关它。
+    #    ⚠️ 顺序**先关再杀**（同 fishbot）：杀完再关，中间那段时间人还在矿里挨打，
+    #      而且 `_post` 撞上正在退出的进程会白等一次超时。
+    #    ⚠️ **超时给短**（2s，不是默认 10s）：`_bg_kill` 的全部意义就是"快"，
+    #      不该被一个卡住的游戏进程拖住 10 秒。
+    #    ⚠️ `api._post` 打的是 **AI 那端（BASE_URL=7843）** —— guard 只服务 farmhand，
+    #      打到 7842 会被 C# 侧明确拒绝（那边是恒，IsMainPlayer 硬门）。
+    try:
+        if getattr(job, "name", "") in _MINE_SCRIPTS:
+            api._post("/guard", {"on": False}, 2)
     except Exception:
         pass
     # 🛑 打上"被停"的标记——收工播报要能区分"被停"和"自然跑完"（恒 2026-09-19）。

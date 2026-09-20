@@ -1,6 +1,10 @@
 """
 开垦skill：扫描区域 → 粗清(move_to) → 重扫 → 精补(warp)
 
+🧹 **在哪就在哪清**（恒 2026-09-20 拍板）——清的是**角色当前所在那张图**的指定区域，
+   农场、矿井、野外都行。以前不是这样：不在农场会被**静默搬回农场**、
+   然后在**农场的同名坐标**上清场（在矿里喊一声"清这块"，被清掉的是农场那片）。
+
 用法:
     python clear_area.py <x1> <y1> <x2> <y2> [options]      # 4 个数 = 矩形
     python clear_area.py <cx> <cy> <r>          [options]      # 3 个数 = 圆形（圆心 + 半径）
@@ -18,6 +22,7 @@
 """
 
 import argparse
+import math
 import os
 import time
 from collections import defaultdict
@@ -67,6 +72,55 @@ TOOL_MAP = {
     "LargeBoulder": ("Pickaxe", 10),
     "MeteoriteOre": ("Pickaxe", 10),
 }
+
+# 🪨 大石头/树桩/原木：**敲击次数随工具等级变，不能写死**（恒 2026-09-20：
+#    "在 clear_area 里检查镐子等级去敲大石头是相当有必要的"）。
+#    反编译 `ResourceClump`（decomp/full/StardewValley.TerrainFeatures/ResourceClump.cs）：
+#      · 血量 = `GetDefaultHealth(parentSheetIndex)`：600树桩=10 / 672大石=10 / 602原木=20 / 622陨石=20
+#      · 每击 = `Math.Max(1f, (t.upgradeLevel.Value + 1) * 0.75f)`（`performToolAction` 第一行）
+#      · 门槛 = 同一个 switch 里的 `upgradeLevel` 检查 —— **不够就弹"需要更好的工具"、根本敲不动**，
+#        挥多少下都是白费（`return false`，血量一点都不掉）。
+#    ⇒ 旧写法 TOOL_MAP 里写死 (Pickaxe,10)/(Axe,15) 的两个后果：
+#        **镐子差 → 白挥十下然后静默走开**（还被计进 cleared）；
+#        **镐子好 → 多挥六七下白掉体力**（每挥都扣，这块地越大越亏）。
+#    ⚠️ 下面 `TOOL_MAP` 那四条**保留不动**：`tile_target_name` 靠它认名字，删了就不认识大石头了。
+#       等级换算在 `scan_targets` 里覆盖，真数值一律走 `CLUMP_SPEC`。
+CLUMP_SPEC = {
+    #               需求工具     血量  最低升级等级（0=Basic 1=铜 2=钢 3=金 4=铱）
+    "LargeStump":   ("Axe",     10, 1),   # 树桩：要**铜斧**
+    "LargeLog":     ("Axe",     20, 2),   # 原木：要**钢斧**
+    "LargeBoulder": ("Pickaxe", 10, 2),   # 农场大石：要**钢镐**
+    "MeteoriteOre": ("Pickaxe", 20, 3),   # 陨石：要**金镐**
+}
+_TIER_CN = {0: "普通", 1: "铜", 2: "钢", 3: "金", 4: "铱"}
+_TOOL_CN = {"Axe": "斧头", "Pickaxe": "镐子"}
+
+_TOOL_LV = {}     # 本轮读到的工具等级，scan_targets 开头刷新
+_TOO_WEAK = {}    # 等级不够、敲不动的（收着统一报，别一件件刷屏）
+
+
+def dmg_per_hit(level):
+    """每击伤害——照抄 `ResourceClump.performToolAction`，**别自己编系数**。"""
+    return max(1.0, (level + 1) * 0.75)
+
+
+def detect_tool_levels():
+    """从**背包**读镐子/斧头的升级等级（0=Basic…4=铱）。
+
+    ⚠️ 判据是**背包**、不是"手里拿的"——2026-09-20 在 mine_run 踩过一模一样的坑
+    （读 `player.currentTool` ⇒ 手里是锤子时报出 `Basic Lv.0`）。见 CHANGELOG 09-20(94)④。
+    """
+    lv = {"Pickaxe": 0, "Axe": 0}
+    tiers = (("Iridium", 4), ("Gold", 3), ("Steel", 2), ("Copper", 1))
+    for it in api.state().get("inventory", []):
+        name = it.get("name") or ""
+        for tool in ("Pickaxe", "Axe"):
+            # 注意大小写：`"Iridium Pickaxe".endswith("Axe")` 是 False（末尾是 "axe"），不会串台
+            if name.endswith(tool):
+                for prefix, l in tiers:
+                    if name.startswith(prefix):
+                        lv[tool] = max(lv[tool], l)
+    return lv
 
 TOOL_ORDER = ["Scythe", "Pickaxe", "Axe"]
 
@@ -128,15 +182,20 @@ def scan_area():
     cx, cy = area_spec.center(_AREA)
     radius = area_spec.reach(_AREA) + 5      # 从中心到最远格 + 余量
 
-    if api.current_location() == "Farm":
-        api._post("/position", {"x": cx, "y": cy})
-    else:
-        api.warp("Farm", cx, cy)
+    # 🧹 2026-09-20 恒拍板：「**哪里都允许它清当前场景**」。
+    #    原来这里是 `if 在农场: position / else: warp("Farm", cx, cy)` ——
+    #    不在农场就**静默把人搬回农场**，然后在**农场的同名坐标**上清场
+    #    （⚠️ 真破坏力：在矿里/姜岛喊一句"清这块"，被清的却是农场那片，作物可能就没了）。
+    #    ⇒ 改成**就地**：一律在**当前地图**里挪到区域中心去扫描。
+    api._post("/position", {"x": cx, "y": cy})
     time.sleep(0.6)
     data = api.surroundings(min(radius, 30))
 
     targets = []
     _SKIPPED_PASS.clear()
+    _TOO_WEAK.clear()
+    _TOOL_LV.clear()
+    _TOOL_LV.update(detect_tool_levels())
     for t in data.get("tiles", []):
         x, y = t["x"], t["y"]
         if not area_spec.contains(_AREA, x, y):
@@ -147,10 +206,31 @@ def scan_area():
             continue
 
         tool, hits = TOOL_MAP[name]
+        if name in CLUMP_SPEC:
+            need_tool, health, min_lv = CLUMP_SPEC[name]
+            have = _TOOL_LV.get(need_tool, 0)
+            if have < min_lv:
+                # 等级不够 = **游戏层面敲不动**（`performToolAction` 直接 return，血量一点不掉）。
+                # 别排进去白挥十下还装作清掉了，收着统一报（恒：报错要给下一步、能拦就拦）。
+                _TOO_WEAK.setdefault(name, []).append((x, y, min_lv, have, need_tool))
+                continue
+            tool = need_tool
+            hits = math.ceil(health / dmg_per_hit(have))   # 几下能碎 = 血量 ÷ 每击
         targets.append((x, y, tool, name, hits))
 
     for k, v in _SKIPPED_PASS.items():        # 本轮看见的受保护树，合并进总账（取最大值防灌水）
         _SKIPPED_SEEN[k] = max(_SKIPPED_SEEN.get(k, 0), v)
+
+    if _TOO_WEAK:
+        for nm, items in _TOO_WEAK.items():
+            x, y, min_lv, have, need_tool = items[0]
+            more = f"等 {len(items)} 处" if len(items) > 1 else ""
+            api.log(f"  ⛔ {nm} {more}({x},{y}) **敲不动**：需要"
+                    f"【{_TIER_CN.get(min_lv, min_lv)}级{_TOOL_CN[need_tool]}】，"
+                    f"当前只有【{_TIER_CN.get(have, have)}级】——"
+                    f"游戏会弹「需要更好的工具」并**一点血都不掉**，挥多少下都一样")
+        api.log("  ⇒ 这些格**已跳过、没排进待清名单**——不是「没扫到」，是「扫到了但打不破」。"
+                "下一步：升级工具再来；或它们不挡耕种就先留着（大石头不吃作物）。")
     return targets
 
 
@@ -178,10 +258,8 @@ def target_still_present(x, y, expected_name):
 def stand_for_target(x, y, use_position):
     stand_x, stand_y = x, y - 1
     if use_position:
-        if api.current_location() == "Farm":
-            api._post("/position", {"x": stand_x, "y": stand_y})
-        else:
-            api.warp("Farm", stand_x, stand_y)
+        # 🧹 同 `scan_area`：**就地**挪（当前地图），不再静默搬回农场（恒 2026-09-20）。
+        api._post("/position", {"x": stand_x, "y": stand_y})
         time.sleep(0.3)
         api.face(2)
     else:
@@ -224,6 +302,7 @@ def clear_pass(targets, use_warp=False):
         by_tool[tool].append((x, y, name, hits))
 
     cleared = 0
+    stuck = []      # 敲了上限仍没掉的（不能混进 cleared，见下面循环里的注释）
     for tool in TOOL_ORDER:
         items = by_tool.get(tool, [])
         if not items:
@@ -255,11 +334,21 @@ def clear_pass(targets, use_warp=False):
                 actual_hits += 1
                 if not target_still_present(x, y, name):
                     break
-            if actual_hits < hits:
-                api.log(f"  {name} at ({x},{y}) cleared after {actual_hits}/{hits} hits")
+            # ⚠️ 2026-09-20 恒：这里原来是**无条件** `cleared += 1` —— **敲不碎也算"清掉了"**。
+            #    工具等级不够 / 差几下的时候，日志会报"清完 N 格"而东西还在原地
+            #    （同 09-20(94)④ 在 mine_run 抓到的那个"静默成功"病，一个模子）。
+            #    改成**只认真的没了**；没碎的收进 stuck，收尾统一报出来。
+            _before = cleared
+            if not target_still_present(x, y, name):
+                if actual_hits < hits:
+                    api.log(f"  {name} at ({x},{y}) cleared after {actual_hits}/{hits} hits")
+                cleared += 1
+            else:
+                stuck.append((x, y, name, actual_hits, hits))
 
-            cleared += 1
-            if cleared % 20 == 0:
+            # ⚠️ 必须带 `cleared != _before`：现在 cleared 不再每次必增，
+            #    单写 `cleared % 20 == 0` 会在 cleared=0/20/40 时**每个没碎的目标都重刷一行**。
+            if cleared != _before and cleared % 20 == 0:
                 api.log(f"  {cleared} cleared...")
 
             i += 1
@@ -287,6 +376,16 @@ def clear_pass(targets, use_warp=False):
             # 这些格**也是这一趟清掉的**（只是没为它们单独挥一下）⇒ 计数算进去，
             # 别让"cleared N"看着像漏了（真机：17 格只挥 4 下，日志却报 cleared 4）。
             cleared += _trimmed_total
+
+    # ⚠️ 敲满上限仍没掉的 —— **必须露出来**，否则"cleared N"会把它们盖过去（恒：别静默）。
+    if stuck:
+        api.log(f"  ⚠️ {len(stuck)} 件**敲满上限仍没清掉**（已从 cleared 里剔除，没算成清的）：")
+        for sx, sy, sname, ah, hh in stuck[:6]:
+            api.log(f"     · {sname} ({sx},{sy}) 敲了 {ah}/{hh} 下")
+        if len(stuck) > 6:
+            api.log(f"     · …还有 {len(stuck) - 6} 件")
+        api.log("     ⇒ scan 阶段会先拦掉「工具等级不够」那一类，所以剩下的多半是**站位/朝向没对上**"
+                "（人在砍空气）。把这几条发我，我按坐标查 `stand_for_target` 的落点。")
 
     return cleared
 

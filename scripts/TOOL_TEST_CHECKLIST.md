@@ -5,6 +5,10 @@
 > **上面那行汇总数还没跟着重算**（手工加应为 ✅ **167 函数** / 待测 **13**）。**没敢跑 `--from-log`**，因为它对今晚这类
 > **故意的负样本**会把它们记成 ❌（实测副本跑出来 `❌ 3`），并且会把 7 行手写的 `⏭ 没条件测`（`放`/`放置` 那族）
 > 又冲成 ✅ —— 两个都是本表最怕的漂。**下次专门收一次：先修生成器（负样本/⏭ 语义），再重算汇总。**
+> ⚠️ **2026-09-20 又手改了一批**（`mine:go`/`mine:farm` + social `movie`/`snack`/`电影`/`零食` + menu
+> `minigame`/`minigame_state`/`小游戏`/`小游戏状态`/`赌场` 共 11 行）。**汇总数照旧没动** —— 上面那条"先修生成器
+> 再重算"的前提没变，我不想在生成器还漂的时候手搓一个数字进表。**待测函数净减 5**（`go_mining`/`movie`/`snack`/
+> `minigame_click`/`minigame_state`），其中 `minigame_state` 是**清掉一个过期的 `⏭ 没条件测`**（本轮真进赌场了）。
 
 > 用法：跑测试（任何渠道，只要走 :8000 的 MCP）→ `python gen_tool_checklist.py --from-log` 自动打勾。
 > 判定规则见脚本头部；**⚠️ op「」= 参数被静默丢掉 ⇒ 不算 ✅**（也不算 ❌ —— 那一下压根没执行，当"没有证据"跳过，本行沿用上一轮结论）；真报错才 ❌。
@@ -147,8 +151,8 @@
 | `bomb_retreat` | T2 摆场 |  | ✅ | `session_log:1240` |
 | `bomb_status` | T1 自动 |  | ✅ | `session_log:1226` |
 | `bomb_volcano` | T3 副作用 | bomb, hp_threshold, max_minutes, min_covered, poll | ✅ | `session_log:590` |
-| `farm` | T2 摆场 |  |  |  |
-| `go` ≡`farm` | T2 摆场 | cycles, food_hp, food_sta, hp_threshold, mode, ore, resume, start, target |  |  |
+| `farm` | T2 摆场 |  | ✅ | ← 同 `mine:go`〔go_mining〕 |
+| `go` ≡`farm` | T2 摆场 | cycles, food_hp, food_sta, hp_threshold, mode, ore, resume, start, target | ✅ | `session_log:1666` farm ore=Copper 真机跑通（找到目标矿→敲碎→背包 Copper Ore x4）。⚠️ **首跑是红的**：困难矿井铜矿不认（(O)849）连刷 3 次「本层无 Copper」敲 0 块，已修 → CHANGELOG 09-20 |
 | `organize` | T2 摆场 | disable, reset | ✅ | `session_log:1174` |
 | `progress` ⇄`check:mine` | T1 自动 |  | ✅ | `session_log:1215` |
 | `rush` ≡`farm` | T2 摆场 |  |  |  |
@@ -201,17 +205,17 @@
 | `gift` | T3 副作用 | item_name, npc_name | ✅ | 真机 09-19：送礼正路(台词+好感+周/日计数+背包)/手持非空不毁物/今天已送过被拦/背包没这件/NPC 不存在 — 见 CHANGELOG 92② |
 | `give` | T3 副作用 | item_name, player_name | ✅ | `session_log:1357` |
 | `hand` | T3 副作用 | item_name, player_name | ✅ | `session_log:1355` |
-| `movie` | T2 摆场 | npc |  |  |
+| `movie` | T2 摆场 | npc | ✅ | `session_log:1631,1634` 无参出全表；npc=阿比盖尔 走 `_movie_npc_plan`（喜爱 +100、糖冰棍 +50）两条分支都对 |
 | `send` | T3 副作用 | message | ✅ | `session_log:698` |
-| `snack` | T2 摆场 |  |  |  |
+| `snack` | T2 摆场 |  | ✅ | `session_log:1632` 28 条零食全出（Joja玉米 10g → 星之果实雪糕 1250g） |
 | `发` ≡`send` | T3 副作用 |  | ✅ | ← 同 `social:send`〔send_chat〕 |
 | `好感` ≡`friendship` | T1 自动 |  | ✅ | ← 同 `social:friendship`〔check_friendship〕 |
 | `搭话` ≡`chat` | T2 摆场 |  | ✅ | ← 同 `social:chat`〔chat_npc〕 |
-| `电影` ≡`movie` | T2 摆场 |  |  |  |
+| `电影` ≡`movie` | T2 摆场 |  | ✅ | ← 同 `social:movie`〔movie〕 |
 | `给` ≡`give` | T3 副作用 |  | ✅ | ← 同 `social:give`〔give_item〕 |
 | `送礼` ≡`gift` | T3 副作用 |  | ✅ | ← 同 `social:gift`〔gift_npc〕；站位另验（恒目视「走过去的，拐进柜台里，很自然」）见 CHANGELOG 92③ |
 | `递给` ≡`hand` | T3 副作用 |  | ✅ | ← 同 `social:hand`〔hand_item〕 |
-| `零食` ≡`snack` | T2 摆场 |  |  |  |
+| `零食` ≡`snack` | T2 摆场 |  | ✅ | ← 同 `social:snack`〔snack〕 |
 
 ## `scene`（73）
 
@@ -314,8 +318,8 @@
 | `key` | T2 摆场 | hold, key | ✅ | `session_log:1108` |
 | `know` | T2 摆场 |  | ✅ | `session_log:510` |
 | `levelup_choose` | T3 副作用 | profession, side |  |  |
-| `minigame` | T2 摆场 | action |  |  |
-| `minigame_state` | T2 摆场 |  | ⏭ 没条件测 | `session_log:545` 要赌场小游戏（CalicoJack/Slots，得先进沙漠赌场） |
+| `minigame` | T2 摆场 | action | ✅ | `session_log:1638-1663` 全验：老虎机 bet10/bet100/done（余额真扣 5300→5290→5190）；21点 hit/stand/play_again/quit/double；裸坐标 x,y 与 action 等效补牌。⚠️ `double`=**结果屏「再赌一把」**(赢局才生效、下注 100→200)，牌局中途点静默无效却回 ok —— docstring 写"加倍"会误导 AI |
+| `minigame_state` | T2 摆场 |  | ✅ | `session_log:1646,1648,1650` 牌局中 / 结果屏 / 转盘滚动 三态全读到（**清掉旧 ⏭**：本轮真进沙漠赌场了） |
 | `number` | T2 摆场 | confirm | ⏭ 没条件测 | `session_log:546` 要弹着数量框（节庆兑换台 / 转盘押注） |
 | `read` | T2 摆场 |  | ✅ | `session_log:1453` |
 | `read_book` | T3 副作用 |  | ✅ | `session_log:549` |
@@ -332,8 +336,8 @@
 | `取消` ≡`cancel` | T2 摆场 |  | ✅ | ← 同 `menu:cancel`〔cancel〕 |
 | `合成` ≡`craft` | T3 副作用 |  | ✅ | ← 同 `menu:craft`〔craft〕 |
 | `填槽` ≡`display_fill` ⇄`festival:display_fill` | T3 副作用 |  |  |  |
-| `小游戏` ≡`minigame` | T2 摆场 |  |  |  |
-| `小游戏状态` ≡`minigame_state` | T2 摆场 |  | ⏭ 没条件测 | ← 同 `menu:minigame_state`〔minigame_state〕 |
+| `小游戏` ≡`minigame` | T2 摆场 |  | ✅ | ← 同 `menu:minigame`〔minigame_click〕 |
+| `小游戏状态` ≡`minigame_state` | T2 摆场 |  | ✅ | ← 同 `menu:minigame_state`〔minigame_state〕 |
 | `开日志` ≡`journal` ⇄`check:quest` | T2 摆场 |  | ✅ | ← 同 `menu:journal`〔open_questlog〕 |
 | `按键` ≡`key` | T2 摆场 |  | ✅ | ← 同 `menu:key`〔press_key〕 |
 | `捏人` ≡`customize` ⇄`settings:customize` | T3 副作用 |  | ✅ | ← 同 `settings:customize`〔character_customize〕 |
@@ -360,7 +364,7 @@
 | `读技能书` ≡`read_book` | T3 副作用 |  | ✅ | ← 同 `menu:read_book`〔read_book〕 |
 | `读物品` ≡`read_book` | T3 副作用 |  | ✅ | ← 同 `menu:read_book`〔read_book〕 |
 | `读纸条` ≡`read_book` | T3 副作用 |  | ✅ | ← 同 `menu:read_book`〔read_book〕 |
-| `赌场` ≡`minigame` | T2 摆场 |  |  |  |
+| `赌场` ≡`minigame` | T2 摆场 |  | ✅ | ← 同 `menu:minigame`〔minigame_click〕 |
 | `起名` ≡`customize` ⇄`settings:customize` | T3 副作用 |  | ✅ | ← 同 `settings:customize`〔character_customize〕 |
 | `跳` ≡`skip` | T2 摆场 |  | ✅ | ← 同 `menu:跳剧情`〔skip_event〕 |
 | `跳剧情` ≡`skip` | T2 摆场 |  | ✅ | `session_log:1122` |

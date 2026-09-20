@@ -46,7 +46,8 @@ import requests
 
 # ⚔️ 2026-09-06 复用 bomb 的武器系统（WeaponMixin：选武器/类别/挥速自适应/锤子重砸）
 # 🎁 2026-09-07 复用 bomb 的开箱（BombMiner.open_treasure_chests，真机验证城镇 40 层能开）
-from bomb_common import WeaponMixin, BombMiner, ManualChestFull
+from bomb_common import (WeaponMixin, BombMiner, ManualChestFull,
+                         parse_food_list, pick_food_by_priority)
 
 # ── 常量 ──
 
@@ -96,14 +97,58 @@ EAT_HP = 60
 
 # 矿节点 itemId → 矿石名（SDV 1.6 矿节点 Name 报 'Stone'，靠 objId 区分）
 # 实测 1.6 矿节点 itemId：751铜 / 290铁 / 764金 / 765铱 / 767神秘石
+# ⚠️ 2026-09-20 真机补：**困难矿井（神庙激活）的铜矿换 ID 了** —— 是 (O)849，不是 751。
+#    `/dump_tile` 在 UndergroundMine21(20,8) 读出真名 "Copper Stone"（恒肉眼也看见那儿有铜矿），
+#    而 `/surroundings` 报的 object 是 "Stone" ⇒ 名字这条线全瞎，只能靠 objId 认。
+#    症状：`mine go mode=farm ore=Copper` 连刷 3 次「本层无 Copper」、一块没敲就走人。
+#    ⚠️ 铁/金**不受影响**（危险矿井仍是 290/764，见下面的表）—— 别以为整层 ID 都换了一套。
 ORE_NODE_IDS = {
-    "(O)751": "Copper Node", "(O)290": "Iron Node",
+    "(O)751": "Copper Node", "(O)849": "Copper Node",   # 普通矿井 / 困难矿井（Copper Stone）
+    "(O)290": "Iron Node",
     "(O)764": "Gold Node", "(O)765": "Iridium Node", "(O)767": "Mystic Stone",
     "(O)CalicoEggStone_1": "Calico Egg Stone",   # 🥚 沙漠节骷髅洞蛋矿（2026-08-18 实测：objId 名字ID，Name 报 Stone）
 }
 
+# 金属/放射矿关键词（真名形如 "Copper Stone"（困难矿井）或 "Copper Node"（普通矿井））
+ORE_METAL_KEYWORDS = ("Copper", "Iron", "Gold", "Iridium", "Radioactive")
+# 宝石关键词（真名形如 "Gem Stone"/"Diamond Stone"…）
+GEM_KEYWORDS = ("Gem", "Jade", "Ruby", "Emerald", "Diamond",
+                "Topaz", "Amethyst", "Aquamarine")
+_STONE_NAMES = ("Stone", "石头")   # 普通石头：唯一要排除的那一类
+
+
+def is_ore_node(name: str) -> bool:
+    """真名是不是「矿石/宝石节点」（相对普通石头 "Stone"）。
+
+    ⚠️ 2026-09-20 恒拍板修：消费侧原来用的是**名字形状**判据
+    （`scan_floor_ores` 里的 `"Node" in name or "Geode" in name`），
+    那是"节点都叫 X Node"年代留下的。1.6 真名变成 `X Stone` 之后它**静默误杀**：
+      `(O)849 "Copper Stone"`（困难矿井的铜）、`(O)44 "Gem Stone"` 全被判成普通石头丢掉 ⇒
+      **上游 `_rock_name`/`ore_score` 辛苦认出来的宝石，走到这里一刀没了**（同「精通山洞：给消费方
+      写了分支 ≠ 消费方拿得到数据」那条通式）。
+
+    判据按**关键词**认，不按名字形状、也不靠上面那张 objId 表独家兜底 ——
+    因为表里只有 `Copper Node`：哪天 C# 的 `SafeObjectName` 补上 849、开始老实报
+    `"Copper Stone"`，靠表匹配的写法会**当场换个马甲再犯一次**。关键词两边都认。
+    """
+    if not name or name in _STONE_NAMES:
+        return False
+    if "Node" in name or "Geode" in name:          # 老判据兜底（"Iron Node"/晶球…），保证不回归
+        return True
+    if name in ORE_NODE_IDS.values():              # objId 表认出来的（含 Calico Egg Stone）
+        return True
+    return any(k in name for k in ORE_METAL_KEYWORDS + GEM_KEYWORDS)
+
 # objId → dump_tile 真名(宝石/放射矿等 Name 也报 'Stone' 的节点解析用,https 2026-08-29)
 _TILENAME = {}
+
+# 🔨 一块矿最多敲几下（`mine_rock`：敲一下→检查→没碎再敲）。
+# ⚠️ 2026-09-20 恒：原来是 15 下 —— "太多了，改 8 下应该也绝对够了"。
+#    这个数是**安全上限**不是目标：正常情况下每一击后都会检查、碎了立刻停，
+#    **铱镐（Lv.4）敲普通石头 1~2 下**。上限的作用只有一个 —— 出错时别无限空挥。
+#    ⇒ 上限调小的**唯一风险**是"真需要 8 下以上的矿被中途放弃"，
+#      所以敲满仍不碎时会**明确报出来**（不是静默 skip），攒够样本就能判断该不该再调。
+ROCK_MAX_BLOWS = 8
 
 # 梯子/竖井名称
 LADDER_NAMES = {"Ladder", "MineShaft"}
@@ -225,6 +270,7 @@ class MineBot(WeaponMixin):
         self.bomb_type = "Pickaxe"   # WeaponMixin.swing 挥完切回的工具（下矿用镐子挖）
         self.mine_level = 0          # 当前矿井层数
         self._rock_count = 0         # 当前层敲了多少块
+        self._guard_on = False       # 🛡️ C# 侧贴身自动防御是否开上了（见 bomb_common.guard_on）
 
     # ── 底层 API ──
 
@@ -290,11 +336,26 @@ class MineBot(WeaponMixin):
     # ── 工具检测 ──
 
     def detect_pickaxe(self):
-        """从 state 读取当前工具，解析镐子级别"""
+        """从**背包**里找镐子、解析等级（不再看手里拿着什么）。
+
+        ⚠️ 2026-09-20 恒：「**镐子等级探测和武器有什么关系**？」——**没有关系，有关系就是 bug**。
+        原来读的是 `player.currentTool`，也就是**手里正拿着的那件东西**，它隐含假设"手里一定是镐子"。
+        AI 战斗后手里是锤子时（`swing` 结束理论上会切回镐子，但实测有过手里是 `Galaxy Hammer` 的情况），
+        `Iridium/Gold/Steel/Iron/Copper` 一个都匹配不上 ⇒ 回落 `Basic / Lv.0`
+        ⇒ 日志把"手里的锤子"当镐子量了一下，报了个假的 Lv.0。
+        （实测同一套代码：`Tool: Galaxy Hammer (level 0)` vs `镐子: Iridium (Lv.4)` ——
+         差别只在**手里拿的是啥**，与镐子本身无关。）
+        ⇒ 判据改成**问背包**，跟手无关（`preflight` 判"有没有镐子"用的也是这套）。
+
+        ⚠️ 顺带如实说明：`pickaxe_level`/`pickaxe_name` **目前只被两行日志读**
+        （冲层/刷矿的模式抬头），**没有任何行为消费它**。`mine_rock` 是"敲→检查→敲碎为止"，
+        不按等级算敲击次数。所以这里修的是**日志在撒谎**，不是挖矿行为。
+        """
         s = self.state()
-        tool = s.get("player", {}).get("currentTool", "")
+        inv = s.get("inventory") or []
+        tool = next((i.get("name") or "" for i in inv if "Pickaxe" in (i.get("name") or "")), "")
         if not tool:
-            log("  ⚠️ 没有选中任何工具")
+            log("  ⚠️ 背包里没有镐子（detect_pickaxe 找不到）")
             return False
 
         # 提取镐子前缀 "Iridium Pickaxe" → "Iridium"
@@ -306,7 +367,7 @@ class MineBot(WeaponMixin):
                 self.pickaxe_name = prefix
                 self.pickaxe_level = lv
                 break
-        log(f"  Tool: {tool} (level {self.pickaxe_level})")
+        log(f"  🔨 背包镐子: {tool} (Lv.{self.pickaxe_level})")
         return True
 
     # ⚔️ detect_weapon 已复用 bomb_common.WeaponMixin（选武器/类别/挥速，跳过工具镰）——不再本地定义
@@ -510,16 +571,17 @@ class MineBot(WeaponMixin):
                 return 0         # 最高优先级
             if "Radioactive" in name:
                 return 1         # 放射矿(1.6 最值钱)
-            if any(g in name for g in ("Gem", "Jade", "Ruby", "Emerald", "Diamond",
-                                       "Topaz", "Amethyst", "Aquamarine")):
+            if any(g in name for g in GEM_KEYWORDS):
                 return 2         # 宝石(值钱)
-            if name == "Copper Node":
+            # ⚠️ 2026-09-20：这三条原来写死等于 "Copper Node"/"Iron Node"/"Gold Node"——
+            #    困难矿井真名是 "Copper Stone"，会直接掉到 9（排到石头后面）。改按关键词认。
+            if "Copper" in name:
                 return 3
-            if name == "Iron Node":
+            if "Iron" in name:
                 return 4
-            if name == "Gold Node":
+            if "Gold" in name:
                 return 5
-            if name == "Stone":
+            if name in _STONE_NAMES:
                 return 6         # 石头最后
             return 9
 
@@ -802,7 +864,7 @@ class MineBot(WeaponMixin):
 
         # 敲——检查——再敲——敲碎或重试
         empty_swings = 0
-        for blow in range(15):
+        for blow in range(ROCK_MAX_BLOWS):
             s = self.state()
             if s["player"]["health"] <= 0:
                 return "dead"
@@ -821,6 +883,11 @@ class MineBot(WeaponMixin):
             )
             if not still_there:
                 self._rock_count += 1
+                # 🔨 2026-09-20：把"实际敲了几下"记下来——上限从 15 砍到 8 之后，
+                #    这是判断"8 到底够不够"的唯一真数据（恒：别拍脑袋定这个数）。
+                #    只在 >1 下时打，免得每块普通石头刷一行。
+                if blow + 1 > 1:
+                    log(f"  🔨 {name} ({x},{y}) 敲了 {blow + 1} 下才碎")
                 # 敲碎了：等掉落落地（1s），走上去捡——position 瞬移不触发拾取，必须走路
                 time.sleep(1.0)
                 try:
@@ -845,7 +912,12 @@ class MineBot(WeaponMixin):
                 time.sleep(0.15)
                 empty_swings = 0
 
-        log(f"  ⚠️ {name} ({x},{y}) 敲了15下没碎，跳过")
+        # ⚠️ 敲满上限仍不碎 —— **不许静默**（恒 2026-09-20：报错要说清下一步、别让 AI 干瞪眼）。
+        #    两种成因要分开讲，因为它们**下一步动作完全不同**。
+        log(f"  ⚠️ {name} ({x},{y}) 敲了 {ROCK_MAX_BLOWS} 下没碎，跳过这一块")
+        log(f"     可能①：**困难矿井的硬岩**——它就是要更多下 ⇒ 该调大 ROCK_MAX_BLOWS；")
+        log(f"     可能②：**站位/朝向没对上**（人在敲空气）⇒ 该查 find_adjacent_tile 的落点。")
+        log(f"     本块跳过**不影响同层其他矿**；若一层里反复出现同一条，把这条日志发我。")
         return "skip"
 
     def pickup_foragables(self, location):
@@ -960,64 +1032,78 @@ class MineBot(WeaponMixin):
                 continue
         return False
 
+    def _eat_one(self, name, why=""):
+        """吃**指定**那样，返回是否真吃上了。
+        ⚠️ 2026-09-20 修：原来"只剩一种食物"那条分支是
+           `r = self.use_item()` 之后**压根没看 r**，直接 `log("✅ 吃了 X")` + `return True` ——
+           又一处"说吃了、其实没吃"（前两条分支都老实判了 `_check_eat_result`，唯独它没判）。
+           现在三条路统一走这一个函数，判据只有一份。
+        """
+        tag = f"（{why}）" if why else ""
+        try:
+            self.select(name)
+            time.sleep(0.2)
+            r = self.use_item()
+            time.sleep(0.5)
+            if self._check_eat_result(r):
+                log(f"  ✅ 吃了 {name}{tag}")
+                return True
+            log(f"  ⚠️ {name} 没吃上{tag} —— 端点回的是 {str(r)[:80]}")
+        except Exception as e:
+            log(f"  ⚠️ 吃 {name} 出错{tag}: {e}")
+        return False
+
     def eat_if_needed(self, food_sta, food_hp, hp_threshold, sta_threshold):
-        """根据当前状态决定吃什么"""
-        if not food_sta and not food_hp:
-            return self.auto_eat(hp_threshold, sta_threshold)
+        """按需进食。`food_hp`/`food_sta` 收**列表（靠前的先吃）**或逗号串；空 = 不点名。
+
+        🕐 2026-09-20 恒「自定义吃食」：跟 `bomb_common.BombMiner.eat_if_needed` 是**同一套规矩**
+        （那边有完整的三条注释），这里只说本条：
+          · 点名就在点名的里挑（血低看 `food_hp`、体力低看 `food_sta`，两表分开不混）
+          · 表内降级：靠前的没货试下一项
+          · **整张表都没货 → 吭一声再退回自动挑**（不吃饭会死，吃错只是浪费）
+        """
+        hp_list = parse_food_list(food_hp)
+        sta_list = parse_food_list(food_sta)
+        if not hp_list and not sta_list:
+            return self.auto_eat(hp_threshold, sta_threshold)   # 没点名 = 老行为，一个字没变
 
         s = self.state()
         p = s["player"]
-        hp = p["health"]
-        max_hp = p["maxHealth"]
-        sta = p["stamina"]
-        max_sta = p["maxStamina"]
-
+        hp, max_hp = p["health"], p["maxHealth"]
+        sta, max_sta = p["stamina"], p["maxStamina"]
         hp_pct = (hp / max_hp * 100) if max_hp > 0 else 100
         sta_pct = (sta / max_sta * 100) if max_sta > 0 else 100
+        if hp_pct >= hp_threshold and sta_pct >= sta_threshold:
+            return False   # 都不缺
 
-        # 体力食物和回血食物分开处理
-        if sta_pct < sta_threshold and food_sta:
-            log(f"  ⚡ 体力 {sta_pct:.0f}% < {sta_threshold}%，吃 {food_sta}")
-            try:
-                self.select(food_sta)
-                time.sleep(0.2)
-                r = self.use_item()
-                time.sleep(0.5)
-                if self._check_eat_result(r):
-                    log(f"  ✅ 吃了 {food_sta}")
-                    return True
-            except Exception as e:
-                log(f"  ⚠️ 吃 {food_sta} 失败: {e}")
+        inv_names = {it.get("name") for it in (s.get("inventory") or []) if it}
+        # 🔀 两样都低时**血优先**（2026-09-20 顺手统一，**这是一处行为变更，写下来**）：
+        #    原代码是 `if 体力低 ... elif 血低`（体力优先），跟本文件 `auto_eat` 的
+        #    「血低→绝不拿纯体力咖啡保命」和 `BombMiner._rank` 的「回血量×10 主导」**互相矛盾**——
+        #    同一件事三个口径。恒 2026-09-19 也说过"不到快死都可以继续下"。
+        #    取**血优先**：血归零是**死亡掉东西**，体力归零只是力竭（`unsafe_reason` 两条都管撤退）。
+        #    ⚠️ 一次只吃一样、这个函数每层会被反复调用 ⇒ 两样都低时不会饿着体力那条，只是先后。
+        hp_low = hp_pct < hp_threshold
+        want = hp_list if hp_low else sta_list
+        label = "回血" if hp_low else "体力"
 
-        elif hp_pct < hp_threshold and food_hp:
-            log(f"  ❤️ HP {hp_pct:.0f}% < {hp_threshold}%，吃 {food_hp}")
-            try:
-                self.select(food_hp)
-                time.sleep(0.2)
-                r = self.use_item()
-                time.sleep(0.5)
-                if self._check_eat_result(r):
-                    log(f"  ✅ 吃了 {food_hp}")
-                    return True
-            except Exception as e:
-                log(f"  ⚠️ 吃 {food_hp} 失败: {e}")
+        if hp_low:
+            log(f"  ❤️ HP {hp_pct:.0f}% < {hp_threshold}%")
+        else:
+            log(f"  ⚡ 体力 {sta_pct:.0f}% < {sta_threshold}%")
 
-        # 如果只有一种食物，不管缺什么都吃它
-        if (sta_pct < sta_threshold or hp_pct < hp_threshold) and (food_sta or food_hp):
-            f = food_sta or food_hp
-            if f:
-                log(f"  🍽️ 状态不足，吃 {f}")
-                try:
-                    self.select(f)
-                    time.sleep(0.2)
-                    r = self.use_item()
-                    time.sleep(0.5)
-                    log(f"  ✅ 吃了 {f}")
-                    return True
-                except Exception as e:
-                    log(f"  ⚠️ 吃 {f} 失败: {e}")
+        # ① 点名优先 + ② 表内降级（pick 已经是从前往后第一个有货的）
+        pick = pick_food_by_priority(want, inv_names)
+        if pick and self._eat_one(pick, f"点名·{label}"):
+            return True
 
-        return False
+        # ③ 整张表都没货（或吃失败）→ 吭一声，再退回自动挑
+        if want:
+            log(f"  ⚠️ 点名的{label}食物一个都没吃上（表：{','.join(want)}）"
+                f" —— 退回自动挑（想吃点名的，请先确保它们在包里）")
+        else:
+            log(f"  ⚠️ 这次需要{label}，但没点过那类的名 —— 退回自动挑")
+        return self.auto_eat(hp_threshold, sta_threshold)
 
     def _check_eat_result(self, result):
         """检查 use_item 结果"""
@@ -1032,7 +1118,11 @@ class MineBot(WeaponMixin):
     # 🏳️ 撤退血量线用**绝对值**（恒 2026-09-19 拍板，与 bomb_common 对齐）：
     #    "不到快死都可以跟着房主继续下"。原来是百分比阈值 ⇒ 时间到点会被报成
     #    "状态不足"，再落到"没有食物，撤退"，误导 AI 去补食物。
-    RETREAT_HP_ABS = 20
+    # ⚠️ 2026-09-20 恒：**20 → 35**（"20 可能太危险了…加到 35 生命值撤吗？所有矿洞"）。
+    #    现场：真机冲层打到 **14/180** 才撤。20 这条线确实把人了捞出来，但余量只剩 20 点，
+    #    困难矿井里一次受击就可能 20+ ⇒ 常是"刚判危险就没了"。35 留约两下缓冲。
+    #    ⚠️ **与 `bomb_common.BombMiner.RETREAT_HP_ABS` 是两份镜像**，改一处必须同步另一处。
+    RETREAT_HP_ABS = 35
     # 撤退时间与 bomb 系列统一（原来 mine 是 2400、bomb 是 2430——同一件事两个值）。
     # 取 2430：现在撤退是瞬移（权杖/图腾），不用留走路时间，晚一点多挖 30 分钟。
     RETREAT_TOD = 2430
@@ -1057,8 +1147,8 @@ class MineBot(WeaponMixin):
         return None
 
     def is_safe(self, hp_threshold=30, sta_threshold=15):
-        """（兼容壳）`hp_threshold` **已废弃**——血量线改成绝对值 <20（恒 2026-09-19），
-        保留形参只为不打断老调用方；真判据一律看 unsafe_reason()。"""
+        """（兼容壳）`hp_threshold` **已废弃**——血量线改成绝对值 `<RETREAT_HP_ABS>`（恒 2026-09-19 改绝对值、
+        2026-09-20 由 20 提到 35），保留形参只为不打断老调用方；真判据一律看 unsafe_reason()。"""
         return self.unsafe_reason(sta_threshold=sta_threshold) is None
 
     # ── 梯子 ──
@@ -1175,18 +1265,45 @@ class MineBot(WeaponMixin):
 
     def scan_floor_ores(self, node_name, loc, hp_threshold, sta_threshold):
         """扫层找目标矿：站落点 radius 30 扫一次，没矿直接返回（run_farm 出门重进，不抽抽）。
-        挖所有矿节点（目标矿优先，宝石/铱/神秘顺手），顺带采集物（泪晶/地晶/火水晶/石英）。"""
+        挖所有矿节点（目标矿优先，宝石/铱/神秘顺手），顺带采集物（泪晶/地晶/火水晶/石英）。
+
+        ⚠️ 2026-09-20 恒拍板修：这里原来又加了一道 `"Node" in name or "Geode" in name`
+        **名字形状**过滤，把 `find_rocks`/`_rock_name` 已经认出来的 `"Copper Stone"`(困难矿井的铜)、
+        `"Gem Stone"` 全静默丢掉——**docstring 写着"宝石顺手"，代码却在下一行把它们扔了**。
+        判据交给 `is_ore_node()`（认得出的节点名），别在消费侧再猜一遍名字。"""
         targets = []
         seen = set()
         for t in self.find_rocks(priority_ore=node_name, radius=30):
-            name = t[2]
-            if name == node_name or "Node" in name or "Geode" in name:
+            if is_ore_node(t[2]):
                 key = (t[0], t[1])
                 if key not in seen:
                     seen.add(key)
                     targets.append(t)
         self.collect_foragables(loc)
         return targets
+
+    def wait_clock_ticks(self, need=20, timeout=40):
+        """等**游戏时钟**走够 `need` 分钟（返回 (等够没, 实际等了多久, 时钟到底动没动)）。
+
+        ⚠️ 2026-09-20 恒+反编译实锤：矿井层的回收**挂在游戏时钟每 10 分钟那一下**上
+        （`Game1.cs:6015` → `MineShaft.UpdateMines10Minutes` → `clearInactiveMines()`），
+        而且**新建的层要跨 2 跳才可回收** —— 因为函数里 `clearInactiveMines()` 跑在
+        `activeMine.lifespan++` **之前**，第一跳时 `lifespan` 还是 0、被
+        `if (mine.lifespan == 0 && keepUntickedLevels) return false;` 保护着。
+        ⇒ 「出门重进刷新」如果不等时钟，就是**结构性空转**（哪怕时钟在走也刷不出来）。
+        恒 2026-09-20：**时钟冻住时反复刷出来的指纹是一模一样的 —— 那是时钟的锅，不是"这层没矿"**，
+        要如实报出来并请房主检查时间插件（TimeSpeed）。
+        """
+        s0 = (self.state().get("time") or {}).get("timeOfDay", 0) or 0
+        t_start = time.time()
+        t1 = s0
+        while time.time() - t_start < timeout:
+            time.sleep(1.0)
+            t1 = (self.state().get("time") or {}).get("timeOfDay", 0) or 0
+            moved = (t1 - s0) if t1 >= s0 else (t1 + 2400 - s0)   # 跨天：2400+ 回绕到 600+
+            if moved >= need:
+                return True, time.time() - t_start, True
+        return False, time.time() - t_start, (t1 != s0)
 
     def collect_foragables(self, location):
         """顺手采集地面物（泪晶/地晶/火水晶/石英/洞穴萝卜等），position 到旁 + walk 捡（position 不触发拾取）。"""
@@ -1573,6 +1690,10 @@ class MineBot(WeaponMixin):
                 self.hunt_for_coal(loc)
 
             # 扫全层找目标矿；没矿就出门重进刷新（层随机，最多重试 3 次）
+            # ⚠️ 2026-09-20：原来这里 `warp(Mountain)` + `sleep(1.2)` 就回来 —— **结构性空转**。
+            #    层的回收挂在游戏时钟的 10 分钟滴答上、且新建层要跨 **2 跳**才可回收
+            #    （详见 `wait_clock_ticks` 的 docstring）。不等时钟 = 每次回来都是**同一张图**，
+            #    于是"重试 3 次"看起来在努力、其实一直在扫同一个房间，还会把"没矿"冤枉给这一层。
             round_rocks = 0
             targets = self.scan_floor_ores(node_name, loc, hp_threshold, sta_threshold)
             retry = 0
@@ -1580,7 +1701,17 @@ class MineBot(WeaponMixin):
                 retry += 1
                 log(f"  🔁 本层无 {ore_type}，出门重进刷新 ({retry}/3)")
                 self.warp("Mountain", x=54, y=5)
-                time.sleep(1.2)
+                advanced, waited, moved_at_all = self.wait_clock_ticks(need=20, timeout=40)
+                if not advanced:
+                    log(f"  ⚠️ 在外面等了 {waited:.0f}s，时钟只走了 {'一点（不到 2 个 10 分钟边界）' if moved_at_all else '**0**'}")
+                    log("     ⇒ 这次「重进」**不可能刷新**：层的回收由游戏时钟的 10 分钟滴答驱动，")
+                    log("        且新建层要跨 **2 跳**才可回收。**所以这不是「这层没矿」的证据。**")
+                    if not moved_at_all:
+                        log("     ⇒ 时钟压根没走：**请让房主检查时间插件**（TimeSpeed 是不是把流动冻住了）；")
+                        log("        （冻着的时候，同层反复刷出来的指纹会**一模一样**——那是时钟的锅，不是地图随机性差。）")
+                    else:
+                        log("     ⇒ 时钟在走但这一跳没跨够；改用**别的层号**刷（浅/深 5 层）比反复刷同层靠谱。")
+                    break
                 if not self.safe_warp(loc):
                     break
                 time.sleep(1.0)
@@ -1654,13 +1785,16 @@ def main():
     parser.add_argument("--cycles", type=int, default=5,
                         help="刷矿循环次数（farm 模式，默认 5）")
     parser.add_argument("--hp-threshold", type=int, default=30,
-                        help="血量低于此百分比时撤退（默认 30）——吃食物阈值固定 60%")
+                        # ⚠️ `%%` 是必须的：argparse 会对 help 串做 `%` 格式化，
+                        #    裸 `%` 会让 `--help` 直接抛 `ValueError: incomplete format`
+                        #    （2026-09-20 发现：三个脚本都有，没人跑 --help 所以一直没暴露）
+                        help="血量低于此百分比时撤退（默认 30）——吃食物阈值固定 60%%")
     parser.add_argument("--sta-threshold", type=int, default=10,
                         help="体力低于此百分比时吃食物（默认 20）")
     parser.add_argument("--food-sta", type=str, default=None,
-                        help="体力食物名称（如 Salad）")
+                        help="体力食物（**逗号分隔、靠前的先吃**，如 '沙拉,面包'）。单个名字照旧")
     parser.add_argument("--food-hp", type=str, default=None,
-                        help="回血食物名称（如 Cheese）")
+                        help="回血食物（**逗号分隔、靠前的先吃**，如 '奶酪,鱼肉卷'）。单个名字照旧")
     parser.add_argument("--port", type=int, default=7842,
                         help="NagiBridge 端口（默认 7842）")
     parser.add_argument("--resume", action="store_true", default=True,
@@ -1671,6 +1805,8 @@ def main():
                         help="查看已到达的最深层数，不挖矿")
     parser.add_argument("--reset-progress", action="store_true",
                         help="重置进度文件")
+    parser.add_argument("--no-guard", action="store_true",
+                        help="🛡️ 关掉 C# 侧贴身自动防御（A/B 对照用：看 guard 到底救了多少血）")
     args = parser.parse_args()
 
     # ── 进度查询/重置 ──
@@ -1725,26 +1861,41 @@ def main():
         except Exception:
             pass
 
-    # 启动模式
-    if args.mode == "rush":
-        bot.run_rush(
-            start_level=args.start,
-            target_floor=args.target,
-            food_sta=args.food_sta,
-            food_hp=args.food_hp,
-            hp_threshold=args.hp_threshold,
-            sta_threshold=args.sta_threshold,
-            resume=args.resume,
-        )
-    else:
-        bot.run_farm(
-            ore_type=args.ore,
-            cycles=args.cycles,
-            food_sta=args.food_sta,
-            food_hp=args.food_hp,
-            hp_threshold=args.hp_threshold,
-            sta_threshold=args.sta_threshold,
-        )
+    # ── 启动模式 ──
+    # 🛡️ 2026-09-20 恒（"反应晚 2-3 下"的根治）：开 C# 侧的贴身自动防御。
+    #    ⚠️ **故意包在这一层，不放进 run_rush/run_farm 里面**：
+    #      · `run_rush` 里那条 `ManualChestFull` 的**中间 return**（满包领不走）时，
+    #        人还在矿里、还在被怪打 —— 正是最需要防御的时候；放函数内部就漏了它。
+    #      · `run_rush` 另有 2 处早期 return、`run_farm` 1 处，且**本文件从头到尾一个
+    #        try/finally 都没有**。包这一处 = 两条模式 + 所有内层 return + 所有异常，一条不落。
+    #      · 形状照抄 bomb_mine.run_rush 那套"开在 try 前一行、还原在 finally"。
+    #    ⚠️ 这**兜不住 `_bg_kill`**（Windows terminate = TerminateProcess ⇒ 子进程没 finally）
+    #       —— 那条走 MCP 服务器的 `_bg_kill` 补刀，见 nagi_mcp_server.py 里那段注释。
+    if not args.no_guard:
+        bot.guard_on()
+    try:
+        if args.mode == "rush":
+            bot.run_rush(
+                start_level=args.start,
+                target_floor=args.target,
+                food_sta=args.food_sta,
+                food_hp=args.food_hp,
+                hp_threshold=args.hp_threshold,
+                sta_threshold=args.sta_threshold,
+                resume=args.resume,
+            )
+        else:
+            bot.run_farm(
+                ore_type=args.ore,
+                cycles=args.cycles,
+                food_sta=args.food_sta,
+                food_hp=args.food_hp,
+                hp_threshold=args.hp_threshold,
+                sta_threshold=args.sta_threshold,
+            )
+    finally:
+        if not args.no_guard:
+            bot.guard_off()
 
 
 if __name__ == "__main__":

@@ -28,7 +28,7 @@ os.environ.setdefault("NAGI_URL", "http://localhost:7843")
 os.environ.setdefault("NAGI_HOST_URL", "http://localhost:7842")
 
 from bomb_common import (BombMiner, log, is_mine_location, extract_mine_level,
-                         ManualChestFull,
+                         ManualChestFull, parse_food_list,
                          BOMB_RADIUS, backpack_plan, is_rock, drop_value, is_volcano)
 
 # ═══════════ 已移除：主动打怪（2026-08-09，按user要求移到协同模式） ═══════════
@@ -647,6 +647,14 @@ class BombMineBot(BombMiner):
         self.bomb_type = self.choose_bomb_type(self.bomb_type)
         log(f"\n💣 === 炸矿模式({tag}): {start_level} → {target_floor}层 | 炸弹: {self.bomb_type} ===")
         self.no_pause_on_unfocus()   # 后台也能走位，不抢user的焦点
+        # 🛡️ 2026-09-20：**C# 贴身自动防御由 `main()` 开关**（见 ModEntry.GuardTick），
+        #    **不在这个函数里**——理由同 mine_run：这里有一条 `ManualChestFull` 的中间 return，
+        #    那时人还在矿里挨打，正需要防御；包在 main() 的 try/finally 才不漏。
+        #    ⚠️ **节奏风险仍在、要自己一轮真机**：炸矿是**故意**站在点燃的炸弹旁边等冷却，
+        #      且 `combat_aggressive` 本来就主动追击+`mine_teleport` 贴脸 —— guard 插进来
+        #      会不会打断炸弹节奏，**没测过**（`--no-guard` 可单独关）。
+        #    ✅ "剑的 AoE 会不会误伤同场的恒"已被反编译证伪：`GameLocation.damageMonster`
+        #      只处理 `characters[num] is Monster`，玩家不在 `loc.characters` 里 ⇒ 打不到玩家。
         try:
             return self._run_rush_inner(start_level, target_floor, follow_host, max_floors=max_floors)
         except ManualChestFull as e:
@@ -859,7 +867,9 @@ def main():
     #    eat_recovery 里 /heal 的救急线、以及 preflight 的拦启动线。
     #    四个入口原来三种值（bomb_mine 30 / mine go 50 / escort 50 / volcano 30），统一成 30。
     parser.add_argument("--hp-threshold", type=int, default=30,
-                        help="吃/兜底线：血量低于此% 吃食物（含 /heal 救急、preflight 拦启动）。"
+                        # ⚠️ `%%` 是必须的：argparse 会对 help 串做 `%` 格式化，裸 `%` 会让
+                        #    `--help` 抛 `ValueError: unsupported format character`（2026-09-20 发现）
+                        help="吃/兜底线：血量低于此%% 吃食物（含 /heal 救急、preflight 拦启动）。"
                              "默认30。⚠️ 撤退线不在这里——撤退看 HP<20 绝对值。")
     parser.add_argument("--follow-host", type=int, default=1, help="user在矿里就一起冲层（1开0关）")
     parser.add_argument("--weapon", type=str, default=None, help="武器绑定：指定用某把武器（如 'Galaxy Hammer'），不指定自动选真实武器")
@@ -874,6 +884,11 @@ def main():
     parser.add_argument("--one-floor", action="store_true", help="逐层模式：跑一层返回结构化摘要，不撤退（AI 层间整理背包再调下一层）")
     parser.add_argument("--organize-disable", action="store_true", help="AI 判定后续不需要整理背包：写 bomb_organize.json disabled")
     parser.add_argument("--organize-reset", action="store_true", help="整理完背包后重置间隔计数（bomb_organize.json floors_since_organize=0）")
+    parser.add_argument("--no-guard", action="store_true", help="🛡️ 关掉 C# 侧贴身自动防御（A/B 对照用）")
+    parser.add_argument("--food-hp", type=str, default=None,
+                        help="🍽️ 回血食物（**逗号分隔、靠前的先吃**，如 '奶酪,鱼肉卷'）；不传=自动挑")
+    parser.add_argument("--food-sta", type=str, default=None,
+                        help="🍽️ 体力食物（**逗号分隔、靠前的先吃**，如 '沙拉,面包'）；不传=自动挑")
     args = parser.parse_args()
 
     # ⚠️ 2026-09-19：--lead 自 2026-08-23 起**完全无效**（goal 恒等于 target_floor，
@@ -981,6 +996,10 @@ def main():
                       follow_host=bool(args.follow_host),
                       lead=args.lead, autodrop=args.autodrop,
                       weapon=args.weapon)
+    # 🍽️ 2026-09-20 恒：自定义吃食 —— 点名 + 优先级（逗号分隔、靠前的先吃）。
+    #    不传 = 空表 = 退回原来的"自动挑"（一个字没变）。
+    bot.food_hp = parse_food_list(args.food_hp)
+    bot.food_sta = parse_food_list(args.food_sta)
     bot.target_was_default = target_was_default   # 🔥 结束段据此点名"默认target到顶就撤"（2026-09-06 恒）
     bot.target_was_default_skull = target_was_default and in_skull   # 默认 target 且是头骨(≥121)→结束段不提示（头骨无电梯/进度层数概念）
 
@@ -991,7 +1010,19 @@ def main():
         return
 
     max_floors = 1 if args.one_floor else None
-    bot.run_rush(start, target, follow_host=bool(args.follow_host), max_floors=max_floors)
+    # 🛡️ 2026-09-20 恒：贴身自动防御（见 ModEntry.GuardTick）。
+    #    ⚠️ **"剑的 AoE 会不会误伤同场的恒"这条已由反编译证伪**：
+    #      `GameLocation.damageMonster` 开头就 `characters[num] is Monster { IsMonster: not false,
+    #      Health: >0 }` 才处理（玩家不在 `loc.characters` 里、也不可能是 `Monster`）
+    #      ⇒ **武器打不到玩家**。原先那正是把 bomb 系列排除在外的理由之一，现在解除了。
+    #    形状同 mine_run：开在 try 前、关在 finally。
+    if not args.no_guard:
+        bot.guard_on()
+    try:
+        bot.run_rush(start, target, follow_host=bool(args.follow_host), max_floors=max_floors)
+    finally:
+        if not args.no_guard:
+            bot.guard_off()
 
 
 if __name__ == "__main__":

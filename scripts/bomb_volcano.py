@@ -29,7 +29,7 @@ os.environ.setdefault("NAGI_URL", "http://localhost:7843")
 os.environ.setdefault("NAGI_HOST_URL", "http://localhost:7842")
 
 from bomb_common import (BombMiner, log, is_rock, extract_mine_level,
-                         BOMB_NAMES)
+                         BOMB_NAMES, parse_food_list)
 from bomb_mine import BombMineBot, backpack_plan
 
 # 火山地点前缀（VolcanoDungeon1-10 + VolcanoCaldera 锻造台区都算"在火山"）
@@ -430,12 +430,17 @@ def main():
     parser.add_argument("--host-port", type=int, default=None, help="房主(user)端口（默认7842）")
     parser.add_argument("--bomb", type=str, default="Bomb", help="炸弹类型：Bomb/Mega Bomb/Cherry Bomb")
     parser.add_argument("--min-covered", type=int, default=3, help="至少覆盖N块岩体才炸（火山簇小，默认3）")
-    parser.add_argument("--hp-threshold", type=int, default=30, help="血量低于此%撤退（默认30）")
+    parser.add_argument("--hp-threshold", type=int, default=30, help="血量低于此%%撤退（默认30）")
     parser.add_argument("--poll", type=float, default=2.5, help="user位置轮询间隔秒（默认2.5）")
     parser.add_argument("--max-minutes", type=int, default=None, help="最多运行分钟数")
     parser.add_argument("--autodrop", type=int, default=0, help="背包满时自动丢价值≤此值的物品（已退役，恒2026-08-23全退役：0=只报不丢，满包撤退交给AI）")
     parser.add_argument("--weapon", type=str, default=None, help="武器绑定（如 'Galaxy Hammer'）")
     parser.add_argument("--no-wait", action="store_true", help="user不在火山时不等待直接结束")
+    parser.add_argument("--no-guard", action="store_true", help="🛡️ 关掉 C# 侧贴身自动防御（A/B 对照用）")
+    parser.add_argument("--food-hp", type=str, default=None,
+                        help="🍽️ 回血食物（逗号分隔、靠前的先吃，如 '奶酪,鱼肉卷'）；不传=自动挑")
+    parser.add_argument("--food-sta", type=str, default=None,
+                        help="🍽️ 体力食物（逗号分隔、靠前的先吃，如 '沙拉,面包'）；不传=自动挑")
     args = parser.parse_args()
 
     import re as _re
@@ -449,6 +454,9 @@ def main():
                      poll=args.poll,
                      autodrop=args.autodrop,
                      weapon=args.weapon)
+    # 🍽️ 2026-09-20 恒：自定义吃食 —— 点名 + 优先级（逗号分隔、靠前的先吃）；不传=自动挑
+    bot.food_hp = parse_food_list(args.food_hp)
+    bot.food_sta = parse_food_list(args.food_sta)
 
     # ⚠️ 2026-08-16 预检：只硬拦血量过低（没炸弹/没武器黄，骑行可切镐子硬跟）
     block = bot.preflight()
@@ -456,7 +464,17 @@ def main():
         log(block)
         sys.exit(1)
 
-    ok = bot.run(max_minutes=args.max_minutes, wait_host=not args.no_wait)
+    # 🛡️ 2026-09-20 恒：贴身自动防御（见 ModEntry.GuardTick）。
+    #    ⚠️ 本脚本**跟恒一起骑行**（user 换层就跟着换）—— 误伤那条已被反编译证伪：
+    #      `GameLocation.damageMonster` 只处理 `characters[num] is Monster`，
+    #      玩家不在 `loc.characters` 里 ⇒ **武器打不到玩家**。
+    if not args.no_guard:
+        bot.guard_on()
+    try:
+        ok = bot.run(max_minutes=args.max_minutes, wait_host=not args.no_wait)
+    finally:
+        if not args.no_guard:
+            bot.guard_off()
     sys.exit(0 if ok else 1)
 
 

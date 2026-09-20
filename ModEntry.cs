@@ -539,6 +539,40 @@ public class ModEntry : Mod
     private int _toolAnimWait;
     private bool _walkAllowWater;  // 🪙 淘金/蟹笼走位: 允许落水格(站水上淘)+回调原位; 普通走位保持排水面
 
+    // ═══════════════════════════════════════════════════════════════════════
+    //  🛡️ 贴身自动防御「guard」（2026-09-20 恒：下矿被怪磨死）
+    // ═══════════════════════════════════════════════════════════════════════
+    // 【为什么必须搬到 C#】AI 的自卫在 Python 里是**轮询**：`retaliate_if_hit()` 挂在
+    //   `run_rush` 的**外层 while 每轮一次**（mine_run.py:1502），而一轮要敲最多 3 块石头、
+    //   每块 1.5~4s ⇒ **HP 检查间隔 2~10 秒**（`combat_check` 更疏：`MONSTER_SCAN_INTERVAL=3`
+    //   的计数按**外层轮次**加，不是按石头）。怪物 1~2s 打一下 ⇒ **正好差 2~3 下**，
+    //   跟恒实测分毫不差。
+    //   ⚠️ **不是 HTTP 慢**（/state 13ms、/face 7ms、/select 3ms、/tool 26ms）；
+    //      **Python 侧也无解** —— 它 ~90% 的时间在 `time.sleep()` 里睡着，
+    //      没有任何"优先级"能叫醒一个睡着的进程。唯一每 tick 都醒着的是**游戏自己**。
+    //
+    // 【它做什么】每 tick 找**切比雪夫半径 1**（玩家所在 3×3）内最近的 Monster，
+    //   转身 + 挥手上最好的近战武器，**不移动**（恒 2026-09-20 拍板"只转向+挥"）。
+    //   一刀的完整时序见 `GuardTick` 的方法头注释（换武器/转向/挥/换回，顺序全是硬约束）。
+    //
+    // 【谁能开】只有 HTTP `/guard`。⚠️ `!Game1.player.IsMainPlayer` 是硬门 ⇒ 7842 的恒
+    //   **永远**碰不到这条路（跟本文件里那些"只对 farmhand"的块同一个规矩）。
+    //
+    // 【为什么 Python 兜不住"关"】`_bg_kill` 在 Windows 上是 `TerminateProcess` ⇒ 子进程
+    //   没有信号、没有 atexit、**finally 一行都不跑**。MCP 服务器必须自己补一刀
+    //   `/guard off`（见 nagi_mcp_server._bg_kill 里那段注释）。
+    private bool _guardOn;                  // 只由 /guard 在**主线程**写；GuardTick 也只主线程读
+    private string _guardWeaponName = "";   // Python 点名的武器（空 = C# 自己挑）
+    private bool _guardNoWeapon;            // 自关过一次"没武器"，供 /guard 状态读出
+    private int _guardSwings;               // 累计挥击（状态读出 + 播报）
+    /// <summary>⚔️ 挥完后要换回的武器槽（-1 = 不欠）。**不能在当帧换回**——
+    /// `showSwordSwipe`（`Farmer.cs:6599`）**每帧**重读 `who.CurrentTool`，不是武器就跳过
+    /// `DoDamage` ⇒ 当帧换回 = 把 6 帧横扫砍成 1 帧，**只中正前方一格、对角彻底打不到**。
+    /// 所以攒在这里，等 `UsingTool` 落回 false 的下一 tick 再还。</summary>
+    private int _guardPendingRestore = -1;
+    private double _guardLastReportMs = -99999;  // 上次播报的游戏毫秒（防洪）
+    private string _guardLastTarget = "";        // 最近一次的目标 "墓碑(12,34)"
+
     // Tool area 蓄力补漏（取余补站位，2026-08-15）：主流程后自检漏格 → 聚矩形再蓄力补。
     private List<(int tx, int ty)> _toolAreaTargets = new();
     private string _toolAreaOperation = "till";   // 逐锚点验证用（till/water）
@@ -933,6 +967,19 @@ public class ModEntry : Mod
         _knownQuests = new HashSet<string>();
         _knownQuestDone = new HashSet<string>();
         _questInited = false;
+        // 🛡️ guard 一定关：换存档/回标题之后，Python 那边的开关已经无从对账
+        //    （MCP 可能都没在跑）⇒ 别让上一个存档的 guard 状态漏进下一个存档。
+        // ⚠️ 只在 ReturnedToTitle 清、**不在"换天"重置块里清**：一趟挖矿**可以跨零点**
+        //    （run_rush 24:30 才撤），换天一清 = 半夜那一刀正好丢在最危险的时候（正是本 bug 的形状）。
+        //    "漏出去的 guard"另有两条网：① `GuardTick` 自己的门（isInBed / eventUp /
+        //    activeClickableMenu）已经把过夜/结算那几段全挡住了；② MCP 的 `_bg_kill` 兜底。
+        _guardOn = false;
+        _guardWeaponName = "";
+        _guardNoWeapon = false;
+        _guardSwings = 0;
+        _guardPendingRestore = -1;
+        _guardLastReportMs = -99999;
+        _guardLastTarget = "";
     }
 
     private void ClearMovementState()
@@ -1600,10 +1647,20 @@ public class ModEntry : Mod
     {
         // 矿节点：SDV 1.6 Name 报 'Stone'（矿节点与石头同名 "X Stone"），必须用 itemId 区分
         // 实测 1.6 矿节点 itemId：751铜 / 290铁 / 764金 / 765铱 / 767神秘石
+        // 🪨 2026-09-20 补 **849**：**困难矿井**（神庙激活，`mineHardMode`）的铜换了个号 ——
+        //    普通矿井是 751 `"Copper Node"`，困难矿井是 849 `"Copper Stone"`；铁/金**没换**
+        //    （290/764 两边通用）。2026-09-20 真机坐实：`/surroundings` 把 849 报成 `"Stone"`
+        //    ⇒ `farm ore=Copper` 在 21 层连刷 3 次「本层无 Copper」、敲 0 块。
+        //    报 "Copper Stone" 是**照游戏自己的真名**（`/dump_tile` 实测），不是我们另起的名。
+        // ⚠️ 待验：`(O)44` 疑似也有同样问题（据报真名 "Gem Stone"），但**它的编号我还没有实据**
+        //    （反编译里宝石节点用的是 "2/4/6/8/10/12/14" 那一组，与 44 对不上）
+        //    ⇒ **宁可不映射**：这张表是**优先级最高**的（命中了就不再看 obj.Name），
+        //      编号认错会把一个本来正常显示的东西**改坏**。等真机 `/dump_tile` 看到 itemId 再补。
         var id = obj.itemId?.Value ?? obj.ParentSheetIndex.ToString();
         var mapped = id switch
         {
             "751" => "Copper Node",
+            "849" => "Copper Stone",   // 困难矿井的铜
             "290" => "Iron Node",
             "764" => "Gold Node",
             "765" => "Iridium Node",
@@ -2216,6 +2273,18 @@ public class ModEntry : Mod
             return;
         }
 
+        // 🛡️ 贴身自动防御（2026-09-20 恒："反应晚 2-3 下"的根治）——**这个位置不能挪**：
+        //    · **必须在「工具蓄力块」之上**：那个块自跑时会 `return`（上面那条），蓄力期间
+        //      天然进不来。**蓄力中途挥剑 = 打出一个假成功** —— 落地代码读 `CurrentTool`
+        //      已经变成武器 ⇒ `tool is Hoe` / `tool is WateringCan` 双双不中 ⇒ 回包仍是
+        //      `ok:true, action:"charge_release"` 但**一格没锄**（同 "工具说谎" 那一族）。
+        //    · **必须在「命令队列块」之前**：那个块会在一堆条件下 `return`
+        //      （`_toolAnimWait` / `_commandDelay` / `_waitingForMove` / 没走完），
+        //      放它后面 = guard **绝大多数 tick 根本跑不到**（那正是本 bug 的形状）。
+        //    · 对挖矿脚本**零干扰**：mine_run 从头到尾**没用过 `_commandQueue`**
+        //      （写它的只有 `/queue` 和 `/tool_area`，都是农活）⇒ 跟命令队列井水不犯河水。
+        try { GuardTick(); } catch (Exception ex) { Monitor.Log($"[guard] tick 异常: {ex.Message}", LogLevel.Warn); }
+
         // Process command queue
         if (_commandQueue != null && _commandQueue.Count > 0 && Context.IsWorldReady)
         {
@@ -2628,6 +2697,7 @@ public class ModEntry : Mod
                 "/eat" => HandleEat(),
                 "/buffs" => HandleBuffs(),
                 "/set_pause" => HandleSetPause(ctx),
+                "/guard" => HandleGuard(ctx),   // 🛡️ 贴身自动防御开关（只转向+挥，不移动）
                 "/warp" => HandleWarp(ctx),
                 "/warp_into" => HandleWarpInto(ctx),
                 "/warp_building" => HandleWarpBuilding(ctx),
@@ -3808,10 +3878,20 @@ public class ModEntry : Mod
         return tcs.Task.GetAwaiter().GetResult();
     }
 
-    /// GET /passable_rect?x1=&y1=&x2=&y2=
+    /// GET /passable_rect?x1=&y1=&x2=&y2=&location=
     /// 按矩形返回整片区域"每格"的可走+物体/地形（非 hasInfo 过滤），供 AI 看全图——
     /// 迷宫直线段分解(maze_seg.py)一次取整张迷宫：passable(寻路同款 IsTilePassable)+object/terrain/largeTerrain/resource。
     /// ⚠️ IsTilePassable 必须主线程读（同 /surroundings），矩形限 ~96×96 防爆。
+    ///
+    /// 🔧 2026-09-20 补 **可选 `location`**（欠账，对齐兄弟端点 `/passable`）：
+    ///   以前这个端点**只认 `Game1.player.currentLocation`**，传了 `location=` 也**一声不吭地忽略**
+    ///   —— 2026-09-20 真被它骗过一次：我想扫"恒那个档的农场有没有资源堆"，
+    ///   传了 `location=Farm` 却没生效，实际扫的是**角色当时所在的 Cabin**（3220 格），
+    ///   而我拿这份"农场没有资源堆"的结论去汇报了。
+    ///   ⚠️ 兄弟端点 `/passable` 从 2026-09-19 起就是"找不到就如实报错"，这里却各走各的
+    ///      ⇒ **同一个语义两个口径**，正是"判据别放消费侧猜"的同族病。
+    ///   现在两者一致：**不传 = 当前图（旧行为一个字没变）；传了找不到 = 明确报错**，
+    ///   绝不偷偷换回当前图（恒：「宁报错别兜底」——偷偷换 = 人会拿着别张图的数据下结论）。
     private object HandlePassableRect(HttpListenerContext ctx)
     {
         if (!Context.IsWorldReady)
@@ -3822,6 +3902,7 @@ public class ModEntry : Mod
         int y1 = int.TryParse(qs["y1"], out var b) ? b : 0;
         int x2 = int.TryParse(qs["x2"], out var c) ? c : 0;
         int y2 = int.TryParse(qs["y2"], out var d) ? d : 0;
+        string locName = qs["location"] ?? "";
         var minX = Math.Min(x1, x2); var maxX = Math.Max(x1, x2);
         var minY = Math.Min(y1, y2); var maxY = Math.Max(y1, y2);
         if (maxX - minX > 96) maxX = minX + 96;   // ⚠️ 限尺寸防爆
@@ -3833,6 +3914,18 @@ public class ModEntry : Mod
             try
             {
                 var loc = Game1.player.currentLocation;
+                if (!string.IsNullOrEmpty(locName))
+                {
+                    var want = Game1.getLocationFromName(locName);
+                    if (want == null)
+                    {
+                        // ⚠️ 与 /passable 同一句文案 —— 两个端点说同一件事，别各写各的
+                        tcs.SetResult(new { ok = false,
+                            error = $"找不到地点 '{locName}'（顶层地点表里没有；cabin/棚屋的室内是 instanced interior，查不到）" });
+                        return;
+                    }
+                    loc = want;
+                }
                 var mapW = loc.Map.DisplayWidth / 64;
                 var mapH = loc.Map.DisplayHeight / 64;
                 var tiles = new List<object>();
@@ -3869,6 +3962,12 @@ public class ModEntry : Mod
                             {
                                 600 => "LargeStump", 602 => "LargeLog", 622 => "MeteoriteOre",
                                 672 => "LargeBoulder", 752 => "LargeBoulder", 754 => "LargeBoulder",
+                                // 🪨 2026-09-20 补 756/758：**困难矿井**里与 752/754 同型的那两种大石
+                                //    （`MineShaft.cs:1621` 的 `tryToAddOreClumps`，`Choose(752,754)` /
+                                //     困难模式走 `Choose(756,758)`）。原来会掉到下面的兜底报 `Clump:756`。
+                                //    ⚠️ `148` **故意不映射**：它和 622 同门槛同血量，但长什么样我没有实据，
+                                //       留着 `Clump:148` 是**诚实的未知**，真见到再照 `dump_tile` 补。
+                                756 => "LargeBoulder", 758 => "LargeBoulder",
                                 _ => $"Clump:{clump.parentSheetIndex.Value}"
                             };
 
@@ -6941,6 +7040,12 @@ public class ModEntry : Mod
         return tcs.Task.GetAwaiter().GetResult();
     }
 
+    /// <summary>🪨 镐子敲得动的资源堆 `parentSheetIndex` —— **照抄反编译 `ResourceClump.cs:148-235`**
+    /// 的 `performToolAction` case 表（600 树桩 / 602 原木归斧头，在 `Axe` 分支里）：
+    /// 148 与 622 同组（陨石，镐≥3）｜672 农场大石（镐≥2）｜752/754 矿井大石 + 756/758 困难矿井大石
+    /// （同型：8 血、**任意镐**无等级门槛）。</summary>
+    private static readonly int[] PICKAXE_CLUMPS = { 148, 622, 672, 752, 754, 756, 758 };
+
     private string? ValidateToolUse(Tool tool, GameLocation loc, Vector2 tileVec, int tx, int ty)
     {
         bool hasObj = loc.objects.ContainsKey(tileVec);
@@ -6989,8 +7094,13 @@ public class ModEntry : Mod
 
             case Pickaxe:
                 bool hasStone = hasObj && loc.objects[tileVec].Name == "Stone";
+                // 🪨 2026-09-20：补 **756/758/148**（原来只列 672/752/754/622）。
+                //    `756`/`758` 是**困难矿井**里的那两种大石、`148` 与 `622` 同为陨石 —— 三种都能用任意
+                //    镐子敲（反编译 `ResourceClump.cs:213-216`，无等级门槛那一支）。
+                //    漏掉的后果不是"敲不碎"，是 `/use` 直接回「Nothing to break here」
+                //    —— **自家人正确拒绝了一个合法动作**（同族：白名单漏项 = 工具把正事挡在门外）。
                 bool hasBoulder = loc.resourceClumps.Any(c =>
-                    (c.parentSheetIndex.Value == 672 || c.parentSheetIndex.Value == 752 || c.parentSheetIndex.Value == 754 || c.parentSheetIndex.Value == 622)
+                    Array.IndexOf(PICKAXE_CLUMPS, c.parentSheetIndex.Value) >= 0
                     && tx >= c.Tile.X && tx < c.Tile.X + c.width.Value
                     && ty >= c.Tile.Y && ty < c.Tile.Y + c.height.Value);
                 if (!hasStone && !hasBoulder && tf is not HoeDirt)
@@ -10970,6 +11080,109 @@ public class ModEntry : Mod
     {
         _timeFrozen = false;
         return new { ok = true, action = "resumed" };
+    }
+
+    /// <summary>
+    /// 🛡️ `/guard` — 贴身自动防御开关（2026-09-20 恒："反应晚 2-3 下"）
+    ///   POST { "on": true, "weapon": "Galaxy Hammer" } → 开/关
+    ///   GET  /  POST 不带 on                          → 只读状态
+    ///
+    /// 【谁调】只有 Python：`MineBot` 在 `main()` 最后一跳开、`finally` 关；
+    ///   MCP 服务器在 `_bg_kill` 里补一刀 off（Windows `TerminateProcess` ⇒
+    ///   被杀的子进程**没有 finally**，见 nagi_mcp_server.py 里那段注释）。
+    ///
+    /// 【为什么 weapon 由 Python 传，而不是 C# 自己挑】"选哪把"这件事**已经有唯一实现了**：
+    ///   `bomb_common.WeaponMixin.detect_weapon`（被"拿大镰刀挥挥挥"打出来的那套优先级：
+    ///   weapon_override > 真 MeleeWeapon 跳 wtype=3 > 关键词兜底）。
+    ///   在 C# 再写一套 = **两份必然漂移**。C# 只做"名字→槽位"的**执行**，优先级留在 Python。
+    ///   ⚠️ 但 C# **必须自己也能挑**（`PickBestMeleeSlot`）：以后有人手搓 curl 开 guard 时用得上。
+    ///
+    /// 【宁报错别兜底】Python 点名的武器**不在包里** ⇒ 直接 `ok:false` + 明确文案，
+    ///   **绝不偷偷换成别的** —— "说好看门的是银河锤、实际拿镰刀"这种谎最难查。
+    ///   只有 Python 根本没传名字时，才退到 C# 自选。
+    ///   ⚠️ 失败**必须让 AI 看得见**（EnqueueAlert），否则 Python 以为背后有人保它，
+    ///      回到"站桩被磨死"的原始状态还查不出来。
+    /// </summary>
+    private object HandleGuard(HttpListenerContext ctx)
+    {
+        // ⚠️ 路由是**按 path 分发**的（HandleRequest 读了 method 却从不用），
+        //    GET/POST 的分流得自己来 —— 同 HandlePan 的形状。读空 body 会得到空字典，安全。
+        var p = ReadJson(ctx);
+        if (!Context.IsWorldReady)
+            throw new InvalidOperationException("World not ready");
+
+        var tcs = new TaskCompletionSource<object>();
+        EnqueueMainThread(() =>
+        {
+            try
+            {
+                // 没写 on = 只读（GET /guard 与 POST /guard {} 同义）。
+                // 走主线程读：这些字段都是主线程写的，统一口径。
+                if (!p.ContainsKey("on"))
+                {
+                    tcs.SetResult(new
+                    {
+                        ok = true,
+                        on = _guardOn,
+                        weapon = _guardWeaponName,
+                        noWeapon = _guardNoWeapon,
+                        swings = _guardSwings,
+                        lastTarget = _guardLastTarget,
+                        isMainPlayer = Game1.player?.IsMainPlayer ?? true,
+                        note = "guard = 每 tick 找 3×3 内的怪，转身+挥近战武器，不移动"
+                    });
+                    return;
+                }
+
+                bool on = GetParamOr(p, "on", false);
+                string weapon = GetParamOr(p, "weapon", "");
+                var farmer = Game1.player;
+
+                if (on)
+                {
+                    // ⛔ 硬门：这个进程的 Game1.player 是房主 ⇒ **明确报错**，不是静默不动
+                    //    （静默的话 Python 会以为开着，恒的真人角色就白挨一套逻辑）。
+                    if (farmer == null || farmer.IsMainPlayer)
+                        throw new InvalidOperationException(
+                            "这是房主进程（Game1.player.IsMainPlayer=true），guard 只服务 AI 的 farmhand");
+
+                    if (weapon.Length > 0)
+                    {
+                        if (FindMeleeWeaponSlot(farmer, weapon) < 0)
+                        {
+                            EnqueueAlert("guard",
+                                $"🛡️ /guard on 失败：背包里没有近战武器「{weapon}」（不会拿别的凑数）",
+                                "warning", "guard");
+                            throw new InvalidOperationException(
+                                $"背包里没有近战武器「{weapon}」（guard 不会拿别的凑数）");
+                        }
+                    }
+                    else if (PickBestMeleeSlot(farmer) < 0)
+                    {
+                        EnqueueAlert("guard", "🛡️ /guard on 失败：背包里没有任何近战武器", "warning", "guard");
+                        throw new InvalidOperationException("背包里没有任何近战武器（开了也只能站着被磨）");
+                    }
+                }
+
+                _guardOn = on;
+                if (on)
+                {
+                    _guardWeaponName = weapon;   // 空 = 每次挥击时 C# 自己挑
+                    _guardNoWeapon = false;
+                    AddRecentEvent("guard",
+                        $"🛡️ 贴身防御已开启（{(weapon.Length > 0 ? weapon : "自动挑")}）", Game1.ticks);
+                    Monitor.Log($"[guard] ON weapon='{(weapon.Length > 0 ? weapon : "(auto)")}'", LogLevel.Info);
+                }
+                else
+                {
+                    _guardWeaponName = "";
+                    Monitor.Log($"[guard] OFF（累计挥 {_guardSwings} 刀）", LogLevel.Info);
+                }
+                tcs.SetResult(new { ok = true, on = _guardOn, weapon = _guardWeaponName, swings = _guardSwings });
+            }
+            catch (Exception ex) { tcs.SetResult(new { ok = false, error = ex.Message }); }
+        });
+        return tcs.Task.GetAwaiter().GetResult();
     }
 
     private object HandleFishbot(HttpListenerContext ctx)
@@ -20275,6 +20488,300 @@ public class ModEntry : Mod
         };
     }
 
+    // ═══════════════════════════════════════════════════════════════════════
+    //  🛡️ 贴身自动防御（字段区那段长注释有来龙去脉；调用点在 OnUpdateTicked 蓄力块之后）
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// <summary>🛡️ 贴身自动防御：每 tick 一次。开关只走 HTTP `/guard`。
+    ///
+    /// 【判据链的顺序有讲究，别随手重排】
+    ///   ① 世界门 → ② **先还债**（换回武器） → ③ 开关 → ④ "这角色归不归我管"
+    ///   → ⑤ 照抄游戏 `leftClick` 的那串门 → ⑥ 别抢正在播的动画 → ⑦ 找怪 → ⑧ 换武器/转向/挥。
+    ///
+    /// 【② 为什么要还债、且必须在 ③ 之前】挥完那一刀后手里还攥着剑，要等动画播完才换回
+    ///   （原因见 `_guardPendingRestore` 的注释：`showSwordSwipe` 每帧重读 `CurrentTool`）。
+    ///   放在开关之前 ⇒ guard 中途被关掉、或换存档，也能把武器还回去，不会留一把剑攥在手里。
+    ///
+    /// 【⑤ 是照抄游戏自己的】`MeleeWeapon.leftClick`（`MeleeWeapon.cs:487`）：
+    ///   `who.health > 0 && Game1.activeClickableMenu == null && Game1.farmEvent == null
+    ///    && !Game1.eventUp && !who.swimming.Value && !who.bathingClothes.Value && !who.onBridge.Value`
+    ///   少一条就会做出"游戏不让挥、我们却挥了"的动作（比如 2am 昏迷那个 Event 里挥剑）。
+    ///
+    /// 【⛔ 两道绝不能碰的线】
+    ///   ① **别在"不挥"的那一帧写 `FacingDirection`**。工具动画的 frame68 会按
+    ///      `GetToolLocation()` 提交落地格（血案见蓄力块那段"没等"的注释），
+    ///      顺手转身会把它挪到**错的格**上。所以"只转向不挥"是**错的** ——
+    ///      转向必须和挥击绑死在**同一帧**里。这也是 `GuardFacing` 同格时返回 -1 的原因。
+    ///   ② **别动 `_walkRoute` / `_pathQueue` / `farmer.Position`**。恒拍板的"只转向+挥"
+    ///      就是为了不跟走位抢人；`Character.Halt()` 也不碰 `Position` ⇒ 挥剑不会打断走位。
+    ///
+    /// 【挥速不用自己限流】门 ⑥ 判的是 `UsingTool`，它由动画收尾帧的 `Farmer.canMoveNow`
+    ///   （`Farmer.cs:6759`）置回 false ⇒ 节奏 = **游戏自己的挥速**，不需要手搓冷却。
+    ///   ⚠️ **别改成判 `_toolAnimWait`**：那个闩是给**工具**动画用的（存在理由是工具帧 frame68
+    ///      的 `Farmer.useTool`），而剑帧表里根本没有 `useTool`；何况它的**清零点在
+    ///      `_commandQueue.Count > 0` 那个块里面**，队列为空时走不到 ⇒ 值可能一直留着，
+    ///      拿它当门 = guard 可能被一个陈旧值**永久关掉**（本 bug 的形状重现一遍）。
+    ///
+    /// 【副作用（拟人，接受）】`DoDamage` 末尾会对 AoE 边框格逐个 `performToolAction`
+    ///   （`MeleeWeapon.cs:1398`）⇒ 顺手割掉面前那几格的杂草。**真人挥剑也这样**，不额外处理。
+    ///
+    /// 【武器形态】剑/匕首走平砍（同帧结算）；**锤子冷却好了走重砸**
+    ///   （`triggerClubFunction` 是 **6×6 格** AoE，但伤害在 320ms 后的动画收尾帧才落）——
+    ///   完整理由与两个坑见 ⑨ 段注释。
+    /// </summary>
+    private void GuardTick()
+    {
+        if (!Context.IsWorldReady || Game1.player == null) return;   // ①
+
+        var farmer = Game1.player;
+
+        // ② 先还债：挥完那一刀后，等动画播完再把武器槽换回去（原因见 _guardPendingRestore）。
+        if (_guardPendingRestore >= 0 && !farmer.UsingTool)
+        {
+            try { farmer.CurrentToolIndex = _guardPendingRestore; } catch { }
+            _guardPendingRestore = -1;
+        }
+
+        if (!_guardOn) return;                                       // ③
+
+        // ④ ⛔硬门：这个进程的 Game1.player 是恒（房主）⇒ **绝对不替他挥剑**。
+        //    （`/guard on` 在房主进程上会直接报错，这里是不依赖调用方的第二道保险。）
+        if (farmer.IsMainPlayer) return;
+
+        // ⑤ 游戏自己的 leftClick 门（MeleeWeapon.cs:487）——逐条照抄，别凭感觉加减
+        if (farmer.health <= 0) return;
+        if (Game1.activeClickableMenu != null) return;   // 开背包/菜单时不动手
+        if (Game1.farmEvent != null) return;
+        if (Game1.eventUp) return;
+        if (farmer.swimming.Value || farmer.bathingClothes.Value || farmer.onBridge.Value) return;
+        // ⑤补：反编译里没有、但这条路必须有的三条
+        if (farmer.isInBed.Value) return;                // 躺床时姿势是躺的，别举剑
+        if (farmer.isRidingHorse()) return;              // 骑马：DoDamage 末尾会 forceCanMove 把动画掐了
+        if (farmer.isEating || farmer.itemToEat != null) return;   // 嘴里有东西：挥击会把吃东西拆了
+
+        // ⑥ 别抢正在播的动画（`UsingTool` 是权威信号，见方法头）
+        if (_isChargingTool) return;   // 双保险：调用点本来就在蓄力块之后；
+                                       //   万一以后有人挪了调用点，这条能挡住"挥剑打断蓄力"
+                                       //   （那样会打出 ok:true 却一格没锄的假成功）
+        if (farmer.UsingTool) return;
+
+        // ⑦ 找怪：切比雪夫半径 1 = 玩家所在 3×3。**用 foreach 不用 LINQ**——
+        //    这是 60fps 的热路径，`OfType<>().Where(闭包)` 每 tick 都要分配枚举器 + 闭包，
+        //    白给 GC 添活。（枚举语义与 /surroundings 一致，只是半径换成 1。）
+        var loc = farmer.currentLocation;
+        if (loc == null) return;
+        int cx = farmer.TilePoint.X, cy = farmer.TilePoint.Y;
+        Monster? target = null;
+        int bestD = int.MaxValue;
+        foreach (var m in loc.characters.OfType<Monster>())
+        {
+            // ⛔ 打得动的才当目标（装石头的螃蟹 / 竹节虫 / 无敌帧 / 隐身 —— 见 GuardTargetable）
+            if (!GuardTargetable(m)) continue;
+            int dx = Math.Abs(m.TilePoint.X - cx), dy = Math.Abs(m.TilePoint.Y - cy);
+            if (dx > 1 || dy > 1) continue;     // 切比雪夫半径 1
+            int d = dx + dy;                    // 贴脸(0) > 正前(1) > 对角(2)
+            if (d < bestD) { bestD = d; target = m; }
+        }
+        if (target == null) return;
+
+        // ⑧ 选武器槽。**每次挥击都重算**，不缓存 index —— 背包会变（Python 边挖边捡），
+        //    缓存的槽位会指到别的物品上（"手里莫名多了个山洞萝卜"式的事故）。
+        int slot = _guardWeaponName.Length > 0
+            ? FindMeleeWeaponSlot(farmer, _guardWeaponName)
+            : PickBestMeleeSlot(farmer);
+        if (slot < 0)
+        {
+            // 没武器 = **明确上报 + 当场自关**，不静默装死（宁报错别兜底）。
+            // 固定文案 ⇒ 走 EnqueueAlert 的 `type:message` 4 秒节流键，不会刷屏；
+            // 自关 ⇒ 不空转，也不让 AI 一直以为背后有人保它。
+            _guardOn = false;
+            _guardNoWeapon = true;
+            EnqueueAlert("guard",
+                "🛡️ guard 自动关闭：背包里找不到近战武器"
+                + (_guardWeaponName.Length > 0 ? $"（Python 点名要的「{_guardWeaponName}」不在包里）" : ""),
+                "warning", "guard");
+            AddRecentEvent("guard", "🛡️ 贴身防御已关闭（没武器）", Game1.ticks);
+            Monitor.Log($"[guard] 没武器 → 自关。want='{_guardWeaponName}'", LogLevel.Warn);
+            return;
+        }
+
+        // ⑨ 挥：**换武器 → 转向 → 挥**，三步的顺序全是硬约束。
+        //    ⚠️ 换武器必须在 `BeginUsingTool()` **之前** —— `doSwipe` 第一行就是
+        //       `if (f == null || f.CurrentTool != this) return;`（`MeleeWeapon.cs:1129`），
+        //       顺序反了 = **隔空挥**：伤害照落、动画不播。
+        int prev = farmer.CurrentToolIndex;
+        farmer.CurrentToolIndex = slot;
+        int face = GuardFacing(cx, cy, target.TilePoint);
+        if (face >= 0) farmer.FacingDirection = face;
+
+        // 🔨 锤子（`MeleeWeapon.type.Value == 2`）：**冷却好了就重砸，没好就平砍**。
+        //    【为什么锤子值得单独走一条】重砸 `triggerClubFunction`（`MeleeWeapon.cs:909`）的
+        //      AoE 是 `Rectangle(Position.X-192, bb.Y-192, **384, 384**)` —— **6×6 格、36 格**！
+        //      对比平砍那条（`getAreaOfEffect`，`MeleeWeapon.cs:695`）是「面前 1 格宽 × 1.75 深」
+        //      ⇒ 被围殴时重砸一下顶十下平砍。（Python 的 `swing()` 早就有这条：
+        //      `weapon_class == "hammer"` → `special=True` → `/tool {special:true}`；
+        //      guard 第一版**只做了平砍**，是漏的。）
+        //    【冷却谁管】**游戏自己管** —— `animateSpecialMove` 开头就是
+        //      `... && specialCooldown() <= 0`（`MeleeWeapon.cs:1001`），冷却中调它 = **静默 no-op**
+        //      （跟 `/tool` 那条"说用了其实没动"同族）。所以这里**先自己读一眼**再决定，
+        //      别把"没冷却"和"没挥"混成一样。
+        //      ⚠️ `specialCooldown()` 是 `protected`，ModEntry 调不到；但它对 type=2 返回的
+        //         `clubCooldown` 是 **`public static int`**（`MeleeWeapon.cs:93`，在 `Update`
+        //         里按毫秒递减）⇒ 直接读那个字段就够了。
+        bool clubSpecial = false;
+        if (farmer.Items[slot] is MeleeWeapon mw && mw.type.Value == 2)
+        {
+            try { clubSpecial = MeleeWeapon.clubCooldown <= 0; } catch { clubSpecial = false; }
+        }
+
+        try
+        {
+            if (clubSpecial)
+            {
+                // 🔨 重砸。⚠️ 与平砍**不同步**：`doAnimateSpecialMove`（`MeleeWeapon.cs:1063`）
+                //    走的是 `animateOnce(176, 40f, 8, triggerClubFunction)`
+                //    ⇒ **伤害在 8×40=320ms 后**的动画收尾帧才落，不是当帧。
+                //    `beginSpecialMove` 会 `UsingTool=true; CanMove=false` ⇒ 门 ⑥ 天然挡住下一刀，
+                //    不会把这段动画掐断（掐断 = `triggerClubFunction` 不触发 = **一下没打中**）。
+                //    ⚠️ 程序调用没有农夫 Update 的复位（`triggerClubFunction` 自己不重置），
+                //       所以照抄 `/tool special` 那条：**1.2s 后 forceCanMove 强制复位**
+                //       （320ms 伤害 + 余量）。不补 = 小人一直举着锤子。
+                ((MeleeWeapon)farmer.CurrentTool!).animateSpecialMove(farmer);
+                var f2 = farmer;
+                System.Threading.Tasks.Task.Run(() =>
+                {
+                    System.Threading.Thread.Sleep(1200);
+                    try { EnqueueMainThread(() => { try { f2.forceCanMove(); } catch { } }); } catch { }
+                });
+            }
+            else
+            {
+                farmer.BeginUsingTool();   // 同帧 `setFarmerAnimating` → `doSwipe` + `DoDamage`
+                farmer.EndUsingTool();     // 与 `/tool`(:3000-3001) 对齐；对 MeleeWeapon 是 no-op
+                                           // （`Tool.endUsing` 的效果分支把 MeleeWeapon 排除在外）
+            }
+        }
+        finally
+        {
+            // ⑩ **欠着**，下一 tick 等动画播完再还（不能当帧还，见 _guardPendingRestore）。
+            //    有多个怪时会把 prev 重新记一遍 —— 但那时 CurrentToolIndex 已经是武器槽，
+            //    等于"继续欠着换回同一个原位"，语义正确。
+            _guardPendingRestore = prev;
+        }
+
+        // ⑪ 记账 + 上报。⚠️ 用 AddRecentEvent **不用 EnqueueAlert**：
+        //    guard 是"背景在替你做"，不是"需要你处理"——进 /alerts 会把真正该看的告警挤掉。
+        //    ⚠️ AddRecentEvent 的去重只比紧邻上一条，环形上限只有 20 条 ⇒ **真正防洪的是
+        //    下面这个时间闩**。15s 是拍的（一次交战里怪一直在打，不该每刀一条）；
+        //    真机测完按实际交战频率再调。
+        _guardSwings++;
+        double now = Game1.currentGameTime.TotalGameTime.TotalMilliseconds;
+        string tname = $"{target.Name}({target.TilePoint.X},{target.TilePoint.Y})";
+        if (now - _guardLastReportMs > 15000)
+        {
+            AddRecentEvent("guard", $"🛡️ 贴身自动反击 {tname}", Game1.ticks);
+            _guardLastReportMs = now;
+        }
+        Monitor.Log($"[guard] {(clubSpecial ? "🔨重砸" : "挥")} #{_guardSwings} → {tname} hp={target.Health} "
+            + $"slot={slot} 武器={farmer.Items[slot]?.Name ?? "?"}", LogLevel.Info);
+        _guardLastTarget = tname;
+    }
+
+    /// <summary>🎯 guard 选目标时的"**这会儿打得动吗**"判据。
+    ///
+    /// 【为什么要有它】恒 2026-09-20 真机看出来的："螃蟹类和沙漠甲虫不打（除非能检测到它移动）"。
+    ///   我那次真机测试正好撞上：贴着 Rock Crab 连挥 16 刀，它 HP 只从 272 掉到 268 —— **白挥**。
+    ///
+    /// 【游戏自己的机制】（反编译逐行核过 —— **不用去猜"它动没动"**）
+    ///   · `RockCrab.takeDamage`（`RockCrab.cs:143`）：
+    ///     `else if (Sprite.currentFrame % 4 == 0 && !shellGone.Value) { num = 0; playSound("crafting"); }`
+    ///     ⇒ **还装着石头时伤害恒为 0**（"叮"一声，像敲在石头上）。
+    ///   · `RockCrab.update`（`:202`）：`if (!withinPlayerThreshold() && !shellGone.Value) Halt();`
+    ///     ，且随后 `else { if (!shellGone.Value) return; ... }` ⇒ **`shellGone=false` 的螃蟹根本不动**。
+    ///     ⇒ 恒说的"检测到它移动才打得动"**跟 `shellGone` 是同一件事**，而 `shellGone` 是**精确信号**：
+    ///       没有检测延迟、不会误判，而且 Truffle Crab 那种"靠近就自己脱壳"（`:206`）也一并覆盖。
+    ///   · 🪵 **Stick Bug（竹节虫）就是 RockCrab 的一个变体**（`makeStickBug()`，`:68`，`Name="Stick Bug"`，
+    ///     由 `MineShaft.cs:4175` 生成）—— 同一个 `shellGone` 门。而且它更狠：`hitWithTool`（`:98`）
+    ///     对竹节虫**直接 `return false`**（镐子敲不动），炸弹那条破壳分支也带 `!isStickBug` ⇒ **炸弹也不脱壳**。
+    ///   · ⚠️ 破壳正路是**镐子敲 5 下**（`performToolAction`，`:102`，`shellHealth` 5→0）——
+    ///     那是**人的活儿，不是 guard 的**。guard 只挥武器、只转向不移动，**这里就是"不挥"**；
+    ///     要敲壳得 AI 自己 `scene use` 换镐子上，**别自作主张去补镐子**（那会跟"只挥武器"打架）。
+    ///
+    /// 【顺带挡掉的】`isInvincible()`（通用无敌帧 + Leaper 蜷缩，`Monster.cs:369` / `Leaper.cs:66`）
+    ///   和 `IsInvisible`（`NPC.cs:736`）—— 这两种挥了同样一点伤害都没有。
+    /// </summary>
+    private static bool GuardTargetable(Monster? m)
+    {
+        if (m == null || m.Health <= 0) return false;
+        if (m.IsInvisible || m.isInvincible()) return false;
+        if (m is RockCrab crab && !crab.shellGone.Value) return false;
+        return true;
+    }
+
+    /// <summary>🧭 玩家格 → 目标格的**朝向**（0上 1右 2下 3左）。
+    /// ⚠️ 本文件**没有**"格→格朝向"的现成 helper：`GetFacingTile` 是**反方向**（朝向→格），
+    ///   `/face` 只收一个 direction 数字。所以补这一个。
+    ///
+    /// 规则 = **主轴优先**（|dx| 大走左右，否则上下）；**平手（正对角 1,1）取左右** ——
+    ///   剑的 AoE 是朝向前方那一条并按动画帧横扫（`getAreaOfEffect`，`MeleeWeapon.cs:695`），
+    ///   横扫那一侧更容易蹭到对角。
+    ///   ⚠️ 但**别指望一刀必中**：正对角的怪本来就在 AoE 边上，miss 一次是预期内的
+    ///   —— 恒已接受（怪会自己走进正面那一格）。
+    /// 同格（dx=dy=0，怪踩在玩家身上）返回 **-1** = "连朝向都别写"
+    ///   （为什么不能白写朝向，见 `GuardTick` 方法头 ⛔①）。
+    /// </summary>
+    private static int GuardFacing(int px, int py, Point tile)
+    {
+        int sdx = tile.X - px, sdy = tile.Y - py;
+        if (sdx == 0 && sdy == 0) return -1;
+        if (Math.Abs(sdx) >= Math.Abs(sdy)) return sdx > 0 ? 1 : 3;
+        return sdy > 0 ? 2 : 0;
+    }
+
+    /// <summary>🧰 guard 用：按名字在背包里找**近战武器**槽位；找不到回 -1。
+    /// 匹配规则**照抄 `/select` 那套两趟**（精确 Name/DisplayName/QualifiedItemId 优先，
+    ///   再 `Contains` 兜底）—— 别另写一套，写第二套就是"两份必然漂移"。
+    /// ⚠️ 只认 `MeleeWeapon`：`/select "Iridium Scythe"` 是能选中**工具镰**的，那不是武器
+    ///   （Python 的 `detect_weapon` 专门为这个打过补丁，见 bomb_common.py 那段注释）。
+    /// </summary>
+    private static int FindMeleeWeaponSlot(Farmer farmer, string name)
+    {
+        if (farmer?.Items == null || string.IsNullOrEmpty(name)) return -1;
+        for (int i = 0; i < farmer.Items.Count; i++)
+        {
+            if (farmer.Items[i] is not MeleeWeapon mw) continue;
+            if (mw.Name.Equals(name, StringComparison.OrdinalIgnoreCase)
+                || (mw.DisplayName ?? "").Equals(name, StringComparison.OrdinalIgnoreCase)
+                || (mw.QualifiedItemId ?? "").Equals(name, StringComparison.OrdinalIgnoreCase))
+                return i;
+        }
+        for (int i = 0; i < farmer.Items.Count; i++)
+        {
+            if (farmer.Items[i] is MeleeWeapon mw
+                && (mw.Name ?? "").Contains(name, StringComparison.OrdinalIgnoreCase))
+                return i;
+        }
+        return -1;
+    }
+
+    /// <summary>🧰 guard 用：C# 自己挑一把武器（Python 没传名字时才走这里）。
+    /// 优先级**照抄 Python 的 `WeaponMixin.detect_weapon`**，别自创：
+    ///   先"非镰的近战武器"，再退到镰 —— 这是 2026-08-10 被"拿大镰刀挥挥挥"打出来的规矩
+    ///   （实测 Iridium Scythe 是 `MeleeWeapon(wtype=3)` 且背包排第 3，会抢在银河锤前面）。
+    /// 📌 已知不如 Python 的地方：不看伤害、不看 weapon_override。所以**正常路径永远是
+    ///   Python 传名字进来**（`MineBot.detect_weapon()` 已经把优先级算完了），
+    ///   这里只是"手搓 curl 开 guard"时的兜底。
+    /// </summary>
+    private static int PickBestMeleeSlot(Farmer farmer)
+    {
+        if (farmer?.Items == null) return -1;
+        for (int i = 0; i < farmer.Items.Count; i++)
+            if (farmer.Items[i] is MeleeWeapon mw && !mw.isScythe()) return i;
+        for (int i = 0; i < farmer.Items.Count; i++)
+            if (farmer.Items[i] is MeleeWeapon) return i;
+        return -1;
+    }
+
     // --- Helpers ---
 
     private void EnqueueMainThread(Action action)
@@ -20594,6 +21101,28 @@ public class ModEntry : Mod
             {
                 if (b != null && !b.isMoving && !b.isTilePassable(tileVec))
                     return false;
+            }
+        }
+        catch { }
+
+        // 🪨 2026-09-20 恒「还有你说的可通行性」：**resourceClumps（2×2 大石头/树桩/原木/陨石）
+        //    以前一个字都没查**。反编译实锤：`GameLocation.isTilePassable`（GameLocation.cs:2898）
+        //    **只查两样** —— Back 层有没有 `Passable` 属性、Buildings 层有没有实心块
+        //    ⇒ 上面那道关卡对资源堆**恒放行**（跟 09-12 查出来的"水格从来没被拦过"是同一个病）。
+        //    而走位是**直接改 `farmer.Position`**（见上面建筑那段的 :20581）⇒
+        //    **尺子说能走，角色就真穿过去了**，游戏自己的碰撞根本没机会介入。
+        //    判据照抄游戏自己的碰撞掩码（`GameLocation.cs:2615`）：它按**包围盒相交**判 ——
+        //    `resourceClump.getBoundingBox()`（`ResourceClump.cs:445`）=
+        //    `Rectangle(瓷砖X*64, 瓷砖Y*64, w*64, h*64)` ⇒ 对"一个查询格"来说，
+        //    逐格等价物就是 `occupiesTile(x,y)`（`ResourceClump.cs:448`，同一段算术）。
+        //    ⚠️ **不自己写 `tile.X + width`**：`width`/`height` 都是 NetInt，
+        //       写死 2×2 会在将来出现非 2×2 的资源堆时**静默算错**（判据别放消费侧猜）。
+        //    ⚠️ 管的是**可通行性**，不是"能不能敲"——敲的工具等级门槛在 `clear_area`/`ValidateToolUse`。
+        try
+        {
+            foreach (var rc in location.resourceClumps)
+            {
+                if (rc != null && rc.occupiesTile(tile.X, tile.Y)) return false;
             }
         }
         catch { }

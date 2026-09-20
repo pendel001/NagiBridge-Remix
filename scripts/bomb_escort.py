@@ -28,7 +28,7 @@ os.environ.setdefault("NAGI_URL", "http://localhost:7843")
 os.environ.setdefault("NAGI_HOST_URL", "http://localhost:7842")
 
 from bomb_common import (BombMiner, log, is_mine_location, BOMB_RADIUS,
-                         HIGH_VALUE_ORES, rock_score)
+                         HIGH_VALUE_ORES, rock_score, parse_food_list)
 
 
 class EscortBot(BombMiner):
@@ -403,8 +403,13 @@ def main():
     parser.add_argument("--bomb", type=str, default="Bomb", help="炸弹类型：Bomb/Mega Bomb/Cherry Bomb")
     parser.add_argument("--ore-radius", type=int, default=8, help="炸矿范围：user周围多少格内（默认8）")
     parser.add_argument("--cooldown", type=int, default=20, help="两次炸弹最小间隔秒数（默认20）")
-    parser.add_argument("--hp-threshold", type=int, default=30, help="血量低于此%撤退（默认30）")
+    parser.add_argument("--hp-threshold", type=int, default=30, help="血量低于此%%撤退（默认30）")
     parser.add_argument("--max-minutes", type=int, default=None, help="最多跟随分钟数")
+    parser.add_argument("--no-guard", action="store_true", help="🛡️ 关掉 C# 侧贴身自动防御（A/B 对照用）")
+    parser.add_argument("--food-hp", type=str, default=None,
+                        help="🍽️ 回血食物（逗号分隔、靠前的先吃，如 '奶酪,鱼肉卷'）；不传=自动挑")
+    parser.add_argument("--food-sta", type=str, default=None,
+                        help="🍽️ 体力食物（逗号分隔、靠前的先吃，如 '沙拉,面包'）；不传=自动挑")
     args = parser.parse_args()
 
     from bomb_common import NAGI_URL, HOST_URL
@@ -415,7 +420,20 @@ def main():
     bot = EscortBot(port, hport, bomb_type=args.bomb,
                     ore_radius=args.ore_radius, cooldown=args.cooldown,
                     hp_threshold=args.hp_threshold)
-    bot.run(max_minutes=args.max_minutes)
+    # 🍽️ 2026-09-20 恒：自定义吃食 —— 点名 + 优先级（逗号分隔、靠前的先吃）；不传=自动挑
+    bot.food_hp = parse_food_list(args.food_hp)
+    bot.food_sta = parse_food_list(args.food_sta)
+    # 🛡️ 2026-09-20 恒：贴身自动防御（见 ModEntry.GuardTick）。
+    #    ⚠️ 本脚本**贴身跟着恒跑** —— 原先"怕剑的 AoE 误伤恒"正是把它排除在外的理由之一，
+    #      现已被反编译证伪：`GameLocation.damageMonster` 只处理
+    #      `characters[num] is Monster`，玩家不在 `loc.characters` 里 ⇒ **打不到玩家**。
+    if not args.no_guard:
+        bot.guard_on()
+    try:
+        bot.run(max_minutes=args.max_minutes)
+    finally:
+        if not args.no_guard:
+            bot.guard_off()
 
 
 if __name__ == "__main__":
