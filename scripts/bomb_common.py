@@ -851,6 +851,11 @@ class BombMiner(WeaponMixin):
     RETREAT_HP_ABS = 35
     RETREAT_TOD = 2430
     EAT_RECOVER_MAX = 3   # 连吃这么多次仍没回上血 → 判"回不上来"，当撤退信号
+    # ⏳ `eat_recovery` 吃完等回血的**上限**（轮询到真回血就提前走，不盲等满）。
+    #    ⚠️ 2026-09-20 实测（恒这趟沙漠跑掐出来的）：结算发生在 **~2.5 秒**
+    #       —— 手动吃一块奶酪，采样 0.6/1.1/1.6/2.1s 都还是 131，**2.7s 才变 180**。
+    #       原来盲等 **2.0 秒**采样一次就当作"回没回"的判据 ⇒ **每次都在结算前读到"没回"**。
+    EAT_SETTLE_TIMEOUT = 4.0
 
     def unsafe_reason(self):
         """返回"该撤了"的原因串（None=安全）。血/时间/**吃回不上来**三类分开报——
@@ -1078,7 +1083,17 @@ class BombMiner(WeaponMixin):
             elif cat in ("Forage", "采集品", "Flower", "花"):
                 continue  # 采集/花类未知物品不可食（Sap/花），别浪费（2026-08-10 火山吃 Sap bug）
             q = int(it.get("quality", 0) or 0)
-            hp_rec = FOOD_RECOVERY.get(name, (30, 15))[1]   # 未知食物默认补15
+            # 🩹 回血量**优先用游戏给的真值**（`/state` 的 `healthRecovered` = 反编译的
+            #    `healthRecoveredOnConsumption()`），只在它缺席时才退到手抄表。
+            #    ⚠️ 手抄表（`FOOD_RECOVERY`）是 1.5 年代的数：只列了十几种，**且数算错**
+            #    —— 1.6 是 `ceil(Edibility*2.5)+Quality*Edibility` 再 ×0.45，
+            #    表里"Cheese→38"而真值 56、"Fish Taco"干脆没有（于是被当成默认 15）。
+            #    后果不只是显示错：`eff = hp_rec / 卖价` 是**排序依据**，用它挑"补得满的"会挑错人。
+            #    （同族教训：`ModEntry.cs` 状态条也是同一套 1.5 老公式 —— 那份要重启游戏才改得动。）
+            hp_rec = it.get("healthRecovered")
+            if hp_rec is None:
+                hp_rec = FOOD_RECOVERY.get(name, (30, 15))[1]   # 拿不到真值才用手抄表（未知食物默认15）
+            hp_rec = int(hp_rec)
             value = max(int(it.get("value", 0) or 0), 1)
             eff = hp_rec / (value * (1 + 0.5 * q))          # 含星级：高星实际卖价贵→性价比低→留卖
             foods.append((name, hp_rec, eff))
@@ -1105,15 +1120,33 @@ class BombMiner(WeaponMixin):
                 priority = 0
             return (-priority, -f[2])
         foods.sort(key=rank)
-        # 自适应血量：优先吃补得满的；硬兜底/补不满吃排序最前
+        # ── ① 点名优先（2026-09-20 恒拍板，与 `eat_if_needed` 同一套规矩）──
+        #    ⚠️ 原来这里**根本不读 `self.food_hp`**：恒点名「鱼肉卷,奶酪」，真机日志却是
+        #       `🍽️ 自保吃 Cheese(回38) HP 42%` —— 鱼肉卷 20 个**一个没动**，点名在三个炸矿
+        #       脚本里是**死的**。根因：`bomb_*` 的血线自保走的是**本函数**（`bomb_mine.py:458`），
+        #       不是 `eat_if_needed`；我当初只改了后者。
+        #       通式教训：**给消费方写了分支 ≠ 消费方拿得到数据**（同族：`/state` 瘦/`/menu` 详）。
+        #    · 点名命中 → 就吃它（不再走"补得满/菠萝优先"那套排序）
+        #    · 整张表都没货 → **吭一声**再退回自动挑（绝不静默：静默会让"我点名了"和"点名没生效"
+        #      在日志里长得一模一样）
+        named = parse_food_list(self.food_hp) if getattr(self, "food_hp", None) else []
         chosen = None
-        if hp_pct >= hard:
-            for f in foods:
-                if f[1] >= gap:
-                    chosen = f[0]
-                    break
+        if named:
+            picked = pick_food_by_priority(named, {f[0] for f in foods})
+            if picked:
+                chosen = picked
+            else:
+                log(f"  ⚠️ 点名的回血食物一个都没吃上（表：{','.join(named)}）"
+                    f" —— 退回自动挑（想吃点名的，请先确保它们在包里）")
+        # ② 没点名（或点名全没货）：自适应血量——优先吃补得满的；硬兜底/补不满吃排序最前
         if chosen is None:
-            chosen = foods[0][0]
+            if hp_pct >= hard:
+                for f in foods:
+                    if f[1] >= gap:
+                        chosen = f[0]
+                        break
+            if chosen is None:
+                chosen = foods[0][0]
         # 拟人吃：先停下（边走边吃动画不生效），再吃 + 等 2 秒动画播完（回血在 doneEating 结算）
         try:
             for _ in range(5):
@@ -1126,20 +1159,37 @@ class BombMiner(WeaponMixin):
         self.eat(chosen)
         self._last_eat = time.time()
         log(f"  🍽️ 自保吃 {chosen}(回{FOOD_RECOVERY.get(chosen, (0, 0))[1]}) HP {hp_pct:.0f}%")
-        time.sleep(2.0)  # ⚠️ 等动画播完，回血由 eatObject→doneEating 结算（IsActive 补丁后后台也可靠）
+        # ⏳ 等回血落地：由 eatObject→doneEating 结算。
+        # ⚠️ 2026-09-20 改（恒这趟沙漠跑掐出来的，代价=整趟在第 136 层被误判撤退）：
+        #    原来这里 `time.sleep(2.0)` 后**只采样一次**，那一枪就定"回没回"。而实测结算在 **~2.5s**
+        #    （手动吃奶酪：0.6/1.1/1.6/2.1s 都还是 131，2.7s 才 180）⇒ **每一枪都打在结算之前**
+        #    ⇒ `_recover_streak` **必然** 1→2→3 ⇒ `unsafe_reason()` 判"回不上来" ⇒ 撤退。
+        #    真机现场：103/180（57%）撤的，而血其实一直在回（76→103）。
+        #    注意它**测的从来不是"回不上来"，是"我采样太早"** —— 判据错在尺子上，不在世界。
+        #    改：轮询到真回血为止（真回了立刻走，常态反而比盲等快）。
+        hp2, max2 = hp, maxhp
+        deadline = time.time() + self.EAT_SETTLE_TIMEOUT
+        while time.time() < deadline:
+            time.sleep(0.25)
+            try:
+                p2 = self.state().get("player", {})
+                hp2 = p2.get("health", hp2)
+                max2 = p2.get("maxHealth", max2) or 1
+            except Exception:
+                continue
+            if hp2 > hp + 1:
+                break
         # 兜底：吃完仍低于 hard → /heal 救急（吃动画被打断/异常时不至于死）
         try:
-            s2 = self.state()
-            p2 = s2.get("player", {})
-            hp2 = p2.get("health", 0)
-            max2 = p2.get("maxHealth", 1)
-            # 🩸 收敛计数（2026-09-19 新增）：等满 2 秒动画却**一点血都没回**（+1 容差算没回）——
-            #    典型就是"边吃边挨打"。连中 EAT_RECOVER_MAX 次 ⇒ unsafe_reason() 判"回不上来" ⇒
-            #    主循环撤退。**这条是砍掉"站着吃挨打直到死"的关键**（光有 HP<20 只解决"何时该撤"，
-            #    解决不了"撤之前一直在原地吃"）。
+            # 🩸 收敛计数（2026-09-19 新增，2026-09-20 修）：**等满 EAT_SETTLE_TIMEOUT 仍**一点血
+            #    都没回（+1 容差）才计数——典型就是"边吃边挨打"。连中 EAT_RECOVER_MAX 次 ⇒
+            #    unsafe_reason() 判"回不上来" ⇒ 主循环撤退。
+            #    **这条是砍掉"站着吃挨打直到死"的关键**（光有 HP<35 只解决"何时该撤"，
+            #    解决不了"撤之前一直在原地吃"）。所以它必须准 —— 误报的代价是**好端端把整趟掐停**。
             if hp2 <= hp + 1:
                 self._recover_streak += 1
-                log(f"  🩸 吃完血没回（{hp}→{hp2}），连 {self._recover_streak}/{self.EAT_RECOVER_MAX} 次")
+                log(f"  🩸 吃完血没回（{hp}→{hp2}，等满 {self.EAT_SETTLE_TIMEOUT:.0f}s），"
+                    f"连 {self._recover_streak}/{self.EAT_RECOVER_MAX} 次")
             else:
                 self._recover_streak = 0
             if max2 and hp2 / max2 * 100 < hard:

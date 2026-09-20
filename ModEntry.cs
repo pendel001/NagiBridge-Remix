@@ -573,6 +573,46 @@ public class ModEntry : Mod
     private double _guardLastReportMs = -99999;  // 上次播报的游戏毫秒（防洪）
     private string _guardLastTarget = "";        // 最近一次的目标 "墓碑(12,34)"
 
+    // 🔬 诊断（2026-09-20 恒真机掐出来：「头骨矿洞里啥都不打」）。
+    //   **症状**：`UndergroundMine121+` 里 guard 一刀不挥（人站着不动、飞蛇贴到**同格**、
+    //   血 180→38 都没反应）；同一份代码在普通矿井（Mine 1/2/5/15）里 43 刀全中。
+    //   **难点**：`/guard` 只会报"挥了几刀"，**报不出"为什么不挥"** ⇒ 我先前的三个假设
+    //   （网络位置滞后 / 炸矿太忙 `UsingTool` 卡住 / 两端 `characters` 不一致）**逐个被真机证伪**，
+    //   却没有手段再往下切。所以加这一组**纯粹用来回答"卡在哪一步"**的只读字段。
+    //   `_guardBlock` 就是"这一 tick 走到哪道门就 return 了"的编号（见 `GuardBlockName`）；
+    //   后三个是**当前图上到底有多少角色/怪、最近的怪几格** —— 它们能一刀切开
+    //   「`currentLocation.characters` 在头骨矿洞里是空的」（数据源问题）
+    //   和「列表里有怪、但被某道门挡住了」（判据问题）。
+    //   ⚠️ 只在主线程写、读的是 int ⇒ HTTP 线程直接读安全，不用加锁。
+    private int _guardBlock = -1;            // -1=未评估 / 0=挥了 / >0 = 第几道门（GuardBlockName 查表）
+    private int _guardCharsTotal = -1;       // 当前地图 characters 总数（-1=没采样到）
+    private int _guardCharsMonsters = -1;    // 其中 Monster 数
+    private int _guardNearestMonster = -1;   // 最近的怪离玩家的切比雪夫距离（-1=没怪）
+
+    /// <summary>🔬 `_guardBlock` 的编号 → 人话。**编号必须与 `GuardTick` 里的赋值一一对应**，
+    /// 加门就得两边一起加（这里的规矩跟 `/guard` 那份模型头注释一样：别让判据漂移）。</summary>
+    private static string GuardBlockName(int b) => b switch
+    {
+        -1 => "未评估（guard 关 / 世界没就绪）",
+        0 => "✅ 挥了",
+        1 => "世界没就绪",
+        2 => "guard 关着",
+        3 => "⛔ 这是房主进程（IsMainPlayer）",
+        4 => "血<=0",
+        5 => "开着菜单（activeClickableMenu）",
+        6 => "事件/节庆中（farmEvent/eventUp）",
+        7 => "游泳/浴衣/桥上",
+        8 => "isInBed（躺床）",
+        9 => "骑着马",
+        10 => "嘴里有东西（isEating/itemToEat）",
+        11 => "正在蓄力（_isChargingTool）",
+        12 => "🎬 UsingTool —— 工具/挥击动画还没播完",
+        13 => "3×3 内没有打得动的怪",
+        14 => "背包里找不到近战武器",
+        15 => "currentLocation 为空",
+        _ => $"未知({b})",
+    };
+
     // Tool area 蓄力补漏（取余补站位，2026-08-15）：主流程后自检漏格 → 聚矩形再蓄力补。
     private List<(int tx, int ty)> _toolAreaTargets = new();
     private string _toolAreaOperation = "till";   // 逐锚点验证用（till/water）
@@ -980,6 +1020,10 @@ public class ModEntry : Mod
         _guardPendingRestore = -1;
         _guardLastReportMs = -99999;
         _guardLastTarget = "";
+        _guardBlock = -1;
+        _guardCharsTotal = -1;
+        _guardCharsMonsters = -1;
+        _guardNearestMonster = -1;
     }
 
     private void ClearMovementState()
@@ -1776,7 +1820,17 @@ public class ModEntry : Mod
                     return string.Join(" ", tbits);
                 }
                 case StardewValley.Object obj when obj.Edibility > 0:
-                    return $"恢复{obj.Edibility}体力/{Math.Max(1, (int)(obj.Edibility * 0.45))}血";
+                    // 🐛 2026-09-20 修：这里原来是**1.5 年代的老公式**（拿 `Edibility` 直接当体力、
+                    //    拿 `Edibility*0.45` 当血）。1.6 两者都改了（反编译 `Object.cs:3892-3922`）：
+                    //      体力 = staminaRecoveredOnConsumption() = ceil(Edibility * 2.5) + Quality * Edibility
+                    //      血   = healthRecoveredOnConsumption() = (int)(体力 * 0.45f)
+                    //        （特例：(O)874 → ×0.68；(O)773 生命药水 → 血 999；`Edibility < 0` → 血 0）
+                    //    ⇒ 旧公式**双双少报 2.5 倍，还漏掉星级加成**。真机现场（恒点名鱼肉卷）：
+                    //      状态条写"恢复66体力/29血"，而 `/state` 与游戏真值是 **165体力/74血**。
+                    //    ⚠️ 两份数会漂移的根治法不是"再抄一份公式"，而是**问游戏要** —— 直接调它的方法。
+                    //      这也正是恒那条"**判据别放消费侧猜**"：让游戏自己说，别在显示层重算。
+                    return $"恢复{obj.staminaRecoveredOnConsumption()}体力"
+                         + $"/{Math.Max(0, obj.healthRecoveredOnConsumption())}血";
                 default:
                     return "";
             }
@@ -11129,6 +11183,14 @@ public class ModEntry : Mod
                         swings = _guardSwings,
                         lastTarget = _guardLastTarget,
                         isMainPlayer = Game1.player?.IsMainPlayer ?? true,
+                        // 🔬 诊断（2026-09-20）：**"为什么没挥"的唯一答案来源**。
+                        //   `block`=这一 tick 卡在哪道门（0=挥了）、`charsMonsters`=当前图上有几只怪。
+                        //   这两个数一起看就能一刀切开"看不见怪"和"看见了但被门挡住"。
+                        block = _guardBlock,
+                        blockName = GuardBlockName(_guardBlock),
+                        charsTotal = _guardCharsTotal,
+                        charsMonsters = _guardCharsMonsters,
+                        nearestMonster = _guardNearestMonster,
                         note = "guard = 每 tick 找 3×3 内的怪，转身+挥近战武器，不移动"
                     });
                     return;
@@ -11169,6 +11231,12 @@ public class ModEntry : Mod
                 {
                     _guardWeaponName = weapon;   // 空 = 每次挥击时 C# 自己挑
                     _guardNoWeapon = false;
+                    // ⚠️ 2026-09-20 修：**开的时候清零**。原来 `_guardSwings` 是**跨趟累计**，
+                    //    于是炸矿脚本收工那句"本趟共挥 N 刀"报的是**从开机到现在的总数**
+                    //    （真机现场：两趟沙漠跑各报"本趟 43 刀"，而 43 全是更早一趟的）。
+                    //    这正是恒那套"**尺子**"教训：计数器的口径必须和它的措辞一致。
+                    _guardSwings = 0;
+                    _guardBlock = -1; _guardCharsTotal = -1; _guardCharsMonsters = -1; _guardNearestMonster = -1;
                     AddRecentEvent("guard",
                         $"🛡️ 贴身防御已开启（{(weapon.Length > 0 ? weapon : "自动挑")}）", Game1.ticks);
                     Monitor.Log($"[guard] ON weapon='{(weapon.Length > 0 ? weapon : "(auto)")}'", LogLevel.Info);
@@ -20542,55 +20610,83 @@ public class ModEntry : Mod
             _guardPendingRestore = -1;
         }
 
-        if (!_guardOn) return;                                       // ③
+        if (!_guardOn) { _guardBlock = 2; return; }                  // ③
 
         // ④ ⛔硬门：这个进程的 Game1.player 是恒（房主）⇒ **绝对不替他挥剑**。
         //    （`/guard on` 在房主进程上会直接报错，这里是不依赖调用方的第二道保险。）
-        if (farmer.IsMainPlayer) return;
+        if (farmer.IsMainPlayer) { _guardBlock = 3; return; }
+
+        // 🔬 采样（2026-09-20 诊断）：**放在所有门之前**。原因：要回答的那个问题是
+        //    "头骨矿洞里为什么一刀不挥"，而"卡在哪道门"和"这张图上到底有几只怪"
+        //    是**两个独立的未知** —— 采样若放在门后面，被门挡住的那一 tick 就采不到数，
+        //    等于用"挡住"掩盖了"列表是空的"，两个病看起来一模一样。
+        //    代价：每 tick 多一次 `characters` 遍历（这个列表通常个位数，可忽略）。
+        var loc = farmer.currentLocation;
+        if (loc == null) { _guardBlock = 15; return; }
+        int cx = farmer.TilePoint.X, cy = farmer.TilePoint.Y;
+        {
+            int nChar = 0, nMon = 0, nearest = -1;
+            foreach (var c in loc.characters)
+            {
+                nChar++;
+                if (!(c is Monster mm)) continue;
+                nMon++;
+                int dd = Math.Max(Math.Abs(mm.TilePoint.X - cx), Math.Abs(mm.TilePoint.Y - cy));
+                if (nearest < 0 || dd < nearest) nearest = dd;
+            }
+            _guardCharsTotal = nChar;
+            _guardCharsMonsters = nMon;
+            _guardNearestMonster = nearest;
+        }
 
         // ⑤ 游戏自己的 leftClick 门（MeleeWeapon.cs:487）——逐条照抄，别凭感觉加减
-        if (farmer.health <= 0) return;
-        if (Game1.activeClickableMenu != null) return;   // 开背包/菜单时不动手
-        if (Game1.farmEvent != null) return;
-        if (Game1.eventUp) return;
-        if (farmer.swimming.Value || farmer.bathingClothes.Value || farmer.onBridge.Value) return;
+        if (farmer.health <= 0) { _guardBlock = 4; return; }
+        if (Game1.activeClickableMenu != null) { _guardBlock = 5; return; }   // 开背包/菜单时不动手
+        if (Game1.farmEvent != null) { _guardBlock = 6; return; }
+        if (Game1.eventUp) { _guardBlock = 6; return; }
+        if (farmer.swimming.Value || farmer.bathingClothes.Value || farmer.onBridge.Value) { _guardBlock = 7; return; }
         // ⑤补：反编译里没有、但这条路必须有的三条
-        if (farmer.isInBed.Value) return;                // 躺床时姿势是躺的，别举剑
-        if (farmer.isRidingHorse()) return;              // 骑马：DoDamage 末尾会 forceCanMove 把动画掐了
-        if (farmer.isEating || farmer.itemToEat != null) return;   // 嘴里有东西：挥击会把吃东西拆了
+        if (farmer.isInBed.Value) { _guardBlock = 8; return; }                // 躺床时姿势是躺的，别举剑
+        if (farmer.isRidingHorse()) { _guardBlock = 9; return; }              // 骑马：DoDamage 末尾会 forceCanMove 把动画掐了
+        if (farmer.isEating || farmer.itemToEat != null) { _guardBlock = 10; return; }   // 嘴里有东西：挥击会把吃东西拆了
 
         // ⑥ 别抢正在播的动画（`UsingTool` 是权威信号，见方法头）
-        if (_isChargingTool) return;   // 双保险：调用点本来就在蓄力块之后；
+        if (_isChargingTool) { _guardBlock = 11; return; }   // 双保险：调用点本来就在蓄力块之后；
                                        //   万一以后有人挪了调用点，这条能挡住"挥剑打断蓄力"
                                        //   （那样会打出 ok:true 却一格没锄的假成功）
-        if (farmer.UsingTool) return;
+        if (farmer.UsingTool) { _guardBlock = 12; return; }
+
+        // ⑧ 选武器槽。**每次挥击都重算**，不缓存 index —— 背包会变（Python 边挖边捡），
+        //    缓存的槽位会指到别的物品上（"手里莫名多了个山洞萝卜"式的事故）。
+        //    ⚠️ 2026-09-20：整段**挪到找怪之前** —— `GuardTargetable` 现在要看着这把武器
+        //       才判得出"沙漠甲虫打不打得到"（`Bug.isArmoredBug` + BugKiller 附魔）。
+        //       挥击用的槽位在下面**再算一次**，"每次重算"的语义一个字没变；
+        //       这里多算的一次**只用于筛选**，不参与执行。
+        int slot = _guardWeaponName.Length > 0
+            ? FindMeleeWeaponSlot(farmer, _guardWeaponName)
+            : PickBestMeleeSlot(farmer);
+        var guardWeapon = slot >= 0 ? farmer.Items[slot] as MeleeWeapon : null;
 
         // ⑦ 找怪：切比雪夫半径 1 = 玩家所在 3×3。**用 foreach 不用 LINQ**——
         //    这是 60fps 的热路径，`OfType<>().Where(闭包)` 每 tick 都要分配枚举器 + 闭包，
         //    白给 GC 添活。（枚举语义与 /surroundings 一致，只是半径换成 1。）
-        var loc = farmer.currentLocation;
-        if (loc == null) return;
-        int cx = farmer.TilePoint.X, cy = farmer.TilePoint.Y;
         Monster? target = null;
         int bestD = int.MaxValue;
         foreach (var m in loc.characters.OfType<Monster>())
         {
-            // ⛔ 打得动的才当目标（装石头的螃蟹 / 竹节虫 / 无敌帧 / 隐身 —— 见 GuardTargetable）
-            if (!GuardTargetable(m)) continue;
+            // ⛔ 打得动的才当目标（装石头的螃蟹 / 竹节虫 / 沙漠甲虫 / 无敌帧 / 隐身 —— 见 GuardTargetable）
+            if (!GuardTargetable(m, guardWeapon)) continue;
             int dx = Math.Abs(m.TilePoint.X - cx), dy = Math.Abs(m.TilePoint.Y - cy);
             if (dx > 1 || dy > 1) continue;     // 切比雪夫半径 1
             int d = dx + dy;                    // 贴脸(0) > 正前(1) > 对角(2)
             if (d < bestD) { bestD = d; target = m; }
         }
-        if (target == null) return;
+        if (target == null) { _guardBlock = 13; return; }
+        _guardBlock = 0;   // 走到这儿就是真要挥了（下面 ⑨ 里若"没武器"再改写成 14）
 
-        // ⑧ 选武器槽。**每次挥击都重算**，不缓存 index —— 背包会变（Python 边挖边捡），
-        //    缓存的槽位会指到别的物品上（"手里莫名多了个山洞萝卜"式的事故）。
-        int slot = _guardWeaponName.Length > 0
-            ? FindMeleeWeaponSlot(farmer, _guardWeaponName)
-            : PickBestMeleeSlot(farmer);
         if (slot < 0)
         {
+            _guardBlock = 14;
             // 没武器 = **明确上报 + 当场自关**，不静默装死（宁报错别兜底）。
             // 固定文案 ⇒ 走 EnqueueAlert 的 `type:message` 4 秒节流键，不会刷屏；
             // 自关 ⇒ 不空转，也不让 AI 一直以为背后有人保它。
@@ -20710,11 +20806,25 @@ public class ModEntry : Mod
     /// 【顺带挡掉的】`isInvincible()`（通用无敌帧 + Leaper 蜷缩，`Monster.cs:369` / `Leaper.cs:66`）
     ///   和 `IsInvisible`（`NPC.cs:736`）—— 这两种挥了同样一点伤害都没有。
     /// </summary>
-    private static bool GuardTargetable(Monster? m)
+    private static bool GuardTargetable(Monster? m, MeleeWeapon? guardWeapon)
     {
         if (m == null || m.Health <= 0) return false;
         if (m.IsInvisible || m.isInvincible()) return false;
         if (m is RockCrab crab && !crab.shellGone.Value) return false;
+        // 🐞 沙漠甲虫（`Bug.isArmoredBug`）—— 头骨矿洞的 Bug **全都是**这种：
+        //    `Bug.cs` 的构造里 `if (areaType == 121) { isArmoredBug.Value = true; ... Health = 150; }`
+        //    （121 = 头骨矿洞），而 `Bug.takeDamage`（`Bug.cs:106-113`）第一句就是
+        //      `if (isArmoredBug.Value && (isBomb || !(who.CurrentTool is MeleeWeapon mw)
+        //                                  || !mw.hasEnchantmentOfType<BugKillerEnchantment>()))
+        //           { playSound("crafting"); return 0; }`
+        //    ⇒ **炸弹 / 普通武器 / 镐子 一律 0 伤害**，只有带 `BugKiller` 附魔的近战武器打得动。
+        //    恒 2026-09-20 现场一眼看穿："沙漠甲虫应该不打才正常吧！确实不该打，打不死。"
+        //    ⇒ 手里这把打不动就别当目标（**跟装壳的岩蟹同一族：打得动才当目标**）。
+        //    ⚠️ 判据看着的是 **guard 要用的那把武器**（不是 `CurrentTool`）—— 见 `GuardTick` ⑧。
+        if (m is Bug bug && bug.isArmoredBug.Value
+            && (guardWeapon == null
+                || !guardWeapon.hasEnchantmentOfType<StardewValley.Enchantments.BugKillerEnchantment>()))
+            return false;
         return true;
     }
 
