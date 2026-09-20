@@ -7516,91 +7516,27 @@ def _ops_run(ops_str: str, dispatch: dict, kw: dict) -> str:
 
 
 # ═══════════════════════════════════════════
-#  🗺️ 动态工具检测（2026-08-14 #13，map 联动·修正版）
-#  不拦 AI，只建议：**域工具在错地方时返回建议行**（照跑）。
-#  ⚠️ 2026-09-20：以前还有"状态条报本图可用域"那条路，恒拍板两处留一处 ⇒ 状态条那行已撤，只留 💡。
-#  未解锁地点由 map_go 单独拦截（见 LOCKED_MAPS + /unlocks）。
+#  🗺️ 动态工具检测 —— 🚫 2026-09-21 **整块退役**（DOMAIN_HOME/PREFIX/EXEMPT + _is_domain_applicable
+#     + _domain_advice 全删）。它原本干两件事，两件都没了，**别再往回加**：
+#    · 状态条报"本图可用域" → 2026-09-20 恒「两处留一处，留不推荐的」先撤。那行**每次调用都占位**，
+#      而 `📍 {loc} (x,y)` 就在同一屏，`可用域: farm` 不过是同一件事的第二遍。
+#    · 💡「X 通常在 Y 做」那一行 → 2026-09-21 恒反问「查进度在外面看好像也没什么问题」，
+#      查完坐实**它没活干**：
+#        ① mine 的**动作类** op 本来就都带地点门禁**且带下一步**（`bomb_plan` → "❌ 不在矿洞
+#           （UndergroundMine）里，先 go_to 矿井"、`bomb_mine` → "❌ 现在不在矿井/头骨矿洞/沙漠里
+#           （{cur}）——先 map_go 到…"）；**没门禁的恰好是只读那几个**
+#           （progress/bomb_status/bomb_collect/organize）—— 而那正是它们**不该**有门禁的地方。
+#        ② farm 走的是**自验结果**那条路（锄地报 `✅ 1/1 锄出` / `缺失N格 + 被什么挡着`，
+#           播种报 `✅ 1/1 确认种上（判据=这格真长出 crop）`）⇒ 最坏也是一句诚实的 `0/1`，
+#           **不会静默谎报**（`clear_area` 当年那种"静默搬回农场再清"已经被单独修掉了）。
+#        ③ 💡 反倒**误伤合法查询**：在农场调 `mine progress`（本来就只看电梯层数）平白吃一句
+#           "你该去矿里"。
+#      ⇒ 恒那句「每个工具不能用都有很详细的报错」是**对的**；护栏在 **op 自己的门禁 / 自验**里，
+#        不在这层"按地图猜该不该劝"。
+#  ⚠️ 以后要判"某张图算不算 farm"，**别照抄旧表** —— 那份名单在 `locations.*`
+#     （`FARM_INTERIOR_BUILDINGS` / `FARM_MACHINE_PREFIXES`，导航也在用，同一件事别写两份）。
+#  未解锁地点由 map_go 单独拦截（LOCKED_MAPS + /unlocks），与本块无关。
 # ═══════════════════════════════════════════
-
-# 域 → 适用地图（能干活的功能区；未列出的域任意区可用）
-DOMAIN_HOME = {
-    # ⚠️ 2026-08-15 恒：温室/姜岛农场也是 farm 适用区（之前只认 Farm，温室给错建议）
-    # 🐄 2026-09-16 恒：畜棚/鸡舍内部**本来就是 farm 的工作场所** —— hay 加干草（饲料槽是畜棚
-    #    自带的，棚外没有）、喂水 宠物碗、畜舍 摸动物，全都只能在棚内做。以前不在表里 ⇒ 棚内调
-    #    farm 会吃到「💡 farm 通常在Farm做 → map go Farm」的**反建议**
-    #    （饲料槽那事就是这么被拱出来的）。
-    #    ⚠️ 必须列**全名**：`_is_domain_applicable` 的前缀匹配是 `cur.startswith(p)`，而
-    #       "Deluxe Barn" 的限定词在**前面** ⇒ 往 DOMAIN_PREFIX 塞 "Barn" 压根匹配不上
-    #       （2026-09-16 第一版就栽在这：doors 测全绿、这条建议却纹丝不动）。矿洞能用前缀
-    #       是因为 `UndergroundMine50` 的数字在后头。
-    #    ⚠️ 只能**追加在尾部**：`DOMAIN_HOME[domain][0]` 被当建议文案里的「家」用，挪了会改口径。
-    #    ⚠️ 2026-09-16 同批补：**棚屋(Big Shed)/地窖(Cellar)** 也是 farm 的工作场所（小桶/罐头瓶/木桶
-    #       全在里面）——刚补完畜棚鸡舍就当场又栽在 Big Shed 上（在小桶屋里上料，头顶还挂着
-    #       「💡 可先 map go Farm」）。名单与导航共用 `locations.*`（同一件事，别写两份）。
-    "farm": ["Farm", "Greenhouse", "IslandWest", "IslandNorth", "IslandEast",
-             *locations.FARM_INTERIOR_BUILDINGS],
-    "mine": ["Mine", "SkullCave"],
-    # 🏠 2026-08-16 恒：小屋域=屋里（FarmHouse/Cabin/岛屋）enum 引导
-    "cabin": ["FarmHouse", "Cabin", "IslandFarmHouse"],
-}
-# 前缀匹配（矿洞/火山各层是独立 location）—— ⚠️ 只适用"限定词在后"的名字
-#    （UndergroundMine50 / VolcanoDungeon3）。"Deluxe Barn" 这种限定词在前的**不能**用前缀，
-#    得去 DOMAIN_HOME 列全名，见那里 2026-09-16 的备注。
-DOMAIN_PREFIX = {
-    "mine": ["UndergroundMine", "VolcanoDungeon"],
-    # 🏠 地窖 Cellar / Cellar2 … Cellar8：限定词在后，"Cellar" 前缀正好能一次盖住 8 个。
-    #    ⚠️ 只进"域适用区"不进导航（出门是两跳，见 locations.FARM_MACHINE_PREFIXES 备注）。
-    "farm": list(locations.FARM_MACHINE_PREFIXES),
-}
-# 免建议的 op：导航类（自己会导航）/ API 直操作
-DOMAIN_EXEMPT = {
-    "mine": {"go", "去"},
-    # ⚠️ 2026-09-20 恒拍板「**哪里都允许它清当前场景**」⇒ `clear`/`清`/`clearground`/`清格` 也豁免：
-    #    `clear_area` 已改成**就地清**（在哪张图就清哪张图的指定区域，见 clear_area.py 头注）。
-    #    不豁免的话，人在矿里清完还会收到「💡 可先 map go Farm」——**跟刚发生的事实打架**。
-    "farm": {"buy", "买", "买动物",          # 买动物去玛妮牧场不在农场（care 域 2026-09-02 并入 farm）
-             "clear", "清", "clearground", "清格"},
-
-    "fish": {"go", "去", "钓", "fish"},
-    "cabin": {"sleep", "睡", "睡觉"},   # sleep 自己会走过去（2026-09-19 起传谁的名字就走谁家）
-}
-
-
-def _is_domain_applicable(domain: str, cur: str) -> bool:
-    """纯地点判断：当前地图是否适用 domain 域（不含 farm 的 HoeDirt 特例）。"""
-    if cur in DOMAIN_HOME.get(domain, []):
-        return True
-    return any(cur.startswith(p) for p in DOMAIN_PREFIX.get(domain, []))
-
-
-def _domain_advice(domain: str, ops_str: str) -> str:
-    """按域建议（不拦）：当前区域不适合该域 → 返回建议行；适合/豁免/读不到 → 空串。"""
-    if domain not in DOMAIN_HOME:
-        return ""
-    try:
-        s = api.state()
-        cur = (s.get("location") or {}).get("name", "")
-    except Exception:
-        return ""
-    if not cur or _is_domain_applicable(domain, cur):
-        return ""
-    # 豁免 op：导航/直操作 → 不啰嗦
-    ops = [o for o in re.split(r"[\s,，]+", (ops_str or "").strip()) if o]
-    exempt = DOMAIN_EXEMPT.get(domain, set())
-    if ops and all(o in exempt for o in ops):
-        return ""
-    # farm 特例：附近有 HoeDirt（温室/姜岛可种植点）也认
-    if domain == "farm":
-        try:
-            surr = api.surroundings(6)
-            if any((t.get("terrain") or "") == "HoeDirt" for t in surr.get("tiles", [])):
-                return ""
-        except Exception:
-            pass
-    home = DOMAIN_HOME[domain][0]
-    # ⚠️ 别在这里重复报 `cur`：状态条那行 `📍 {loc} (x,y)` 已经在 AI 眼皮底下了（2026-09-20 恒：能省则省）。
-    return f"💡 {domain} 通常在{home}做 → map go {home}"
-
 
 def _farm_require_xy(x: int, y: int):
     """x/y **必填**（2026-09-10 恒拍板：删掉「缺坐标→玩家面向格」的兜底）。
@@ -7956,6 +7892,14 @@ def _farm_till(x: int = -1, y: int = -1, rows: int = 1, length: int = 1,
                 _blocked.setdefault("facility", []).append((mx, my, label))
             else:
                 _other.append((mx, my))
+        # 🆕 2026-09-21「整图不可种」判据：**每一格**缺失都满足"地图没标可耕"、且**不是**站位问题。
+        #    ⚠️ 必须排除 `_no_stand`：那是"地没问题、只是四邻没处站"，
+        #       把它算进来会把"被设施围死的一格"误报成"整张图不能种"。
+        _unmarked = [pt for pt in missing
+                     if pt not in _no_stand
+                     and not _tile_obstacle(tiles.get(pt, {}))[0]
+                     and not tiles.get(pt, {}).get('diggable')
+                     and tiles.get(pt, {}).get('terrain') != 'HoeDirt']
         lines.append(f"  ⚠️ 缺失 {len(missing)} 格:")
         for mx, my in missing[:10]:
             info = tiles.get((mx, my), {})
@@ -7980,10 +7924,29 @@ def _farm_till(x: int = -1, y: int = -1, rows: int = 1, length: int = 1,
                 what = f"{what}·{'、'.join(marks)}"
             lines.append(f"    ({mx},{my}) {what}")
         lines.extend(_obstacle_lines(_blocked, verb="锄"))
-        if _other:
-            lines.append(f"  ❔ 另 {len(_other)} 格看不出障碍也没锄成（地图没标可耕地/被水挡？）: "
-                         + " ".join(f"({mx},{my})" for mx, my in _other[:8])
-                         + ("…" if len(_other) > 8 else ""))
+        # 「整图不能种」= 每一格缺失都属"地图没标可耕"（判据见上面 `_unmarked` 那段）
+        _all_unmarked = bool(missing) and len(_unmarked) == len(missing)
+        if _other and not _all_unmarked:
+            # ⚠️ 2026-09-21：别写「**另** N 格」——`_other` 是 `missing` 的**子集**（"看不出障碍"
+            #    那一档），不是另外又多出 N 格；总格数上面 `缺失 N 格` 已经报过，别重复计数。
+            #    ⚠️ 也别再列坐标：同一批格在上面 `({mx},{my}) …` 那几行里已经逐格报过（含各自原因）。
+            #    ⚠️ 而且 `_all_unmarked` 为真时**这句整条略过**：下面那句"全都「地图没标可耕」"
+            #       已经把同一件事说全了，两行 ❔ 挨着只是噪音（恒 2026-09-21：能省则省）。
+            lines.append(f"  ❔ 其中 {len(_other)} 格看不出障碍（地图没标可耕地/被水挡？）")
+        # 🆕 2026-09-21 恒「改进措辞按你认为的来」：一锄都没成、且**每一格**都是"地图没标可耕"时，
+        #    真正的原因多半不是"这几格有问题"，而是**这张图压根不能种地**（真机：Town(43,58)
+        #    `0/1 锄出 · 裸地·地图没标可耕`）。按"**报错必须给下一步**"补一句该去哪，
+        #    别让 AI 对着一个 `0/1` 发呆。
+        #    ⚠️ 这句由 **op 自己的证据**推出（不是另立一张"哪些图算农场"的表 —— 那种表 2026-09-21 刚删）。
+        if _all_unmarked:
+            _cur = ""
+            try:
+                _cur = (api.state().get("location") or {}).get("name") or ""
+            except Exception:
+                pass
+            lines.append("  ❔ 这 " + str(len(missing)) + " 格全都「地图没标可耕」"
+                         + (f"（当前在 {_cur}）" if _cur else "")
+                         + "——**这张图不能种地**，要种先 `map go Farm`（温室/姜岛同理）")
     return "\n".join(lines)
 
 
@@ -8362,8 +8325,6 @@ def farm(ops: str = "", kw: dict | None = None) -> str:
     op_list = [o for o in re.split(r"[\s,，]+", (ops or "").strip()) if o]
     if not op_list:
         return _with_state("❌ ops 为空（如 farm(ops=\"till plant water\")）")
-    # 🗺️ 动态工具检测：不在可种植区 → 建议行（不拦，照跑）
-    _adv = _domain_advice("farm", ops)
     # 🌾 2026-09-19：一条龙那个 op 退役了，**但"一次调用、一份 kw 共用"的组合要保住** ⇒
     #    这里只做**稳定重排**：锄地类 op 一律排在播种类之前（老组合器是"摘掉再合并"，效果等价：
     #    `plant till` 也跑成先锄后种）。其余 op 保持书写顺序不动。
@@ -8427,14 +8388,12 @@ def farm(ops: str = "", kw: dict | None = None) -> str:
     # 🌾 2026-09-19：原来这里有条"till+plant 先合并成一条龙再跑"的特殊分支，**已随该 op 退役删掉**：
     #    现在逐个 op 各跑一次（顺序由上面的"稳定重排"保证锄在种前），**一份 kw 共用**靠
     #    `_FARM_SIBLING_KW` 点名忽略对方参数来兜住。
-    return _with_state((_adv + "\n\n" if _adv else "") + _ops_run(" ".join(op_list), dispatch, kw))
+    return _with_state(_ops_run(" ".join(op_list), dispatch, kw))
 
 
 @mcp.tool()
 def mine(ops: str = "", kw: dict | None = None) -> str:
     """⛏️ 下矿域。go 自动下楼挖矿(mode: rush冲层/farm刷矿；farm 定点刷 ore=Copper铜21/Iron铁41/Gold金71，煤靠铁层41清怪掉) / progress 进度 / bomb_mine 普通炸矿(自动) / bomb_volcano 火山专用炸矿。全 ops+单步炸/协同坑(无镐血低硬拦、火山需 host 同行) → help(mine)。"""
-    # 🗺️ 动态工具检测：progress/bomb_* 建议在矿里做（go 豁免，不拦）
-    _adv = _domain_advice("mine", ops)
     dispatch = {
         "go": go_mining, "rush": go_mining, "farm": go_mining, "去": go_mining,
         "progress": check_mine_progress, "进度": check_mine_progress,
@@ -8444,7 +8403,7 @@ def mine(ops: str = "", kw: dict | None = None) -> str:
         "organize": bomb_organize, "整理背包": bomb_organize,
     }
     _body = _ops_run(ops, dispatch, kw)
-    return _with_state((_adv + "\n\n" if _adv else "") + _body)
+    return _with_state(_body)
 
 
 # ═══════════════════════════════════════════
@@ -8542,8 +8501,6 @@ def _cabin_enum() -> str:
 @mcp.tool()
 def cabin(ops: str = "", kw: dict | None = None) -> str:
     """🏠 小屋/家域（屋内）。sleep 睡觉 / cook 做饭 / 布置家居 / 收放设备 / 摸雕像 等 → help(cabin)。"""
-    # 🗺️ 动态工具检测：小屋域建议在屋里做（sleep 豁免，自己会回家）
-    _adv = _domain_advice("cabin", ops)
     dispatch = {
         "enum": _cabin_enum, "看": _cabin_enum, "引导": _cabin_enum,
         "collect": _cabin_collect, "收": _cabin_collect, "机器": _cabin_collect,
@@ -8560,9 +8517,9 @@ def cabin(ops: str = "", kw: dict | None = None) -> str:
         "cook": cook, "做饭": cook,
     }
     if not (ops or "").strip():
-        return _with_state((_adv + "\n\n" if _adv else "") + _cabin_enum())
+        return _with_state(_cabin_enum())
     _body = _ops_run(ops, dispatch, kw)
-    return _with_state((_adv + "\n\n" if _adv else "") + _body)
+    return _with_state(_body)
 
 
 # ═══════════════════════════════════════════

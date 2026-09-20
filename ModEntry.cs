@@ -10407,16 +10407,40 @@ public class ModEntry : Mod
                         return;
                     }
 
-                    // 从背包取 1 个，设为手持
+                    // 从背包取 1 个
                     var giftOne = (StardewValley.Object)item.getOne();
                     item.Stack -= 1;
                     if (item.Stack <= 0) farmer.Items[idx] = null;
-                    // ⚠️ 同 NPC 那条路：**别用 `farmer.ActiveObject = giftOne`**（会把手持格里原来的
-                    //    东西摘出来销毁，见上面 NPC 分支那段注释 / 任务 #46）。
+
+                    // ⚠️⚠️ 2026-09-21：**绝不写 `farmer.Items[heldSlot]`**。
+                    //    上一版（bba7542）只把"setter 换出销毁"改成"**直接写数组**"，可**成功分支从来没写回**
+                    //    ⇒ 真机复现：手持那格**连东西带格**被顶掉（送 Cheese 成功，破损 CD x2 当场蒸发、
+                    //      背包 35→34）。见 CHANGELOG (104)④ / 任务 #46。
+                    //    现在改成「**礼物放进一个空格 + 把 `CurrentToolIndex` 指过去**」——
+                    //      · 原来手持那件**原地不动**（只是没被选中）⇒ **谁都不会被销毁**；
+                    //      · 游戏照样能把它当"手上的礼物"走 checkAction / SendProposal；
+                    //      · 关键：`reduceActiveItemByOne()` / `ActiveObject` setter 全都按 `CurrentToolIndex`
+                    //        取格子 ⇒ 现在它们打在**礼物那格**，原来那件彻底出了爆炸半径。
                     int heldSlot = farmer.CurrentToolIndex;
-                    bool heldOk = heldSlot >= 0 && heldSlot < farmer.Items.Count;
-                    Item? heldSaved = heldOk ? farmer.Items[heldSlot] : null;
-                    if (heldOk) farmer.Items[heldSlot] = giftOne;
+                    // 优先用刚腾出来的礼物原格（`item.Stack<=0` 时刚置空）；否则找第一个空格
+                    int giftSlot = (farmer.Items[idx] == null) ? idx : -1;
+                    if (giftSlot < 0)
+                    {
+                        for (int i = 0; i < farmer.Items.Count; i++)
+                            if (farmer.Items[i] == null) { giftSlot = i; break; }
+                    }
+                    if (giftSlot < 0)
+                    {
+                        // 满包：**如实报错**（宁报错别兜底）—— 硬写手持格就会顶掉东西，那正是要根治的病
+                        if (farmer.Items[idx] == null) { item.Stack += 1; farmer.Items[idx] = item; }
+                        else farmer.addItemToInventory(giftOne);   // 原格还有同种堆 → 并回去
+                        tcs.SetResult(new { ok = false,
+                            error = "背包没有空格放宽要送的礼物（硬塞会顶掉手上的东西）——"
+                                  + "先腾一格：storage(ops=\"store\") 或 menu click(action=\"discard\")" });
+                        return;
+                    }
+                    farmer.Items[giftSlot] = giftOne;
+                    farmer.CurrentToolIndex = giftSlot;
                     farmer.netItemStowed.Value = false;
 
                     // 站到目标下方一格，面朝目标（面前格 = 目标所在格）
@@ -10434,8 +10458,10 @@ public class ModEntry : Mod
                         farmer);
                     if (!triggered)
                     {
-                        if (heldOk) farmer.Items[heldSlot] = heldSaved;   // 还原手持格（别走 setter）
-                        farmer.addItemToInventory(giftOne);
+                        if (farmer.Items[giftSlot] == giftOne) farmer.Items[giftSlot] = null;  // 撤掉刚放进去的礼物
+                        if (heldSlot >= 0 && heldSlot < farmer.Items.Count)
+                            farmer.CurrentToolIndex = heldSlot;                                // 手持指回原格
+                        farmer.addItemToInventory(giftOne);                                    // 礼物还回背包
                         tcs.SetResult(new { ok = false, error = "没触发送礼交互（目标不在面前或不可送）" });
                         return;
                     }
@@ -10460,11 +10486,16 @@ public class ModEntry : Mod
                         if (!yesClicked)
                         {
                             var f2 = Game1.player;
-                            if (heldOk) f2.Items[heldSlot] = heldSaved;   // 还原手持格（别走 setter）
+                            if (f2.Items[giftSlot] == giftOne) f2.Items[giftSlot] = null;
+                            if (heldSlot >= 0 && heldSlot < f2.Items.Count) f2.CurrentToolIndex = heldSlot;
                             f2.addItemToInventory(giftOne);
                             tcs.SetResult(new { ok = false, error = "送礼对话框未能确认" });
                             return;
                         }
+                        // ✅ 提议发出去了。**礼物这会儿还得挂在手上** —— 对方接受时游戏要靠
+                        //    `reduceActiveItemByOne()` 消耗「当前手持格」。所以**现在不能**立刻把手持指回去，
+                        //    交给 `RestoreHeldWhenSettled` 等这格了结（被收走 / 被退回）后再指回。
+                        RestoreHeldWhenSettled(Game1.player, giftSlot, heldSlot, giftOne);
                         tcs.SetResult(new { ok = true, action = "gift_proposal_sent", target = targetFarmer.Name, item = giftOne.Name, note = "已发送礼物提议，等待对方接受" });
                     }, 400);
                     return;
@@ -10478,6 +10509,44 @@ public class ModEntry : Mod
             }
         });
         return tcs.Task.GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// 🎁 送礼提议发出后的**收尾**：等礼物那一格了结，再把手持格指回原来的位置。
+    ///   · **为什么不能立刻指回**：对方**接受**时游戏调 `reduceActiveItemByOne()`，消耗的是
+    ///     「**当前手持格**」（`CurrentToolIndex`）——提前指回就会**误耗 AI 手里那件工具/武器**。
+    ///   · 判据"了结" = 那格**不再是 giftOne**（被收走 ⇒ 变 null；被换掉 ⇒ 换了对象）。
+    ///   · 上限 ~60s；超时那格还挂着礼物的话，**先把它收回背包再指回**（不丢物）——
+    ///     宁可多还一件，也不能留个"手持指着礼物"的僵尸状态。
+    ///   · 全程吞异常：这是收尾，不该因为读状态失败把玩家卡住。
+    /// 2026-09-21 新增（配合 `give_item` 玩家支路的修复，见 CHANGELOG (104)④ / (106)）。
+    /// </summary>
+    private static void RestoreHeldWhenSettled(Farmer who, int giftSlot, int heldSlot, Item giftOne)
+    {
+        int tries = 0;
+        void Tick()
+        {
+            tries++;
+            try
+            {
+                bool stillThere = giftSlot >= 0 && giftSlot < who.Items.Count
+                                  && ReferenceEquals(who.Items[giftSlot], giftOne);
+                if (!stillThere || tries >= 60)
+                {
+                    if (stillThere)   // 超时还没了结 → 把礼物收回背包，别把它弄丢
+                    {
+                        who.Items[giftSlot] = null;
+                        who.addItemToInventory(giftOne);
+                    }
+                    if (heldSlot >= 0 && heldSlot < who.Items.Count)
+                        who.CurrentToolIndex = heldSlot;
+                    return;
+                }
+                DelayedAction.functionAfterDelay(Tick, 1000);
+            }
+            catch { }
+        }
+        DelayedAction.functionAfterDelay(Tick, 1000);
     }
 
     /// <summary>

@@ -214,7 +214,7 @@
 | `emote` | T3 副作用 |  | ✅ | `session_log:1173` |
 | `friendship` | T1 自动 |  | ✅ | `session_log:1302` |
 | `gift` | T3 副作用 | item_name, npc_name | ✅ | 真机 09-19：送礼正路(台词+好感+周/日计数+背包)/手持非空不毁物/今天已送过被拦/背包没这件/NPC 不存在 — 见 CHANGELOG 92② |
-| `give` | T3 副作用 | item_name, player_name | ❌ | 真机 09-20 第二轮（同图）：**东西送得到，但手持那一格连东西带格一起被顶掉** —— 成功分支 `ModEntry.cs:10468` **从不写回 `heldSaved`**（只在失败分支 `10437`/`10463` 还原）；实测 破损CD x2 蒸发、背包 35→34 格、该格变空。另：**不同图时先把人挪到"对方坐标在本图的位置"再失败**（`give` 假设两人同图）。见 CHANGELOG (104)④ |
+| `give` | T3 副作用 | item_name, player_name | ❌ | 真机 09-20 第二轮（同图）：**东西送得到，但手持那一格连东西带格一起被顶掉** —— 成功分支 `ModEntry.cs:10468` **从不写回 `heldSaved`**（只在失败分支 `10437`/`10463` 还原）；实测 破损CD x2 蒸发、背包 35→34 格、该格变空。另：**不同图时先把人挪到"对方坐标在本图的位置"再失败**（`give` 假设两人同图）。见 CHANGELOG (104)④。**🔧 09-21 已修**（礼物改放空格 + `CurrentToolIndex` 指过去，提议了结后由 `RestoreHeldWhenSettled` 指回；DLL 已双盘部署）—— **⏳ 但没验，仍挂 ❌**，明天重启游戏后复验 |
 | `hand` | T3 副作用 | item_name, player_name | ✅ | `session_log:1355` |
 | `movie` | T2 摆场 | npc | ✅ | `session_log:1631,1634` 无参出全表；npc=阿比盖尔 走 `_movie_npc_plan`（喜爱 +100、糖冰棍 +50）两条分支都对 |
 | `send` | T3 副作用 | message | ✅ | `session_log:698` |
