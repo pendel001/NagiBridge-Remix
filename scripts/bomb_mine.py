@@ -962,7 +962,13 @@ def main():
     except Exception:
         _loc = ""
     _lv = extract_mine_level(_loc) or 0
-    in_skull = _lv >= 121 or _loc.startswith("SkullCave")   # 头骨矿层(≥121) 或 头骨入口
+    # 头骨矿层(≥121) / 头骨入口 SkullCave / **沙漠 Desert**
+    # ⚠️ 2026-09-20 补 `Desert`：原来只认前两个 ⇒ 轮回站在**头骨矿洞门口那张图**(Desert(8,6))
+    #    时，`--target 145` 会被当成"城镇"硬拦（真机现场那句「城镇普通矿井最高【120层】」）。
+    #    沙漠就是去头骨的必经地，在那儿被拦等于"到家门口不让进"。脚本进洞走的是
+    #    `safe_warp("UndergroundMine121")`，不需要先踩进 SkullCave，所以 Desert 收下是对的。
+    #    ⚠️ MCP 的 `bomb_mine` 工具里有一份**同款名单**（nagi_mcp_server.py），改一处要同步另一处。
+    in_skull = _lv >= 121 or _loc.startswith("SkullCave") or _loc == "Desert"
 
     target = args.target
     target_was_default = False   # 是否走了"未指定→默认"的兜底（城镇：没设→120电梯顶；头骨：没设→500深层目标）

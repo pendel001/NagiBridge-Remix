@@ -6118,8 +6118,12 @@ def bomb_mine(target: int = 0, bomb: str = "Bomb", min_covered: int = 3,
                   ⚠️ 点名的整串都没货时会**报一句再退回自动挑**（自动挑可能吃掉你留着卖的）。
     """
     _cur = api.state().get("location", {}).get("name", "")
-    if not (_cur in ("Mine", "SkullCave") or _cur.startswith("UndergroundMine")):
-        return _with_state(f"❌ 现在不在矿井/头骨矿洞里（{_cur}）——先 map_go 到矿井(✓)或头骨矿洞(121+)再炸（防瞬移/音乐乱）")
+    # ⚠️ 2026-09-20 补 `Desert` —— 它就在头骨矿洞门口，是去头骨的必经地；
+    #    原来名单只有 Mine/SkullCave/UndergroundMine* ⇒ 站在沙漠里调 `bomb_mine target=145`
+    #    会被这句拦下（真机现场：轮回 Desert(8,6) 起手就被挡）。
+    #    ⚠️ `bomb_mine.py` 里有一份**同款名单**（`in_skull` 那行），改一处要同步另一处。
+    if not (_cur in ("Mine", "SkullCave", "Desert") or _cur.startswith("UndergroundMine")):
+        return _with_state(f"❌ 现在不在矿井/头骨矿洞/沙漠里（{_cur}）——先 map_go 到矿井(✓)、头骨矿洞或沙漠(121+)再炸（防瞬移/音乐乱）")
     args_list = [f"--target", str(target), f"--bomb", bomb,
                  f"--min-covered", str(min_covered)]
     if food_hp:
