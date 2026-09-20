@@ -2070,15 +2070,59 @@ class BombMiner(WeaponMixin):
         return self.wait_arrival(location, x, y, timeout)
 
     def safe_warp(self, location, x=5, y=5):
+        """warp 到 (location, x, y)，**并校正落点**。
+
+        ⚠️ 2026-09-20 恒真机：「这个**入侵层插楼梯兜底，还是会 warp 到墙外**。好在后面回来了。」
+          根因不是"落点算错"，是**根本没人看过落点**：`/warp` 走的是 `Game1.warpFarmer`，
+          落到哪算哪；原来这里只验证 **地点** 变没变，**从没验证那格能不能站**。
+          而调用方清一色硬编码 `(5,5)`（`bomb_mine.py:447` 感染层保命那条、
+          `bomb_common.py:2657` 追 user 那条、进矿 121 那条），**很多层的 (5,5) 就是墙里/地图外**。
+          最要命的是它是 **`unsafe_reason()` 非空（血<35 / 超时 / 吃回不上来）时的逃生路** ——
+          在最该跑的时候把人定在墙里，恒这次是"运气好后面自己回来了"。
+        """
         r = self.warp(location, x, y)
         if not r.get("ok"):
             return False
         time.sleep(1.5)
+        arrived = False
         for _ in range(10):
             if self.my_location() == location:
-                return True
+                arrived = True
+                break
             time.sleep(0.5)
-        return False
+        if not arrived:
+            return False
+        self.fix_landing()   # 🩹 落点体检（原来完全没有这一步）
+        return True
+
+    def fix_landing(self, radius=4):
+        """🩹 warp 之后体检落点：**这一格站得住吗**？站不住就在附近螺旋找一格站得住的位置过去。
+        返回 True=把落点修好了（说明原来那格是坏的）、False=原本就是好格或修不了。
+
+        ⚠️ 判据用 `/position {check_passable:true}`（C# 侧 `IsTilePassable`，**寻路唯一那把尺子**），
+          **不用"看着像墙"之类的猜**。先试自己脚下那格：ok ⇒ 落点没问题，一次调用就收工。
+        ⚠️ **修不了就原地不动**（宁报错别兜底）：找不到可走格时人至少还在原来那格，
+          乱挪只会挪得更糟。
+        """
+        try:
+            s = self.state().get("player", {})
+            px, py = s.get("x", 0), s.get("y", 0)
+            if self.position(px, py, check_passable=True).get("ok"):
+                return False                      # 落点本来就是好的
+            log(f"  🩹 warp 落点在 ({px},{py}) **站不住**，附近找可走格…")
+            for d in range(1, radius + 1):
+                ring = [(px + dx, py + dy)
+                        for dx in range(-d, d + 1) for dy in range(-d, d + 1)
+                        if max(abs(dx), abs(dy)) == d]
+                for (cx, cy) in ring:
+                    if self.position(cx, cy, check_passable=True).get("ok"):
+                        log(f"  🩹 落点已校正 → ({cx},{cy})（原格 ({px},{py}) 不可走，偏了 {d} 格）")
+                        return True
+            log(f"  ⚠️ ({px},{py}) 站不住，且 {radius} 格内找不到可走格 —— 原地不动，交给上层")
+            return False
+        except Exception as e:
+            log(f"  ⚠️ 落点体检异常：{e}")
+            return False
 
     # ═══════════ 战斗 ═══════════
 

@@ -558,11 +558,32 @@ class BombMineBot(BombMiner):
                 s = self.state()
                 px, py = s["player"]["x"], s["player"]["y"]
                 if far_rocks:
-                    far_rocks.sort(key=lambda r: abs(r[0] - px) + abs(r[1] - py))
-                    target_x, target_y = far_rocks[0]
+                    # ⚠️ 2026-09-20 恒真机抓出来的（129 层「**好笨，不会往下走，自己撤退了**」）：
+                    #    这一段**原来取的是"离自己最近那块石头"**（`sort` 后取 `[0]`，尽管变量叫
+                    #    `far_rocks`）。而"进探索分支"的前提恰恰是
+                    #    `best_bomb_anchor(max_dist=12)` **已经在 12 格内判过"没有值得炸的簇"**
+                    #    ⇒ 走向最近的石头 = **走过去仍落在刚判过的范围里 = 原地打转**。
+                    #    现场日志正好印证：连报两次「探索到 (5,5)」「探索到 (14,8)」——**全在入口边上**，
+                    #    人根本没挪窝，转头被 `_update_stuck()` 判"连续放置失败"撤退。
+                    #    恒的诊断："是不是看的范围太小了…**实际往下走一会儿就有了**。"
+                    #  ⇒ 改成：**优先走锚点半径之外**（那才是没搜过的地），外圈里挑**最密的簇**
+                    #    （密度 = 该岩体切比雪夫 3 格内的同伴数 ≈ 一处能炸到几块）；
+                    #    外圈没矿才退而求其次走**最远**那块 —— 总之要换片地儿，不能原地磨。
+                    #  ⚠️ 这里的 12 必须与上面的 `best_bomb_anchor(max_dist=12)` 一致，改一处要改两处。
+                    def _density(r):
+                        return sum(1 for q in far_rocks
+                                   if max(abs(q[0] - r[0]), abs(q[1] - r[1])) <= 3)
+                    outside = [r for r in far_rocks
+                               if max(abs(r[0] - px), abs(r[1] - py)) > 12]
+                    if outside:
+                        outside.sort(key=lambda r: (-_density(r), abs(r[0] - px) + abs(r[1] - py)))
+                        target_x, target_y = outside[0]
+                    else:
+                        far_rocks.sort(key=lambda r: -(abs(r[0] - px) + abs(r[1] - py)))
+                        target_x, target_y = far_rocks[0]
                 else:
                     target_x, target_y = 20, 20  # 没石头走向层中心（可通行由导航处理）
-                log(f"  🚶 入口无炸点，探索到 ({target_x},{target_y})")
+                log(f"  🚶 无炸点，换片地儿探索到 ({target_x},{target_y})")
                 self.natural_walk(target_x, target_y, self.my_location(), walk_only=True)  # 纯走路（walk_only=False 会 position 传送出界）
                 time.sleep(0.3)
                 continue  # 到目标区后重新找锚点
