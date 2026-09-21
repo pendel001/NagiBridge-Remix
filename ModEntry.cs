@@ -10515,29 +10515,43 @@ public class ModEntry : Mod
     /// 🎁 送礼提议发出后的**收尾**：等礼物那一格了结，再把手持格指回原来的位置。
     ///   · **为什么不能立刻指回**：对方**接受**时游戏调 `reduceActiveItemByOne()`，消耗的是
     ///     「**当前手持格**」（`CurrentToolIndex`）——提前指回就会**误耗 AI 手里那件工具/武器**。
-    ///   · 判据"了结" = 那格**不再是 giftOne**（被收走 ⇒ 变 null；被换掉 ⇒ 换了对象）。
-    ///   · 上限 ~60s；超时那格还挂着礼物的话，**先把它收回背包再指回**（不丢物）——
-    ///     宁可多还一件，也不能留个"手持指着礼物"的僵尸状态。
+    ///   · 判据①「那格**不再是 giftOne**」= 被收走（接受）⇒ 立即收尾。
+    ///   · 判据②🆕「**提议已不在 `FarmerTeam.GetOutgoingProposal()` 里**」= 已了结
+    ///     —— **2026-09-21 补的，专治"拒绝"**。反编译 `PendingProposalDialog.update()`：
+    ///         **接受** → `reduceActiveItemByOne()` + `RemoveOutgoingProposal()` + 关框；
+    ///         **拒绝** → **什么都不做**，只 `RemoveOutgoingProposal()` + 关框。
+    ///       ⇒ 拒绝时礼物**从头到尾没离开过送礼人**，那格**一直是 giftOne**
+    ///         ⇒ 光看①**永远等不到"了结"**，只能靠 60 秒超时兜底
+    ///         （恒 2026-09-21 真机量到：拒绝后手持格**要等满 60 秒**才指回，那 60 秒里
+    ///          AI 手里**举着一个已经退回背包的礼物**）。提议这一条读一下就知道，**不用挂 hook**。
+    ///   · 判据③「`tries >= 60`」= 真超时（对方一直不点、提议还挂着）—— 老兜底，保留。
+    ///   · ⚠️ **判据先验判据**：②必须**先见过提议**（`sawProposal`）才算数 ——
+    ///     否则提议**还没建出来**的那一两拍会被读成 `null` ⇒ 误判"已了结"⇒ 提前指回
+    ///     ⇒ 对方随后接受时 `reduceActiveItemByOne()` 就**误耗 AI 手里那件工具**（正是这段要防的事）。
+    ///   · 🧹 收尾时**一律不动物品**：接受 → 东西已被对方拿走；拒绝/超时 → 东西**本来就在那格里**
+    ///     （游戏什么都没做）。旧代码在超时支做了一次「清空那格 + `addItemToInventory` 放回」，
+    ///     **纯属多余**，而且会丢物（`addItemToInventory` 塞不下时把东西**原样返回**，旧代码把返回值丢了）。
     ///   · 全程吞异常：这是收尾，不该因为读状态失败把玩家卡住。
-    /// 2026-09-21 新增（配合 `give_item` 玩家支路的修复，见 CHANGELOG (104)④ / (106)）。
+    /// 2026-09-21 新增（配合 `give_item` 玩家支路的修复，见 CHANGELOG (104)④ / (106) / (109)）。
     /// </summary>
     private static void RestoreHeldWhenSettled(Farmer who, int giftSlot, int heldSlot, Item giftOne)
     {
         int tries = 0;
+        bool sawProposal = false;   // 必须先见过提议，才认"提议没了 = 了结"（见上面 ⚠️）
         void Tick()
         {
             tries++;
             try
             {
+                Proposal? prop = null;
+                try { prop = who.team?.GetOutgoingProposal(); } catch { }
+                if (prop != null) sawProposal = true;
+
                 bool stillThere = giftSlot >= 0 && giftSlot < who.Items.Count
                                   && ReferenceEquals(who.Items[giftSlot], giftOne);
-                if (!stillThere || tries >= 60)
+                bool proposalSettled = sawProposal && prop == null;   // 🆕 拒绝/接受/对方掉线都会走到这
+                if (!stillThere || proposalSettled || tries >= 60)
                 {
-                    if (stillThere)   // 超时还没了结 → 把礼物收回背包，别把它弄丢
-                    {
-                        who.Items[giftSlot] = null;
-                        who.addItemToInventory(giftOne);
-                    }
                     if (heldSlot >= 0 && heldSlot < who.Items.Count)
                         who.CurrentToolIndex = heldSlot;
                     return;

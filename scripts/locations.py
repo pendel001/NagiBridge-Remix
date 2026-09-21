@@ -739,6 +739,8 @@ MAP_LINKS = {
     ],
     # ── 沙漠 ──
     "Desert": [
+        # 🚌 返程（2026-09-21 恒）：**先走原生**（`navigation.BUS_RETURN`：走到站台 (18,27) → 接住弹出的
+        #    原生对话框选"是" → 等动画）；这条 link 现在只当**没弹菜单时的 warp 兜底**用。
         {"tile": (18, 26), "target": "BusStop", "kind": "warp", "note": "巴士站→回鹈鹕镇巴士站(22,10)（返程，/warps实测）"},
         {"tile": (8, 5), "target": "SkullCave", "kind": "door", "note": "头骨矿洞口→(7,8)，下100层"},
         {"tile": (6, 51), "target": "SandyHouse", "kind": "door", "note": "桑迪绿洲店门→(4,9)，买杨桃种子/饰品"},

@@ -1430,6 +1430,90 @@ def _ticket_travel(frm: str, nxt: str, tkt: dict) -> bool:
         return False
 
 
+# ═══════════════════════════════════════════
+#  🚌 沙漠返程（2026-09-21 恒）：**原生交互优先**，warp 只做兜底
+# ═══════════════════════════════════════════
+# 现状：Desert→BusStop 是 `locations.MAP_LINKS["Desert"]` 里一条 `kind="warp"`，
+#   `_map_go_walk` 交给 `_walk_trigger_warp`（走位到出口站格 → `/warp` 跳）——
+#   这是当初为了"稳定触发"选的捷径（同 `locations.py:639` 那条"AI 不用原生 warp 触发(不稳定)"）。
+# 恒真机观察：走到沙漠巴士上车点，**经过时弹原生交互对话框的概率挺大**——
+#   人既然已经被游戏拉住问话了，就**顺着它走原生那条路**，别再绕开它硬 warp：
+#     walk_to 到站台 → 检测到原生菜单 → 选 option 0（是/否类框的"是"）→ 等 ~10s 动画 → 人已在 BusStop。
+# 没弹菜单 / 没走成 → 返回 False，调用方照旧 warp 兜底（不卡死；写法同 `TICKET_TRAVEL` 的兜底）。
+# ⚠️ 只挂**返程**：去程 BusStop→Desert 有售票机，走 `TICKET_TRAVEL`（那边是恒 2026-08-15 校准过的）。
+BUS_RETURN = {
+    ("Desert", "BusStop"): {"stand": (18, 27), "bus": (18, 26), "wait": 10, "note": "沙漠巴士返程"},
+}
+
+
+def _bus_return_travel(frm: str, nxt: str, cfg: dict) -> bool:
+    """沙漠返程：走到巴士站台 → 等原生菜单弹出 → 选 option 0（"是"）→ 等动画到 nxt。
+
+    返回 True  = **真靠原生交互回**到了 nxt（调用方别再 warp）；
+    返回 False = 没弹菜单 / 没走成（调用方照旧 warp 兜底）。
+    """
+    def _cur() -> str:
+        try:
+            return (api.state().get("location") or {}).get("name", "")
+        except Exception:
+            return ""
+
+    def _settle() -> bool:
+        """点完选项 → 先等 `wait` 秒动画（恒点名 10s），再多等一会防加载慢。"""
+        time.sleep(cfg.get("wait", 10))
+        deadline = time.time() + 25
+        while time.time() < deadline and _cur() != nxt:
+            time.sleep(1.0)
+        return _cur() == nxt
+
+    def _probe(probe_s: float) -> bool:
+        """在 probe_s 秒内等原生菜单弹出并作答；返回"人是否已到 nxt"。"""
+        deadline = time.time() + probe_s
+        while time.time() < deadline:
+            cur = _cur()
+            if cur == nxt:
+                return True            # 走位途中被游戏自己送回去了（那格本就是返程出口）
+            if cur != frm:
+                return False           # 到了别的图 → 交回兜底
+            try:
+                m = api._get("/menu") or {}
+            except Exception:
+                m = {}
+            if m.get("open"):
+                rs = m.get("responses") or []
+                if rs:
+                    # 恒点名：是/否类框的 **option 0 就是"是"**；能按文本认出来就按文本认，认不出就用 0。
+                    idx = rs[0].get("index", 0)
+                    for r in rs:
+                        if (r.get("text") or "").strip().lower() in ("是", "yes", "y", "上车", "坐车"):
+                            idx = r.get("index", 0)
+                            break
+                    api.menu_click(option=idx)
+                else:
+                    api._post("/key", {"key": "ok"})   # 纯文本 DialogueBox（没选项）→ 推一下 ok
+                return _settle()
+            time.sleep(0.8)
+        return False
+
+    try:
+        # 1. 走到巴士站台（下车/上车点 (18,27)）
+        sx, sy = cfg["stand"]
+        _walk_and_wait(frm, sx, sy, timeout=20)
+        if _cur() == nxt:
+            return True
+        if _probe(6.0):
+            return True
+        # 2. 站台没弹 → 再往巴士格 (18,26) 上靠一步：那是 /warps 里的返程出口，
+        #    踩上去要么弹框（我们接住）、要么游戏直接把人送走（那也到 BusStop 了）。
+        bx, by = cfg.get("bus", (sx, sy))
+        _walk_and_wait(frm, bx, by, timeout=10)
+        if _cur() == nxt:
+            return True
+        return _probe(6.0)
+    except Exception:
+        return False
+
+
 def _exit_farm_building(frm: str, nxt: str) -> bool:
     """室内(农场建筑: 小屋/农舍/洞穴/温室等)→室外。
     ✍️ 2026-08-30 恒改：**以 /map 读到的室内真实出口 warp 瓦片为核心**，不再依赖 /farm_buildings 的
@@ -2409,6 +2493,21 @@ def _map_go_walk(path, destination: str, dest: str, lead_log: str = "", npc_targ
                     continue
             _NAV_FAILED["v"] = True
             return _with_state("\n".join(log) + f"\n⚠️ {tkt['note']} 到 {nxt} 失败")
+        # 🚌 沙漠返程（2026-09-21 恒）：**先走原生那条路**（走到站台 → 接住弹出的原生对话框选"是"），
+        #    没弹菜单就落回下面的 `kind=="warp"` 分支照旧 warp 兜底 —— 两条路都不卡死。
+        if (frm, nxt) in BUS_RETURN:
+            br = BUS_RETURN[(frm, nxt)]
+            log[-1] = f"  {i+1}. 🚌 {frm} → {nxt}（{br['note']}·原生交互优先）"
+            if _bus_return_travel(frm, nxt, br):
+                log[-1] += "（🚌 顺原生对话上了车）"
+                continue
+            # 没走成：菜单可能还开着（选了没生效）→ 关掉，别留给 AI 自己收拾
+            try:
+                if (api._get("/menu") or {}).get("open"):
+                    api._post("/menu_close")
+            except Exception:
+                pass
+            log[-1] += "（没弹原生对话 → warp 兜底）"
         arrived = False
         if kind == "warp":
             # ✍️ 2026-08-30 恒：出口瓦片**优先用 MAP_LINKS 里我们自己标的 link['tile']**（必为边界内可达格，

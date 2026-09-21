@@ -14240,6 +14240,30 @@ def gift_npc(npc_name: str, item_name: str) -> str:
         return f"送礼失败: {e}"
 
 
+def _gift_proposal_state() -> str:
+    """🎁 送礼提议现在挂没挂着 —— 数源是**游戏里真挂在送礼方屏幕上的那个等待框**。
+
+    🧭 2026-09-21 **恒点出来的**：玩家之间送礼时，**送礼方这边**会弹一个 `PendingProposalDialog`
+      —— 跟睡觉的 `ReadyCheckDialog`、节日的确认框**同族的"等对方"框**（都是"我在等别人"这一类）。
+      它**在** = 提议还挂着；它**没了** = 提议**已了结**（**接受、拒绝都算**）。
+
+    ⚠️ 它是"被拒绝"**唯一**的信号来源：
+      · `/gift` 那条回包 400ms 后就把话说完了，**提议的结局从不回传**；
+      · 光看背包数量也分不出——**拒绝时东西压根没离开过自己**（数量和"还没点"时一模一样）。
+      ⇒ 少了这个判据，「**被拒绝了**」和「**还没人点**」长得完全一样（洞就是这么来的）。
+
+    返回 `"pending"` / `"settled"` / `"unknown"`——
+    ⚠️ 读不到时返回 `"unknown"` 而**不是** `"settled"`：**别拿读失败当"已了结"**（那是兜底长歪）。
+    """
+    try:
+        m = api._get("/menu") or {}
+    except Exception:
+        return "unknown"
+    if m.get("open") and m.get("type") == "PendingProposalDialog":
+        return "pending"
+    return "settled"
+
+
 @mcp.tool()
 def give_item(player_name: str, item_name: str) -> str:
     """🎁 送物品给另一位玩家（正式赠予，一次一个）
@@ -14272,6 +14296,7 @@ def give_item(player_name: str, item_name: str) -> str:
             # ⏱️ 发出去 ≠ 送到：**接受礼物是要时间的**（恒同日）。等一会儿再回读自己背包——
             #    东西真走了才算送到；没走就如实说"还在等他点同意"。
             if _had > 0:
+                _saw_pending = False
                 for _ in range(_GIFT_ACCEPT_WAIT):
                     time.sleep(1.0)
                     try:
@@ -14280,6 +14305,18 @@ def give_item(player_name: str, item_name: str) -> str:
                                 f"🎁 {r.get('target')} 收下了「{r.get('item')}」✅")
                     except Exception:
                         break
+                    _st = _gift_proposal_state()
+                    if _st == "pending":
+                        _saw_pending = True    # 框在 → 提议确实还挂在那儿
+                    elif _st == "settled" and _saw_pending:
+                        break                  # 框没了 + **确实见过框** ⇒ 已了结（东西没少 ⇒ 被拒）
+                    # "unknown" / 一次都还没见过框 ⇒ 继续等：
+                    #   ⚠️ **判据先验判据** —— 绝不能拿"没读到框"当"被拒绝"，
+                    #      那框可能只是还没弹出来（那样会把"送出中"误报成"被拒"）。
+                # ——— 出口：**只有"见过等待框 + 它已消失 + 东西一件没少"才判定拒绝** ———
+                if _saw_pending and _gift_proposal_state() == "settled":
+                    return _with_state(
+                        f"🚫 {r.get('target')} **拒绝了**「{r.get('item')}」——东西已退回你背包（{item_name} 一件没少）。")
             return _with_state(
                 f"🎁 赠送提议已发给 {r.get('target')}——**还在等他点同意**（东西暂时还在我包里，"
                 f"他不点会自动退回）。别当成已经送到。")
