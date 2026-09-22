@@ -6,6 +6,7 @@ launcher（启动NagiBridge.bat）先跑本脚本：查 Python/依赖库/SMAPI/m
 输出末尾给「手机/Claude Code 连: http://<IP>:8000/mcp」+ 防火墙状态。
 """
 import os
+import re
 import sys
 import io
 import socket
@@ -24,14 +25,99 @@ ROOT_DIR = os.path.dirname(SCRIPT_DIR)
 # ── 配置（可从环境变量覆盖）──
 MCP_PORT = int(os.environ.get("NAGI_MCP_PORT", "8000"))
 MCP_HOST = os.environ.get("NAGI_MCP_HOST", "0.0.0.0")
-# NagiBridge.csproj 里硬编码的游戏启动路径（两盘都要）：
-GAME_DIRS = [
-    r"C:\Program Files (x86)\Steam\steamapps\common\Stardew Valley",
-    r"F:\Stardew Valley 2nd",
-]
 REQUIRED_PKGS = ["mcp", "requests"]          # mcp=服务器必需, requests=stardew_api
 OPTIONAL_PKGS = ["PIL"]                       # 截图降采样用, 缺也能跑
 FIREWALL_RULE = f"NagiBridge MCP {MCP_PORT}"
+
+
+# ── 游戏目录探测（2026-09-22 开源普适性）──
+# ⚠️ 以前这里写死 `C:\Program Files (x86)\Steam\...` + `F:\Stardew Valley 2nd` 两条（恒本机的两盘）。
+#    后果：**别人把游戏装在别的盘/别的 Steam 库，三项检查全 ✗ → 退出码 1 → .bat 直接不给启动服务器**，
+#    还指引他去 C 盘那个并不存在的目录装 SMAPI（指错路）。而 csproj 那边的 ModBuildConfig
+#    早就会自己找游戏了（find-game-folder.targets：注册表 + Steam 库 + 各盘常见路径）——只有这层漏了。
+# 顺序：① NAGI_GAME_DIRS 环境变量（分号/逗号分隔，最高优先，给"探测不到"当逃生口）
+#       ② 注册表 + Steam 库自动探测  ③ 已知候选兜底
+# ⚠️ 探测结果**必须打印出来**（见 main）：宁可让人一眼看出"找错了"，也别静默挑一个用。
+_GAME_DIR_FALLBACK = [
+    r"C:\Program Files (x86)\Steam\steamapps\common\Stardew Valley",   # Steam 默认位置
+    r"F:\Stardew Valley 2nd",                                          # 恒本机的手动副本（别人机器上没有，自动跳过）
+]
+
+
+def _reg_value(root, subkey, name):
+    """读一条注册表值；非 Windows / 没有该项 → None（不抛）。"""
+    try:
+        import winreg
+        with winreg.OpenKey(root, subkey) as k:
+            return winreg.QueryValueEx(k, name)[0]
+    except Exception:
+        return None
+
+
+def _steam_game_dirs():
+    """Steam 装的星露谷可能在任意盘的任意 Steam 库里，逐个库翻一遍。"""
+    out = []
+    try:
+        import winreg
+    except Exception:
+        return out
+    # ① 卸载表里直接有安装路径（最省事、最准）
+    p = _reg_value(winreg.HKEY_LOCAL_MACHINE,
+                   r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Steam App 413150",
+                   "InstallLocation")
+    if p:
+        out.append(p)
+    # ② Steam 库列表 libraryfolders.vdf（游戏装在 D:\SteamLibrary 这种要靠它）
+    steam = _reg_value(winreg.HKEY_CURRENT_USER, r"SOFTWARE\Valve\Steam", "SteamPath")
+    if steam:
+        out.append(os.path.join(steam, "steamapps", "common", "Stardew Valley"))
+        vdf = os.path.join(steam, "steamapps", "libraryfolders.vdf")
+        try:
+            with open(vdf, encoding="utf-8", errors="replace") as f:
+                libs = re.findall(r'"path"\s+"([^"]+)"', f.read())
+            for lib in libs:
+                out.append(os.path.join(lib.replace("\\\\", "\\"), "steamapps", "common", "Stardew Valley"))
+        except Exception:
+            pass
+    return out
+
+
+def _gog_game_dir():
+    try:
+        import winreg
+        return _reg_value(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\GOG.com\Games\1453375253", "PATH")
+    except Exception:
+        return None
+
+
+def _detect_game_dirs():
+    """本机「可能装着星露谷」的目录列表（去重、按可信度排序、只留真的存在的）。"""
+    cands = []
+    env = os.environ.get("NAGI_GAME_DIRS", "").strip()
+    if env:
+        cands += [p.strip().strip('"') for p in re.split(r"[;,]", env) if p.strip()]
+    cands += _steam_game_dirs()
+    cands.append(_gog_game_dir())
+    cands += _GAME_DIR_FALLBACK
+    seen, out = set(), []
+    for p in cands:
+        if not p:
+            continue
+        p = os.path.normpath(p)
+        if p.lower() in seen:
+            continue
+        seen.add(p.lower())
+        if os.path.isdir(p):      # 只留真的存在的目录（不存在=不是这台机器的游戏）
+            out.append(p)
+    return out
+
+
+GAME_DIRS = _detect_game_dirs()
+_GAME_DIRS_HINT = (
+    "没探测到游戏目录。请设环境变量指路（分号分隔），再双击一次：\n"
+    '  set NAGI_GAME_DIRS=D:\\Games\\Stardew Valley\n'
+    "（或在系统设置里加一个用户环境变量 NAGI_GAME_DIRS）"
+)
 
 
 def _ok(msg): return (True, msg)
@@ -103,8 +189,10 @@ def check_smapi():
             found.append(p)
     if found:
         return _ok("SMAPI ✓ " + ", ".join(os.path.basename(os.path.dirname(p)) for p in found))
+    if not GAME_DIRS:
+        return _no("✗ " + _GAME_DIRS_HINT)
     hint = (
-        "✗ 找不到 SMAPI（StardewModdingAPI.exe）。SMAPI 是独立安装器, 需手动装:\n"
+        "✗ 找到游戏目录但里面没有 SMAPI（StardewModdingAPI.exe）。SMAPI 是独立安装器, 需手动装:\n"
         "  1. 官网 https://smapi.io 下载 SMAPI-installer\n"
         "  2. 解压运行 'install on Windows.bat', 选你的游戏目录:\n"
         + "\n".join(f"     - {gd}" for gd in GAME_DIRS)
@@ -163,7 +251,9 @@ def check_mod():
             msg += "（本轮已同步）"
         return _ok(msg)
     # mod 没部署成功 → 人工
-    return _no(f"✗ mod 未部署到两盘（{', '.join(os.path.basename(g) for g in GAME_DIRS)}/Mods/NagiBridge）——请确认 dll 手动复制")
+    if not GAME_DIRS:
+        return _no("✗ " + _GAME_DIRS_HINT)
+    return _no(f"✗ mod 未部署到（{', '.join(os.path.basename(g) for g in GAME_DIRS)}/Mods/NagiBridge）——请确认 dll 手动复制")
 
 
 # ── 5. Fishbot（第三方 mod, 只指引不自动装, 不阻塞）──
@@ -217,8 +307,11 @@ def get_lan_ip():
 
 # ── 7. 防火墙（端口放行, 查→没有则自动加; 无管理员则给命令）──
 def check_firewall():
+    # ⚠️ 2026-09-22 修正判据：以前写的是 `f"name={FIREWALL_RULE}" in out`，但 netsh 打出来的是
+    #    「规则名称:   NagiBridge MCP 8000」（英文系统 "Rule Name:"）——**输出里根本不含 `name=` 这串**
+    #    ⇒ 判据恒为假 ⇒ 每次启动都报"未放行"并再 add 一次（管理员跑就叠出重复规则）。
     code, out, _ = _wrap("netsh", "advfirewall", "firewall", "show", "rule", f"name={FIREWALL_RULE}")
-    if code == 0 and f"name={FIREWALL_RULE}" in out:
+    if code == 0 and FIREWALL_RULE in out:
         return _ok(f"防火墙 {FIREWALL_RULE} 已放行 ✓")
     # 没有 → 自动添加（需管理员）
     print(f"  端口 {MCP_PORT} 防火墙未放行 → 尝试自动添加规则…")
@@ -226,7 +319,8 @@ def check_firewall():
                 f"name={FIREWALL_RULE}", "dir=in", "action=allow", "protocol=TCP", f"localport={MCP_PORT}")
     if add[0] == 0:
         return _ok(f"防火墙已添加 {FIREWALL_RULE} ✓")
-    return _no(f"✗ 防火墙自动添加失败（需管理员权限）。请以管理员运行 CMD 粘贴:\n"
+    return _no(f"✗ 防火墙未放行（不阻断启动：本机 Claude Code 走 127.0.0.1 不受影响；"
+               f"只有手机/别的电脑连才需要）。需管理员运行 CMD 粘贴:\n"
                f"  netsh advfirewall firewall add rule name=\"{FIREWALL_RULE}\" dir=in action=allow protocol=TCP localport={MCP_PORT}")
 
 
@@ -254,18 +348,32 @@ def main():
     print("═" * 52)
     print("  NagiBridge 启动前组件自检")
     print("═" * 52)
+    # 🔍 游戏装在哪——自动探测的结果**摊开给人看**：宁可一眼看出"找错了"（设 NAGI_GAME_DIRS 覆盖），
+    #    也不要静默挑一个用下去。
+    if GAME_DIRS:
+        print("🔍 游戏目录（自动探测；不对就设 NAGI_GAME_DIRS 覆盖）:")
+        for gd in GAME_DIRS:
+            print(f"     {gd}")
+    else:
+        print(f"🔍 游戏目录: {_GAME_DIRS_HINT}")
+    print()
+    # (标签, (ok, 消息), 是否阻断启动)
     checks = [
-        ("Python 版本", check_python()),
-        ("Python 依赖", check_pip_pkgs()),
-        ("SMAPI 本体", check_smapi()),
-        ("mod 部署", check_mod()),
-        ("Fishbot", check_fishbot()),
+        ("Python 版本", check_python(), True),
+        ("Python 依赖", check_pip_pkgs(), True),
+        ("SMAPI 本体", check_smapi(), True),
+        ("mod 部署", check_mod(), True),
+        # ⚠️ 2026-09-22：Fishbot 是**可选**的第三方 mod（只有钓鱼自动化用）。以前它 ✗ 会进 flags
+        #    ⇒ 退出码 1 ⇒ .bat 拒绝启动服务器 —— 跟它自己那句"MCP 服务器无它也能启动"直接打架，
+        #    新用户没装 Fishbot 就双击 = 当场被拦。改成非阻断项。
+        ("Fishbot", check_fishbot(), False),
     ]
     flags = []
-    for label, (ok, msg) in checks:
-        mark = "✓" if ok else "✗"
-        print(f"[{mark}] {label}: {msg}")
-        if not ok:
+    for label, (ok, msg), blocking in checks:
+        mark = "✓" if ok else ("✗" if blocking else "!")
+        note = "（可选项，不阻断启动）" if (not ok and not blocking) else ""
+        print(f"[{mark}] {label}: {msg}{note}")
+        if not ok and blocking:
             flags.append(label)
     # 🔒 防火墙（单独, 需管理员很常见）
     fw_ok, fw_msg = check_firewall()

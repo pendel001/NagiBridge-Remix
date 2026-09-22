@@ -235,7 +235,15 @@ When `Mode` is `"cc"`, the chat panel opens directly in Channel mode (skips mode
 
 ### 4.2 启动 MCP 服务器
 
-在仓库根目录开一个终端：
+**最省事：双击仓库根目录的 `启动NagiBridge.bat`** —— 它先自检（Python / 依赖库 / SMAPI / mod 部署 / 局域网IP，
+缺的尽量自动装，并会打印探测到的「游戏目录」供你核对），全绿了再起服务器。
+
+> ⚠️ 这个 `.bat` **必须待在仓库里**（跟 `scripts\` 文件夹同级）：它靠**自己的位置**去找 `scripts\`，
+> 单独拷到桌面会报 `scripts\launcher_check.py NOT FOUND`。想在桌面点，请用**快捷方式**
+> （右键 → 发送到 → 桌面快捷方式）——快捷方式可以随便摆。
+> 游戏装在别的盘？启动器会自动探测；探测不到就设 `NAGI_GAME_DIRS` 环境变量指路（多个用 `;` 分隔）。
+
+不想用它、或者想自己控制，就在仓库根目录开一个终端：
 
 ```bash
 # Windows（重要：必须有 PYTHONIOENCODING=utf-8，否则 emoji/中文刷屏）
