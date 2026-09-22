@@ -24,6 +24,7 @@
 （走 AI 端口）。抽模块不改变这点 —— `api` 仍是 server 的那一个模块对象。
 """
 
+import difflib
 import json
 import os
 import subprocess
@@ -1198,6 +1199,41 @@ SCENE_NAME_ALIAS = {
 }
 
 
+def _norm_key(s):
+    """🔤 英文地名归一：小写 + 去空格（"farm"→"farm"、"Skull Cave"→"skullcave"）。
+
+    ⚠️ 只用来做**精确归一命中**（见 `_MAP_KEYS_CI`），不做编辑距离/模糊——认不出就原样返回、
+    照旧报"知识库没有"，别让"名字差不多"被悄悄路由到别的图（宁报错别兜底）。"""
+    return "".join(str(s).lower().split())
+
+
+# MAP_LINKS 键的归一索引（模块加载时建一次；MAP_LINKS 是静态常量，运行期不改）。
+# ⚠️ 建表时**当场查冲突**：两个键若归一后撞车（只差大小写/空格），路由就变成"看字典顺序"，
+#    这种错只在真机上偶发、离线测不出来 ⇒ 宁可 import 期就炸（宁报错别兜底）。
+_MAP_KEYS_CI = {}
+for _k in locations.MAP_LINKS:
+    _n = _norm_key(_k)
+    if _n in _MAP_KEYS_CI:
+        raise RuntimeError(f"MAP_LINKS 键归一后冲突：{_k} vs {_MAP_KEYS_CI[_n]}")
+    _MAP_KEYS_CI[_n] = _k
+del _k, _n
+
+
+def _near_map_hint(dest):
+    """认不出的目的地 → 回一句"你是不是想去 X"（没把握就返回空串）。
+
+    ⚠️ 只**提示**、绝不改道：名字没认出来就如实报错，路线由 AI 自己重敲决定。
+    （2026-09-22 恒：报错必须给下一步——只报"没有」等于让 AI 干瞪眼。）"""
+    try:
+        hit = difflib.get_close_matches(_norm_key(dest), list(_MAP_KEYS_CI), n=1, cutoff=0.8)
+    except Exception:
+        return ""
+    if not hit:
+        return ""
+    key = _MAP_KEYS_CI[hit[0]]
+    return f"；你是想去「{key}」吗？那就 `map go {key}`"
+
+
 def _resolve_scene_name(name):
     """把中文/别名目的地认成 MAP_LINKS 场景键（模糊匹配）。
     精确命中→返回场景键；找不到→返回原值(交给既有逻辑走 POI/建筑兜底)。
@@ -1208,6 +1244,14 @@ def _resolve_scene_name(name):
     # 1. 本来就是 MAP_LINKS 键(英文) → 直接用
     if s in locations.MAP_LINKS:
         return s
+    # 1.5 🔤 大小写/空格不敏感（2026-09-22 恒真机撞见）：AI 满屏看到的域名叫**小写** `farm`
+    #     （状态条「🛠️ 可用域: farm」、引导文案「farm 通常在 Farm 做」），于是照着敲
+    #     `map go farm` ⇒ 报「知识库没有「farm」的地点链接」，人在自家小屋出不了门。
+    #     MAP_LINKS 键是 CamelCase(Farm/SeedShop/BusStop)，原来只做精确比对 ⇒ 大写才对得上。
+    #     ⚠️ 归一后**无冲突**（72 键实测，见 `_MAP_KEYS_CI` 的 import 期断言）⇒ 不会误路由。
+    _hit = _MAP_KEYS_CI.get(_norm_key(s))
+    if _hit:
+        return _hit
     # 2. 精确命中别名
     if s in SCENE_NAME_ALIAS:
         return SCENE_NAME_ALIAS[s]
@@ -2779,7 +2823,8 @@ def map_go(destination: str = "", npc: str = "") -> str:
                     return _with_state(f"❌ 到不了 {loc}（现在在 {_cur or '?'}）——先 map go {loc} 走过去")
                 _walk_and_wait(loc, x, y, timeout=35)
                 return _with_state(f"🗺️ 已到「{destination}」门口 ({loc} {x},{y}){_pre}（建筑门，进屋用 interact）")
-            return _with_state(f"🗺️ 知识库没有「{dest}」的地点链接（试试 SeedShop/Town/Mine…）")
+            return _with_state(f"🗺️ 知识库没有「{dest}」的地点链接（试试 SeedShop/Town/Mine…）"
+                               f"{_near_map_hint(dest)}")
         # ⚠️ 未解锁地点拦截（2026-08-14 #13）
         _lock = _map_go_unlock_check(dest)
         if _lock:

@@ -226,6 +226,16 @@ mcp = FastMCP(
 #    这样每个工具注册时自动包一层，不用去动上百处装饰器。
 _MENU_GATE_TOOLS_OK = {"menu", "social", "check", "help", "screenshot",
                        "which_role", "role", "profile", "cancel"}
+# ⚙️ 2026-09-22 恒拍板：**整个 settings 域放行**（不写成 op 白名单）。
+#   起因：捏脸/起名/核对/查参考**全在 settings 域**，而创建角色时 CharacterCustomization **必然开着**
+#   ⇒ 老名单里没有 settings，等于"建角色的每一步都被自家闸门拦死"，AI 卡在第一格
+#   （真机：`settings ops=status` 这种**纯只读**都被拦；逃生提示还叫它去点一个**不存在的**右上角关闭键）。
+#   为什么敢整域放行：settings 域天然**不动世界、不挪角色**（只写配置 + 改外观），
+#   而"此刻到底能不能改外观"由 **C# `/appearance` 自己硬拦**（菜单没开就拒，见 ModEntry.cs:6128）——
+#   闸门这层再拦一遍纯属重复，且拦错了地方。
+#   ⚠️ 刻意**不写成 op 白名单**：捏脸那批 op 有十来个中英别名，漏一个就重演"域 op 断档"
+#      （工具注册了、AI 够不着），清单还会随 dispatch 漂移。
+_MENU_GATE_DOMAINS_FULL_OK = {"settings"}
 _MENU_GATE_OPS_OK = {
     "daily": {"sleep", "睡", "睡觉", "settle", "结算", "lie_bed", "躺", "躺床",
               "cancel", "取消", "peek", "看恒",
@@ -244,10 +254,15 @@ _MENU_GATE_DENY_MAX = 3
 _MENU_GATE_DENY = {}     # {(工具名, 菜单类型): 已拒次数}
 
 
-def _menu_gate_now():
-    """当前开着的菜单类型（短 TTL 缓存）。读不到 → None（**不误拦**）。"""
+def _menu_gate_now(fresh: bool = False):
+    """当前开着的菜单类型（短 TTL 缓存）。读不到 → None（**不误拦**）。
+
+    fresh=True 绕过缓存直读真值。给"判据卡在**菜单刚消失那一刻**"的调用方用——
+    2026-09-22 捏人退役锁要问"**此刻**菜单还在不在"，而缓存里那 1.5s 的旧值恰好会盖住
+    "ok 刚把菜单关掉"的瞬间（同行已有先例：`_close_stray_gamemenu` 也是作废缓存再读）。
+    """
     now = time.time()
-    if now - _MENU_GATE_CACHE["ts"] < _MENU_GATE_TTL:
+    if not fresh and now - _MENU_GATE_CACHE["ts"] < _MENU_GATE_TTL:
         return _MENU_GATE_CACHE["menu"]
     m = None
     try:
@@ -291,6 +306,14 @@ def _close_hint(menu: str) -> str:
        `⚠️ Button 'upperRightCloseButton' not found`（恒提的第三个问题）。
     """
     m = (menu or "").lower()
+    # 🎭 2026-09-22：捏人页**不是障碍**，是"这局的正事本身" —— 绝不能劝 AI 去关它。
+    #   老文案落到通用兜底会叫它点右上角关闭键，而这页**压根没有那个按钮**（只有 okButton/backButton）；
+    #   AI 照着在 ok 上试 = **提前把角色定型、不可逆**。这是错误建议里代价最大的一种。
+    if "charactercustomization" in m:
+        return ("🎭 这是**创建角色/幻觉神龛的捏人页**，不是挡路的菜单 —— **别关它、别乱按**。"
+                "就地在里面做完：settings customize 起名 / settings appearance 捏脸 / "
+                "settings confirm_look 核对，满意后 menu click(button=ok) 确认"
+                "（⚠️ **ok 一按就定型、不可逆**；这页没有右上角关闭键）")
     if "dialoguebox" in m:
         return ("menu read 看内容 → 有选项走 menu click(option=N) 选；"
                 "纯对话用 menu advance 推掉（DialogueBox 没有右上角关闭键）")
@@ -326,6 +349,9 @@ def _menu_gate(name, kwargs, args=(), fn=None):
             menu = _menu_gate_now() or menu     # 没关掉 → 用刷新后的真值继续走原拦截逻辑
         if name in _MENU_GATE_TOOLS_OK:
             return False, ""
+        # ⚙️ 整域放行（见 _MENU_GATE_DOMAINS_FULL_OK 注释）：settings 不动世界，改外观由 C# 自己拦。
+        if name in _MENU_GATE_DOMAINS_FULL_OK:
+            return False, ""
         _reason = ""
         _ok_ops = _MENU_GATE_OPS_OK.get(name)
         if _ok_ops is not None:
@@ -350,7 +376,7 @@ def _menu_gate(name, kwargs, args=(), fn=None):
         else:
             _reason = (f"🚧 现在开着「{menu}」菜单，`{name}` 先别做 —— "
                        f"菜单态下走位/干活/跑脚本都不会按预期生效。\n"
-                       f"   能用：menu(全部) / social 发消息 / check·help / "
+                       f"   能用：menu(全部) / social 发消息 / check·help / settings(全部) / "
                        f"daily sleep·settle·cancel / script stop / map warp_safe\n"
                        f"   先把菜单处理掉：{_close_hint(menu)}")
         # 🔓 安全阀：同一工具 + 同一菜单拒够 3 次 → 第 4 次放行（防"动画演出/检测异常"把 AI 卡死）
@@ -13035,8 +13061,17 @@ def character_customize(name: Optional[str] = None, farmname: Optional[str] = No
                 即使传了 \\uXXXX 转义字面量也会被正确解码。确认用 appearance_info 的 favoriteThing。
     """
     # 🔒 硬锁（2026-08-22 恒：起名/喜好=创建时填一次，ok 后退役=不可再改）
+    #   ⚠️ 2026-09-22 恒拍板收窄判据：退役标记落在 settings.json 里、**跨角色/跨存档永久生效**，
+    #      而它想说的其实是"**这个**角色已定型" ⇒ 新角色一进游戏第一步 `menu customize` 就撞 🔒
+    #      （真机复现：整个新档**从第一个操作就卡死**，而 AI 能看到的唯一线索是"角色已确认"，纯属谎报）。
+    #   新判据：**捏人页正开着 = 创建中 或 幻觉神龛，两条都是正路 ⇒ 放行**；
+    #      ok 一确认菜单就关，锁立刻回来 —— "创建后不可再改"在正常路上**原样保住**。
+    #   ⚠️ 必须 `fresh=True` 直读：缓存那 1.5s 旧值会盖住"ok 刚把菜单关掉"那一刻
+    #      （正好是这把锁最该咬住的时候）。
     if "character_customize" in _retired_tools:
-        return _with_state("🔒 捏人(起名/喜好)已退役：角色已确认。如需改 → settings reactivate(character_customize) 召回。")
+        _cc_open = (_menu_gate_now(fresh=True) or "").lower() == "charactercustomization"
+        if not _cc_open:
+            return _with_state("🔒 捏人(起名/喜好)已退役：角色已确认。如需改 → settings reactivate(character_customize) 召回。")
     body = {}
     if name is not None: body["name"] = name
     if farmname is not None: body["farmname"] = farmname
