@@ -82,6 +82,39 @@ internal static class OtherEmotePatch
 }
 
 /// <summary>
+/// 🚫 按掉「动画自带的那一发落地」（2026-09-23 恒真机："**浇水双判体力扣除**"）。
+///
+/// 病根（真机量出来的，不是读代码猜的）：`/tool` 对一格地挥一下——
+/// `水 22→20（掉 2，原版 1）`、`体力 74→70（掉 4，原版 2）`，**正好翻倍**。
+/// 来源就是我们自己的两条腿：`BeginUsingTool()`/`EndUsingTool()` 放出的**挥舞动画**，
+/// 它的 frame68（FarmerSprite 行为 160，09-10 反编译记过）会调 **`Farmer.useTool`** 再落地一发；
+/// 而我们**为了"蓄力范围/落点可控"自己也要 DoFunction 一发**（见 2291/2497 那段长注释）。
+/// ⚠️ 老注释写着"重复应用是 no-op，无害"——**那只对锄地成立**（再锄还是那块地），
+///    浇水上第二次照样浇水、照样吃水吃体力（升级壶同理，frame68 那一发固定是面前 1 格）。
+///
+/// 修法：**我们那一发是权威的**（范围/位置都算过）⇒ 后面那一发按掉。
+/// ⚠️ 挂点怎么定的（真机走了一遍弯路，记下来省得下次再猜）：
+///    第一版挂在 `Farmer.useTool` 上（09-10 反编译注释里写着 frame68 调它）——
+///    真机日志打的是「**按掉标记超时自动解除**」⇒ **动画那一发压根不走 `Farmer.useTool`**
+///    （那句注释是概括，不是逐字代码）。而"水只会被 `WateringCan.DoFunction` 扣 + 实测一次挥壶扣 2"
+///    ⇒ **它被调了两次** ⇒ 直接钉在 `DoFunction` 上：**不猜调用者是谁，只数调用次数**（更稳）。
+/// ⚠️ 只在"我们自己刚放出的那一发之后"按（`ModEntry._suppressAnimToolUse`），
+///    生效即失效 + 有 tick 超时兜底；**绝不长期劫持**（恒自己按键也走这条路）。
+/// ⚠️ 我们自己的调用**先清标记**（见 `DoFunctionHere`）——否则连着两次浇水会把第二发也按掉。
+/// </summary>
+internal static class SuppressSecondApplyPatch
+{
+    internal static bool Prefix(Farmer who)
+    {
+        if (!ModEntry._suppressAnimToolUse) return true;
+        if (who != Game1.player) return true;   // 🔒 只管自己这个小人的那一发（别按到别人的号上）
+        ModEntry._suppressAnimToolUse = false;   // 只按这一发，按完就解除
+        ModEntry.Instance?.Monitor.Log("[anim] 第二发落地已按掉（防浇水/挥锄双扣）", LogLevel.Trace);
+        return false;
+    }
+}
+
+/// <summary>
 /// 检测其他玩家（恒）的游戏聊天 → 推 recent_events（MCP 端当新消息看，进会话缓冲）。
 /// ChatBox.receiveChatMessage 在联机时对所有 farmhand 进程同步触发（恒发聊天 → AI 进程也跑）。
 /// sourceFarmer 是完整 UniqueMultiplayerID（Int64，反射确认 2026-08-14）；过滤自己发的（Game1.player）和命令。
@@ -616,6 +649,13 @@ public class ModEntry : Mod
     // Tool area 蓄力补漏（取余补站位，2026-08-15）：主流程后自检漏格 → 聚矩形再蓄力补。
     private List<(int tx, int ty)> _toolAreaTargets = new();
     private string _toolAreaOperation = "till";   // 逐锚点验证用（till/water）
+    // 💧 2026-09-23 恒：本轮蓄力浇水**浇到一半没水了**（队列已停手、回包带 out_of_water）⇒
+    //    Python 收到就跑去水边拟人打水，再拿同一块矩形重浇（矩形过滤是"还没浇的"，重发天然幂等）。
+    private bool _toolAreaOutOfWater = false;
+    // 🚫 2026-09-23 恒真机（"浇水双判体力扣除"）：动画自带的那一发落地要按掉，见 `SuppressSecondApplyPatch`。
+    //    真机账：一格地挥一下 = 水掉 2（原版 1）、体力掉 4（原版 2）——两条腿各落了一发。
+    internal static bool _suppressAnimToolUse = false;
+    internal static int _suppressAnimTicks = 0;   // ⏱️ 兜底：万一动画没跑到那一帧，超时自己解除（别挂着）
     private int _toolAreaToolW = 1, _toolAreaToolH = 1;
     private int _toolAreaChargeFrames = 0, _toolAreaUpgradeLevel = 0;
     private int _toolAreaTotalSwings = 0;
@@ -880,6 +920,20 @@ public class ModEntry : Mod
                 else
                 {
                     Monitor.Log("Harmony: 找不到 performPlayerEmote，恒的表情检测未生效", LogLevel.Error);
+                }
+
+                // 🚫 2026-09-23 恒真机（"浇水双判体力扣除"）：**按掉第二发落地**。
+                //    ⚠️ 这个补丁**必须在这儿手工挂**——本模组所有 patch 都是手工 `harmony.Patch()`，
+                //    **没有 PatchAll()** ⇒ 光写 `[HarmonyPatch]` 特性**不会生效**（第一版就栽在这）。
+                //    ⚠️ 挂点选 `DoFunction` 而不是 `Farmer.useTool`：真机日志证明动画那发**不走 useTool**，
+                //       而"水只被 DoFunction 扣 + 实测挥一下扣 2"⇒ 它被调了两次 ⇒ 直接数调用次数最稳。
+                var supPrefix = AccessTools.Method(typeof(SuppressSecondApplyPatch), nameof(SuppressSecondApplyPatch.Prefix));
+                foreach (var mt in new (Type t, string n)[] { (typeof(WateringCan), "DoFunction"), (typeof(Hoe), "DoFunction") })
+                {
+                    var m = AccessTools.Method(mt.t, mt.n);
+                    if (m == null) { Monitor.Log($"Harmony: 找不到 {mt.t.Name}.{mt.n}，那件工具的第二发按不掉", LogLevel.Error); continue; }
+                    harmony.Patch(m, prefix: new HarmonyMethod(supPrefix));
+                    Monitor.Log($"Harmony: {mt.t.Name}.{mt.n} 补丁已应用（按掉第二发落地，防双扣水/体力）", LogLevel.Info);
                 }
 
                 // 恒的聊天检测：postfix receiveChatMessage（联机时所有 farmhand 进程同步触发）
@@ -1196,6 +1250,20 @@ public class ModEntry : Mod
             EnqueueAlert("event_text", eventText, "info", "event");
             _lastEventText = eventText;
         }
+    }
+
+    /// <summary>
+    /// 🎯 **我们自己的那一发落地**（权威：范围/位置都算过）+ 顺手置"按掉动画那一发"的标记。
+    /// ⚠️ 所有"我们主动调 `Tool.DoFunction`"的地方**都该走这里**——一处判据，别按路径各写各的。
+    ///    （2026-09-23 第一版就只在命令队列那两处加了标记、`/tool` 那条漏了 ⇒ 真机量出来还是 2 格水/4 体力。）
+    /// 详见 `SuppressSecondApplyPatch` 的长注释。
+    /// </summary>
+    private static void DoFunctionHere(Tool tool, GameLocation loc, int px, int py, int power, Farmer farmer)
+    {
+        _suppressAnimToolUse = false;                       // 🧹 先清：**我们自己这一发绝不能被按掉**
+        tool.DoFunction(loc, px, py, power, farmer);        // 我们这一发（权威）
+        _suppressAnimToolUse = true;                        // 之后紧跟着来的那一发（动画/游戏自己的）按掉
+        _suppressAnimTicks = 90;                            // ⏱️ 兜底超时（没来就自己解除）
     }
 
     private void CompleteCommandQueue()
@@ -2298,10 +2366,13 @@ public class ModEntry : Mod
                             //    ✅ 正解 = 两条腿：①自己 DoFunction 落地（3×6，位置=锚点面向格，可靠）；
                             //                    ②再放动画给游戏播，并**等它播完才放行下一条命令**（见 _toolAnimWait）。
                             //    ❌ 以前的错在"没等"：`move` 立刻跟上，frame68 被拖到半路、按错位的 GetToolLocation() 提交 ⇒ 单格过锄。
+                            // 🚫 2026-09-23 恒真机（"浇水双判体力扣除"）：`EndUsingTool()` 放出的挥舞动画，
+                            //    自己的 frame68 会再落地一发（固定"面前 1 格"）——蓄力这条上我们已经落了满范围，
+                            //    动画那发纯属白扣（水 +1、体力 +1 份）⇒ 走 `DoFunctionHere`（自己落 + 按掉它那发）。
                             if (_chargeOp == "till" && tool is Hoe hoe2)
-                                hoe2.DoFunction(farmer.currentLocation, px, py, _chargePower, farmer);
+                                DoFunctionHere(hoe2, farmer.currentLocation, px, py, _chargePower, farmer);
                             else if (_chargeOp == "water" && tool is WateringCan wc2)
-                                wc2.DoFunction(farmer.currentLocation, px, py, _chargePower, farmer);
+                                DoFunctionHere(wc2, farmer.currentLocation, px, py, _chargePower, farmer);
                             farmer.EndUsingTool();   // ⚠️ 必须有——否则蓄力姿势不关，累计放大力
                             _toolAnimWait = 150;     // 🎬 ≈36 tick 动画 + 余量；到 0 强制放行（防"动画卡住不动"）
                             var sft = farmer.TilePoint;
@@ -2339,9 +2410,39 @@ public class ModEntry : Mod
         //      （写它的只有 `/queue` 和 `/tool_area`，都是农活）⇒ 跟命令队列井水不犯河水。
         try { GuardTick(); } catch (Exception ex) { Monitor.Log($"[guard] tick 异常: {ex.Message}", LogLevel.Warn); }
 
+        // 🚫 2026-09-23：动画那一发的"按掉标记"超时兜底——万一动画压根没跑到 frame68
+        //    （被打断/换工具），别让标记一直挂着（挂着会在下一次**别人**用工具时按错一发）。
+        if (_suppressAnimTicks > 0 && --_suppressAnimTicks == 0)
+        {
+            if (_suppressAnimToolUse)
+                ModEntry.Instance?.Monitor.Log("[anim] 按掉标记超时自动解除（动画没走到那一帧？）", LogLevel.Trace);
+            _suppressAnimToolUse = false;
+        }
+
         // Process command queue
         if (_commandQueue != null && _commandQueue.Count > 0 && Context.IsWorldReady)
         {
+            // 💧 2026-09-23 恒真机：「ai 的小人每走一步游戏都提示空水壶那个没水的疑问小表情」。
+            //    根因：壶挥空了没人管——剩下每个锚点照样举壶放下，游戏对"空壶使用"的反应就是那个「?」表情，
+            //    顺带白磨体力、白占时间（`/refill` 那条作弊只在**簇边界**补一次，簇一大就中途见底）。
+            //    ⇒ 蓄力浇水时**壶空就停手**：清掉剩下的命令、如实回 `out_of_water`，由 Python 跑水边
+            //      拟人打水后拿同一块矩形重浇（过滤是"还没浇的"，重发天然幂等）。
+            //    ⚠️ 位置必须在 Dequeue **之前**：这一拍是"准备走下一个锚点"，停在这里才真的不空挥、也不白走。
+            //    ⚠️ 蓄力进行中进不来（上面 `_isChargingTool` 块会 return）——那是游戏自己的完整挥击，不用管。
+            if (_toolAreaOperation == "water" && !_toolAreaOutOfWater)
+            {
+                var wcLeft = Game1.player?.Items?.OfType<WateringCan>().FirstOrDefault();
+                if (wcLeft != null && wcLeft.WaterLeft <= 0)
+                {
+                    _toolAreaOutOfWater = true;
+                    _commandQueue.Clear();
+                    _commandResults.Add(new { ok = false, action = "out_of_water", water = 0, error = "watering can empty — charge run stopped" });
+                    ModEntry.Instance?.Monitor.Log("[water] 壶空 → 停手报缺（剩格交给 Python 打水后续浇）", LogLevel.Info);
+                    CompleteCommandQueue();
+                    return;
+                }
+            }
+
             // 🎬 挥击动画没播完，绝不放行下一条命令（2026-09-10 恒）——详见释放段长注释：
             //    不等的话 `move` 会把还在挥的那个小人拖走，动画 frame68 `Farmer.useTool` 便按
             //    **错位的** `GetToolLocation()` 提交 ⇒ 过锄/耕脚下格（沙滩 11×11 实测：单格、落在移动路径第 2 格）。
@@ -2479,17 +2580,21 @@ public class ModEntry : Mod
                         {
                             // ⚠️ 2026-08-15 隔离基础工具：BeginUsingTool（挥舞动画，拟人）+ DoFunction（立即落地）都调——
                             //    只 DoFunction 会没动画像"漂移"；只 BeginUsingTool 会动画没走完就飞（漏格）。
-                            //    两个一起：动画显示 + 可靠应用（重复应用是 no-op，无害）。
+                            // 🚫 2026-09-23 恒真机修正：老注释那句"**重复应用是 no-op，无害**"**是错的**——
+                            //    只对锄地成立（再锄还是那块地）；浇水上动画自带的那发会**再浇一次**
+                            //    ⇒ 一格地吃 2 格水、4 点体力（原版 1/2，真机量过）。
+                            //    ⇒ 动画照放（拟人观感要），但**它自带的那一发按掉**，落地只认我们自己这发。
                             farmer.BeginUsingTool();
                             var ft = GetFacingTile(farmer);
-                            wcUse.DoFunction(farmer.currentLocation, (int)ft.X * 64 + 32, (int)ft.Y * 64 + 32, 0, farmer);
+                            DoFunctionHere(wcUse, farmer.currentLocation, (int)ft.X * 64 + 32, (int)ft.Y * 64 + 32, 0, farmer);
                             _commandResults.Add(new { ok = true, action = "use", item = item.Name });
                         }
                         else if (item is Hoe hoeUse)
                         {
                             farmer.BeginUsingTool();
+                            // 🚫 同水壶：动画那一发按掉（锄地那发虽是 no-op，但**照样算体力**）
                             var ft = GetFacingTile(farmer);
-                            hoeUse.DoFunction(farmer.currentLocation, (int)ft.X * 64 + 32, (int)ft.Y * 64 + 32, 0, farmer);
+                            DoFunctionHere(hoeUse, farmer.currentLocation, (int)ft.X * 64 + 32, (int)ft.Y * 64 + 32, 0, farmer);
                             _commandResults.Add(new { ok = true, action = "use", item = item.Name });
                         }
                         else if (item is Tool)
@@ -3047,7 +3152,8 @@ public class ModEntry : Mod
                 //    同 _commandResults "use"(1888) 已验证的 拟人动画+效果 组合；之前只 DoFunction 像"漂移/尿尿"。
                 //    宠物碗/浇地都会先播挥动画、水再喷到面前格(farmer.Update 播完自动复位 UsingTool)。
                 farmer.BeginUsingTool();
-                wc.DoFunction(farmer.currentLocation, px, py, chargePower, farmer);
+                // 🚫 2026-09-23：自己落 + **按掉动画自带那发**（否则一格地吃 2 格水 / 4 点体力，真机量过）
+                DoFunctionHere(wc, farmer.currentLocation, px, py, chargePower, farmer);
                 // 🐾 2026-09-05 恒（蓄力不结束）：BeginUsingTool 让水壶持住蓄力pose，脚本结束没释放会卡在举壶。
                 //    延迟 ~0.5s 播完挥动画后 reset（EndUsingTool 清 UsingTool + forceCanMove 复位），同武器特殊攻击的复位模式。
                 var wcFarmer = farmer;
@@ -3070,7 +3176,8 @@ public class ModEntry : Mod
                         var facingTile = GetFacingTile(farmer);
                         int px = (int)facingTile.X * 64 + 32;
                         int py = (int)facingTile.Y * 64 + 32;
-                        hoe.DoFunction(farmer.currentLocation, px, py, power, farmer);
+                        // 🚫 同上：锄地这条没放动画，但仍走共用入口（一处判据，以后加动画自动就带上）
+                        DoFunctionHere(hoe, farmer.currentLocation, px, py, power, farmer);
                         tcs.SetResult(new { ok = true, tool = hoe.Name, action = "Hoe.DoFunction",
                             power, tile = new { x = (int)facingTile.X, y = (int)facingTile.Y } });
                     }
@@ -5847,36 +5954,70 @@ public class ModEntry : Mod
         if (int.TryParse(qs["radius"], out var r) && r > 0 && r <= 30)
             radius = r;
 
+        // 🗺️ 2026-09-23 恒拍板：**矩形模式** `?x1=&y1=&x2=&y2=`（带全四个才算）。
+        // 病根（真 bug，恒："播种也记得跳过已经种了的格子"）：半径模式**以玩家为中心**，而 Python 那边
+        //   为了扫一整块地传的是 `max(w,h)//2 + 8`——**半径 >30 时上面那个解析静默退回 10**
+        //   （`r > 0 && r <= 30` 不成立 ⇒ radius 保持初值 10，一声不响）⇒ **长边 ≥45 的地一过就瞎**，
+        //   "已种/没锄/有草"三张表集体只覆盖玩家周围 ±10 ⇒ 播种照着"要种"的名单**种到已有作物的格上**，
+        //   报出来的"跳过 N 格"也是假的。这是典型的"长歪的兜底"（恒最烦那类）——所以不是把上限调大，
+        //   而是让调用方**直接说要哪一块**：不用动角色、不依赖半径、覆盖多少一目了然。
+        // ⚠️ 面积上限**明确报错**（不静默截断）：主线程逐格查 objects/terrainFeatures/crop，几千格还行，
+        //    上万格会卡帧。要更大的区域请分几次扫。
+        int qx1 = int.TryParse(qs["x1"], out var qv1) ? qv1 : -1;
+        int qy1 = int.TryParse(qs["y1"], out var qv2) ? qv2 : -1;
+        int qx2 = int.TryParse(qs["x2"], out var qv3) ? qv3 : -1;
+        int qy2 = int.TryParse(qs["y2"], out var qv4) ? qv4 : -1;
+        bool rectMode = qx1 >= 0 && qy1 >= 0 && qx2 >= 0 && qy2 >= 0;
+        int rx1 = Math.Min(qx1, qx2), ry1 = Math.Min(qy1, qy2);
+        int rx2 = Math.Max(qx1, qx2), ry2 = Math.Max(qy1, qy2);
+        if (rectMode)
+        {
+            long area = (long)(rx2 - rx1 + 1) * (ry2 - ry1 + 1);
+            if (area > 4096)
+                return new { ok = false, error = $"矩形 {rx2 - rx1 + 1}x{ry2 - ry1 + 1}={area} 格超过上限 4096——分几次扫（别指望它静默截断）" };
+        }
+
         // ⚠️ 2026-08-10: isTilePassable/objects 等地图状态必须主线程读——HTTP线程读火山图
         //    全报不可走（连玩家脚下都 False，AI 炸矿找锚点直接废）。包 EnqueueMainThread
         //    （同 /dump_tile 已验证的主线程模式）彻底解决。
         var tcs = new TaskCompletionSource<object>();
         EnqueueMainThread(() =>
         {
-            try { tcs.SetResult(BuildSurroundings(radius)); }
+            try { tcs.SetResult(BuildSurroundings(radius, rectMode, rx1, ry1, rx2, ry2)); }
             catch (Exception ex) { tcs.SetResult(new { ok = false, error = ex.Message }); }
         });
         return tcs.Task.GetAwaiter().GetResult();
     }
 
-    private object BuildSurroundings(int radius)
+    /// <summary>扫一圈/一块地。`rectMode=true` 时扫 [rx1,ry1]-[rx2,ry2]（不看 radius），否则以玩家为中心 ±radius。
+    /// 两种模式下 `npcs/monsters/farmers/animals` 的口径**统一成"在这块扫描范围内"**（`InScope`）。</summary>
+    private object BuildSurroundings(int radius, bool rectMode = false, int rx1 = 0, int ry1 = 0, int rx2 = 0, int ry2 = 0)
     {
         var farmer = Game1.player;
         var loc = farmer.currentLocation;
         var cx = farmer.TilePoint.X;
         var cy = farmer.TilePoint.Y;
+        var mapW = loc.Map.DisplayWidth / 64;
+        var mapH = loc.Map.DisplayHeight / 64;
+
+        // 🔎 扫描范围（统一成绝对格坐标）
+        int startX = Math.Max(0, rectMode ? rx1 : cx - radius);
+        int startY = Math.Max(0, rectMode ? ry1 : cy - radius);
+        int endX = Math.Min(mapW - 1, rectMode ? rx2 : cx + radius);
+        int endY = Math.Min(mapH - 1, rectMode ? ry2 : cy + radius);
+        // 实体（NPC/怪/玩家/牲畜）的"在不在范围内"判据——两种模式同一个含义
+        bool InScope(int ex, int ey) => rectMode
+            ? (ex >= startX && ex <= endX && ey >= startY && ey <= endY)
+            : (Math.Abs(ex - cx) <= radius && Math.Abs(ey - cy) <= radius);
 
         var tiles = new List<object>();
 
-        for (int dy = -radius; dy <= radius; dy++)
+        for (int ty = startY; ty <= endY; ty++)
         {
-            for (int dx = -radius; dx <= radius; dx++)
+            if (ty < 0 || ty >= mapH) continue;
+            for (int tx = startX; tx <= endX; tx++)
             {
-                int tx = cx + dx, ty = cy + dy;
-                if (tx < 0 || ty < 0) continue;
-                var mapW = loc.Map.DisplayWidth / 64;
-                var mapH = loc.Map.DisplayHeight / 64;
-                if (tx >= mapW || ty >= mapH) continue;
+                if (tx < 0 || tx >= mapW) continue;
 
                 var tileVec = new Vector2(tx, ty);
                 // ⚠️ 2026-08-26 恒：以前这里用裸 loc.isTilePassable —— 只查地图图层，不查物体，
@@ -6036,7 +6177,7 @@ public class ModEntry : Mod
         }
 
         var nearbyNpcs = loc.characters
-            .Where(n => !(n is Monster) && Math.Abs(n.TilePoint.X - cx) <= radius && Math.Abs(n.TilePoint.Y - cy) <= radius)
+            .Where(n => !(n is Monster) && InScope(n.TilePoint.X, n.TilePoint.Y))
             .Select(n => new {
                 name = n.Name,
                 x = n.TilePoint.X,
@@ -6048,13 +6189,13 @@ public class ModEntry : Mod
 
         var nearbyMonsters = loc.characters
             .OfType<Monster>()
-            .Where(m => Math.Abs(m.TilePoint.X - cx) <= radius && Math.Abs(m.TilePoint.Y - cy) <= radius)
+            .Where(m => InScope(m.TilePoint.X, m.TilePoint.Y))
             .Select(m => new { name = m.Name, x = m.TilePoint.X, y = m.TilePoint.Y, health = m.Health, maxHealth = m.MaxHealth })
             .ToList();
 
         var nearbyFarmers = Game1.getOnlineFarmers()
             .Where(f => f != farmer && f.currentLocation == loc
-                && Math.Abs(f.TilePoint.X - cx) <= radius && Math.Abs(f.TilePoint.Y - cy) <= radius)
+                && InScope(f.TilePoint.X, f.TilePoint.Y))
             .Select(f => new { name = f.Name, x = f.TilePoint.X, y = f.TilePoint.Y })
             .ToList();
 
@@ -6071,7 +6212,7 @@ public class ModEntry : Mod
                 foreach (var a in alist)
                 {
                     if (a == null) continue;
-                    if (Math.Abs(a.TilePoint.X - cx) > radius || Math.Abs(a.TilePoint.Y - cy) > radius) continue;
+                    if (!InScope(a.TilePoint.X, a.TilePoint.Y)) continue;
                     nearbyAnimals.Add(new
                     {
                         name = a.Name,
@@ -6090,6 +6231,9 @@ public class ModEntry : Mod
             ok = true,
             center = new { x = cx, y = cy },
             radius,
+            rect_mode = rectMode,
+            // 🗺️ 实际扫到的范围（矩形模式=请求那块**与地图求交**后的结果；半径模式=以玩家为中心的正方形）
+            scanned = new { x1 = startX, y1 = startY, x2 = endX, y2 = endY },
             location = loc.Name,
             tiles,
             npcs = nearbyNpcs,
@@ -6626,9 +6770,31 @@ public class ModEntry : Mod
         if (loc.objects.TryGetValue(vec, out var so) && IsDiggableSpot(so))
             return loc.isTilePassable(new Location(x, y), Game1.viewport);   // 斑点格：物件=斑点本身
         if (IsGingerTile(loc, vec)) return true;                              // 姜点：锄头挥它 = 收姜
+        // 🌱 2026-09-23 恒真机（session_log 09-22 23:43）：**已经长着作物的地不锄**。
+        //    凭据：`farm ops="till plant"` 指着一块**已有作物**的小矩形 ⇒ 锄地相把那几格逐格拟人锄了一遍
+        //    （恒："还是一步一顿"），轮到播种相才说"没一格种得了"。锄头挥在已种的地上白走位、白磨体力，
+        //    屏幕上看就是"AI 在作物上来回踩"。（游戏自己多半会拦，但**工具不该先伸这一手**。）
+        //    ⚠️ 姜点上面已放行（锄头正是收姜的工具）；这里只管**正常作物**那一类。
+        if (loc.terrainFeatures.TryGetValue(vec, out var tfCrop) && tfCrop is HoeDirt hdCrop && hdCrop.crop != null)
+            return false;
         if (loc.doesTileHaveProperty(x, y, "Diggable", "Back") == null) return false;
         return !loc.objects.ContainsKey(vec)
             && !loc.IsTileBlockedBy(vec, ~(StardewValley.CollisionMask.Characters | StardewValley.CollisionMask.Farmers));
+    }
+
+    /// <summary>
+    /// 💧 浇水目标格（2026-09-23 恒：「没有作物、没有耕的地也在浇」）——**矩形分支与自动检测分支共用这一份**。
+    /// 判据：HoeDirt + 有作物 + **没浇过**(state 0) + **没熟**。
+    /// ⚠️ 为什么单独抽出来：矩形分支以前**根本没有它**，套的是锄地那两道门（`IsTillTarget`）⇒
+    ///    "目标格"变成矩形里的**可耕空地**，锚点围着空地排、空地也挥，浇水那路的补漏/验证跟着空转。
+    /// ⚠️ `!readyForHarvest()` 是**跟 Python `find_unwatered` 的 `not harvestable` 对齐**的同一把尺
+    ///    （两边不同尺 = 熟了的作物白浇，还多耗水多跑腿）；`/surroundings` 的 `harvestable` 用的也是
+    ///    游戏自己的 `dirt.readyForHarvest()`，所以三处是同一个判据。
+    /// </summary>
+    private static bool IsWaterTarget(GameLocation loc, int x, int y)
+    {
+        return loc.terrainFeatures.TryGetValue(new Vector2(x, y), out var tf) && tf is HoeDirt dirt
+            && dirt.crop != null && dirt.state.Value == 0 && !dirt.readyForHarvest();
     }
 
     /// <summary>
@@ -9562,6 +9728,10 @@ public class ModEntry : Mod
 
         EnqueueMainThread(() =>
         {
+            // 💧 2026-09-23：`/queue` 不是蓄力农活——别让它**继承上一次 tool_area 的 "water"**，
+            //    否则壶空时那条"停手闸"会误伤普通命令队列（判据只有一份，标记就得跟着命令来源走）。
+            _toolAreaOperation = "";
+            _toolAreaOutOfWater = false;
             _commandQueue = new Queue<Dictionary<string, object?>>(commands);
             _commandDelay = 0;
             _waitingForMove = false;
@@ -16965,6 +17135,12 @@ public class ModEntry : Mod
         if (operation != "water" && operation != "till")
             return new { ok = false, error = "operation must be 'water' or 'till'" };
 
+        // 🧹 2026-09-23：本轮状态**开工前先清**。`_commandQueueTcs` 是上一轮的 TCS——本轮 calc 若早退
+        //    （比如"矩形里没有要浇的作物"），下面 `if (_commandQueueTcs != null)` 会**拿上一次的结果当本次回包**
+        //    ⇒ 明明报错却回一个陈旧的 ok:true（"工具说谎"那一族）。清掉即走 calcResult 里的真错误。
+        _commandQueueTcs = null;
+        _toolAreaOutOfWater = false;
+
         // 1. CALCULATION — runs on main thread (needs game state)
         var calcTcs = new TaskCompletionSource<object>();
         EnqueueMainThread(() =>
@@ -17012,12 +17188,19 @@ public class ModEntry : Mod
                     //    病根：只查 Diggable 会把"**可耕但被建筑/物件挡住**"的格当目标 → 游戏 `DoFunction` 的
                     //    `makeHoeDirt` 按第二道门**拒绝**它 → 它变成"漏格" → 再被 `PatchMissingOnMain` **强行写土**
                     //    ⇒ 土长到建筑/小屋贴图上（恒 09-10 沙滩抓到）。补漏绝不该比游戏自己更敢种土。
+                    // 🚨 2026-09-23 恒真机：「浇水和播种还有点点不满意…**没有作物、没有耕的地也在浇**！很笨笨。」
+                    //    根因：这一段**从来没按 operation 分岔**——`operation=water` 也套上面那套**锄地**两道门，
+                    //    于是"目标格"= 矩形里的**可耕空地**（压根没有 HoeDirt、没有作物），而真正该用的浇水判据
+                    //    只写在**没传 rect** 的自动检测分支里（下面那个 else）。后果是一串：
+                    //      ① 锚点围着空地排 ⇒ 没作物/没翻的地也挥（白磨体力、白耗水）；
+                    //      ② `FindMissingToolAreaTiles("water")` / 补漏那一层也吃这个错集合 ⇒ **浇水这路的"验证"一直在空转**。
+                    //    ⇒ 按 operation 分岔：water 与自动检测分支**共用同一份** IsWaterTarget（判据只有一份）。
                     for (int x = Math.Min(x1, x2); x <= Math.Max(x1, x2); x++)
                         for (int y = Math.Min(y1, y2); y <= Math.Max(y1, y2); y++)
                         {
                             // 🪱 2026-09-19：两道门收敛进 IsTillTarget，并补上**斑点例外**
                             //    （斑点自己就是物件，原先被"有物件就跳过"整格排除 → 一个都挖不动）
-                            if (IsTillTarget(loc, x, y))
+                            if (operation == "water" ? IsWaterTarget(loc, x, y) : IsTillTarget(loc, x, y))
                                 targetTiles.Add((x, y));
                         }
                 }
@@ -17030,8 +17213,8 @@ public class ModEntry : Mod
                             var vec = new Vector2(cx, cy);
                             if (operation == "water")
                             {
-                                if (loc.terrainFeatures.TryGetValue(vec, out var tf) && tf is HoeDirt dirt
-                                    && dirt.crop != null && dirt.state.Value == 0)
+                                // 💧 2026-09-23：判据抽成 IsWaterTarget，与**矩形分支共用一份**（别两处各写各的）
+                                if (IsWaterTarget(loc, cx, cy))
                                     targetTiles.Add((cx, cy));
                             }
                             else
@@ -17090,7 +17273,12 @@ public class ModEntry : Mod
             //    实测 charge 蓄力等待期间位置可能漂移、fallback 从错位算导致浇不上（73,20-22 列案例）；
             //    直接 DoFunction（等效 /tool）position 站位可靠。仍漏的报 still_missing 原因）
             int patches = 0;
-            if (completed && (operation == "till" || operation == "water"))
+            // 💧 2026-09-23 恒真机："然后浇了一会儿**作弊把地块全改了不浇水了**"——就是这个循环干的：
+            //    壶空停手后，剩下的格全成了"漏格" ⇒ 这里把 `wdirt.state.Value = 1` **咔嚓一下直写**，
+            //    不挥壶、不费水、不走位。补漏的定位是"把游戏该做却漏掉的零星几格补上"（2026-09-03 恒：调体力），
+            //    **不是"替 AI 把没水可浇的地全浇了"**。壶空时该做的事是**如实报剩多少格**，
+            //    让 Python 去打水、回来拿同一块矩形再浇一遍（矩形过滤只挑"还没浇的"，幂等）。
+            if (completed && !_toolAreaOutOfWater && (operation == "till" || operation == "water"))
             {
                 for (int round = 0; round < 4; round++)
                 {
@@ -17116,6 +17304,8 @@ public class ModEntry : Mod
                 ["swings"] = _toolAreaTotalSwings,
                 ["patches"] = patches,
                 ["still_missing"] = stillList,
+                // 💧 2026-09-23：壶空了、队列中途停手 ⇒ 让 Python 知道"这不是浇完了，是没水了"（含下一步：打水后重浇）
+                ["out_of_water"] = _toolAreaOutOfWater,
                 ["result"] = result
             };
         }
@@ -17133,7 +17323,15 @@ public class ModEntry : Mod
         int minY = targetTiles.Min(t => t.ty), maxY = targetTiles.Max(t => t.ty);
         int nx = (int)Math.Ceiling((double)(maxX - minX + 1) / toolW);
         int ny = (int)Math.Ceiling((double)(maxY - minY + 1) / toolH);
+        // 🚫 2026-09-23 恒真机："**还是会浇到未耕地！**"——锚点到这一步是按**外框**铺 `nx×ny` 个的，
+        //    跟"这一锚点底下到底有没有要浇/要锄的格"**完全无关**。基础壶(1 格)碰上 11×7 的外框 =
+        //    **77 个锚点**，可真实目标只有 49 格 ⇒ 人走满 77 格、对着没作物的空地照样挥。
+        //    更疼的是**水也被空地喝掉了**：那趟 40 格水只浇到 18 格真作物，22 格喂了空地，
+        //    壶一空就把剩下的 31 格丢给"补漏直写地块"（不挥壶不费水）——恒看到的就是
+        //    "浇了一会儿，咔嚓一下全改了、人不浇了"。⇒ **只有喷到的范围里真有目标格的锚点才留**。
+        var targetSet = new HashSet<(int, int)>(targetTiles);
         var commands = new List<Dictionary<string, object?>>();
+        int anchorsAll = 0, anchorsKept = 0;
         // 🔍 2026-09-03 恒（调体力）：看目标矩形会切几个锚点（每个锚点=move+face+charge=3 条命令，释放一次 DoFunction）
         ModEntry.Instance?.Monitor.Log($"[build-cmds] rect=({minX},{minY})-({maxX},{maxY}) toolW={toolW} toolH={toolH} → nx={nx} ny={ny} anchors={nx * ny} totalCmds={nx * ny * 3}", LogLevel.Info);
         for (int row = 0; row < ny; row++)
@@ -17164,21 +17362,32 @@ public class ModEntry : Mod
                     int wDelta = wSpan - toolW;                   // 首尾中心差（余数时 <toolW 产生重叠）
                     ax = minX + half + (int)Math.Round((double)wDelta * col / (nx - 1), MidpointRounding.AwayFromZero);
                 }
-                commands.Add(new Dictionary<string, object?> { ["action"] = "move", ["x"] = ax, ["y"] = ay });
-                commands.Add(new Dictionary<string, object?> { ["action"] = "face", ["direction"] = 2 });
+                anchorsAll++;
                 // 逐锚点验证用（2026-08-15 恒）：该锚点蓄力/单格覆盖的格（toolW 宽 × toolH 高，面向下）
                 var anchorTargets = new List<(int tx, int ty)>();
                 int halfW2 = (toolW - 1) / 2;
                 for (int dxx = -halfW2; dxx <= halfW2; dxx++)
                     for (int dyy = 1; dyy <= toolH; dyy++)
                         anchorTargets.Add((ax + dxx, ay + dyy));
+                // 🚫 只留"喷得到真目标"的锚点（见函数头那条长注释）；喷了个空 → 这条命令整条不发。
+                var hit = anchorTargets.FindAll(t => targetSet.Contains(t));
+                if (hit.Count == 0)
+                {
+                    if (col == end) break;
+                    continue;
+                }
+                anchorsKept++;
+                commands.Add(new Dictionary<string, object?> { ["action"] = "move", ["x"] = ax, ["y"] = ay });
+                commands.Add(new Dictionary<string, object?> { ["action"] = "face", ["direction"] = 2 });
+                // targets 给**喷到的真目标**（不是整块几何范围）——逐锚点验证只该验真的目标格。
                 if (chargeFrames > 0)
-                    commands.Add(new Dictionary<string, object?> { ["action"] = "charge", ["frames"] = chargeFrames, ["power"] = upgradeLevel, ["targets"] = anchorTargets });
+                    commands.Add(new Dictionary<string, object?> { ["action"] = "charge", ["frames"] = chargeFrames, ["power"] = upgradeLevel, ["targets"] = hit });
                 else
-                    commands.Add(new Dictionary<string, object?> { ["action"] = "use", ["targets"] = anchorTargets });
+                    commands.Add(new Dictionary<string, object?> { ["action"] = "use", ["targets"] = hit });
                 if (col == end) break;
             }
         }
+        ModEntry.Instance?.Monitor.Log($"[build-cmds] 锚点 {anchorsKept}/{anchorsAll} 个留（喷到空地的 {anchorsAll - anchorsKept} 个已丢）⇒ {anchorsKept} swings", LogLevel.Info);
         return commands;
     }
 
@@ -17216,7 +17425,11 @@ public class ModEntry : Mod
                             && dirt.crop != null && dirt.state.Value == 0;
                     }
                     if (isMissing)
-                        missing.Add((tx, ty, MissingReason(loc, tx, ty)));
+                        // 🩹 2026-09-23：`MissingReason` 数的是**四邻挡路**——那是**锄地**的口径
+                        //    （站不站得住决定能不能挥）。浇水看的是"这格浇上没浇上"，四邻是 HoeDirt 很正常，
+                        //    报「右HoeDirt」只会误导（恒 09-23 真机日志里就出现过「仍漏 29 格…右HoeDirt」）。
+                        missing.Add((tx, ty, operation == "water" ? "还没浇上（壶里没水 / 蓄力没喷到这格）"
+                                                                 : MissingReason(loc, tx, ty)));
                 }
                 tcs.SetResult(missing);
             }

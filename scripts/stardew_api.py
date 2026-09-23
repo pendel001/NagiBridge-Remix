@@ -116,7 +116,18 @@ def state(consume_events=False, light=False):
 
 
 def surroundings(radius=10):
+    """以**玩家为中心**扫 ±radius。⚠️ radius 上限 30，**传 >30 会静默退回 10**（C# 2026-09-23 前的老行为）
+    ——要扫一整块地请用 `surroundings_rect()`，别靠调大半径。"""
     return _get("/surroundings", {"radius": radius})
+
+
+def surroundings_rect(x1, y1, x2, y2):
+    """🗺️ **按矩形**扫一块地（2026-09-23 新增）：不用管玩家站哪、不受 radius 30 的限制。
+    返回同 `/surroundings`（多一个 `scanned` 说明实际扫到的范围，已与地图求交）。
+    ⚠️ 格数上限 4096，超了**明确报错**（不静默截断）——调用方该如实把错误交给 AI。
+    用途：播种/锄地/浇水前"这块地里哪些格已经有作物/没锄/被占"——**判据要覆盖整块地**，
+    半径模式在地长边 ≥45 时会瞎掉（那正是"播种种到已有的格上"的病根）。"""
+    return _get("/surroundings", {"x1": int(x1), "y1": int(y1), "x2": int(x2), "y2": int(y2)})
 
 
 def alerts(peek=False):
@@ -434,8 +445,147 @@ def watering_can_water():
 
 
 def refill_water():
-    """Refill watering can via /refill endpoint."""
+    """⚠️ 作弊：`/refill` 直接把 `WaterLeft = waterCanMax`（小人**原地不动**、不走路不打水）。
+    2026-09-23 恒拍板：农活这边改走 `refill_can_natural()`（人真去水边打水），这个只留作应急。"""
     return _post("/refill")
+
+
+# 💧 水→站位 的四邻（水在 (wx+dx, wy+dy) 时，人站 (wx+dx*0 …)——实际是"站 = 水 + (dx,dy)、面朝水的 face"）。
+#    与 server 的 `_CRAB_FACE` **同一张表**：0=上 1=右 2=下 3=左（SDV 原生 FacingDirection，
+#    /face 直接写 `Game1.player.FacingDirection`）。
+_WATER_FACE = ((0, -1, 2), (0, 1, 0), (1, 0, 3), (-1, 0, 1))
+# 「水 − 站位」→ 该朝哪（0=上 1=右 2=下 3=左）；到位后按**实际站位**重算用（walk_to 可能就近改点）
+_FACE_BY_DELTA = {(0, -1): 0, (1, 0): 1, (0, 1): 2, (-1, 0): 3}
+
+
+def water_tiles(x=None, y=None, radius=15):
+    """水格真值表（GET /water：`loc.isWaterTile` 逐格问游戏）。返回 list 或 **None**。
+    ⚠️ None = 端点没回数据，跟"这儿真没水"(=[]) **不是一回事**，调用方别把两者混成一个空表（恒 2026-09-12「别甩锅」）。"""
+    p = {"radius": max(1, min(int(radius), 30))}
+    if x is not None and y is not None:
+        p["x"], p["y"] = int(x), int(y)
+    try:
+        r = _get("/water", p)
+    except Exception:
+        return None
+    if not r.get("ok"):
+        return None
+    return r.get("water") or []
+
+
+def refill_can_natural(can_name=None, radius=15, log=None):
+    """💧 **拟人取水**（2026-09-23 恒）：走到水边 → 面朝水 → 挥壶。游戏原生取水机制，有挥壶动画。
+    返回 `(ok, 一行说明)`——**失败时说明里带下一步**（恒：报错必须给下一步，别让 AI 干瞪眼）。
+
+    ⚠️ 为什么不用 `refill_water()`：那条是 `/refill` 直接改 `WaterLeft`，人**原地不动、没有打水动作**，
+    恒看到的是"AI 每走一步都弹空壶的疑问表情"——设计说的"自动蓄水"从来没真做过。
+    ⚠️ **只在水真的空了才该调这个**（恒 2026-09-23 拍板）：它不是"随手补满"，是跑一趟的成本。
+    ⚠️ 判据：`/passable` 读 body ⇒ 必须 `_post`（老坑，别用 _get 敲它）。
+    """
+    def _say(m):
+        if log:
+            log(m)
+
+    try:
+        s = state()
+    except Exception as e:
+        return False, f"❌ 连不上游戏（{e}）——下一步：确认 MCP 与游戏都在跑"
+    loc = (s.get("location") or {}).get("name") or ""
+    px, py = s["player"]["x"], s["player"]["y"]
+    inv = s.get("inventory") or []
+
+    def _pick_can():
+        if can_name:
+            return can_name
+        for i in inv:
+            n = i.get("name") or ""
+            if "Watering Can" in n:
+                return n
+        return None
+
+    name = _pick_can()
+    if not name:
+        return False, "❌ 背包里没有水壶——下一步：先回家拿上水壶再来浇"
+
+    def _left():
+        """回读壶里剩多少（验证用；拿不到返回 None）。"""
+        try:
+            st = state()
+            wc = next((i for i in st.get("inventory", []) if (i.get("name") or "") == name), {})
+            return wc.get("waterLeft"), wc.get("waterMax")
+        except Exception:
+            return None, None
+
+    before, mx = _left()
+    if before is not None and mx and before >= mx:
+        return True, f"💧 壶本来就是满的（{before}/{mx}），不用跑这一趟"
+
+    wt = water_tiles(px, py, radius)
+    if wt is None:
+        return False, "❌ 拿不到水格表（/water 没回数据）——下一步：先确认 mod/DLL 是新版（`GET /water` 能通）"
+    water = {(w["x"], w["y"]) for w in wt}
+    if not water:
+        return False, f"⚠️ {loc} 里 {radius} 格内没有水——下一步：换张有水的图（或先 `map go Farm` 到水塘边）再浇"
+
+    # 水格的陆地邻居 → 按"离人近"排（走位前先按曼哈顿挑，真走不到的往下试）
+    cand = []
+    for wx, wy in water:
+        for dx, dy, fd in _WATER_FACE:
+            sx, sy = wx + dx, wy + dy
+            if (sx, sy) in water:
+                continue          # 纯水格站不住
+            cand.append((abs(sx - px) + abs(sy - py), sx, sy, fd, wx, wy))
+    cand.sort()
+
+    tried = 0
+    for _, sx, sy, fd, wx, wy in cand:
+        if tried >= 6:
+            break
+        try:
+            if not _post("/passable", {"x": sx, "y": sy}).get("passable"):
+                continue
+        except Exception:
+            continue
+        tried += 1
+        try:
+            # ⚠️ `/walk_to` 是**异步**的（布好路线就返回，人还在走）⇒ 得自己轮询到位。
+            #    而且它会把"站不住的格"**就近改成邻居**并在回包里注明 ⇒ 以回包的 destination 为准，
+            #    到位后再按**实际站位**重新算朝水的方向（别拿出发前预算的那个 face，可能对不上）。
+            wr = walk_to_coord(loc, sx, sy) or {}
+            if not wr.get("ok", False):
+                _say(f"  ⚠️ 走不到 ({sx},{sy})：{wr.get('error', 'walk_to 没回 ok')}")
+                continue
+            dst = wr.get("destination") or {}
+            ax, ay = int(dst.get("x", sx)), int(dst.get("y", sy))
+            deadline = time.time() + min(25.0, 8.0 + (abs(ax - px) + abs(ay - py)) * 0.4)
+            while time.time() < deadline and player_tile() != (ax, ay):
+                time.sleep(0.25)
+            tx, ty = player_tile()
+            dt = (wx - tx, wy - ty)
+            if dt not in _FACE_BY_DELTA:
+                _say(f"  ⚠️ 落在 ({tx},{ty})，它不在水 ({wx},{wy}) 的四邻（差 {dt}）——换一处水边")
+                continue
+            face(_FACE_BY_DELTA[dt])
+            time.sleep(0.25)
+            select(name)
+            time.sleep(0.25)
+            use_tool(name)          # 面朝水挥壶 = 游戏原生打水（C# 走 BeginUsingTool+DoFunction，有动画）
+            time.sleep(1.0)
+        except Exception as e:
+            _say(f"  ⚠️ ({sx},{sy}) 这条路没走通: {e}")
+            continue
+        after, _ = _left()
+        if before is not None and after is not None and after > before:
+            return True, f"💧 走到 ({sx},{sy}) 面朝水 ({wx},{wy}) 挥壶打水：{before} → {after}（真打上来的）"
+        if before is None and after is not None and after > 0:
+            return True, f"💧 走到 ({sx},{sy}) 面朝水 ({wx},{wy}) 挥壶打水：壶里 {after}（真打上来的）"
+        before = after if after is not None else before
+
+    if tried == 0:
+        return False, (f"❌ {loc} 里 {radius} 格内的水边**一格都站不住**（岸格被箱子/建筑/水围着）——"
+                       "下一步：绕到水塘另一边（`map go Farm` 换个方向）或先清掉挡路的物件再浇")
+    return False, ("❌ 水边跑了几处，挥壶后壶里的水**没涨**——下一步：先确认壶拿在手上、再叫一次；"
+                   "若仍不涨，多半是 `/tool` 这条路取不了水（那是 C# 的事），把这个回包报给恒")
 
 
 def menu():

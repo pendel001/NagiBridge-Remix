@@ -3,8 +3,16 @@
 升级壶蓄力覆盖范围（3线/5线/3×3/6×3），站位/取余数补边界全由 ModEntry 锚点机制处理；
 漏格由 DLL 自动补（取余补站位蓄力补，不直接改地块，till/water 统一）。
 ⚠️ 不用 (已删)/water_area 直接改地块（作弊）；不 /tool（实测无效，check_design.py 有挡）。
-流程：装备水壶(无→报错) → cluster 未浇作物 → 每簇 tool_area 蓄力浇 → 中途没水 /refill →
-补浇：重扫漏的 cluster 再 tool_area（兜底）→ 验证报告。
+流程：装备水壶(无→报错) → cluster 未浇作物 → 每簇 tool_area 蓄力浇 →
+      **中途壶空了就停下、跑水边拟人打水、回来拿同一块矩形接着浇** → 补浇兜底 → 验证报告。
+
+🚨 2026-09-23 恒真机两条，都在这一版修掉：
+  ① 「没有作物、没有耕的地也在浇！很笨笨」= **C# `/tool_area` 的矩形分支套的是锄地判据**
+     （`IsTillTarget`），不是浇水判据 ⇒ 目标格变成"矩形里的可耕空地"。现在 C# 按 operation 分岔、
+     与"没传 rect 的自动检测分支"共用同一份 `IsWaterTarget`（HoeDirt+有作物+未浇+没熟）。
+  ② 「ai 的小人每走一步都弹空水壶那个没水的疑问表情」= 壶挥空了没人管（`/refill` 那条**作弊**只在
+     簇边界补一次，簇一大就中途见底）。现在 C# 壶空即**停手报缺**（`out_of_water`），
+     这边收到就 `api.refill_can_natural()` **走去水边真打水**（不再是原地改数字）。
 """
 import argparse
 import os
@@ -45,7 +53,10 @@ def cluster(pts, gap=10):
 
 
 def equip_watering_can():
-    """装备最好的水壶 + 灌满。返回 (是否装备成功, 水壶名)。"""
+    """装备最好的水壶。返回 (是否装备成功, 水壶名)。
+    ⚠️ 2026-09-23 恒：这里**不再顺手灌满**——补水只走 `refill_can_natural()`（人真去水边打水），
+    而它"只在水真的空了才去"。壶要是空着来的，第一块地会让 C# 停手报 `out_of_water`，
+    循环里自然会先跑一趟水边，不必在这儿预先作弊补满。"""
     try:
         inv = api.state().get("inventory", [])
         # 水壶名：Iridium/Copper/Iron/Gold Watering Can / Watering Can（优先级降序）
@@ -55,45 +66,28 @@ def equip_watering_can():
             if any((i.get("name") or "") == name for i in inv):
                 api.select(name)
                 time.sleep(0.3)
-                # 灌满水壶
-                st = api.state()
-                wc = next((i for i in st.get("inventory", []) if (i.get("name") or "") == name), {})
-                if (wc.get("waterLeft") or 0) == 0:
-                    try:
-                        api.refill_water()
-                        time.sleep(0.3)
-                    except Exception:
-                        pass
                 return True, name
     except Exception:
         pass
     return False, None
 
 
-def _refill_if_needed():
-    """水壶剩水不多就自动补满。返回 True=补过。"""
-    try:
-        st = api.state()
-        wc = next((i for i in st.get("inventory", []) if "Watering Can" in (i.get("name") or "")), {})
-        if (wc.get("waterLeft") or 0) <= 2:
-            api.refill_water()
-            api.log("  🔄 水壶没水，自动补水后继续")
-            time.sleep(0.3)
-            return True
-    except Exception:
-        pass
-    return False
-
-
 def _water_rect(x1, y1, x2, y2):
     """对一块矩形调 /tool_area 蓄力浇水（基础壶逐格挥壶 / 升级壶蓄力覆盖）。
     ⚠️ 走位+蓄力可能很久（基础壶逐格挥壶），必须长超时——10s 会把蓄力截断。
-    补漏由 ModEntry 自动做（取余补站位蓄力补，不直接改地块），返回 patches / still_missing。"""
-    r = api._post("/tool_area",
-                  {"operation": "water", "x1": x1, "y1": y1, "x2": x2, "y2": y2},
-                  timeout=600)
+    补漏由 ModEntry 自动做（取余补站位蓄力补，不直接改地块）。
+    返回 dict：{ok, text, out_of_water}——`out_of_water=True` = 浇到一半壶空了、C# **已停手报缺**
+    （剩下没浇的格子还在，打水后拿同一块矩形重发即可：矩形过滤只挑"还没浇的"，天然幂等）。"""
+    try:
+        r = api._post("/tool_area",
+                      {"operation": "water", "x1": x1, "y1": y1, "x2": x2, "y2": y2},
+                      timeout=600)
+    except Exception as e:
+        return {"ok": False, "out_of_water": False, "text": f"  ❌ tool_area 浇水调用失败: {e}"}
+    oow = bool(r.get("out_of_water"))
     if not r.get("ok"):
-        return f"  ❌ tool_area 浇水失败: {r.get('error', r)}"
+        return {"ok": False, "out_of_water": oow,
+                "text": f"  ❌ tool_area 浇水失败: {r.get('error', r)}"}
     patches = r.get("patches", 0)
     still = r.get("still_missing") or []
     s = f"  ✅ tool_area 蓄力浇 ({x1},{y1})-({x2},{y2})"
@@ -104,14 +98,41 @@ def _water_rect(x1, y1, x2, y2):
         for m in still[:3]:
             rsn = m.get('reason') or ''
             s += f" ({m.get('x')},{m.get('y')})「{rsn}」" if rsn else f" ({m.get('x')},{m.get('y')})"
-    return s
+    if oow:
+        s += "　💧 中途壶空了（C# 已停手，剩格打水后续浇）"
+    return {"ok": True, "out_of_water": oow, "text": s}
+
+
+def _water_cluster(x1, y1, x2, y2, tries=4):
+    """浇一块矩形：**壶空了就跑水边拟人打水、回来拿同一块矩形接着浇**（恒 2026-09-23：
+    只在水真的空了才去，不提前补）。返回 True=这块浇完了/尽力了，False=打不到水被迫半途停下。"""
+    for _ in range(tries):
+        r = _water_rect(x1, y1, x2, y2)
+        api.log(r["text"])
+        if not r["out_of_water"]:
+            return True
+        ok, msg = api.refill_can_natural(log=api.log)
+        api.log("  " + msg)
+        if not ok:
+            api.log("  ⏭ 打不到水 —— 这块剩下没浇的格子先留着（补浇轮/下一趟再处理）")
+            return False
+    api.log(f"  ⚠️ ({x1},{y1})-({x2},{y2}) 来回打水 {tries} 次还没浇完 —— 先停，别再空转")
+    return False
 
 
 def run():
     api.log("=== Water Crops (tool_area 蓄力拟人) ===")
     unwatered = find_unwatered()
     if not unwatered:
-        api.log("Nothing to water!")
+        # 🌧️ 2026-09-23：把"为什么没得浇"说清楚（恒 2026-09-12 记过：异步下这句回不到 AI，
+        #    它以为自己浇过一遍）。晴天/温室也可能真的没得浇，所以只在下雨时才提雨。
+        why = ""
+        try:
+            if bool((api.state().get("time") or {}).get("isRaining")):
+                why = "（今天下雨，作物已经被雨浇过了）"
+        except Exception:
+            pass
+        api.log(f"Nothing to water! {why}本图没有「有作物且没浇过」的格，没用壶、没走位、没耗体力")
         return
 
     api.log(f"Found {len(unwatered)} unwatered crops — cluster 聚类后 tool_area 蓄力浇")
@@ -132,41 +153,46 @@ def run():
     # 主浇：聚类 → 每簇 tool_area 蓄力浇水（站位/补边界由 ModEntry 锚点机制处理）
     groups = cluster(unwatered, gap=10)
     api.log(f"  → {len(groups)} 簇")
+    no_water = []
     for i, g in enumerate(groups, 1):
         x1 = min(p[0] for p in g); x2 = max(p[0] for p in g)
         y1 = min(p[1] for p in g); y2 = max(p[1] for p in g)
-        _refill_if_needed()
+        api.log(f"  [{i}/{len(groups)}] 簇 ({x1},{y1})-({x2},{y2}) {len(g)}格")
         try:
-            api.log(f"  [{i}/{len(groups)}] 簇 ({x1},{y1})-({x2},{y2}) {len(g)}格")
-            api.log(_water_rect(x1, y1, x2, y2))
-            time.sleep(0.3)
+            if not _water_cluster(x1, y1, x2, y2):
+                no_water.append(f"({x1},{y1})-({x2},{y2})")
         except Exception as e:
             api.log(f"  ⚠️ 簇 ({x1},{y1})-({x2},{y2}) 失败: {e}")
+        time.sleep(0.3)
 
-    # 补浇兜底：重扫漏的格子（初始扫描范围外/被跳过的新未浇），cluster 后再 tool_area 补——不 (已删)/water_area（恒）
+    # 补浇兜底：重扫漏的格子（初始扫描范围外/打水没赶上的一批），cluster 后再 tool_area 补——不 (已删)/water_area（恒）
     missed = find_unwatered()
     if missed:
         api.log(f"  ⚠️ 补浇 {len(missed)} 格（cluster 后再 tool_area 蓄力补，不 (已删)/water_area 作弊）")
         for g in cluster(missed, gap=10):
             x1 = min(p[0] for p in g); x2 = max(p[0] for p in g)
             y1 = min(p[1] for p in g); y2 = max(p[1] for p in g)
-            _refill_if_needed()
             try:
-                api.log(_water_rect(x1, y1, x2, y2))
-                time.sleep(0.3)
+                if not _water_cluster(x1, y1, x2, y2):
+                    no_water.append(f"({x1},{y1})-({x2},{y2})")
             except Exception:
                 api.log(f"    ⚠️ 补浇 ({x1},{y1})-({x2},{y2}) 失败")
         time.sleep(0.3)
 
-    # 验证（真浇了才算）
+    # 验证（真浇了才算）——⚠️ 只剩熟作物/空地不算漏（判据与 C# IsWaterTarget 同一把尺）
     still = find_unwatered()
     if still:
-        api.log(f"  Still {still} unwatered（tool_area 补浇后仍漏——报告，不 (已删)/water_area 作弊）")
+        api.log(f"  ⚠️ 还有 {len(still)} 格没浇上：{still[:6]}{' …' if len(still) > 6 else ''}")
     else:
         api.log("  All watered!")
 
     s = api.state()
+    left, mx = api.watering_can_water()
     api.log(f"Done! {len(groups)} 簇蓄力浇水，覆盖 {len(unwatered)} 格（真走位+蓄力挥壶）")
+    api.log(f"  壶里剩水: {left}/{mx}")
+    if still:
+        api.log(f"  🔎 下一步：还有 {len(still)} 格干的——多半是水没打上（上面有「水边跑了…没涨」那条）"
+                f"或站位被挡；把壶灌满再叫一次 `farm water` 就行")
     api.log(f"Stamina: {s['player']['stamina']:.0f}/{s['player']['maxStamina']}")
     api.log(f"Time: {s['time']['timeOfDay']}")
 

@@ -2923,7 +2923,13 @@ _PORT_SCRIPTS = {"water_crops", "chop_trees", "clear_area", "mine_run", "fish_ru
 # 🚀 自动异步白名单（2026-08-16 恒拍板）：便利工具跑这些长脚本 → 自动后台异步，AI 不用手动后台。
 # 长任务（钓鱼/挖矿/炸矿/收放机器/浇水可能很久）被动异步；短任务（清地/砍树/摸动物/捡采集等）保持同步。
 _ASYNC_SCRIPTS = {"mine_run", "fish_run", "bomb_mine", "bomb_escort", "bomb_volcano",
-                  "fruit_round", "machine_loader", "water_crops",
+                  "fruit_round", "machine_loader",
+                  # 💧 2026-09-23 恒拍板：`water_crops` **移出白名单、改同步等结果**。
+                  #    原话「浇水是异步的耶！我不记得是我自己把它放进异步了还是怎样」——是 08-16
+                  #    自动异步白名单最初那 8 个之一（恒拍板那天）。副作用早记过一条（09-12）：
+                  #    异步下 AI 只看到「🚀 已后台启动」，**「没有要浇的」/失败原因都不回流**，它以为自己浇过。
+                  #    这次浇水要"浇到一半没水就跑水边打水再回来接着浇"，过程里得看得到结果，干脆同步。
+                  #    ⚠️ 想改回异步：`async_config add=water_crops` 即可（本行留此注记，别再翻旧账）。
                   # 🌾 2026-09-16 恒：收获改回**拟人**（逐个走位+动手）后一株要 2~4 秒，
                   #    一片地几十株就是好几分钟 ⇒ 必须进白名单转后台（同 harvest 的老问题）。
                   "scythe_crops"}
@@ -4547,40 +4553,28 @@ def apply_fertilizer(fertilizer_name: str, x: int = -1, y: int = -1,
     # ⚠️ 异种化肥=占用（SDV 不允许已施肥的地改施别的化肥，实测覆盖不生效），跳过并提示
     do, skip, occupied, not_tilled = [], [], [], []
     _blocked_f = {}    # 🌿 没锄的格里，还把"被什么挡着"分出来（恒：地格上有杂草）
-    # 🦶 2026-09-19：站田心扫描**要挑能站的格**——原来写死田心，田心正好是洒水器/箱子格时
-    #    人就被闪上去了（恒真机："踩到洒水器了"）。挑不出能站的格就**原地扫**。
-    _fcx = x + dx * length // 2 + rdx * rows // 2
-    _fcy = y + dy * length // 2 + rdy * rows // 2
-    _wk0 = api.walk_ok_tiles(min(t[0] for t in target_tiles) - 1, min(t[1] for t in target_tiles) - 1,
-                             max(t[0] for t in target_tiles) + 1, max(t[1] for t in target_tiles) + 1)
-    _pk0 = api.stand_near(target_tiles, _wk0, _fcx, _fcy)
-    if _pk0:
-        try:
-            api.position(_pk0[0], _pk0[1])
-            time.sleep(0.3)
-        except Exception:
-            pass
-    try:
-        surr = api.surroundings(max(length, rows) + 5)
-        tiles = {(t["x"], t["y"]): t for t in surr.get("tiles", [])}
-        for tx, ty in target_tiles:
-            t = tiles.get((tx, ty), {})
-            if t.get("terrain") != "HoeDirt":
-                not_tilled.append((tx, ty))
-                _lab, _cl = _tile_obstacle(t)
-                if _lab:
-                    _blocked_f.setdefault("clear" if _cl else "facility",
-                                          []).append((tx, ty, _lab))
-                continue
-            fert = _norm_fert(t.get("fert"))
-            if fert is None:
-                do.append((tx, ty))
-            elif fert_id is not None and fert == fert_id:
-                skip.append((tx, ty))
-            else:
-                occupied.append((tx, ty))
-    except Exception:
-        do = target_tiles[:]  # 扫描失败就全撒，事后检测兜底
+    # 🗺️ 2026-09-23：改**按矩形扫**（`_scan_tiles`）——见那个函数的长注释。原来要"先站田心再按半径扫"
+    #    （半径 >30 会被 C# 静默退回 10，大块地等于瞎撒），而且**扫描失败就"全撒、事后兜底"**——
+    #    那不叫兜底：不知道哪格有化肥就直接撒 = 白耗化肥。现在扫不成**如实报、不动手**。
+    tiles, _serr = _scan_tiles(target_tiles)
+    if _serr:
+        return _with_state(f"❌ {_serr}——本次没撒化肥（**看不全就不动手**：不知道哪格有化肥就撒=白耗）")
+    for tx, ty in target_tiles:
+        t = tiles.get((tx, ty), {})
+        if t.get("terrain") != "HoeDirt":
+            not_tilled.append((tx, ty))
+            _lab, _cl = _tile_obstacle(t)
+            if _lab:
+                _blocked_f.setdefault("clear" if _cl else "facility",
+                                      []).append((tx, ty, _lab))
+            continue
+        fert = _norm_fert(t.get("fert"))
+        if fert is None:
+            do.append((tx, ty))
+        elif fert_id is not None and fert == fert_id:
+            skip.append((tx, ty))
+        else:
+            occupied.append((tx, ty))
 
     if not do:
         return _with_state(f"{warp_log}🌱 目标区 {len(target_tiles)} 格无需撒"
@@ -4612,30 +4606,23 @@ def apply_fertilizer(fertilizer_name: str, x: int = -1, y: int = -1,
         api.use_item()
         time.sleep(0.35)
 
-    # 6. 检测兜底：站田中央重扫，精确比对目标化肥 ID（不能只看"有化肥"——旧化肥会误报）
+    # 6. 检测兜底：重扫目标格，精确比对目标化肥 ID（不能只看"有化肥"——旧化肥会误报）
+    #    🗺️ 2026-09-23：改按矩形扫（`_scan_tiles`）；矩形模式不依赖站位 ⇒ "先站田心"那步删掉。
     time.sleep(0.4)
-    cx = x + dx * length // 2 + rdx * rows // 2
-    cy = y + dy * length // 2 + rdy * rows // 2
-    # 🦶 站田心扫描要挑能站的格（同锄地/播种）——田心正好是洒水器/箱子格时不能硬闪上去
-    _park = api.stand_near(do, _walk_ok, cx, cy)
-    if _park:
-        try:
-            api.position(_park[0], _park[1])
-            time.sleep(0.3)
-        except Exception:
-            pass
     got = 0
     try:
-        surr = api.surroundings(max(length, rows) + 5)
-        tiles = {(t["x"], t["y"]): t for t in surr.get("tiles", [])}
+        tiles, _verr = _scan_tiles(do)
+        if _verr:
+            raise RuntimeError(_verr)
         for tx, ty in do:
             fert = _norm_fert(tiles.get((tx, ty), {}).get("fert"))
             if fert_id is None:
                 got += 1 if fert is not None else 0   # 未知化肥 ID：退化成"有化肥就算"
             elif fert == fert_id:
                 got += 1
-    except Exception:
-        got = None  # 检测失败不误报
+    except Exception as _e:
+        got = None        # 检测失败不误报
+        _verr_msg = str(_e)
 
     lines = [f"🌱 撒化肥「{fertilizer_name}」 ({x},{y}) 起 {rows}x{length}" ]
     _ig = _ignored_note(ignored)
@@ -4644,7 +4631,8 @@ def apply_fertilizer(fertilizer_name: str, x: int = -1, y: int = -1,
     if got is not None:
         lines.append(f"  ✅ 已撒 {got}/{len(do)} 格")
     else:
-        lines.append(f"  ✅ 已执行 {len(do)} 格（检测失败）")
+        lines.append(f"  ⚠️ 已执行 {len(do)} 格，但**检测没成**（{_verr_msg}）——别把这当成「撒上了」，"
+                     f"要看结果自己 `look` 一眼")
     if no_stand_f:
         lines.append(f"  ⚠️ 没撒 {len(no_stand_f)} 格（**四邻没处站**）: "
                      + " ".join(f"({a},{b})" for a, b in no_stand_f[:8]))
@@ -4765,19 +4753,16 @@ def _till_rect(x1: int, y1: int, x2: int, y2: int) -> str:
 
 @mcp.tool()
 def water_crops() -> str:
-    """💧 给作物浇水
-    自动检测：
-    - 🌧️ 下雨/暴雨 → 跳过浇水
-    - 💧 水壶没水 → 自动装满
-    - ⏰ 晚10点后不浇（明天再说）
+    """💧 给作物浇水（同步等结果；一簇几十格，可能要走近一分钟）
+    只浇**有作物且没浇过**的格（空地和没翻的地不碰）；
+    壶浇空了会**走去水边真打水**（拟人，不再是原地把壶灌满），打满回来接着浇。
+    ⏰ 晚10点后别浇（明天再说）。浇完回包里带"还剩几格没浇上 + 下一步"。
     """
     # ⚠️ 2026-08-15：tool_area 蓄力走位可能很久（基础壶逐格/大田），60s 会掐断浇水脚本
+    # 💧 2026-09-23 恒：移出 `_ASYNC_SCRIPTS` ⇒ 现在**同步等**（async_ok 留着不影响：不在白名单就不转后台）。
     result = _run_script("water_crops", timeout=600, async_ok=True)
     if result.startswith("🚀"):
-        return _with_state(result)   # 长脚本自动异步：立即返回 job_id
-    # 尝试从输出判断下雨
-    if "rain" in result.lower() or "跳过" in result:
-        return _with_state(f"💧 浇水: 下雨天，跳过\n{result[:300]}")
+        return _with_state(result)   # 若哪天被加回白名单，仍是这条异步回包
     return _with_state(f"💧 浇水完成\n{result[:600]}")
 
 
@@ -7763,6 +7748,36 @@ def _obstacle_lines(blocked, verb="锄") -> list:
     return lines
 
 
+def _scan_tiles(pts, margin: int = 1):
+    """🗺️ 按**这批格的外框**扫一遍地形，返回 `(tiles, err)`——`tiles` = `{(x,y): tile}`，
+    `err` 非空 = **没扫成**（调用方要如实报，**别把"扫失败"当成"扫出来是空的"**）。
+
+    ⚠️ 2026-09-23 恒真机（"播种也记得跳过已经种了的格子"）挖出来的病根：
+    以前全部用 `api.surroundings(max(w,h)//2 + 8)` —— 那是**以玩家为中心**的半径扫描，而 C# 的
+    半径解析是 `r > 0 && r <= 30`，**传 >30 不是截到 30、而是静默退回 10**！
+    ⇒ 地长边 ≥45 格时（`max//2+8 > 30`）整块地的扫描只剩玩家周围 ±10 格看得见：
+    "已有作物 / 没锄 / 有草"三张表集体失明 ⇒ 播种照着"要种"的名单**种到已经有作物的格上**
+    （游戏拒绝了，最后拿季节/别的当解释），报出来的"跳过 N 格"也是假的。
+    这是典型的"**长歪的兜底**"（恒最烦那类）——所以不是把半径调大，而是**直接说要哪一块**：
+    `/surroundings` 的矩形模式与玩家站哪无关、覆盖范围一目了然，上限 4096 格超了**明确报错**。
+    顺带：矩形模式不需要"先瞬移到田心"那一步 ⇒ 少一次乱窜的瞬移。
+    """
+    pts = list(pts)
+    if not pts:
+        return {}, ""
+    x1 = min(p[0] for p in pts) - margin
+    y1 = min(p[1] for p in pts) - margin
+    x2 = max(p[0] for p in pts) + margin
+    y2 = max(p[1] for p in pts) + margin
+    try:
+        r = api.surroundings_rect(x1, y1, x2, y2)
+    except Exception as e:
+        return {}, f"扫地块 ({x1},{y1})-({x2},{y2}) 失败: {e}"
+    if not r.get("ok"):
+        return {}, f"扫地块 ({x1},{y1})-({x2},{y2}) 失败: {r.get('error')}"
+    return {(t["x"], t["y"]): t for t in r.get("tiles", [])}, ""
+
+
 def _farm_till(x: int = -1, y: int = -1, rows: int = 1, length: int = 1,
                direction: str = "horizontal",
                x1: int = -1, y1: int = -1, x2: int = -1, y2: int = -1,
@@ -7827,6 +7842,28 @@ def _farm_till(x: int = -1, y: int = -1, rows: int = 1, length: int = 1,
         head = f"🌾 {_lay_cn}布局锄地 ({rx1},{ry1})-({rx2},{ry2}) {w}x{h}"
         note = None
 
+    # 🌱 2026-09-23 恒真机（"播种也记得跳过已经种了的格子"）：**锄地同样得跳过已经有作物的格**。
+    #    真机凭据（session_log 09-22 23:43，恒那个新档）：`farm ops="till plant"` 指着一块**已有作物**
+    #    的小矩形 ⇒ **锄地相把那 4 格逐格拟人锄了一遍**（恒："还是一步一顿"），轮到播种相才说
+    #    "4 格没一格种得了（已有作物 4）"。锄头挥在已种的地上：游戏不一定毁作物，但**白走位、白磨体力**，
+    #    从屏幕上看就是"AI 在作物上来回踩"。
+    #    ⚠️ 判据要 **`crop` 或 `forageCrop` 都算**：大葱/姜的 `indexOfHarvest` 是空的、只有 forageCrop
+    #       （C# `/surroundings` 6040 行就记着这条）——只认 `crop` 会把大葱格当空地，照样锄过去。
+    #    ⚠️ 与播种那相**同一个判据**（`has_crop`），别两处各写各的。
+    _pre, _serr = _scan_tiles(tile_list)
+    if _serr:
+        return _with_state(f"❌ {_serr}——本次没锄（**看不全就不动手**，别凭缺角的地图下锄）")
+    has_crop = {pt for pt in tile_list
+                if (_pre.get(pt, {}).get("crop") or _pre.get(pt, {}).get("forageCrop"))}
+    if has_crop:
+        tile_list = [pt for pt in tile_list if pt not in has_crop]
+    if not tile_list:
+        return _with_state(
+            f"🌾 ({rx1},{ry1})-({rx2},{ry2}) 这 {len(has_crop)} 格**全都有作物**，一格没锄。\n"
+            f"  ⏭ 跳过 {len(has_crop)} 格（已有作物，锄头不往已种的地上招呼）\n"
+            f"  🔎 下一步：换一块没种过的地（`look` 看附近哪块空着），"
+            f"或先把这些作物**收掉**（`farm ops=\"harvest\"` / 镰刀收）再锄")
+
     # ── 3. 锄头等级决定"怎么锄" ──
     _select_best_hoe()
     try:
@@ -7887,18 +7924,15 @@ def _farm_till(x: int = -1, y: int = -1, rows: int = 1, length: int = 1,
         return _till_rect(rx1, ry1, rx2, ry2) + ("\n" + _ig_note if _ig_note else "")
 
     # ── 4. 逐下检测（判据 `terrain == "HoeDirt"`；2026-09-17 真机 A/B 校过：手锄一格立刻读到）──
-    # 🦶 站田心扫描**要挑能站的格**：原来写死 `position(田心)`，田心是洒水器/箱子格时人就被闪上去
-    #    （恒 2026-09-19 真机："踩到洒水器了"）。挑不出能站的格就**原地扫**（不硬瞬移）。
+    # 🗺️ 2026-09-23：验收扫描改**按矩形**（`_scan_tiles`，见那个函数的长注释）。原来这里先
+    #    `position(田心)` 再按半径扫——半径 >30 会被 C# **静默退回 10**，长边 ≥45 的地上
+    #    "锄过的格"也会被报成"没锄"。矩形模式不依赖站位 ⇒ 那一步瞬移一并删掉（少一次乱窜）。
     time.sleep(0.4)
-    _park = api.stand_near(tile_list, _walk_ok, (rx1 + rx2) // 2, (ry1 + ry2) // 2)
-    if _park:
-        try:
-            api.position(_park[0], _park[1])
-            time.sleep(0.3)
-        except Exception:
-            pass
-    surr = api.surroundings(max(w, h) // 2 + 6)
-    tiles = {(t["x"], t["y"]): t for t in surr.get("tiles", [])}
+    tiles, _verr = _scan_tiles(tile_list)
+    if _verr:
+        return _with_state(f"🌾 锄地已做完，但**验收扫描失败**：{_verr}\n"
+                           f"  🔎 本次锄了 {len(tile_list)} 格（另有 {len(has_crop)} 格已有作物被跳过），"
+                           f"但**没验成**——别把这当成「锄到了」，要看结果请自己 `look` 一眼")
     tilled = [pt for pt in tile_list if tiles.get(pt, {}).get("terrain") == "HoeDirt"]
     missing = [pt for pt in tile_list if tiles.get(pt, {}).get("terrain") != "HoeDirt"]
     lines = [f"{head} | {method}"]
@@ -7906,6 +7940,8 @@ def _farm_till(x: int = -1, y: int = -1, rows: int = 1, length: int = 1,
         lines.append(note)
     if _ig_note:
         lines.append(_ig_note)
+    if has_crop:
+        lines.append(f"  ⏭ 跳过 {len(has_crop)} 格（已有作物——锄头不往已种的地上招呼）")
     lines.append(f"  ✅ {len(tilled)}/{len(tile_list)} 锄出")
     if missing:
         _no_stand = set(no_stand)
@@ -8058,30 +8094,22 @@ def _farm_plant(seed_name: str = "", seed: str = "", x: int = -1, y: int = -1, r
 
     # ── 5. 扫地形：① 目标地块在不在当前图 ② 哪些格要跳过（已有作物 / 设施占格）──
     #    ⚠️ 判据用"**田心格在不在扫描结果里**"，不能用"tiles 为空"——半径不够时也会空。
-    def _scan(radius):
-        try:
-            return {(t["x"], t["y"]): t for t in api.surroundings(radius).get("tiles", [])}
-        except Exception:
-            return {}
-    radius = max(w, h) // 2 + 8
-    tiles = _scan(radius)
-    if not any(pt in tiles for pt in plant_tiles):
-        # 当前位置扫不到田块（站得远，或**压根不在同一张图**）→ 站到田里再扫一次。
-        # 🦶 落脚点**要挑能站的**：田心是洒水器/箱子格时不能硬闪上去（恒 2026-09-19："踩到洒水器了"）。
-        _walk_ok0 = api.walk_ok_tiles(rx1 - 1, ry1 - 1, rx2 + 1, ry2 + 1)
-        _park0 = api.stand_near(plant_tiles, _walk_ok0, (rx1 + rx2) // 2, (ry1 + ry2) // 2)
-        if _park0:
-            try:
-                api.position(_park0[0], _park0[1])
-                time.sleep(0.4)
-                tiles = _scan(radius)
-            except Exception:
-                pass
+    # 🗺️ 2026-09-23：改**按矩形扫**（`_scan_tiles`）——见那个函数的长注释。原来用
+    #    `api.surroundings(max(w,h)//2+8)`（以玩家为中心），半径 >30 会被 C# **静默退回 10**；
+    #    矩形模式跟玩家站哪无关 ⇒ "先瞬移到田心再扫" 那一步也一并删了。
+    tiles, _serr = _scan_tiles(plant_tiles)
+    if _serr:
+        return _with_state(f"❌ {_serr}——本次没播种（**看不全就不动手**，别凭缺角的地图下种）")
     if not any(pt in tiles for pt in plant_tiles):
         cur = (api.state().get("location") or {}).get("name", "?")
         return _with_state(f"❌ 目标田块 ({rx1},{ry1})-({rx2},{ry2}) 不在当前地图（现在在 {cur}）"
                            f"——一个动作都没做。请先用 map go 到那块地所在的图。")
-    planted_crop = {pt for pt in plant_tiles if tiles.get(pt, {}).get("crop")}
+    # 🌱 2026-09-23 恒（"播种也记得跳过已经种了的格子"）：**已有作物 = `crop` 或 `forageCrop`**。
+    #    ⚠️ 大葱/姜的 `indexOfHarvest` 是**空的**、只有 forageCrop（C# `/surroundings` 6040 行记着这条）
+    #    ⇒ 只认 `crop` 会把大葱格当空地 ⇒ 一路"想种上去"（游戏每格都拒，观感就是恒说的"一步一顿"）。
+    #    判据与锄地那相**同一份**。
+    planted_crop = {pt for pt in plant_tiles
+                    if (tiles.get(pt, {}).get("crop") or tiles.get(pt, {}).get("forageCrop"))}
     # 🆕 2026-09-19（恒「**地格上有杂草**」）：跳过的不再只有"已种/被设施占"两种 —— 还要认出
     #    **杂草挡着**（→ 先 clear）、**压根没锄**（→ 先 till）。原来看见 object 才算"被占"，
     #    长草的格（没有 object，只有 terrain=Grass）就一路走到"逐格种 → 被游戏拒绝"，
@@ -8103,6 +8131,10 @@ def _farm_plant(seed_name: str = "", seed: str = "", x: int = -1, y: int = -1, r
     if not do_tiles:
         _msg = [f"{warp_log}🌱 {len(plant_tiles)} 格**没一格种得了**（已有作物 {len(planted_crop)}）"]
         _msg.extend(_obstacle_lines(_blocked, verb="种"))
+        # 🔎 2026-09-23 恒（"AI 盲目试了同一块两次"）：**一步没动手就要给下一步**，否则 AI 只能原样再叫一次。
+        _msg.append("  🔎 下一步：换一块**没种过**的地（`look` 扫一眼附近哪块空着、哪块已有作物），"
+                    "或先把这些作物收掉（`farm ops=\"harvest\"`）；"
+                    "**原地重发同一个矩形结果不会变**（这 N 格上就是有作物）")
         return _with_state("\n".join(_msg))
 
     # ── 6. 站位格（共用件；四邻全占则如实报缺失、不瞬移）──
@@ -8152,7 +8184,10 @@ def _farm_plant(seed_name: str = "", seed: str = "", x: int = -1, y: int = -1, r
     # ── 8. 验证：**只认 `crop`**（别拿 HoeDirt 兜底——已翻的地一堆 HoeDirt，
     #    那样"一格没种上"也会报"✅ 播种完成"，是假绿；恒："别把红的记成绿的"）──
     time.sleep(0.4)
-    tiles2 = _scan(max(w, h) // 2 + 8)
+    tiles2, _verr = _scan_tiles(do_tiles)
+    if _verr:
+        return _with_state(f"🌱 播种动作已做完（{len(do_tiles)} 格），但**验收扫描失败**：{_verr}\n"
+                           f"  🔎 没验成——别把这当成「种上了」，要看结果请自己 `look` 一眼")
     real = [pt for pt in do_tiles if tiles2.get(pt, {}).get("crop")]
     lines = [head]
     if warp_log:
