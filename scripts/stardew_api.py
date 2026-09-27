@@ -8,6 +8,15 @@ import socket
 import random
 
 import os
+# ⚠️⚠️ 2026-09-23 血的教训：**这个默认值是 7842 = 房主(恒)**，不是 AI。
+#     走 MCP 永远没事 —— `nagi_mcp_server.py` 在 `import stardew_api` **之前**就
+#     `os.environ.setdefault("NAGI_URL", "...:7843")`，所以服务进程里 BASE_URL 恒是 AI。
+#     ⇒ **只有"绕开 MCP、裸 python 直接 import stardew_api"** 才会落到 7842，
+#       而这时的症状极具迷惑性：`api.warp(...)` 回 `ok:true` 且回读得像成功，
+#       **人却被传走的是恒**（`/state` 读 7843 却纹丝不动 ⇒ 看着像"传送不生效"）。
+#     ⇒ 要在服务外直接调：**显式钉死端口**（`os.environ["NAGI_URL"]="http://localhost:7843"`
+#       要在 import 之前，用 setdefault 不管你用），或干脆走 `mcp_cli.py`。
+#     判据：`print(api.BASE_URL)` —— 打算动 AI 却打出 7842，就是这条踩上了。
 BASE_URL = os.environ.get("NAGI_URL", "http://localhost:7842")
 
 # AI 角色（被 MCP 控制的 farmhand）的进程端口 — 彩蛋/分身类操作打到这个进程。
@@ -231,9 +240,18 @@ def face(direction):
     return _post("/face", {"direction": direction})
 
 
-def select(name):
-    """Select an inventory item by name."""
-    return _post("/select", {"name": name})
+def select(name, quality: int = -1):
+    """Select an inventory item by name.
+
+    🍽️ 2026-09-25 恒：「daily 吃饭如果传的是食物名字没有星级，**先吃最高星级的**」——
+    同名不同星是**不同的槽**，而 `/select` 精确匹配**取第一个命中**（吃到哪一星全看背包顺序）。
+    `quality`（0/1/2/**4**，4=铱）给 >=0 就**只认那一档**；-1 = 老行为。
+    ⚠️ 旧 DLL 不认识这个键、会**原样忽略** ⇒ 退化成今天的行为（不会更坏）。
+    """
+    data = {"name": name}
+    if quality is not None and int(quality) >= 0:
+        data["quality"] = int(quality)
+    return _post("/select", data)
 
 
 def use_tool(name="current", force=False, power=-1):
@@ -592,8 +610,12 @@ def menu():
     return _get("/menu")
 
 
-def menu_click(option=None, button=None, x=None, y=None, item=None, right=None, quantity=1, action=None, real=False, slot=None, category=None):
+def menu_click(option=None, button=None, x=None, y=None, item=None, right=None, quantity=1, action=None, real=False, slot=None, category=None, move_mouse=None):
+    # 🖱️ move_mouse（2026-09-26 恒："别动我的鼠标"）：-1/None=自动（服务端按菜单名单，现已清空 ⇒ 不动）、
+    #    0=绝不挪、1=强制挪。**这是逃生口**：万一某个界面点了没反应（它真读 Game1.getMouseX），
+    #    传 1 就能恢复老行为，**不用重编 DLL**。平时别传。
     data = {}
+    if move_mouse: data["move_mouse"] = move_mouse
     if option is not None: data["option"] = option
     if button is not None: data["button"] = button
     if x is not None: data["x"] = x

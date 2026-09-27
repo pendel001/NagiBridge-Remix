@@ -130,7 +130,7 @@ POI = {
     "皮埃尔商店(优选交付箱)": {"map": "SeedShop", "pos": (19, 29), "require_order": {"requester": "Pierre"}, "note": "🧺 皮埃尔优选交货箱=**「皮埃尔优选」交付点**(收获并把25个金星品质蔬菜放进箱)：人站(19,29)朝0交互(19,28)把金星菜放箱；require_order=已接Pierre订单(进行中)才显示；⚠️箱子没接单不交互,(19,28)为AI面前solid推测,**坐标待恒确认**；内容可加 keywords:[\"金星\",\"蔬菜\"]（2026-08-22 恒带路）"},
     "社区中心(门口)":     {"map": "Town",       "pos": (53, 20),"note": "祝尼魔献祭入口"},
     "社区中心(门口)":     {"map": "Town",       "pos": (53, 20),"note": "入口"},
-    "社区中心(献祭大厅)": {"map": "CommunityCenter", "pos": (32, 23),"note": "献祭面板"},
+    "社区中心(献祭大厅)": {"map": "CommunityCenter", "pos": (14, 23),"note": "🟨 献祭面板(祝尼魔卷轴)：站它**旁边**朝它 scene interact 开 JunimoNoteMenu，看完 menu cancel 关掉。⚠️ 坐标是 2026-09-25 真机实测改的（**原写 (32,23)，实测那是块空地、interact 打空**——那个数多半来自反编译/另一存档状态，别信）。⚠️ **这块板子不是游戏对象**（`/surroundings`、`/tile_props?scan=Action` 在这间屋里全是 0），是地图贴图 + 一个孤立阻挡格 ⇒ **「它出现了没有」没法从数据判**（恒 2026-09-25：「知不知道哪些板子出现了好像不清楚」）：走到这儿 `interact`，没反应就是还没有。"},
     "社区布告栏(特别任务板)": {"map": "Town", "pos": (62, 94), "unlock": {"year": 1, "season": "fall", "day": 2}, "note": "📋 鹈鹕镇社区布告栏/**特别任务板**(1.5)：⚠️不是社区中心献祭板！**年1秋2后出现**；人站(62,94)朝上交互(62,93)开 SpecialOrdersBoard；`menu read` 看任务卡(名称/目标/奖励/期限)→`menu click(button=acceptLeftQuestButton/acceptRightQuestButton)`接；订单如「起风的日子」「给谁送餐」等（2026-08-22 AI现场检测+read_menu修复，accept_quest已退役）"},
     "社区布告栏(特别任务领奖箱)": {"map": "Town", "pos": (60, 94), "note": "📬 特别订单**领奖小邮箱**（社区布告栏左2格，⚠️不是接单板！板在(62,93)）：站(60,94)朝上交互(60,93)领已完成订单的**兑奖券(Prize Ticket)×1**（物品奖励需背包有空位，满格领不到——先丢低价值物腾格）；兑奖券再去**刘易斯家兑奖机**兑换实战奖励（2026-08-29 AI现场实测：completed的绿豆单在此领到兑奖券）"},
     "皮埃尔商店(求助布告栏)": {"map": "Town", "pos": (42, 57), "note": "📋 皮埃尔店西墙**每日求助栏**(Help Wanted/Billboard)：⚠️**不是社区布告栏(特别任务板)**！站(42,57)朝上交互(42,56)开 Billboard 每日求助菜单；`menu read` 看今日求助(如帮罗宾收35木材)；求助内容=questOfTheDay(2026-08-29 AI现场检测，玩家站(42,57)开菜单)"},
@@ -1055,6 +1055,64 @@ MAP_FEATURES = {
     "IslandNorth": ["火山(挖矿/锻造台)", "办事处(捐化石)", "挖掘场", "姜岛商人"],
     "Caldera": ["锻造台(附魔/合成戒指/龙牙附魔)"],
     "QiNutRoom": ["齐先生任务板/兑换店"],
+}
+
+
+# 🚧 `MAP_FEATURES` 条目的**可用性门槛**（2026-09-23 恒：春2日 AI 跑到 Mountain，
+#    状态条「🗺️ 可:」就告诉它能去木匠商店、探险家公会和矿井 —— 可矿井第 5 天才开、
+#    公会的门禁也没做过）。**只收录"有权威判据"的条目，拿不准的一律不写**（宁可不藏，不误藏）。
+#
+# 键 = 地点（同 MAP_FEATURES），值 = {条目去掉括号后的前缀: 依赖}
+#   条目前缀必须**逐字等于** `MAP_FEATURES` 里那一项 `split("(")[0]`（渲染处就是这么切的）。
+# 依赖两种写法：
+#   `map:<地图名>`  → 该地图未解锁就藏。判据走 `navigation._locked_maps()`（= /unlocks，
+#                     游戏自己的 mail flag/条件；地图名必须与 `navigation.LOCKED_MAPS` 的键一致）。
+#   `door:<建筑名>` → "推门被游戏挡回来"的记忆（`navigation.door_blocked()`，当天有效、换天清）。
+#                     用在哪：**游戏侧没有可读 flag 的门**（探险家公会的锁是 `guildMember`
+#                     或 quest 16，Python 这边读不到当前角色的那两项）。
+# 🛤️ **铁路石堆**：`Mountain.railroadAreaBlocked` / `railroadBlockRect` —— **夏3日地震后清**
+#    （出处：`ModEntry.cs` 的 `RuntimeBlockers` 表，反射读游戏自己的私有字段，不抄坐标）。
+#    ⚠️ 石堆堵的是 **Mountain 上去铁路那条路** ⇒ 在它清掉之前 **温泉（BathHouse）根本去不了**。
+#    恒 2026-09-25：「railroad 我记得有门禁，特定天数之后才解锁……**在那个日期之前都不要误导 AI 去泡温泉**」
+#    —— 他记得对，具体日期是**年1 夏3日**（地震事件当天清）。
+RAILROAD_OPEN_SEASON, RAILROAD_OPEN_DAY = "summer", 3
+
+
+def railroad_open(season="", day=0, year=1) -> bool:
+    """🛤️ 铁路通了吗（= **温泉能不能去**）。判据＝**年1 夏3日之后**。
+
+    ⚠️ 读不到日期 → 返回 False（**当没通**）：这一侧的失败只是"少提一条恢复体力的路"，
+       而反过来（错说"能去"）会让 AI 白跑半个地图 —— 两害相权，宁少提。
+    """
+    try:
+        if int(year) > 1:
+            return True                      # 1 年过后早清了（地震是一次性事件）
+        se = str(season or "").lower()
+        if se in ("fall", "winter"):
+            return True
+        if se == "summer":
+            return int(day) >= RAILROAD_OPEN_DAY
+        return False                         # spring（和夏3日之前）
+    except Exception:
+        return False
+
+
+MAP_FEATURE_GATES = {
+    "Farm":       {"温室": "map:Greenhouse"},
+    "BusStop":    {"巴士售票处": "map:Desert"},      # 巴士没修好 = Desert 未解锁
+    "Town":       {"电影院": "map:MovieTheater", "下水道": "map:Sewer"},
+    "Forest":     {"秘密森林": "map:Woods", "精通山洞": "map:MasteryCave"},
+    # ⚠️ 探险家公会：**两条**门禁（值是 list ⇒ 任一条不满足就藏）。
+    #    `map:Mine` 挡的是**山体塌方**（与矿井同一天解除：`landslide = DaysPlayed<5`，
+    #    见 navigation `_MOUNTAIN_BEHIND_LANDSLIDE` 里的连通域实测）——塌方在的时候公会**物理上到不了**；
+    #    `door:` 挡的是"到了门口但门锁着"（杀 10 只绿史莱姆 / guildMember）。
+    "Mountain":   {"矿井": "map:Mine",
+                   "探险家公会": ["map:Mine", "door:AdventureGuild"]},
+    "Beach":      {"姜岛船": "map:IslandSouth"},
+    "FishShop":   {"姜岛船票": "map:IslandSouth"},
+    "Desert":     {"头骨矿洞": "map:SkullCave"},
+    "Railroad":   {"山顶": "map:Summit", "魔女沼泽口": "map:WitchSwamp"},
+    "SandyHouse": {"赌场入口": "map:Club"},
 }
 
 

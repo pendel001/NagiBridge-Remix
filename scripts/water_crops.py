@@ -24,6 +24,17 @@ args = parser.parse_args()
 
 os.environ["NAGI_URL"] = f"http://localhost:{args.port}"
 import stardew_api as api
+# ⚡ 低体力线 —— **全局唯一一份**（恒 2026-09-24：「耕种相关（锄/浇）也要…低过 20 都停」）。
+#    浇水一格 2 点体力，一整片能一次烧空 ⇒ **每簇动手前**先看一眼，低于线就停手（已浇的算数）。
+from stamina_common import is_low as _sta_low, stop_note as _sta_note
+
+
+def _stam():
+    """(当前体力, 上限) —— 读不到 (None, None)。取数口只有一个（同 server 的 `_stamina_now`）。"""
+    try:
+        return api.player_stamina()
+    except Exception:
+        return (None, None)
 
 
 def find_unwatered(radius=30):
@@ -154,10 +165,19 @@ def run():
     groups = cluster(unwatered, gap=10)
     api.log(f"  → {len(groups)} 簇")
     no_water = []
+    stopped = ""
     for i, g in enumerate(groups, 1):
         x1 = min(p[0] for p in g); x2 = max(p[0] for p in g)
         y1 = min(p[1] for p in g); y2 = max(p[1] for p in g)
         api.log(f"  [{i}/{len(groups)}] 簇 ({x1},{y1})-({x2},{y2}) {len(g)}格")
+        # ⚡ 低体力保护（恒 2026-09-24）：**每簇动手前**看一眼——一簇 = 一次蓄力覆盖一大片，
+        #    低于线就停在这儿，别为了剩下的几簇把人累趴（已浇的算数，剩下的如实报）。
+        _cur, _mx = _stam()
+        if _sta_low(_cur):
+            _left = sum(len(x) for x in groups[i - 1:])
+            stopped = _sta_note(_cur, _mx, f"剩 {_left} 格没浇（第 {i}/{len(groups)} 簇起）")
+            api.log("  " + stopped)
+            break
         try:
             if not _water_cluster(x1, y1, x2, y2):
                 no_water.append(f"({x1},{y1})-({x2},{y2})")
@@ -167,7 +187,8 @@ def run():
 
     # 补浇兜底：重扫漏的格子（初始扫描范围外/打水没赶上的一批），cluster 后再 tool_area 补——不 (已删)/water_area（恒）
     missed = find_unwatered()
-    if missed:
+    # ⚡ 体力已经停手了就别再补浇（补浇也是一簇一次蓄力，同样是体力）
+    if missed and not stopped:
         api.log(f"  ⚠️ 补浇 {len(missed)} 格（cluster 后再 tool_area 蓄力补，不 (已删)/water_area 作弊）")
         for g in cluster(missed, gap=10):
             x1 = min(p[0] for p in g); x2 = max(p[0] for p in g)
@@ -190,7 +211,11 @@ def run():
     left, mx = api.watering_can_water()
     api.log(f"Done! {len(groups)} 簇蓄力浇水，覆盖 {len(unwatered)} 格（真走位+蓄力挥壶）")
     api.log(f"  壶里剩水: {left}/{mx}")
-    if still:
+    if stopped:
+        # ⚡ 停手原因**说在最前**（否则下面那句"还有 N 格干的"会让人以为是水/站位的问题）
+        api.log(f"  {stopped}")
+        api.log(f"  🔎 下一步：补完体力再叫一次 `farm water`（这次浇过的不会白浇）")
+    elif still:
         api.log(f"  🔎 下一步：还有 {len(still)} 格干的——多半是水没打上（上面有「水边跑了…没涨」那条）"
                 f"或站位被挡；把壶灌满再叫一次 `farm water` 就行")
     api.log(f"Stamina: {s['player']['stamina']:.0f}/{s['player']['maxStamina']}")

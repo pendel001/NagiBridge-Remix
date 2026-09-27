@@ -118,7 +118,10 @@ def main():
             if pick is None and icons:
                 pick = icons[0]
             if pick:
-                post("/click", {"x": pick["x"], "y": pick["y"]})
+                # ⚠️ 2026-09-26：原来没带 `no_move` ⇒ `/click` 会先 `setMousePosition` **拽走恒的光标**
+                #   （恒：「献祭那个强切前台+鼠标漂移」—— 拽光标 + 他正好在点 ⇒ 点到游戏窗口 ⇒ 窗口被顶到最前）。
+                #   `ChooseFromIconsMenu` 不在"真读 Game1.getMouseX"的名单里（decomp grep 实查）⇒ 不用挪光标。
+                post("/click", {"x": pick["x"], "y": pick["y"], "no_move": True})
                 time.sleep(1.0)
                 log(f"✅ 选了: {pick.get('hoverText')}")
             else:

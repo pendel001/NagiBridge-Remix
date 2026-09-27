@@ -9,6 +9,11 @@
 原理：扫 /surroundings，凡"可走(passable=True) + 有 object"的格就是地上物品，
 走过去自动拾取。黑名单排除箱子/洒水器/火把等能踩上去但不是要捡的结构。
 
+📐 **扫描范围 = 以你为中心的「方形」±30 格（61×61）**，不是圆——C# 的判据是
+   `Math.Abs(ex-cx) <= r && Math.Abs(ey-cy) <= r`。**超出范围的它看不见**，
+   所以"找到 0 个"只说明**附近没有**，不说明这张图没有。
+   （`--radius` 最大 30；再大 `/surroundings` 会**静默退回 10**，脚本已收回上限并警告。）
+
 用法:
   python pickup_scene.py                    # 捡当前场景全部可拾取物
   python pickup_scene.py --port 7843
@@ -22,7 +27,8 @@ import argparse
 
 parser = argparse.ArgumentParser(description="[pickup] 捡当前场景地面可拾取物品")
 parser.add_argument("--port", type=int, default=None, help="NagiBridge 端口（默认 7843）")
-parser.add_argument("--radius", type=int, default=30, help="扫描半径（默认30）")
+parser.add_argument("--radius", type=int, default=30,
+                    help="扫描半径（默认30，上限30；**方形** ±r 格，不是圆——见文件头）")
 parser.add_argument("--max", type=int, default=30, help="一次最多捡几个（默认30）")
 parser.add_argument("--dry-run", action="store_true", help="只扫不捡")
 parser.add_argument("--host-port", type=int, default=None, help="host端口（默认7842，仅读状态用）")
@@ -120,6 +126,12 @@ def main():
         log(f"⚠️ --radius {args.radius} 超出 /surroundings 上限 30"
             f"（再大它会**静默退回 10**，比 30 还小）——已按 30 跑")
         args.radius = 30
+    # 📐 半径语义（恒 2026-09-23「采集物的探测范围得说清楚」）：C# 是
+    #    `Math.Abs(ex-cx) <= r && Math.Abs(ey-cy) <= r` ⇒ **方形**（切比雪夫），
+    #    以你为中心 (2r+1)×(2r+1) —— **不是**圆。报告里把范围写出来，别让 AI 拿
+    #    "找到 0 个"当"这张图没有"，它可能只是站在离东西 31 格的地方。
+    _span = 2 * args.radius + 1
+    _scope = f"附近 {args.radius} 格内（以你为中心的方形 {_span}×{_span}）"
     try:
         st = requests.get(f"{base}/status", timeout=5).json()
     except Exception as e:
@@ -166,7 +178,7 @@ def main():
         uniq.append((x, y, obj))
     uniq.sort(key=lambda t: (abs(t[0] - cx) + abs(t[1] - cy)))
 
-    log(f"📍 {loc} | 找到 {len(uniq)} 个可拾取物品")
+    log(f"📍 {loc} | {_scope} 找到 {len(uniq)} 个可拾取物品")
     for x, y, obj in uniq[:15]:
         log(f"  · {obj} ({x},{y})")
 
@@ -175,7 +187,7 @@ def main():
         return
 
     if not uniq:
-        log("🎉 场景里没有要捡的东西")
+        log(f"🎉 {_scope}没有要捡的东西（走远点再扫一次才知道更外面有没有）")
         return
 
     def walk_near(x, y, timeout=20):

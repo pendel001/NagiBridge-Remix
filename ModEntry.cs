@@ -1479,8 +1479,17 @@ public class ModEntry : Mod
                 ["content"] = content,
                 ["tick"] = tick
             });
+            // 🔴 2026-09-27：满了原来一律 `RemoveAt(0)` —— 拾取/机器这类事件量极大（一晚几百条），
+            //    恒的聊天会被**小新闻挤掉**（同样是"没送出去就销毁"，同样不打日志）。
+            //    改成优先淘汰最旧的**非聊天**事件；实在一条非聊天都没有，才丢最旧的聊天。
+            //    ⚠️ 仍然保持"总数 ≤ MAX_RECENT_EVENTS"（只删一条）⇒ 不会无限膨胀。
             if (_recentEvents.Count > MAX_RECENT_EVENTS)
-                _recentEvents.RemoveAt(0);
+            {
+                int victim = _recentEvents.FindIndex(e =>
+                    !(e.TryGetValue("type", out var t) &&
+                      (t?.ToString() == "chat" || t?.ToString() == "emote")));
+                _recentEvents.RemoveAt(victim >= 0 ? victim : 0);
+            }
         }
     }
 
@@ -1593,7 +1602,14 @@ public class ModEntry : Mod
             var lines = new List<string>();
             foreach (var info in src)
             {
-                string q = info.Quality switch { 1 => "[银]", 2 => "[金]", 3 => "[铱]", _ => "" };
+                // ⚠️ 2026-09-25 恒真机：「ai 兴奋地大喊**普通**鲶鱼 400g」——400g 是**铱星**价。
+                //    反编译实锤（`Item.cs:308` 的 quality 分支）：**0=无 · 1=银 · 2=金 · 4=铱**，
+                //    `case 3:` 是**空的**（游戏里 3 这一档根本不存在，1.6 里只有 4）。
+                //    老表把 3 当铱 ⇒ **quality=4 查不到 → 标没了**，而价格走游戏自己的
+                //    `sellToStorePrice`（= 价×(1+品质×0.25)，4 ⇒ ×2 = 400g）**是对的** ⇒
+                //    就成了"400g 却没标星"的自相矛盾 ⇒ AI 只能按"没标=普通"理解（它不笨，是数据在骗它）。
+                //    4 是真值、3 留着防老档/控制台手搓值。
+                string q = info.Quality switch { 1 => "[银]", 2 => "[金]", 3 or 4 => "[铱]", _ => "" };
                 var bits = new List<string> { $"{q}{info.DisplayName}" };
                 if (info.Count > 1) bits.Add($"×{info.Count}");
                 if (info.Value > 0) bits.Add($"({info.Value}g)");
@@ -2034,7 +2050,15 @@ public class ModEntry : Mod
                 _lastDayKey = dayKey;
                 if (!firstInit)
                 {
-                    lock (_recentEvents) _recentEvents.Clear();
+                    // 🔴 2026-09-27 恒：「有时候我发送给ai的信息会被静默吞掉」——这里原来无条件
+                    //    `Clear()`，**连没读过的聊天一起清**。AI 在睡觉/等结算那种窗口（等睡·
+                    //    等 ready，可能几十分钟不调一次工具）时，恒发的消息就躺在这个账本里等人
+                    //    渲染；一旦跨过 6:00 ⇒ **在展示给 AI 之前就被销毁**，两端都不打日志。
+                    //    ⇒ 换天只清"日抛"的拾取/描述，**聊天与表情保留**（它们不是日抛数据）。
+                    lock (_recentEvents)
+                        _recentEvents.RemoveAll(e =>
+                            !(e.TryGetValue("type", out var t) &&
+                              (t?.ToString() == "chat" || t?.ToString() == "emote")));
                     lock (_pickupLock) _pendingPickups.Clear();
                     _lastPickupTick = -1;
                     _descShownToday.Clear();
@@ -2159,8 +2183,49 @@ public class ModEntry : Mod
                     //    给 (23,13)）人就当场飞到墙外，这就是"角色飞出墙外"的元凶。
                     //    现在：先确认落点可站；站不住就**宁可不动**，只报错并清路线——
                     //    走不到是可恢复的（调用方会重试/换策略），飞出地图是不可恢复的。
+                    //
+                    // 🚧 2026-09-23 恒真机（AI 穿过山体塌方）之后补的**连通闸门**：
+                    //    "站得住"**不等于**"走得到"。塌方那类运行时阻挡物一挡，BFS 会**正确地**
+                    //    返回 null，而这条兜底只查 `IsTilePassable(目标格)` ⇒ 它会好心地把人
+                    //    **传送到墙的另一边**（塌方东侧那格站得住）——比穿过石头更糟，连动画都没有。
+                    //    真机实证：`map go 探险家公会` 最后人落在 Mountain (76,9)，就是走的这一支。
+                    //    判据 = **实际落点**与**起点**同一连通域（`IsReachableByWalking`）。
+                    //    ⚠️ 只堵 `IsTilePassable` 不堵这里 = 没堵。
+                    //    ⚠️⚠️ 判据必须挂在**实际落点**（`dest`）上，**不是**"请求的目标格"（`tp`）——
+                    //       目标格常常本身就站不住（门格是墙），而"落到它旁边那格"是正当的
+                    //       （`_enter_building_door` 正是靠这条走到门口、再 `interact` 开门）。
+                    //       挂在 `tp` 上会把这一类**该落**的一并毙掉（我第一版就是这么写的，
+                    //       2026-09-23 真机自查发现：要求"目标格 1 圈全堵、2~4 格外却有路"才会显形）。
                     var tp = new Point(seg.TargetX, seg.TargetY);
-                    if (IsTilePassable(farmer.currentLocation, tp))
+                    var dest = IsTilePassable(farmer.currentLocation, tp)
+                        ? tp
+                        : FindNearestPassableTile(farmer.currentLocation, tp, 4);
+                    if (dest != null
+                        && !IsReachableByWalking(farmer.currentLocation, farmer.TilePoint, dest.Value))
+                    {
+                        // 🗣️ 2026-09-27(164) 恒真机：「既然能 position 到，那要不静默掉」——
+                        //    没静默（这条是**真的**：两把尺子 `/passable` 全屋 + `/surroundings` 互证过），
+                        //    但**旧文案确实在说假话**：原文写「…**不瞬移硬闯**，原地不动」，而
+                        //    `_pet_pets_natural` 走位失败后**紧接着就 `/position` 兜底** ⇒ AI 下一拍
+                        //    人已经在目标格了 ⇒ 那句"原地不动"对它就是**假的**（它看到的和读到的对不上）。
+                        //    ⚠️ 判据要**只描述这一步做了什么**（走位没成、人还在原处），别替调用方承诺
+                        //       "人不会到那儿"——调用方用 `/position` 兜底是**既定设计**（屋内精确落点只能靠它）。
+                        EnqueueAlert("walk_blocked",
+                            $"⛔ 走不到 ({tp.X},{tp.Y})：落点 ({dest.Value.X},{dest.Value.Y}) 和你现在站的不是同一片连通区"
+                            + "（运行时阻挡物/墙圈）—— **这一步没走过去**；要过去请换落点或换条路",
+                            "warning", "walk");
+                        _walkRoute = null;
+                        _walkSegIdx = 0;
+                        _walkSegmentStarted = false;
+                        _pathQueue = null;
+                        return;
+                    }
+                    if (dest == null)
+                    {
+                        // 附近全堵死 → 原地不动，别把人扔进墙里
+                        EnqueueAlert("walk_failed", $"走不到 {seg.Location} ({tp.X},{tp.Y})，附近也没有可站格——原地不动", "warning", "walk");
+                    }
+                    else if (dest.Value == tp)
                     {
                         EnqueueAlert("walk_teleport", $"BFS failed, teleporting to ({tp.X},{tp.Y})", "warning", "walk");
                         farmer.Position = new Vector2(tp.X, tp.Y) * Game1.tileSize;
@@ -2168,18 +2233,9 @@ public class ModEntry : Mod
                     }
                     else
                     {
-                        var safe = FindNearestPassableTile(farmer.currentLocation, tp, 4);
-                        if (safe != null)
-                        {
-                            EnqueueAlert("walk_teleport", $"BFS failed, ({tp.X},{tp.Y}) 站不住 → 就近落到 ({safe.Value.X},{safe.Value.Y})", "warning", "walk");
-                            farmer.Position = new Vector2(safe.Value.X, safe.Value.Y) * Game1.tileSize;
-                            EnqueueAlert("walk_completed", $"Teleported to {seg.Location} ({safe.Value.X},{safe.Value.Y})", "info", "walk");
-                        }
-                        else
-                        {
-                            // 附近全堵死 → 原地不动，别把人扔进墙里
-                            EnqueueAlert("walk_failed", $"走不到 {seg.Location} ({tp.X},{tp.Y})，附近也没有可站格——原地不动", "warning", "walk");
-                        }
+                        EnqueueAlert("walk_teleport", $"BFS failed, ({tp.X},{tp.Y}) 站不住 → 就近落到 ({dest.Value.X},{dest.Value.Y})", "warning", "walk");
+                        farmer.Position = new Vector2(dest.Value.X, dest.Value.Y) * Game1.tileSize;
+                        EnqueueAlert("walk_completed", $"Teleported to {seg.Location} ({dest.Value.X},{dest.Value.Y})", "info", "walk");
                     }
                     // Also clear the route
                     _walkRoute = null;
@@ -2966,6 +3022,8 @@ public class ModEntry : Mod
                 "/chat/history" => HandleChatHistory(),
                 "/mail" => HandleMail(),   // 📬 读邮箱未读邮件（2026-08-15恒：AI要看信）
                 "/bundles" => HandleBundles(),   // 🎁 献祭**存档状态**（只读，不走路——2026-09-11恒拍板重编）
+                "/progress" => HandleProgress(), // 🧭 游戏自己知道、地图数据里看不见的：板子在不在/在哪 + mail/events 原表（2026-09-25）
+                "/nuts" => HandleNuts(ctx),   // 🌰 姜岛还没拿的金核桃在哪（埋点 + 核桃丛，2026-09-25）
                 "/hud" => HandleHud(ctx),   // 💬 HUD通知（Game1.addHUDMessage）——⚠️ 2026-08-15恒：不再用于推送给user（过夜复盘看不到），统一走/chat
                 "/buy_animal" => HandleBuyAnimal(ctx),
                 "/sprinklers" => HandleSprinklers(),
@@ -3297,7 +3355,11 @@ public class ModEntry : Mod
 
         var tcs = new TaskCompletionSource<object>();
 
-        EnqueueMainThread(() =>
+        // ⚠️ 2026-09-25 真机（献祭板那晚）：游戏侧在 `checkAction` 里抛异常时，`EnqueueMainThread`
+        //    的排空循环**只 log 不 SetResult**（见 OnUpdateTicked 里那个 catch）⇒ 等它的 HTTP 请求
+        //    **永远挂着** ⇒ AI 只等到一次超时，**完全不知道发生了什么**（那次就这么瞒了一整晚）。
+        //    ⇒ 整段包一层 try/catch：把"游戏自己抛的异常"变成**一句话 + 下一步**。
+        void InteractBody()
         {
             var farmer = Game1.player;
             var loc = farmer.currentLocation;
@@ -3340,6 +3402,14 @@ public class ModEntry : Mod
                 {
                     acted = true;
                     res["crabPot"] = cpName;
+                    res["actionTriggered"] = true;
+                }
+                // 🏛️ 献祭板兜底（2026-09-25）：⚠️ **`acted` 为真也要试** —— farmhand 端
+                //    checkAction 会"成功"地什么都不做（详见 TryJunimoNoteInteract 的 XML 注释）
+                if (TryJunimoNoteInteract(loc, farmer, targetX, targetY, out var ccWhat))
+                {
+                    acted = true;
+                    res["communityCenter"] = ccWhat;
                     res["actionTriggered"] = true;
                 }
                 tcs.SetResult(res);
@@ -3414,12 +3484,22 @@ public class ModEntry : Mod
                 }
             }
 
+            // 🏛️ 献祭板兜底（面前格）：⚠️ 放在 `!acted2` 之外 —— 那格是献祭板时 checkAction
+            //    会返回 true，于是上面整块兜底都不会进（同 TryJunimoNoteInteract 的 XML 注释）
+            string? ccNoteName = null;
+            if (TryJunimoNoteInteract(loc, farmer, ftx, fty, out var ccWhat2))
+            {
+                acted2 = true;
+                ccNoteName = ccWhat2;
+            }
+
             var result = new Dictionary<string, object?>
             {
                 ["ok"] = true,
                 ["actionTriggered"] = acted2,
                 ["facingTile"] = new { x = ftx, y = fty }
             };
+            if (ccNoteName != null) result["communityCenter"] = ccNoteName;
 
             if (loc.objects.TryGetValue(tileVec, out var obj))
                 result["object"] = obj.Name;
@@ -3434,6 +3514,22 @@ public class ModEntry : Mod
                 result["npc"] = npc.Name;
 
             tcs.SetResult(result);
+        }
+
+        EnqueueMainThread(() =>
+        {
+            try { InteractBody(); }
+            catch (Exception ex)
+            {
+                try { Monitor.Log($"[interact] 游戏侧抛异常: {ex}", LogLevel.Error); } catch { }
+                tcs.SetResult(new
+                {
+                    ok = false,
+                    error = $"游戏自己抛了异常（{ex.GetType().Name}）：{ex.Message}",
+                    hint = "这是**游戏内部**报的错，不是工具坏了 —— 多半跟「你站在哪一格」有关。" +
+                           "换一格站位再来一次；要是反复出现，把这条原文 + 目标坐标发给 host。"
+                });
+            }
         });
 
         return tcs.Task.GetAwaiter().GetResult();
@@ -3680,6 +3776,72 @@ public class ModEntry : Mod
         {
             return false;
         }
+    }
+
+    /// <summary>
+    /// 🏛️ 献祭板兜底（2026-09-25 恒真机 A/B：**7842(房主)能开、7843(farmhand)开不了**）。
+    ///
+    /// 根因：`CommunityCenter.checkAction` 的献祭板分支（Buildings 层 tileIndex 1824~1833）走
+    /// `checkBundle` → `bundleMutexes[area].RequestLock(...)` —— 一把 **NetMutex 联机锁**：
+    ///   · 房主：`owner == -1` ⇒ 本地当场授予 ⇒ 下一拍 `NetMutex.Update` 开菜单 ✓
+    ///   · farmhand：要绕网络一圈回来，而**"拿不到"那条分支没传回调**
+    ///     （`if (owner.Value != -1) { failed?.Invoke(); return; }` —— `checkBundle` 没给 failed）
+    ///     ⇒ **静默什么都不发生**：`/interact` 回 `actionTriggered:true`、日志干净、界面就是不开。
+    ///
+    /// 同族第四个（前三个见 `TryFurnitureInteract`/`TryFishPondInteract`/`TryCrabPotInteract`），
+    /// 都是"checkAction 的分支被某样东西卡着 ⇒ 直接做它真正要做的那件事"。
+    ///
+    /// ⚠️ **只在客户端兜**（`Game1.IsClient`）：房主那条原生路是好的 —— **不碰能跑的东西**。
+    /// ⚠️ **不碰锁**：`JunimoNoteMenu` 自己不用 mutex（反编译确认：锁只围在"开菜单"这一步外面），
+    ///    直接 new 出来**就是** `checkBundle` 拿到锁之后要做的那件事本身。
+    /// ⚠️ **站位不在任何区里就原样放过**（返回 false），不猜一个区硬开 —— 缺参数宁可明确失败
+    ///    （游戏自己那时会让 `bundleMutexes[-1]` 抛异常，那是另一码事，见 CHANGELOG）。
+    /// </summary>
+    private bool TryJunimoNoteInteract(GameLocation loc, Farmer farmer, int tx, int ty, out string? what)
+    {
+        what = null;
+        try
+        {
+            if (!Game1.IsClient || loc is not CommunityCenter cc) return false;
+            if (Game1.activeClickableMenu != null) return false;   // 已经有界面了（含房主原生路开出来的）→ 别抢
+
+            int idx = loc.getTileIndexAt(new Location(tx, ty), "Buildings", "indoors");
+            int area;
+            if (idx is >= 1824 and <= 1833) area = CcAreaNumberAt(cc, farmer);        // 各区那块板
+            else if (idx == 1799 && cc.numberOfCompleteBundles() > 2) area = 5;       // 大堂那块牌（同 checkAction）
+            else return false;
+            if (area < 0) return false;
+
+            Game1.activeClickableMenu = new StardewValley.Menus.JunimoNoteMenu(area, cc.bundlesDict());
+            string nm = "";
+            try { nm = CommunityCenter.getAreaDisplayNameFromNumber(area); } catch { }
+            what = string.IsNullOrEmpty(nm) ? $"area {area}" : nm;
+            Monitor.Log($"[cc-note] farmhand 旁路直开献祭板：{what}", LogLevel.Info);
+            return true;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 读 `CommunityCenter.getAreaNumberFromLocation(Farmer.Tile)` —— **游戏私有方法**，只能反射
+    /// （同 `/progress` 那条反射的做法）。返回 -1 = 站位不落在任何一个区框里（游戏自己也是这么判的）。
+    /// </summary>
+    private static int CcAreaNumberAt(CommunityCenter cc, Farmer farmer)
+    {
+        try
+        {
+            const System.Reflection.BindingFlags AB =
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
+                | System.Reflection.BindingFlags.Instance;
+            var mi = cc.GetType().GetMethod("getAreaNumberFromLocation", AB, null,
+                                             new[] { typeof(Vector2) }, null);
+            if (mi?.Invoke(cc, new object[] { farmer.Tile }) is int a) return a;
+        }
+        catch { }
+        return -1;
     }
 
     /// <summary>
@@ -4362,6 +4524,281 @@ public class ModEntry : Mod
     ///    项目里 `locations.py` / `bundles.py` / `calendar_data.py` 对这几间的名字已经对不上号了，
     ///    再抄一遍只会多一个错处。
     /// </summary>
+    /// <summary>
+    /// GET /progress — 🧭 **游戏自己知道、但地图数据里看不见**的那些状态（2026-09-25 恒拍板重编）。
+    ///
+    /// **为什么要有它**（恒 2026-09-25 真机逮到的）：社区中心那块**献祭面板**，
+    ///   `/surroundings`（整间屋 151 格）、`/tile_props?scan=Action`、`/furniture` 读出来**全是 0**，
+    ///   连单格全属性都是 `tiles: {}` —— 它**不是 object、不是 Action 瓦片、不是家具**，
+    ///   是**游戏代码按坐标自己判的**（DLL 里那组成员：`isJunimoNoteAtArea` / `getNotePosition` /
+    ///   `ResetJunimoNotes` / `checkForNewJunimoNotes`）。
+    ///   ⇒ 「这块板出现了没有」「它在哪一格」**只能问游戏**，问地图没用。
+    ///
+    /// 恒的原话：「进入社区中心也报**可见板子的 poi**」「已解锁温室矿车什么什么的节点也可以报」。
+    ///   · **节点**那半**已经有了**：`/unlocks` + `/minecarts` + `/gsq`（见路由表那几行注释），
+    ///     这个端点**不再造第二张 flag 表**。
+    ///   · 这里只补两件：① 六块板的**在不在 + 在哪格**；② `mailReceived` / `eventsSeen` **原表**，
+    ///     让 Python 侧去认（在 C# 里手抄 flag 表这事本文件已经栽过，别再来一遍）。
+    ///
+    /// ⚠️ **这里用反射是故意的**：万一 `isJunimoNoteAtArea`/`getNotePosition` 的名字或签名猜错，
+    ///   端点**照样返回该类型上所有含 "note" 的成员名**（`members` 字段）——
+    ///   照着改一次就行，**不用"再让恒重启一次游戏"来试错**（C# 的试错代价全在他那一次重启上）。
+    /// </summary>
+    private object HandleProgress()
+    {
+        if (!Context.IsWorldReady)
+            throw new InvalidOperationException("World not ready");
+        var tcs = new TaskCompletionSource<object>();
+        EnqueueMainThread(() =>
+        {
+            try
+            {
+                var cc = Game1.RequireLocation<CommunityCenter>("CommunityCenter");
+                var t = cc.GetType();
+                const System.Reflection.BindingFlags AB =
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
+                    | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Static;
+
+                // 🔎 诊断：这个类型上所有跟 note 有关的成员 —— **带完整签名**（名字猜错了照这个改）
+                //    ⚠️ 第一版只报名字 ⇒ 名字对不上时**看不出参数长什么样**，等于白跑一轮重启。
+                var members = new List<string>();
+                try
+                {
+                    foreach (var m in t.GetMembers(AB))
+                    {
+                        if (!m.Name.ToLowerInvariant().Contains("note")) continue;
+                        if (m is System.Reflection.MethodInfo mi)
+                            members.Add($"{m.MemberType}:{m.Name}(" +
+                                string.Join(",", mi.GetParameters().Select(p => p.ParameterType.Name)) +
+                                $")->{mi.ReturnType.Name}");
+                        else
+                            members.Add($"{m.MemberType}:{m.Name}");
+                    }
+                    members = members.Distinct().OrderBy(s => s).ToList();
+                }
+                catch { }
+
+                // 反射找"这一区有没有板"（试几个可能的写法，签名都按 (int)）
+                // ⚠️⚠️ **返回前一定要自己转一手**（2026-09-25 第一版栽在这）：
+                //    第一版把 `Mi.Invoke(...)` 的原对象直接塞进匿名对象去 JSON 序列化 ——
+                //    而 `getNotePosition` 返回的是**只有字段、没有属性**的结构体，
+                //    序列化器**只认属性** ⇒ 打出来是个 **`{}`**。
+                //    **坐标其实早就拿到了，是我自己在出口把它咽了。**
+                //    （对照：`Vector2` 有 X/Y **属性**就能序列化；`xTile.Dimensions.Location`
+                //      那类只有字段的不行 —— 所以这里一律自己转，别赌序列化器。）
+                object? Flatten(object v)
+                {
+                    var d = new Dictionary<string, object?> { ["type"] = v.GetType().Name };
+                    try
+                    {
+                        foreach (var f in v.GetType().GetFields(AB))
+                            if (f.Name is "X" or "Y" or "x" or "y" or "Width" or "Height")
+                                d[f.Name] = f.GetValue(v)?.ToString();
+                        if (!d.ContainsKey("X") && !d.ContainsKey("x"))
+                            d["str"] = v.ToString();
+                    }
+                    catch { }
+                    return d;
+                }
+
+                object? CallInt(string[] names, int area)
+                {
+                    foreach (var nm in names)
+                    {
+                        try
+                        {
+                            var mi = t.GetMethod(nm, AB, null, new[] { typeof(int) }, null);
+                            if (mi == null) continue;
+                            var v = mi.Invoke(mi.IsStatic ? null : cc, new object[] { area });
+                            if (v == null) return null;
+                            if (v is bool || v is int || v is float || v is double || v is string) return v;
+                            return Flatten(v);
+                        }
+                        catch { }
+                    }
+                    return null;
+                }
+
+                var areas = new List<object>();
+                int nAreas = 6;
+                try { nAreas = cc.areasComplete.Count; } catch { }
+                for (int a = 0; a < nAreas; a++)          // ⚠️ Count=6，天然排除 area 6(Joja影院)，理由见 HandleBundles 的 XML 注释
+                {
+                    string nm = "";
+                    // ⚠️ 是**静态**方法（编译期就告诉你：CS0176 用实例访问静态成员）——
+                    //    同族的 `getAreaNameFromNumber` 也是静态（见 HandleBundles 的 XML 注释）。
+                    try { nm = CommunityCenter.getAreaDisplayNameFromNumber(a); } catch { }
+                    areas.Add(new
+                    {
+                        n = a,
+                        name = nm,
+                        // 「该不该有板」和「此刻在不在」是两回事（DLL 成员名里两个都有）——
+                        // `shouldNoteAppearInArea` 是**意图**（跟剧情/进度走），`isJunimoNoteAtArea` 更像**此刻逐格判**。
+                        // 两个都报，别自己挑一个替游戏下结论。
+                        noteShould = CallInt(new[] { "shouldNoteAppearInArea", "ShouldNoteAppearInArea" }, a),
+                        noteHere = CallInt(new[] { "isJunimoNoteAtArea", "IsJunimoNoteAtArea", "hasJunimoNoteAtArea" }, a),
+                        notePos = CallInt(new[] { "getNotePosition", "GetNotePosition", "getJunimoNotePosition", "getNoteTilePosition" }, a)
+                    });
+                }
+
+                // 原表（Python 侧认节点/todo：别在这儿手抄白名单）
+                string[] mail = Array.Empty<string>();
+                try
+                {
+                    var m = Game1.MasterPlayer?.mailReceived;   // 房主权威端（同 /unlocks 的口径）
+                    if (m != null) mail = m.Where(x => !string.IsNullOrEmpty(x)).ToArray();
+                }
+                catch { }
+                string[] seen = Array.Empty<string>();
+                try
+                {
+                    // eventsSeen 这文件里没人 compile-time 用过 ⇒ 走反射，猜错也不炸构建
+                    var ep = Game1.player?.GetType().GetProperty("eventsSeen", AB)
+                             ?? Game1.player?.GetType().GetField("eventsSeen", AB) as System.Reflection.MemberInfo;
+                    object? ev = ep switch
+                    {
+                        System.Reflection.PropertyInfo pi => pi.GetValue(Game1.player),
+                        System.Reflection.FieldInfo fi => fi.GetValue(Game1.player),
+                        _ => null
+                    };
+                    if (ev is System.Collections.IEnumerable en)
+                        seen = en.Cast<object>().Select(o => o?.ToString() ?? "").Where(s => s.Length > 0).ToArray();
+                }
+                catch { }
+
+                tcs.SetResult(new
+                {
+                    ok = true,
+                    location = cc.Name,
+                    areas,
+                    members,
+                    mail = mail.Length > 400 ? mail.Take(400).ToArray() : mail,
+                    mailCount = mail.Length,
+                    events = seen.Length > 400 ? seen.Take(400).ToArray() : seen,
+                    eventCount = seen.Length
+                });
+            }
+            catch (Exception ex)
+            {
+                tcs.SetResult(new { ok = false, error = ex.Message });
+            }
+        });
+        return tcs.Task.GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// 🌰 姜岛**还没拿**的金核桃在哪 —— 全问游戏自己，**不按地图数据猜**（2026-09-25）。
+    ///
+    /// 起因（恒）：「你打算做姜岛金核桃收集吗？…挖核桃就是人类受罪然后 AI 也毫无参与感。
+    /// 让 AI 也参与进去帮忙找些。AI 应该参与不了弹弓的金核桃，但是**摇树的、挖掘的应该都可以弄到**。
+    /// **附近半径 9 格内有金核桃没获取就可以显示给 AI 去找**」。
+    ///
+    /// 两类（出处：反编译 `Bush.cs` / `IslandLocation.cs` / `Multiplayer.cs`）：
+    ///  · `buried` 埋点 —— `IslandLocation.buriedNutPoints`（每张岛图的 C# 构造里硬编码的坐标表）。
+    ///    锄头真挥中那格 → `Hoe.cs:118` 的 `checkForBuriedItem` → `IslandLocation.checkForBuriedItem`
+    ///    → `broadcastNutDig` → `_performNutDig` 才把 `(O)73` 掉出来。
+    ///    **拿没拿过**看 `netWorldState.FoundBuriedNuts`（键 = `{NameOrUniqueName}_{x}_{y}`）。
+    ///    ⚠️⚠️ 特意用 **netWorldState** 这一份，不是 `FarmerTeam.collectedNutTracker`：前者跟
+    ///    `mailReceived` 一样**无条件同步**，后者是两套记账 —— 这个仓在"本地图字段没同步"
+    ///    （`areasComplete`/`loc.characters`）上栽过不止一次，能挑同步面大的就挑大的。
+    ///  · `bush` 核桃丛 —— `Bush` 里 `size==4` **就是**核桃丛，`tileSheetOffset==1` = 上面还挂着核桃
+    ///    （`readyForHarvest()` 判的就是这一个 NetInt）。摇它 = **动作键** → `Bush.performUseAction`
+    ///    → `shake()`。⚠️ **别拿工具去砍**：`Bush.performToolAction` 第一行就是
+    ///    `if (size.Value == 4) return false;` —— 砍它一点反应都没有，别让 AI 在那儿白挥。
+    ///
+    /// ⛔ 明确**做不到**的（如实说，别让 AI 白跑）：弹弓那只 —— `IslandNorth` 的 `TreeNutShot`
+    ///    （要瞄准射），以及 `IslandHut` 的 `TreeNut`（一次性剧情）。
+    ///
+    /// ⚠️ 读的是**本进程的 `Game1.currentLocation`** ⇒ 想知道"**AI 附近**"就**必须打在 AI 那端**
+    ///    （Python 侧用 `_ai_get`；用 `_get` 有可能打到房主，报出来的会是**恒站的那张图**）。
+    /// </summary>
+    private object HandleNuts(HttpListenerContext ctx)
+    {
+        if (!Context.IsWorldReady)
+            throw new InvalidOperationException("World not ready");
+        // 🗺️ `?location=X` = **扫指定地图**（不给就扫人站的这张）——恒 2026-09-25 问
+        //    「**现在存档扫得到姜岛吗？没有解锁过**」。
+        //    ⚠️ 光靠 currentLocation 扫不到：姜岛没解锁就**没法站上去**，而"站不上去"与
+        //      "地图实例在不在"是两回事 —— 反编译实锤（`SaveGame.cs:1496` 那套
+        //      "**新建实例 + `TransferDataFromSavedLocation` 搬存档数据**"）说明读档那一刻
+        //      `IslandLocation` 构造就跑过了 ⇒ `SetBuriedNutLocations()`（唯一的埋点表来源）
+        //      已经填好，**不需要进过岛**。
+        var locName = ctx.Request.QueryString["location"];
+        var tcs = new TaskCompletionSource<object>();
+        EnqueueMainThread(() =>
+        {
+            try
+            {
+                var loc = string.IsNullOrEmpty(locName)
+                    ? Game1.currentLocation
+                    : Game1.getLocationFromName(locName);
+                if (loc == null)
+                {
+                    tcs.SetResult(new { ok = false, error = $"location not found: {locName}" });
+                    return;
+                }
+
+                ISet<string>? found = null;
+                try { found = Game1.netWorldState?.Value?.FoundBuriedNuts; } catch { }
+                int walnutsFound = -1;
+                try { walnutsFound = Game1.netWorldState?.Value?.GoldenWalnutsFound ?? -1; } catch { }
+
+                var nuts = new List<Dictionary<string, object?>>();
+
+                // ① 埋在地里的
+                if (loc is IslandLocation il)
+                {
+                    try
+                    {
+                        int guard = 0;
+                        foreach (var pt in il.buriedNutPoints)
+                        {
+                            if (++guard > 500) break;      // 死循环挡板，别把主线程挂住
+                            string key = loc.NameOrUniqueName + "_" + pt.X + "_" + pt.Y;
+                            bool taken = found != null && found.Contains(key);
+                            nuts.Add(new Dictionary<string, object?>
+                            {
+                                ["x"] = pt.X, ["y"] = pt.Y, ["kind"] = "buried", ["taken"] = taken
+                            });
+                        }
+                    }
+                    catch { }
+                }
+
+                // ② 摇树丛（size==4 = 核桃丛；offset==1 = 还挂着核桃）
+                try
+                {
+                    foreach (var ltf in loc.largeTerrainFeatures)
+                    {
+                        if (ltf is not Bush b) continue;
+                        if (b.size.Value != 4) continue;
+                        nuts.Add(new Dictionary<string, object?>
+                        {
+                            ["x"] = (int)b.Tile.X, ["y"] = (int)b.Tile.Y,
+                            ["kind"] = "bush", ["taken"] = b.tileSheetOffset.Value != 1
+                        });
+                    }
+                }
+                catch { }
+
+                tcs.SetResult(new
+                {
+                    ok = true,
+                    location = loc.NameOrUniqueName,
+                    isIsland = loc is IslandLocation,
+                    walnutsFound,                     // 🌰 全档已收集总数（同 /state 的 walnuts）
+                    left = nuts.Count(n => !(bool)(n["taken"] ?? false)),
+                    nuts
+                });
+            }
+            catch (Exception ex)
+            {
+                tcs.SetResult(new { ok = false, error = ex.Message });
+            }
+        });
+        return tcs.Task.GetAwaiter().GetResult();
+    }
+
     private object HandleBundles()
     {
         if (!Context.IsWorldReady)
@@ -4575,6 +5012,72 @@ public class ModEntry : Mod
     {
         try { return f.QiGems; } catch { return 0; }
     }
+    /// <summary>🎣 钓鱼累计条数（`Stats.FishCaught`，只增不减）。
+    /// 给鱼脚本当**精确计数**用：开头读一次 / 收工读一次，差值 = 这一趟真钓上几条
+    /// （比"数 isReeling 边沿"准 —— 那个采样会漏、还把脱钩算进去）。
+    /// ⚠️ 反射读：`Stats` 的这个键在不同版本里可能是属性或字典项，拿不到就回 -1
+    /// （**-1 = 读不到**，调用方据此退回旧口径，别把"读不到"当成"0 条"）。</summary>
+    private static int SafeFishCaught(Farmer f)
+    {
+        // ⚠️ 2026-09-24 第一版只试了「属性 FishCaught」+「非泛型 Get(string)」两个形状，
+        //    真机回 **-1**（两个都没命中）⇒ 鱼脚本只能标「（估算）」（好在它标了，没谎报 0）。
+        //    这里把**可能长成的样子都试一遍**：属性 / 非泛型 Get / 泛型 Get<T> / 直接读 Values 字典；
+        //    键名大小写也两个都试（`fishCaught` vs `FishCaught`）。
+        //    返回值一律经 `Convert.ToInt64` 收敛 —— SDV 的统计计数按 `uint` 存，
+        //    直接 `is int` 会**全部漏掉**（第一版就是死在这儿）。
+        try
+        {
+            var st = f.stats;
+            if (st == null) return -1;
+            var t = st.GetType();
+            foreach (var key in new[] { "fishCaught", "FishCaught" })
+            {
+                // ① 属性
+                var p = t.GetProperty(key, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+                if (p != null)
+                {
+                    var v0 = p.GetValue(st);
+                    if (v0 != null) { try { return (int)Convert.ToInt64(v0); } catch { } }
+                }
+                // ② 非泛型 Get(string)
+                var m = t.GetMethod("Get", BindingFlags.Public | BindingFlags.Instance, null,
+                                    new[] { typeof(string) }, null);
+                if (m != null)
+                {
+                    var v1 = m.Invoke(st, new object[] { key });
+                    if (v1 != null) { try { return (int)Convert.ToInt64(v1); } catch { } }
+                }
+                // ③ 泛型 Get<T>(string)（SDV 好几个版本是这么长的）
+                foreach (var gm in t.GetMethods(BindingFlags.Public | BindingFlags.Instance))
+                {
+                    if (gm.Name != "Get" || !gm.IsGenericMethod) continue;
+                    var ps = gm.GetParameters();
+                    if (ps.Length != 1 || ps[0].ParameterType != typeof(string)) continue;
+                    try
+                    {
+                        var v2 = gm.MakeGenericMethod(typeof(int)).Invoke(st, new object[] { key });
+                        if (v2 != null) return (int)Convert.ToInt64(v2);
+                    }
+                    catch { }
+                    try
+                    {
+                        var v3 = gm.MakeGenericMethod(typeof(uint)).Invoke(st, new object[] { key });
+                        if (v3 != null) return (int)Convert.ToInt64(v3);
+                    }
+                    catch { }
+                }
+                // ④ 直接翻 Values 字典（Dictionary<string, uint>）
+                var vf = t.GetField("Values", BindingFlags.Public | BindingFlags.Instance)
+                      ?? t.GetField("values", BindingFlags.Public | BindingFlags.Instance);
+                if (vf?.GetValue(st) is System.Collections.IDictionary dict && dict.Contains(key))
+                {
+                    try { return (int)Convert.ToInt64(dict[key]); } catch { }
+                }
+            }
+            return -1;
+        }
+        catch { return -1; }
+    }
     private static int SafeWalnuts(Farmer f)
     {
         try
@@ -4605,14 +5108,9 @@ public class ModEntry : Mod
         // light=true：不返回背包物品明细（只有 name/stack/slotIndex），状态条只需格数，省解析。
         // 想看明细调 check_backpack（不带 light）。
         bool light = (ctx.Request.QueryString["light"] ?? "") == "true";
+        // ⚠️ 这里**只取快照、不清**（"看过即清空"的清空动作挪到本函数末尾、result 建好之后）——
+        //    先清后建会让"中途抛异常"变成**永久丢失**（详见 `var result = new` 处的注释）。
         var eventsSnapshot = GetRecentEventsSnapshot();
-        if (consume)
-        {
-            lock (_recentEvents)
-            {
-                _recentEvents.Clear();
-            }
-        }
 
         var farmer = Game1.player;
         var loc = farmer.currentLocation;
@@ -4646,6 +5144,13 @@ public class ModEntry : Mod
         // ⚠️ 2026-08-10 修复：.Where(i=>i!=null) 是压缩列表，index≠真实槽位（有空槽时点错格子）。
         //    改用带原始 index 的 Select，报 slotIndex 真实槽位，AI 点背包格/放锻造槽用 slotIndex 定位。
         // light=true 只报 name/stack/slotIndex（状态条只需格数），跳过 SafeSellPrice/DescribeItemStats 重活
+        // 📚 2026-09-27：**补 `itemId` + `catNum`**（2026-09-27(164)）—— 状态条那条"背包里有书/纸条，
+        //    用 menu read_book 读"的提示，原先只能拿一份**手写名字名单**去猜（`_BOOK_HINT_KEYS`），
+        //    实测漏得干净：`Jewels Of The Sea = (O)Book_Roe / catNum=-102 / category='书'` —— 游戏自己
+        //    标得清清楚楚，而名单里一个关键字都不含 ⇒ 状态条哑巴 ⇒ AI 只能去 `scene select`+`interact` 瞎试。
+        //    ⚠️ 这两个都是**纯属性读取**（`QualifiedItemId` 拼字符串、`Category` 是字段），不是
+        //       `SafeSellPrice`/`DescribeItemStats` 那种重活 —— light 的初衷（省重活）没被破坏。
+        //    📌 通式：**拿名单认物品**迟早再烂一次（`isForage()` 那批已经演过一遍）⇒ 判据要问游戏。
         List<object> inventory;
         if (light)
         {
@@ -4655,7 +5160,13 @@ public class ModEntry : Mod
                 {
                     ["name"] = x.i.Name,
                     ["stack"] = x.i.Stack,
-                    ["slotIndex"] = x.slotIdx
+                    ["slotIndex"] = x.slotIdx,
+                    ["itemId"] = x.i.QualifiedItemId,
+                    // ⚠️ 必须与**非 light 那条**逐字同源（那边是 `i.Category`，`Item` 级的）——
+                    //    写成 `(x.i as Object)?.Category ?? 0` 会让**工具**在这边落 `0`、在那边落 `-99`
+                    //    （`Tool` 不是 `Object`，`Item.Category` 对工具恒 `-99`，本仓多处按 -99 判"是工具"）
+                    //    ⇒ 同一个字段名两种口径，正是"/state瘦 /menu详 各序列化一份会漂移"那个形状。
+                    ["catNum"] = x.i.Category
                 }).ToList();
         }
         else
@@ -4813,6 +5324,12 @@ public class ModEntry : Mod
                 // 点物品=送出（receiveLeftClick 内部调 behaviorFunction），不是拿起。状态条据此注入提示。
                 gift = Game1.activeClickableMenu is StardewValley.Menus.ItemGrabMenu giftIgm
                        && (giftIgm.reverseGrab || giftIgm.behaviorFunction != null),
+                // 🎁 行为函数名（`clickToAddItemToLuauSoup`/`grabItemFromInventory`/`shipItem`…）——
+                //    `/menu` 那份也报同一个东西：**别只在一处序列化**（这键漂移过一次，
+                //    见下面 mastery 那条注释的教训）。
+                grabBehavior = Game1.activeClickableMenu is StardewValley.Menus.ItemGrabMenu gbIgm
+                               ? (gbIgm.behaviorFunction?.Method?.Name ?? (gbIgm.reverseGrab ? "reverseGrab" : null))
+                               : null,
                 // 🧬 技能升级菜单（LevelUpMenu, 2026-08-30 恒）：含 5/10 级职业选择(isProfessionChooser=true)。
                 //    AI 经 /state 看到 activeMenu.type=LevelUpMenu + 本 levelUp 对象，就知道该选分支了。
                 //    offered[0]=左、offered[1]=右；选完走 menu ops=levelup_choose。
@@ -4849,7 +5366,12 @@ public class ModEntry : Mod
             };
         }
 
-        return new
+        // 🔴 2026-09-27：原来这里是 `return new {…}` 直返，而**清空发生在上面**（拿到快照之后
+        //    立刻 Clear）——"销毁"与"送到 AI 手上"之间隔着几百行建对象/读 NPC/读动物。
+        //    这中间任何一个异常（`HandleState` 没走 `EnqueueMainThread`，是在 HTTP 监听线程上
+        //    直接读 `Game1.player`/`loc.characters` 的，并发改集合就会抛）⇒ 被上层 catch 成 400，
+        //    **事件已经在账本里销毁、却从没送到 AI 手上**。⇒ 先建好 `result`、**成功再清**。
+        var result = new
         {
             ok = true,
             worldReady = true,
@@ -4867,6 +5389,10 @@ public class ModEntry : Mod
                 minigame = Game1.currentMinigame?.GetType().Name,   // 🎰 当前小游戏(Slots/CalicoJack)；null=无（2026-08-23 恒：牌局/老虎机读端点用）
                 currentTool = farmer.CurrentTool?.Name,
                 currentItem = farmer.CurrentItem?.Name,   // 📚 手持物品名（书是Object非Tool，CurrentTool会null；2026-08-16恒测读书）
+                // 📚 2026-09-27(164)：手持那条提示（"📚 手持「X」——用 menu read_book 读"）原先也**只能按名字猜**
+                //    ⇒ `Jewels Of The Sea` 认不出。补上游戏自己的判据（同 light 背包那两个字段的理由）。
+                currentItemId = farmer.CurrentItem?.QualifiedItemId,
+                currentItemCat = farmer.CurrentItem?.Category ?? 0,   // 同 `catNum`：走 `Item.Category`（工具恒 -99）
                 currentToolUpgrade = (farmer.CurrentTool as Tool)?.UpgradeLevel ?? -1,
                 facingDirection = farmer.FacingDirection,
                 isMale = farmer.IsMale,   // 🚻 角色性别（2026-09-10 恒：浴场男女更衣室门禁要按性别选门——
@@ -4887,6 +5413,10 @@ public class ModEntry : Mod
                 festivalScore = farmer.festivalScore,   // 🥚 蛋蛋节捡蛋进度（festival eggrun 用，2026-08-17）
                 voucherPending = Game1.player.stats.Get("specialOrderPrizeTickets"),   // 🎟️ 特别订单领奖箱**待领券数**（>0=有气泡可拿，2026-08-29 恒反编译 GameLocation "SpecialOrdersPrizeTickets"）
                 prizeTickets = farmer.Items.CountId("PrizeTicket"),   // 🎟️ 手头兑奖券数量（兑奖机 mainButton 兑换用）
+                // 🎣 2026-09-24 恒：「数量好像还不准，**都是说钓了 0 条**」——鱼脚本此前只能靠
+                //    `isReeling`/小游戏菜单**数边沿**（采样会漏，且脱钩也算）。这是**游戏自己的**累计
+                //    计数（`Stats.FishCaught`，只增不减）⇒ 脚本开头读一次、收工再读一次，**差值就是真条数**。
+                fishCaught = SafeFishCaught(farmer),
                 qiGems = SafeQiGems(farmer),   // 💎 齐钻（矿/齐先生单变化；核桃房全程；2026-09-02 状态条变才报）
                 walnuts = SafeWalnuts(farmer),   // 🌰 金核桃（只在姜岛；2026-09-02 状态条变才报）
                 buffs = EnumerateBuffs(farmer),
@@ -4978,7 +5508,15 @@ public class ModEntry : Mod
             pets,
             inventory,
             otherPlayers = Game1.otherFarmers.Values
-                .Where(f => f.currentLocation != null)
+                // ⚠️ 2026-09-25 真机：**farmhand 那端（7843）会把自己也列进来**（实测
+                //    `[Claude(自己), 恒]`；房主那端正常）。这是 **09-10 就记过的已知坑**，
+                //    浴场那条路（`HandleBathhouseFind` 的 `others`）早按 UniqueMultiplayerID
+                //    排掉了自己，**这条漏了**。
+                //    影响面实测很小（`📍` 那行不受影响：它读的是 host 的 `player`，不是这份）——
+                //    真正吃到的是 `nagi_mcp_server.py:5059` 的耕地规划（"别人站的格当阻挡格"
+                //    ⇒ 把自己脚下那格也算进去了）。
+                .Where(f => f.currentLocation != null
+                            && f.UniqueMultiplayerID != Game1.player.UniqueMultiplayerID)
                 .Select(f => new
                 {
                     name = f.Name,
@@ -4987,6 +5525,17 @@ public class ModEntry : Mod
                     y = f.TilePoint.Y
                 }).ToList()
         };
+
+        // ✅ 只有 result **完整建出来**了才消费事件（理由见上面 `var result = new` 那段注释）。
+        //    `eventsSnapshot` 是副本，`result` 里已经拿着它了 ⇒ 这里清的是账本，不影响本次回包。
+        if (consume)
+        {
+            lock (_recentEvents)
+            {
+                _recentEvents.Clear();
+            }
+        }
+        return result;
     }
 
     private List<Dictionary<string, object?>>? GetRecentEventsSnapshot()
@@ -6656,13 +7205,20 @@ public class ModEntry : Mod
     }
 
     /// <summary>
-    /// POST /select  { "name": "Parsnip Seeds" }
+    /// POST /select  { "name": "Parsnip Seeds" [, "quality": 4] }
     /// Selects an inventory item by name (sets it as the active toolbar slot).
+    ///
+    /// 🍽️ `quality`（2026-09-25 恒：「daily 吃饭如果传的是食物名字没有星级，**先吃最高星级的**」）：
+    ///    同名不同星是**不同的槽**，而本函数精确匹配**取第一个命中** ⇒ 原来"吃到哪一星"完全由
+    ///    **背包顺序**决定。给出 `quality` 就只认那一档；**给 -1/不传 = 老行为**（向后兼容）。
+    ///    ⚠️ 判据用 `Object.Quality`（0/1/2/**4**，见 `Item.cs:308`：**4 才是铱**、3 不存在）；
+    ///       非 Object（工具/武器）取 -1 ⇒ 指定 quality 时**永远不会**误命中它们。
     /// </summary>
     private object HandleSelect(HttpListenerContext ctx)
     {
         var p = ReadJson(ctx);
         var name = GetParam<string>(p, "name");
+        var wantQual = GetParamOr(p, "quality", -1);   // -1 = 不限品质（老行为）
 
         if (!Context.IsWorldReady)
             throw new InvalidOperationException("World not ready");
@@ -6681,12 +7237,18 @@ public class ModEntry : Mod
             //    我自己在还原装修时就被它绊了一跤：想铺 `(FL)48`，可 `(FL)1` 在更靠前的槽，
             //    最后只能先把 `(FL)1` `/drop` 掉才铺得成。
             //    `/state` 早就给了 `itemId`、`/drop` 早就认 QualifiedItemId —— **唯独这里不认**，缺的就这一环。
+            // 🍽️ 品质闸：`wantQual < 0` = 不限（老行为）；否则只认 `Object.Quality` 相等的那一槽
+            bool QualOk(Item it) =>
+                wantQual < 0
+                || ((it as StardewValley.Object)?.Quality ?? -1) == wantQual;
+
             for (int i = 0; i < farmer.Items.Count; i++)
             {
                 if (farmer.Items[i] != null &&
                     (farmer.Items[i].Name.Equals(name, StringComparison.OrdinalIgnoreCase)
                      || farmer.Items[i].DisplayName.Equals(name, StringComparison.OrdinalIgnoreCase)
-                     || (farmer.Items[i].QualifiedItemId ?? "").Equals(name, StringComparison.OrdinalIgnoreCase)))
+                     || (farmer.Items[i].QualifiedItemId ?? "").Equals(name, StringComparison.OrdinalIgnoreCase))
+                    && QualOk(farmer.Items[i]))
                 {
                     idx = i;
                     break;
@@ -6698,7 +7260,8 @@ public class ModEntry : Mod
                 for (int i = 0; i < farmer.Items.Count; i++)
                 {
                     if (farmer.Items[i] != null &&
-                        (farmer.Items[i].Name ?? "").Contains(name, StringComparison.OrdinalIgnoreCase))
+                        (farmer.Items[i].Name ?? "").Contains(name, StringComparison.OrdinalIgnoreCase)
+                        && QualOk(farmer.Items[i]))
                     {
                         idx = i;
                         break;
@@ -6708,7 +7271,10 @@ public class ModEntry : Mod
 
             if (idx < 0)
             {
-                tcs.SetResult(new { ok = false, error = $"Item '{name}' not found in inventory" });
+                // 🍽️ 指定了品质却找不到 ⇒ **明说到底缺哪一档**（别只报 "not found" 让人猜）
+                tcs.SetResult(new { ok = false, error = wantQual < 0
+                    ? $"Item '{name}' not found in inventory"
+                    : $"家里没有「{name}」的 {(wantQual == 4 || wantQual == 3 ? "铱" : wantQual == 2 ? "金" : wantQual == 1 ? "银" : "普通")}星（背包里没有这一档）" });
                 return;
             }
 
@@ -6776,6 +7342,16 @@ public class ModEntry : Mod
         //    屏幕上看就是"AI 在作物上来回踩"。（游戏自己多半会拦，但**工具不该先伸这一手**。）
         //    ⚠️ 姜点上面已放行（锄头正是收姜的工具）；这里只管**正常作物**那一类。
         if (loc.terrainFeatures.TryGetValue(vec, out var tfCrop) && tfCrop is HoeDirt hdCrop && hdCrop.crop != null)
+            return false;
+        // 🌱 2026-09-25 恒真机（「耕地在**已经耕过的格子**上，没有智能跳过」）：**翻好的地（HoeDirt、还没作物）也不锄**。
+        //    上面那条只挡住了"已有作物"，已翻好的地会一路走到下面 6875 的 `Diggable` 检查 ——
+        //    那是**地图 Back 层的静态属性**、翻地并不会把它抹掉，而 `IsTileBlockedBy` 对无作物的
+        //    HoeDirt 也返回"不挡" ⇒ `IsTillTarget` 返回 true ⇒ **整块地每轮都被重复锄一遍**
+        //    （蓄力那条路尤其明显：`/tool_area` 拿着整块矩形重扫，报告里"锄出 N 格"一半是空挥）。
+        //    ⚠️ 这还和**本文件自己的验收口径**打架：`FindMissingToolAreaTiles` 里 till 的"已完成"
+        //       判据就是 `hasDirt`（已经是 HoeDirt = 这一锄成了）——那边当完成、这边当待锄。
+        //    ⚠️ 上面的**斑点格/姜点**两个例外已经提前 return，不受这条影响（锄头正是挖它们/收姜的工具）。
+        if (loc.terrainFeatures.TryGetValue(vec, out var tfDirt) && tfDirt is HoeDirt)
             return false;
         if (loc.doesTileHaveProperty(x, y, "Diggable", "Back") == null) return false;
         return !loc.objects.ContainsKey(vec)
@@ -9824,7 +10400,26 @@ public class ModEntry : Mod
                 return;
             }
 
-            var chest = new StardewValley.Objects.Chest(true, tileVec);
+            // 🐛 2026-09-24 恒真机（「那边的箱子**不是我们自己的**」）：Town 那两口箱子是**裸箱子** ——
+            //    `/dump_tile` 实测 `itemId=-1`、`name="错误物品 (-1)"`、`parentSheetIndex=-1`
+            //    （正经箱子是 `(BC)130 宝箱`）。这玩意儿长得就不像箱子，
+            //    而我们的 `IsStorageChest` 又会把它当自家仓库（列出来 / 往里存 / 走位专程过去）。
+            //    ⇒ 改成**从物品建**：`(BC)130` 是正经宝箱物品，itemId/图鉴/容量/可敲走一次到位。
+            //
+            // ⚠️⚠️ **更正（2026-09-25，恒问"itemId 空不认会不会误伤新放置的空箱子"时查出来的）**：
+            //    这里原来写着"**老写法 `new Chest(true, tileVec)` 造出来的就是那种裸箱（实测 itemId=-1）**"
+            //    —— **这句是错的，已划掉**，理由是两条硬证据：
+            //      ① 反编译（`decomp/full/StardewValley.Objects/Chest.cs:232`）：
+            //         `Chest(bool playerChest, Vector2 tileLocation, string itemId = "130")`
+            //          → `Object(Vector2, string itemId)`（`Object.cs:855`）**无条件** `base.ItemId = itemId`
+            //          ⇒ **老写法造出来的是 `itemId = "130"`**（还会 `ResetParentSheetIndex()` 顺手补齐图鉴）。
+            //      ② 这个端点**Python 侧从来没有调用方**（本文件老早记着"凭空造箱、仍悬着"）⇒
+            //         它压根**没被跑过**，"实测"两个字站不住（没跑过的东西哪来的实测）。
+            //    ⇒ 结论：那两口裸箱**不是**这条口子造的，**制造者仍然不详**，别让它挂在一根假线索上。
+            //      （收紧 `IsStorageChest` 本身**不受影响**：那两口确实 `itemId = -1`，照样被排除。）
+            var chest = ItemRegistry.Create<StardewValley.Objects.Chest>("(BC)130");
+            chest.TileLocation = tileVec;
+            chest.playerChest.Value = true;      // 玩家箱（能被自家工具敲走、"归位"认得）
             loc.objects.Add(tileVec, chest);
             tcs.SetResult(new { ok = true, placed = "Chest", x = cx, y = cy });
         });
@@ -11667,9 +12262,15 @@ public class ModEntry : Mod
                 string? letterFrom = null;
                 bool menuIsChoice = false;
                 object? shopPage = null;
+                // 💰 本店收购清单（背包里**真有的**那些；判据=游戏自己的 ShopMenu.highlightItemToSell）
+                List<string>? sellableHere = null;
                 object? ccInfo = null;
                 object? numberSelect = null;   // 🔢 NumberSelectionMenu 数量框（50g换1星星币兑换台/转盘押注）
-                bool giftMenu = false;   // 🎁 ItemGrabMenu+reverseGrab/behaviorFunction（送礼菜单，点物品=送出不是拿起）
+                bool giftMenu = false;   // 🎁 ItemGrabMenu+reverseGrab/behaviorFunction（点物品=触发菜单行为，不是拿起）
+                // 🎁 **行为函数的名字**（`clickToAddItemToLuauSoup` / `chooseSecretSantaGift` /
+                //    `grabItemFromInventory` / `shipItem`…）—— Python 靠它给**具体**指引，
+                //    而不是把开箱子当成"送礼菜单"（见下面 ItemGrabMenu 分支的注释）
+                string? grabBehavior = null;
                 // 📋 2026-09-07 恒：ItemListMenu(丢失的物品) + ShippingMenu(过夜结算) 序列化字段
                 string? menuTitle = null;
                 int listTotal = 0, listPage = 0, listPageSize = 0;
@@ -11769,6 +12370,17 @@ public class ModEntry : Mod
                         pageSize = 4,
                         total = forSale.Count
                     };
+
+                    // 💰 这家**收**背包里哪些（2026-09-27 恒：「它可能害怕全卖是把所有东西都卖出去，
+                    //    包括那些种子。而其实威利的鱼店只收鱼和浮漂！所以我们可能还是得做游戏里的
+                    //    当前可卖给它看看」）。
+                    //    判据直接用游戏自己的 `ShopMenu.highlightItemToSell(Item)` —— **public 纯判据、
+                    //    无副作用**（反编译核对过：只读 categoriesToSellHere + tagsToSellHere）。
+                    //    ⚠️ `heldItem != null` 时它语义变了（只判"能不能和手上那件叠"）⇒ 那时不报，别给错的。
+                    sellableHere = shop.heldItem == null
+                        ? Game1.player.Items.Where(i => i != null && shop.highlightItemToSell(i))
+                              .Select(i => i.DisplayName).Distinct().ToList()
+                        : null;
 
                     // 商店菜单的背包侧槽位（放物品进衣柜/商店用）：InventoryMenu.inventory
                     if (shop.inventory?.inventory != null)
@@ -12052,9 +12664,20 @@ public class ModEntry : Mod
 
                 else if (menu is ItemGrabMenu igm)
                 {
-                    // 🎁 送礼菜单（冬星节神秘礼物等）：reverseGrab 或 behaviorFunction 设置过
-                    // → 点物品=送出（ItemGrabMenu.receiveLeftClick 内部调 behaviorFunction），不是拿起。
+                    // 🎁 「点物品=触发这个菜单自己的行为」的菜单：reverseGrab 或 behaviorFunction 设置过。
+                    //    ⚠️ **别把它理解成"送礼菜单"**（2026-09-27 恒问「要不只在这两个节日当天有这个分支？」
+                    //    + 反编译数过 32 处 `new ItemGrabMenu(`）：设 behaviorFunction 的**不止那两个节日** ——
+                    //    `Chest.cs`×5 / `StorageFurniture.cs` / `Cabin.cs` / `Object.cs`×2 / `Utility.cs` /
+                    //    `Building.cs` / `JunimoHut.cs` / `ShippingBin.cs` / `IslandWest.cs` 全都会设
+                    //    （开箱子 / 开冰箱 / 出货箱 / 祝尼魔屋…**天天在发生**）⇒ **按节日 gate 一定会漏**。
+                    //    真正的判据是**行为函数叫什么**，下面 `grabBehavior` 把它报出去。
                     giftMenu = igm.reverseGrab || igm.behaviorFunction != null;
+                    try
+                    {
+                        grabBehavior = igm.behaviorFunction?.Method?.Name
+                                       ?? (igm.reverseGrab ? "reverseGrab" : null);
+                    }
+                    catch { grabBehavior = null; }
                     // 领取物菜单（吉尔讨伐奖励/宝箱）：报出可领取物品 + 槽位坐标
                     // SDV 1.6 各版本字段名不同——用反射穷举 Item 字段和 ClickableComponent 槽位字段
                     grabItems = new List<object>();
@@ -12404,12 +13027,23 @@ public class ModEntry : Mod
                     // heldItem（光标物品）
                     string? heldName = null;
                     try { heldName = (menu.GetType().GetField("heldItem", jFlags)?.GetValue(menu) as Item)?.DisplayName; } catch { }
+                    // 具体页正开着的是哪一包（-1=列表页）——MCP 靠它把「这一页要什么」跟包名对上。
+                    // ⚠️ `bundles[]` 里只有全局包号、**没有名字**，名字要 MCP 那边去 `/bundles` 反查。
+                    int curBundleIdx = -1;
+                    try
+                    {
+                        var cpb = menu.GetType().GetField("currentPageBundle", jFlags)?.GetValue(menu);
+                        if (cpb != null)
+                            curBundleIdx = Convert.ToInt32(cpb.GetType().GetField("bundleIndex", jFlags)?.GetValue(cpb) ?? -1);
+                    }
+                    catch { }
                     ccInfo = new
                     {
                         whichArea,
                         areaName = (whichArea >= 0 && whichArea < areaNames.Length) ? areaNames[whichArea] : whichArea.ToString(),
                         bundles = bundleInfos,
                         specificBundlePage = specific,
+                        currentBundleIndex = curBundleIdx,   // 🏛️ 具体页=当前包号；列表页=-1（2026-09-25）
                         bundleBounds,        // 列表页每块 bundle 的点击位（menu_click 进 specific 页）
                         ingredientSlots = ingSlots,  // specific 页投放槽位
                         inventorySlots = invSlots,   // specific 页底部背包（点物品拿起）
@@ -12599,6 +13233,8 @@ public class ModEntry : Mod
                     shopItems,
                     isChoice = menuIsChoice,
                     shopPage,
+                    // 原样送（**空列表和 null 要分得清**：[] = 这店一件都不收；null = 读不到/手上有东西）
+                    sellableHere,
                     buttons = buttons != null && buttons.Count > 0 ? buttons : null,
                     items = grabItems != null && grabItems.Count > 0 ? grabItems : null,
                     slots = grabSlots != null && grabSlots.Count > 0 ? grabSlots : null,
@@ -12606,6 +13242,7 @@ public class ModEntry : Mod
                     characterCust = ccInfo,
                     numberSelect,
                     gift = giftMenu,
+                    grabBehavior,
                     // 📋 2026-09-07 恒：ItemListMenu(丢失的物品) + ShippingMenu(过夜结算) 明细
                     menuTitle,
                     listTotal, listPage, listPageSize,
@@ -12836,6 +13473,35 @@ public class ModEntry : Mod
         return tcs.Task.GetAwaiter().GetResult();
     }
 
+    /// <summary>
+    /// 🖱️ **真的会读 `Game1.getMouseX/Y` 的菜单**——只有这些才值得挪真人 OS 光标。
+    ///
+    /// ⚠️ **2026-09-26 恒拍板：清空（`menu click` 永不动他的鼠标）。**
+    /// 起因是恒的两条连着来：「一瞬间挪了我的鼠标」+「献祭那个强切前台+鼠标漂移」。
+    /// 根因不在切前台——**是 `setMousePosition` 拽走他的光标，他正好在点（钓鱼），
+    /// 那一下点落在星露谷窗口上，Windows 就把窗口顶到最前** ⇒ 两条症状同一个根因的两个阶段。
+    ///
+    /// 原来是 `grep -rl "getMouseX\|getMouseY" decomp/full/StardewValley.Menus/` 的结果，
+    /// 逐个核过**没有一个真的需要靠坐标点击**：
+    ///   · 捏脸 `CharacterCustomization` —— `settings appearance/color` 全是**反射直接写值**
+    ///     （`/color_pick` 走 `ColorPicker.HsvRgb` 赋值），确认那下是**点按钮** `click(button=ok)`，
+    ///     走的是按钮分支，**不经过坐标分支**；
+    ///   · 博物馆 `MuseumMenu` —— 走专用端点 `/museum_donate`，全程不点坐标；
+    ///   · 升级 `LevelUpMenu` —— 走 `/levelup_choose`；普通升级本文件里**自动 `okButtonClicked()`**；
+    ///   · `SocialPage`/`CarpenterMenu`/`AnimalPage`/`BuildingPaintMenu`/`TextBox`/`ChatBox`/
+    ///     `TitleMenu`/`CoopMenu` —— **Python 全仓 grep 零命中**，压根没有路能把 AI 送进去。
+    /// ⇒ 留着只会白拉恒的光标，**清空**。
+    ///
+    /// 🚑 **万一将来发现某个界面真的点不动**（点了没反应 = 它真读鼠标位）：
+    /// ①先试 `menu click(x=.., y=.., move_mouse=1)` **强制挪一次**（不用重编 DLL）；
+    /// ②确认后把那个菜单名加回下面这个集合即可（改一行、重编）。
+    /// `move_mouse` 三态：缺省 -1 **自动**（照名单）/ 0 绝不挪 / **1 强制挪**。
+    /// </summary>
+    private static readonly HashSet<string> _MENUS_READING_REAL_MOUSE = new HashSet<string>
+    {
+        // （2026-09-26 清空；加回来之前先读上面那段——多半该用 move_mouse=1 而不是往这里塞）
+    };
+
     private object HandleMenuClick(HttpListenerContext ctx)
     {
         var p = ReadJson(ctx);
@@ -12850,6 +13516,8 @@ public class ModEntry : Mod
         var slotIdx = GetParamOr(p, "slot", -1);     // 按背包槽位 index 直点（不依赖坐标，恒 2026-08-10）
         var category = GetParamOr(p, "category", -1);  // 🗂️ ShippingMenu 按类目 index 钻入（不依赖坐标/分辨率）
         var real = GetParamOr(p, "real", false);     // real=true: 对话选项走真实 receiveLeftClick 响应（createQuestionDialogue 用，如跳舞邀请；跳过 event.answerDialogueQuestion）
+        // 🖱️ 挪不挪**真人 OS 光标**：-1=自动（只对真读鼠标位的菜单挪）/ 0=绝不挪 / 1=强制挪（万一名单漏了）
+        var moveMouse = GetParamOr(p, "move_mouse", -1);
 
         var tcs = new TaskCompletionSource<object>();
         EnqueueMainThread(() =>
@@ -12862,6 +13530,17 @@ public class ModEntry : Mod
                     tcs.SetResult(new { ok = false, error = "No menu open" });
                     return;
                 }
+                // ⚠️ 2026-09-25 恒：「而且还有一瞬间挪了我的鼠标！」——`Game1.setMousePosition` 挪的是
+                //   **真人 OS 光标**（老注释自己就写着"代价是挪 OS 光标"，当时赌"AI 前台操作时恒看不见"——
+                //   恒看见了）。绝大多数菜单只认传进去的 x,y，压根不读鼠标位 ⇒ 那是白挪。
+                //   名单 = `grep -rl getMouseX\\|getMouseY decomp/full/StardewValley.Menus/` 的结果，
+                //   **只有这几个真的读**：捏脸滑块(CharacterCustomization)/博物馆捐赠(MuseumMenu)/
+                //   社交页/木工/动物页/升级页/建漆/TextBox/ChatBox/标题页。
+                //   ⚠️ 2026-08-10 那条「ForgeMenu 槽位放置必须挪」**已证伪**：ForgeMenu.cs 里 `getMouseX` 零命中，
+                //      且放料早就改走 `/forge_set` 了。系统菜单名（`menu.GetType().Name`）外面带命名空间吗？
+                //      ——不带，`imenu.GetType().Name` 就是 `ForgeMenu`/`JunimoNoteMenu` 这种裸名。
+                bool needMove = moveMouse == 1
+                                || (moveMouse < 0 && _MENUS_READING_REAL_MOUSE.Contains(menu.GetType().Name));
 
                 if (option >= 0 && menu is DialogueBox db)
                 {
@@ -13086,10 +13765,12 @@ public class ModEntry : Mod
                                 {
                                     jType.GetField("heldItem", jFlags)?.SetValue(menu, found);
                                 }
-                                // ⚠️ 附魔/商店经验（CLAUDE.md 7939-7940）：槽位放置读实际鼠标位置(Game1.getMouseX/Y)，
-                                //    必须 setMousePosition 对齐（去掉后放置失败）。捐赠同款。
+                                // ⚠️ 2026-09-25：这里原来照抄"槽位放置读实际鼠标位"的说法先 setMousePosition，
+                                //    但 `decomp/full/StardewValley.Menus/JunimoNoteMenu.cs` 与 `Bundle.cs` 里
+                                //    `getMouseX/getMouseY` **零命中** ⇒ 捐赠根本不读鼠标位，那一下纯属白拉恒的光标。
+                                //    投料靠下面 `receiveLeftClick(slotCX, slotCY)` 传的坐标（`ingredientSlots[i].containsPoint(x,y)`）。
                                 int slotCX = slots[i].bounds.Center.X, slotCY = slots[i].bounds.Center.Y;
-                                try { Game1.setMousePosition(slotCX, slotCY); } catch { }
+                                if (needMove) { try { Game1.setMousePosition(slotCX, slotCY); } catch { } }
                                 try { menu.receiveLeftClick(slotCX, slotCY); }
                                 catch (Exception ex) { excMsg = ex.Message; }
                                 var afterHeld = jType.GetField("heldItem", jFlags)?.GetValue(menu) as Item;
@@ -13322,7 +14003,7 @@ public class ModEntry : Mod
                                             if (grabInv[i] != null && grabSlots[i] != null) { grabIdx = i; break; }
                                         if (grabIdx < 0) break;   // 没有可领的了
                                         int mx = grabSlots[grabIdx].bounds.Center.X, my = grabSlots[grabIdx].bounds.Center.Y;
-                                        try { Game1.setMousePosition(mx, my); } catch { }
+                                        if (needMove) { try { Game1.setMousePosition(mx, my); } catch { } }
                                         igm.receiveLeftClick(mx, my);
                                         got++;
                                     }
@@ -13345,7 +14026,7 @@ public class ModEntry : Mod
                                         return;
                                     }
                                     int ccx = cc2.bounds.Center.X, ccy = cc2.bounds.Center.Y;
-                                    try { Game1.setMousePosition(ccx, ccy); } catch { }
+                                    if (needMove) { try { Game1.setMousePosition(ccx, ccy); } catch { } }
                                     igm.receiveLeftClick(ccx, ccy);
                                     string claimedName = cit2?.DisplayName ?? cit2?.Name ?? "?";
                                     // 领后验证：物品对象是否已不在领取侧 actualInventory（压实后槽位会补位，别按槽看用对象身份）。
@@ -13450,10 +14131,9 @@ public class ModEntry : Mod
 
                 if (clickX >= 0 && clickY >= 0)
                 {
-                    // ⚠️ 2026-08-10 恢复：ForgeMenu 的槽位放置读实际鼠标位置(Game1.getMouseX/Y)，
-                    //   必须 setMousePosition 对齐（去掉后槽位放置失败，恒确认）。
-                    //   代价是挪 OS 光标——AI 前台操作时不干扰恒（恒让前台），后台操作才可见。
-                    Game1.setMousePosition(clickX, clickY);
+                    // 挪不挪见上面 `needMove` 的注释（2026-09-25：默认**不再**拉恒的鼠标）。
+                    if (needMove)
+                        Game1.setMousePosition(clickX, clickY);
                     if (right)
                     {
                         // 右键批量：拆堆叠取 N 个（每个右键取 1）。quantity 上限 999。
@@ -15852,6 +16532,17 @@ public class ModEntry : Mod
         {
             var id = c.itemId?.Value ?? "";
             if (id == "248") return false;
+            // 🐛 2026-09-24 恒真机：「**那边的箱子不是我们自己的**，这太奇怪了」——
+            //    Town (114,17) 与 (123,58) 有两口 `/dump_tile` 报 `typeName: Chest`、
+            //    但 `itemId = -1`、`name = "错误物品 (-1)"`、`parentSheetIndex = -1` 的**裸箱子**
+            //    （恒自己那口正经箱是 `(BC)130 宝箱`）。它们**不是用箱子物品摆下来的**，
+            //    是代码直接造的（⚠️ 2026-09-25 更正：**不是** `/placechest` 的老写法 —— 那条造出来的
+            //    是正经 `itemId="130"` 且该端点从没被调用过，详见 `HandlePlaceChest` 里的更正注释）。
+            //    而我们这边**任何 Chest 都被当成"我们的仓库"** ⇒ /scan_chests 列它、
+            //    store_all 往里塞、`_walk_to_chest` 专程走过去（恒就是这么看见角色
+            //    跑去书摊那片山坡的）。⇒ 判据收紧：**itemId 不是正经物品的一律不认**
+            //    （"-1" 是 Item 基类默认值；空串同理）。⚠️ 这不影响 130/232/BigChest/石箱/冰箱。
+            if (string.IsNullOrEmpty(id) || id == "-1") return false;
         }
         catch { }
         return true;
@@ -15892,7 +16583,18 @@ public class ModEntry : Mod
                 list.Add((ch, kv.Key, ""));
         try
         {
-            if (loc is FarmHouse fh && fh.fridge?.Value is Chest fr && IsStorageChest(fr))
+            // 👻 2026-09-27 恒一句话点破：「我们的小屋都是第一档还没升级厨房，有个鬼的冰箱」。
+            //    反编译 `FarmHouse.cs`：`fridge` 是 `readonly NetRef<Chest>`，**构造时就无条件建好**
+            //    （:26），但它的**坐标**靠扫地图上的冰箱贴图（:1915
+            //    `fridgePosition = GetFridgePositionFromMap() ?? Point.Zero`）——
+            //    游戏自己的 XML 文档写着 *"…or Point.Zero **if not found**"*。
+            //    ⇒ 没厨房 ⇒ 没贴图 ⇒ 坐标落 `Point.Zero` = (0,0)，而那格是**墙**。
+            //    ⚠️ 旧代码只判了「这个 Chest 对象在不在」（**永远在**），于是把一个**玩家在游戏里
+            //    看不见、也打不开**的容器当仓库摆给 AI —— 实测往里存/取都"成功"，
+            //    而 `/store_all`（一键归位）读的是同一个列表 ⇒ 东西会进玩家够不着的地方。
+            //    📌 通式：**"这个对象存在" ≠ "它在世界里"** —— NetRef 字段常年非空，可达性要另判。
+            if (loc is FarmHouse fh && fh.fridge?.Value is Chest fr && IsStorageChest(fr)
+                && fh.fridgePosition != Point.Zero)
                 list.Add((fr, fr.TileLocation, "内置冰箱"));
         }
         catch { }
@@ -21477,13 +22179,112 @@ public class ModEntry : Mod
             $"🚪 门{why}（{locName} ({tile.X},{tile.Y})）→ 停在门前，没硬闯", "warning", "walk");
     }
 
-    private bool IsTilePassable(GameLocation location, Point tile, bool allowWater = false)
+    /// <summary>
+    /// 🚧 运行时阻挡物 —— **游戏没把它们画进瓦片层**，我们的尺子必须自己去问游戏。
+    ///
+    /// 2026-09-23 恒真机：「AI 直接穿过了山体塌方（锁矿井路）的大石头」。
+    /// 根因（三步钉死）：`StardewValley.Locations/Mountain.cs:352` 的塌方**只写在**
+    /// `isCollidingPosition`（`if (landslide.Value &amp;&amp; position.Intersects(landSlideRect)) return true;`）
+    /// 和 `isTilePlaceable` 里，**`isTilePassable` / 瓦片属性完全没有它**；
+    /// 而走位是**直接改 `farmer.Position`**（同下面 building/resourceClump 两段的说明）
+    /// ⇒ 尺子说能走，角色就真的穿过去了，游戏自己的碰撞根本没机会介入。
+    /// 实测：`/passable (50,6) Mountain` 回 `true`，拿 `/passable_rect` 跑连通域，
+    /// 塌方当墙时「矿井口/探险家公会」整片与农场侧**断开**（1226 vs 1610 格）。
+    ///
+    /// 条目 = (地图名, "是否生效"的私有 NetBool 字段, "阻挡矩形"的私有字段) ——
+    /// **反射读游戏自己的字段，不抄坐标**（抄了就会跟游戏漂）。
+    /// ⚠️ 只覆盖"我们真会踩到"的两处；将来再撞到同类，往表里加一行即可。
+    /// ⚠️ 别拿 `loc.isCollidingPosition(...)` 当可走性谓词 —— 基类那个重载
+    ///    （GameLocation.cs:2493）会 updateMap 并连带查角色/物体/怪物，影响面太大。
+    /// </summary>
+    private static readonly (string Map, string FlagField, string RectField)[] RuntimeBlockers = {
+        ("Mountain", "landslide", "landSlideRect"),                // 🏔️ 山体塌方：春5日前堵死矿井口/公会那片
+        ("Mountain", "railroadAreaBlocked", "railroadBlockRect"),  // 🛤️ 铁路石堆：夏3日地震后清
+    };
+
+    /// <summary>反射读私有实例字段（`ReflectField` 那个只认 Public，这两处都是 private）。</summary>
+    private static object? ReflectPrivate(object obj, string field)
+    {
+        try
+        {
+            var f = obj.GetType().GetField(field,
+                BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Instance);
+            return f?.GetValue(obj);
+        }
+        catch { return null; }
+    }
+
+    /// <summary>该格是否落在"运行时阻挡物"里（判据与游戏 `isTilePlaceable` 一致：**格中心像素**在矩形内）。</summary>
+    private static bool IsRuntimeBlocked(GameLocation location, Point tile)
+    {
+        if (location == null) return false;
+        foreach (var rb in RuntimeBlockers)
+        {
+            if (location.Name != rb.Map) continue;
+            try
+            {
+                var flagObj = ReflectPrivate(location, rb.FlagField);
+                if (flagObj == null) continue;
+                var flagVal = flagObj.GetType().GetProperty("Value")?.GetValue(flagObj);
+                if (!(flagVal is bool active) || !active) continue;
+                if (ReflectPrivate(location, rb.RectField) is Microsoft.Xna.Framework.Rectangle r
+                    && r.Contains(tile.X * 64 + 32, tile.Y * 64 + 32))
+                    return true;
+            }
+            catch { }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// 🌊 兜底瞬移前的**连通闸门**：目标格必须与起点"真的走得通"（判据=完整的 `IsTilePassable`）。
+    ///
+    /// 为什么非有不可：给 `IsTilePassable` 加上"运行时阻挡物"之后，BFS 会**正确地**返回 null，
+    /// 而 `walk` 那条兜底**不看连通性**（只查目标格站不站得住）——那等于把"走过去"换成"传送过去"，
+    /// 人照样到了不该到的地方，而且这次连动画都没有。**只堵一半 = 没堵**。
+    ///
+    /// ⚠️ 判据用**完整的 `IsTilePassable`**，不是 `ConnectedMapLayer` —— 那个**故意**只看地图图层
+    ///    （岩石在 object 层、可炸穿，不算分界），用途是炸矿的"墙圈胞腔"，两件事别混。
+    /// ⚠️ `ignoreTransient=true` 把**牲畜**排除在外：动物会走，构不成"结构性屏障"，
+    ///    否则满屋子动物的畜棚会被判成"和外面不连通"，把原本正常的兜底瞬移也一并毙掉。
+    /// </summary>
+    private bool IsReachableByWalking(GameLocation loc, Point from, Point to, int cap = 40000)
+    {
+        if (from == to) return true;
+        var seen = new HashSet<Point> { from };
+        var q = new Queue<Point>();
+        q.Enqueue(from);
+        int[] dx = { 0, 0, -1, 1 };
+        int[] dy = { -1, 1, 0, 0 };
+        int n = 0;
+        while (q.Count > 0 && n++ < cap)
+        {
+            var p = q.Dequeue();
+            for (int i = 0; i < 4; i++)
+            {
+                var np = new Point(p.X + dx[i], p.Y + dy[i]);
+                if (seen.Contains(np)) continue;
+                if (!IsTilePassable(loc, np, ignoreTransient: true)) continue;
+                if (np == to) return true;
+                seen.Add(np);
+                q.Enqueue(np);
+            }
+        }
+        return false;
+    }
+
+    private bool IsTilePassable(GameLocation location, Point tile, bool allowWater = false,
+                                bool ignoreTransient = false)
     {
         // Check map bounds
         if (tile.X < 0 || tile.Y < 0) return false;
         var mapWidth = location.Map.DisplayWidth / 64;
         var mapHeight = location.Map.DisplayHeight / 64;
         if (tile.X >= mapWidth || tile.Y >= mapHeight) return false;
+
+        // 🚧 运行时阻挡物（山体塌方 / 铁路石堆，2026-09-23）：见 `RuntimeBlockers` 的长注释。
+        //    放最前面：只比一次地图名，平时的代价是一个字符串比较。
+        if (IsRuntimeBlocked(location, tile)) return false;
 
         // Use the game's built-in passability check（只查地图图层，不查家具/物体）
         var tileVec = new Vector2(tile.X, tile.Y);
@@ -21566,20 +22367,42 @@ public class ModEntry : Mod
         //    （鸡舍只有 16 台机器照样卡死，证明根因是动物不是杂物）。
         //    加上这条后：目标格是动物 → BFS 走不通 → FindPath 的"退到最近可走邻居"
         //    兜底才真正生效，正好落在卡迪纳尔相邻格，interact 一次就摸到。
-        if (GetAnimalTiles(location).Contains(tile)) return false;
+        //    ⚠️ `ignoreTransient`（2026-09-23）：连通闸门 `IsReachableByWalking` 用得到 ——
+        //       动物会走，不是结构性屏障；把它们算进去的话，满屋牲畜的畜棚会被判成"和外面不连通"。
+        if (!ignoreTransient && GetAnimalTiles(location).Contains(tile)) return false;
 
         // 额外：家具/摆放物碰撞（室内床/桌子/箱子等 isTilePassable 不查，会穿墙）
+        // 🛏️ 2026-09-27(164)：**判据照游戏改** —— 恒一句破案：「是我干的。我挪了床和电视。
+        //    **真人可以从床经过，ai可不行。**」⇒ AI 在自家屋里被自己的家具关成死区
+        //    （门口 (3,11) 那一小块走不进房间，只能靠 `/position` 瞬移）—— 直接撞"是不是拟人"那条验收。
+        //
+        // 游戏自己怎么算（反编译 `GameLocation.isCollidingPosition` :2626）：
+        //     foreach (Furniture item in furniture)
+        //         if (item.furniture_type.Value != 12
+        //             && item.IntersectsForCollision(position)
+        //             && (!rectangle.HasValue || !item.IntersectsForCollision(rectangle.Value)))
+        //             return true;                      // = 撞了
+        // ⇒ 我们旧写法与游戏有**三处**不同，而且**每一处都更严**：
+        //     ① 旧：`!f.isPassable()`（`Furniture.isPassable()` 只对 type 12 放行，这点两边一致）
+        //     ② 旧：按 `getTilesWide/High` 的**整格 footprint** —— 游戏用的是**像素级碰撞盒**
+        //        `IntersectsForCollision(rect)`。家具贴图常常填不满它的格子 ⇒ 我们**多挡了一整圈格**。
+        //     ③ 游戏还有一道"**已经叠在里面就不算撞**"（`!item.IntersectsForCollision(rectangle.Value)`）
+        //        —— 让人能**从家具里走出来**、不会被卡死。⚠️ 这道是**像素级**的逃生口，
+        //        本函数是**逐格**查询（BFS/`/passable`/`/surroundings` 共用），拿不到"人现在站哪"，
+        //        所以**故意不移植** —— 移植不了就别假装有。（少了它只会偏严，不会偏松。）
+        //     ④ 游戏整段外面还有 `if (!flag ...)`（`flag` = `Game1.eventUp` 且事件不忽略碰撞）；
+        //        节日事件里家具不挡人。本函数是纯几何查询，**保持与事件无关**，同样不移植。
+        //    📌 通式：**"我们比游戏严"只会以"AI 干不了人能干的事"的形式出现** —— 而它的表现
+        //       不是报错，是**静默地绕路/瞬移/干等**（这次就伪装成了"走不到"）。
         try
         {
             foreach (var f in location.furniture)
             {
                 if (f == null) continue;
-                int fx = (int)f.TileLocation.X, fy = (int)f.TileLocation.Y;
-                if (tile.X >= fx && tile.X < fx + f.getTilesWide()
-                    && tile.Y >= fy && tile.Y < fy + f.getTilesHigh())
-                {
-                    if (!f.isPassable()) return false;
-                }
+                if (f.furniture_type.Value == 12) continue;   // 床等：游戏两处都放行（见上 ①）
+                // ⚠️ 必须写全名：本文件同时 using 了 `xTile.Dimensions`（有同名 Rectangle）⇒ 裸写歧义。
+                if (f.IntersectsForCollision(new Microsoft.Xna.Framework.Rectangle(tile.X * 64, tile.Y * 64, 64, 64)))
+                    return false;
             }
             if (location.objects != null && location.objects.TryGetValue(tileVec, out var obj) && obj != null)
             {

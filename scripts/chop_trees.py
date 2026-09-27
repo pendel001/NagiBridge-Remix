@@ -53,7 +53,9 @@ def axe_fell_hits(axe_name):
     return 15
 
 HIT_DELAY = 0.65
-STAMINA_RESERVE = 20
+# ⚡ 低体力线 —— **全局唯一一份**（恒 2026-09-24：「锄/浇…低过 20 都停」，见 `stamina_common`）。
+#    这里原本自己写了个 `20`：本文件、fish_run、nagi_mcp_server 各一份 —— 正是要收掉的东西。
+from stamina_common import MIN_STAMINA as STAMINA_RESERVE
 MAX_TREE_HITS = 20  # 树类最多敲20下防死循环
 
 

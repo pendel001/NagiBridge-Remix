@@ -13,6 +13,7 @@ import ast
 import inspect
 import io
 import os
+import re
 import sys
 
 if sys.stdout.encoding and sys.stdout.encoding.lower().startswith("gbk"):
@@ -178,6 +179,24 @@ def _scan_tools_missing_wstate() -> list:
     return offenders
 
 
+def _dispatch_ops():
+    """各域 dispatch 表。返回 (全部键 {(域,键)}, 键→值函数名 {(域,键): 函数名})。
+
+    抄 **dispatch 表**不抄文档——文档会漂，表不会（`gen_tool_checklist.py` 同一条规矩）。
+    ⚠️ 提取逻辑**只有一份**，在 `nagi_mcp_server._dispatch_keys()`（`help` 的 op 名反查
+    用的是同一份）——这里只是把它翻成自检要的形状，**别在这儿再写一遍 AST**：
+    早先各写一遍时，我那份用"行首正则"，mine 把两个 op 写在同一行就漏了一个，
+    于是**报出一个假的"意图索引悬空"**。判据只有一份是 CLAUDE.md 级规矩。
+    """
+    raw = M._dispatch_keys()
+    keys, k2f = set(), {}
+    for k, bucket in raw.items():
+        for d, fn in bucket:
+            keys.add((d, k))
+            k2f[(d, k)] = fn
+    return keys, k2f
+
+
 def main():
     registered = {t.name for t in M.mcp._tool_manager.list_tools()}
 
@@ -250,7 +269,85 @@ def main():
     else:
         print(f"  ✅ 调 _ops_run 的 {_N_OPS_TOOLS[0]} 个域工具都有 _with_state 收尾（状态条外层兜底成立）")
 
-    # 8. 汇总
+    # 8. 📖 help 别名表不悬空：`_HELP_ALIAS` 的**值**必须真的是 `_DOMAIN_GUIDES` 的键
+    #    2026-09-25 实测长出来过：「脚本」→"scripts"，可域键是单数 "script"
+    #    ⇒ `help(脚本)` 走别名那条路 `_DOMAIN_GUIDES[...]` **当场 KeyError 炸**，
+    #    不是"没找到"那种优雅降级 —— AI 正卡在"我不知道该怎么办"来查指引，反挨一记异常。
+    #    别名是手写的、域键也手写，改名/新加时漏对一次就中招，所以在这里按"值 ∈ 域键"逐条对。
+    _dangling = sorted(f"{k}→{v}" for k, v in M._HELP_ALIAS.items() if v not in M._DOMAIN_GUIDES)
+    if _dangling:
+        for _d in _dangling:
+            _k = _d.split("→")[0]
+            PROBLEMS.append(f"  help 别名「{_d}」的域名不在 _DOMAIN_GUIDES 里"
+                            f" → help({_k}) 会 KeyError（改成存在的域名）")
+    else:
+        print(f"  ✅ help 别名表 {len(M._HELP_ALIAS)} 条全部指向存在的域")
+
+    # 9. 🎯 意图索引（`_INTENT_INDEX`，AI 说"我想干嘛"→直给敲哪条）
+    #    (a) **悬空**=拦：索引指向的 (域,op) 必须真的在 dispatch 表里 —— 写错 op 名的话，
+    #        AI 会照着一条**不存在的命令**去敲（比"搜不到"更坏），所以和别名表同规格。
+    #    (b) **覆盖**=只提示：168 个 op 里没被任何意图句覆盖的，只是"少一个口语入口"，
+    #        不等于坏 —— 逐个列出当待办，别拿去卡构建。
+    _idx_ops = {(d, op) for _, d, op, _ in M._INTENT_INDEX}
+    _keys, _k2f = _dispatch_ops()
+    # 🔴 空表 = 提取器瘸了（`except` 会把它吞成"没有悬空"这种假绿）：`_dispatch_keys`
+    #    当初漏 import `textwrap` 就是这个形态——op 反查从此永远"查无此 op"却不报错。
+    if not _keys:
+        PROBLEMS.append("  `_dispatch_keys()` 返回空表 → op 反查（help(craft)）永远查无此 op，"
+                        "而下面的悬空检查还会**假绿**（没键自然没悬空）")
+    _dangling_idx = sorted(f"{d}.{op}" for d, op in _idx_ops if (d, op) not in _keys)
+    if _dangling_idx:
+        for _x in _dangling_idx:
+            PROBLEMS.append(f"  意图索引指向「{_x}」，但该域 dispatch 里没有这个 op"
+                            f" → AI 会照着一条不存在的命令敲")
+    else:
+        print(f"  ✅ 意图索引 {len(M._INTENT_INDEX)} 条全部指向真实 op")
+
+    # 覆盖按 **能力**（dispatch 的值函数）算，不按键：一个函数常挂好几个别名键
+    # （`check.building`/`building_list`/`buildings` 是同一个 `building_list`），
+    # 按键算会把 1 个能力数成 3 个，覆盖率看着虚高、缺口看着虚多。
+    _caps = {(d, fn) for (d, _k), fn in _k2f.items()}
+    _covered = {(d, _k2f[(d, op)]) for d, op in _idx_ops if (d, op) in _k2f}
+    _miss = sorted(_caps - _covered)
+    print(f"  · 🎯 意图索引覆盖 {len(_caps) - len(_miss)}/{len(_caps)} 个能力（{len(M._INTENT_INDEX)} 条）"
+          f"；未覆盖 {len(_miss)} 个 = 少一句口语入口，不影响正确性")
+    if _miss:
+        _head = "、".join(f"{d}.{o}" for d, o in _miss[:30])
+        print(f"     未覆盖(前30): {_head}{' …' if len(_miss) > 30 else ''}")
+
+    # 10. 🎯 意图检索**回归样本**（每条都是真踩出来的，别让它悄悄松回去）
+    #     A「火山」：恒 09-25 的原话——"工具要配地点用"，同一个词既可能是"怎么去/解锁没"
+    #       也可能是"在那儿怎么炸"，所以**地点和工具两条都得给**，不能只给 `bomb_volcano`
+    #       （那还是个"得先人在火山里"才放行的工具，猜错代价最高）。
+    #     B「给恒送个东西」：**说明文不许当索引**——`收银台卖东西` 的"东西"曾被当成地点。
+    #     C「随便说点啥」：说明文里的"随便钓"同理；无关的话就该老老实实回 ❌。
+    _cases = [
+        ("火山",     lambda r: "📍" in r and "🛠" in r, "地点+工具两条都要给（工具要配地点用）"),
+        ("给恒送个东西", lambda r: "📍" not in r and "social" in r, "别被说明文里的「卖东西」拐去当地点"),
+        ("随便说点啥",  lambda r: "❌" in r, "无关的话就该回没有，别硬凑一个地点"),
+        ("我想去河边钓鱼", lambda r: "📍" in r and "fish" in r, "河=Forest/Town 那个老翻车点"),
+        # D `craft`/`制作`：日志里 AI 真实打过的两个（`help(craft)` 现在必须走 op 名反查，
+        #   不能被地点截胡——`craft` 的 `ra` 曾是 `Railroad` 的前缀；`help(制作)` 原先是 ❌）
+        ("craft",  lambda r: "🛠" in r and "menu" in r, "op 名反查；别被「Ra(ilroad)」截胡"),
+        ("制作",   lambda r: "menu" in r, "日志实锤：原先回 ❌ 没有「制作」的指引"),
+        ("畜舍",   lambda r: "farm" in r, "中文 op 键（dispatch 表里本来就有）"),
+    ]
+    _bad = []
+    for _q, _ok, _why in _cases:
+        try:
+            _r = M.help.__wrapped__(_q)
+        except Exception as e:
+            _bad.append(f"help({_q}) 抛异常 {type(e).__name__}: {e}")
+            continue
+        if not _ok(_r):
+            _bad.append(f"help({_q}) 结果不对——{_why}")
+    if _bad:
+        for _b in _bad:
+            PROBLEMS.append(f"  {_b}")
+    else:
+        print(f"  ✅ 意图检索回归样本 {len(_cases)}/{len(_cases)} 通过")
+
+    # 11. 汇总
     print(f"  · 注册工具总数: {len(registered)}")
     print(f"  · keep-set 白名单: {len(M._KEEP_TOOLS)}（15 域 + {len(M._KEEP_TOOLS) - 15} 独立）")
 

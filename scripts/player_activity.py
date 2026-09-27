@@ -494,7 +494,20 @@ def describe_activity(state_data: dict) -> str:
     #    它**不是"在睡觉"**，而是 `Farmer.cs:7553` 那句「**脚踩的那格有 `Bed` 属性**」——
     #    每天清早 6:00 醒来那一刻就成立（人正好站在床格上）。**单用它一定会把"刚起床"看成"赖床"。**
     in_bed = bool(p.get("isInBed"))
-    is_fishing = p.get("fishing") is not None or "FishingRod" in tool
+    # 🎣 钓鱼判据：**只看"线在水里"那几个布尔**（恒 2026-09-25 真机纠正：「我哪里有在钓鱼」）。
+    # ⚠️ 旧判据两个洞，正好互相掩护：
+    #   ① `p.get("fishing") is not None` —— `/state` **永远**带这个字典（里面全是 false 的布尔）
+    #      ⇒ **恒为真** ⇒ 任何人只要没被前面几级认出来，一律被播成"正在钓鱼"。
+    #      恒当场逮到的就是这个：人在商店里、上一句是"在商店"，合起来念成"**在商店钓鱼**"。
+    #   ② `"FishingRod" in tool` —— 那是**类型名**；`/state` 的 currentTool 是 `Tool.Name`，
+    #      实值是 `Bamboo Pole`/`Training Rod`/`Fiberglass Rod`/`Iridium Rod`，**永远不含它**
+    #      （所以真正在起作用的只有 ① 那个恒真式，② 是一块写着好看的招牌，从来没生效过）。
+    # ⇒ 判据收成和鱼脚本 / 状态条**同一份**：`isFishing | isCasting | isReeling`。
+    # ⚠️ **别退回"拿着竿就算在钓"**：拿竿 ≠ 在钓 —— 收工拖着竿走路、在店里手滑选到竿、
+    #    刚起床顺手装备上，都不是。（线在水里那段时间 `isFishing` 本来就为真，
+    #    换竿的那一两秒空档不值得为它把整类误报放回来。）
+    _f = p.get("fishing") or {}
+    is_fishing = bool(_f.get("isFishing") or _f.get("isCasting") or _f.get("isReeling"))
 
     hp_ratio = health / max(1, max_health)
     stam_ratio = stamina / max(1, max_stamina)
@@ -640,7 +653,7 @@ def describe_activity(state_data: dict) -> str:
     #  体力掉了 = 正在挥工具
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    if "FishingRod" in tool or is_fishing:
+    if is_fishing:
         return f"🎣 **{name}** 正在钓鱼"
 
     # 武器：非矿井/沙漠不报战斗，体力掉了就是砍草/乱挥
@@ -706,7 +719,18 @@ def describe_activity(state_data: dict) -> str:
         #    天然就是**没有就绪屏**的那种 = 躺着不干活 ⇒ 这才叫赖床。
         #    ⚠️ 这是个**靠层级顺序成立的隐式契约**（没有写成显式判据）；把赖床挪到菜单前面
         #    会静默破坏它 —— 深夜 `lie_bed` 躺好的人会被说成"还在赖床"。
-        if in_bed and tod >= 630:
+        # 💤 赖床 = 「人在床上 + 没有就绪屏 + **还没到中午**」——窗口是恒 2026-09-25 定的。
+        #   · 起点 630（6:30）：6:00~6:30 站在床格上 = **刚起床**（正常，人正好在床格上），不算赖床。
+        #   · 终点 1200（中午）：**过了中午就不叫"赖床"了** —— 那会儿还躺在床上是"躺平"，
+        #     播成"赖床"名不副实（恒拍板：「太短了，改成中午 12 点」）。
+        #   🔴 **这块我栽过一次，留档**：修完上面那条"恒真式"的钓鱼判据后，"还在赖床"露了出来，
+        #      我**想当然**判它是假播报（"他人就在电脑前跟我说话，怎么可能赖床"），擅自收成
+        #      `630 <= tod < 700`。恒当场打回：「**10 点了怎么在发呆，好像说是赖床才对吧**」。
+        #      量数据才明白他全对：那格 FarmHouse(5,9) 的 **`isInBed=True`**（游戏自己说的）、
+        #      且从他那个进程看该格 `passable=false`（那就是**床**本身）——**他真在床上**。
+        #      ⚠️ 教训：**"看起来像假消息" ≠ "它是假消息"** —— 判据有没有错**去读数据、别拿常识推**
+        #        （这正是不许我替用户验收观感类播报的理由）。**下次先问一句，别先动手改。**
+        if in_bed and 630 <= tod < 1200:
             return f"💤 **{name}** 还在赖床"
         if "bathhouse" in loc_lower:
             return f"♨️ **{name}** 正在泡澡，好悠闲"

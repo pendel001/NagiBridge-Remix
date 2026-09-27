@@ -595,7 +595,7 @@ def walk_to(poi_name: str = "", x: int = None, y: int = None) -> str:
     - 秘密森林 / 巫师塔 / 玛妮牧场
     - 山湖 / 海边 / 河流各种钓鱼点
     - 皮埃尔商店 / 餐吧 / 铁匠铺 / 博物馆
-    - 自己小屋(床) / 温室 / 农场洞穴
+    - 自己小屋(床) / 温室 / 农场洞穴 / 邮箱（动态定位，读信走它）
     - 巴士站 / 沙漠 / 姜岛船
     - 浴场 / 铁路 / 隧道
 
@@ -642,6 +642,59 @@ def walk_to(poi_name: str = "", x: int = None, y: int = None) -> str:
         #    而且它用 `api`（= AI 端口 7843）—— 子进程那条路默认打 7842 房主，见下面 ⚠️。
         if any(k in poi_name for k in ("回家", "自己小屋", "我的小屋")):
             return go_to(poi_name)
+        # 🧭 名字先自己核一遍：**不在 POI 表、也不是地图名 ⇒ 当场给下一步**，别丢给子进程。
+        #    子进程只会回一句「[FAIL] no route from X to Y」，AI 拿着它只能干瞪眼
+        #    （2026-09-25 恒真机：「你跟他说可：格斯柜台，结果他搜格斯柜台又报找不到」——
+        #     状态条那行 `🗺️ 可:` 是**自由文本**（`locations.MAP_FEATURES`），119 条里 110 条
+        #     **都不是能走的 POI 名**（「格斯柜台」vs 真键 `星之果实餐吧(柜台)`、「哈维医院」vs
+        #     `哈维医院(门口)`…），AI 照抄它必然撞墙）。
+        if poi_name not in locations.POI and poi_name not in locations.MAP_LINKS:
+            try:
+                _st = api.state()
+                _cur = (_st.get("location") or {}).get("name", "") or ""
+                _px, _py = (_st.get("player") or {}).get("x"), (_st.get("player") or {}).get("y")
+            except Exception:
+                _cur, _px, _py = "", None, None
+            # 🔎 **先模糊对一次**（恒 2026-09-25：「猪车也犯了一样的毛病，poi_name 搜猪车搜不出来，
+            #    可却告诉他"可：猪车"」）—— 状态条那行是**自由文本**、渲染时还 `split("(")[0]`
+            #    **把括号砍掉**（`猪车(周五周日)` → 打出「猪车」；真键是 `猪车(旅行货车)`）
+            #    ⇒ 光"列出本图落点"不够，**它得能自己认出来**。
+            #    **唯一命中**就直接走（回执里写的也是完整名字，AI 顺带学到正确叫法）；
+            #    **多个命中不猜**（宁报错别兜底）—— 摊开让它挑。
+            _cand = sorted(k for k in locations.POI if poi_name and (poi_name in k or k in poi_name))
+            # 「猪车」会同时命中 `猪车(旅行货车)`(Forest) 和 `夜市猪车(旅行货车)`(夜市)——
+            # **同名的两地**。先按**当前所在图**收窄：人就在那种图里时它就是那一个。
+            _cand_here = [k for k in _cand if locations.POI[k].get("map") == _cur]
+            if len(_cand_here) == 1:
+                _cand = _cand_here
+            if len(_cand) == 1:
+                poi_name = _cand[0]        # ← 认出来了，照它的完整名字继续走（下面全走正常流程）
+            elif len(_cand) > 1:
+                _lines = "\n".join(
+                    f"     · {k}（{locations.POI[k].get('map')}）" for k in _cand[:8])
+                return _with_state(
+                    f"❓ 「{poi_name}」不是落点名，但**有 {len(_cand)} 个相近的** —— 我不替你猜：\n"
+                    f"{_lines}\n"
+                    f"   👉 挑一个**完整的名字**再 `map walk`。")
+        if poi_name not in locations.POI and poi_name not in locations.MAP_LINKS:
+            try:
+                _st = api.state()
+                _cur = (_st.get("location") or {}).get("name", "") or ""
+                _px, _py = (_st.get("player") or {}).get("x"), (_st.get("player") or {}).get("y")
+            except Exception:
+                _cur, _px, _py = "", None, None
+            _here = [k for k, v in locations.POI.items() if v.get("map") == _cur]
+            if _px is not None and _py is not None:
+                _here.sort(key=lambda k: abs(locations.POI[k]["pos"][0] - _px)
+                           + abs(locations.POI[k]["pos"][1] - _py))
+            _fallback = ("、".join(_here[:8]) + ("…" if len(_here) > 8 else "")) if _here else "（本图没登记可走落点）"
+            return _with_state(
+                f"❌ 认不出「{poi_name}」——POI 表里没有这个名字，也不是地图名。\n"
+                f"   「{_cur}」**能走的落点**（就近排）：{_fallback}\n"
+                f"   👉 照上面挑一个再 `map walk`；⚠️ **别照状态条 `🗺️ 可:` 那行抄名字**"
+                f"（那是「这地方能干嘛」的说明，不是落点名）。\n"
+                f"   👉 想走具体格子：`map walk x=.. y=..`；找 **NPC** 用 `map npc` 那一路"
+                f"（人不是落点，走不到）。")
         # 同图 → go_to.py 走过去
         # ⚠️⚠️ 2026-09-12 真机抓到两个**会打到恒身上**的坑，都在这一段：
         #  ① **没传 --port**：go_to.py 的 `--port` 默认 `NAGI_PORT`、再默认 **7842=房主**，
@@ -733,11 +786,29 @@ def _buildings() -> list:
         return []
 
 
+def _stand_beside(location: str, x: int, y: int):
+    """找 (x,y) 旁边**站得住**的一格（目标格本身是建筑/物件、踩不上去时用，如邮箱）。
+
+    顺序固定（左→下→右→上），判据只用游戏自己的 `/passable`（2026-09-24：别自己猜，
+    实测邮箱那格 `Farm(56,16)=False` —— 它在小屋的建筑占位里，人永远站不上去）。
+    找不到返回 None。
+    """
+    for dx, dy in ((-1, 0), (0, 1), (1, 0), (0, -1)):
+        try:
+            if api._post("/passable", {"x": x + dx, "y": y + dy,
+                                       "location": location}).get("passable"):
+                return (x + dx, y + dy)
+        except Exception:
+            continue
+    return None
+
+
 def _resolve_place(place: str):
     """把目的地解析成 (location, x, y)；解析不出返回 None（走 POI 兜底）。
 
     - "回家/自己小屋/我的小屋" → homeLocation 动态找自己的小屋（farmhand 各自的 Cabin）
     - 建筑名（畜棚/鸡舍/温室/鱼塘/出货箱…）→ /farm_buildings 实时定位门，抗建筑搬家
+    - "邮箱/信箱" → /state.mailbox 的动态坐标（跟着自己那间小屋/农舍走）
     门都在 Farm 外立面，walk_to 到门前即可。
     """
     p = (place or "").strip()
@@ -764,7 +835,18 @@ def _resolve_place(place: str):
                 return ("Farm", b["doorX"], b["doorY"])
         return ("Farm", 59, 12)  # 最后兜底：农舍位置
 
-    # 2. 建筑关键字 → 实时定位门
+    # 2. 邮箱/信箱 → **动态坐标**（`/state.mailbox` = `Game1.player.getMailboxPosition()`：
+    #    跟着自己那间小屋/农舍走，小屋挪过位置它就变 ⇒ 绝不能写死坐标）。
+    #    ⚠️ **落点是旁边的可站格，不是邮箱那格**：邮箱格在建筑的占位里、踩不上去（见 `_stand_beside`）；
+    #       真正要敲的那一格由状态条的 📬 行写给 AI（"到了再 scene at x y"）。
+    if any(k in p for k in ("邮箱", "信箱", "mailbox")):
+        mb = (api.state().get("mailbox") or {})
+        if not mb.get("location"):
+            return None
+        stand = _stand_beside(mb["location"], mb["x"], mb["y"])
+        return (mb["location"], stand[0], stand[1]) if stand else None
+
+    # 3. 建筑关键字 → 实时定位门
     KEYWORDS = {
         # ⚠️ 2026-09-19（恒）：**这里必须走"最长匹配"**（见下面 sorted），否则单字键会抢走长键。
         #    真机实录（只读探出来的一族同病）：`农舍`→**鸡舍的门**、`工棚`→**畜棚的门**——
@@ -1095,6 +1177,7 @@ def go_to(place: str) -> str:
 
     支持：
     - 回家 / 自己小屋 / 我的小屋 → 动态回自己的小屋
+    - 邮箱 / 信箱 → 走到**自己的邮箱**旁边（/state.mailbox 动态定位；到了再 scene at 敲那一格）
     - 建筑名：畜棚/鸡舍/温室/鱼塘/筒仓/出货箱/马厩/工棚/传送…
     - POI 名：皮埃尔商店/海滩/矿井入口/头骨矿洞/巴士站/沙漠…
 
@@ -1351,16 +1434,120 @@ for _b, (_om, (_dx, _dy)) in locations.BUILDING_DOORS.items():
 
 
 def _locked_door_dialogue():
-    """推门没推开时读一眼菜单：门禁/营业时间/性别拦下会弹 DialogueBox（且门没开）。
-    返回对话文本(str，可能空串)；没有弹窗 → None（=不是"门锁着"，是真·导航失败）。
-    2026-09-10：用来把「门锁着」和「路走不到」分开——前者不该触发兜底 warp 硬闯。"""
+    """推门没推开时读一眼菜单：门禁/营业时间/好感/性别拦下时游戏**一定会说句话**。
+    返回那句话的文本(str，可能空串)；没有弹窗 → None（=不是"门锁着"，是真·导航失败）。
+    2026-09-10：用来把「门锁着」和「路走不到」分开——前者不该触发兜底 warp 硬闯。
+
+    ⚠️ 2026-09-23 扩：**也认 `LetterViewerMenu`（信件）** —— 探险家公会那扇门的锁弹的是
+       **信件**不是 DialogueBox（反编译 `StardewValley.Locations/Mountain.cs:74`：
+       `!who.mailReceived.Contains("guildMember") && !who.hasQuest("16")` 时
+       `Game1.drawLetterMessage(...)`）。只认 DialogueBox 的旧版**认不出它** ⇒ 被判成
+       "真·导航失败" ⇒ 掉进兜底 `api.warp(nxt, ARRIVE[nxt])` **穿墙进公会**，
+       把"杀 10 只绿史莱姆"的门禁整个绕掉（`locations.ARRIVE["AdventureGuild"] = (6,12)`）。
+    """
     try:
         m = api._get("/menu")
-        if m.get("open") and m.get("type") == "DialogueBox":
+        if not m.get("open"):
+            return None
+        t = m.get("type")
+        if t == "DialogueBox":
             return (m.get("dialogue") or "").strip()
+        if t == "LetterViewerMenu":
+            title = (m.get("letterTitle") or "").strip()
+            body = (m.get("letterBody") or "").strip()
+            if title and body:
+                return f"{title}：{body}"
+            return title or body
     except Exception:
         pass
     return None
+
+
+# ── 🚪 门禁记忆（恒 2026-09-23）──
+# 推门被游戏挡回来（弹对话/信件）⇒ 记一笔 `(地图, 建筑英文名)`，**当天**不再在状态条
+# `🗺️ 可:` 里推荐它——春2日 AI 一到 Mountain 就被告知"能去探险家公会"，可那门根本没开。
+# **换天自动清空**（营业时间/好感/任务进度都可能过夜变好）。
+# ⚠️ 只影响**显示**，不影响导航：那扇门本来就不该拦着 AI 去试——公会的锁门信正是
+#    "去哪接杀绿史莱姆任务"的线索，拦住反而是错的。
+_DOOR_BLOCKED = {"day": None, "keys": set()}
+_DAYKEY_CACHE = {"ts": 0.0, "key": None}
+
+
+def _day_key_cached(ttl: float = 30.0):
+    """游戏日期键（30s TTL）——门禁记忆要按天清，但状态条不该为此每调多打一次 HTTP。"""
+    now = time.time()
+    if _DAYKEY_CACHE["key"] is not None and now - _DAYKEY_CACHE["ts"] < ttl:
+        return _DAYKEY_CACHE["key"]
+    try:
+        k = api.day_key()
+    except Exception:
+        k = None                       # 读不到 → None；当天判据退化成"永不跨天清"，宁可不误伤
+    _DAYKEY_CACHE.update(ts=now, key=k)
+    return k
+
+
+def _door_today() -> set:
+    """"今天"那批推不开的门（跨天自动清空）。"""
+    dk = _day_key_cached()
+    if _DOOR_BLOCKED["day"] != dk:
+        _DOOR_BLOCKED["day"] = dk
+        _DOOR_BLOCKED["keys"] = set()
+    return _DOOR_BLOCKED["keys"]
+
+
+def door_blocked(loc: str = "") -> set:
+    """本图今天"推门被挡回来"的建筑英文名集合；loc 留空 = 全部。"""
+    try:
+        keys = _door_today()
+    except Exception:
+        return set()
+    return {b for (m, b) in keys if not loc or m == loc}
+
+
+def mark_door_blocked(building: str, loc: str = "") -> None:
+    """记一笔"这扇门现在进不去"（`loc` 留空 = 当前所在图）。只在 `🗺️ 可:` 里生效，不拦导航。"""
+    if not building:
+        return
+    try:
+        keys = _door_today()
+        if not loc:
+            loc = (api.state().get("location") or {}).get("name", "") or ""
+        if loc:
+            keys.add((loc, building))
+    except Exception:
+        pass
+
+
+def map_feature_hidden(loc: str) -> set:
+    """`locations.MAP_FEATURES[loc]` 里**现在用不了**的条目前缀（渲染 `🗺️ 可:` 时摘掉）。
+
+    判据来自 `locations.MAP_FEATURE_GATES`：
+      `map:X`  → `_locked_maps()`（/unlocks 权威，30s 缓存）里有 X 就藏
+      `door:X` → 今天推过这扇门、被游戏挡回来过（`door_blocked()`）
+    值可以是**一条依赖（str）或一组（list）**——list 里**任意一条**不满足就藏
+    （例：探险家公会 = 塌方挡路 map:Mine **或** 门锁着 door:AdventureGuild）。
+    ⚠️ **读不到一律不藏** —— 渲染侧出的错不该变成"把能去的地方也藏了"。
+    """
+    gates = getattr(locations, "MAP_FEATURE_GATES", {}).get(loc) or {}
+    if not gates:
+        return set()
+    try:
+        locked = _locked_maps()
+    except Exception:
+        locked = set()
+    try:
+        blocked = door_blocked(loc)
+    except Exception:
+        blocked = set()
+    hidden = set()
+    for token, dep in gates.items():
+        for one in (dep if isinstance(dep, (list, tuple, set)) else [dep]):
+            kind, _, target = str(one).partition(":")
+            if kind == "map" and target in locked:
+                hidden.add(token)
+            elif kind == "door" and target in blocked:
+                hidden.add(token)
+    return hidden
 
 
 def _step_into_building(arrive_map: str, arrive_pos) -> str:
@@ -1379,16 +1566,22 @@ def _step_into_building(arrive_map: str, arrive_pos) -> str:
             return f"，推门进屋已站在{b}室内门口"
     except Exception:
         return ""
-    # 没进屋：大概率门锁着（未到营业时间/未解锁）→ interact 会弹个"上锁了"DialogueBox，
-    # 顺手关掉别留菜单给 AI，并明确回报（2026-09-10 恒：医院07:00门没开、弹了菜单）。
-    try:
-        m = api._get("/menu")
-        if m.get("open") and m.get("type") == "DialogueBox":
+    # 没进屋：大概率门锁着（未到营业时间/未解锁/好感不够）→ 游戏会弹对话或**信件**
+    # （公会那扇门弹的就是信件，见 `_locked_door_dialogue`），顺手关掉别留菜单给 AI，并明确回报
+    # （2026-09-10 恒：医院07:00门没开、弹了菜单）。
+    # ⚠️ 关门之前**先把游戏的原话抄进回报里**：公会的锁门信正是"去哪接杀史莱姆任务"的唯一线索，
+    #    关掉又不转述 = 把 AI 该看到的东西吃掉了（2026-09-23 扩信件时想通的）。
+    txt = _locked_door_dialogue()
+    if txt is not None:
+        mark_door_blocked(b, arrive_map)     # 🚪 记一笔：今天 `🗺️ 可:` 别再推荐它
+        try:
             api._post("/key", {"key": "ok"})
             api._post("/menu_close")
-            return "（~这扇门没开，未到营业时间/未解锁~）"
-    except Exception:
-        pass
+        except Exception:
+            pass
+        _txt = (txt or "").replace("\n", " ").strip()[:120]
+        return (f"（~这扇门没开：{_txt}~）" if _txt
+                else "（~这扇门没开，未到营业时间/未解锁~）")
     return ""
 
 
@@ -1907,8 +2100,37 @@ def _dwarf_rock_blocked() -> bool:
     return blocked
 
 
+# 🚧 Mountain 上「塌方以东」那片（2026-09-23 恒真机：AI 直接穿过了山体塌方的大石头）。
+#    病根：游戏把塌方**只写在 `Mountain.isCollidingPosition` / `isTilePlaceable`** 里
+#    （反编译 `StardewValley.Locations/Mountain.cs:352`，`landslide = DaysPlayed < 5`），
+#    **瓦片层（isTilePassable）完全没有它** ⇒ 我们的 BFS/`/passable` 判它"可走"，
+#    于是规划出一条穿石头的路。拿游戏自己的 `/passable_rect` 跑连通域实测：
+#      塌方当可走 → (15,40) 与 公会站格(76,9)/矿井口(54,4) **同一个连通域**（1610 格）；
+#      塌方当墙   → 公会/矿井口**整块孤立**（(15,40) 那侧只剩 1226 格）。
+#    ⇒ 不是"绕一绕能到"，是真的去不了（与矿井同一天解除：`landslide = DaysPlayed<5`，
+#      而 `unlocks.mine` 写的正是"春5日收到信后可进矿洞"）。所以判据直接复用 `unlocks.mine`。
+#    ⚠️ 这是**拦导航**，不是藏显示——`🗺️ 可:` 那边走 `locations.MAP_FEATURE_GATES`（同步加了一条）。
+#    ⛏️ 根治要动 C#（让寻路的可走性判据也认这类"运行时碰撞矩形"），已记账待批。
+_MOUNTAIN_BEHIND_LANDSLIDE = {"Mine", "AdventureGuild"}
+
+
 def _map_go_unlock_check(dest: str) -> str:
-    """未解锁地点 → 返回拦截串；解锁/不在表/读不到 → 空串放行。"""
+    """未解锁地点 / 塌方挡路 → 返回拦截串；能去/不在表/读不到 → 空串放行。"""
+    if dest in _MOUNTAIN_BEHIND_LANDSLIDE and "Mine" in _locked_maps():
+        # ⚠️ 2026-09-25 恒：「railroad 有门禁，特定天数后才解锁」—— 对，**夏3日**地震才清石堆，
+        #    而**温泉就在石堆后面** ⇒ 原来那句"现在能去的是…**温泉**"是**在骗人**
+        #    （出处 `ModEntry.cs` 的 `RuntimeBlockers` 表：`railroadAreaBlocked`/`railroadBlockRect`）。
+        #    铁路通了才把温泉列进"能去的地方"。
+        try:
+            _t = api.state().get("time") or {}
+            _rail = locations.railroad_open(_t.get("season"), _t.get("dayOfMonth"), _t.get("year"))
+        except Exception:
+            _rail = False
+        _extra = "/温泉" if _rail else ""
+        return (f"❌ 去不了 {dest}：Mountain 那条路上**山体塌方还堵着**——"
+                f"矿井口/探险家公会那片与农场侧是断开的（春5日通了才能过去，和矿井同一天）。\n"
+                f"   现在能去的是山西南侧：罗宾木匠店(ScienceHouse)/山湖钓点/莱纳斯帐篷{_extra}。"
+                f"急事请让 user 帮忙。")
     if dest not in LOCKED_MAPS:
         return ""
     if dest not in _locked_maps():
@@ -2609,11 +2831,15 @@ def _map_go_walk(path, destination: str, dest: str, lead_log: str = "", npc_targ
             if ok:
                 log[-1] += "（🚪推门进屋）"
             if not ok:
-                # 🔒 门锁着（未到营业时间/未解锁/好感不够/性别不符）→ 推门会弹 DialogueBox。
+                # 🔒 门锁着（未到营业时间/未解锁/好感不够/性别不符）→ 推门时游戏会说句话
+                #    （**对话或信件**，两种都算，见 `_locked_door_dialogue`）。
                 #    停下、**不算导航失败、不兜底 warp 硬闯**——瞬移进去 = 穿墙作弊，
                 #    恒 2026-09-10 真机抓到：8:10 皮埃尔店锁着，旧兜底 api.warp 把人塞进了 SeedShop(6,29)。
+                #    ⚠️ 公会那扇门弹的是**信件**：只认 DialogueBox 时这里判成"真·导航失败"，兜底
+                #       warp 直接把人送进公会，把杀史莱姆的门禁绕掉（2026-09-23 堵上）。
                 lock_txt = _locked_door_dialogue()
                 if lock_txt is not None:
+                    mark_door_blocked(nxt, frm)    # 🚪 今天 `🗺️ 可:` 别再推荐它
                     try:
                         api._post("/menu_close")
                     except Exception:
@@ -2671,11 +2897,10 @@ def _map_go_walk(path, destination: str, dest: str, lead_log: str = "", npc_targ
     elif destination in locations.POI:
         poi = locations.POI[destination]
         if poi.get("map") == dest:
-            _walk_and_wait(dest, poi["pos"][0], poi["pos"][1], timeout=20)
             # 2026-08-16 恒：POI 结构化站位+朝向（宠物水碗朝右/柜台朝上；幂等，walk_to 双调无害）
-            face_log = _apply_poi_stand_face(destination)
-            door_log = _step_into_building(dest, poi["pos"])   # 🔑 一键开门：落点是建筑门瓦片→推门进屋
-            final_txt = f"\n✅ 到达 {destination}（{poi['pos']}）{face_log}{door_log}"
+            # 🔴 2026-09-24：没走到就**别报"✅ 到达"**（见 `_poi_walk_honest`）
+            _ok, _tail = _poi_walk_honest(dest, destination, poi)
+            final_txt = (f"\n✅ 到达 {destination}（{poi['pos']}）{_tail}" if _ok else f"\n{_tail}")
     final_txt += mine_hint + _mine_entry_reminder(dest)
     return _with_state("\n".join(log) + final_txt)
 
@@ -2705,6 +2930,32 @@ def _npc_arrive_note(npc_name, npc0, at_loc):
     hint = (f"  ⏱️ {npc_name} 正在移动，NPC 位置和导航到达时可能有延时偏差——"
             "贴近后重新 find_npc 确认再互动") if moved else ""
     return f"📍 已在 {at_loc}，走到 {npc_name} 旁边（{n['x']},{n['y']}）{hint}"
+
+
+def _poi_walk_honest(dest: str, destination: str, poi: dict,
+                     timeout: int = 20, retry: int = 30):
+    """走到 POI 并应用站位/朝向。返回 `(是否到达, 尾巴文案)`。
+
+    ⚠️ **三处 POI 终止路径共用这一份**（同图 / 交通直达 / BFS 末段）—— 以前三处各写各的，
+      而且**都把 `_walk_and_wait` 的返回值丢掉**：超时照样往下走、回包照样写「✅ 到达 X（pos）」，
+      = **谎报到达**（"报成功但事没发生"家族里最贵的一种：上层照它决定下一步）。
+
+    真机 2026-09-24（恒：「**是不是路途太遥远了**，从错误箱调用 fish 跑过来，见它每次都朝向错报面前没水」）：
+      人从书摊那片小山坡（Town 114,17）去镇鲶鱼钓点 (3,93)，一百多格，20s 走不完，
+      于是同一次调用里 map_go 说 (3,93)、fish_run 读到 (68,74)、状态条 (52,91) —— 三个数三个地方；
+      `go_fishing` 拿那句"已走到"当到点了**就地开钓** ⇒ 鱼机朝**走路方向**抛竿
+      ⇒「🚫 抛竿方向没有水」，白跑一趟。
+
+    ⇒ ①先补一段（长走位常见 30s+）；②仍不到就**如实说"人还在半路"**、且**不设站位/朝向**
+      （离得远时设朝向是假的，人一走就没了）。
+    """
+    _ok, _note = _walk_and_wait(dest, poi["pos"][0], poi["pos"][1], timeout=timeout)
+    if not _ok:
+        _ok, _note = _walk_and_wait(dest, poi["pos"][0], poi["pos"][1], timeout=retry)
+    if not _ok:
+        return False, (f"⚠️ 还没走到 {destination}（{_note}）——**人还在半路**，"
+                       f"别当成已经站到点上了（走位没走完，朝向/交互都会落空）")
+    return True, _apply_poi_stand_face(destination) + _step_into_building(dest, poi["pos"])
 
 
 @_stuck_track
@@ -2822,6 +3073,13 @@ def map_go(destination: str = "", npc: str = "") -> str:
                     # 到不了目标图：**如实报**，不做跨图瞬移（宁报错别兜底）
                     return _with_state(f"❌ 到不了 {loc}（现在在 {_cur or '?'}）——先 map go {loc} 走过去")
                 _walk_and_wait(loc, x, y, timeout=35)
+                # 📬 邮箱不是"建筑门"：这一格只是**站位**，要敲的是旁边那格邮箱
+                #    （2026-09-24 真机：原文案会回"（建筑门，进屋用 interact）"，把 AI 往错的动作上带）
+                if any(k in (destination or "") for k in ("邮箱", "信箱", "mailbox")):
+                    _mb = (api.state().get("mailbox") or {})
+                    _next = (f" → scene at {_mb['x']} {_mb['y']} 读信"
+                             if _mb.get("location") == loc else "")
+                    return _with_state(f"🗺️ 已到邮箱旁 ({loc} {x},{y}){_pre}{_next}")
                 return _with_state(f"🗺️ 已到「{destination}」门口 ({loc} {x},{y}){_pre}（建筑门，进屋用 interact）")
             return _with_state(f"🗺️ 知识库没有「{dest}」的地点链接（试试 SeedShop/Town/Mine…）"
                                f"{_near_map_hint(dest)}")
@@ -2847,13 +3105,25 @@ def map_go(destination: str = "", npc: str = "") -> str:
             # 已在目标地点：若指定了 POI 且 POI 就在本图，仍走到 POI 精确位置
             if destination in locations.POI and locations.POI[destination].get("map") == dest:
                 poi = locations.POI[destination]
-                _walk_and_wait(dest, poi["pos"][0], poi["pos"][1], timeout=20)
+                # ⚠️ 2026-09-24 恒真机（「**是不是路途太遥远了**，从错误箱调用 fish 跑过来，
+                #    见它每次都朝向错报面前没水」）：这里原来 `_walk_and_wait(...)` 的**返回值被丢掉**，
+                #    20 秒超时**照样**往下走、返回串还写「🗺️ 已在 Town，走到 镇鲶鱼钓点（(3,93)）」
+                #    —— **谎报到达**（同"报成功但事没发生"家族，而这是最贵的一种：上层照它决定下一步）。
+                #    实测那次：人从书摊那片小山坡（Town 114,17）出发，一百多格，20s 走不完 ⇒
+                #    同一秒里 map_go 说 (3,93)、脚本读到 (68,74)、状态条 (52,91)，三个数三个地方；
+                #    上层 `go_fishing` 拿这句当"到点了"就地开钓 ⇒ **鱼机朝着走路方向抛竿**
+                #    ⇒「🚫 抛竿方向没有水」白跑一趟。
+                #    ⇒ ①先补一段（长走位常见 30s+）；②仍不到就**如实说"人还在半路"**、
+                #      且**不设站位/朝向**（离得远的时候设朝向是假的，人一走动就没了）。
                 # ⚠️ 2026-08-23 恒：已在目标图(如已在 Club)时也要 _apply_poi_stand_face——
                 #    walk_to 有 ±2 容差可能停偏1格、且不设 face，interact 会打到错误瓦片。
                 #    与另两条 POI 终止路径(transport/BFS)一致：position 瞬移到 stand + 设朝向。
-                face_log = _apply_poi_stand_face(destination)
-                door_log = _step_into_building(dest, poi["pos"])   # 🔑 一键开门：落点=门瓦片→推门进屋
-                return _with_state(f"🗺️ 已在 {dest}，走到 {destination}（{poi['pos']}）{face_log}{door_log}")
+                #    🔴 2026-09-24：没走到就**别报"已走到"**（详见 `_poi_walk_honest` 的注释：
+                #    恒那句「是不是路途太遥远了」就是这么来的）。
+                _ok, _tail = _poi_walk_honest(dest, destination, poi)
+                if not _ok:
+                    return _with_state(_tail)
+                return _with_state(f"🗺️ 已在 {dest}，走到 {destination}（{poi['pos']}）{_tail}")
             return _with_state(f"🗺️ 已经在 {cur} 了" + _mine_hint + _mine_entry_reminder(cur))
         # 🎪 2026-08-29 恒：节日临时图(Temp/Forest-IceFestival)不在 MAP_LINKS，map_go 到逻辑场地
         #   (Town/Forest/Beach)会误报"没路径"——玩家其实已被游戏自动送到节日场地。只在临时图且目标是
@@ -2923,10 +3193,11 @@ def map_go(destination: str = "", npc: str = "") -> str:
                 # 直达 → 若 destination 是 POI 在本图，走到 POI 精确位
                 if destination in locations.POI and locations.POI[destination].get("map") == dest:
                     poi = locations.POI[destination]
-                    _walk_and_wait(dest, poi["pos"][0], poi["pos"][1], timeout=20)
-                    face_log = _apply_poi_stand_face(destination)
-                    door_log = _step_into_building(dest, poi["pos"])   # 🔑 一键开门：落点=门瓦片→推门进屋
-                    return _with_state(f"{tlog} → 到达 {destination}（{poi['pos']}）{face_log}{door_log}" + _mine_entry_reminder(dest))
+                    # 🔴 2026-09-24：没走到就**别报"到达"**（见 `_poi_walk_honest`）
+                    _ok, _tail = _poi_walk_honest(dest, destination, poi)
+                    _lead = (f"{tlog} → 到达 {destination}（{poi['pos']}）{_tail}" if _ok
+                             else f"{tlog} → {_tail}")
+                    return _with_state(_lead + _mine_entry_reminder(dest))
                 return _with_state(f"{tlog} → 到达 {dest}" + _mine_entry_reminder(dest))
             # 落点≠dest（岛柱落岛南等）：从落点续走 BFS
             cur = land

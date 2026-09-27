@@ -2311,7 +2311,12 @@ class BombMiner(WeaponMixin):
                     time.sleep(0.5)
                     s2 = self.state()
                     if s2.get("in_dialogue"):
-                        self._post("/click", {})
+                        # ⚠️ 2026-09-26：原来这里发裸 `/click {}` —— 那是**真 OS 鼠标**：
+                        #   无菜单分支会 `SetCursorPos(窗口中心)` + `mouse_event` 真点一下
+                        #   ⇒ **拽走恒的光标**，而且真实点击会**把光标所在窗口顶到最前**。
+                        #   恒那晚的描述正是这对组合：「献祭那个强切前台+鼠标漂移」。
+                        #   这条只是"对话推不动了兜底推一下"，本来就该用进程内动作键 ⇒ 两个 no_ 都开。
+                        self._post("/click", {"no_move": True, "no_mouse": True})
                         time.sleep(0.5)
                     break
                 time.sleep(0.5)
@@ -2541,7 +2546,10 @@ class BombMiner(WeaponMixin):
                     if pick is None and icons:
                         pick = icons[0]
                     if pick:
-                        self._post("/click", {"x": pick["x"], "y": pick["y"]})
+                        # ⚠️ 2026-09-26：同上——有菜单时 /click 一样会先 `setMousePosition` 拽光标。
+                        #   ChooseFromIconsMenu **不在**"真读 Game1.getMouseX"的名单里
+                        #   （decomp grep 实查）⇒ 传进去的 x,y 就够，不用挪光标。
+                        self._post("/click", {"x": pick["x"], "y": pick["y"], "no_move": True})
                         time.sleep(0.8)
                         log(f"  🗿 选效果: {pick.get('hoverText')}")
             except Exception:
@@ -2730,7 +2738,8 @@ def backpack_plan(bot, drop_below=15, need_slots=3):
     for i in inv:
         name = i.get("name", "?")
         val = i.get("value") or drop_value(name)
-        q = {0: "", 1: "[银]", 2: "[金]", 3: "[铱]"}.get(i.get("quality", 0), "")
+        # ⚠️ 品质只有 0/1/2/**4**（反编译 `Item.cs:308`：4=铱星，3 这一档不存在）——老表写 3 ⇒ 铱星物品**标不出来**
+        q = {0: "", 1: "[银]", 2: "[金]", 3: "[铱]", 4: "[铱]"}.get(i.get("quality", 0), "")
         lines.append(f"  · {q}{name}×{i.get('stack', 1)} ≈{val}g")
     free = bot.inventory_free_slots()
     lines.append(f"  剩余 {free} 格")

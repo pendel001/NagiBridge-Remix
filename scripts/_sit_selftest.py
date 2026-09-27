@@ -13,6 +13,16 @@ os.environ.setdefault("NAGI_HOST_URL", "http://localhost:7842")
 
 import nagi_mcp_server as M
 
+# ⚠️ 2026-09-27 修：**本文件自称"纯逻辑自测（不打游戏）"，其实偷偷依赖游戏在场。**
+#    游戏开着全绿；**游戏一关就挂死**（faulthandler 抓到的栈）：
+#      `sit → _with_state → _state_suffix → api.ensure_roles → detect_roles → _probe_role`
+#    —— `_with_state` 要给返回值挂状态条，而状态条要角色映射，映射要探测游戏端口。
+#    更坑的是 `detect_roles` **失败路径不写缓存** ⇒ 每次 `_with_state` 都重探一遍，
+#    于是"挂死"表现为**极慢 + 最后超时**，而不是干脆报错。
+#    ⇒ 照别的自验（`_reply_hint_selftest` / `_daily_hints_selftest`）的做法把 `_with_state`
+#      打成恒等：本文件要验的是 **sit/seats 的逻辑**，状态条（及其背后的角色探测）不是被测对象。
+M._with_state = lambda s: s
+
 fails = []
 
 
