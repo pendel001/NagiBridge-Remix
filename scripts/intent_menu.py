@@ -174,6 +174,11 @@ class Verb:
     # ⚠️ **没有 exec 的动词不进单子**（所见即所得：单子上有的，按了就成）。
     #    宁可单子短，也不列"看得见按不动"的东西——那跟旧接口"列出来再说不行"是一回事。
     exec: Callable = None            # (Ctx, targets, run) -> str 回执
+    # 🗂 **目录行**的下一层：(Ctx, targets) -> Level。
+    #    「接了」= 有 exec（动作行）**或** 有 subs（目录行）——两个都没有才不上单子。
+    subs: Callable = None
+    # 多选定稿后的执行：(Ctx, [(Row, 数量)], run) -> 回执（qty 层用）
+    exec_multi: Callable = None
     # True = 所有目标并成一行（执行器本来就是批量的，别假装能挑单个）
     merge: bool = False
     # 并成一行时用的理由（单个目标时用 `reason`）
@@ -422,6 +427,14 @@ class Row:
     label: str          # 正文，如「收 钻石」
     reason: str         # 理由（审计面）
     dist: int           # 最近那个目标走几步（曼哈顿）
+    # 🗂 非 None ⇒ **目录行**（这行还要选，句尾印 `…`）；None ⇒ **动作行**（按了就成）。
+    #    判据不是「有选择就嵌套」，是「**这行有没有把自己说完**」。
+    level: "Level" = None
+    # 它在这一层被印出来的号（渲染时填）。qty 层**沿用**上一层发的号，不重排位置。
+    no: int = 0
+    # 印在正文前的那截定位。`None` = 用 `_where(目标)`；`""` = **不印**
+    # （货架上的商品/菜单里的项**不在世界里**，印"手持"就是撒谎）。
+    where: str = None
 
 
 def _dist(ctx: Ctx, t) -> int:
@@ -440,8 +453,9 @@ def _candidates(ctx: Ctx) -> list:
     """
     buckets = {}
     for v in VERBS:
-        if v.exec is None:
-            continue                      # 没接执行的动词**不上单子**（见 Verb.exec 那段）
+        # 「接了」= 有 exec（动作行）**或** 有 subs（目录行）。两个都没有 = 看得见按不动，不上单子。
+        if v.exec is None and v.subs is None:
+            continue
         if v.target == "held":
             t = ctx.held
             if t and v.can(ctx, t) is True:
@@ -459,8 +473,10 @@ def _candidates(ctx: Ctx) -> list:
             reason = v.reason_many(ctx, targets) if v.reason_many else v.reason(ctx, near)
         else:
             reason = v.reason(ctx, near)
+        # 🗂 目录行的下一层**在这就算出来**（顶层要拿它报 `（N 件）`，也得知道它长不长）。
         rows.append(Row(verb=v, targets=targets,
-                        label=label or v.label, reason=reason, dist=_dist(ctx, near)))
+                        label=label or v.label, reason=reason, dist=_dist(ctx, near),
+                        level=v.subs(ctx, targets) if v.subs else None))
     # 排序：先按动词权重，再按**距离**。
     # ⚠️ 距离是个**合法且可审计**的排序理由（"近的先做"）——比一个黑盒启发式诚实得多。
     #    而且同权重的一批（20 台机器）全靠它拉开，否则前 N 条就是**随便挑的**。
@@ -491,25 +507,98 @@ def _where(t) -> str:
     return "手持"
 
 
-# 🧠 最近一次**显示给 AI**的那几条。`do_row(n)` 打的是它，不是重算的第 n 条（见 `do_row`）。
+# 🧠 最近一次**显示给 AI**的那几条。`do_row` 打的是它，不是重算的第 n 条（见 `do_row`）。
 _LAST_ROWS: list = []
 
+# ═══════════════════════════════════════════════════════════════════════
+# ⑥ 单子是一叠，不是一张（2026-09-28 定稿）
+# ═══════════════════════════════════════════════════════════════════════
+# 判据只有一条：**这行有没有把自己说完**。
+#   说完了（「收 3 台桶 → 上古水果酒 ×3」）⇒ **动作行**，按了就成；
+#   没说（「取出」——取哪条？）⇒ **目录行**（句尾印 `…`），点开才发号。
+# ⚠️ **行没说完的，不许拿默认去补**——那正是恒那条「宁报错别兜底」。
+#    让它变成目录行，比给它编一个"最常见"的默认值安全得多。
 
-def render_menu(ctx: Ctx, n: int = 5, header: str = "") -> str:
-    """渲染选项单。
+_STACK: list = []       # [顶层, 子层, 孙层…]；空 = 还没看过单子
 
-    - 前 n 条 + **理由列**
-    - 被挤掉的**如实报**「还有 K 项」（铁律 2）
-    - 末尾永远留 `0 做点别的`——它既是**逃出牢笼**的口子，也是**探索口**
+
+@dataclass
+class Level:
+    """一屏单子。
+
+    `mode` = 这一层**接受什么形态的敲法**。它是「静默陷阱」的解法：
+    **形态不对就报错，绝不猜。**
+        act  → `do(n)`              敲了就做
+        pick → `do(n)` / `do(1,4)`  选一个或多个 → 进下一层
+        qty  → `do(1=1,4=4)`        **必须**写「号=数量」；只写号 = 报错
+
+    ⚠️ 为什么 qty 层**必须**拒绝「只写号」：那是恒最初提的形状（两屏都 `do(1,4)`、
+    靠位置对齐）。**上一屏序无关、下一屏序有关的同一个写法** ⇒ 写反（`do(4,1)`）
+    **不报错**，只是买对东西、买错数量，而 AI「会照做、不怀疑」。
+    ⇒ 改成 **`号=数量` 配对**（自包含 ⇒ 序消失），并在这儿把旧形态**明确拒掉**。
     """
-    global _LAST_ROWS
-    rows = _candidates(ctx)
-    lines = []
-    if header:
-        lines.append(header)
+    rows: list
+    title: str = ""
+    mode: str = "act"
+    verb: "Verb" = None          # pick/qty 层的执行者
+    keep_no: bool = False        # True = 沿用上层发的号（qty 层），不重排位置
+    fp: tuple = ()               # 世界指纹（见 `_fingerprint`）
 
-    shown = rows[:n]
+
+def _fingerprint(ctx: Ctx) -> tuple:
+    """世界指纹——**只取会让子层单子作废的那两样**：换图 / 开了菜单。
+
+    ⚠️ 刻意**不含坐标**：人走两步不该把手里那屏单子清掉。
+    """
+    return (ctx.loc, (ctx.menu or {}).get("type"))
+
+
+def reset_menu():
+    """把单子收回顶层（换场 / 断线重连时调）。"""
+    _STACK[:] = []
+    _LAST_ROWS.clear()
+
+
+_LEVEL_HINT = {
+    "act": "> 敲编号，或 at x,y",
+    "pick": "> 敲编号，可以多选（`1,4`）",
+    "qty": "> 写「号=数量」（`1=1,4=4`）—— **只写号不认**",
+}
+
+
+def _render_level(ctx: Ctx, lv: Level, n: int = 5) -> str:
+    global _LAST_ROWS
+    lines = []
+    if lv.title:
+        lines.append(lv.title)
+
+    shown = lv.rows[:n]
+    for i, r in enumerate(shown, 1):
+        # ⚠️ 行号是**动作编号**，不是背包位次——两个数字混用就是"拿错尺子"。
+        r.no = r.no if lv.keep_no else i
+        if r.level is not None:
+            # 🗂 目录行：句尾 `…` = 这行还要选。**只报数量，不发号**——号点开才印在眼前
+            #    ⇒（a）AI 永远不用数数；（b）号不跨屏，"短命句柄"从风险变成设计。
+            tail = f"{len(r.level.rows)} 件"
+            if r.reason:
+                tail += f" · {r.reason}"
+            lines.append(f" {r.no}  {r.label}…   ← {tail}")
+            continue
+
+        disp = r.label + (f" ×{len(r.targets)}" if len(r.targets) > 1 else "")
+        if len(r.targets) == 1:
+            # 单目标 → 印坐标（AI 可能想用别的工具精确指它）
+            loc = r.where if r.where is not None else _where(r.targets[0])
+            tail = f"{loc} {r.reason}".strip()
+        else:
+            # 多目标 → 坐标**省掉**（省了才有你说的那个效果），只给"几处 + 最近几格"。
+            # ⚠️ 但**不能不给定位信息**——否则 AI 不知道这一敲要跑多远。
+            # ⚠️ 距离说「**步**」，不说「格」——「格」在这条线上另有含义（箱子 22 格）。
+            #    同屏两个"格"是两个意思，就是"拿错尺子"的温床（2026-09-27 真机照出来的）。
+            tail = f"{len(r.targets)} 处 · 最近 {r.dist} 步 · {r.reason}".rstrip()
+        lines.append(f" {r.no}  {disp}   ← {tail}")
     _LAST_ROWS = list(shown)
+
     if not shown:
         # ⚠️ 这里只报**事实计数**，**不做推荐排序**——排序必须带理由（`Verb.reason` 那段
         #    的审计面）。宁可先给计数 + 出口，也不给一个编出来的"建议"。
@@ -518,50 +607,186 @@ def render_menu(ctx: Ctx, n: int = 5, header: str = "") -> str:
             lines.append(f"  （这一刻没有可做的 · 本图另有 {fact} —— at x,y 指过去）")
         else:
             lines.append("  （这一刻没有可做的动作——试试 at(x,y) 指一样东西）")
-    for i, r in enumerate(shown, 1):
-        # ⚠️ 行号是**动作编号**，不是背包位次——两个数字混用就是"拿错尺子"。
-        disp = r.label + (f" ×{len(r.targets)}" if len(r.targets) > 1 else "")
-        if len(r.targets) == 1:
-            # 单目标 → 印坐标（AI 可能想用别的工具精确指它）
-            tail = f"{_where(r.targets[0])} {r.reason}"
-        else:
-            # 多目标 → 坐标**省掉**（省了才有你说的那个效果），只给"几处 + 最近几格"。
-            # ⚠️ 但**不能不给定位信息**——否则 AI 不知道这一敲要跑多远。
-            # ⚠️ 距离说「**步**」，不说「格」——「格」在这条线上另有含义（箱子 22 格）。
-            #    同屏两个"格"是两个意思，就是"拿错尺子"的温床（2026-09-27 真机照出来的）。
-            tail = f"{len(r.targets)} 处 · 最近 {r.dist} 步 · {r.reason}"
-        lines.append(f" {i}  {disp}   ← {tail}")
 
-    hidden = len(rows) - len(shown)
+    hidden = len(lv.rows) - len(shown)
     if hidden > 0:
         lines.append(f"—— 还有 {hidden} 项（more）")     # 铁律 2：不许静默截断
 
-    lines.append(" 0  做点别的…  （at x,y 指哪打哪）")
-    lines.append(f"> 敲编号，或 at x,y")
+    if len(_STACK) > 1:
+        lines.append(" 0  这些都不是（返回上一层）")     # 与顶层 `0` 同义：这些都不是
+    else:
+        lines.append(" 0  做点别的…  （at x,y 指哪打哪）")
+    lines.append(_LEVEL_HINT.get(lv.mode, _LEVEL_HINT["act"]))
     return "\n".join(lines)
 
 
-def do_row(n: int, run: Callable, ctx: Ctx = None) -> str:
-    """敲单子上的第 n 条。
+def render_menu(ctx: Ctx, n: int = 5, header: str = "") -> str:
+    """渲染**当前这一屏**单子（顶层，或 AI 点开的子层）。
+
+    - 前 n 条 + **理由列**
+    - 被挤掉的**如实报**「还有 K 项」（铁律 2）
+    - 末尾永远留 `0`——顶层是**逃出牢笼**的口子，子层是**返回**
+    """
+    root = Level(_candidates(ctx), header)
+    if not _STACK:
+        _STACK.append(root)
+    else:
+        _STACK[0] = root                      # 顶层每次都重算（世界一直在动）
+        # ⚠️ 换图 / 开了菜单 ⇒ 上面的子层**全作废**：它那几行的目标格已经不是这个地方的了。
+        #    宁可直接收回顶层重给，也不留一屏指向旧世界的号。
+        if len(_STACK) > 1 and _fingerprint(ctx) != _STACK[-1].fp:
+            _STACK[:] = [root]
+    _STACK[-1].fp = _fingerprint(ctx)
+    return _render_level(ctx, _STACK[-1], n)
+
+
+def _parse_code(code):
+    """把 AI 敲的那串拆成 `[(号, 数量或 None)]`。**混着写就报错，不猜**。
+
+    认这三种（中文逗号也认，AI 会打）：
+        `1`          单号
+        `1,4`        多选 —— **集合，序无关**
+        `1=1,4=4`    号=数量 —— **配对自包含 ⇒ 序也无关**
+
+    ⚠️ 混着写（`1,4=4`）**必须拒**：一个"序无关的集合"里混进一个"带了量的项"，
+    分不清哪截是哪个意思——猜错了就是静默错误。
+    """
+    if isinstance(code, int):
+        return [(code, None)], None
+    s = str(code if code is not None else "").strip().replace("，", ",")
+    if not s:
+        return None, "❌ 敲个编号（如 `1`），或者 at x,y 指过去"
+    out, forms = [], set()
+    for part in s.split(","):
+        part = part.strip()
+        if not part:
+            return None, f"❌ 「{code}」里有个空档 —— 写成 `1,4` 或 `1=1,4=4`"
+        if "=" in part:
+            a, _, b = part.partition("=")
+            a, b = a.strip(), b.strip()
+            if not a.isdigit() or not b.isdigit():
+                return None, f"❌ 「{part}」看不懂 —— 数量写成「号=数量」，如 `1=5`"
+            out.append((int(a), int(b)))
+            forms.add("=")
+        else:
+            if not part.isdigit():
+                return None, f"❌ 「{part}」看不懂 —— 编号就写数字，如 `1` 或 `1,4`"
+            out.append((int(part), None))
+            forms.add("n")
+    if len(forms) > 1:
+        return None, ("❌ 这一串**混了两种写法** —— 要么全写号（`1,4` 选哪些），"
+                      "要么全写「号=数量」（`1=1,4=4`）。混着写分不清哪截是哪个意思。")
+    if len({n for n, _ in out}) != len(out):
+        return None, "❌ 同一个号写了两遍 —— 想改数量写一遍就够，我不猜你要哪个。"
+    return out, None
+
+
+def _row_by_no(lv: Level, no: int):
+    if lv.keep_no:
+        return next((r for r in lv.rows if r.no == no), None)
+    return lv.rows[no - 1] if 1 <= no <= len(lv.rows) else None
+
+
+def _nos(lv: Level) -> str:
+    return "、".join(str(r.no) for r in lv.rows)
+
+
+def _open_qty(lv: Level, chosen: list):
+    """pick 层选完 → qty 层。
+
+    **号沿用上一层发的那些号**（不重排位置）：AI 在下一屏看到的还是它刚选的那几个号，
+    不用在两个编号系统之间换算——"跨屏对数"正是我们要删掉的那件事。
+    """
+    rows = []
+    for no in chosen:
+        r = _row_by_no(lv, no)
+        if r is None:
+            return None, f"❌ 这一层只有 {_nos(lv)} 号 —— 没有 {no} 号"
+        r.no = no
+        rows.append(r)
+    sub = Level(rows, title="各多少？（写「号=数量」，如 `1=5`）",
+                mode="qty", verb=lv.verb, keep_no=True, fp=lv.fp)
+    _STACK.append(sub)
+    return sub, None
+
+
+def _do_qty(ctx: Ctx, lv: Level, sel, run) -> str:
+    """qty 层：`号=数量` 配对。**只写号的一律拒**——那正是"位置对齐"那个老陷阱。"""
+    held = {r.no: r for r in lv.rows}
+    pairs = []
+    for no, cnt in sel:
+        if cnt is None:
+            return ("❌ 这一层要写「**号=数量**」（如 `1=1,4=4`）—— 只写号我不猜你要几个。\n"
+                    "   （只写号就变成「按位置对齐」，写反了会买对东西、买错数量，还不报错。）")
+        if no not in held:
+            return (f"❌ 这一层是你刚选的那几样（{_nos(lv)} 号）—— 里面没有 {no} 号。\n"
+                    f"   想改选哪些，敲 0 回去重选。")
+        if cnt <= 0:
+            return f"❌ {no} 号写的是 {cnt} —— 数量得是正整数，不猜。"
+        pairs.append((held[no], cnt))
+    if lv.verb is None or lv.verb.exec_multi is None:
+        return "❌ 这一步还没接执行"
+    out = lv.verb.exec_multi(ctx, pairs, run)
+    _STACK[:] = _STACK[:1]          # 做完了 ⇒ 收回顶层
+    return out
+
+
+def do_row(code, run: Callable, ctx: Ctx = None) -> str:
+    """敲单子。`code` 可以是 `1` / `"1,4"` / `"1=1,4=4"` / `0`。
 
     ⚠️ **打的是上一次渲染出来的那一行**（AI 实际看见的），**不是重算的第 n 条**。
     重算出来的第 n 条可能**已经不是它看见的那条**了（它读单子的时候世界变了）
     ⇒ 它会以为在收钻石、我们收的却是翡翠，**而它会照做、不怀疑**。
-    用缓存 + 回执回显，至少保证"做的是它看见的那件事"。
 
     ⚠️ 今晚**不重新验 `can()`**：`/machine_collect` 自己会跳过已经收掉的机器，
        所以误敲的代价是"什么也没发生"（回执会报 collected=0）。
        **将来接了会"做错事"的动词（丢东西/送礼），这里必须先补验。**
     """
-    if not _LAST_ROWS:
-        return "❌ 手上还没有单子 —— 先看一眼（look），再敲编号"
-    if not (1 <= n <= len(_LAST_ROWS)):
-        return (f"❌ 单子上只有 1~{len(_LAST_ROWS)} 号 —— "
-                f"想做别的，用 at x,y 指过去")
-    row = _LAST_ROWS[n - 1]
+    if not _STACK:
+        return "❌ 手上还没有单子 —— 先看一眼，再敲编号"
+    lv = _STACK[-1]
+    sel, err = _parse_code(code)
+    if err:
+        return err
+
+    # ── 0 = 这些都不是（顶层是"做点别的"，子层是"返回"——同一个语义）────────
+    if len(sel) == 1 and sel[0] == (0, None):
+        if len(_STACK) > 1:
+            _STACK.pop()
+            return _render_level(ctx, _STACK[-1], 5)
+        return "👌 好，做点别的去 —— 想指哪一样东西，用 at x,y"
+
+    if lv.mode == "qty":
+        return _do_qty(ctx, lv, sel, run)
+
+    if any(c is not None for _, c in sel):
+        return ("❌ 这一层没有数量要填 —— 直接写号就行（`1` 或 `1,4`）。\n"
+                "   要填数量是**选完**之后那一屏的事。")
+    if lv.mode == "act" and len(sel) > 1:
+        return ("❌ 这一层一次只能敲一个 —— 要连着做几件，一件一件来。\n"
+                "   （「多选」是**选哪些**那一层才有的）")
+
+    # ── pick 层：可以一次选多个（`1,4`）→ 进 qty 层 ──────────────
+    if lv.mode == "pick":
+        sub, e = _open_qty(lv, [n for n, _ in sel])
+        return e if e else _render_level(ctx, sub, 5)
+
+    no = sel[0][0]
+    row = _row_by_no(lv, no)
+    if row is None:
+        return (f"❌ 这一层只有 {_nos(lv)} 号 —— 没有 {no} 号。\n"
+                f"   想指别的东西，用 at x,y")
+
+    # 🗂 目录行：点开下一层（**本身不执行任何东西**）
+    if row.level is not None:
+        _STACK.append(row.level)
+        return _render_level(ctx, row.level, 5)
+
     if row.verb.exec is None:
         return f"❌ 「{row.label}」还没接执行"
-    return row.verb.exec(ctx, row.targets, run)
+    out = row.verb.exec(ctx, row.targets, run)
+    _STACK[:] = _STACK[:1]          # 做完了 ⇒ 收回顶层
+    return out
 
 
 def render_at(ctx: Ctx, x: int, y: int) -> str:
@@ -737,6 +962,7 @@ def _fixture():
 
 def _selftest():
     ok = []
+    reset_menu()          # 单子是一叠，会跨用例留下来 —— 每个用例开头自己清
     ctx = _fixture()
 
     # ① 三档：真 / 假 / 连接级未知
@@ -812,6 +1038,66 @@ def _selftest():
     # ⑨ 不崩：空世界 + 没单子就敲
     render_menu(Ctx())
     ok.append(("空世界不崩", True))
+
+    # ⑩ 目录行 / 多选 / 配对（0928 定稿）—— 用一个**假买卖动词**演一遍，一个字节不碰游戏。
+    #    ⚠️ 这是**形**，不是真买卖。真买卖要等商店那条路（#9）。
+    shop = Verb("buy", "买", 70, lambda c, t: True, lambda c, t: "店里有货",
+                lambda c, t: "买", "tile")
+
+    def _shop_subs(c, ts):
+        rows = [Row(shop, [{"good": g, "price": p}], g, f"{p}g", 0, where="")
+                for g, p in [("鲤鱼", 30), ("鲫鱼", 40), ("蚌", 60), ("蛤蜊", 10)]]
+        return Level(rows, title="买哪几样？（可以多选，如 `1,4`）",
+                     mode="pick", verb=shop)
+
+    def _shop_exec_multi(c, chosen, run):
+        bits = " · ".join(f"{r.label}×{n}（{r.targets[0]['price'] * n}g）" for r, n in chosen)
+        total = sum(r.targets[0]["price"] * n for r, n in chosen)
+        return render_receipt("买", bits, True, note=f"共 {total}g")
+
+    shop.subs, shop.exec_multi = _shop_subs, _shop_exec_multi
+    VERBS.append(shop)
+    _VERB_BY_KEY["buy"] = shop
+    try:
+        sctx = Ctx(px=5, py=5, loc="SeedShop", tiles={(5, 6): {"x": 5, "y": 6}})
+        reset_menu()
+        top = render_menu(sctx, n=5)
+        ok.append(("🗂 目录行句尾带 `…`", "买…" in top))
+        ok.append(("🗂 顶层**只报数量**、不发号", "4 件" in top))
+
+        n_before = len(calls)
+        sub = do_row(1, fake_run, sctx)
+        ok.append(("敲目录行 → 进下一层，**本身什么都不做**",
+                   "买哪几样" in sub and len(calls) == n_before))
+        ok.append(("子层的号印在眼前（AI 不用数）", "1  鲤鱼" in sub))
+
+        q = do_row("1,4", fake_run, sctx)
+        ok.append(("多选 `1,4` → 进「各多少」那层", "各多少" in q))
+        ok.append(("qty 层**沿用**上层发的号", " 1  鲤鱼" in q and " 4  蛤蜊" in q))
+
+        # ⚠️⚠️ 这条就是今晚那个**静默陷阱**的正身：qty 层只写号，必须**拒**，不许按位置对齐。
+        bad = do_row("1,4", fake_run, sctx)
+        ok.append(("⚠️ qty 层只写号 → **拒**（写反了会买对东西买错数量）",
+                   "号=数量" in bad and "❌" in bad))
+
+        ok.append(("子层 `0` → 回上一层", "鲤鱼" in do_row(0, fake_run, sctx)))
+        do_row("1,4", fake_run, sctx)                 # 再选一次，这回真买
+        done = do_row("1=1,4=4", fake_run, sctx)
+        ok.append(("配对 `1=1,4=4` → 执行", "鲤鱼×1" in done and "蛤蜊×4" in done))
+        ok.append(("回执**逐条列**、带小计", "30g" in done and "40g" in done and "共 70g" in done))
+
+        # 形态不对 / 混写：**一律报错，不猜**
+        reset_menu()
+        render_menu(sctx, n=5)
+        ok.append(("混着写 → 拒", "混了两种写法" in do_row("1,4=4", fake_run, sctx)))
+        render_menu(ctx, n=5)
+        ok.append(("act 层写数量 → 拒", "没有数量要填" in do_row("1=1", fake_run, ctx)))
+        ok.append(("act 层多选 → 拒", "一次只能敲一个" in do_row("1,2", fake_run, ctx)))
+        ok.append(("越界的号 → 拒并给出路", "at x,y" in do_row(97, fake_run, ctx)))
+    finally:
+        VERBS.remove(shop)
+        _VERB_BY_KEY.pop("buy", None)
+        reset_menu()
 
     print("\n—— 意图选项单 · 不吃游戏自验 ——")
     for name, good in ok:
