@@ -15,18 +15,69 @@ import time
 import stardew_api as api
 
 
-def get_empty_machines(machine_type="", location=""):
-    fr = api.farm_report()
-    if not fr.get("ok"):
-        return [], fr.get("error", "")
-    ml = (fr.get("machines") or {}).get("machines") or []
+def _status_map():
+    """一次拉 `/machines` 建 `{(x,y): status}` 索引。
+
+    ⚠️ 别每台机器拉一次——屋里 100 台，一圈下来 100 发 HTTP（老代码就是这么干的）。
+    拉的是**当前所在地点**的机器，所以只在我们已经站在那栋屋里时才有意义。
+    """
+    try:
+        ms = api.machines().get("machines") or []
+    except Exception:
+        return {}
+    out = {}
+    for m in ms:
+        try:
+            out[(int(m.get("x")), int(m.get("y")))] = m.get("status")
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def get_serviceable_machines(machine_type="", location="", with_items=None, here=False):
+    """这一趟该伺候哪些机器 = **好了的（收）+ 空着的（放）**。
+
+    ⚠️ 2026-09-27 恒：「**收放一条过**」——好了的机器要收、空着的要放，
+        **两者混在同一趟路里**。所以目标不再是"空机器"，是"**能伺候的机器**"。
+    ⚠️ `with_items` 空（没带原料）⇒ **只挑 ready**，别把空机器也串进路线白走一趟。
+    ⚠️ 机器类型**默认不限**：机器是混着摆的（小桶+脱水机+水冷塔），限了会"路过却不收"——
+        人也是走到哪儿收哪儿。（恒 2026-09-27 同意：收不传设备，放只传物品。）
+
+    ⚠️⚠️ `here=True` = **只伺候脚下这间屋**，数据源换成 `/machines`。为什么非要这样——
+        2026-09-27 真机踩的坑，**同一间屋子三个名字对不上**：
+            `/state.location.name` = `FarmHouse`、`uniqueName` = `FarmHouse`（**都不带 guid**）
+            `/machines.location`   = `FarmHouse`
+            `/farm_report` 的机器条目：`location` = `Cabin`、`location_unique` = `FarmHouse<guid>`
+        ⇒ 拿前两个去过滤第三个，**恒得 0**（第一趟就这么空跑了两千多次）。
+        更狠的是：`/farm_report` 默认范围是「农场+建筑室内+地窖」，**压根不含房主的 FarmHouse**
+        （它在 `Game1.locations` 里，既不是农场建筑也不是地窖）⇒ 站在家里跑"全农场"，
+        **家里那 100 台一台都扫不到**。
+        ⇒ **要伺候脚下这间，就用 `/machines`——它报的就是当前地点，不用名字匹配。**
+           （`/farm_report` 漏掉 FarmHouse 这件事本身是 C# 的账，已记批次。）
+    """
+    if here:
+        try:
+            ml = api.machines().get("machines") or []
+        except Exception as e:
+            return [], f"/machines 失败: {e}"
+    else:
+        fr = api.farm_report()
+        if not fr.get("ok"):
+            return [], fr.get("error", "")
+        ml = (fr.get("machines") or {}).get("machines") or []
+    only_collect = not with_items
     out = []
     for m in ml:
-        if m.get("status") != "empty":
+        st = m.get("status")
+        if st == "ready":
+            pass                                  # 好了 → 收
+        elif st == "empty" and not only_collect:
+            pass                                  # 空着且有料 → 放
+        else:
             continue
-        if machine_type and not str(m.get("type", "")).lower() == machine_type.lower():
+        if machine_type and str(m.get("type", "")).lower() != machine_type.lower():
             continue
-        if location and not str(m.get("location", "")).lower() == location.lower():
+        if not here and location and str(m.get("location", "")).lower() != location.lower():
             continue
         out.append(m)
     return out, ""
@@ -344,66 +395,129 @@ def _order_tiles(tiles, start):
     return path
 
 
-def load_around(sx, sy, ms, items, holding=""):
-    """**站在过道格 (sx,sy)，把它八邻的目标机器一次放满**（这就是"走一步装一圈"）。
+def service_around(sx, sy, ms, items, holding=""):
+    """**站在过道格 (sx,sy)，把它八邻的机器挨个伺候**——该收的收、该放的放。
+    （"走一步办一圈"，2026-09-16 恒骂过"上面一排下面一排走两轮"之后的老形状。）
 
-    返回 (装了几台, 说明, 原料是否耗尽, 现在手上拿的是什么)。
-    ⚠️ 哪台失败不影响别的台 —— 记一句接着放下一台（装错品类是单台的事，不该整圈放弃）。
+    ⚠️ 2026-09-27 恒拍板「**一台摸两下**」：好了的机器**第一下收进包、第二下才把料放进去**。
+       所以 ready 的机器最多摸两次；本来就空着的只摸一次。（游戏里人也是这么操作的。）
+
+    **怎么知道干成了什么：看 `status` 的前后变化，不猜**——
+        ready → empty       = 收了
+        empty → processing  = 放了
+        没变                = 什么都没干（放错品类 / 没原料）
+    ⚠️ 手持不合法时游戏**不消耗原料**，所以"放错品类"只是白摸一下，不亏东西。
+
+    ⚠️ 原料耗尽**不等于整轮收工**：只是**停止放**，剩下的机器照样收。
+       （老 `load_around` 一没料就 return「exhausted」，调用方当场 break 掉整轮——
+        那是"只放不收"年代的写法，放到今天会把后面 ready 的机器**整片漏收**。）
+
+    返回 (伺候到的机器名单, 收了几件, 放了几台, 说明, 原料是否耗尽, 现在手上拿的是什么)
+    ⚠️ 回**名单**不是回个数：老代码 `todo[:n]` 假设"前 n 台成功"，
+       中间一旦有失败就记错（无害，但是假的）。这里如实回名单。
     """
-    n = 0
-    notes = []
+    done, notes = [], []
+    n_collect = n_load = 0
+    exhausted = False
+    smap = _status_map()
+
+    def st_of(m):
+        return smap.get((m["x"], m["y"]))
+
     for m in ms:
-        nm, why = select_any(items, holding=holding)
-        if not nm:
-            return n, why, True, holding      # 原料彻底没了 → 整轮收工信号
-        holding = nm
-        r2 = api._post("/interact", {"x": m["x"], "y": m["y"]})
+        before = st_of(m)
+
+        # ── 空着的机器：**先拿料，再摸** ──────────────────────────────
+        # ⚠️⚠️ 2026-09-27 真机血案：第一版只在"收完再放"那条支路里 select，
+        #     空机器这条路**直接 interact** ⇒ **空手摸桶**，53 台全报
+        #     「Keg 需要 水果/蔬菜/蜂蜜/咖啡豆/茶叶」。恒一眼看出「没有成功手持」。
+        #     **select 必须在 interact 之前，两条路都要**（老 load_around 就是每台都先 select 的）。
+        if before == "empty":
+            if not items or exhausted:
+                continue                      # 没料不摸（计划里也该被剔掉，见 run() 的剪枝）
+            nm, why = select_any(items, holding=holding)
+            if not nm:
+                exhausted = True
+                continue
+            holding = nm
+            api._post("/interact", {"x": m["x"], "y": m["y"]})
+            time.sleep(0.35)
+            smap = _status_map()
+            if st_of(m) == "processing":
+                n_load += 1
+                done.append(m)
+            else:
+                notes.append(f"({m['x']},{m['y']}) {_machine_missing_reason(m['type'])}")
+            continue
+
+        # ── 好了的机器：第一下是"收"，第二下才拿料放 ────────────────────
+        api._post("/interact", {"x": m["x"], "y": m["y"]})
         time.sleep(0.35)
-        ok = False
-        try:
-            for mm in (api.machines().get("machines") or []):
-                if int(mm.get("x", -1)) == m["x"] and int(mm.get("y", -1)) == m["y"]:
-                    ok = mm.get("status") == "processing"
-                    break
-        except Exception:
-            pass
-        if ok or r2.get("actionTriggered"):
-            n += 1
-        else:
-            notes.append(f"({m['x']},{m['y']}) {_machine_missing_reason(m['type'])}")
-    return n, "; ".join(notes), False, holding
+        smap = _status_map()
+        after = st_of(m)
+
+        if before == "ready" and after == "empty":
+            n_collect += 1
+            done.append(m)
+            if items and not exhausted:
+                nm, why = select_any(items, holding=holding)
+                if not nm:
+                    exhausted = True
+                else:
+                    holding = nm
+                    api._post("/interact", {"x": m["x"], "y": m["y"]})
+                    time.sleep(0.35)
+                    smap = _status_map()
+                    if st_of(m) == "processing":
+                        n_load += 1
+            continue
+
+        # 既不是 ready 也不是 empty（processing 之类）——本来就不该进这趟
+        notes.append(f"({m['x']},{m['y']}) 来的时候是 {before}，摸完是 {after}，没动")
+
+    return done, n_collect, n_load, "; ".join(notes), exhausted, holding
 
 
-def run(items, machine_type="", location="", count=0, no_enter=False):
-    """items: 原料名列表（按优先级；一个用尽自动换下一个）。
-    count: 最多装几台（0=不限）。原料彻底用尽 → **整轮提前收工**（不把剩余空机器试一遍）。
+def run(items, machine_type="", location="", count=0, no_enter=False, here=False):
+    """items: 原料名列表（按优先级；一个用尽自动换下一个）。**留空 = 只收不放。**
+    count: 最多装几台（0=不限）。
+
+    ⚠️ 2026-09-27 恒：「**收放一条过**」——好了的收、空着的放，同一趟路办完。
+       原料用尽 ⇒ **只是停止放，继续收**。老代码在这儿 break 掉整轮，
+       会把后面 ready 的机器**整片漏掉**（那是"只放不收"年代的写法）。
 
     🚶 走位模型（2026-09-16 改）：**按"过道格"走，不按"机器"走**——
-       一站八邻一次放满，机器成排时省掉一大半来回。
+       一站八邻一次办完，机器成排时省掉一大半来回。
     """
-    api.log(f"=== Machine Loader: items={items} type={machine_type or 'any'} loc={location or 'all'} "
+    if here:
+        no_enter = True          # 只伺候脚下这间 ⇒ 本来就不用进门
+    mode = "收放" if items else "只收"
+    api.log(f"=== Machine Loader({mode}): items={items or '(无)'} type={machine_type or 'any'} "
+            f"loc={'★脚下这间' if here else (location or 'all')} "
             f"count={count or '∞'} no_enter={no_enter} ===")
-    empty, err = get_empty_machines(machine_type, location)
+    targets, err = get_serviceable_machines(machine_type, location,
+                                            with_items=items, here=here)
     if err:
         api.log(f"获取机器列表失败: {err}")
         return
-    api.log(f"找到空机器 {len(empty)} 台")
-    if not empty:
-        api.log("没有空机器")
+    n_ready = sum(1 for m in targets if m.get("status") == "ready")
+    api.log(f"可伺候 {len(targets)} 台（好了 {n_ready} · 空着 {len(targets) - n_ready}）")
+    if not targets:
+        api.log("没有可伺候的机器")
         return
 
     # 按"地点+建筑"分组：同一栋屋里一口气走完，不用反复进出
     groups = {}
-    for m in empty:
+    for m in targets:
         b = m.get("building") or {}
         groups.setdefault((m.get("location"), b.get("x"), b.get("y")), []).append(m)
 
-    loaded = 0
-    skipped = 0
+    n_collect = n_load = skipped = 0
     stop_msg = ""
     holding = ""      # 手上正拿着的原料；跨过道格保持，避免每格都重选、手持物狂闪（恒 2026-09-16）
-    for gi, (key, ms) in enumerate(groups.items()):
-        if count and loaded >= count:
+    feed = list(items)          # 原料用尽后置空 ⇒ 后面只收不放（**不是收工**）
+    for key, ms in groups.items():
+        if count and n_load >= count:
             break
         loc, bx, by = key
         # 每组（= 一栋屋）只进一次门。`b` 直接取该组任一机器的 building 字典（doorX/doorY 就在里面）。
@@ -425,35 +539,67 @@ def run(items, machine_type="", location="", count=0, no_enter=False):
         aisles = _aisle_map(ms)
         p = api.state().get("player", {})
         path = _order_tiles(list(aisles), (p.get("x", 0), p.get("y", 0)))
-        api.log(f"📍 {loc}: {len(ms)} 台空机器 → {len(path)} 个过道格（走一圈，不再一桶一趟）")
+        api.log(f"📍 {loc}: {len(ms)} 台 → {len(path)} 个过道格（走一圈，不再一桶一趟）")
         done_machines = set()
         for (sx, sy) in path:
-            if count and loaded >= count:
+            if count and n_load >= count:
                 break
             todo = [m for m in aisles[(sx, sy)] if (m["x"], m["y"]) not in done_machines]
             if not todo:
                 continue
-            ok_walk = _walk_to_tile(loc, sx, sy)
-            if not ok_walk:
+            if not _walk_to_tile(loc, sx, sy):
                 skipped += len(todo)
                 api.log(f"  ⚪ 过道格 ({sx},{sy}) 走不到，跳过其 {len(todo)} 台")
                 continue
-            n, note, exhausted, holding = load_around(sx, sy, todo, items, holding=holding)
-            for m in todo[:n]:
+            done, c, l, note, exhausted, holding = service_around(
+                sx, sy, todo, feed, holding=holding)
+            for m in done:
                 done_machines.add((m["x"], m["y"]))
-            loaded += n
-            # 实装数小于尝试数时，把没装上的算跳过（整圈只报一行，别刷屏）
-            fails = len(todo) - n
-            if n or fails:
-                api.log(f"  🟢 格({sx},{sy}) 八邻装了 {n}/{len(todo)} 台" + (f"  ⚠️ {note}" if note else ""))
-            skipped += fails
-            if exhausted:
-                stop_msg = note
-                api.log(f"  ⏹ {note} —— 提前收工（已装 {loaded} 台，还剩 {len(empty) - loaded} 台空机器没装）")
-                break
-        if stop_msg:
-            break
-    api.log(f"完成: 装上 {loaded} 台, 跳过 {skipped} 台" + (f"，⏹ 提前收工：{stop_msg}" if stop_msg else ""))
+            n_collect += c
+            n_load += l
+            skipped += len(todo) - len(done)
+            if c or l or note:
+                api.log(f"  🟢 格({sx},{sy}) 八邻收 {c} 件 / 放 {l} 台"
+                        + (f"  ⚠️ {note}" if note else ""))
+            if exhausted and feed:
+                feed = []
+                stop_msg = "原料用完了"
+                # ⚠️ **不 break**（剩下的 ready 机器照样要收），但**必须立刻把空机器剪掉**：
+                #    没料了再走过去纯属白走。恒 2026-09-27：「**多少水果放多少个桶，
+                #    没有就停了**。8 个水果……别说经过 8 个桶，远远不止八个位了」。
+                #    第一版只把 feed 置空、没剪枝 ⇒ 6 个水果在 53 台空桶间走了一整圈。
+                ready_xy = {(m["x"], m["y"]) for m in targets if m.get("status") == "ready"}
+                aisles = {t: [x for x in v if (x["x"], x["y"]) in ready_xy]
+                          for t, v in aisles.items()}
+                n_left = sum(len(v) for v in aisles.values())
+                api.log(f"  ⏹ {stop_msg} —— 后面只收不放（本图还有 {n_left} 台待收）")
+                if not n_left:
+                    api.log("  ⏹ 本图没有待收的机器了 —— 收工")
+                    break
+
+    # 收工复核：**再扫一次**，如实报还剩几台空着——不靠自己记的账
+    left_empty = 0
+    try:
+        # 复核跟目标用**同一个数据源**（`--here` 时是 /machines），别混着比
+        src = (api.machines().get("machines") if here
+               else (api.farm_report().get("machines") or {}).get("machines")) or []
+        left_empty = sum(
+            1 for m in src
+            if m.get("status") == "empty"
+            and (here or not location
+                 or str(m.get("location", "")).lower() == location.lower())
+            and (not machine_type
+                 or str(m.get("type", "")).lower() == machine_type.lower()))
+    except Exception:
+        pass
+
+    msg = f"✅ 收了 {n_collect} 件 · 放入 {n_load} 台"
+    if not items:
+        msg += " · 没带原料，只收"
+    if left_empty:
+        msg += f" · 还有 {left_empty} 台空着" + (f"（{stop_msg}）" if stop_msg else "")
+    msg += f" · 未办成 {skipped} 台"
+    api.log(msg)
 
 
 def _walk_to_tile(loc, tx, ty):
@@ -469,12 +615,17 @@ def _walk_to_tile(loc, tx, ty):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Load raw materials into empty machines (game-native)")
-    parser.add_argument("item", help="原料英文名/ID；**可用逗号给多个并按优先级依次用完**，"
-                                     "如 'Ancient Fruit,Starfruit'（Cask 用成品如 Starfruit Wine）")
+    parser.add_argument("item", nargs="?", default="",
+                        help="原料英文名/ID（**留空 = 只收不放**）；可用逗号给多个并按优先级依次用完，"
+                             "如 'Ancient Fruit,Starfruit'（Cask 用成品如 Starfruit Wine）")
     parser.add_argument("--type", default="", help="机器类型，如 Keg / Cask（留空=所有空机器）")
     parser.add_argument("--location", default="", help="限定地点，如 Cellar / Big Shed（留空=全农场）")
     parser.add_argument("--count", type=int, default=0, help="最多装几台（0=不限）")
     parser.add_argument("--no-enter", action="store_true", help="已在目标屋内，跳过进门的 warp")
+    parser.add_argument("--here", action="store_true",
+                        help="**只伺候脚下这间屋**（数据源 /machines，不做地点名匹配）。"
+                             "在家/在棚里干活就用它——`--location` 跟 `/farm_report` 的名字对不上，"
+                             "而且 `/farm_report` 默认范围压根不含房主的 FarmHouse。")
     parser.add_argument("--port", type=int, default=7843)   # AI 角色进程（恒批注 2026-08-13：别打到 host 恒的号）
     args = parser.parse_args()
 
@@ -485,4 +636,4 @@ if __name__ == "__main__":
 
     # 逗号分隔 → 原料名列表（按给到的顺序即优先级）
     _items = [x.strip() for x in str(args.item).split(",") if x.strip()]
-    run(_items, args.type, args.location, args.count, args.no_enter)
+    run(_items, args.type, args.location, args.count, args.no_enter, here=args.here)
