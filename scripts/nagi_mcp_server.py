@@ -13555,6 +13555,39 @@ def _furniture_miss_msg(x: int, y: int) -> str:
                    f"（**大件只报左上角那格，但点它覆盖的任意一格都行**）")
 
 
+def _cant_remove_reason(x: int, y: int) -> str:
+    """🛏 「这格上的家具拿不动」——**挨个问一遍**，别给一串猜（恒 2026-09-29）。
+
+    原来的文案是三选一瞎猜：「可能是站太远、开着菜单、或这是**别人家的床**」——
+    2026-09-29 真机当场撞上反例：那是**轮回自己的床**，它却报"别人家的床"。
+    恒当场给了正解：「**如果挪自己的床失败，那么大概率就是——有人躺在上面**。
+    挪自己的床报错写这个就好。」（那张床是 `BedFurniture`，`canBeRemoved` 会因为
+    床上有人而 false —— 这是它最典型的拿不动。）
+
+    ⚠️ 只说**问得出来的**；问不出来的一律不编（这条路上"像样的猜测"比报错危害大）。
+    """
+    bits = []
+    try:
+        if ((api.state() or {}).get("activeMenu") or {}).get("type"):
+            bits.append("**开着菜单**（开着菜单拿不了家具）")
+    except Exception:
+        pass
+    # 🛏 这是不是**自己的床**？——拿 `crawl_bed locate` 问游戏（认床靠 `BedFurniture` 类，不按名字猜）。
+    try:
+        me = (api.state().get("player") or {}).get("name") or ""
+        if me:
+            bl = api._ai_post("/crawl_bed", {"action": "locate", "player": me}) or {}
+            bd = bl.get("bed") or {}
+            if bd.get("x") == x and bd.get("y") == y:
+                bits.append("**这是你自己的床** —— 它拿不动最常见的原因就是"
+                            "**有人正躺在上面**（床上有人的时候游戏不让挪）")
+    except Exception:
+        pass
+    if not bits:
+        bits.append("户外这类非装修图还有一条：**站太远**")
+    return "可能的原因：" + "；".join(bits) + "。"
+
+
 # ── 🪑 家具「读回验证」的两个小工具（2026-09-19，坐实「报的是地毯、动的是椅子」）──────────
 # 为什么需要：`furniture_pickup` 原来直接把 C# 给的 `furniture` 名字回给 AI，而那个名字是
 #   「**第一个包围盒命中**」—— 游戏真删的却是**从后往前**扫到的那件
@@ -13655,8 +13688,8 @@ def furniture_pickup(tile_x: int, tile_y: int) -> str:
             _tgt = r.get("furniture")
             _who = f"「{_tgt}」" if _tgt else f"这格上的「{_here}」"
             return _with_state(
-                f"⚠️ {_who}没拿起来：可能是**站太远**（只在户外这类非装修图才有这限制）、"
-                f"**开着菜单**、或这是**别人家的床**。**物品没动。**")
+                f"❌ {_who}没拿起来。**物品没动。**\n"
+                f"   {_cant_remove_reason(int(tile_x), int(tile_y))}")
         _gone = _wait_furniture_gone(_before)
         if _gone:
             # 再补一环：**地上少了 ≠ 包里多了**。家具不堆叠（恒 2026-09-19），
@@ -20946,8 +20979,17 @@ def _im_run(op, args):
             txt = str(helpers[op]())
         except Exception as e:
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
-        # ⚠️ 判"成没成"只看它自己那句开头是不是 ❌ —— **别在这儿替它下结论**。
-        return {"ok": not txt.lstrip().startswith("❌"), "text": txt}
+        # ⚠️ 判"成没成"只看它自己那句**开头** —— **别在这儿替它下结论**。
+        #    ⚠️⚠️ 但原来**只认 `❌`**，而工具的话其实有**三档**（2026-09-29 真机照出来的）：
+        #      `❌` = 确定没成 · `⚠️` = **没成/存疑**（例：`⚠️ …没拿起来…**物品没动。**`）· 其余 = 成。
+        #    只认 `❌` ⇒ `furniture_pickup` 那句「物品没动」被判成 **ok**
+        #    ⇒ 回执头一行印 **`✅ 搬走家具 蓝白条纹双人床`**，正文却写着"没拿起来"
+        #    —— **同一屏自己打自己**。这是"嘴上说成功"的活标本（今晚第三次）。
+        #    ⚠️ 判据**故意偏保守**：认错的方向只会让 `✅` **变少、不会变多**
+        #    （把"成功带告示"误判成 ⚠️ 只是难看；把"没成"误判成 ✅ 是骗人）。
+        t = txt.lstrip()
+        st = "no" if t.startswith("❌") else ("maybe" if t.startswith("⚠") else "yes")
+        return {"ok": st == "yes", "st": st, "text": txt}
     try:
         if op in _IM_POST_OPS:
             return api._ai_post(f"/{op}", args)

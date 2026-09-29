@@ -405,6 +405,10 @@ def _read_show(ctx, t):
 # 🪑 坐 / 🛋 搬家具 / 🐾 摸 —— 2026-09-29 接线
 # ═══════════════════════════════════════════════════════════════════
 
+# 回执头一个字的**三档**（要跟正文一致，见 `_receipt_from_helper`）。
+_MARK = {"yes": "✅", "maybe": "⚠️", "no": "❌"}
+
+
 def _receipt_from_helper(verb_cn, desc, r, planned=""):
     """**高阶层动作**（那种 Python 里已经写好的、自己会读回验证的 op）的回执。
 
@@ -424,7 +428,13 @@ def _receipt_from_helper(verb_cn, desc, r, planned=""):
         return render_receipt(verb_cn, desc, False, note=f"回包看不懂：{r!r}")
     txt = (r.get("text") or "").strip()
     ok = bool(r.get("ok"))
-    head = f"{'✅' if ok else '❌'} {verb_cn} {desc}".rstrip()
+    # ⚠️⚠️ 头一个字的档位**必须跟正文一致**（2026-09-29 真机抓的活标本：
+    #    `✅ 搬走家具 蓝白条纹双人床` 配着正文「…**没拿起来**…物品没动。」
+    #    —— 同一屏自己打自己，就是"嘴上说成功"）。
+    #    三档：`yes`→✅ · `maybe`（工具自己说的 ⚠️ = **没成/存疑**）→⚠️ · 其余→❌。
+    #    没带 `st` 的（裸端点那族）退回老的两档。
+    _st = r.get("st") or ("yes" if ok else "no")
+    head = f"{_MARK.get(_st, '❌')} {verb_cn} {desc}".rstrip()
     if planned:
         head += f"（去之前看见 {planned}）"
     if txt:
@@ -2737,6 +2747,21 @@ def _selftest():
     r_fur = do_row(_no_of("搬走 红沙发"), act_run, ctx)
     ok.append(("搬家具 走 `furniture_pickup`", any(c[0] == "furniture_pickup" for c in calls)))
     ok.append(("搬家具 不回编结果", "它自己的话" in r_fur))
+    # ⚠️⚠️ **头一个字的档位必须跟正文一致**（2026-09-29 真机抓的活标本：
+    #    `✅ 搬走家具 蓝白条纹双人床` 配着正文「…**没拿起来**…**物品没动。**」
+    #    —— 同一屏自己打自己）。根因：`_im_run` 的 `ok` **只认开头的 `❌`**，
+    #    而工具的话有三档（`❌` 确定没成 / `⚠️` 没成或存疑 / 其余=成）。
+    r_maybe = _receipt_from_helper("搬走家具", "蓝白条纹双人床",
+                                   {"ok": True, "st": "maybe",
+                                    "text": "⚠️ 「床」没拿起来。**物品没动。**"})
+    m_head = r_maybe.splitlines()[0]
+    ok.append(("⚠️ 正文说没成 ⇒ 头一行**不许是 ✅**", not m_head.startswith("✅")))
+    ok.append(("⚠️ 头一行**跟正文同档**（⚠️）", m_head.startswith("⚠️")))
+    ok.append(("⚠️ 正文照旧原样带出来", "物品没动" in r_maybe))
+    # 反面闸：**真成了**的还得是 ✅（别为了修上面那条把 ✅ 全干掉）。
+    r_yes = _receipt_from_helper("搬走家具", "红沙发",
+                                 {"ok": True, "st": "yes", "text": "🪑 拿起了 红沙发"})
+    ok.append(("✅ 反面：真成了照旧 ✅", r_yes.splitlines()[0].startswith("✅")))
 
     # 🗂 子层**要能看完**（2026-09-29 真机照出来的洞）：子层原来写死 `n=5`，而**没有翻页的口子**
     #    ⇒ 尾巴那句「还有 N 项（more）」是**空承诺**（`more` 压根不存在）。
