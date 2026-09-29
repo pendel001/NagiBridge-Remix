@@ -22,7 +22,7 @@ CALLS = []
 
 # ── 桩数据（字段名照抄端点真回包）────────────────────────────────────
 STATE = {
-    "player": {"x": 12, "y": 12, "stamina": 268, "maxItems": 36,
+    "player": {"x": 12, "y": 12, "stamina": 268, "maxItems": 36, "money": 1234,
                "currentItem": "Book", "currentItemId": "(O)Book", "currentTool": None},
     "location": {"name": "FarmHouse"},
     "inventory": [
@@ -50,14 +50,35 @@ ANIMALS = {"animals": [{"name": "牛牛", "type": "White Cow", "x": 11, "y": 14,
                         "wasPetToday": False, "friendship": 120}]}
 
 
-def _stub(build="2026-09-29 12:00:00 @abc1234"):
+# 🏪 商店那一份（`/menu` 的真回包形状）——货架 + 这家收什么
+MENU_SHOP = {
+    "type": "ShopMenu",
+    "shopItems": [
+        {"name": "Strawberry Seeds", "displayName": "草莓种子", "id": "(O)745",
+         "price": 100, "stock": 5, "visible": True},
+        {"name": "Parsnip Seeds", "displayName": "防风草种子", "id": "(O)472",
+         "price": 20, "stock": -1, "visible": True},
+    ],
+    "shopPage": {"index": 0, "pageSize": 4, "total": 2},
+    "sellableHere": ["草莓"],
+}
+
+
+def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=False):
     CALLS.clear()
+    state = dict(STATE)
+    if shop:
+        state = dict(STATE, activeMenu={"type": "ShopMenu"})
 
     def g(ep, params=None):
         CALLS.append(("GET", ep, params))
+        if ep == "/menu":
+            if menu_get_raises:
+                raise RuntimeError("模拟：商店开着但 /menu 读不出来")
+            return MENU_SHOP
         return {
             "/status": {"ok": True, "build": build},
-            "/state": STATE,
+            "/state": state,
             "/surroundings": SURR,
             "/machines": {"machines": []},
             "/scan_chests": {"chests": CHESTS},
@@ -68,6 +89,14 @@ def _stub(build="2026-09-29 12:00:00 @abc1234"):
 
     def p(ep, data=None):
         CALLS.append(("POST", ep, data))
+        if ep == "/menu/click":            # 买：C# 回那一坨
+            return {"ok": True, "clicked": "shop_item",
+                    "item": (data or {}).get("item"),
+                    "quantity": (data or {}).get("quantity", 1)}
+        if ep == "/sell_to_shop":          # 卖：整摞走
+            return {"ok": True, "totalGold": 100,
+                    "sold": [{"item": (data or {}).get("name"), "sold": 5,
+                              "unitPrice": 20, "totalPrice": 100}]}
         return {"ok": True,
                 "taken": (data or {}).get("count", 1),
                 "stored": [{"item": (data or {}).get("name"),
@@ -75,6 +104,9 @@ def _stub(build="2026-09-29 12:00:00 @abc1234"):
 
     api._ai_get, api._ai_post = g, p
     M._with_state = lambda x, *a, **k: x      # 状态机跟"接线"无关，打桩掉
+    # 这两道闸门跟"接线"无关（它们要真游戏在场）；买卖那条路会过它们，先打桩掉。
+    M._ensure_background = lambda *a, **k: None
+    M._peer_econ_mute = lambda *a, **k: None
     M.intent_menu.reset_menu()                # 单子是全局状态，用例间要清
 
 
@@ -154,7 +186,62 @@ def main():
     res.append(ok("坐 走的是 Python 那个高阶层 `sit`（真走过去+读回验证），不是裸端点",
                   not any(c[1] == "/sittable" and c[0] == "POST" for c in CALLS)))
 
-    # ⑦ ops 写错要有出路（不许静默）
+    # ⑦ 🏪 买 / 卖 —— 接线那一段（`/menu` 什么时候打、打了什么）
+    _stub()
+    ctx = M._im_ctx()
+    res.append(ok("没开商店 ⇒ `shop` 是 `None`（**确定的「没有」**）", ctx.shop is None))
+    res.append(ok("⚠️ 没开商店时 **`/menu` 一次都不打**（平时不多花一发）",
+                  not any(c[1] == "/menu" for c in CALLS)))
+
+    _stub(shop=True)
+    ctx = M._im_ctx()
+    res.append(ok("商店开着 ⇒ 货架拼进 ctx",
+                  len((ctx.shop or {}).get("items") or []) == 2))
+    res.append(ok("商店开着 ⇒ 「这家收什么」拼进 ctx",
+                  (ctx.shop or {}).get("sellable") == ["草莓"]))
+    res.append(ok("钱包从 `/state` 拼进来（不问 `/menu` 要）", ctx.money == 1234))
+
+    # ⚠️ 三态不许折叠：开着但读不出来 ⇒ `{}`（"不知道"），**不是** `None`（"没有"）
+    _stub(shop=True, menu_get_raises=True)
+    ctx = M._im_ctx()
+    res.append(ok("⚠️ 商店开着但 `/menu` 读不出来 ⇒ `{}`（**不是** None）",
+                  ctx.shop == {}))
+
+    # 买：show → 点开 → 选 → 各多少 → 真打到 `/menu/click`
+    # ⚠️ `n=40` 是必须的：`show` 默认只给前 5 条，而买卖的权重（74/72）**排在后面**
+    #    （捡 90 / 摸 84 / 箱子 80 …）⇒ 不放大就**根本看不到那两行**，测试会假红。
+    _stub(shop=True)
+    out = M.intent(ops="show", kw={"n": 40})
+    res.append(ok("商店开着 ⇒ 单子上有「买…」", "买…" in out))
+    res.append(ok("商店开着 ⇒ 单子上有「卖…」（背包有这家收的）", "卖…" in out))
+    buy_no = next(r.no for r in M.intent_menu._LAST_ROWS if (r.label or "") == "买")
+    shelf = M.intent(ops="do", kw={"code": str(buy_no)})
+    res.append(ok("点开「买」→ 出货架（名/价/库存都在）",
+                  "草莓种子" in shelf and "100g" in shelf and "剩 5" in shelf))
+    M.intent(ops="do", kw={"code": "1,2"})
+    CALLS.clear()
+    r_buy = M.intent(ops="do", kw={"code": "1=3,2=1"})
+    hits = [c[2] for c in CALLS if c[0] == "POST" and c[1] == "/menu/click"]
+    res.append(ok("买 真打到 `/menu/click`，**各是各的数量**",
+                  [h.get("quantity") for h in hits] == [3, 1]))
+    res.append(ok("买 用的是**物品 id**（不是中文名）", hits[0].get("item") == "(O)745"))
+    res.append(ok("买 回执逐条列", "草莓种子" in r_buy and "×3" in r_buy))
+
+    # 卖：**没有数量层**，多选直接卖，走 `/sell_to_shop` + 内部名
+    M.intent_menu.reset_menu()
+    M.intent(ops="show", kw={"n": 40})
+    sell_no = next(r.no for r in M.intent_menu._LAST_ROWS if (r.label or "") == "卖")
+    cand = M.intent(ops="do", kw={"code": str(sell_no)})
+    res.append(ok("点开「卖」→ 出候选，写清**整摞走**", "整摞" in cand))
+    CALLS.clear()
+    r_sell = M.intent(ops="do", kw={"code": "1"})
+    shits = [c[2] for c in CALLS if c[0] == "POST" and c[1] == "/sell_to_shop"]
+    res.append(ok("卖 真打到 `/sell_to_shop`（**没有中间的 qty 层**）", len(shits) == 1))
+    res.append(ok("卖 传的是**内部名**（C# 只认 `item.Name`）",
+                  shits and shits[0].get("name") == "Strawberry"))
+    res.append(ok("卖 回执写清**整摞几个**", "整摞 5 个" in r_sell and "100g" in r_sell))
+
+    # ⑧ ops 写错要有出路（不许静默）
     res.append(ok("不认识的 ops → 报错并列出可用的",
                   "❌" in M.intent(ops="nonsense") and "show" in M.intent(ops="nonsense")))
     res.append(ok("do 不带编号 → 报错 + 给下一步",

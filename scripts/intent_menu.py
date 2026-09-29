@@ -166,6 +166,18 @@ class Ctx:
     #    `IngredientLabel`——`/machines` 的 `heldItemId` 都给全了，一行的事）。
     #    进 C# 批次，**别在这儿堆名单**（名单会烂，本项目的老病）。
     zh: dict = field(default_factory=dict)
+    # 💰 钱包（`/state` 的 `player.money`）——买那条行要给"买得起吗"的判断面。
+    #    同 `max_items`：**问游戏要**，不写死。
+    money: int = 0
+    # 🏪 商店（**只在 ShopMenu 开着时才有**）—— 货架 + 「这家收什么」。
+    #    ⚠️ 三态**不许折叠**（"没有"和"读不到"混成一个就是静默）：
+    #      · `None`              —— **没开商店**（确定的"没有"）
+    #      · 有 `items` 键的字典  —— 读到了
+    #      · 字典但没有 `items`   —— 商店开着**读不出来**（"不知道" ⇒ CAN_MAYBE）
+    #    数据取自 `/menu`（**不是** `/state`）：`/state.activeMenu` 只有类型，
+    #    货架明细与「这家收什么」**只在 `/menu` 那份里**（同族坑：`/state` 瘦 `/menu` 详
+    #    会漂移，09-27 喂错源那次的形状）。
+    shop: Optional[dict] = None
 
     def zh_of(self, name: str) -> str:
         return (self.zh or {}).get(name) or name
@@ -798,26 +810,37 @@ STORE_V = Verb("chest_store", "存", 0, None, None, lambda c, t: "存", "tile",
                exec_multi=_exec_store_multi)
 
 
-def _unambiguous(objs, key):
-    """把**同名多摞**的挑出去 → `(留下的, 挑出去几摞)`。
+def _unambiguous(objs, *keyfns):
+    """把**分不清是哪一摞**的挑出去 → `(留下的, 挑出去几摞)`。
 
-    ⚠️ 为什么必须挑出去（2026-09-29 审查）：`/chest_take`、`/store` **只按名字认**
-    （`Name` / `DisplayName`），而 `/scan_chests` **不吐品质** ⇒ 同名两摞在单子上印出来
-    **一模一样**，AI 指哪摞都解析不出，端点按自己的遍历顺序拿一摞
+    ⚠️ 为什么必须挑出去（2026-09-29 审查）：`/chest_take`、`/store`、`/sell_to_shop`
+    **只按名字认**（`Name` / `DisplayName`）⇒ 两摞在单子上印出来**一模一样**时，
+    AI 指哪摞都解析不出，端点按自己的遍历顺序拿一摞
     ⇒ **可能动错那一摞、而且不报错**（"会照做、不会怀疑"的那类静默错误）。
     ⇒ 认不出的**不列**（宁缺勿编）；挑出去几摞要**如实说**（铁律 2：不许静默截断）。
     📌 一条游戏事实帮着理解为什么"同名=可疑"：**同物品同品质会自动叠**（`canStackWith`）
     ⇒ 同名两摞必然是品质/状态不同，正是端点分不清的那种。
+
+    ⚠️⚠️ **可以给多把尺子**（`*keyfns`），这是 2026-09-29 审查抓出来的必修：
+    单子上"AI 看到的那把尺子"（**行标签 = 显示名**）和"端点认的那把尺子"
+    （**内部名**）**可以是两个字段**。只按其中一把去重，另一把撞车时就会漏：
+      · 两件**不同物品撞同一个显示名**（`Wine`/`Juice` 都叫「酒」）——按显示名才看得出来；
+      · 两摞**同内部名不同显示名**（地板/墙纸 `Name` 恒是 `Flooring`/`Wallpaper`）
+        ——只有按内部名才看得出来，可端点正是按内部名卖，它会卖掉**第一摞**。
+    ⇒ 调用方把**两把尺子都给**，任何一把撞车就整组挑出去。
     """
-    seen = {}
-    for o in objs:
-        k = key(o)
-        if k:
-            seen[k] = seen.get(k, 0) + 1
-    dup = {k for k, n in seen.items() if n > 1}
+    dup = set()
+    for kf in keyfns:
+        seen = {}
+        for o in objs:
+            k = kf(o)
+            if k:
+                seen[k] = seen.get(k, 0) + 1
+        dup |= {k for k, n in seen.items() if n > 1}
     if not dup:
         return objs, 0
-    return [o for o in objs if key(o) not in dup], sum(seen[k] for k in dup)
+    kept = [o for o in objs if not any(kf(o) in dup for kf in keyfns)]
+    return kept, len(objs) - len(kept)
 
 
 def _item_row(it, box, verb):
@@ -940,6 +963,278 @@ def _chest_show(ctx, t):
     return f"{b.get('name') or '箱子'}({t.get('x')},{t.get('y')})"
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# 🏪 商店（买 / 卖）—— 166 ③ 「多选 / 配对」那条的正身
+# ═══════════════════════════════════════════════════════════════════════
+# 数据来源 = **`/menu`**（不是 `/state`）。`/state.activeMenu` 只给类型，
+# 货架明细（`shopItems`）和「这家收什么」（`sellableHere`）**只在 `/menu` 那份里**
+# ——同一个东西两个端点各序列化一份，正是 09-27 那次"喂错源、对着能领的碑喊领不了"的形状。
+#
+# 🔬 两条判据都**问游戏**，都不是我们编的表：
+#   · 买：`ShopMenu.forSale` + `itemPriceAndStock`（名字 / 单价 / **库存**）——C# 端点直接吐。
+#   · 卖：`ShopMenu.highlightItemToSell(Item)` —— **游戏自己的"这家收不收"**
+#     （只读 `categoriesToSellHere` + `tagsToSellHere`，无副作用）。
+#     威利鱼店只收鱼和浮漂、皮埃尔不收矿石 —— **不用我们列**。
+#
+# ⚠️⚠️ 一条游戏事实让两边的**形状不一样**（反编译 + CHANGELOG 实锤）：
+#   · **买** = `menu click(item=, quantity=N)`，要几个是几个
+#     ⇒ 值得长一层「各多少」（`do(1=4,2=2)` = 1 号买 4 个、2 号买 2 个）。
+#   · **卖** = 游戏**单击卖整个堆叠**（`inventory.leftClick` → `chargePlayer(-stack)`），
+#     C# `/sell_to_shop` 只认一个名字、卖掉**第一组**就 `break`。
+#     ⇒ 卖**没有数量层**。长一屏能填数量的界面 = **骗 AI**（填 3 也是整摞走）。
+#     要卖一部分得先拆堆（`menu click action=split`）——那是另一件事，别混进这张单子。
+#   ⇒ 同一个动词表里，两个动词的层数不一样，**这是游戏决定的，不是我们偷懒**。
+
+def _shop_goods(ctx):
+    """货架上的商品 → `list`，或者 `None` = **这一层判不出来**。
+
+    ⚠️ 调用方要把两种"判不出来"分开（见 `_buy_can`）：
+       `ctx.shop is None` ⇒ **没开商店**（确定的"没有"）；
+       `ctx.shop` 是真字典但没有 `items` 键 ⇒ 商店开着却**读不出来**（"不知道"）。
+    """
+    if not isinstance(ctx.shop, dict) or "items" not in ctx.shop:
+        return None
+    return ctx.shop.get("items") or []
+
+
+def _sellable_here(ctx):
+    """这家**收**我背包里哪些 → `list[显示名]`，或 `None` = 判不出来。
+
+    ⚠️ `sellableHere` 为空和缺失是**两回事**（C# 两处分别写 `[]` 和 `null`）：
+       空列表 = 这家**确实什么都不收**；`None` = 问不出来（`heldItem != null` 时游戏
+       的判据语义会变，C# 特意不报——**别把那时的结果当"不收"**）。
+    """
+    if not isinstance(ctx.shop, dict) or "sellable" not in ctx.shop:
+        return None
+    return ctx.shop.get("sellable")
+
+
+def _stock_text(g):
+    """库存那截。`stock < 0` = **无限量**（游戏用 `-1` 表示）⇒ 一个字都不印。"""
+    st = g.get("stock")
+    if isinstance(st, int) and st >= 0:
+        return f"剩 {st}"
+    return ""
+
+
+def _price_text(g) -> str:
+    """单价的**真成本** —— 钱 **或** 材料。
+
+    ⚠️⚠️ 2026-09-29 审查抓的：原来只印 `price`，而**易货商品 `Price` 恒 0**
+    （克林特升级 / 沙漠商人 / 姜岛商人那种"5 个铜锭换"）⇒ 印出来是 `0g`，
+    **看着白拿，点下去真扣材料**。`/menu` 现成带着 `trade`/`tradeCount`/`tradeName`
+    （`ModEntry.cs:12349`），兄弟实现 `menu read` 早就印了（`（需 铜锭×5）`）——
+    新行不该把这截丢掉。
+    ⚠️ 原来还写 `price or 0`：字段缺了印 `0g`，把"不知道"说成"不要钱"。
+        ⇒ **缺就不印**（同族老账：`catNum` 缺→0 当硬筛）。
+    """
+    t = g.get("trade")
+    if t:
+        tn = g.get("tradeName") or t
+        tc = g.get("tradeCount")
+        cost = f"{tn}×{tc}" if tc else str(tn)
+    else:
+        p = g.get("price")
+        cost = "" if p is None else f"{p}g"
+    st = _stock_text(g)
+    return " · ".join(x for x in (cost, st) if x)
+
+
+def _buy_can(ctx, t):
+    """🏪 现在能买吗——商店开着（且读得到货架）才有这一行。
+
+    ⚠️ 不在商店里**不该出现"买"**（铁律：单子上的字都得从游戏读出来；
+       "买"对着空气说就是编）。所以判据是 `ctx.shop` 存在，不是"附近有没有店"。
+    """
+    if ctx.shop is None:
+        return CAN_NO
+    goods = _shop_goods(ctx)
+    if goods is None:
+        return CAN_MAYBE          # 开着但读不出来 ⇒ 同三档：不上单子
+    return CAN_YES if goods else CAN_NO
+
+
+def _buy_reason(ctx, t):
+    """理由栏 = 审计面。条数由目录行的 `count_text` 报，**这儿不重复**（同屏两个数=两把尺子）。"""
+    return f"钱包 {ctx.money}g"
+
+
+def _buy_count(ctx, targets):
+    goods = _shop_goods(ctx) or []
+    return f"{len(goods)} 样"
+
+
+def _buy_subs(ctx, targets):
+    """🛒 买：货架 → 选哪几样 → 各多少。
+
+    ⚠️ 货架**整页列出**（不只当前可见那 4 个）：`/menu/click` 是**按名字/ID 找**的
+    （内部会 `currentItemIndex` 翻到那一页再点）⇒ 翻页这步**本来就不用 AI 操心**。
+    这是新接口白赚的一条：旧接口下 AI 得自己读 `shopPage` 再敲 upArrow/downArrow。
+    """
+    # ⚠️ 买这边**只按行标签（显示名）去重**，够用：端点是**我们传 `id` 进去**的
+    #    （`_exec_buy_multi` 传 `g["id"]`），id 由货架本身保证唯一
+    #    ⇒ 没有"另一个字段会撞车"的问题（跟**卖**不一样，那边只能传名字、端点自己遍历）。
+    #    真有两样货同名 ⇒ 行分不清 ⇒ 照挑。
+    goods, amb = _unambiguous(_shop_goods(ctx) or [],
+                              lambda g: g.get("displayName") or g.get("name"))
+    rows = []
+    for g in goods:
+        cn = g.get("displayName") or g.get("name")
+        rows.append(Row(BUY_V, [{"good": g}], cn, _price_text(g), 0, where=""))
+    lv = Level(rows, title="买哪几样？（可以多选，如 `1,4`）", mode="pick", verb=BUY_V)
+    if amb:
+        lv.title += (f"\n  ⚠️ 有 {amb} 样**同名**的货没列出来 —— 点了也说不清买的哪一个")
+    return lv
+
+
+def _exec_buy_multi(ctx, pairs, run):
+    """🛒 买：**逐条报**（哪样成了、成交几个）。
+
+    ⚠️ 不替游戏编原因：C# 那句 `note` 已经把"可能钱不够/库存不足/背包放不下"
+       三件事一起说了，而且它**不知道**是哪个 —— 我们也别猜（同 `_exec_take_multi`）。
+    ⚠️ 一个**真后果**要照说：背包满时 C# 会把买到的**丢到脚边**
+       （`Game1.createItemDebris`，见 `ModEntry.cs:13828`）⇒ 不是"没买到"，是"买到地上了"。
+    """
+    lines, ok_n = [], 0
+    for row, cnt in pairs:
+        g = row.targets[0]["good"]
+        cn = g.get("displayName") or g.get("name")
+        r = run("buy", {"item": g.get("id") or g.get("name"), "quantity": cnt}) or {}
+        got = int(r.get("quantity") or 0)
+        if r.get("ok") and got:
+            ok_n += 1
+            # ⚠️ 少买时把那句原因**原样端过来**；游戏没给就**只说差额**，
+            #    **别把 `None` 印给 AI**（那比不说更坏：它会把 None 当成一个值）。
+            why = f" —— {r['note']}" if r.get("note") else ""
+            extra = f"（要 {cnt} 个，成交 {got} 个{why}）" if got != cnt else ""
+            lines.append(f"  · {cn} ×{got}{extra}")
+        else:
+            lines.append(f"  · {cn} ×{cnt} —— **没买成**"
+                         f"（游戏回：{r.get('error') or '一件都没成交'}）")
+    return render_receipt("买", f"{len(pairs)} 样", ok_n > 0, note="\n".join(lines))
+
+
+def _sell_can(ctx, t):
+    """💰 现在能卖吗——同 `_buy_can`，另外**得真有东西可卖**（这家收的 ∩ 背包里有的）。"""
+    if ctx.shop is None:
+        return CAN_NO
+    sellable = _sellable_here(ctx)
+    if sellable is None:
+        return CAN_MAYBE
+    return CAN_YES if _sell_pairs(ctx, sellable)[0] else CAN_NO
+
+
+def _sell_pairs(ctx, sellable):
+    """背包里**这家收的** → `([行], 挑出去几摞)`。
+
+    ⚠️ 去重**必须同时给两把尺子**（2026-09-29 审查抓的洞）：
+      · **行标签** = `slot["name"]`（= 显示名）——游戏侧 `sellableHere` 也是 `i.DisplayName`
+        （`ModEntry.cs:12276`），**筛选就是按这把尺子做的**；
+      · **端点认的** = `raw["name"]`（英文内部名，C# `item.Name.Equals(name)`）。
+    这个函数原来**筛选用显示名、去重却用内部名** —— 两件不同物品撞同一个显示名时
+    两把尺子都放行 ⇒ 单子上出两行**印得一模一样**的候选 ⇒ AI 指哪行都可能卖错东西。
+    （`Wine`/`Juice` 都叫「酒」这类在游戏里是有的：货架上就有同显示名不同 id 的商品。）
+    """
+    here = set(sellable)
+    cand = [s for s in ctx.inv if s.get("name") in here and s.get("raw", {}).get("name")]
+    return _unambiguous(cand, lambda s: s.get("name"), lambda s: s["raw"]["name"])
+
+
+def _sell_rows(ctx, sellable):
+    rows = []
+    for s in _sell_pairs(ctx, sellable)[0]:
+        n = s.get("stack") or 1
+        val = (s.get("value") or 0) * n
+        rows.append(Row(SELL_V, [{"slot": s}], s.get("name"),
+                        f"×{n} · {val}g", 0, where=""))
+    return rows
+
+
+def _sell_reason(ctx, t):
+    """理由栏 = 审计面：这条能到手多少钱。
+
+    ⚠️ 2026-09-29 审查：原来写「**这家收** N 样」是**说错话** —— `sellableHere`
+       的语义是「这家收的 **∩ 我背包里真有的**」（C# `Game1.player.Items.Where(...)`,
+       `ModEntry.cs:12276`；`menu read` 印的是"这店收（**背包里卖得掉的**）"，
+       一直带着限定语）。照字面读会变成"**这店只收 N 种**"，
+       而事实是"我手上只有这 N 种能卖给它"。理由栏说错 = 判据看起来就错。
+    ⚠️ 条数由目录行的 `count_text` 报、**跟这里同一个尺子**（都是"点开会看到几行"），
+       所以**不在这儿说第二遍**（同屏两个数=两把尺子）。
+    """
+    total = sum((r.targets[0]["slot"].get("value") or 0) * (r.targets[0]["slot"].get("stack") or 1)
+                for r in _sell_rows(ctx, _sellable_here(ctx) or []))
+    return f"共 {total}g"
+
+
+def _sell_count(ctx, targets):
+    return f"{len(_sell_rows(ctx, _sellable_here(ctx) or []))} 摞"
+
+
+def _sell_subs(ctx, targets):
+    """💰 卖：**选哪几摞** → 整摞走（没有数量层，见上面那段）。
+
+    ⚠️ 层数比买少一层，**这是游戏决定的**：单击卖整个堆叠。宁可少一层，
+       也不给一屏"能填数量"的假界面 —— 那个填了不生效、还不报错。
+    """
+    sellable = _sellable_here(ctx)
+    rows = _sell_rows(ctx, sellable or [])
+    amb = _sell_pairs(ctx, sellable or [])[1]
+    lv = Level(rows, title="卖哪几摞？（可以多选，如 `1,4`）—— **整摞走**",
+               mode="pick", verb=SELL_V, exec_on_pick=True,
+               hint="> 敲编号，可以多选（`1,4`）—— 敲了就卖，**这一摞整个走**")
+    if amb:
+        # ⚠️ 措辞**不写死原因**（原来写"同名但不同品质"，而现在挑出去的有两种：
+        #    同显示名 / 同内部名）—— 只说"分不清"，别替游戏编一个它没说的理由。
+        lv.title += (f"\n  ⚠️ 背包里有 {amb} 摞**分不清是哪一摞**的没列出来 —— "
+                     f"游戏一次只卖第一摞，名字撞车的认不出是哪个")
+    return lv
+
+
+def _exec_sell_multi(ctx, pairs, run):
+    """💰 卖：**逐条报**（哪一摞成了、到手多少金）。
+
+    ⚠️ 回执**必须写"整摞卖了 N 个"**（铁律 3）：AI 脑子里那个数（它只报了"1 号"）
+       跟真实发生的（整摞走）差着量级，不回显它就会以为自己只卖了 1 个。
+    """
+    lines, ok_n = [], 0
+    for row, _cnt in pairs:
+        s = row.targets[0]["slot"]
+        cn = s.get("name")
+        nm = s["raw"]["name"]
+        r = run("sell", {"name": nm}) or {}
+        sold = (r.get("sold") or [{}])[0] if r.get("sold") else {}
+        n = sold.get("sold") or 0
+        # ⚠️ 金额**拿到才印**：缺字段时印 `→ 0g` 就是把"不知道"说成"一分钱没给"
+        #    （同族老账：`catNum` 缺 → 0 当硬筛、"空位"缺 → None/None 格）。
+        gold = f" → {r['totalGold']}g" if r.get("totalGold") is not None else ""
+        if r.get("ok") and n:
+            ok_n += 1
+            # ⚠️ 只报**事实**（2026-09-29 审查）：
+            #   ① 原来写 `n != stack ⇒ "比预想少"` —— 条件是"不等"、话是"少"，
+            #      卖出**更多**时回执会自己打自己脸；② 那句"它只卖了第一摞"是**编原因**
+            #      （候选层已经保证同名只列一摞，这原因压根不成立），跟 `_exec_take_multi`
+            #      刚立的"只报差额、不替游戏编原因"相冲。
+            #   `/state` 那份 stack 是**渲染当时**的快照，中间东西变多是可能的
+            #   ⇒ 只把两个数摊开，哪个是对的让 AI 自己看。
+            was = s.get("stack") or 0
+            diff = f"（看单子时是 {was} 个）" if n != was else ""
+            lines.append(f"  · {cn} **整摞 {n} 个**{gold}{diff}")
+        else:
+            lines.append(f"  · {cn} —— **没卖成**（游戏回：{r.get('error') or '一件都没卖'}）")
+    return render_receipt("卖", f"{len(pairs)} 摞", ok_n > 0, note="\n".join(lines))
+
+
+# 「买 / 卖」两个动词 = **目录行**（顶层只报有几样，点开才发号）。
+# ⚠️ 它们**同一个对象**既是顶层那条（`subs`/`count`）又是子层的执行者（`exec_multi`）——
+#    容器那边分成了 `chest` / `chest_take` 两个对象，是因为顶层扫的是"图上的格子"（`tile`）
+#    而子层的目标是"这个容器"。买卖没有"格子"：它在 **world** 这一档（问的是"现在这个处境"），
+#    顶层和子层指向的是同一个东西 ⇒ 一个对象就够，分成两个反而多一处会漂的重复。
+BUY_V = Verb("buy", "买", 72, _buy_can, _buy_reason, lambda c, t: "买", "world",
+             subs=_buy_subs, count=_buy_count, exec_multi=_exec_buy_multi)
+SELL_V = Verb("sell", "卖", 74, _sell_can, _sell_reason, lambda c, t: "卖", "world",
+              subs=_sell_subs, count=_sell_count, exec_multi=_exec_sell_multi)
+
+
 VERBS: list = [
     # 📦 容器（箱子/冰箱）：**一行一个箱子**，点开是它的动作面（看/取/存）。
     #    判据在 `_chest_can`（"在 /scan_chests 名单里"），收容判据在文件上方那段反编译说明。
@@ -985,6 +1280,10 @@ VERBS: list = [
          exec=_exec_eat),
     Verb("read",    "看",     40, _read_can,    _read_reason,    _read_show,    "held",
          exec=_exec_read),
+    # 🏪 买 / 卖（**只在商店开着时才有**，见上面那段商店说明）。两条都是**目录行**。
+    # ⚠️ 权重压在 `collect`(88)/`chest`(80) 之下、`eat`(50) 之上：站在柜台前，买卖是正事；
+    #    但商店**开着**的时候才会出现，所以它不会跟农场那批抢第一屏。
+    SELL_V, BUY_V,
 ]
 
 
@@ -1160,6 +1459,14 @@ class Level:
     verb: "Verb" = None          # pick/qty 层的执行者
     keep_no: bool = False        # True = 沿用上层发的号（qty 层），不重排位置
     fp: tuple = ()               # 世界指纹（见 `_fingerprint`）
+    # 💰 pick 层**选完直接做，不进「各多少」那一层**。
+    #    ⚠️ 只在**游戏自己决定量**的动词上开（现在只有「卖」：单击卖整个堆叠）。
+    #    开着的理由：长一屏"能填数量"的假界面 = 填了不生效、还不报错——
+    #    正是 166 ③ 花大力气删掉的那类静默陷阱。层数由**游戏**决定，不是我们偷懒。
+    exec_on_pick: bool = False
+    # 这一层的提示行（不写 = 按 `mode` 取默认）。只在 `exec_on_pick` 那类
+    # "形态跟默认不一样"的屏上用 —— 提示得说清**这一屏能怎么敲**。
+    hint: str = ""
 
 
 def _fingerprint(ctx: Ctx) -> tuple:
@@ -1234,7 +1541,8 @@ def _render_level(ctx: Ctx, lv: Level, n: int = 5) -> str:
         lines.append(" 0  这些都不是（返回上一层）")     # 与顶层 `0` 同义：这些都不是
     else:
         lines.append(" 0  做点别的…  （at x,y 指哪打哪）")
-    lines.append(_LEVEL_HINT.get(lv.mode, _LEVEL_HINT["act"]))
+    # 提示优先取这一层自己的（`exec_on_pick` 那类形态跟默认不一样，得说清怎么敲）。
+    lines.append(lv.hint or _LEVEL_HINT.get(lv.mode, _LEVEL_HINT["act"]))
     return "\n".join(lines)
 
 
@@ -1398,8 +1706,24 @@ def do_row(code, run: Callable, ctx: Ctx = None) -> str:
         return ("❌ 这一层一次只能敲一个 —— 要连着做几件，一件一件来。\n"
                 "   （「多选」是**选哪些**那一层才有的）")
 
-    # ── pick 层：可以一次选多个（`1,4`）→ 进 qty 层 ──────────────
+    # ── pick 层：可以一次选多个（`1,4`）──────────────────────────
     if lv.mode == "pick":
+        # 💰 `exec_on_pick`：选完**直接做**，不进「各多少」——因为**游戏自己定量**
+        #    （卖=单击卖整个堆叠）。给一屏能填数量的假界面 = 填了不生效还不报错。
+        # ⚠️ 数量传 `None`：执行器要能分辨"没数量这回事"和"数量是 0"。
+        if lv.exec_on_pick:
+            if lv.verb is None or lv.verb.exec_multi is None:
+                return "❌ 这一步还没接执行"
+            rows = []
+            for no, _c in sel:
+                r = _row_by_no(lv, no)
+                if r is None:
+                    return (f"❌ 这一层只有 {_nos(lv)} 号 —— 没有 {no} 号。\n"
+                            f"   想指别的东西，用 at x,y")
+                rows.append((r, None))
+            out = lv.verb.exec_multi(ctx, rows, run)
+            _STACK[:] = _STACK[:1]          # 做完了 ⇒ 收回顶层
+            return out
         sub, e = _open_qty(ctx, lv, [n for n, _ in sel])
         return e if e else _render_level(ctx, sub, 5)
 
@@ -1551,11 +1875,13 @@ def scan_world(surr: dict, machines: list = None, chests: list = None,
 
 def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None,
              caps: dict = None, seats: dict = None, furniture: dict = None,
-             animals: dict = None) -> Ctx:
+             animals: dict = None, shop: dict = None) -> Ctx:
     """把 `/state`(**full**) + `/surroundings`(+`/machines`/`/scan_chests`) 拼成 Ctx。
 
     ⚠️ 只搬运，**不补默认值**：缺什么就让它缺着（`can()` 遇到缺失自然回 假/？）。
     ⚠️ `caps` **必须调用方给**（见 `Ctx.caps` 那段），这里不猜。
+    ⚠️ `shop` 同理：**没开商店传 `None`**，开了但读不出来传一个空字典
+       （两种"判不出来"在 `_buy_can`/`_sell_can` 里要分开，见 `Ctx.shop` 那段）。
     """
     p = (state or {}).get("player") or {}
     inv = scan_backpack(state)
@@ -1611,7 +1937,8 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
                sitting=bool(((seats or {}).get("me") or {}).get("sitting")),
                pets=pets,
                stamina=p.get("stamina") or 0, max_items=p.get("maxItems") or 0,
-               caps=caps or {}, zh=zh)
+               money=p.get("money") or 0,
+               caps=caps or {}, zh=zh, shop=shop)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1811,65 +2138,19 @@ def _selftest():
     render_menu(Ctx())
     ok.append(("空世界不崩", True))
 
-    # ⑩ 目录行 / 多选 / 配对（0928 定稿）—— 用一个**假买卖动词**演一遍，一个字节不碰游戏。
-    #    ⚠️ 这是**形**，不是真买卖。真买卖要等商店那条路（#9）。
-    shop = Verb("buy", "买", 70, lambda c, t: True, lambda c, t: "店里有货",
-                lambda c, t: "买", "tile")
-
-    def _shop_subs(c, ts):
-        rows = [Row(shop, [{"good": g, "price": p}], g, f"{p}g", 0, where="")
-                for g, p in [("鲤鱼", 30), ("鲫鱼", 40), ("蚌", 60), ("蛤蜊", 10)]]
-        return Level(rows, title="买哪几样？（可以多选，如 `1,4`）",
-                     mode="pick", verb=shop)
-
-    def _shop_exec_multi(c, chosen, run):
-        bits = " · ".join(f"{r.label}×{n}（{r.targets[0]['price'] * n}g）" for r, n in chosen)
-        total = sum(r.targets[0]["price"] * n for r, n in chosen)
-        return render_receipt("买", bits, True, note=f"共 {total}g")
-
-    shop.subs, shop.exec_multi = _shop_subs, _shop_exec_multi
-    VERBS.append(shop)
-    _VERB_BY_KEY["buy"] = shop
-    try:
-        sctx = Ctx(px=5, py=5, loc="SeedShop", tiles={(5, 6): {"x": 5, "y": 6}})
-        reset_menu()
-        top = render_menu(sctx, n=5)
-        ok.append(("🗂 目录行句尾带 `…`", "买…" in top))
-        ok.append(("🗂 顶层**只报数量**、不发号", "4 件" in top))
-
-        n_before = len(calls)
-        sub = do_row(1, fake_run, sctx)
-        ok.append(("敲目录行 → 进下一层，**本身什么都不做**",
-                   "买哪几样" in sub and len(calls) == n_before))
-        ok.append(("子层的号印在眼前（AI 不用数）", "1  鲤鱼" in sub))
-
-        q = do_row("1,4", fake_run, sctx)
-        ok.append(("多选 `1,4` → 进「各多少」那层", "各多少" in q))
-        ok.append(("qty 层**沿用**上层发的号", " 1  鲤鱼" in q and " 4  蛤蜊" in q))
-
-        # ⚠️⚠️ 这条就是今晚那个**静默陷阱**的正身：qty 层只写号，必须**拒**，不许按位置对齐。
-        bad = do_row("1,4", fake_run, sctx)
-        ok.append(("⚠️ qty 层只写号 → **拒**（写反了会买对东西买错数量）",
-                   "号=数量" in bad and "❌" in bad))
-
-        ok.append(("子层 `0` → 回上一层", "鲤鱼" in do_row(0, fake_run, sctx)))
-        do_row("1,4", fake_run, sctx)                 # 再选一次，这回真买
-        done = do_row("1=1,4=4", fake_run, sctx)
-        ok.append(("配对 `1=1,4=4` → 执行", "鲤鱼×1" in done and "蛤蜊×4" in done))
-        ok.append(("回执**逐条列**、带小计", "30g" in done and "40g" in done and "共 70g" in done))
-
-        # 形态不对 / 混写：**一律报错，不猜**
-        reset_menu()
-        render_menu(sctx, n=5)
-        ok.append(("混着写 → 拒", "混了两种写法" in do_row("1,4=4", fake_run, sctx)))
-        render_menu(ctx, n=5)
-        ok.append(("act 层写数量 → 拒", "没有数量要填" in do_row("1=1", fake_run, ctx)))
-        ok.append(("act 层多选 → 拒", "一次只能敲一个" in do_row("1,2", fake_run, ctx)))
-        ok.append(("越界的号 → 拒并给出路", "at x,y" in do_row(97, fake_run, ctx)))
-    finally:
-        VERBS.remove(shop)
-        _VERB_BY_KEY.pop("buy", None)
-        reset_menu()
+    # ⑩ 敲法的**形态**规则（0928 定稿）——动作层，跟哪个动词无关。
+    #    ⚠️ 2026-09-29 改：这一段的「目录行/多选/配对」原来靠一个**假买卖动词**演
+    #    （`VERBS.append` + `finally: remove`，还用 `_VERB_BY_KEY.pop("buy")` 收尾）。
+    #    现在真买卖在 ⑫ 上线了 ⇒ 那个夹具**必须撤**：它的收尾会把**真 "buy"** 从
+    #    `_VERB_BY_KEY` 里 pop 掉 ⇒ 单子一渲染就 `KeyError: 'buy'`（真接线之后它才发作）。
+    #    留下的是**跟动词无关**的那几条形状规则。
+    reset_menu()
+    render_menu(ctx, n=5)
+    ok.append(("混着写 → 拒", "混了两种写法" in do_row("1,4=4", fake_run, ctx)))
+    render_menu(ctx, n=5)
+    ok.append(("act 层写数量 → 拒", "没有数量要填" in do_row("1=1", fake_run, ctx)))
+    ok.append(("act 层多选 → 拒", "一次只能敲一个" in do_row("1,2", fake_run, ctx)))
+    ok.append(("越界的号 → 拒并给出路", "at x,y" in do_row(97, fake_run, ctx)))
 
     # ⑪ 📦 容器（166 ⑤）——一个箱子一行，点开是它的动作面
     reset_menu()
@@ -2163,6 +2444,215 @@ def _selftest():
     reset_menu()
     ok.append(("开着菜单 ⇒ 不给「搬家具」", "搬走 红沙发" not in render_menu(menuctx, n=40)))
 
+    # ⑫ 🏪 买 / 卖 —— **同一个"多选 + 配对"机制的真身**（0928 恒听我演的那一套：
+    #    「1=4，2=2」）。fixture 用**真字段名**，值全是占位的。
+    def _shopctx(shelf=None, sellable=("小嘴鲈鱼", "鲶鱼", "浮木"), money=1234):
+        c = _fixture()
+        c.money = money
+        # 🎒 背包**照 `/state` 的真形**重建：`name`=英文内部名 / `displayName`=中文。
+        # ⚠️ 上面 `_fixture()` 那三条**只有 displayName**（它们服务的是"吃/看"，不碰内部名）。
+        #    卖走的是**内部名**（C# 是 `item.Name.Equals(name)`）⇒ 这里必须带全，
+        #    否则测试自己会**假绿**：行不出现，而"不出现"在别的地方是合法结果。
+        #    形照 `/state`（`slotIndex`/`stack`/`value`/`quality`），值全是占位的。
+        c.inv = scan_backpack({"inventory": [
+            {"slotIndex": 6, "name": "Smallmouth Bass", "displayName": "小嘴鲈鱼",
+             "stack": 2, "value": 50, "quality": 0, "sellable": True},
+            {"slotIndex": 7, "name": "Catfish", "displayName": "鲶鱼",
+             "stack": 1, "value": 200, "quality": 0, "sellable": True},
+            {"slotIndex": 8, "name": "Driftwood", "displayName": "浮木",
+             "stack": 5, "value": 0, "quality": 0, "sellable": True},
+        ]})
+        c.held = None          # 手持那件是 `_fixture()` 的，跟这个场景无关（免得多出一条「看」）
+        c.shop = {"items": (shelf if shelf is not None else [
+                    {"name": "Strawberry Seeds", "displayName": "草莓种子", "id": "(O)745",
+                     "price": 100, "stock": 5},
+                    {"name": "Parsnip Seeds", "displayName": "防风草种子", "id": "(O)472",
+                     "price": 20, "stock": -1},
+                    {"name": "Potato Seeds", "displayName": "土豆种子", "id": "(O)475",
+                     "price": 50, "stock": 3},
+                ]),
+                "sellable": (list(sellable) if sellable is not None else None)}
+        return c
+
+    sctx = _shopctx()
+    reset_menu()
+    top = render_menu(sctx, n=40)
+    ok.append(("🏪 商店开着 ⇒ 「买」是**目录行**（句尾 `…`）", "买…" in top))
+    ok.append(("🏪 顶层**只报几样**、不发号", "3 样" in top))
+    ok.append(("🏪 理由栏给钱包（从游戏读的）", "钱包 1234g" in top))
+    ok.append(("💰 「卖」也在（背包里有这家收的）", "卖…" in top))
+
+    # ⚠️⚠️ 三态不许折叠：没开商店 / 开着读不出来 —— **两种情况都不许出现「买」**，
+    #    但原因不一样（一个是"没有"，一个是"不知道"）。混成一个就是静默。
+    noshop = _fixture()
+    reset_menu()
+    ok.append(("🏪 **没开商店** ⇒ 不给「买」", "买…" not in render_menu(noshop, n=40)))
+    unknown = _fixture()
+    unknown.shop = {}          # 开着但读不出来（"不知道"）
+    reset_menu()
+    ok.append(("🏪 商店开着但**读不出来** ⇒ 也不给「买」（不糊弄）",
+               "买…" not in render_menu(unknown, n=40)))
+
+    # ── 买：目录 → 选哪几样 → 各多少 → 真走端点 ──────────────
+    reset_menu()
+    render_menu(sctx, n=40)
+    n_before = len(calls)
+    shelf = do_row(_no_of("买"), fake_run, sctx)
+    ok.append(("🏪 敲「买」→ 进货架，**本身什么都不做**",
+               "买哪几样" in shelf and len(calls) == n_before))
+    ok.append(("🏪 货架行带**单价**", "100g" in shelf))
+    ok.append(("🏪 有限量的报**库存**", "剩 5" in shelf))
+    ok.append(("🏪 无限量（stock=-1）**不印库存**", "剩 -1" not in shelf))
+
+    q = do_row("1,3", fake_run, sctx)
+    ok.append(("🛒 多选 `1,3` → 进「各多少」那层", "各多少" in q))
+    ok.append(("🛒 qty 层**沿用**上层发的号", " 1  草莓种子" in q and " 3  土豆种子" in q))
+
+    # ⚠️⚠️ 这条就是那个**静默陷阱**的正身：qty 层只写号，必须**拒**，不许按位置对齐。
+    bad = do_row("1,3", fake_run, sctx)
+    ok.append(("⚠️ qty 层只写号 → **拒**（写反了会买对东西买错数量）",
+               "号=数量" in bad and "❌" in bad))
+    # ⚠️ 放在"拒"**之后**：`do_row(0)` 会把 qty 层弹掉 ⇒ 上面那条就变成在 pick 层敲，
+    #    结果是"进各多少"而不是"拒"（**测试自己把它测没了**）。
+    ok.append(("🛒 子层 `0` → 回上一层", "草莓种子" in do_row(0, fake_run, sctx)))
+
+    def buy_run(ep, payload):
+        calls.append((ep, payload))
+        if payload.get("item") == "(O)745":
+            return {"ok": True, "clicked": "shop_item", "quantity": payload.get("quantity")}
+        # 第二样一件都没成交（钱不够/库存没了）
+        return {"ok": False, "error": "商店里没买成「土豆种子」（一件都没成交，**钱没动**）"}
+
+    reset_menu()
+    render_menu(sctx, n=40)
+    do_row(_no_of("买"), fake_run, sctx)
+    do_row("1,3", fake_run, sctx)
+    calls.clear()
+    got = do_row("1=4,3=2", buy_run, sctx)
+    ok.append(("🛒 配对 `1=4,3=2` → 真走 buy，**各是各的数量**",
+               [c[1].get("quantity") for c in calls] == [4, 2]))
+    ok.append(("🛒 回执**逐条列**", "草莓种子 ×4" in got))
+    ok.append(("🛒 没成交的那条**不装成功**", "没买成" in got and "土豆种子" in got))
+
+    # ⚠️⚠️ 单价那截必须说**真成本**（2026-09-29 审查）：易货商品的 `Price` 恒 0
+    #    ⇒ 只印 `price` 的话，克林特升级/沙漠商人那种"5 个铜锭换"会印成 `0g`，
+    #    **看着白拿、点下去真扣材料**。`/menu` 现成带着 trade/tradeCount/tradeName。
+    ok.append(("🛒 易货商品印**材料**（不是 0g）",
+               _price_text({"price": 0, "trade": "(O)378", "tradeCount": 5,
+                            "tradeName": "铜锭"}) == "铜锭×5"))
+    ok.append(("🛒 `price` 字段缺 ⇒ **一个字都不印**（不拿 0 兜底）",
+               _price_text({"displayName": "神秘种子"}) == ""))
+
+    # ── 卖：**没有数量层**（游戏单击卖整个堆叠）────────────────
+    reset_menu()
+    render_menu(sctx, n=40)
+    n_before = len(calls)
+    sell = do_row(_no_of("卖"), fake_run, sctx)
+    ok.append(("💰 敲「卖」→ 进候选，**本身什么都不做**",
+               "卖哪几摞" in sell and len(calls) == n_before))
+    ok.append(("💰 候选写清**整摞走**", "整摞" in sell))
+    ok.append(("💰 候选带**这一摞几件 + 值多少**", "×2" in sell))
+    # ⚠️⚠️ 这条原来写 `"各多少" not in sell` —— **恒真、拦不住它自称要拦的退化**
+    #    （2026-09-29 审查用退化实现复现过：把 `exec_on_pick` 去掉，那条断言**照样过**，
+    #     因为「各多少」只出现在 **qty 层**的标题里，pick 层的渲染永远不含它）。
+    #    ⇒ 直接钉**机制本身**：这一层得是 pick + `exec_on_pick`。
+    #    （「敲了真执行」由下面 `do_row("1,2", …)` 那条钉。）
+    ok.append(("⚠️ 卖那一层标了 `exec_on_pick`（**这才是「不进数量层」的判据**）",
+               _STACK[-1].mode == "pick" and _STACK[-1].exec_on_pick is True))
+
+    def sell_run(ep, payload):
+        calls.append((ep, payload))
+        if payload.get("name") == "Smallmouth Bass":
+            return {"ok": True, "sold": [{"item": "Smallmouth Bass", "sold": 2,
+                                          "unitPrice": 50, "totalPrice": 100}],
+                    "totalGold": 100}
+        return {"ok": False, "error": "Item 'Catfish' not found in inventory"}
+
+    calls.clear()
+    done = do_row("1,2", sell_run, sctx)
+    ok.append(("💰 多选 `1,2` → **直接就卖了**（没中间那层）",
+               [c[0] for c in calls] == ["sell", "sell"]))
+    ok.append(("💰 走的是**内部名**（C# 只认 `item.Name`）",
+               calls[0][1].get("name") == "Smallmouth Bass"))
+    ok.append(("💰 回执写清**整摞卖了几个**（AI 只报了'1 号'，得替它把量说回来）",
+               "整摞 2 个" in done and "100g" in done))
+    ok.append(("💰 没卖成的那条**如实报**", "没卖成" in done))
+
+    # ⚠️ 差额那句**只报事实**（2026-09-29 审查）：原来条件写 `n != stack`、话写"比预想少"
+    #    ⇒ 卖出**更多**时回执自打脸；后半句"它只卖了第一摞"是**编原因**（候选层已保证
+    #    同名只列一摞，这原因压根不成立）。`/state` 的 stack 只是**渲染当时**的快照。
+    reset_menu()
+    render_menu(sctx, n=40)
+    do_row(_no_of("卖"), fake_run, sctx)
+    _rows = [r for r in _STACK[-1].rows if (r.label or "") == "小嘴鲈鱼"]
+    _out = _exec_sell_multi(sctx, [(_rows[0], None)],
+                            lambda ep, p: {"ok": True, "totalGold": 250,
+                                           "sold": [{"item": "Smallmouth Bass", "sold": 5}]})
+    ok.append(("💰 卖出**更多** ⇒ 不印「比预想少」（条件只写'不等'、话却断言'少'）",
+               "比预想少" not in _out and "整摞 5 个" in _out))
+    ok.append(("💰 差额只**摊开两个数**、不替游戏编原因",
+               "看单子时是 2 个" in _out and "只卖了第一摞" not in _out))
+
+    # ⚠️ 卖那一层**形状跟默认 pick 不一样** ⇒ 提示得说清怎么敲（不然 AI 会照默认少写一层）
+    reset_menu()
+    render_menu(sctx, n=40)
+    sell2 = do_row(_no_of("卖"), fake_run, sctx)
+    ok.append(("💰 提示说清**敲了就卖**（不是'可以多选'就完事）", "敲了就卖" in sell2))
+    ok.append(("💰 卖那一层写「号=数量」→ 拒（这一层没有数量）",
+               "没有数量要填" in do_row("1=2", fake_run, sctx)))
+
+    # ⚠️ 分不清是哪一摞 ⇒ **两摞都不列** + 如实说挑出去几摞（宁缺勿编）。
+    #    ⚠️⚠️ 必须**两把尺子各演一遍**（2026-09-29 审查抓的假绿）：
+    #    原来只演了"同内部名"那一种 —— 于是"筛选用显示名、去重却用内部名"这个
+    #    **两把尺子对不上**的洞照样全绿（第二例就是它）。
+    def _sell_pick(c, needle="卖"):
+        reset_menu()
+        render_menu(c, n=40)
+        return do_row(_no_of(needle), fake_run, c)
+
+    # ① 同**内部名**（同物品、品质不同 ⇒ 叠不成一摞）：端点按 Name 卖会拿第一组
+    dup1 = _shopctx(sellable=("小嘴鲈鱼", "鲶鱼"))
+    dup1.inv.append(scan_backpack({"inventory": [
+        {"slotIndex": 9, "name": "Smallmouth Bass", "displayName": "小嘴鲈鱼",
+         "stack": 4, "value": 75, "quality": 2, "sellable": True}]})[0])
+    d1 = _sell_pick(dup1)
+    ok.append(("💰 ①同**内部名**两摞 ⇒ 一个都不印（端点是'卖第一组'，列了就是让它指空气）",
+               "小嘴鲈鱼" not in d1))
+    ok.append(("💰 ①同内部名 ⇒ **如实说**挑出去了", "分不清" in d1))
+
+    # ② 异**内部名**、同**显示名**（Wine/Juice 都叫「酒」这类）：
+    #    行标签一样 ⇒ AI 分不出哪行是哪件；而端点按**内部名**卖 ⇒ 两行各自卖各自那件，
+    #    AI 指哪个号都可能卖错东西。**只按内部名去重会漏掉这一例。**
+    #    ⚠️ 得留一条**不撞车**的（鲶鱼）：两件「酒」都被挑出去之后、若没有别的可卖，
+    #       「卖」那一行**整行不出现**（`_sell_can` 的正确行为）⇒ 测不到那条注释。
+    dup2 = _shopctx(sellable=("酒", "鲶鱼"))
+    dup2.inv = scan_backpack({"inventory": [
+        {"slotIndex": 6, "name": "Wine", "displayName": "酒",
+         "stack": 1, "value": 10, "quality": 0, "sellable": True},
+        {"slotIndex": 7, "name": "Juice", "displayName": "酒",
+         "stack": 1, "value": 10, "quality": 0, "sellable": True},
+        {"slotIndex": 8, "name": "Catfish", "displayName": "鲶鱼",
+         "stack": 1, "value": 200, "quality": 0, "sellable": True},
+    ]})
+    d2 = _sell_pick(dup2)
+    ok.append(("💰 ②同**显示名**两件 ⇒ 也一个都不印（否则两行印得一模一样）",
+               " 1  酒" not in d2))
+    ok.append(("💰 ②同显示名 ⇒ **如实说**挑出去了", "分不清" in d2))
+
+    # ⚠️ 这家不收的**一根都不动**（判据问游戏，不是我们编名单）
+    nostock = _shopctx(sellable=("海胆",))
+    reset_menu()
+    ok.append(("💰 这家不收我背包里的 ⇒ 不给「卖」（不编名单）",
+               "卖…" not in render_menu(nostock, n=40)))
+
+    # ⚠️ 理由栏**不能说错语义**（2026-09-29 审查）：`sellableHere` 是
+    #    「这家收的 **∩ 我背包里真有的**」，写成「这家收 N 样」会被读成
+    #    "这店只收 N 种"（漏掉"还有多少种我手上没有"）。理由栏是审计面，说错=显形。
+    reset_menu()
+    top_sell = render_menu(sctx, n=40)
+    ok.append(("💰 理由栏不说「这家收 N 样」（那是交集，不是全集）", "这家收" not in top_sell))
+    ok.append(("💰 理由栏只报**能到手多少钱**", "共 300g" in top_sell))
+
     print("\n—— 意图选项单 · 不吃游戏自验 ——")
     for name, good in ok:
         print(("  ✅ " if good else "  ❌ ") + name)
@@ -2183,6 +2673,22 @@ def _selftest():
     reset_menu()
     render_menu(ctx, n=40)
     print(do_row(_no_of("矿石箱"), lambda e, p: {"ok": True}, ctx))
+
+    print("\n> 站在柜台前（商店 menu 开着）—— 买/卖怎么长")
+    reset_menu()
+    shopshow = _shopctx()
+    render_menu(shopshow, n=40)
+    print(render_menu(shopshow, n=40))
+    print("\n> do(买)   （点开货架——翻页那步**不用 AI 操心**）")
+    print(do_row(_no_of("买"), lambda e, p: {"ok": True}, shopshow))
+    print("\n> do(1,3) → do(1=4,3=2)   （各多少：号=数量，配对，序无关）")
+    do_row("1,3", lambda e, p: {"ok": True}, shopshow)
+    print(do_row("1=4,3=2", lambda e, p: {
+        "ok": True, "clicked": "shop_item", "quantity": 4}, shopshow))
+    print("\n> do(卖)   （**没有数量层**——游戏单击卖整个堆叠）")
+    reset_menu()
+    render_menu(shopshow, n=40)
+    print(do_row(_no_of("卖"), lambda e, p: {"ok": True}, shopshow))
     return len(bad) == 0
 
 
