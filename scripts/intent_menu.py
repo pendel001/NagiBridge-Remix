@@ -1718,7 +1718,10 @@ def _render_level(ctx: Ctx, lv: Level, n: int = 5) -> str:
 
     hidden = len(lv.rows) - len(shown)
     if hidden > 0:
-        lines.append(f"—— 还有 {hidden} 项（more）")     # 铁律 2：不许静默截断
+        # ⚠️ 这里**不能写「（more）」**：压根没有 `more` 这个 op，敲了回「❌ 看不懂」
+        #    ⇒ 那是一扇**假门**（跟 166 删掉的"点了没反应"同类）。铁律 2 要的是**如实报数**，
+        #    不是给一个打不开的出口。（2026-09-29 真机敲了才发现的。）
+        lines.append(f"—— 还有 {hidden} 项没印出来")     # 铁律 2：不许静默截断
 
     if len(_STACK) > 1:
         lines.append(" 0  这些都不是（返回上一层）")     # 与顶层 `0` 同义：这些都不是
@@ -1746,7 +1749,11 @@ def render_menu(ctx: Ctx, n: int = 5, header: str = "") -> str:
         if len(_STACK) > 1 and _fingerprint(ctx) != _STACK[-1].fp:
             _STACK[:] = [root]
     _STACK[-1].fp = _fingerprint(ctx)
-    return _render_level(ctx, _STACK[-1], n)
+    # ⚠️⚠️ **深层的 `show` 不是顶层**（2026-09-29 真机照出来的洞）：`n=5` 只该管**顶层第一屏**
+    #    （那里是"从一大堆里挑头几条"）；AI 点开一层后敲 `show`「再看一眼」，它要的是
+    #    **刚点开的那一摞本身**。一刀切按 5 印 ⇒ 21 条只剩 5 条，还配一句打不开的假门
+    #    （实测：`do 1` 印全 21 条，紧接着 `show` 只剩 5 条 —— 同一层，两个答案）。
+    return _render_level(ctx, _STACK[-1], n if len(_STACK) == 1 else _SUB_N)
 
 
 def _parse_code(code):
@@ -2282,6 +2289,22 @@ def _selftest():
         ok.append((f"报的数对得上（共 {_total} 条 - 显示 1）", f"还有 {_total - 1} 项" in m1))
         # ⚠️ 同样别写死 n：拿**算出来的条数**当尺子（夹具一变，写死的 n 就假红）
         ok.append(("没超 N 条时不该报", "还有" not in render_menu(ctx, n=_total)))
+        # ⚠️ 报「还有 K 项」时**不许配一句「（more）」**——没有 `more` 这个 op，
+        #    敲了回「❌ 看不懂」⇒ 那是扇**假门**（2026-09-29 真机敲出来的）。
+        ok.append(("截断那行不给假门（没有 `more` 这个 op）", "more" not in m1))
+
+        # ⚠️⚠️ 2026-09-29 真机洞：`show`（= `render_menu`）打在**深层**上时，
+        #    原来不管在第几层都按 `n=5` 印 ⇒ 同一个单子，`do` 印全 21 条、
+        #    紧接着 `show` 只剩 5 条。`show` 是 AI 最常用的动作（再看一眼），
+        #    一走这条路就**看不见自己刚点开的东西**。
+        render_menu(ctx, n=40)                     # 先回顶层，免得下面这层叠在别人头上
+        deep = Level([Row(probe_verbs[0], [None], f"深层{i}", "", 0)
+                      for i in range(20)], mode="pick")
+        _push_level(deep, ctx)
+        big = render_menu(ctx)                     # ← 默认那条路（n=5）
+        ok.append(("深层的 show 不被截成 5 条", big.count("深层") == 20))
+        ok.append(("深层没截就不该报「还有」", "还有" not in big))
+        _STACK[:] = _STACK[:1]
     finally:
         for pv in probe_verbs:
             VERBS.remove(pv)
