@@ -1696,14 +1696,22 @@ def _render_level(ctx: Ctx, lv: Level, n: int = 5) -> str:
         disp = r.label + (f" ×{len(r.targets)}" if len(r.targets) > 1 else "")
         if len(r.targets) == 1:
             # 单目标 → 印坐标（AI 可能想用别的工具精确指它）
-            loc = r.where if r.where is not None else _where(r.targets[0])
-            tail = f"{loc} {r.reason}".strip()
+            # ⚠️ **情境动词（`target="world"`）没有坐标**（2026-09-29 真机照出来的）：
+            #    它的目标**就是 `None`**（"现在这个处境"，不属于任何一格），走 `_where(None)`
+            #    会印成「**手持 20 只**（Rabbit×2、Duck×3…）」—— 牛成了"拿在手里"的。
+            #    "手持"只对 `held` 动词成立：那一层 `None` **就是**手持那件。
+            loc = (r.where if r.where is not None
+                   else ("" if r.verb.target == "world" else _where(r.targets[0])))
+            tail = " ".join(x for x in (loc, r.reason) if x)
         else:
             # 多目标 → 坐标**省掉**（省了才有你说的那个效果），只给"几处 + 最近几格"。
             # ⚠️ 但**不能不给定位信息**——否则 AI 不知道这一敲要跑多远。
             # ⚠️ 距离说「**步**」，不说「格」——「格」在这条线上另有含义（箱子 22 格）。
             #    同屏两个"格"是两个意思，就是"拿错尺子"的温床（2026-09-27 真机照出来的）。
-            tail = f"{len(r.targets)} 处 · 最近 {r.dist} 步 · {r.reason}".rstrip()
+            # ⚠️ 用 `join`，**不用 `.rstrip()`**：`rstrip` 只吃空白，`reason` 为空时会留下
+            #    一个**光秃秃的 `·`**（真机 2026-09-29：「2 坐 现代长椅 ×2 ← 2 处 · 最近 22 步 ·」）。
+            tail = " · ".join(x for x in (f"{len(r.targets)} 处", f"最近 {r.dist} 步",
+                                          r.reason) if x)
         lines.append(f" {r.no}  {disp}   ← {tail}")
     _LAST_ROWS = list(shown)
 
@@ -2634,6 +2642,31 @@ def _selftest():
     ok.append(("🐾 摸动物只数**只算没摸过的**（2 头里 1 头摸过了）",
                "摸 还没摸的动物" in top2 and "1 只" in top2))
     ok.append(("🐾 猫狗那一行也在", "摸 猫狗" in top2))
+    # ⚠️ **情境动词（`target="world"`）不许印「手持」**（2026-09-29 真机照出来）：
+    #    它的目标**就是 `None`**，走 `_where(None)` ⇒ 印成「手持 20 只（Rabbit×2…）」，
+    #    牛成了拿在手里的。`held` 动词印「手持」是对的（那层 `None` 就是手持那件）
+    #    —— 判据得看 `verb.target`，不能看"目标是不是 None"（两者都是 None）。
+    pet_line = next((l for l in top2.splitlines() if "摸 还没摸的动物" in l), "")
+    ok.append(("🐾 情境动词那行不写「手持」", "手持" not in pet_line))
+    # ⚠️ 空 `reason` 不许在尾巴留一个**光秃秃的 `·`**（`.rstrip()` 只吃空白，吃不掉它）。
+    # ⚠️⚠️ **夹具里所有多目标行的 reason 都非空** ⇒ 光靠 `top2` 这条闸**根本红不了**
+    #    （A/B 当场照出来的：把代码改回 `.rstrip()`，它照样绿 = 白写的闸）。
+    #    ⇒ 自己造一行**空 reason 的多目标行**，那条支路才真的被走到。
+    ok.append(("现有那一屏没有以光秃秃的 `·` 结尾的行",
+               not [l for l in top2.splitlines() if l.rstrip().endswith("·")]))
+    _push_level(Level([Row(VERBS[0], [{"x": 1, "y": 1}, {"x": 2, "y": 2}],
+                           "空理由行", "", 5)], mode="act"), ctx)
+    d_empty = _render_level(ctx, _STACK[-1], 40)
+    ok.append(("空 `reason` 的多目标行**不留**光秃秃的 `·`",
+               not [l for l in d_empty.splitlines() if l.rstrip().endswith("·")]))
+    _STACK[:] = _STACK[:1]
+    reset_menu()
+    # 🍽 反面：**手持**动词（吃/看）照旧要写「手持」——别为了修上面那条把 loc 一律砍掉。
+    #    ⚠️ 这行会改 `_LAST_ROWS` ⇒ **用完必须把 ctx 那一屏渲染回来**，否则下面
+    #    `_no_of("坐 木椅")` 会在别人的单子上找号（`do_row` 打的是 `_LAST_ROWS`）。
+    ok.append(("🍽 手持动词照旧写「手持」（是它才该写）", "手持" in render_menu(eatctx, n=40)))
+    reset_menu()
+    render_menu(ctx, n=40)
 
     calls.clear()
     r_sit = do_row(_no_of("坐 木椅"), act_run, ctx)
