@@ -76,7 +76,10 @@ def scan_backpack(state: dict) -> list:
             "idx": slot_of(i),                              # None = 老 DLL，不可选
             "name": i.get("displayName") or i.get("name") or "?",
             "stack": i.get("stack", 1),
-            "quality": i.get("quality", 0),
+            # ⚠️ **不拿 0 兜底**：`0` 是"普通品质"这个**真值**（`/select` 的 quality=0 = 只要普通的），
+            #    而缺字段是"不知道"。两者折叠成一个 0，就会**挑不中银/金/铱星那一摞**。
+            #    缺就是 None，往下走由消费方判（同 can() 三档：算不出 ≠ 不是）。
+            "quality": i.get("quality"),
             "value": i.get("value") or 0,
             "sellable": i.get("sellable", True),
             # 下面三个**原样搬，不猜**：字段不在就是 None，跟着走 CAN_MAYBE
@@ -102,6 +105,19 @@ def is_book(slot: dict):
     return c == BOOK_CAT
 
 
+# 🛠 「这是不是工具」——游戏自己的判据（`Tool.Category == -99`，反编译 + CHANGELOG 09-27 那条）。
+#    ⚠️ 比 `item is Tool` **略宽**：镰刀是 `(W)47` 也叫 -99（已知差异，不影响用途）。
+TOOL_CAT = -99
+
+
+def is_tool(slot: dict):
+    """🛠 识别层：这东西**是不是工具** → True / False / None(问不出来)。"""
+    c = slot.get("cat_num")
+    if c is None:
+        return CAN_MAYBE
+    return c == TOOL_CAT
+
+
 def is_edible(slot: dict):
     """🍽 识别层：这东西能不能吃（游戏 `staminaRecoveredOnConsumption`）。"""
     e = slot.get("edible")
@@ -125,6 +141,10 @@ class Ctx:
     tiles: dict = field(default_factory=dict)        # {(x,y): /surroundings 的 tile}
     menu: Optional[dict] = None
     stamina: int = 0
+    # 🎒 背包容量（游戏 `Farmer.MaxItems`：12/24/36 三档）。
+    #    “取”那条行要判“背包放得下吗”——**只能问游戏要**，写死 36 就是编表。
+    #    拿不到（老 DLL）→ 0 ⇒ 算不出 ⇒ 那条行不出现（同 can() 第三档）。
+    max_items: int = 0
     # 🔌 连接级能力表（字段名 → True=这版 DLL 会吐它 / 缺失=不知道）。
     # ⚠️ **必须由调用方从版本信息填，不许从格子里猜**。
     #    `/surroundings` 对这几个字段用的是"**只在为真时才写键**"的约定
@@ -183,6 +203,9 @@ class Verb:
     merge: bool = False
     # 并成一行时用的理由（单个目标时用 `reason`）
     reason_many: Callable = None
+    # 🗂 目录行那截「（N 件）」的出处：(Ctx, targets) -> str。
+    #    不写 = 数下一层有几行。容器要报的是**箱里几件**（见 `Row.count_text`）。
+    count: Callable = None
 
 
 # ── 以下每个 can() 都只用**端点已经吐出来的**字段，一个都不用猜 ──────────
@@ -223,7 +246,8 @@ def _harvest_can(ctx, t):
 
 
 def _harvest_reason(ctx, t):
-    name = t.get("cropRealName") or t.get("crop") or "作物"
+    # ⚠️ `crop` 是**产物 item ID**（`crop.indexOfHarvest`），不是名字 —— 拿它兜底会印出"24"。
+    name = t.get("cropName") or "作物"
     extra = ""
     if t.get("cropScythe"):
         extra = " · 得用镰刀"
@@ -231,7 +255,7 @@ def _harvest_reason(ctx, t):
 
 
 def _harvest_show(ctx, t):
-    return f"收 {t.get('cropRealName') or t.get('crop') or '作物'}"
+    return f"收 {t.get('cropName') or '作物'}"
 
 
 def _dig_can(ctx, t):
@@ -276,26 +300,6 @@ def _collect_show(ctx, t):
     m = t.get("machine") or {}
     item = m.get("item")
     return f"收 {ctx.zh_of(item) if item else (t.get('object') or '机器')}"
-
-
-def _open_can(ctx, t):
-    """📦 开箱：**只认 `/scan_chests` 认过的**。
-
-    ⚠️ 不拿 `object == "Chest"` 猜——那又是按名字认（本项目栽过无数次）。
-    迷你出货箱也是 `IsStorageChest` 的排除对象（2026-09-12 定论：显式点名才认，别拆）。
-    """
-    if not t:
-        return CAN_NO
-    return CAN_YES if t.get("is_chest") else CAN_NO
-
-
-def _open_reason(ctx, t):
-    n = t.get("chest_items")
-    return f"箱子（{n} 格）" if n is not None else "箱子"
-
-
-def _open_show(ctx, t):
-    return "开箱"
 
 
 def _collect_reason_many(ctx, targets):
@@ -346,7 +350,8 @@ def _eat_reason(ctx, t):
         parts.append(f"体力 +{t['edible']}")
     if t.get("health"):
         parts.append(f"血 +{t['health']}")
-    return "手持 · " + " / ".join(parts)
+    # ⚠️ 别在这写"手持"——`_where()` 已经在前面写了一次，会印成"手持 手持 · …"（同 `_read_reason`）。
+    return " / ".join(parts)
 
 
 def _eat_show(ctx, t):
@@ -360,10 +365,11 @@ def _read_can(ctx, t):
     但"**这本读不读得了**"（读过的书再读没反应）游戏没有事前判据，
     只能 `performUseAction()` 返回 false 才知道（反编译定论，2026-08-29）。
     ⇒ 这里按识别层进单子，**真失败了由回执如实报**「这本读过了，没反应」。
+    ⚠️ 2026-09-29：这里原来还有一句 `if t.get("read_done"): return CAN_NO`——
+    全仓没有任何地方生产 `read_done`（`/state`、`/scan_chests`、`scan_backpack` 都没有），
+    是个**看着像闸门、其实永远不触发**的键 ⇒ 已删。**要真有这个判据，得先有人生产它。**
     """
     if not t:
-        return CAN_NO
-    if t.get("read_done"):
         return CAN_NO
     return is_book(t)
 
@@ -377,18 +383,405 @@ def _read_show(ctx, t):
     return f"看 {t.get('name')}"
 
 
+def _held_name(slot) -> str:
+    """手持/背包那件东西的**内部名**（英文）——端点按它匹配，别拿中文显示名去撞。"""
+    return (slot.get("raw") or {}).get("name") or slot.get("name") or ""
+
+
+def _quality_of(slot) -> int:
+    """`/select` 的 `quality`：**-1 = 不限品质**（游戏那边的原话）。
+
+    ⚠️ 别拿 `scan_backpack` 的 0 当默认——`0` 在 `/select` 里是**硬筛"只要普通品质"**，
+    会把银/金/铱星那一摞挑掉。字段缺 = 不知道 ⇒ **-1（不限）**，不是 0。
+    """
+    q = slot.get("quality")
+    return q if isinstance(q, int) and q >= 0 else -1
+
+
+def _exec_select_then(ctx, slot, run, ep, payload, verb_cn, note_ok, note_fail):
+    """🍽📖 吃/看的共同形状：**先 `/select` 锁到单子上那一件，再动手**。
+
+    ⚠️ 为什么必须 select：`/eat` 吃的是 `farmer.CurrentItem`、`/use mode=read` 读的也是
+    `CurrentItem` —— 它们**不认名字**。不先锁，敲"吃 草莓"可能吃掉手上别的。
+    ⚠️ **select 的成败必须看**（2026-09-29 审查抓出来的洞）：槽位漂了 / 那件没了 /
+       品质档对不上 ⇒ select 回 `ok:false`，此时**还往下走就是吃掉手上那件别的**，
+       而回执写着单子上那件 —— 静默错误动作（同族："以为在收钻石、收的却是翡翠"）。
+       ⇒ 没锁上就**停在这儿**，什么都不做，把它如实说出来。
+    ⚠️ `quality` 一起传：同名两摞（不同品质）时 `/select` 才选得准（2026-09-19 那条老账）。
+    回执**只报游戏回的**，不替它算（铁律 3 的反面：替它算 = 我们编数字）。
+    """
+    nm = _held_name(slot)
+    if not nm:
+        return render_receipt(verb_cn, slot.get("name") or "?", False,
+                              note="拿不到它的内部名 —— 不敢乱点（宁可不做）")
+    label = slot.get("name") or nm
+    sel = run("select", {"name": nm, "quality": _quality_of(slot)}) or {}
+    if not sel.get("ok"):
+        return render_receipt(verb_cn, label, False,
+                              note=f"**没选中它**（游戏回：{sel.get('error') or sel}）"
+                                   f"—— 手上的东西**没动**，先看一眼背包再敲")
+    r = run(ep, payload) or {}
+    # ⚠️ 回执里回显的是**单子上那件**（AI 看见的中文名），不是端点回的 `item.Name`——
+    #    那个是英文内部名（"Strawberry"），AI 在单子上没见过它，等于换了把尺子。
+    if not r.get("ok"):
+        return render_receipt(verb_cn, label, False, note=note_fail.format(r=r.get("error") or r))
+    return render_receipt(verb_cn, f"{label}×1", True, note=note_ok.format(r=r))
+
+
+def _exec_eat(ctx, targets, run):
+    """🍽 吃（手持那件）。"""
+    return _exec_select_then(
+        ctx, targets[0], run, "eat", {}, "吃",
+        note_ok="游戏回：体力 {r[stamina]} · 血 {r[health]}",
+        note_fail="游戏回：{r}")
+
+
+def _exec_read(ctx, targets, run):
+    """📖 看/读（手持那件）——「读没读过」游戏没有事前判据，
+    ⇒ **真失败了由回执如实报**「读过了，没反应」（见 `_read_can`）。"""
+    return _exec_select_then(
+        ctx, targets[0], run, "use", {"mode": "read"}, "看",
+        note_ok="读了（游戏消耗 1 个）",
+        note_fail="游戏回：{r}")
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 📦 容器（箱子 / 冰箱）—— 166 ⑤
+# ═══════════════════════════════════════════════════════════════════════
+# 🔬 「容器收什么」的判据（2026-09-29 反编译 **C 盘 1.6.15.24356** 实锤）
+#
+#   `Chest.ShowMenu()` 按 `SpecialChestType` 挂筛子：
+#     · 迷你出货箱 → `Utility.highlightShippableObjects`（只收可出货的）
+#     · 富集器     → `Object.HighlightFertilizers`（只收肥料，容量 1）
+#     · **其余全走 `InventoryMenu.highlightAllItems`**（普通箱 / 大箱子 / 祝尼魔箱 / 自动装载器）
+#   ⇒ **普通箱子 = 全收**，筛子只长在特型箱上。
+#
+#   🔑 而 C# 的 `/scan_chests` 名单 `IsStorageChest` **已经把迷你出货箱、祝尼魔箱排除**
+#      ⇒ **单子上出现的箱子都是"全收"那一族**。所以这一层**不需要**再判容器类型——
+#      真正要守的是那条反向的：**别把名单外的容器放上单子**。
+#   ⚠️ 已知洞（**挂账，走 C# 批次，别在这儿编表**）：`Enricher`（施肥器）没被
+#      `IsStorageChest` 排除，它只收肥料、只有 1 格。判据在游戏里（`SpecialChestTypes`），
+#      我们这边看不见 ⇒ 修法是把名单补齐 / 补一个能力位，见 CHANGELOG 167。
+#
+#   ⚠️ 冰箱 = `Chest{ fridge = true }`（**不是独立类**）：`ShowMenu` 只把开箱音效换成
+#      `doorCreak`，**筛子还是 highlightAllItems** ⇒ **冰箱也是全收**（反直觉，但实锤）。
+#   ⚠️ 鱼缸(`FishTankFurniture`) / 梳妆柜(`StorageFurniture`) 是 **Furniture 不是 Chest**
+#      ⇒ C# `HandleStore` 硬判 `is Chest`，**压根够不着**：鱼缸按 `HasRoomForThisItem()`
+#      （`Data/AquariumFish` 分类 + 容量）、梳妆柜按 `{帽-95, 衣-100, 靴-97, 戒-96}`。
+#      ⇒ 它们**因此不会出现在单子上**——不是我们排除的，是端点本来就不认。
+#   ⚠️ 「看」＝**走过去真开**（画面通道：菜单给恒看）+ 内容进回执（数据通道：给我们）。
+#      它要一个新端点（`chest.ShowMenu()` 是 public，C# 一行的事），**还没做**
+#      ⇒ 由能力位 `caps["chest_open"]` 把关：这版 DLL 没有，那行就**不出现**（不糊弄）。
+#      ⚠️ 别拿 `/interact` 代替：`Chest.checkForAction` 开头卡 `didPlayerJustRightClick`
+#      （反编译 + 2026-09-12 实测），API 驱动没有真鼠标右键 ⇒ 开不了。
+
+def _box(t):
+    """这一格的容器明细（`/scan_chests` 认过的那份）。没认过 = 不是我们的仓库。"""
+    return (t or {}).get("chest")
+
+
+def _slots_text(used, cap) -> str:
+    """「u/c 格」——**任一个数拿不到就一个字都不印**（宁可短，也别把 `None/None` 摆给 AI）。
+    ⚠️ 老 DLL / 字段缺失时，印 `None/None 格` 比不印更坏：AI 会把它当成一个数。"""
+    if used is None or cap is None:
+        return ""
+    return f"{used}/{cap} 格"
+
+
+def _box_space(box):
+    """容器放得下吗 → True / False / None(算不出)。
+
+    **空位数用游戏给的 `freeSlots`**（= `GetActualCapacity() - used`），不是我们数出来的。
+    ⚠️ 空位 0 一律判「放不下」：`/scan_chests` **不吐品质**，而品质不同的同类**不能叠**
+    ⇒ 赌"能叠进已有那摞"就是把拿不准的事装成准的。宁可少给一条行，也不给一条会失败的行。
+    """
+    if box is None:
+        return CAN_MAYBE
+    free = box.get("freeSlots")
+    if free is None:
+        return CAN_MAYBE
+    return CAN_YES if free > 0 else CAN_NO
+
+
+def _box_accepts(box, slot):
+    """这个容器收这件东西吗 → True / False / None(算不出)。
+
+    ⚠️ 现在恒 `True`，**而且这个 True 是有出处的**：能走到这儿的 `box` 全来自
+    `/scan_chests` 的 `IsStorageChest` 名单，而那份名单已经把带筛子的特型箱
+    （迷你出货箱／祝尼魔箱）排除了 —— 剩下的正是游戏挂 `highlightAllItems` 的那族
+    （含冰箱，见文件上方那段反编译说明）。
+    ⇒ 这一层的正确做法**不是**在这儿列"冰箱只收食材"之类的表（那是**编表**，
+      本项目因为名单会烂栽过：1.6 矿节点 ID、`Jewels Of The Sea` 两次），
+      而是**保证带筛子的容器进不了这张单子**。名单补全的活在 C#（见上面挂的账）。
+    """
+    if box is None:
+        return CAN_MAYBE
+    return CAN_YES
+
+
+def _pack_space(ctx):
+    """背包放得下吗 → True / False / None(算不出)。
+
+    容量取 **`/state.player.maxItems`**（游戏自己的 `Farmer.MaxItems`，12/24/36 三档）
+    ——**不是**我们写死 36（写死就是编表）。同 `_box_space`：装不下就判装不下，不赌能叠。
+    """
+    cap = ctx.max_items
+    if not cap:
+        return CAN_MAYBE
+    return CAN_YES if len(ctx.inv) < cap else CAN_NO
+
+
+def _exec_take_multi(ctx, pairs, run):
+    """🧺 取：**逐条报**（哪条成了、哪条没成）。
+
+    ⚠️ 不许整批报成功、也不许整批回滚——两个都是替 AI 圆场（166 ④ 配套硬要求）。
+    ⚠️ **只报事实，不替游戏编原因**（2026-09-29 审查）：`took < cnt` 既可能是箱里不够，
+    也可能是**背包中途塞满**（`HandleChestTake` 装不下就提前 break）——
+    原来那句写死"（箱里只有 N 个）"是**我们把猜测当成了游戏的话**。现在只报差额。
+    """
+    lines, ok_n = [], 0
+    for row, cnt in pairs:
+        it, box = row.targets[0]["item"], row.targets[0]["box"]
+        cn = it.get("displayName") or it.get("name")
+        r = run("chest_take", {"x": box["x"], "y": box["y"],
+                               "name": it.get("name"), "count": cnt}) or {}
+        took = r.get("taken") or 0
+        if r.get("ok") and took:
+            ok_n += 1
+            extra = "" if took == cnt else f"（要 {cnt} 个，到手 {took} 个）"
+            lines.append(f"  · {cn} ×{took}{extra}")
+        else:
+            lines.append(f"  · {cn} ×{cnt} —— **没取到**（游戏回：{r.get('error') or 'taken=0'}）")
+    return render_receipt("取", f"{len(pairs)} 种", ok_n > 0, note="\n".join(lines))
+
+
+def _exec_store_multi(ctx, pairs, run):
+    """📥 存：同样**逐条报**。
+
+    ⚠️⚠️ **这是快捷路，不是拟人路**（同 `_exec_collect` 的记账）：
+    C# `HandleStore`（`ModEntry.cs:10429`）是**原子直操**——`farmer.Items` ↔ `chest.addItem`，
+    **不校验距离** ⇒ 人站在半张图外也能"存进去"。
+    拟人那条是 MCP 工具 `chest_store`（`nagi_mcp_server.py` 里先 `_walk_to_chest` 再 `/store`）。
+    ⇒ **接线时必须补 `/walk_to`**（或直接改调 `chest_store`），否则恒一眼看出不是人在走。
+      今晚没补：走路是**观感**，没真机验过的走路不该先写死一套"走多近、站哪边"。
+    """
+    lines, ok_n = [], 0
+    for row, cnt in pairs:
+        slot, box = row.targets[0]["slot"], row.targets[0]["box"]
+        cn = slot.get("name") or slot.get("raw", {}).get("name")
+        r = run("store", {"x": box["x"], "y": box["y"],
+                          "name": _held_name(slot), "count": cnt, "keepTools": True}) or {}
+        got = sum(s.get("count") or 0 for s in (r.get("stored") or []))
+        if r.get("ok") and got:
+            ok_n += 1
+            extra = "" if got == cnt else f"（要放 {cnt} 个，进去了 {got} 个）"
+            lines.append(f"  · {cn} ×{got}{extra}")
+        else:
+            lines.append(f"  · {cn} ×{cnt} —— **没存进去**（游戏回：{r.get('error') or 'stored=[]'}）")
+    return render_receipt("存", f"{len(pairs)} 种", ok_n > 0, note="\n".join(lines))
+
+
+def _exec_chest_open(ctx, targets, run):
+    """👀 看：**走过去真开**（画面通道）+ 内容进回执（数据通道）。开完**不关**。
+
+    ⚠️ 恒 2026-09-28 拍板「开完不关」：① 很多操作本来就要点菜单；
+       ② 他那边看着像人在操作（拟人的验收判据）。
+    ⚠️ 这里**只走路 + 开**，不读内容——内容由 `/menu` 另外读，
+       两条通道分开（一次调用干两件事，接了也能漂）。
+    ⚠️ 端点 `/chest_open` **这版 C# 还没有**（在批次里）⇒ 由 `caps` 把关，那行不出现。
+       真接上了，这里也要先 `/walk_to` 走到箱子边再开（拟人那条）。
+    """
+    t = targets[0]
+    x, y = t.get("x"), t.get("y")
+    r = run("chest_open", {"x": x, "y": y}) or {}
+    if not r.get("ok"):
+        return render_receipt("开箱", f"({x},{y})", False,
+                              note=f"游戏回：{r.get('error') or r}")
+    return render_receipt("开箱", f"({x},{y})", True,
+                          note="菜单开着（不关）—— 内容用 menu read 看")
+
+
+# 「看 / 取 / 存」三个动作——**只长在容器那一层里**，不进顶层动词表：
+# 顶层扫的是"图上的格子"，而它们的目标是"这个容器"，由 `_chest_subs` 现场算。
+OPEN_V = Verb("chest_open", "看（走过去开箱）", 0, None, None,
+              lambda c, t: "看（走过去开箱）", "tile", exec=_exec_chest_open)
+TAKE_V = Verb("chest_take", "取", 0, None, None, lambda c, t: "取", "tile",
+              exec_multi=_exec_take_multi)
+STORE_V = Verb("chest_store", "存", 0, None, None, lambda c, t: "存", "tile",
+               exec_multi=_exec_store_multi)
+
+
+def _unambiguous(objs, key):
+    """把**同名多摞**的挑出去 → `(留下的, 挑出去几摞)`。
+
+    ⚠️ 为什么必须挑出去（2026-09-29 审查）：`/chest_take`、`/store` **只按名字认**
+    （`Name` / `DisplayName`），而 `/scan_chests` **不吐品质** ⇒ 同名两摞在单子上印出来
+    **一模一样**，AI 指哪摞都解析不出，端点按自己的遍历顺序拿一摞
+    ⇒ **可能动错那一摞、而且不报错**（"会照做、不会怀疑"的那类静默错误）。
+    ⇒ 认不出的**不列**（宁缺勿编）；挑出去几摞要**如实说**（铁律 2：不许静默截断）。
+    📌 一条游戏事实帮着理解为什么"同名=可疑"：**同物品同品质会自动叠**（`canStackWith`）
+    ⇒ 同名两摞必然是品质/状态不同，正是端点分不清的那种。
+    """
+    seen = {}
+    for o in objs:
+        k = key(o)
+        if k:
+            seen[k] = seen.get(k, 0) + 1
+    dup = {k for k, n in seen.items() if n > 1}
+    if not dup:
+        return objs, 0
+    return [o for o in objs if key(o) not in dup], sum(seen[k] for k in dup)
+
+
+def _item_row(it, box, verb):
+    """容器里的一样东西 = pick 层的一行。**不在世界里 ⇒ 不印定位**（印"手持"就是撒谎）。"""
+    cn = it.get("displayName") or it.get("name")
+    return Row(verb, [{"item": it, "box": box}], cn, f"箱里 ×{it.get('count')}", 0, where="")
+
+
+def _slot_row(slot, box, verb):
+    """背包里的一样东西 = pick 层的一行，目标是"存进这个容器"。"""
+    return Row(verb, [{"slot": slot, "box": box}], slot.get("name"),
+               f"背包 ×{slot.get('stack')}", 0, where="")
+
+
+def _chest_subs(ctx, targets):
+    """📦 一个容器的动作面（166 ⑤）——**三行都由处境算，算不出的行根本不出现**：
+      · `看` —— 这版 DLL 有 `chest_open` 能力位才长
+      · `取` —— 容器里有东西 **且** 背包放得下
+      · `存` —— 背包里有它收的 **且** 容器放得下
+    """
+    t = targets[0]
+    box = _box(t)
+    if box is None:
+        return None
+    x, y = t.get("x"), t.get("y")
+    here = f"({x},{y})"
+    rows = []
+
+    # ① 看＝走过去真开（画面通道，恒要的拟人观感）
+    if ctx.cap("chest_open"):
+        rows.append(Row(OPEN_V, [t], "看（走过去开箱）",
+                        _slots_text(box.get("used"), box.get("capacity")), 0, where=""))
+
+    # ⚠️ 行**只在算得出来("YES")时才出现**：第三档（算不出）与"不"一样不上单子
+    #    （166 ⑤：「算不出 ⇒ 那行根本不出现」；同 can() 三档，不透支信任）。
+    #    差别在**要不要说一句**：算得出"装不下"⇒ 给一句事实 + 下一步（恒：「报缺了要给出路」）；
+    #    算不出（老 DLL）⇒ 闭嘴（那是**连接级**信息，逐格里翻不出来）。
+    notes = []
+
+    # ② 取…：容器里有 ∩ 背包放得下
+    mine = [it for it in (box.get("items") or []) if (it.get("count") or 0) > 0]
+    mine, amb = _unambiguous(mine, lambda it: it.get("name"))
+    pack = _pack_space(ctx)
+    if mine and pack is CAN_YES:
+        rows.append(Row(TAKE_V, [t], "取", f"背包 {len(ctx.inv)}/{ctx.max_items}", 0,
+                        level=Level([_item_row(it, dict(box, x=x, y=y), TAKE_V) for it in mine],
+                                    title=f"取哪几样？{here}（可以多选，如 `1,4`）",
+                                    mode="pick", verb=TAKE_V),
+                        where="", count_text=f"{len(mine)} 种"))
+    elif mine and pack is CAN_NO:
+        notes.append(f"背包满了（{len(ctx.inv)}/{ctx.max_items} 格）"
+                     f"—— 先卖或存掉点东西，「取」才放得下")
+    if amb:
+        notes.append(f"有 {amb} 摞**同名但不同品质**的没列出来 —— 端点只按名字认，"
+                     f"认不出是哪一摞（要精确挑就用 storage 域）")
+
+    # ③ 存…：背包 ∩ 容器收的 ∩ 容器放得下
+    space = _box_space(box)
+    if space is CAN_YES:
+        # ⚠️ **工具不进这张候选**：`/store` 默认 `keepTools=True`（恒的保护设置），
+        #    它会在端点里**静默跳过工具** ⇒ 列出来就是"按了不成"的行。
+        #    不在这儿顺手把 `keepTools` 翻成 false ——那是**动恒设的安全阀**，得他拍板。
+        #    判据问游戏（`catNum == -99`）；**问不出（None）也不列**（同三档：不透支信任）。
+        can = [s for s in ctx.inv
+               if s.get("idx") and is_tool(s) is False and _box_accepts(box, s) is True]
+        can, amb2 = _unambiguous(can, _held_name)
+        if can:
+            rows.append(Row(STORE_V, [t], "存", f"箱空 {box.get('freeSlots')} 格", 0,
+                            level=Level([_slot_row(s, dict(box, x=x, y=y), STORE_V) for s in can],
+                                        title=f"存哪几样去 {here}？（可以多选，如 `1,4`）",
+                                        mode="pick", verb=STORE_V),
+                            where="", count_text=f"{len(can)} 种"))
+        if amb2:
+            notes.append(f"背包里有 {amb2} 摞**同名但不同品质**的没列出来 —— "
+                         f"端点只按名字认，认不出是哪一摞")
+    elif space is CAN_NO:
+        notes.append(f"箱子满了（{box.get('used')}/{box.get('capacity')} 格）"
+                     f"—— 先取点东西出来，「存」才放得下")
+
+    title = f"📦 {box.get('name') or '箱子'} {here}"
+    slots = _slots_text(box.get("used"), box.get("capacity"))
+    if slots:
+        title += f" · {slots}"
+    for n in notes:
+        title += f"\n  ⚠️ {n}"
+    if not rows:
+        # 与顶层同款：**只报事实，不编推荐**（理由栏要有出处，编不出来就别给）
+        title += "\n  （这个箱子现在没有能做的——空着就是空着）"
+    return Level(rows, title=title)
+
+
+def _chest_can(ctx, t):
+    """📦 这一格是个容器吗——判据 = **它出现在 `/scan_chests` 里**（见上面那段名单说明）。
+
+    ⚠️ **不按 `object == "Chest"` 的名字认**（本项目栽过无数次），也不按贴图/名字猜。
+    """
+    return CAN_YES if _box(t) else CAN_NO
+
+
+def _chest_reason(ctx, t):
+    """理由栏 = 审计面。容器这条只留**空几格**（"还剩多少地方"才是要判断的东西）；
+    里面有几件由目录行的计数报（`count_text`），**别在这儿说第二遍**（同屏两个数=两把尺子）。"""
+    b = _box(t) or {}
+    free = b.get("freeSlots")
+    return f"空 {free} 格" if free is not None else ""
+
+
+def _chest_count(ctx, targets):
+    """目录行那截计数 = **箱里几件**（不是"点开有几个动作"）。
+
+    ⚠️ 数不出来时回 `""`（**不印**），**不是**回 `None` —— 回 None 会掉进
+    `_render_level` 的兜底 `len(rows)`，那就变成另一个意思了（两把尺子）。
+    """
+    b = _box(targets[0]) or {}
+    return f"{b.get('used')} 件" if b.get("used") is not None else ""
+
+
+def _chest_show(ctx, t):
+    b = _box(t) or {}
+    return f"{b.get('name') or '箱子'}({t.get('x')},{t.get('y')})"
+
+
 VERBS: list = [
+    # 📦 容器（箱子/冰箱）：**一行一个箱子**，点开是它的动作面（看/取/存）。
+    #    判据在 `_chest_can`（"在 /scan_chests 名单里"），收容判据在文件上方那段反编译说明。
+    # ⚠️ 权重**故意低于 `collect`(88)**（2026-09-29 审查）：容器行是**目录行**（点开还有一层），
+    #    而单子第一屏的承诺是"**动作面**"（按了就成）。农场/主屋常态有 5+ 个箱子，
+    #    权重一高，第一屏就被"点开还有一层"占满，真正能一下做完的（收机器）反被挤到"还有 N 项"。
+    Verb("chest", "箱子", 80, _chest_can, _chest_reason, _chest_show, "tile",
+         subs=_chest_subs, count=_chest_count),
     Verb("collect", "收 已好的机器", 88, _collect_can, _collect_reason, _collect_show, "tile",
          exec=_exec_collect, merge=True, reason_many=_collect_reason_many),
-    # ⚠️ 下面这些**只有渲染没有执行**（`exec=None`）⇒ **今晚不上单子**。
-    #    接执行要一个个来：`/harvest`、`/tool_area`、`/eat`、`/use mode=read` 端点都有，
-    #    但都要在真机上验一遍"敲了之后到底发生什么"才敢放出来（v1 只放最稳的那个）。
+    # ⚠️ 下面这些**只有渲染没有执行**（`exec=None`）⇒ **不上单子**，只在 `at(x,y)` 里
+    #    标「⏳ 还没接执行」——**那行就是缺口探测器**（见 `render_at` 的注释）。
+    #    没接的原因**不是懒**，是这两族各有各的形状问题：
+    #      · 捡/收作物/锄：**不是逐格动作**。`/harvest` 是**半径批量**（`radius` 默认 15），
+    #        农活域本来就在算「哪片可耕/哪块熟了」⇒ 按 166 ⑨ 它们该长成**聚合行**
+    #        （`收这块地（12 格成熟）`），不是"对着这一格收"。**塞进逐格动词表就是走错形状**。
+    #      · 坐/搬家具/摸动物：要"走过去 + 转向 + 交互"的编排，且**观感要恒验收**
+    #        （拟人那条路），不该在没有真机的情况下先接上。
     Verb("pick",    "捡",     90, _pick_can,    _pick_reason,    _pick_show,    "tile"),
     Verb("harvest", "收作物", 85, _harvest_can, _harvest_reason, _harvest_show, "tile"),
     Verb("dig",     "锄",     60, _dig_can,     _dig_reason,     _dig_show,     "tile"),
-    Verb("open",    "开箱",   55, _open_can,    _open_reason,    _open_show,    "tile"),
-    Verb("eat",     "吃",     50, _eat_can,     _eat_reason,     _eat_show,     "held"),
-    Verb("read",    "看",     40, _read_can,    _read_reason,    _read_show,    "held"),
+    # 🍽📖 吃 / 看：**接上了**（2026-09-29）。两条都是 `held` 目标、都走"先 select 再动手"，
+    #     共用同一个执行器形状（见 `_exec_select_then`）。
+    #     ⚠️ 它们能不能出现，取决于 `ctx.held` —— 而 `ctx_from` 原先读 `currentTool`
+    #     （书/食物都不是 Tool）⇒ **这两条结构性永不出现**。今晚一并修了（见 `ctx_from`）。
+    Verb("eat",     "吃",     50, _eat_can,     _eat_reason,     _eat_show,     "held",
+         exec=_exec_eat),
+    Verb("read",    "看",     40, _read_can,    _read_reason,    _read_show,    "held",
+         exec=_exec_read),
 ]
 
 
@@ -403,10 +796,16 @@ PENDING: list = [
     # (key, 中文, 缺什么)
     ("sit",      "坐",     "要 `/sittable`（`GetSeatCapacity()>0` + `mapSeats`）——现成端点，搬进来即可"),
     ("pickup_f", "搬走家具", "要 `/furniture` + `canBeRemoved()`——现成端点"),
-    ("open",     "开箱",    "要问游戏「这东西是不是容器」——`/surroundings` 现在只给 object 名，没给容器标记"),
     ("gift",     "送礼",    "要面前是 NPC + `tryToReceiveActiveObject`——问游戏有，但**是动作级的**（试了才知道收不收）"),
-    ("machine",  "收机器",  "要 `readyForHarvest`——`/machines` 现成，搬进来即可"),
     ("pet",      "摸动物",  "要牲畜的「今天摸过没」——现成端点里没这字段"),
+    # ⚠️ 2026-09-29：`open`（开箱）与 `machine`（收机器）两条**已上线**，从这里挪走了：
+    #    开箱 → 顶层「箱子」目录行；收机器 → `collect`（快捷路，恒拍板复用）。
+    #    剩下的两条**新缺口**是今晚反编译核容器时才看清的（都在 C# 那边，不在这一层）：
+    ("tank",     "鱼缸/梳妆柜", "**是 Furniture 不是 Chest** ⇒ `/store` 够不着（`HandleStore` 硬判 `is Chest`）。"
+                                "鱼缸判据 `FishTankFurniture.HasRoomForThisItem()`（`Data/AquariumFish` 分类+容量）、"
+                                "梳妆柜 `categoriesToSellHere{帽-95,衣-100,靴-97,戒-96}`"),
+    ("enricher", "施肥器",  "⚠️ `IsStorageChest` **没排 Enricher**（只收肥料、容量 1）⇒ 它会被当成普通仓库列出来。"
+                            "判据在游戏 `SpecialChestTypes` 里，我们看不见 ⇒ 补名单，**别编表**"),
     # ⚠️ 墙纸/地板：恒 2026-09-27 拍板「趣味功能，放后面」。
     #    而且它是**全场最难的一条**：`Furniture.isPlaceable()` **恒 true**（等于没有判据），
     #    墙纸连"这卷铺哪面墙、归哪个房间"都没有端点（`GetFloorID` 要房间号，要不到静默 false）。
@@ -435,6 +834,10 @@ class Row:
     # 印在正文前的那截定位。`None` = 用 `_where(目标)`；`""` = **不印**
     # （货架上的商品/菜单里的项**不在世界里**，印"手持"就是撒谎）。
     where: str = None
+    # 🗂 目录行那截「（N 件）」的**替身**。默认数下一层有几行；容器行要报的是
+    # **箱里有多少件**，不是"点开有几个动作"——两个数并排就是"拿错尺子"的温床
+    # （2026-09-27 真机照出来过：同屏两个"格"两个意思）。
+    count_text: str = None
 
 
 def _dist(ctx: Ctx, t) -> int:
@@ -474,9 +877,11 @@ def _candidates(ctx: Ctx) -> list:
         else:
             reason = v.reason(ctx, near)
         # 🗂 目录行的下一层**在这就算出来**（顶层要拿它报 `（N 件）`，也得知道它长不长）。
+        lv = v.subs(ctx, targets) if v.subs else None
         rows.append(Row(verb=v, targets=targets,
                         label=label or v.label, reason=reason, dist=_dist(ctx, near),
-                        level=v.subs(ctx, targets) if v.subs else None))
+                        level=lv,
+                        count_text=v.count(ctx, targets) if (v.count and lv) else None))
     # 排序：先按动词权重，再按**距离**。
     # ⚠️ 距离是个**合法且可审计**的排序理由（"近的先做"）——比一个黑盒启发式诚实得多。
     #    而且同权重的一批（20 台机器）全靠它拉开，否则前 N 条就是**随便挑的**。
@@ -579,9 +984,10 @@ def _render_level(ctx: Ctx, lv: Level, n: int = 5) -> str:
         if r.level is not None:
             # 🗂 目录行：句尾 `…` = 这行还要选。**只报数量，不发号**——号点开才印在眼前
             #    ⇒（a）AI 永远不用数数；（b）号不跨屏，"短命句柄"从风险变成设计。
-            tail = f"{len(r.level.rows)} 件"
-            if r.reason:
-                tail += f" · {r.reason}"
+            # ⚠️ `count_text` 为 `""` = **这行的计数说不出来**（不是"没有计数"）⇒ 一个字都不印，
+            #    否则会掉回 `len(rows)`，把"点开有几条"冒充成"箱里几件"（两把尺子）。
+            base = r.count_text if r.count_text is not None else f"{len(r.level.rows)} 件"
+            tail = " · ".join(x for x in (base, r.reason) if x)
             lines.append(f" {r.no}  {r.label}…   ← {tail}")
             continue
 
@@ -691,7 +1097,7 @@ def _nos(lv: Level) -> str:
     return "、".join(str(r.no) for r in lv.rows)
 
 
-def _open_qty(lv: Level, chosen: list):
+def _open_qty(ctx: Ctx, lv: Level, chosen: list):
     """pick 层选完 → qty 层。
 
     **号沿用上一层发的那些号**（不重排位置）：AI 在下一屏看到的还是它刚选的那几个号，
@@ -706,8 +1112,22 @@ def _open_qty(lv: Level, chosen: list):
         rows.append(r)
     sub = Level(rows, title="各多少？（写「号=数量」，如 `1=5`）",
                 mode="qty", verb=lv.verb, keep_no=True, fp=lv.fp)
-    _STACK.append(sub)
+    _push_level(sub, ctx)
     return sub, None
+
+
+def _push_level(lv: "Level", ctx: Ctx):
+    """把一屏推进栈，并**给它盖当场的世界指纹**。
+
+    ⚠️⚠️ 2026-09-29 审查抓出来的洞：子层是 `_candidates` 现场造的，`fp` 是默认的 `()`，
+    而 `_fingerprint(ctx)` 恒是真元组 ⇒ `render_menu` 里那句"换图/开菜单才作废"的判据
+    **恒成立** ⇒ **AI 只要再看一眼单子，子层就被砍回顶层**，
+    而它手上的号已经从"取"变成"第 2 个箱子"了 —— **号跨屏换了意思**，
+    正是 166 ③ 说好要删掉的那件事。⇒ **谁进栈谁盖指纹**。
+    """
+    lv.fp = _fingerprint(ctx)
+    _STACK.append(lv)
+    return lv
 
 
 def _do_qty(ctx: Ctx, lv: Level, sel, run) -> str:
@@ -768,7 +1188,7 @@ def do_row(code, run: Callable, ctx: Ctx = None) -> str:
 
     # ── pick 层：可以一次选多个（`1,4`）→ 进 qty 层 ──────────────
     if lv.mode == "pick":
-        sub, e = _open_qty(lv, [n for n, _ in sel])
+        sub, e = _open_qty(ctx, lv, [n for n, _ in sel])
         return e if e else _render_level(ctx, sub, 5)
 
     no = sel[0][0]
@@ -779,7 +1199,7 @@ def do_row(code, run: Callable, ctx: Ctx = None) -> str:
 
     # 🗂 目录行：点开下一层（**本身不执行任何东西**）
     if row.level is not None:
-        _STACK.append(row.level)
+        _push_level(row.level, ctx)          # ⚠️ 推栈必须盖指纹，否则"再看一眼"就把这层砍掉
         return _render_level(ctx, row.level, 5)
 
     if row.verb.exec is None:
@@ -800,7 +1220,11 @@ def render_at(ctx: Ctx, x: int, y: int) -> str:
         return f"📍 ({x},{y}) —— **那里什么都没有**（不在你能看到的范围内，或本来就没东西）"
 
     # 作物优先：有作物的格子上 `object` 通常是空的，只看 object 会把萝卜地印成"空地"。
-    name = (t.get("object") or t.get("cropRealName") or t.get("crop")
+    # 📦 箱子格同理：它的名字在 `/scan_chests` 那份明细里（`DisplayChestName`）——
+    #    不补这一档，下面列着「1 矿石箱…」、抬头却写「空地」，同一屏自相矛盾。
+    # ⚠️ **不拿 `crop` 兜底**：它是产物 item ID（`crop.indexOfHarvest`），印出来是个数字。
+    name = (t.get("object") or t.get("cropName") or (_box(t) or {}).get("name")
+            or ("作物" if t.get("harvestable") else None)
             or t.get("terrain") or "空地")
     head = f"📍 ({x},{y})  {name}"
 
@@ -814,14 +1238,17 @@ def render_at(ctx: Ctx, x: int, y: int) -> str:
         if v.target != "tile":
             continue
         if v.can(ctx, t) is True:
-            (ready if v.exec else pending).append(v)
+            # ⚠️ **有 `subs` 的目录动词也算"按得动"**——它点开就是动作面（166 ②）。
+            #    原来只认 `exec`，会把「箱子」错判成"还没接执行"，摆进 ⏳ 那行。
+            (ready if (v.exec or v.subs) else pending).append(v)
     ready.sort(key=lambda v: -v.weight)
 
     lines = [head]
     if not ready:
         lines.append("  （这里没有它能做的动作）")
     for i, v in enumerate(ready, 1):
-        lines.append(f" {i}  {v.show(ctx, t)}   ← {v.reason(ctx, t)}")
+        mark = "…" if (v.subs and not v.exec) else ""
+        lines.append(f" {i}  {v.show(ctx, t)}{mark}   ← {v.reason(ctx, t)}")
     if pending:
         lines.append("  ⏳ 还没接执行：" + "、".join(v.label for v in pending))
     lines.append(" 0  返回")
@@ -875,6 +1302,16 @@ def scan_world(surr: dict, machines: list = None, chests: list = None) -> dict:
         t = tiles.setdefault((x, y), {"x": x, "y": y})
         t["is_chest"] = True
         t["chest_items"] = len(c.get("items") or [])
+        # 📦 容器明细**整份搬过来**（166 ⑤ 的存/取行全靠它算）。
+        #    ⚠️ 字段名照抄 `/scan_chests` 的原样，别在这儿改名——
+        #    `capacity`/`used`/`freeSlots` 都是**游戏算给我们的数**（`GetActualCapacity()`）。
+        t["chest"] = {
+            "name": c.get("name") or "",
+            "items": c.get("items") or [],
+            "capacity": c.get("capacity"),
+            "used": c.get("used"),
+            "freeSlots": c.get("freeSlots"),
+        }
     return tiles
 
 
@@ -888,18 +1325,29 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
     p = (state or {}).get("player") or {}
     inv = scan_backpack(state)
 
-    # 手持：游戏 `/state` 只给 `currentTool` **名字**（不给槽位）。
+    # 手持：**`currentItem` 才是手持**。
+    # ⚠️⚠️ 2026-09-29 修：原先读的是 `currentTool`（"手上的**工具**"）——
+    #    书 / 食物 / 种子都不是 Tool，`CurrentTool` 恒 null ⇒ **手持恒为 None**，
+    #    「吃」「看」这两条行**结构性地永远不会出现**。CHANGELOG 165 ③ 真机当晚就写了
+    #    「`currentItem` 才是手持」，但那句话没落回这里（写在别处的账，代码没跟上）。
     # ⚠️⚠️ 比的是 **`raw.name`（英文内部名）**，不是 `displayName`（中文）——
     #    2026-09-27 真机第一次跑就栽在这：`currentTool="Galaxy Hammer"`
     #    而显示名是"银河之锤"，拿显示名比 ⇒ **手持恒为 None**，静默。
     #    （fixture 编不出这个 bug：我编的两边是自洽的。这就是真机的价值。）
-    # ⚠️ 名字仍可能重（两把同名工具）⇒ 这里是**近似**。真接进服务前换成 C# 的手持槽位。
-    #    找不到就**没有手持**（不猜一个最像的）。
+    # 精确匹配优先用 **`currentItemId`（QualifiedItemId）**：地板/墙纸那类「同名多款」
+    # 只差一个 id（同 `/select` 那条老账，2026-09-19）。
+    # ⚠️ 名字仍可能重（两把同名工具）⇒ 名字那条是**近似**。找不到就**没有手持**
+    #    （不猜一个最像的）。
     held = None
-    ct = p.get("currentTool")
-    if ct:
+    ci, ciid = p.get("currentItem"), p.get("currentItemId")
+    if ciid:
         for it in inv:
-            if (it.get("raw") or {}).get("name") == ct:
+            if (it.get("raw") or {}).get("itemId") == ciid:
+                held = it
+                break
+    if held is None and ci:
+        for it in inv:
+            if (it.get("raw") or {}).get("name") == ci:
                 held = it
                 break
 
@@ -921,7 +1369,8 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
                loc=((state or {}).get("location") or {}).get("name") or "",
                held=held, inv=inv, tiles=tiles,
                menu=(state or {}).get("activeMenu"),
-               stamina=p.get("stamina") or 0, caps=caps or {}, zh=zh)
+               stamina=p.get("stamina") or 0, max_items=p.get("maxItems") or 0,
+               caps=caps or {}, zh=zh)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -949,14 +1398,24 @@ def _fixture():
         (13, 11): {"x": 13, "y": 11, "passable": True, "forage": True, "object": "野莓C"},
         (11, 12): {"x": 11, "y": 12, "passable": True, "diggable": True},
         (12, 13): {"x": 12, "y": 13, "passable": True, "harvestable": True,
-                   "cropRealName": "萝卜", "cropScythe": False},
+                   "cropName": "萝卜", "crop": "24", "cropScythe": False},
         (12, 11): {"x": 12, "y": 11, "passable": True},   # 空地：什么都不该出
         # 两台出同样的东西 —— 专门用来验「聚合成一行」
         (14, 12): {"x": 14, "y": 12, "machine": {"status": "ready", "item": "Diamond"}},
         (15, 12): {"x": 15, "y": 12, "machine": {"status": "ready", "item": "Diamond"}},
+        # 📦 容器：形照 `/scan_chests` 的真实回包（字段名原样），值全是占位的。
+        (13, 13): {"x": 13, "y": 13, "is_chest": True, "chest_items": 3, "chest": {
+            "name": "矿石箱", "capacity": 36, "used": 3, "freeSlots": 33,
+            "items": [{"name": "Diamond", "displayName": "钻石", "count": 2, "qualifiedId": "(O)72"},
+                      {"name": "Jade", "displayName": "翡翠", "count": 7, "qualifiedId": "(O)70"},
+                      {"name": "Stone", "displayName": "石头", "count": 99, "qualifiedId": "(O)390"}]}},
+        # 满箱（freeSlots=0）→ 「存」那条行**不该出现**（不赌"能叠上去"）
+        (11, 13): {"x": 11, "y": 13, "is_chest": True, "chest_items": 1, "chest": {
+            "name": "满箱", "capacity": 36, "used": 36, "freeSlots": 0,
+            "items": [{"name": "Stone", "displayName": "石头", "count": 99, "qualifiedId": "(O)390"}]}},
     }
     return Ctx(px=12, py=12, loc="FarmHouse", inv=inv, held=inv[0],
-               tiles=tiles, stamina=268,
+               tiles=tiles, stamina=268, max_items=36,
                caps={"forage": True, "diggable": True, "harvestable": True})
 
 
@@ -964,6 +1423,22 @@ def _selftest():
     ok = []
     reset_menu()          # 单子是一叠，会跨用例留下来 —— 每个用例开头自己清
     ctx = _fixture()
+
+    def _no_of(needle):
+        """在**当前这一屏**里找含 `needle` 的那一行的号。
+
+        ⚠️ 号**不写死**：动词权重/排序一改，写死的号就指到别的行上去，
+        测试会假红（更坏的是**假绿**——敲对了号却敲错了行）。同 ④ 那条"别把条数写死"。
+        ⚠️⚠️ **找不到就抛**（2026-09-29 审查抓的测试自己的洞）：返回 None 的话
+        `do_row(None, …)` 只回一句"敲个编号"，而那一堆 `not in` 的**否定断言照样为真**
+        ⇒ **整批判成假绿**。测试自己先得是可信的。
+        """
+        no = next((r.no for r in _LAST_ROWS if needle in (r.label or "")), None)
+        if no is None:
+            raise AssertionError(
+                f"这一屏里没有含「{needle}」的行 —— 单子是："
+                + " / ".join((r.label or "?") for r in _LAST_ROWS))
+        return no
 
     # ① 三档：真 / 假 / 连接级未知
     empty_tile = {"x": 12, "y": 11, "passable": True}
@@ -980,9 +1455,11 @@ def _selftest():
 
     # ③ 单子是**动作面**：没接执行的动词**一个都不许上**
     menu = render_menu(ctx, n=5)
-    ok.append(("没接执行的动词不上单子（野莓/萝卜/古书都不该出现）",
-               "野莓" not in menu and "萝卜" not in menu and "古书" not in menu))
+    ok.append(("没接执行的动词不上单子（野莓/萝卜都不该出现）",
+               "野莓" not in menu and "萝卜" not in menu))
     ok.append(("接了的动词在单子上", "收 已好的机器" in menu))
+    # 🍽📖 2026-09-29：吃/看**接上执行了** ⇒ 手持那件（fixture 是古书）该出现
+    ok.append(("接了的「看」在单子上（手持是书）", "看 古书" in menu))
     ok.append(("两台同产物 → 聚合成一行", "×2" in menu))
     ok.append(("产物摊在**理由**栏（Diamond×2）", "Diamond×2" in menu))
     ok.append(("单子带理由列", "←" in menu))
@@ -1022,8 +1499,9 @@ def _selftest():
         calls.append((ep, payload))
         return {"ok": True, "collected": 2, "skippedFull": 0}
 
-    render_menu(ctx, n=5)                      # 先看一眼，才有单子可敲
-    out = do_row(1, fake_run, ctx)
+    render_menu(ctx, n=9)                      # 先看一眼，才有单子可敲
+    # ⚠️ 按**标签**找那一行，不写死 1 号（2026-09-29 加容器行后，1 号已经变成箱子了）
+    out = do_row(_no_of("收 已好的机器"), fake_run, ctx)
     ok.append(("do_row 打的是批量端点", bool(calls) and calls[0][0] == "machine_collect"))
     ok.append(("do_row 报实际收到几件", "收到 2 件" in out))
     ok.append(("敲越界的号 → 拒绝并给出路", "at x,y" in do_row(len(_LAST_ROWS) + 5, fake_run, ctx)))
@@ -1032,8 +1510,9 @@ def _selftest():
     def full_run(ep, payload):
         return {"ok": True, "collected": 1, "skippedFull": 7}
 
-    render_menu(ctx, n=5)
-    ok.append(("背包满 → 说清下一步", "先去卖或存" in do_row(1, full_run, ctx)))
+    render_menu(ctx, n=9)
+    ok.append(("背包满 → 说清下一步",
+               "先去卖或存" in do_row(_no_of("收 已好的机器"), full_run, ctx)))
 
     # ⑨ 不崩：空世界 + 没单子就敲
     render_menu(Ctx())
@@ -1099,6 +1578,218 @@ def _selftest():
         _VERB_BY_KEY.pop("buy", None)
         reset_menu()
 
+    # ⑪ 📦 容器（166 ⑤）——一个箱子一行，点开是它的动作面
+    reset_menu()
+    top = render_menu(ctx, n=9)
+    ok.append(("📦 容器是**目录行**（句尾 `…`）", "矿石箱(13,13)…" in top))
+    ok.append(("📦 目录行的计数是**箱里几件**", "3 件" in top))
+    ok.append(("📦 理由栏给的是空位数", "空 33 格" in top))
+
+    n_before = len(calls)
+    box = do_row(_no_of("矿石箱"), fake_run, ctx)
+    ok.append(("点开容器 → 进动作面，**本身什么都不做**",
+               "矿石箱" in box and len(calls) == n_before))
+    ok.append(("动作面里有「取」", " 1  取…" in box or "取…" in box))
+    ok.append(("动作面里有「存」", "存…" in box))
+    ok.append(("⚠️ 没有 `chest_open` 能力位 ⇒ 「看」**不出现**（不糊弄）",
+               "走过去开箱" not in box))
+    # ⚠️ 逐条报的假 run：一条成、一条没成——**不许整批报成功**
+    def take_run(ep, payload):
+        calls.append((ep, payload))
+        if ep == "chest_take":
+            return {"ok": True, "taken": payload["count"] if payload["name"] == "Diamond" else 0}
+        if ep == "store":
+            return {"ok": True, "stored": [{"item": payload["name"], "count": payload["count"]}]}
+        return {"ok": True}
+
+    do_row(0, fake_run, ctx)                       # 0 = 这些都不是（回顶层）
+    render_menu(ctx, n=9)
+    do_row(_no_of("矿石箱"), fake_run, ctx)
+    pick = do_row(_no_of("取"), fake_run, ctx)
+    ok.append(("「取」点开 → 列箱里的东西（号印在眼前）", "钻石" in pick and "翡翠" in pick))
+    q = do_row("1,2", fake_run, ctx)
+    ok.append(("取 多选 `1,2` → 「各多少」那层", "各多少" in q))
+    done = do_row("1=2,2=7", take_run, ctx)
+    ok.append(("取 配对 `1=2,2=7` 真走 `chest_take`", any(c[0] == "chest_take" for c in calls)))
+    ok.append(("取 回执**逐条列**（哪条成了）", "钻石 ×2" in done and "翡翠 ×7" in done))
+    ok.append(("取 回执**逐条报失败**（没成的那条不装成功）", "没取到" in done))
+
+    # 满箱 ⇒ 「存」那条行**不出现**（不赌"能叠上去"）
+    do_row(0, fake_run, ctx)
+    render_menu(ctx, n=9)
+    full = do_row(_no_of("满箱"), fake_run, ctx)
+    ok.append(("满箱（freeSlots=0）⇒ 「存」不出现", "存…" not in full))
+    ok.append(("满箱仍能「取」", "取…" in full))
+    ok.append(("满箱**说清下一步**（报缺了要给出路）", "箱子满了" in full and "先取点" in full))
+
+    # 「看」：能力位在 ⇒ 那行出现、**按了真走 `chest_open`**（不是"还没接执行"）
+    def open_run(ep, payload):
+        calls.append((ep, payload))
+        return {"ok": True}
+
+    capok = _fixture()
+    capok.caps = dict(capok.caps, chest_open=True)
+    reset_menu()
+    render_menu(capok, n=9)
+    lv = do_row(_no_of("矿石箱"), fake_run, capok)
+    ok.append(("有 `chest_open` 能力位 ⇒ 「看」出现", "走过去开箱" in lv))
+    calls.clear()
+    op = do_row(_no_of("看（走过去开箱）"), open_run, capok)
+    ok.append(("看 真走 `chest_open`（**不是**「还没接执行」）",
+               any(c[0] == "chest_open" for c in calls)))
+    ok.append(("看 说明白**开完不关**（恒拍板）", "不关" in op))
+
+    # 存：背包 ∩ 容器收的 ∩ 放得下
+    do_row(0, fake_run, ctx)
+    render_menu(ctx, n=9)
+    do_row(_no_of("矿石箱"), fake_run, ctx)
+    spick = do_row(_no_of("存"), fake_run, ctx)
+    ok.append(("「存」点开的候选来自**背包**", "草莓" in spick))
+    # ⚠️ `/store` 默认 keepTools=True 会**静默跳过工具** ⇒ 工具不进候选（否则是"按了不成"的行）
+    ok.append(("工具不进「存」的候选（锄头 catNum 缺失 ⇒ 问不出 ⇒ 不列）",
+               "锄头" not in spick))
+    ok.append(("知道不是工具的照常列（古书 catNum=-102）", "古书" in spick))
+    q2 = do_row("1", take_run, ctx)                # pick 层先选"存哪几样"
+    ok.append(("存 选完 → 进「各多少」（**不是**在 pick 层直接填数量）", "各多少" in q2))
+    calls.clear()
+    sdone = do_row("1=3", take_run, ctx)           # qty 层：号=量
+    ok.append(("存 配对 `1=3` 真走 `/store`", any(c[0] == "store" for c in calls)))
+    ok.append(("存 回执回显物品和数量", "×3" in sdone))
+
+    # ⑫ 🍽📖 吃 / 看：**先 select 再动手**（`/eat`、`/use mode=read` 都不认名字，吃的是 CurrentItem）
+    def eat_run(ep, payload):
+        calls.append((ep, payload))
+        if ep == "eat":
+            return {"ok": True, "ate": "Strawberry", "health": 176, "stamina": 288}
+        return {"ok": True}
+
+    eatctx = _fixture()
+    eatctx.held = eatctx.inv[1]                    # 草莓（edibleValue=20）
+    reset_menu()
+    ok.append(("手持草莓 ⇒ 「吃 草莓」在单子上", "吃 草莓" in render_menu(eatctx, n=9)))
+    calls.clear()
+    rc = do_row(_no_of("吃 草莓"), eat_run, eatctx)
+    ok.append(("吃 **先 select**（锁到单子上那一件）", bool(calls) and calls[0][0] == "select"))
+    ok.append(("吃 再 eat", any(c[0] == "eat" for c in calls)))
+    ok.append(("吃 回执回显对象 + **游戏回**的体力/血", "草莓" in rc and "288" in rc and "176" in rc))
+
+    def read_fail_run(ep, payload):
+        calls.append((ep, payload))
+        if ep == "use":
+            return {"ok": False, "error": "读取没反应（可能已读过/或该物品不能读）"}
+        return {"ok": True}
+
+    reset_menu()
+    render_menu(ctx, n=9)                          # fixture 手持 = 古书
+    calls.clear()
+    rc2 = do_row(_no_of("看 古书"), read_fail_run, ctx)
+    ok.append(("看 走 `use mode=read`",
+               any(c[0] == "use" and c[1].get("mode") == "read" for c in calls)))
+    ok.append(("看 **读没读得了由回执如实报**（不装成读了）", "没反应" in rc2))
+
+    # ⑬ 回归：手持判据必须是 `currentItem` —— 书/食物不是 Tool，`currentTool` 恒 null
+    st = {"player": {"x": 12, "y": 12, "maxItems": 36,
+                     "currentItem": "Book", "currentItemId": "(O)Book", "currentTool": None},
+          "inventory": [{"slotIndex": 2, "name": "Book", "displayName": "古书",
+                         "itemId": "(O)Book", "catNum": BOOK_CAT, "stack": 1}]}
+    c2 = ctx_from(st, {}, None, None)
+    ok.append(("手持走 `currentItem`（书不是 Tool ⇒ 原判据恒空手）", c2.held is not None))
+    ok.append(("手持按 `currentItemId` 精确匹配", (c2.held or {}).get("name") == "古书"))
+    ok.append(("背包容量取 `maxItems`（**不写死 36**）", c2.max_items == 36))
+    st2 = {"player": {"x": 12, "y": 12, "currentTool": "Axe"},
+           "inventory": [{"slotIndex": 0, "name": "Axe", "displayName": "斧头"}]}
+    ok.append(("只有 `currentTool` 时**不兜底**（宁可没有手持，不猜）",
+               ctx_from(st2, {}, None, None).held is None))
+
+    # ⑭ 三档：容量/空位拿不到 ⇒ `None` ⇒ **那条行不出现**（宁缺勿编）
+    ok.append(("空位字段缺失 → CAN_MAYBE", _box_space({}) is CAN_MAYBE))
+    ok.append(("背包容量缺失 → CAN_MAYBE", _pack_space(Ctx()) is CAN_MAYBE))
+    ok.append(("空位 0 → CAN_NO", _box_space({"freeSlots": 0}) is CAN_NO))
+    nospace = _fixture()
+    nospace.max_items = 0                          # 老 DLL：算不出背包容量
+    reset_menu()
+    render_menu(nospace, n=9)
+    lv0 = do_row(_no_of("矿石箱"), fake_run, nospace)
+    ok.append(("背包容量**算不出** ⇒ 「取」不出现（第三档同「不」）", "取…" not in lv0))
+    # ⚠️ 但"算不出"**不解释**（那是连接级的事）；只有"算得出装不下"才给一句+下一步
+    ok.append(("算不出 ⇒ **不编解释**", "背包满了" not in lv0))
+
+    fullbag = _fixture()
+    fullbag.max_items = len(fullbag.inv)           # 背包**满了**（算得出）
+    reset_menu()
+    render_menu(fullbag, n=9)
+    lv1 = do_row(_no_of("矿石箱"), fake_run, fullbag)
+    ok.append(("背包满（算得出）⇒ 「取」不出现", "取…" not in lv1))
+    ok.append(("背包满 ⇒ 说清下一步", "背包满了" in lv1 and "先卖或存" in lv1))
+
+    # ⑮ 2026-09-29 审查抓出来的洞——**每一条都钉一条断言**（不钉就是修了个寂寞）
+    # (a) ⚠️ 子层被"再看一眼"砍掉 ⇒ 号会悄悄换意思
+    reset_menu()
+    render_menu(ctx, n=9)
+    do_row(_no_of("矿石箱"), fake_run, ctx)
+    again = render_menu(ctx, n=9)                  # 模拟 AI 又看一眼单子
+    ok.append(("⚠️ 再看一眼单子**仍停在子层**（号不换意思）", "取…" in again))
+
+    # (b) ⚠️ `/select` 没锁上 ⇒ **不许接着吃/读**（否则吃掉手上那件别的）
+    def sel_fail_run(ep, payload):
+        calls.append((ep, payload))
+        if ep == "select":
+            return {"ok": False, "error": "家里没有「Strawberry」"}
+        return {"ok": True, "ate": "Pale Ale", "health": 1, "stamina": 1}
+
+    reset_menu()
+    render_menu(eatctx, n=9)
+    calls.clear()
+    r_sel = do_row(_no_of("吃 草莓"), sel_fail_run, eatctx)
+    ok.append(("⚠️ select 没锁上 ⇒ **不动手**（不吃错东西）",
+               not any(c[0] == "eat" for c in calls)))
+    ok.append(("select 失败 ⇒ 如实报「没选中」", "没选中" in r_sel))
+
+    # (c) `/select` 的品质：缺就是"不限"(-1)，**不是** 0（0 = 硬筛"只要普通品质"）
+    ok.append(("品质缺 → 传 -1（不限），不传 0（硬筛）",
+               _quality_of({"quality": None}) == -1 and _quality_of({"quality": 2}) == 2))
+
+    # (d) 作物真名的键是 **`cropName`**（`crop` 是产物 item ID，印出来是个数字）
+    ok.append(("作物名走 `cropName`（不是印 ID）", "萝卜" in render_at(ctx, 12, 13)))
+
+    # (e) 吃那一行**不重复印「手持」**（`_where()` 已经印过一次）
+    ok.append(("吃 的理由栏不重复印「手持」", "手持 手持" not in render_menu(eatctx, n=9)))
+
+    # (f) 同名两摞：**端点只按名字认** ⇒ 认不出的不列，且如实说（铁律 2）
+    dupctx = _fixture()
+    dupctx.tiles[(13, 13)]["chest"]["items"].append(
+        {"name": "Diamond", "displayName": "钻石", "count": 5, "qualifiedId": "(O)72"})
+    reset_menu()
+    render_menu(dupctx, n=9)
+    lv_dup = do_row(_no_of("矿石箱"), fake_run, dupctx)
+    ok.append(("同名两摞 ⇒ **如实说**挑出去了几摞", "同名但不同品质" in lv_dup))
+    ok.append(("同名两摞确实没进候选", "钻石" not in do_row(_no_of("取"), fake_run, dupctx)))
+
+    # (g) 取少了：**只报差额，不替游戏编原因**（装不下也会少给，不只是"箱里没有"）
+    def short_run(ep, payload):
+        calls.append((ep, payload))
+        if ep == "chest_take":
+            return {"ok": True, "taken": max(0, payload["count"] - 3)}
+        return {"ok": True}
+
+    reset_menu()
+    render_menu(ctx, n=9)
+    do_row(_no_of("矿石箱"), fake_run, ctx)
+    do_row(_no_of("取"), fake_run, ctx)
+    do_row("1", fake_run, ctx)
+    dshort = do_row("1=5", short_run, ctx)
+    ok.append(("取少了 ⇒ 报差额", "到手 2 个" in dshort))
+    ok.append(("取少了 ⇒ **不编原因**（不再写死「箱里只有」）", "箱里只有" not in dshort))
+
+    # (h) 字段缺 ⇒ **一个字都不印**，不把 `None/None` 摆给 AI
+    badbox = _fixture()
+    badbox.tiles[(13, 13)]["chest"].pop("used")
+    badbox.tiles[(13, 13)]["chest"].pop("capacity")
+    reset_menu()
+    render_menu(badbox, n=9)
+    lv_none = do_row(_no_of("矿石箱"), fake_run, badbox)
+    ok.append(("字段缺 ⇒ 不印 `None`", "None" not in lv_none))
+
     print("\n—— 意图选项单 · 不吃游戏自验 ——")
     for name, good in ok:
         print(("  ✅ " if good else "  ❌ ") + name)
@@ -1108,9 +1799,17 @@ def _selftest():
         print("未过：" + " / ".join(bad))
 
     print("\n—— 样例单（形，值全是占位的）——")
+    reset_menu()          # ⚠️ 必须清：上面那些用例会把子层留在栈上，
+                          #    不清就印出"上一个用例的那一屏"（而且夹具还是那个缺字段的）
     print(render_menu(ctx, header="🎯 FarmHouse (12,12) · 🔋268"))
     print("\n> at 12,13   （接没接执行都列，分开列）")
     print(render_at(ctx, 12, 13))
+    print("\n> at 13,13   （指着一个箱子：目录动词也列出来）")
+    print(render_at(ctx, 13, 13))
+    print("\n> do(箱子)   （点开它——里面的行**由处境算**，不是模板）")
+    reset_menu()
+    render_menu(ctx, n=9)
+    print(do_row(_no_of("矿石箱"), lambda e, p: {"ok": True}, ctx))
     return len(bad) == 0
 
 
