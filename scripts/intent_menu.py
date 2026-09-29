@@ -231,6 +231,13 @@ class Verb:
     #    ⚠️ **只在同一层真的两组都出现时才印组头** —— 农场那种清一色的图**原样不动**
     #    （排序是照权重精心排的；没必要的分组只会把"最近的要先做"这条理由搅浑）。
     group: str = ""
+    # ⚡ **执行器会不会把这一行的目标全做了**。
+    #    `×N` 在单子上的语义是「**这一按会把 N 个都做了**」（收 20 台机器、捡 5 处…）。
+    #    但有的执行器**只吃 `targets[0]`**（锄一格、坐一张椅子）——
+    #    给它印 `×N` 就是**假承诺**：2026-09-29 真机，`锄地 ×185` 按下去只锄了 1 格
+    #    （世界实查：`(50,11)` 由 `Grass` 变 `HoeDirt`、邻居一格没动，回执写 `1/1 锄出`）。
+    #    ⇒ `batch=True` 才许印 `×N`；`False` 印「最近那一格 + 附近另有 N-1 格 + 一次做一格」。
+    batch: bool = False
 
 
 # ── 以下每个 can() 都只用**端点已经吐出来的**字段，一个都不用猜 ──────────
@@ -1382,7 +1389,8 @@ VERBS: list = [
          subs=_chest_overview, count=_chest_count, merge=True,
          reason_many=_chest_reason_many, group="设备"),
     Verb("collect", "收 已好的机器", 88, _collect_can, _collect_reason, _collect_show, "tile",
-         exec=_exec_collect, merge=True, reason_many=_collect_reason_many, group="设备"),
+         exec=_exec_collect, merge=True, batch=True,          # 整图 20 台**全收**（真机验过）
+         reason_many=_collect_reason_many, group="设备"),
     # ⚠️ 下面这些**只有渲染没有执行**（`exec=None`）⇒ **不上单子**，只在 `at(x,y)` 里
     #    标「⏳ 还没接执行」——**那行就是缺口探测器**（见 `render_at` 的注释）。
     #    没接的原因**不是懒**，是这两族各有各的形状问题：
@@ -1398,6 +1406,8 @@ VERBS: list = [
     Verb("pet_pets", "摸 猫狗",      83, _pets_can, _pets_reason, _pets_show, "world",
          exec=_exec_pets),
     # 🪑 坐 / 🛋 搬家具（逐格）——2026-09-29 接线
+    # ⚠️ `batch=False`：`_exec_sit` 只吃 `targets[0]`（人只能坐一张）
+    #    ⇒ 街上两张长椅时**不许印 `坐 现代长椅 ×2`**（那是"两张都要坐"）。
     Verb("sit",     "坐",     70, _sit_can,     _sit_reason,     _sit_show,     "tile",
          exec=_exec_sit, group="家具"),
     # 🛋 搬走：**目录行**（一屋子家具一件一行 ⇒ 顶层只留一行报总数，点开才发号）。
@@ -1406,10 +1416,13 @@ VERBS: list = [
          reason_many=_pickup_reason_many, group="家具"),
     # 🌿 捡 / 🌾 收作物：**聚合行**（一次一片，端点的语义本来就不是逐格）
     Verb("pick",    "捡 地上的东西", 90, _pick_can, _pick_reason, _pick_show, "tile",
-         exec=_exec_pick, merge=True, reason_many=_pick_reason_many),
+         exec=_exec_pick, merge=True, batch=True,             # 帮手一片全捡（真机：×2 捡到 2）
+         reason_many=_pick_reason_many),
     Verb("harvest", "收 成熟作物", 85, _harvest_can, _harvest_reason, _harvest_show, "tile",
-         exec=_exec_harvest, merge=True, reason_many=_harvest_reason_many),
-    # ⛏ 锄：**逐格**（`_farm_till(x,y)` 单格恒走拟人）
+         exec=_exec_harvest, merge=True, batch=True,          # `harvest_crops` 是半径批量
+         reason_many=_harvest_reason_many),
+    # ⛏ 锄：**逐格**（`_farm_till(x,y)` 单格恒走拟人）⇒ `batch=False`：
+    #    执行器只吃 `targets[0]`，**不许印 `×N`**（真机：`×185` 按下去只锄 1 格）。
     Verb("dig",     "锄",     60, _dig_can,     _dig_reason,     _dig_show,     "tile",
          exec=_exec_dig),
     # 🍽📖 吃 / 看：**接上了**（2026-09-29）。两条都是 `held` 目标、都走"先 select 再动手"，
@@ -1704,8 +1717,20 @@ def _render_level(ctx: Ctx, lv: Level, n: int = 5) -> str:
             lines.append(f" {r.no}  {r.label}…   ← {tail}")
             continue
 
-        disp = r.label + (f" ×{len(r.targets)}" if len(r.targets) > 1 else "")
-        if len(r.targets) == 1:
+        # ⚠️⚠️ **`×N` = "这一按会把 N 个都做了"** ⇒ 只有执行器**真会全做**（`batch`）才许印。
+        #    2026-09-29 真机：`锄地 ×185` 按下去只锄了 **1 格**（世界实查 `(50,11)`
+        #    `Grass`→`HoeDirt`、邻居没动、回执 `1/1 锄出`）—— 印 `×185` 就是假承诺。
+        #    只吃 `targets[0]` 的动词（锄/坐）改印「最近那一格 + 附近另有 N-1 格 + 一次做一格」。
+        n_t = len(r.targets)
+        many = n_t > 1
+        disp = r.label + (f" ×{n_t}" if (many and r.verb.batch) else "")
+        if many and not r.verb.batch:
+            loc = r.where if r.where is not None else _where(r.targets[0])
+            tail = " · ".join(x for x in (loc, f"附近另有 {n_t - 1} 格", r.reason,
+                                          "一次做一格") if x)
+            lines.append(f" {r.no}  {disp}   ← {tail}")
+            continue
+        if n_t == 1:
             # 单目标 → 印坐标（AI 可能想用别的工具精确指它）
             # ⚠️ **情境动词（`target="world"`）没有坐标**（2026-09-29 真机照出来的）：
             #    它的目标**就是 `None`**（"现在这个处境"，不属于任何一格），走 `_where(None)`
@@ -2664,6 +2689,25 @@ def _selftest():
     #    —— 判据得看 `verb.target`，不能看"目标是不是 None"（两者都是 None）。
     pet_line = next((l for l in top2.splitlines() if "摸 还没摸的动物" in l), "")
     ok.append(("🐾 情境动词那行不写「手持」", "手持" not in pet_line))
+    # ⚡⚡ **`×N` 只许给"真会全做"的动词**（2026-09-29 真机：`锄地 ×185` 按下去
+    #    只锄了 1 格，世界实查 `(50,11)` `Grass`→`HoeDirt`、邻居没动、回执 `1/1 锄出`）。
+    #    `×N` 在单子上的语义是"这一按会把 N 个都做了"——只吃 `targets[0]` 的动词印它 = **假承诺**。
+    ctxd = _fixture()
+    for i in range(3):                       # 摆 3 格可锄的（单格时压根印不出 ×N，测不到）
+        ctxd.tiles[(30 + i, 30)] = {"terrain": "Grass", "diggable": True}
+    reset_menu()
+    dm = render_menu(ctxd, n=40)
+    dline = next((l for l in dm.splitlines() if "锄地" in l), "")
+    ok.append(("⛏ 锄地**不印 `×N`**（它一次只锄一格）", "×" not in dline))
+    ok.append(("⛏ 锄地**说清只做一格**", "一次做一格" in dline))
+    # ⚠️ 别把格数写死（夹具里本来就有一格可锄 —— 写死就假红）。**算出来再比**。
+    n_dig = sum(1 for t in ctxd.tiles.values() if t.get("diggable") is True)
+    ok.append((f"⛏ 但**不瞒着**（如实说附近另有 {n_dig - 1} 格）",
+               f"附近另有 {n_dig - 1} 格" in dline))
+    # 反面闸：**真会全做**的动词（捡/收机器）照旧要印 `×N` —— 别一刀切。
+    ok.append(("🌿 反面：捡**照旧**印 `×N`（它真的一片全捡）", "捡 地上的东西 ×3" in top2))
+    reset_menu()
+    render_menu(ctx, n=40)
     # ⚠️ 空 `reason` 不许在尾巴留一个**光秃秃的 `·`**（`.rstrip()` 只吃空白，吃不掉它）。
     # ⚠️⚠️ **夹具里所有多目标行的 reason 都非空** ⇒ 光靠 `top2` 这条闸**根本红不了**
     #    （A/B 当场照出来的：把代码改回 `.rstrip()`，它照样绿 = 白写的闸）。
