@@ -102,6 +102,11 @@ from storage_common import (_parse_store_spec, _resolve_storage_target, _hex_to_
 #    **全局唯一一份**，见 `stamina_common` 的 docstring（为什么单开模块、为什么不能塞进 stardew_api）
 import stamina_common as sta
 
+# ── 🎯 意图选项单（2026-09-29 接线）──
+#    纯 Python 的一层：把"现在能做的事"渲染成一张**可敲编号的列表**（三条铁律写在它自己文件顶部）。
+#    ⚠️ 它**不 import stardew_api**（世界快照靠外面喂）⇒ 放哪儿都安全，但搁这儿跟别的本地模块作伴。
+import intent_menu
+
 # ── 🧭 导航（2026-09-11 task#7：从本文件拆出 navigation.py）──
 #    ⚠️ 这行**必须**在 `import stardew_api` 之后（也就是这里，和 storage_common 同处）：
 #       stardew_api 在 import 期就把 NAGI_URL / NAGI_AI_URL 固化成 BASE_URL / AI_BASE_URL，
@@ -15191,6 +15196,7 @@ _SETTINGS_DISPATCH = {
 
 # 📖 详细域指引（2026-08-22：docstring 精简后，深度/坑靠 help 查，不丢细节）
 _DOMAIN_GUIDES = {
+"intent": "🎯 意图选项单（**先看单子、再敲编号**）：`intent(ops=\"show\")` 看这一刻能做的事（一行一件，`←` 后面是理由）；`intent(ops=\"do\", kw={\"code\":\"1\"})` 敲第 1 行；`intent(ops=\"at\", kw={\"x\":12,\"y\":30})` 指哪打哪（逃生口，问「这一格能做什么」）。敲法：`1` 一行 · `1,4` **多选**（选哪些，顺序无所谓）· `1=2,4=7` **各多少**（号=数量，配对，顺序也无所谓）· `0` = 这些都不是（子层里 = 返回上一层）。⚠️**目录行句尾带 `…`**（点开还有下一层，顶层只报个数不发号）；**号是当场发的、不跨屏** —— 敲之前先 `show` 看一眼当前那一屏，别记着上一屏的号去敲。⚠️单子上**出现的那条，按了就成**；没出现 = 这一刻算不出来（不是「不行」）。覆盖：收机器 / 开箱子（取·存）/ 吃 / 看书 / 捡 / 收作物 / 锄 / 坐 / 搬家具 / 摸动物 / 摸猫狗。",
 "check": "查询域，what=...：status(完整状态) backpack(逐格价值/星级) worn(穿戴) machines(全场机器清单) mine(下矿进度) silo(干草) mastery(精通) buildings(木匠建筑) quest(开任务日志) chests(当前图箱) storage(箱子网络) look(环视周围) profile(我的技能等级+职业分支,如是否 Luremaster 蟹笼免饵) role(端口↔角色确认:我是谁/恒是谁)。⚠️查概览用 status，查逐格用 backpack，别都调浪费 token。📌profile/role 一律走 check（不叫 profile()/which_role()）。📐这个域的参数叫 **what**，**不是 ops**。带参的只有两个: chests(chest=N 看第N个箱) / look(radius=10 环视半径)；其余(status/backpack/worn/machines/mine/silo/mastery/buildings/quest/storage/profile/role)**全无参**。⚠️查概览用 status、查逐格用 backpack，别都调一遍浪费 token。",
 "farm": "农活域(🌱必走，别手动挥工具组合，用域 ops)：till(锄地) plant(种,跳过已种;带 layout 就按洒水器布局种) water(浇,自动跳雨+水壶没水先装满) harvest(收) scythe(镰刀收蒜/花/茶) fertilize(化肥) clear(清杂草石树桩;坐标同 till，也可 `radius=N` 走**圆形**；**会自动往外多清 2 格**——田边的杂草会长进田里把作物顶掉，不用自己放大) plot(连通域规划) plan(方形规划,纯算格) chop(砍树)。⚠️**锄地/播种各只有一个实现**：锄地=`till`（`hoe`/`布局锄`/`tillfield`/`蓄力锄` 都是它的别名）、播种=`plant`（`sow`/`plantlayout`/`播种规划` 都是它的别名）；⛔ 没有 `till_plant`——要锄+种写 `ops=\"till plant\"`。 clearground(清单格) collect(一键收机器:只收不放,全农场瞬收不走路) load(放原料) building(一屋收放:拟人走进去收+放料,item留空=只收不放) break(拆/敲同scene,镐子敲可破物/翻已耕地) place(放置/播种同scene) pond/pond_add/pond_feed/pond_collect/pond_fish(鱼塘)。⚠️漏格DLL自动补；**缺的格会被点名「被什么挡着」**（🌿草/杂草/🪨石头/🪵树枝→**先 `clear` 清一遍再 till/plant**；🏗️洒水器/箱子等设施→⛔别清、那是规划该绕开的格）——草占着地格时锄头是锄不出 HoeDirt 的，别对着「缺失N格」发呆。只在 Farm/温室/姜岛。带参 op(plant 的 seed_name、till/clear 的 x/y/rows、fertilize 的 fertilizer_name、place 的 name、building 的 location、collect 的 machine_type、pond_add 的 item)→ kw={'参数名':值}。🐄动物: animals(摸+收) 喂水/碗(宠物水,🌧️雨天自动跳过——雨会把碗填满) milk(挤奶剪毛) buy(买动物,豁免建议) doors(关门) hay(干草) pet(猫狗) petwalk(拟人摸) 畜舍/这间(这间屋动物) statue(祈福)——⚠️farm water=浇地,动物水用 喂水; farm building=机器收放,这屋动物用 畜舍。📐参数键名: till/clear/plant/fertilize 都是 x,y(**必填**),rows,length,direction（till/plant 也可用 x1,y1,x2,y2 直接给矩形两角）；plant 另有 seed_name,layout,direct,trellis；harvest/scythe=radius；plot=x,y,radius,all_plots；chop=area(**值写几个数**：4 个数=矩形两角 / 3 个数=圆心+半径，逗号空格都认)；collect=machine_type,location；load=item,machine_type,location；building=location,item,machine_type；place=name,x,y；break=x,y,steps,radius；pond_add=item+x,y（pond_feed/collect/fish 只要 x,y）；buy=animal_type,name,building；petwalk=include_petted；hay=dry_run。⚠️direction 只认 horizontal(默认)/vertical 两个值,别写'横'/'竖'。💡大田洒水器布局(可选,纯自动化建议)：要按洒水器留格/留走道就 plan→till→plant 三件套——plan(x1,y1,x2,y2,layout=0,hoe_level=-1,trellis=False) **纯算格不动机器**先看要锄/种哪些; till(x1,y1,x2,y2,layout=0) 按布局锄; plant(x1,y1,x2,y2,seed_name,**layout**) 按布局种（layout=0 整块/1 初级十字/2 高级/3 铱；direct=True 瞬移快、默认走位拟人）。想一次说完就 `ops=\"till plant\"`（**一份 kw 共用**，锄地会自动点名忽略 seed_name）。**layout 四档**: 0=标准整块(不预留洒水器,锄法蛇形逐格走位,任何锄头等级都行) 1=初级(十字稀疏,每台覆盖上下左右4格;锄法=精确锄每台4格,**与锄头等级无关**) 2=高级(优质,田宽高先裁成**3的倍数**,每3×3中心1台覆盖8格,整块蓄力锄) 3=铱(裁成**5的倍数**,每5×5中心1台覆盖24格;⚠️爬架作物不适用)。hoe_level: 0→1格 1→3线 2→5线 3→3×3 4→6×3,-1=自动读手持。trellis=True=爬架作物(啤酒花/青豆/葡萄,不可通过格)⇒自动**种2留1**留走道让AI能进田浇收。只管种不摆洒水器就直接 plant,不用 plan 那套。⚠️已知限制: layout 0/2/3 碰上金/铱锄(hoe_level>=3)会报**0处锄地站位**并自打一行'落点未实测校准,暂不规划蓄力站位'——**那是刻意不猜不是出错**; layout 1 不吃蓄力站位不受影响。",
 "mine": "下矿域(⚒️ 矿井/头骨/火山)：go(去挖矿:mode=rush冲层/farm刷矿,start起始层,target目标层,ore,cycles圈数) progress(进度) bomb_status/bomb_plan/bomb_place/bomb_collect/bomb_ladder/bomb_retreat(单步炸,**都要 bomb_ 前缀**) bomb_mine(自动) bomb_volcano(火山) organize(整理背包)。🔁**刷矿=mode=go(mode=farm)**：定点刷指定矿→ore=Copper铜(21层)/Iron铁(41层)/Gold金(71层)；**煤靠 farm 铁层(41)顺手清尘埃精灵/蝙蝠掉**（不是 ore 选项，跑 auto 内部刷）。🏃下矿=mode=go(mode=rush,start可选≤电梯上限+5倍数,target默认120)。⚠️无镐/血低硬拦；梯子 /ladder+confirm。⚔️贴身(3×3)自卫=游戏自己每 tick 挥刀(go/bomb_mine/bomb_escort/bomb_volcano 四个脚本都自开自关,**只转向不移动**;手上是锤子且冷却好了会重砸6×6)；2格外的怪仍靠脚本扫描,别站桩。🍽️**自定义吃食**：go/bomb_mine/bomb_volcano 都可传 food_hp/food_sta=**逗号分隔、靠前的先吃**(如 food_hp=「奶酪,鱼肉卷」)。血低只看 food_hp、体力低只看 food_sta(**两张表分开别混**)。点名后就只在这几样里挑——**防止自动挑把你留着卖的吃了**(山羊奶酪最典型)；整串都没货会明确报一句再退回自动挑。⚠️bomb_mine 没炸弹+host在同矿井→自动转【内部】协同(跟随host+帮忙敲矿/打怪)不撤退出矿(bomb_escort 不对外暴露、AI 不主动启用)；bomb_retreat 结束协同+停脚本+脱离矿井回门口。⚠️接「深处的危险」重置电梯→起始层动态从1起(内置脚本自动读，不暴露工具)；刷矿目标层不可直达会上报，需先冲层带回或改浅层。📐带参速查: go(mode=rush冲层/farm刷矿, start起始层, target目标层, ore=Copper铜/Iron铁/Gold金, cycles圈数, hp_threshold, food_sta, food_hp, resume) bomb_plan(radius,min_covered,top) bomb_place(x,y **必填**) bomb_collect(max_items) bomb_mine(target,bomb,min_covered,follow_host,lead,autodrop,one_floor,food_hp,food_sta) bomb_volcano(bomb,min_covered,hp_threshold,max_minutes,poll,food_hp,food_sta) organize(disable,reset)。💣bomb 三个取值 'Cherry Bomb'樱桃/'Bomb'黑/'Mega Bomb'超级——**点名的包里没有就按 黑>超级>樱桃 自动换成有的**(不会误报没炸弹)；范围 樱桃=边长7十字 / 黑=11x11方块 / 超级=15x15方块，⚠️黑和超级**会炸伤自己**(实测黑掉3血)。⚠️bomb_volcano **要求 host 已在矿/火山里**才放行(火山瓦片没法程序化换层)。⚠️bomb_mine one_floor=True=逐层模式(同步,只跑一层出摘要,不撤退)；**默认冲层模式=异步后台跑,推荐**。💡出发前占位物：提前放1个可堆叠物(铱矿/铱锭/五彩碎片)在包，满包时同种战利品自动堆叠吸附、少触发满包停；别拿银河之魂这类带死亡会丢的稀有物当占位。",
@@ -20763,11 +20769,182 @@ def profile() -> str:
 #   只暴露 15 域入口 + 无域等价物的必需独立工具；其余独立工具隐藏（域内部仍调它们，只是不给 AI 直调）。
 #   2026-08-22：设置域=常规设置+捏脸(一次性)合并——settings_status/retire/reactivate/color_pick/list_*_ref
 #     并入 settings 域 ops，不再单独注册；go_sleep/walk_to/pet_* 等已有域 op 的便捷项一并隐藏（走域 op）。
+# ═══════════════════════════════════════════════════════════════════════
+# 🎯 意图选项单接线（`intent` 工具）—— 2026-09-29
+# ═══════════════════════════════════════════════════════════════════════
+# 这一层把"现在能做的事"渲染成一张**可敲编号的列表**：AI 的动作空间收敛成
+#   `do 编号`（敲第几行） 和 `at x y`（指哪打哪，逃生口）
+# 工具名、参数名、传参格式 —— AI 这辈子都不用看见。三条铁律在 `intent_menu.py` 顶部。
+#
+# ⚠️ 三种"料"各有出处，**全是问游戏**（不许编）：
+#   · 格子/作物/可捡 ← `/surroundings`（半径上限 30；更远的目标靠下面几个全图端点补）
+#   · 容器/冰箱     ← `/scan_chests`（全图）· 机器 ← `/machines`（全图）
+#   · 座位 ← `/sittable`（判据在 C# 里照抄游戏）· 家具 ← `/furniture` · 牲畜 ← `/animals`
+#   · 猫狗 ← `/surroundings` 的 `npcs` 里 `kind=="pet"`
+#
+# ⚠️ `caps`（"这版 DLL 会不会吐某字段"）**只能由版本信息填，不许从格子里猜**：
+#    那几个键是"**只在为真时才写**"的 ⇒ 单看一格，「这格不是」和「这版不给」长得一模一样。
+#    现在拿 `/status.build` 当闸门：有构建标记（= 跑的是**我们自己编的** DLL）才认。
+#    📌 这不是"编表"：它陈述的是**我们自己端点的 schema**（源码在仓库，可核对），不是游戏规则。
+#    ⚠️ **残留风险**：我们自己**老一版**的 DLL 也会蒙混过关（标记在、字段缺）——
+#       真正的解法是 C# 批次里补一个能力位，到那时这里换成"问游戏"。
+_IM_CAPS_WHEN_OURS = {
+    "forage": True, "diggable": True, "harvestable": True,
+    # ⚠️ `chest_open`（走过去真开箱）**故意不在这儿** —— 那个端点还没写，
+    #    现在声明它有 = 骗自己 ⇒ 「看」那一行不会出现（等 C# 批次补上再开）。
+}
+
+
+def _im_caps() -> dict:
+    """这版 DLL 认哪些字段。读不到 / 不是我们编的 ⇒ **空表**（= 什么都不敢认，宁缺勿编）。"""
+    try:
+        st = api._ai_get("/status") or {}
+    except Exception:
+        return {}
+    build = str(st.get("build") or "").strip()
+    if not build or "未生成" in build:
+        return {}
+    return dict(_IM_CAPS_WHEN_OURS)
+
+
+def _im_ctx():
+    """一次把单子要的世界快照凑齐。
+
+    ⚠️ **每一项都容错**：少一样就少一类行（这一层本来就"算不出 ⇒ 那行不出现"），
+    但**不许因为 `/animals` 在非农场图报错就整个崩掉**。
+    """
+    def safe(fn, default):
+        try:
+            return fn()
+        except Exception:
+            return default
+
+    state = safe(lambda: api._ai_get("/state"), {})
+    surr = safe(lambda: api._ai_get("/surroundings", {"radius": 30}), {})
+    machines = safe(lambda: (api._ai_get("/machines") or {}).get("machines") or [], [])
+    chests = safe(lambda: (api._ai_get("/scan_chests") or {}).get("chests") or [], [])
+    seats = safe(lambda: api._ai_get("/sittable", {"radius": 30}), {})
+    furniture = safe(lambda: api._ai_get("/furniture"), {})
+    animals = safe(lambda: api._ai_get("/animals"), {})
+    return intent_menu.ctx_from(state, surr, machines, chests, caps=_im_caps(),
+                                seats=seats, furniture=furniture, animals=animals)
+
+
+# 🔌 裸端点里**要 POST** 的那几个（其余 GET）。写错方法 = 游戏那边 404/405，白跑一趟。
+_IM_POST_OPS = {"select", "store", "chest_take", "eat", "use", "walk_to", "drop"}
+
+
+def _im_run(op, args):
+    """单子敲下去**要执行的那一下**（合同：`(op 名, 参数字典) -> dict`）。
+
+    两类 op：
+    - **高阶层**：Python 里早就写好、**自己会读回验证**的那些（坐/搬家具/摸/捡采集）
+      ⇒ 调函数，把它的**原话**带回去（回执要用它的话，见 `_receipt_from_helper`）。
+    - **裸端点**：直接打 C#，回 dict。
+    """
+    args = dict(args or {})
+    helpers = {
+        "sit": lambda: sit(args.get("x"), args.get("y"), args.get("face")),
+        "furniture_pickup": lambda: furniture_pickup(args.get("x"), args.get("y")),
+        "pet_animals": lambda: _pet_animals_in_building(),
+        # ⚠️ 调**底层那个不带状态条**的（`pet_pet()` 外面裹了 `_with_state`）——
+        #    回执里再嵌一条状态条 = 一屏两张条，反而看不清「这次到底干了啥」。
+        "pet_pets": lambda: _pet_pets_natural(),
+        "pickup_scene": lambda: pickup_scene(),
+        # 🌾 收作物：走 farm 域的**拟人**那条（`scythe_crops` 脚本，自己选镰刀 + 逐个走位）。
+        #    ⚠️ **不是** C# 的 `/harvest`（那条隔空批量、产物直进包，恒 2026-09-17 否掉过）。
+        #    ⚠️ 它是**长脚本（异步）**：回的是 job 号 ⇒ 回执里**别说成"收完了"**。
+        "harvest_crops": lambda: harvest_crops(radius=args.get("radius") or 25),
+        # ⛏ 单格锄：`_farm_till(x,y)` —— x/y 必填、缺省 1×1，**单格恒走拟人逐格**。
+        "farm_till": lambda: _farm_till(x=args.get("x"), y=args.get("y")),
+    }
+    if op in helpers:
+        try:
+            txt = str(helpers[op]())
+        except Exception as e:
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        # ⚠️ 判"成没成"只看它自己那句开头是不是 ❌ —— **别在这儿替它下结论**。
+        return {"ok": not txt.lstrip().startswith("❌"), "text": txt}
+    try:
+        if op in _IM_POST_OPS:
+            return api._ai_post(f"/{op}", args)
+        return api._ai_get(f"/{op}", args)
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def _im_head(ctx) -> str:
+    """单子抬头：**我在哪、还剩多少体力**（都是游戏给的数）。"""
+    return f"🎯 {ctx.loc or '?'} ({ctx.px},{ctx.py}) · 🔋{ctx.stamina}"
+
+
+@mcp.tool()
+def intent(ops: str = "show", kw: dict | None = None) -> str:
+    """🎯 意图选项单：**看单子 → 敲编号**。把"这一刻能做的事"列成一屏，你只管报第几行。
+
+    ops：
+      show  看单子（默认）。一行一件事，`←` 后面是理由。
+      do    敲编号。`do 1` 做第 1 行；`do 1,4` **多选**（选哪些，顺序无所谓）；
+            `do 1=2,4=7` **各多少**（号=数量，配对，顺序也无所谓）。`0` = 这些都不是。
+      at    指哪打哪：`at x y` 指一个坐标，出来的是"对这格能做什么"（逃生口）。
+      help  这个说明。
+
+    ⚠️ 两条用法：① 目录行（句尾带 `…`）点开还有下一层，**号是当场发的、不跨屏**——
+    每次敲之前先 `show` 看一眼当前那一屏。② 单子上**出现的每一条，按了就成**；
+    没出现的不是"不行"，是这一刻算不出来。
+
+    Args:
+        ops: show / do / at / help
+        kw: do → {"code": "1,4"}（编号）· at → {"x": 12, "y": 30} · show → {"n": 5}（显示几条）
+    """
+    kw = kw or {}
+    o = (ops or "show").strip().lower()
+
+    if o in ("help", "?", "帮助", "说明"):
+        return _with_state(__doc__ or "")
+
+    if o in ("at", "指", "指哪打哪"):
+        x, y = kw.get("x"), kw.get("y")
+        if x is None or y is None:
+            return _with_state("❌ at 要 x y 两个坐标（如 kw={\"x\":12,\"y\":30}）—— 坐标自己查："
+                               "地图/周围/找 NPC 那些只读的")
+        try:
+            ctx = _im_ctx()
+            return _with_state(intent_menu.render_at(ctx, int(x), int(y)))
+        except Exception as e:
+            return _with_state(f"❌ 看 ({x},{y}) 出错：{type(e).__name__}: {e}")
+
+    if o in ("do", "敲", "行"):
+        code = kw.get("code", kw.get("号", kw.get("n")))
+        if code is None or code == "":
+            return _with_state("❌ 敲个编号：kw={\"code\":\"1\"}（多选 `1,4`；带数量 `1=2,4=7`；"
+                               "`0` = 这些都不是）")
+        try:
+            ctx = _im_ctx()
+            return intent_menu.do_row(code, _im_run, ctx)
+        except Exception as e:
+            return _with_state(f"❌ 敲 {code} 出错：{type(e).__name__}: {e}")
+
+    if o in ("show", "看", "单子", ""):
+        try:
+            ctx = _im_ctx()
+            n = int(kw.get("n") or 5)
+            return _with_state(intent_menu.render_menu(ctx, n=n, header=_im_head(ctx)))
+        except Exception as e:
+            return _with_state(f"❌ 开单子出错：{type(e).__name__}: {e}")
+
+    return _with_state(f"❌ 不认识的 ops「{ops}」—— 只有 show / do / at / help")
+
+
 #   模块常量：domain_selftest.py 直接 import 校验 keep-set 完整性。
 _KEEP_TOOLS = {
     # 13 域 dispatcher（2026-09-02 合并：quest→menu, care→farm）
     "check", "farm", "mine", "cabin", "social", "scene",
     "menu", "storage", "daily", "map", "festival", "fish", "settings",
+    # 🎯 2026-09-29：意图选项单（`senses` 分支那套「动作空间恒定」）——**必须在这儿**，
+    #    否则注册了也够不着 = 域op断档那个病（工具存在、AI 看不见）。
+    #    ⚠️ 名字**不能叫 `menu`**（那是"界面/菜单域"，早占了）；这一层叫 `intent`。
+    "intent",
     # 🧭 2026-09-02 合并：script(五合一)/session(三合一)——run_script/script_start/status/stop/async_config→script；
     #   session_status/set/export→session。⚠️旧工具名已隐藏，AI 别直调。
     "script", "session",

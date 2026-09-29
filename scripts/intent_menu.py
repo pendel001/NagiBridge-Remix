@@ -140,6 +140,12 @@ class Ctx:
     inv: list = field(default_factory=list)          # scan_backpack 的结果
     tiles: dict = field(default_factory=dict)        # {(x,y): /surroundings 的 tile}
     menu: Optional[dict] = None
+    # 🪑 我此刻是不是坐着（`/sittable` 的 `me.sitting`）。坐着时**不该再给"坐"的行**
+    #    ——要先起身（`scene stand`）。这是**处境**，不是格子的属性。
+    sitting: bool = False
+    # 🐾 本图的宠物（猫狗）——来自 `/surroundings` 的 `npcs` 里 `kind=="pet"` 的那几个。
+    #    它们是**世界级**的（不属于某一格的动作），所以不进 tiles。
+    pets: list = field(default_factory=list)
     stamina: int = 0
     # 🎒 背包容量（游戏 `Farmer.MaxItems`：12/24/36 三档）。
     #    “取”那条行要判“背包放得下吗”——**只能问游戏要**，写死 36 就是编表。
@@ -381,6 +387,187 @@ def _read_reason(ctx, t):
 
 def _read_show(ctx, t):
     return f"看 {t.get('name')}"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 🪑 坐 / 🛋 搬家具 / 🐾 摸 —— 2026-09-29 接线
+# ═══════════════════════════════════════════════════════════════════
+
+def _receipt_from_helper(verb_cn, desc, r):
+    """**高阶层动作**（那种 Python 里已经写好的、自己会读回验证的 op）的回执。
+
+    ⚠️ 回执**优先用它自己的话**（`text`），别在这儿重拼一遍：
+    那些 op 里带着复核（`furniture_pickup` 就是**靠前后 diff 才没报错名字**的，
+    恒 2026-09-19 真机抓到过"报的是地毯、动的是椅子"）。
+    我们重拼 = 把它们的复核丢掉，又回到"嘴上说成功"。
+    """
+    if not isinstance(r, dict):
+        return render_receipt(verb_cn, desc, False, note=f"回包看不懂：{r!r}")
+    txt = (r.get("text") or "").strip()
+    ok = bool(r.get("ok"))
+    if txt:
+        return f"{'✅' if ok else '❌'} {verb_cn} {desc}\n   " + txt.replace("\n", "\n   ")
+    if not ok:
+        return render_receipt(verb_cn, desc, False, note=f"游戏回：{r.get('error') or r}")
+    return render_receipt(verb_cn, desc, True)
+
+
+def _sit_can(ctx, t):
+    """🪑 坐——判据**问游戏**（`/sittable` 里 C# 照抄了 `GetSeatCapacity()` / `mapSeats`，
+    连"吃不吃朝向"都是照抄 `Furniture.GetSittingDirection()`，见 CHANGELOG 09-11）。
+    ⚠️ **坐着时不给**（要先 `scene stand` 起身）；座位满了也不给。
+    """
+    s = (t or {}).get("seat")
+    if not s or ctx.sitting:
+        return CAN_NO
+    free = s.get("free")
+    if free is None:
+        return CAN_MAYBE
+    return CAN_YES if free > 0 else CAN_NO
+
+
+def _sit_show(ctx, t):
+    return f"坐 {t['seat'].get('name') or '座位'}"
+
+
+def _sit_reason(ctx, t):
+    return "吃朝向" if (t["seat"] or {}).get("face") else ""
+
+
+def _exec_sit(ctx, targets, run):
+    s = targets[0]["seat"]
+    r = run("sit", {"x": s.get("x"), "y": s.get("y")})
+    return _receipt_from_helper("坐", s.get("name") or f"({s.get('x')},{s.get('y')})", r)
+
+
+def _pickup_can(ctx, t):
+    """🛋 拿得起家具吗。
+
+    ⚠️ **游戏没有"这件能不能拿"的事前判据**（`canBeRemoved()` 要传人、且装修图里恒真）
+    ⇒ 这一条**没有真正的 can()**，只能"有家具就给行、拿不动由回执如实报"
+       （背包满 / 别人家的床 —— 那两样 `furniture_pickup` 都会点名说）。
+    ⚠️ 开菜单时拿不了（helper 自己写的）⇒ 开菜单就不给。
+    """
+    if not t or ctx.menu:
+        return CAN_NO
+    return CAN_YES if t.get("furniture") else CAN_NO
+
+
+def _pickup_show(ctx, t):
+    return f"搬走 {t['furniture'].get('name') or '家具'}"
+
+
+def _pickup_reason(ctx, t):
+    f = t["furniture"]
+    wh = f"{f.get('width')}×{f.get('height')}"
+    return f"{wh} · 装修图可隔屋拿"
+
+
+def _exec_pickup(ctx, targets, run):
+    f = targets[0]["furniture"]
+    r = run("furniture_pickup", {"x": f.get("x"), "y": f.get("y")})
+    return _receipt_from_helper("搬走家具", f.get("name") or "", r)
+
+
+def _animals_left(ctx):
+    """还没摸的牲畜——`/animals` 的 `wasPetToday`（**游戏自己的字段**，不是我们记的账）。"""
+    return [t for t in ctx.tiles.values() if (t.get("animal") or {}).get("wasPetToday") is False]
+
+
+def _pet_can(ctx, t):
+    return CAN_YES if _animals_left(ctx) else CAN_NO
+
+
+def _pet_show(ctx, t):
+    return "摸 还没摸的动物"
+
+
+def _pet_reason(ctx, t):
+    left = _animals_left(ctx)
+    cnt = {}
+    for a in left:
+        ty = (a.get("animal") or {}).get("type") or "?"
+        cnt[ty] = cnt.get(ty, 0) + 1
+    return f"{len(left)} 只（" + "、".join(f"{k}×{v}" for k, v in cnt.items()) + "）"
+
+
+def _exec_pet(ctx, targets, run):
+    left = _animals_left(ctx)
+    r = run("pet_animals", {})
+    return _receipt_from_helper("摸动物", f"{len(left)} 只", r)
+
+
+def _pets_can(ctx, t):
+    return CAN_YES if ctx.pets else CAN_NO
+
+
+def _pets_show(ctx, t):
+    return "摸 猫狗"
+
+
+def _pets_reason(ctx, t):
+    return "、".join(p.get("name") or "宠物" for p in ctx.pets)
+
+
+def _exec_pets(ctx, targets, run):
+    who = "、".join(p.get("name") or "宠物" for p in ctx.pets)
+    r = run("pet_pets", {})
+    return _receipt_from_helper("摸猫狗", who, r)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 🌿 捡 / 🌾 收作物 / ⛏ 锄 —— 2026-09-29 接线
+# ═══════════════════════════════════════════════════════════════════
+# ⚠️ 这三个**形状不一样**，是查过实现才定的（别看着都是"农活"就长一样）：
+#   · **捡**：拟人那条是 `pickup_scene`（走过去 → 转身 → interact）**一次捡一片**，
+#     它**不是逐格动作** ⇒ 聚合行（同 166 ⑨：一片走行）。
+#     （另有 `/interact{x,y}` 能捡，但**没有距离校验 = 隔空捡**，不走它。）
+#   · **收作物**：`/harvest` 是**隔空半径批量**（快捷路），farm 域的 `harvest` 才是拟人
+#     （`scythe_crops` 脚本，逐个走位）—— 两者**都只吃半径、不吃坐标** ⇒ 也只能聚合。
+#     ⚠️ 半径**别超 25**：C# 那边 `radius` 收 `>0 && <=30`，超了**静默落回 10**
+#     （"报成功而事没发生"那个病，见 CHANGELOG 那条）。
+#   · **锄**：`_farm_till(x,y)` **x/y 必填、缺省 1×1**，且单格**恒走拟人逐格**（走过去→转身→挥锄）
+#     ⇒ 这个**可以逐格**，就按逐格接。
+# 📌 一句话：**目标算不算得出 / 端点认不认坐标，决定了它长成行还是聚合行**（同 166 ⑨）。
+
+def _pick_reason_many(ctx, targets):
+    cnt = {}
+    for t in targets:
+        nm = t.get("object") or "地上的东西"
+        cnt[nm] = cnt.get(nm, 0) + 1
+    return "、".join(f"{k}×{v}" for k, v in sorted(cnt.items(), key=lambda x: -x[1]))
+
+
+def _exec_pick(ctx, targets, run):
+    """🌿 捡——走**拟人那条**（`pickup_scene`：走过去、转身、interact），一次把附近能捡的捡了。"""
+    r = run("pickup_scene", {})
+    return _receipt_from_helper("捡", f"附近 {len(targets)} 处", r)
+
+
+def _harvest_reason_many(ctx, targets):
+    cnt = {}
+    for t in targets:
+        nm = t.get("cropName") or "作物"
+        cnt[nm] = cnt.get(nm, 0) + 1
+    return "、".join(f"{k}×{v}" for k, v in sorted(cnt.items(), key=lambda x: -x[1]))
+
+
+def _exec_harvest(ctx, targets, run):
+    """🌾 收作物——走 farm 域的**拟人**收（`scythe_crops` 脚本，自己选镰刀、逐个走位）。
+
+    ⚠️ **不是** C# 的 `/harvest`：那条是隔空批量、产物直进包（恒 2026-09-17 否掉过）。
+    ⚠️ 半径给 **25**：C# 的 `/surroundings` 收 `>0 && <=30`，超了**静默落回 10**。
+    ⚠️ 它是**长脚本（异步）** ⇒ 回执是"跑起来了 + 怎么查"，不是"收完了"——**别把这句当成了**。
+    """
+    r = run("harvest_crops", {"radius": 25})
+    return _receipt_from_helper("收作物", f"半径 25 内（看见 {len(targets)} 格熟的）", r)
+
+
+def _exec_dig(ctx, targets, run):
+    """⛏ 锄——`farm till` 的单格路（`_farm_till(x,y)`：x/y 必填、缺省 1×1、单格恒走拟人）。"""
+    t = targets[0]
+    r = run("farm_till", {"x": t.get("x"), "y": t.get("y")})
+    return _receipt_from_helper("锄", f"({t.get('x')},{t.get('y')})", r)
 
 
 def _held_name(slot) -> str:
@@ -771,9 +958,25 @@ VERBS: list = [
     #        （`收这块地（12 格成熟）`），不是"对着这一格收"。**塞进逐格动词表就是走错形状**。
     #      · 坐/搬家具/摸动物：要"走过去 + 转向 + 交互"的编排，且**观感要恒验收**
     #        （拟人那条路），不该在没有真机的情况下先接上。
-    Verb("pick",    "捡",     90, _pick_can,    _pick_reason,    _pick_show,    "tile"),
-    Verb("harvest", "收作物", 85, _harvest_can, _harvest_reason, _harvest_show, "tile"),
-    Verb("dig",     "锄",     60, _dig_can,     _dig_reason,     _dig_show,     "tile"),
+    # 🐾 摸（**情境动词**：问的是"现在这个处境"，不指某一格）——2026-09-29 接线
+    #    `wasPetToday` 就在 `/animals` 里 ⇒ "今天摸过没"**问得到**（PENDING 里那句是旧的）。
+    Verb("pet",     "摸 还没摸的动物", 84, _pet_can,  _pet_reason,  _pet_show,  "world",
+         exec=_exec_pet),
+    Verb("pet_pets", "摸 猫狗",      83, _pets_can, _pets_reason, _pets_show, "world",
+         exec=_exec_pets),
+    # 🪑 坐 / 🛋 搬家具（逐格）——2026-09-29 接线
+    Verb("sit",     "坐",     70, _sit_can,     _sit_reason,     _sit_show,     "tile",
+         exec=_exec_sit),
+    Verb("pickup_f", "搬走家具", 68, _pickup_can, _pickup_reason, _pickup_show, "tile",
+         exec=_exec_pickup),
+    # 🌿 捡 / 🌾 收作物：**聚合行**（一次一片，端点的语义本来就不是逐格）
+    Verb("pick",    "捡 地上的东西", 90, _pick_can, _pick_reason, _pick_show, "tile",
+         exec=_exec_pick, merge=True, reason_many=_pick_reason_many),
+    Verb("harvest", "收 成熟作物", 85, _harvest_can, _harvest_reason, _harvest_show, "tile",
+         exec=_exec_harvest, merge=True, reason_many=_harvest_reason_many),
+    # ⛏ 锄：**逐格**（`_farm_till(x,y)` 单格恒走拟人）
+    Verb("dig",     "锄",     60, _dig_can,     _dig_reason,     _dig_show,     "tile",
+         exec=_exec_dig),
     # 🍽📖 吃 / 看：**接上了**（2026-09-29）。两条都是 `held` 目标、都走"先 select 再动手"，
     #     共用同一个执行器形状（见 `_exec_select_then`）。
     #     ⚠️ 它们能不能出现，取决于 `ctx.held` —— 而 `ctx_from` 原先读 `currentTool`
@@ -859,7 +1062,13 @@ def _candidates(ctx: Ctx) -> list:
         # 「接了」= 有 exec（动作行）**或** 有 subs（目录行）。两个都没有 = 看得见按不动，不上单子。
         if v.exec is None and v.subs is None:
             continue
-        if v.target == "held":
+        if v.target == "world":
+            # 🌍 **情境动词**：不属于某一格，也不属于手持那件——它问的是"现在这个处境"。
+            #    （「摸 还没摸的（3 只）」「下到下一层」这类。）
+            #    目标传 `None`：动词自己看 ctx（它要什么自己拿），**不给它编一个假格子**。
+            if v.can(ctx, None) is True:
+                buckets.setdefault((v.key, None), []).append(None)
+        elif v.target == "held":
             t = ctx.held
             if t and v.can(ctx, t) is True:
                 buckets.setdefault((v.key, None if v.merge else v.show(ctx, t)), []).append(t)
@@ -871,15 +1080,18 @@ def _candidates(ctx: Ctx) -> list:
     rows = []
     for (vkey, label), targets in buckets.items():
         v = _VERB_BY_KEY[vkey]
-        near = min(targets, key=lambda t: _dist(ctx, t))
-        if v.merge:
+        # 🌍 情境动词的 targets 是 `[None]`（没有格）⇒ 距离 0、定位留空，理由由动词自己看 ctx 说。
+        world = bool(targets) and targets[0] is None
+        near = None if world else min(targets, key=lambda t: _dist(ctx, t))
+        dist = 0 if world else _dist(ctx, near)
+        if v.merge and not world:
             reason = v.reason_many(ctx, targets) if v.reason_many else v.reason(ctx, near)
         else:
             reason = v.reason(ctx, near)
         # 🗂 目录行的下一层**在这就算出来**（顶层要拿它报 `（N 件）`，也得知道它长不长）。
         lv = v.subs(ctx, targets) if v.subs else None
         rows.append(Row(verb=v, targets=targets,
-                        label=label or v.label, reason=reason, dist=_dist(ctx, near),
+                        label=label or v.label, reason=reason, dist=dist,
                         level=lv,
                         count_text=v.count(ctx, targets) if (v.count and lv) else None))
     # 排序：先按动词权重，再按**距离**。
@@ -1271,7 +1483,8 @@ def render_receipt(action: str, target_desc: str, ok: bool,
     return "\n".join(lines)
 
 
-def scan_world(surr: dict, machines: list = None, chests: list = None) -> dict:
+def scan_world(surr: dict, machines: list = None, chests: list = None,
+               seats: dict = None, furniture: dict = None, animals: dict = None) -> dict:
     """把 `/surroundings` + `/machines` + `/scan_chests` 三个回包**叠成一格一栈**。
 
     ⚠️ 为什么叠进同一格：一格上本来就能有多层（地板 / 物体 / 机器 / 家具）——
@@ -1312,11 +1525,33 @@ def scan_world(surr: dict, machines: list = None, chests: list = None) -> dict:
             "used": c.get("used"),
             "freeSlots": c.get("freeSlots"),
         }
+
+    # 🪑 座位（`/sittable`）。判据在 C# 里照抄游戏（`GetSeatCapacity()` + `mapSeats`），
+    #    我们只搬结果。**只挂锚点那一格**——座位点是游戏给的交互格。
+    for s in (seats or {}).get("seats") or []:
+        x, y = s.get("x"), s.get("y")
+        if isinstance(x, int) and isinstance(y, int):
+            tiles.setdefault((x, y), {"x": x, "y": y})["seat"] = s
+
+    # 🛋 家具（`/furniture`）。⚠️ **只挂锚点格**（`TileLocation`）：
+    #    大件（沙发/钢琴）覆盖多格，若逐格都挂，同一件会在单子上出现好几行
+    #    （聚合键是"名字+坐标"，坐标不同 = 好几行），**AI 会以为有好几件**。
+    for f in (furniture or {}).get("furniture") or []:
+        x, y = f.get("x"), f.get("y")
+        if isinstance(x, int) and isinstance(y, int):
+            tiles.setdefault((x, y), {"x": x, "y": y})["furniture"] = f
+
+    # 🐄 牲畜（`/animals`）——`wasPetToday` **就在回包里**（"今天摸过没"问得到）。
+    for a in (animals or {}).get("animals") or []:
+        x, y = a.get("x"), a.get("y")
+        if isinstance(x, int) and isinstance(y, int):
+            tiles.setdefault((x, y), {"x": x, "y": y})["animal"] = a
     return tiles
 
 
 def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None,
-             caps: dict = None) -> Ctx:
+             caps: dict = None, seats: dict = None, furniture: dict = None,
+             animals: dict = None) -> Ctx:
     """把 `/state`(**full**) + `/surroundings`(+`/machines`/`/scan_chests`) 拼成 Ctx。
 
     ⚠️ 只搬运，**不补默认值**：缺什么就让它缺着（`can()` 遇到缺失自然回 假/？）。
@@ -1351,7 +1586,7 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
                 held = it
                 break
 
-    tiles = scan_world(surr, machines, chests)
+    tiles = scan_world(surr, machines, chests, seats, furniture, animals)
 
     # 🀄 英文→中文对照：只用**手里已有的数据**堆，不为此打 HTTP。
     zh = {}
@@ -1365,10 +1600,16 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
             if n and dn:
                 zh.setdefault(n, dn)
 
+    # 🐾 猫狗（宠物）：`/surroundings` 的 `npcs` 里 `kind == "pet"` 那几个。
+    #    它们**不是** NPC、也不在 tiles 上 ⇒ 世界级（`target="world"` 的动词看这个）。
+    pets = [n for n in ((surr or {}).get("npcs") or []) if n.get("kind") == "pet"]
+
     return Ctx(px=p.get("x") or 0, py=p.get("y") or 0,
                loc=((state or {}).get("location") or {}).get("name") or "",
                held=held, inv=inv, tiles=tiles,
                menu=(state or {}).get("activeMenu"),
+               sitting=bool(((seats or {}).get("me") or {}).get("sitting")),
+               pets=pets,
                stamina=p.get("stamina") or 0, max_items=p.get("maxItems") or 0,
                caps=caps or {}, zh=zh)
 
@@ -1413,9 +1654,20 @@ def _fixture():
         (11, 13): {"x": 11, "y": 13, "is_chest": True, "chest_items": 1, "chest": {
             "name": "满箱", "capacity": 36, "used": 36, "freeSlots": 0,
             "items": [{"name": "Stone", "displayName": "石头", "count": 99, "qualifiedId": "(O)390"}]}},
+        # 🪑 座位 / 🛋 家具 / 🐄 牲畜（形照 `/sittable` `/furniture` `/animals` 的真实回包）
+        (14, 13): {"x": 14, "y": 13, "seat": {"kind": "furniture", "name": "木椅",
+                                             "x": 14, "y": 13, "capacity": 1, "free": 1,
+                                             "face": False}},
+        (15, 13): {"x": 15, "y": 13, "furniture": {"name": "红沙发", "x": 15, "y": 13,
+                                                   "width": 2, "height": 1, "furnitureType": 0}},
+        (11, 14): {"x": 11, "y": 14, "animal": {"name": "牛牛", "type": "White Cow",
+                                                "wasPetToday": False, "friendship": 120}},
+        (12, 14): {"x": 12, "y": 14, "animal": {"name": "哞哞", "type": "White Cow",
+                                                "wasPetToday": True, "friendship": 60}},
     }
     return Ctx(px=12, py=12, loc="FarmHouse", inv=inv, held=inv[0],
                tiles=tiles, stamina=268, max_items=36,
+               pets=[{"name": "喵喵", "kind": "pet"}],
                caps={"forage": True, "diggable": True, "harvestable": True})
 
 
@@ -1454,30 +1706,58 @@ def _selftest():
     ok.append(("catNum 缺失 → ？(不猜)", is_book(ctx.inv[2]) is CAN_MAYBE))
 
     # ③ 单子是**动作面**：没接执行的动词**一个都不许上**
-    menu = render_menu(ctx, n=5)
-    ok.append(("没接执行的动词不上单子（野莓/萝卜都不该出现）",
-               "野莓" not in menu and "萝卜" not in menu))
+    # ⚠️ 这条**必须用假动词验**（2026-09-29）：原来拿真动词（捡/收作物）当反例，
+    #    等它们真接上执行，断言就变成**过时的假红**。机制要用**构造出来的反例**验。
+    # ⚠️ n 给足（**别写死小 n**）：夹具一长，小 n 就把后面的行挤掉 ⇒ 假红。截断由 ④ 专门测。
+    probe = Verb("probe_unwired", "还没接的假动词", 1, lambda c, t: True,
+                 lambda c, t: "", lambda c, t: "假动作", "tile")
+    VERBS.append(probe)
+    _VERB_BY_KEY["probe_unwired"] = probe
+    try:
+        menu = render_menu(ctx, n=40)
+        ok.append(("没接执行的动词**不上单子**（机制）", "假动作" not in menu))
+    finally:
+        VERBS.remove(probe)
+        _VERB_BY_KEY.pop("probe_unwired", None)
     ok.append(("接了的动词在单子上", "收 已好的机器" in menu))
     # 🍽📖 2026-09-29：吃/看**接上执行了** ⇒ 手持那件（fixture 是古书）该出现
     ok.append(("接了的「看」在单子上（手持是书）", "看 古书" in menu))
+    # 🌿🌾⛏ 同一天接的：捡/收作物（**聚合行**）+ 锄（逐格）
+    ok.append(("接了的「捡」在单子上（聚合）", "捡 地上的东西" in menu))
+    ok.append(("接了的「收作物」在单子上（聚合）", "收 成熟作物" in menu))
+    ok.append(("接了的「锄」在单子上", "锄地" in menu))
     ok.append(("两台同产物 → 聚合成一行", "×2" in menu))
     ok.append(("产物摊在**理由**栏（Diamond×2）", "Diamond×2" in menu))
     ok.append(("单子带理由列", "←" in menu))
     ok.append(("单子留 0 出口", "做点别的" in menu))
 
     # ④ 铁律 2：不许静默截断
-    # ⚠️ 得**临时**给 pick 接个占位 exec——否则单子永远只有 1 行，这条根本测不到。
-    #    （这是"只列能执行的"的副作用：可测性被单子长度绑住了，记着。）
-    pick = _VERB_BY_KEY["pick"]
-    pick.exec = lambda c, ts, run: "（自验占位）"
-    _total = len(_candidates(ctx))
-    m1 = render_menu(ctx, n=1)
-    ok.append(("超出 N 条如实报「还有 K 项」", "还有" in m1))
-    # ⚠️ 别把条数写死——第一次写"3 个野莓 - 1 = 2"就漏算了 collect 那行也在单子上。
-    #    算出来再比，尺子才跟着代码走。
-    ok.append((f"报的数对得上（共 {_total} 条 - 显示 1）", f"还有 {_total - 1} 项" in m1))
-    ok.append(("没超 N 条时不该报", "还有" not in render_menu(ctx, n=9)))
-    pick.exec = None
+    # ⚠️ 得先有足够长的单子才测得出来 ⇒ 临时多挂几个占位动词（**用完原样还回去**）。
+    # ⚠️⚠️ 2026-09-29 踩过：这里原来是"临时给 pick 挂占位 exec、用完 `pick.exec = None`"——
+    #    那在 pick **本来就没接执行**时是对的；等 pick 真接上执行，那行就**把真执行器抹掉了**
+    #    整个后半场的用例跟着一起错（表现出来是"捡那条行不见了"）。
+    #    ⇒ **凡"临时改共享对象"的测试，必须存原值再还原**，不许写死成你以为的那个值。
+    probe_verbs = []
+    for i in range(4):
+        pv = Verb(f"probe_pad{i}", f"占位{i}", 1, lambda c, t: True,
+                  lambda c, t: "", lambda c, t: f"占位动作{i}", "tile",
+                  exec=lambda c, ts, run: "（自验占位）")
+        probe_verbs.append(pv)
+        VERBS.append(pv)
+        _VERB_BY_KEY[pv.key] = pv
+    try:
+        _total = len(_candidates(ctx))
+        m1 = render_menu(ctx, n=1)
+        ok.append(("超出 N 条如实报「还有 K 项」", "还有" in m1))
+        # ⚠️ 别把条数写死——第一次写"3 个野莓 - 1 = 2"就漏算了 collect 那行也在单子上。
+        #    算出来再比，尺子才跟着代码走。
+        ok.append((f"报的数对得上（共 {_total} 条 - 显示 1）", f"还有 {_total - 1} 项" in m1))
+        # ⚠️ 同样别写死 n：拿**算出来的条数**当尺子（夹具一变，写死的 n 就假红）
+        ok.append(("没超 N 条时不该报", "还有" not in render_menu(ctx, n=_total)))
+    finally:
+        for pv in probe_verbs:
+            VERBS.remove(pv)
+            _VERB_BY_KEY.pop(pv.key, None)
 
     # ⑤ 指哪打哪：接没接**都列**，但分开列（`at` 是问句不是动作面）
     at_empty = render_at(ctx, 99, 99)
@@ -1485,7 +1765,20 @@ def _selftest():
     ok.append(("指到空 → 不编「附近有」", "附近" not in at_empty))
     at_bush = render_at(ctx, 13, 12)
     ok.append(("指到野莓 → 出「捡」", "捡" in at_bush))
-    ok.append(("指到野莓 → 同时标明还没接执行", "还没接执行" in at_bush))
+    # ⚠️ 2026-09-29：捡**接上执行了** ⇒ 它该是"按得动的"，不再落 ⏳ 那行（原来那条断言过时了）。
+    ok.append(("接了的「捡」**不在** ⏳ 那行",
+               "捡" in at_bush and "还没接执行：捡" not in at_bush))
+    # 「⏳ 还没接执行」是**缺口探测器**——同样用**假动词**验（真动词迟早全接上）
+    gapv = Verb("probe_gap", "没接的假动作", 1, lambda c, t: True,
+                lambda c, t: "", lambda c, t: "假动作", "tile")
+    VERBS.append(gapv)
+    _VERB_BY_KEY["probe_gap"] = gapv
+    try:
+        ok.append(("没接执行的动词落 ⏳ 那行（缺口探测器）",
+                   "还没接执行" in render_at(ctx, 13, 12)))
+    finally:
+        VERBS.remove(gapv)
+        _VERB_BY_KEY.pop("probe_gap", None)
 
     # ⑥ 回执必须回显对象
     rc = render_receipt("卖出", "草莓×5", True, "+600g", "背包③ 现在是 菠萝×2")
@@ -1499,7 +1792,7 @@ def _selftest():
         calls.append((ep, payload))
         return {"ok": True, "collected": 2, "skippedFull": 0}
 
-    render_menu(ctx, n=9)                      # 先看一眼，才有单子可敲
+    render_menu(ctx, n=40)                      # 先看一眼，才有单子可敲
     # ⚠️ 按**标签**找那一行，不写死 1 号（2026-09-29 加容器行后，1 号已经变成箱子了）
     out = do_row(_no_of("收 已好的机器"), fake_run, ctx)
     ok.append(("do_row 打的是批量端点", bool(calls) and calls[0][0] == "machine_collect"))
@@ -1510,7 +1803,7 @@ def _selftest():
     def full_run(ep, payload):
         return {"ok": True, "collected": 1, "skippedFull": 7}
 
-    render_menu(ctx, n=9)
+    render_menu(ctx, n=40)
     ok.append(("背包满 → 说清下一步",
                "先去卖或存" in do_row(_no_of("收 已好的机器"), full_run, ctx)))
 
@@ -1580,7 +1873,7 @@ def _selftest():
 
     # ⑪ 📦 容器（166 ⑤）——一个箱子一行，点开是它的动作面
     reset_menu()
-    top = render_menu(ctx, n=9)
+    top = render_menu(ctx, n=40)
     ok.append(("📦 容器是**目录行**（句尾 `…`）", "矿石箱(13,13)…" in top))
     ok.append(("📦 目录行的计数是**箱里几件**", "3 件" in top))
     ok.append(("📦 理由栏给的是空位数", "空 33 格" in top))
@@ -1603,7 +1896,7 @@ def _selftest():
         return {"ok": True}
 
     do_row(0, fake_run, ctx)                       # 0 = 这些都不是（回顶层）
-    render_menu(ctx, n=9)
+    render_menu(ctx, n=40)
     do_row(_no_of("矿石箱"), fake_run, ctx)
     pick = do_row(_no_of("取"), fake_run, ctx)
     ok.append(("「取」点开 → 列箱里的东西（号印在眼前）", "钻石" in pick and "翡翠" in pick))
@@ -1616,7 +1909,7 @@ def _selftest():
 
     # 满箱 ⇒ 「存」那条行**不出现**（不赌"能叠上去"）
     do_row(0, fake_run, ctx)
-    render_menu(ctx, n=9)
+    render_menu(ctx, n=40)
     full = do_row(_no_of("满箱"), fake_run, ctx)
     ok.append(("满箱（freeSlots=0）⇒ 「存」不出现", "存…" not in full))
     ok.append(("满箱仍能「取」", "取…" in full))
@@ -1630,7 +1923,7 @@ def _selftest():
     capok = _fixture()
     capok.caps = dict(capok.caps, chest_open=True)
     reset_menu()
-    render_menu(capok, n=9)
+    render_menu(capok, n=40)
     lv = do_row(_no_of("矿石箱"), fake_run, capok)
     ok.append(("有 `chest_open` 能力位 ⇒ 「看」出现", "走过去开箱" in lv))
     calls.clear()
@@ -1641,7 +1934,7 @@ def _selftest():
 
     # 存：背包 ∩ 容器收的 ∩ 放得下
     do_row(0, fake_run, ctx)
-    render_menu(ctx, n=9)
+    render_menu(ctx, n=40)
     do_row(_no_of("矿石箱"), fake_run, ctx)
     spick = do_row(_no_of("存"), fake_run, ctx)
     ok.append(("「存」点开的候选来自**背包**", "草莓" in spick))
@@ -1666,7 +1959,7 @@ def _selftest():
     eatctx = _fixture()
     eatctx.held = eatctx.inv[1]                    # 草莓（edibleValue=20）
     reset_menu()
-    ok.append(("手持草莓 ⇒ 「吃 草莓」在单子上", "吃 草莓" in render_menu(eatctx, n=9)))
+    ok.append(("手持草莓 ⇒ 「吃 草莓」在单子上", "吃 草莓" in render_menu(eatctx, n=40)))
     calls.clear()
     rc = do_row(_no_of("吃 草莓"), eat_run, eatctx)
     ok.append(("吃 **先 select**（锁到单子上那一件）", bool(calls) and calls[0][0] == "select"))
@@ -1680,7 +1973,7 @@ def _selftest():
         return {"ok": True}
 
     reset_menu()
-    render_menu(ctx, n=9)                          # fixture 手持 = 古书
+    render_menu(ctx, n=40)                          # fixture 手持 = 古书
     calls.clear()
     rc2 = do_row(_no_of("看 古书"), read_fail_run, ctx)
     ok.append(("看 走 `use mode=read`",
@@ -1708,7 +2001,7 @@ def _selftest():
     nospace = _fixture()
     nospace.max_items = 0                          # 老 DLL：算不出背包容量
     reset_menu()
-    render_menu(nospace, n=9)
+    render_menu(nospace, n=40)
     lv0 = do_row(_no_of("矿石箱"), fake_run, nospace)
     ok.append(("背包容量**算不出** ⇒ 「取」不出现（第三档同「不」）", "取…" not in lv0))
     # ⚠️ 但"算不出"**不解释**（那是连接级的事）；只有"算得出装不下"才给一句+下一步
@@ -1717,7 +2010,7 @@ def _selftest():
     fullbag = _fixture()
     fullbag.max_items = len(fullbag.inv)           # 背包**满了**（算得出）
     reset_menu()
-    render_menu(fullbag, n=9)
+    render_menu(fullbag, n=40)
     lv1 = do_row(_no_of("矿石箱"), fake_run, fullbag)
     ok.append(("背包满（算得出）⇒ 「取」不出现", "取…" not in lv1))
     ok.append(("背包满 ⇒ 说清下一步", "背包满了" in lv1 and "先卖或存" in lv1))
@@ -1725,9 +2018,9 @@ def _selftest():
     # ⑮ 2026-09-29 审查抓出来的洞——**每一条都钉一条断言**（不钉就是修了个寂寞）
     # (a) ⚠️ 子层被"再看一眼"砍掉 ⇒ 号会悄悄换意思
     reset_menu()
-    render_menu(ctx, n=9)
+    render_menu(ctx, n=40)
     do_row(_no_of("矿石箱"), fake_run, ctx)
-    again = render_menu(ctx, n=9)                  # 模拟 AI 又看一眼单子
+    again = render_menu(ctx, n=40)                  # 模拟 AI 又看一眼单子
     ok.append(("⚠️ 再看一眼单子**仍停在子层**（号不换意思）", "取…" in again))
 
     # (b) ⚠️ `/select` 没锁上 ⇒ **不许接着吃/读**（否则吃掉手上那件别的）
@@ -1738,7 +2031,7 @@ def _selftest():
         return {"ok": True, "ate": "Pale Ale", "health": 1, "stamina": 1}
 
     reset_menu()
-    render_menu(eatctx, n=9)
+    render_menu(eatctx, n=40)
     calls.clear()
     r_sel = do_row(_no_of("吃 草莓"), sel_fail_run, eatctx)
     ok.append(("⚠️ select 没锁上 ⇒ **不动手**（不吃错东西）",
@@ -1753,14 +2046,14 @@ def _selftest():
     ok.append(("作物名走 `cropName`（不是印 ID）", "萝卜" in render_at(ctx, 12, 13)))
 
     # (e) 吃那一行**不重复印「手持」**（`_where()` 已经印过一次）
-    ok.append(("吃 的理由栏不重复印「手持」", "手持 手持" not in render_menu(eatctx, n=9)))
+    ok.append(("吃 的理由栏不重复印「手持」", "手持 手持" not in render_menu(eatctx, n=40)))
 
     # (f) 同名两摞：**端点只按名字认** ⇒ 认不出的不列，且如实说（铁律 2）
     dupctx = _fixture()
     dupctx.tiles[(13, 13)]["chest"]["items"].append(
         {"name": "Diamond", "displayName": "钻石", "count": 5, "qualifiedId": "(O)72"})
     reset_menu()
-    render_menu(dupctx, n=9)
+    render_menu(dupctx, n=40)
     lv_dup = do_row(_no_of("矿石箱"), fake_run, dupctx)
     ok.append(("同名两摞 ⇒ **如实说**挑出去了几摞", "同名但不同品质" in lv_dup))
     ok.append(("同名两摞确实没进候选", "钻石" not in do_row(_no_of("取"), fake_run, dupctx)))
@@ -1773,7 +2066,7 @@ def _selftest():
         return {"ok": True}
 
     reset_menu()
-    render_menu(ctx, n=9)
+    render_menu(ctx, n=40)
     do_row(_no_of("矿石箱"), fake_run, ctx)
     do_row(_no_of("取"), fake_run, ctx)
     do_row("1", fake_run, ctx)
@@ -1786,9 +2079,89 @@ def _selftest():
     badbox.tiles[(13, 13)]["chest"].pop("used")
     badbox.tiles[(13, 13)]["chest"].pop("capacity")
     reset_menu()
-    render_menu(badbox, n=9)
+    render_menu(badbox, n=40)
     lv_none = do_row(_no_of("矿石箱"), fake_run, badbox)
     ok.append(("字段缺 ⇒ 不印 `None`", "None" not in lv_none))
+
+    # ⑯ 2026-09-29 接线：坐 / 搬家具 / 摸（agent 说的"全转接个大概"）
+    def act_run(ep, payload):
+        calls.append((ep, payload))
+        return {"ok": True, "text": f"{ep} 走过了（这是它自己的话）"}
+
+    reset_menu()
+    top2 = render_menu(ctx, n=40)
+    ok.append(("🪑 「坐 木椅」在单子上", "坐 木椅" in top2))
+    ok.append(("🛋 「搬走 红沙发」在单子上", "搬走 红沙发" in top2))
+    ok.append(("🐾 摸动物只数**只算没摸过的**（2 头里 1 头摸过了）",
+               "摸 还没摸的动物" in top2 and "1 只" in top2))
+    ok.append(("🐾 猫狗那一行也在", "摸 猫狗" in top2))
+
+    calls.clear()
+    r_sit = do_row(_no_of("坐 木椅"), act_run, ctx)
+    ok.append(("坐 走 `sit`（高阶层，带读回验证）",
+               any(c[0] == "sit" for c in calls)))
+    ok.append(("坐 的回执**用它自己的话**（不重拼）", "它自己的话" in r_sit))
+
+    reset_menu()
+    render_menu(ctx, n=40)
+    calls.clear()
+    r_fur = do_row(_no_of("搬走 红沙发"), act_run, ctx)
+    ok.append(("搬家具 走 `furniture_pickup`", any(c[0] == "furniture_pickup" for c in calls)))
+    ok.append(("搬家具 不回编结果", "它自己的话" in r_fur))
+
+    reset_menu()
+    render_menu(ctx, n=40)
+    calls.clear()
+    do_row(_no_of("摸 还没摸的动物"), act_run, ctx)
+    ok.append(("摸动物 走 `pet_animals`", any(c[0] == "pet_animals" for c in calls)))
+    reset_menu()
+    render_menu(ctx, n=40)
+    calls.clear()
+    do_row(_no_of("摸 猫狗"), act_run, ctx)
+    ok.append(("摸猫狗 走 `pet_pets`", any(c[0] == "pet_pets" for c in calls)))
+
+    # ⚠️ 已经坐着 ⇒ **不该再给「坐」**（要先 scene stand 起身）
+    sitctx = _fixture()
+    sitctx.sitting = True
+    reset_menu()
+    ok.append(("坐着时不给「坐」的行", "坐 木椅" not in render_menu(sitctx, n=40)))
+    # ⚠️ 养着宠物才给「摸猫狗」那行
+    nopet = _fixture()
+    nopet.pets = []
+    reset_menu()
+    ok.append(("没猫狗就不给「摸猫狗」", "摸 猫狗" not in render_menu(nopet, n=40)))
+
+    # 🌿🌾⛏ 捡 / 收作物 / 锄（2026-09-29 接线）——形状不一样，各测各的
+    reset_menu()
+    render_menu(ctx, n=40)
+    calls.clear()
+    r_pick = do_row(_no_of("捡 地上的东西"), act_run, ctx)
+    ok.append(("捡 走**拟人那条** `pickup_scene`（不是隔空的 /interact）",
+               any(c[0] == "pickup_scene" for c in calls)
+               and not any(c[0] == "interact" for c in calls)))
+    ok.append(("捡 是**聚合行**（一次一片，不是逐格）", "它自己的话" in r_pick))
+
+    reset_menu()
+    render_menu(ctx, n=40)
+    calls.clear()
+    r_hv = do_row(_no_of("收 成熟作物"), act_run, ctx)
+    ok.append(("收作物 走 farm 域的**拟人** `harvest_crops`（不是 C# 的 /harvest）",
+               any(c[0] == "harvest_crops" for c in calls)
+               and not any(c[0] == "harvest" for c in calls)))
+    ok.append(("收作物 半径 **25**（超 30 会被 C# 静默落回 10）",
+               all(c[1].get("radius") == 25 for c in calls if c[0] == "harvest_crops")))
+
+    reset_menu()
+    render_menu(ctx, n=40)
+    calls.clear()
+    do_row(_no_of("锄地"), act_run, ctx)
+    ok.append(("锄 走 `farm_till` 且**带坐标**（单格恒走拟人逐格）",
+               any(c[0] == "farm_till" and c[1].get("x") is not None for c in calls)))
+    # ⚠️ 开菜单时家具拿不了 ⇒ 不给那行
+    menuctx = _fixture()
+    menuctx.menu = {"type": "ItemGrabMenu"}
+    reset_menu()
+    ok.append(("开着菜单 ⇒ 不给「搬家具」", "搬走 红沙发" not in render_menu(menuctx, n=40)))
 
     print("\n—— 意图选项单 · 不吃游戏自验 ——")
     for name, good in ok:
@@ -1808,7 +2181,7 @@ def _selftest():
     print(render_at(ctx, 13, 13))
     print("\n> do(箱子)   （点开它——里面的行**由处境算**，不是模板）")
     reset_menu()
-    render_menu(ctx, n=9)
+    render_menu(ctx, n=40)
     print(do_row(_no_of("矿石箱"), lambda e, p: {"ok": True}, ctx))
     return len(bad) == 0
 

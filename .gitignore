@@ -3,6 +3,11 @@ bin/
 obj/
 build_output/
 
+# ── 🔒 DLL 备份（本地回滚用：二进制、每个 1MB+）──
+#    ⚠️ 2026-09-29 踩过：一次 `git add -A` 顺手把 1.2MB 的备份 DLL 提交了。
+#    这目录是本机的事（回滚靠它），跟 git 没关系。
+_dll_backup/
+
 # ── Python ──
 __pycache__/
 *.pyc
