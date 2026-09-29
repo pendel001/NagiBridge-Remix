@@ -290,24 +290,10 @@ def _harvest_show(ctx, t):
     return f"收 {t.get('cropName') or '作物'}"
 
 
-def _dig_can(ctx, t):
-    """⛏ 锄：`/surroundings` 的 `diggable`（游戏地图属性 `Diggable`）。
-
-    同 `forage`：**只在为真时才写键** ⇒ 键不在 = 不可锄。
-    """
-    if not t:
-        return CAN_NO
-    if ctx.cap("diggable") is None:
-        return CAN_MAYBE
-    return CAN_YES if t.get("diggable") is True else CAN_NO
-
-
-def _dig_reason(ctx, t):
-    return "游戏判可锄（挖斑点/开地）"
-
-
-def _dig_show(ctx, t):
-    return "锄地"
+# ⛔ `_dig_can`/`_dig_reason`/`_dig_show`/`_exec_dig` 2026-09-29 **整套删掉**了
+#    （不是注释掉）—— 留着当死代码，下一个人只会看见"哦这儿有个现成的锄"又接回去。
+#    为什么删见 `VERBS` 里那段 ⛔ 注释（恒：**"能用但不划算"的路 = 走偏的路**）。
+#    判据本身没浪费：`diggable`（`/surroundings` 的 `Diggable` 地图属性）农活域那边还在用。
 
 
 def _collect_can(ctx, t):
@@ -630,13 +616,6 @@ def _exec_harvest(ctx, targets, run):
     r = run("harvest_crops", {"radius": 25})
     return _receipt_from_helper("收作物", "半径 25 内", r,
                                 planned=f"{len(targets)} 格熟的")
-
-
-def _exec_dig(ctx, targets, run):
-    """⛏ 锄——`farm till` 的单格路（`_farm_till(x,y)`：x/y 必填、缺省 1×1、单格恒走拟人）。"""
-    t = targets[0]
-    r = run("farm_till", {"x": t.get("x"), "y": t.get("y")})
-    return _receipt_from_helper("锄", f"({t.get('x')},{t.get('y')})", r)
 
 
 def _held_name(slot) -> str:
@@ -1421,10 +1400,19 @@ VERBS: list = [
     Verb("harvest", "收 成熟作物", 85, _harvest_can, _harvest_reason, _harvest_show, "tile",
          exec=_exec_harvest, merge=True, batch=True,          # `harvest_crops` 是半径批量
          reason_many=_harvest_reason_many),
-    # ⛏ 锄：**逐格**（`_farm_till(x,y)` 单格恒走拟人）⇒ `batch=False`：
-    #    执行器只吃 `targets[0]`，**不许印 `×N`**（真机：`×185` 按下去只锄 1 格）。
-    Verb("dig",     "锄",     60, _dig_can,     _dig_reason,     _dig_show,     "tile",
-         exec=_exec_dig),
+    # ⛔ **「锄」2026-09-29 摘掉了，别再往上加**（恒拍板，理由比"它没用"重要得多）：
+    #    > 「这种需要 AI 参与规划的行为，还是让它自己调我们的原路线吧。不然你给了它锄，
+    #    >  它可能反而会觉得：哦，第一眼给我返回了这个。然后锄一大块地，全靠自己走位
+    #    >  一格一格弄。**毕竟 LLM 有多条路可以走的时候，就有走偏的可能。**」
+    #    ⇒ **菜单是多路口的强暗示**：第一屏返回什么，AI 就倾向照着做。
+    #      所以单子上只放「**这条就是最优解**」的动作；"能用但不划算"的一律别放
+    #      —— 多一条路 = 多一分走偏。
+    #    当时它长这样：`锄地 ← (50,11) · 附近另有 184 格 · 一次做一格`（`farm_till` 单格）。
+    #    而真正的锄地路径在**农活域**，都**比它好**：
+    #      · 整块地 → `farm till x1 y1 x2 y2 [layout=N]`：裁边、算蓄力站位、**一锄 18 格**、蛇形走位
+    #      · 挖斑点 → `scene ops=spot`：扫 `(O)590`/`(O)SeedSpot`/姜点，**批量全挖**
+    #    留着它只剩一个后果：拿农场满地裸泥（`Diggable` 是地图属性，整片农田都 true）
+    #    当噪音，占掉第一屏一个真动作的位置。
     # 🍽📖 吃 / 看：**接上了**（2026-09-29）。两条都是 `held` 目标、都走"先 select 再动手"，
     #     共用同一个执行器形状（见 `_exec_select_then`）。
     #     ⚠️ 它们能不能出现，取决于 `ctx.held` —— 而 `ctx_from` 原先读 `currentTool`
@@ -2303,10 +2291,12 @@ def _selftest():
     ok.append(("接了的动词在单子上", "收 已好的机器" in menu))
     # 🍽📖 2026-09-29：吃/看**接上执行了** ⇒ 手持那件（fixture 是古书）该出现
     ok.append(("接了的「看」在单子上（手持是书）", "看 古书" in menu))
-    # 🌿🌾⛏ 同一天接的：捡/收作物（**聚合行**）+ 锄（逐格）
+    # 🌿🌾 同一天接的：捡/收作物（**聚合行**）
     ok.append(("接了的「捡」在单子上（聚合）", "捡 地上的东西" in menu))
     ok.append(("接了的「收作物」在单子上（聚合）", "收 成熟作物" in menu))
-    ok.append(("接了的「锄」在单子上", "锄地" in menu))
+    # ⛔ 原来这儿有一条 `接了的「锄」在单子上` —— 2026-09-29 随动词退役一起**删掉**了。
+    #    ⚠️ 别改成 `not in` 就完事：那是**另一条闸**（"不许回来"，在下面），
+    #    混在这里会让人以为"锄本来就该在、只是今天不在"。
     ok.append(("两台同产物 → 聚合成一行", "×2" in menu))
     ok.append(("产物摊在**理由**栏（Diamond×2）", "Diamond×2" in menu))
     ok.append(("单子带理由列", "←" in menu))
@@ -2692,20 +2682,22 @@ def _selftest():
     # ⚡⚡ **`×N` 只许给"真会全做"的动词**（2026-09-29 真机：`锄地 ×185` 按下去
     #    只锄了 1 格，世界实查 `(50,11)` `Grass`→`HoeDirt`、邻居没动、回执 `1/1 锄出`）。
     #    `×N` 在单子上的语义是"这一按会把 N 个都做了"——只吃 `targets[0]` 的动词印它 = **假承诺**。
-    ctxd = _fixture()
-    for i in range(3):                       # 摆 3 格可锄的（单格时压根印不出 ×N，测不到）
-        ctxd.tiles[(30 + i, 30)] = {"terrain": "Grass", "diggable": True}
+    #    ⚠️ 那天照出来的两个罪犯一个被修（锄）、一个被**删**（锄整行退役）⇒ 现在只剩 `sit`
+    #    一个 `batch=False` 的多目标样本了，就拿它当闸（**别让闸跟着动词一起消失**）。
+    ctxs = _fixture()
+    ctxs.tiles[(15, 13)] = {"terrain": "Wood", "seat": {
+        "kind": "furniture", "name": "木椅", "x": 15, "y": 13, "capacity": 1, "free": 1}}
     reset_menu()
-    dm = render_menu(ctxd, n=40)
-    dline = next((l for l in dm.splitlines() if "锄地" in l), "")
-    ok.append(("⛏ 锄地**不印 `×N`**（它一次只锄一格）", "×" not in dline))
-    ok.append(("⛏ 锄地**说清只做一格**", "一次做一格" in dline))
-    # ⚠️ 别把格数写死（夹具里本来就有一格可锄 —— 写死就假红）。**算出来再比**。
-    n_dig = sum(1 for t in ctxd.tiles.values() if t.get("diggable") is True)
-    ok.append((f"⛏ 但**不瞒着**（如实说附近另有 {n_dig - 1} 格）",
-               f"附近另有 {n_dig - 1} 格" in dline))
+    sm = render_menu(ctxs, n=40)
+    sline = next((l for l in sm.splitlines() if "坐 木椅" in l), "")
+    ok.append(("🪑 两把同名椅子**不印 `坐 木椅 ×2`**（人只能坐一张）", "×" not in sline))
+    ok.append(("🪑 说清只坐一张", "一次做一格" in sline))
     # 反面闸：**真会全做**的动词（捡/收机器）照旧要印 `×N` —— 别一刀切。
     ok.append(("🌿 反面：捡**照旧**印 `×N`（它真的一片全捡）", "捡 地上的东西 ×3" in top2))
+    # ⛔ **「锄」不许回来**（2026-09-29 恒：「LLM 有多条路可以走的时候，就有走偏的可能」）。
+    #    需要 AI 参与规划的（整块地/挖斑点）让它自己调原路线：`farm till` / `scene spot`。
+    ok.append(("⛔ 单子上**没有**「锄」（它该走农活域，别给多一条路）",
+               "锄" not in top2 and "锄" not in sm))
     reset_menu()
     render_menu(ctx, n=40)
     # ⚠️ 空 `reason` 不许在尾巴留一个**光秃秃的 `·`**（`.rstrip()` 只吃空白，吃不掉它）。
@@ -2823,12 +2815,9 @@ def _selftest():
     ok.append(("收作物 半径 **25**（超 30 会被 C# 静默落回 10）",
                all(c[1].get("radius") == 25 for c in calls if c[0] == "harvest_crops")))
 
-    reset_menu()
-    render_menu(ctx, n=40)
-    calls.clear()
-    do_row(_no_of("锄地"), act_run, ctx)
-    ok.append(("锄 走 `farm_till` 且**带坐标**（单格恒走拟人逐格）",
-               any(c[0] == "farm_till" and c[1].get("x") is not None for c in calls)))
+    # ⛔ 「锄」那三条 2026-09-29 **随动词一起删了**（它退役了，不再有 `farm_till` 这条路）。
+    #    别把它们改写成"跳过"——**留个空壳用例比删掉更坏**：它还是个绿勾，
+    #    下一个人会以为"锄 验过了"。删干净，退役的理由在 `VERBS` 那段 ⛔ 里。
     # ⚠️ 开菜单时家具拿不了 ⇒ 不给那行
     menuctx = _fixture()
     menuctx.menu = {"type": "ItemGrabMenu"}
