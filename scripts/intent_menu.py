@@ -412,20 +412,30 @@ def _read_show(ctx, t):
 # 🪑 坐 / 🛋 搬家具 / 🐾 摸 —— 2026-09-29 接线
 # ═══════════════════════════════════════════════════════════════════
 
-def _receipt_from_helper(verb_cn, desc, r):
+def _receipt_from_helper(verb_cn, desc, r, planned=""):
     """**高阶层动作**（那种 Python 里已经写好的、自己会读回验证的 op）的回执。
 
     ⚠️ 回执**优先用它自己的话**（`text`），别在这儿重拼一遍：
     那些 op 里带着复核（`furniture_pickup` 就是**靠前后 diff 才没报错名字**的，
     恒 2026-09-19 真机抓到过"报的是地毯、动的是椅子"）。
     我们重拼 = 把它们的复核丢掉，又回到"嘴上说成功"。
+
+    ⚠️⚠️ **`desc` 只写"做的是哪一件"**（名字/坐标）；**计划里的数量一律走 `planned`**，
+    印成「（去之前看见 N）」—— 那是**动手前**看到的事实，不是结果。
+    2026-09-29 真机照出来的活标本：单子写「捡 地上的东西 ×5」、按下去**只捡到 3 颗**
+    （地上还剩 2 颗，实查过），而头一行照样印「✅ 捡 **附近 5 处**」
+    —— **把计划数当结果数**，正是这条规矩要挡的"嘴上说成功"。
+    数字只能由**实测**来说：它自己的话里那个「拾取完成：3 个」才是结果。
     """
     if not isinstance(r, dict):
         return render_receipt(verb_cn, desc, False, note=f"回包看不懂：{r!r}")
     txt = (r.get("text") or "").strip()
     ok = bool(r.get("ok"))
+    head = f"{'✅' if ok else '❌'} {verb_cn} {desc}".rstrip()
+    if planned:
+        head += f"（去之前看见 {planned}）"
     if txt:
-        return f"{'✅' if ok else '❌'} {verb_cn} {desc}\n   " + txt.replace("\n", "\n   ")
+        return head + "\n   " + txt.replace("\n", "\n   ")
     if not ok:
         return render_receipt(verb_cn, desc, False, note=f"游戏回：{r.get('error') or r}")
     return render_receipt(verb_cn, desc, True)
@@ -545,7 +555,7 @@ def _pet_reason(ctx, t):
 def _exec_pet(ctx, targets, run):
     left = _animals_left(ctx)
     r = run("pet_animals", {})
-    return _receipt_from_helper("摸动物", f"{len(left)} 只", r)
+    return _receipt_from_helper("摸动物", "", r, planned=f"{len(left)} 只")
 
 
 def _pets_can(ctx, t):
@@ -592,7 +602,7 @@ def _pick_reason_many(ctx, targets):
 def _exec_pick(ctx, targets, run):
     """🌿 捡——走**拟人那条**（`pickup_scene`：走过去、转身、interact），一次把附近能捡的捡了。"""
     r = run("pickup_scene", {})
-    return _receipt_from_helper("捡", f"附近 {len(targets)} 处", r)
+    return _receipt_from_helper("捡", "附近", r, planned=f"{len(targets)} 处")
 
 
 def _harvest_reason_many(ctx, targets):
@@ -611,7 +621,8 @@ def _exec_harvest(ctx, targets, run):
     ⚠️ 它是**长脚本（异步）** ⇒ 回执是"跑起来了 + 怎么查"，不是"收完了"——**别把这句当成了**。
     """
     r = run("harvest_crops", {"radius": 25})
-    return _receipt_from_helper("收作物", f"半径 25 内（看见 {len(targets)} 格熟的）", r)
+    return _receipt_from_helper("收作物", "半径 25 内", r,
+                                planned=f"{len(targets)} 格熟的")
 
 
 def _exec_dig(ctx, targets, run):
@@ -2737,6 +2748,26 @@ def _selftest():
                any(c[0] == "pickup_scene" for c in calls)
                and not any(c[0] == "interact" for c in calls)))
     ok.append(("捡 是**聚合行**（一次一片，不是逐格）", "它自己的话" in r_pick))
+
+    # ⚠️⚠️ **计划数不许当结果数**（2026-09-29 真机活标本：单子写 `捡 ×5`、按下去只到 3 颗，
+    #    地上还剩 2 颗（实查过），而头一行照印「✅ 捡 **附近 5 处**」）。
+    #    造一个"计划 5、只干成 3"的假帮手 —— 夹具里让它的话报 3，
+    #    头一行就**不许**出现把 5 说成做完的说法。
+    ctx5 = _fixture()
+    for i in range(5):                      # 地上摆 5 样能捡的
+        ctx5.tiles[(20 + i, 20)] = {"terrain": "Grass", "forage": True,
+                                    "object": {"name": "Truffle", "forage": True}}
+    reset_menu()
+
+    def _run_half(op, payload):
+        calls.append((op, payload))
+        return {"ok": True, "text": "🎁 拾取完成：3 个"}
+
+    r_pick5 = _exec_pick(ctx5, [ctx5.tiles[(20 + i, 20)] for i in range(5)], _run_half)
+    head5 = r_pick5.splitlines()[0]
+    ok.append(("捡 头一行**不把计划数说成结果**（不许「附近 5 处」）", "附近 5 处" not in head5))
+    ok.append(("捡 头一行**如实标明那是动手前看到的**", "去之前看见 5 处" in head5))
+    ok.append(("捡 结果数仍是帮手自己说的那个（3 个）", "完成：3 个" in r_pick5))
 
     reset_menu()
     render_menu(ctx, n=40)
