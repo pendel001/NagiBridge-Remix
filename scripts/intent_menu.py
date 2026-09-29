@@ -327,6 +327,10 @@ def _harvest_show(ctx, t):
 #    两种完全不同的形态 —— 名单式判据在这个项目里烂过太多次了。
 FURNITURE_BED = 15
 
+# 🌙 过了这个点，「躺一下」**整行不出现**（恒 2026-09-30）。不是"排后面"，是**不给**
+#    —— 见 `_bed_can` 里为什么必须进 `can()`。
+_LIE_LATE_H = 20
+
 # 🛏 「躺一下」抬权重的线：体力或血**低于这个比例**就抬到最前。
 #    恒 2026-09-29：「能不能是低 hp/体力的时候，权重提高？」—— 能，而且**游戏代码背书**
 #    （反编译 `Farmer.cs:7637`：躺在床格上、联机、时间在走 ⇒ 每 500ms 体力+1、血+1）。
@@ -340,7 +344,27 @@ def _bed_can(ctx, t):
     （`_lie_weight`）。混进来 = 体力好的时候这行**整条消失**，AI 想躺下等人/等时间都找不到
     —— 那是"藏起来"，不是"排后面"，两回事。
     """
-    return CAN_YES if (t or {}).get("bed") else CAN_NO
+    if not (t or {}).get("bed"):
+        return CAN_NO
+    # 🌙 **超过 20:00 就不给这一行**（恒 2026-09-30 拍板：「**晚上不出现就好了，不需要踹**」）。
+    #    ⚠️ 为什么必须进 `can()` 而不是只调权重：菜单第一条规矩是
+    #       「**单子上出现的那条，按了就成**」—— 夜里把它摆上去、按了却拒绝，
+    #       就是自己打自己（而且夜里体力低时它还会被顶到**第一行**）。
+    #    ⚠️ 这跟恒把「睡觉」撤出单子是**同一个道理**：床不是菜单该管的事，
+    #       **过夜的意图由 AI 自己带**（`daily sleep who=…`）。
+    #    ⚠️ 钟读不出来（解析失败）**按"不能确定不是夜里"处理 ⇒ 不给**
+    #       —— 同铁律"算不出来 ⇒ 那行不出现"。
+    if _is_night(ctx):
+        return CAN_NO
+    return CAN_YES
+
+
+def _is_night(ctx) -> bool:
+    """现在过 20:00 了吗。⚠️ 读不出钟 ⇒ **当夜里**（保守：宁可不给，也别给一条按了不成的）。"""
+    try:
+        return int((ctx.time or "").split(":")[0]) >= _LIE_LATE_H
+    except Exception:
+        return True
 
 
 def _bed_owner(t) -> str:
@@ -354,6 +378,9 @@ def _bed_desc(t) -> str:
 
 def _lie_weight(ctx) -> int:
     """🛏 「躺一下」的权重：平时**跟别的家具交互差不多**；**血/体力低了抬到最前**。
+
+    ⚠️ **只看资源，不看钟** —— 夜里那行压根不出现（`_bed_can` 里拦掉了），
+    所以不会出现"被顶到第一行、按了却拒绝"那种自相矛盾（2026-09-30 恒：**晚上不出现就够了**）。
 
     ⚠️ 这条判据**不是想当然**（反编译 `Farmer.cs:7637`）——躺下**真的回**：
         `if (isInBed && Game1.IsMultiplayer && shouldTimePass()) { regenTimer = 500;
@@ -2885,6 +2912,19 @@ def _selftest():
     reset_menu()
     bm = render_menu(bedctx, n=40)
     ok.append(("🛏 本场景有床 ⇒ 出「躺一下」", "躺一下" in bm))
+    # 🌙 **夜里整行不给**（恒 2026-09-30：「**晚上不出现就好了，不需要踹**」）。
+    #    ⚠️ 必须拦在 `can()` —— 夜里把它摆上去、按了却拒绝，正好踩菜单第一条
+    #       「**出现的那条按了就成**」；而且夜里体力低时它还会被顶到**第一行**。
+    #    ⚠️ 20:00 是**闭区间**（`>=`）· 钟读不出来 ⇒ **不给**（算不出 ⇒ 不出现，同铁律）。
+    for _t, _want in (("13:20", True), ("19:59", True), ("20:00", False),
+                      ("23:10", False), ("", False)):
+        _c = _fixture()
+        _c.tiles[(20, 20)] = bedctx.tiles[(20, 20)]
+        _c.time = _t
+        reset_menu()
+        _shown = "躺一下" in render_menu(_c, n=40)
+        ok.append((f"🌙 钟「{_t or '读不出'}」⇒ 躺一下{'在' if _want else '**不在**'}单子上",
+                   _shown is _want))
     ok.append(("⛔ **单子上没有「睡觉」**（它该走原路线 `daily sleep who=…`）", "睡觉" not in bm))
     ok.append(("🛏 说的是**谁的床**（`lie_bed` 吃 who 不吃坐标）", "轮回的床" in bm))
     ok.append(("🛏 理由栏写清**不过夜**（跟过夜后果天差地别，别让 AI 猜）", "不过夜" in bm))
@@ -2917,6 +2957,7 @@ def _selftest():
     lowctx = _fixture()
     lowctx.tiles[(20, 20)] = bedctx.tiles[(20, 20)]
     lowctx.stamina, lowctx.max_stamina = 50, 474
+    lowctx.time = "13:20"          # ⚠️ 得是白天：钟读不出/过了 20:00 ⇒ 那行压根不给（见上面那条闸）
     reset_menu()
     lowm = render_menu(lowctx, n=40)
     ok.append(("🛏 体力低时「躺一下」**真排到第一行**（越过分组）",
