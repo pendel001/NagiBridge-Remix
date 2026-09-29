@@ -4036,7 +4036,11 @@ _ASYNC_SCRIPTS = {"mine_run", "fish_run", "bomb_mine", "bomb_escort", "bomb_volc
                   #    ⚠️ 想改回异步：`async_config add=water_crops` 即可（本行留此注记，别再翻旧账）。
                   # 🌾 2026-09-16 恒：收获改回**拟人**（逐个走位+动手）后一株要 2~4 秒，
                   #    一片地几十株就是好几分钟 ⇒ 必须进白名单转后台（同 harvest 的老问题）。
-                  "scythe_crops"}
+                  "scythe_crops",
+                  # 🛏 2026-09-29 恒：躺床**回满再唤醒**（他想的那条："睡好再唤醒 AI"）。
+                  #    ⚠️ **>20:00 那一脚不在这儿**（在 `_lie_rest_flow`，且只踢今天第一次）——
+                  #    放脚本里会把"执意第二次躺"也踹掉，**跟恒的原话相反**。
+                  "lie_rest"}
 
 
 def async_config(show: bool = False, add: str = "", remove: str = "", enable: str = "",
@@ -8018,6 +8022,64 @@ def _who_required(op: str) -> str | None:
             f"（会自动走过去：跨图→门口→推门→床边）；传**别人的名字**=睡那个人的床"
             f"（爬床彩蛋，同样会自动走过去）。\n"
             f"当前存档的玩家：{_sleep_roster()}")
+
+
+_LIE_LATE_TOD = 2000           # 「过 20:00 踹一脚」的线（恒 2026-09-29）
+_LIE_NUDGED = {"day": None}    # 「今天踹过没」——跨天自动失效（别用模块级 bool，那会永久失效）
+
+
+def _lie_rest_flow(who: str) -> str:
+    """🛏 「躺一下」的整条：**同步**走过去躺下 → 然后**后台等回满**，收工播报回到 AI 眼前。
+
+    恒 2026-09-29：「既然能查到这个回复速度！…做'**睡好再唤醒 AI**'。」
+    ⚠️ 躺下那半截**走现成的路**（`_aim_sleep_home` + `approach_bed`，验过的），
+       脚本（`lie_rest.py`）只管**等**。
+    ⚠️ **>20:00 那一脚是「拒绝」不是「骂」**（恒 2026-09-29 当场纠正：
+       「踹的话是'**拒绝并报原因，然后告诉他确认目的的话也可以执意睡**'，**不是口头骂**」）
+       ⇒ 拒绝（不白跑一趟）+ 报事实 + 给出口；**一句劝告都不写**。
+       只在**今天第一次**拦（恒：「如果它执意执行第二次躺，那就让它躺」）。
+    """
+    api.ensure_roles()
+    if not (who or "").strip():
+        return _who_required("躺床")
+
+    # ⏰ 读钟（判"过 20:00 没"）+ 体力上限（写进拒绝里，让 AI 知道要等多久）
+    tod, day, ms = 0, None, 0
+    try:
+        st = api.state(light=True) or {}
+        t = st.get("time") or {}
+        tod = int(t.get("timeOfDay") or 0)
+        day = int(t.get("dayOfMonth") or 0)
+        ms = int((st.get("player") or {}).get("maxStamina") or 0)
+    except Exception:
+        pass
+
+    # ⏰ **过 20:00 的第一脚 = 拒绝**（恒 2026-09-29：「踹的话是**'拒绝并报原因，然后告诉他
+    #    确认目的的话也可以执意睡'**，**不是口头骂**」）⇒ 三件事，一件都不能少：
+    #      ① 拒绝（**不走过去、不躺** —— 先拦，别白跑一趟）
+    #      ② 报原因（**事实**：几点、要等多久）
+    #      ③ 给出口（两条：去睡 / 确认了就再来一次）
+    #    ⚠️ **不写劝告**（"爬起来也做不了多少""不如直接睡"那种）—— 那是念叨，恒点名不要。
+    #    ⚠️ 只在**今天第一次**拦（恒：「如果它执意执行第二次躺，那就让它躺」）。
+    if tod >= _LIE_LATE_TOD and _LIE_NUDGED["day"] != day:
+        _LIE_NUDGED["day"] = day
+        mins = (ms // 120) if ms else None       # 每 500ms 回 1 点 ⇒ 每分钟 120 点
+        wait = f"约 {mins} 分钟" if mins else "好几分钟"
+        # ⚠️ 头一个字**必须是状态标记**（`⚠️`/`❌`）：`_im_run` 就是靠它判"成没成"的，
+        #    换成"🛏"之类的话，单子上的回执会印成 `✅ 躺一下` —— **没躺却报成成了**。
+        #    用 `⚠️`（不是 `❌`）：这是"不推荐"不是"出错"，语气软一档，但**仍然是"没成"**。
+        return (f"⚠️ 不建议躺（{tod // 100:02d}:{tod % 100:02d}，已过 20:00）—— 这次先没躺。\n"
+                f"   要回满得躺{wait}，起来差不多就该过夜了。\n"
+                f"   · 要过夜 → `daily sleep who={who}`\n"
+                f"   · 确认还是要躺 → **重复请求不再阻拦**")
+
+    err = _aim_sleep_home(who)
+    if err:
+        return err
+    r = api.approach_bed(who)
+    if not r.get("ok"):
+        return f"❌ 躺床失败: {r.get('error')}"
+    return _run_script("lie_rest", ["--port", str(_ai_port()), "--who", who], async_ok=True)
 
 
 def _aim_sleep_home(who: str) -> str:
@@ -19697,8 +19759,12 @@ def _bg_finish_report(j: "_BgJob") -> str:
         #    `return` ⇒ 子进程 0 秒**正常退出**(rc=0)，播报却是「✅ 收工（跑了 0s）」。
         #    对着"启动成功 → 立刻✅ → 人还在原地没动"，AI 完全不知道它其实**没干活**，
         #    更不知道自己填错了参数。⇒ 秒退**一律不当成功报**（长脚本没有 3 秒就该跑完的）。
-        head = (f"⚠️ 脚本「{j.name}」刚起就退了（跑了 {dur}s、返回码 0）——**不是跑完**，"
-                "多半是参数/条件不对，它自己就退出来了")
+        # ⚠️ 2026-09-29：原来这句后面还跟着「**多半是参数/条件不对**」——**那是猜的**，
+        #    真机上当场猜反：`lie_rest` 0 秒收工是因为**体力本来就满了**（条件全对）。
+        #    而下一行**已经是脚本的原话**了 ⇒ 猜测只会盖住事实。
+        #    改成只报事实 + 指向下面那几行（恒的规矩：报错给下一步，别编）。
+        head = (f"⚠️ 脚本「{j.name}」**刚起就退了**（跑了 {dur}s、返回码 0）—— 这么快不可能是跑完，"
+                "看它自己下面说了什么")
     elif rc == 0:
         head = f"✅ 脚本「{j.name}」收工（跑了 {dur}s）"
     elif rc is None:
@@ -21001,7 +21067,7 @@ def _im_run(op, args):
         #    而且单子一列就等于**替 AI 把"今晚睡谁家"这个意图先答了**（"不然肯定往自己家钻"）；
         #    姜岛的 `who` 更是另一套语义（大通铺，= "挤到谁床上"）。
         #    ⇒ 过夜走原路线 `daily sleep who=…`，AI **自己带着意图**去调（想睡恒的床也点得到）。
-        "lie_bed": lambda: lie_bed(who=args.get("who") or ""),
+        "lie_bed": lambda: _lie_rest_flow(args.get("who") or ""),
     }
     # 🛒 买卖走**裸端点**（回 dict，回执要逐条报数字），只是外面多两道闸门。
     raw_ops = {

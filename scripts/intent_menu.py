@@ -374,10 +374,24 @@ def _lie_show(ctx, t):
     return "躺一下" + _bed_desc(t)
 
 
+def _pct(v, m) -> str:
+    """`25%` —— **上限读不出来（0）就说"不知道"**，别印成 `0%`（那是拿错尺子）。"""
+    try:
+        return f"{round(int(v) / int(m) * 100)}%" if m else "?"
+    except Exception:
+        return "?"
+
+
 def _lie_reason(ctx, t):
-    # ⚠️ 把"它到底回不回"**说清楚** —— 免得 AI 以为躺一下＝过夜（那两条后果天差地别）。
-    return (f"现在 {ctx.time} · **不过夜**（日不结束）：躺在床格里"
-            f"**每 500ms 回 1 体力 + 1 血**（联机）· 想走开就走开")
+    """🛏 理由栏三样（恒 2026-09-29 定）：
+      ① **当前百分比** —— 「算了，不设目标了。**给它当前百分比了，够不够它自己看着办**」；
+      ② **要躺多久** —— 每 500ms 各回 1 点（`Farmer.cs:7637`）⇒ 全满 ≈ 上限÷120 分钟；
+      ③ **不过夜** —— 免得 AI 以为躺一下＝过夜（那两条后果天差地别）。"""
+    mins = round(ctx.max_stamina / 120) if ctx.max_stamina else None
+    return (f"现在 {ctx.time} · 体力 {_pct(ctx.stamina, ctx.max_stamina)}"
+            f" 血 {_pct(ctx.health, ctx.max_health)} · "
+            + (f"回满约 {max(1, mins)} 分钟 · " if mins else "")
+            + "**不过夜**（日不结束）· 躺满再叫你")
 
 
 def _exec_lie(ctx, targets, run):
@@ -2874,6 +2888,17 @@ def _selftest():
     ok.append(("⛔ **单子上没有「睡觉」**（它该走原路线 `daily sleep who=…`）", "睡觉" not in bm))
     ok.append(("🛏 说的是**谁的床**（`lie_bed` 吃 who 不吃坐标）", "轮回的床" in bm))
     ok.append(("🛏 理由栏写清**不过夜**（跟过夜后果天差地别，别让 AI 猜）", "不过夜" in bm))
+    # 🛏 恒 2026-09-29：「算了，**不设目标了。给它当前百分比了，够不够它自己看着办**。」
+    bedctx.stamina, bedctx.max_stamina = 118, 474
+    bedctx.health, bedctx.max_health = 96, 180
+    reset_menu()
+    bm = render_menu(bedctx, n=40)
+    ok.append(("🛏 给**当前百分比**（体力 25% / 血 53%）",
+               "体力 25%" in bm and "血 53%" in bm))
+    ok.append(("🛏 说清**回满要多久**（474÷120 ≈ 4 分钟）", "回满约 4 分钟" in bm))
+    ok.append(("🛏 说清**躺满会叫醒它**（这条是异步的承诺，不能不说）", "躺满再叫你" in bm))
+    # ⚠️ 上限读不出来时说「不知道」，**不许印 0%**（那是拿错尺子，同 `/state` 那条老病）。
+    ok.append(("🛏 上限读不出来 ⇒ `?` 不是 `0%`", _pct(10, 0) == "?"))
     # 🛏 **低血/低体力 ⇒ 抬权重**（恒：「能不能是低 hp/体力的时候，权重提高？」）。
     #    游戏代码背书（`Farmer.cs:7637`：躺床格上、联机、时间在走 ⇒ 每 500ms 体力+1、血+1）。
     def _lw(stam, ms, hp, mh):
