@@ -184,6 +184,10 @@ class Ctx:
     # 🕐 钟点（`/state` 的 `time`，如 `"13:20"`）。
     #    「睡觉」要用它把**白天别过夜**这条说出来（理由栏），并按钟点调权重 —— 见 `_sleep_weight`。
     time: str = ""
+    # ❤️💪 「躺一下」抬权重的判据要用 —— 同 `stamina`，**都是问游戏要的**（不写死上限）。
+    health: int = 0
+    max_health: int = 0
+    max_stamina: int = 0
 
     def zh_of(self, name: str) -> str:
         return (self.zh or {}).get(name) or name
@@ -315,7 +319,6 @@ def _harvest_show(ctx, t):
 #    游戏属性 `bedSize` 在这版参考程序集里**不存在** ⇒ C# 的 `IsChildBed` 也只能按名字判。
 #    `crawl_bed` 走的是 `FindMasterBed`（**本来就跳过儿童床**）⇒ "能睡的床"和"是谁的床"
 #    一次拿全，**一个名字名单都不用编**（本项目的老病）。
-_SLEEP_LATE_H = 18      # 「该睡了」的分界（游戏 2:00 才昏倒，18 点天开始黑）
 
 # 🛏 游戏常量：`Furniture.bed = 15`（反编译 `StardewValley.Objects/Furniture.cs:54`）。
 #    ⚠️ **用游戏自己的枚举，不编名字名单** —— 真机双向对过：本屋 `furnitureType == 15`
@@ -324,20 +327,17 @@ _SLEEP_LATE_H = 18      # 「该睡了」的分界（游戏 2:00 才昏倒，18 
 #    两种完全不同的形态 —— 名单式判据在这个项目里烂过太多次了。
 FURNITURE_BED = 15
 
-
-def _is_nightish(ctx) -> bool:
-    """现在像不像"该睡了"。⚠️ 钟点解析不出来就**按白天算**（保守：宁可排后面）。"""
-    try:
-        return int((ctx.time or "").split(":")[0]) >= _SLEEP_LATE_H
-    except Exception:
-        return False
+# 🛏 「躺一下」抬权重的线：体力或血**低于这个比例**就抬到最前。
+#    恒 2026-09-29：「能不能是低 hp/体力的时候，权重提高？」—— 能，而且**游戏代码背书**
+#    （反编译 `Farmer.cs:7637`：躺在床格上、联机、时间在走 ⇒ 每 500ms 体力+1、血+1）。
+_LIE_LOW_FRAC = 0.30
 
 
-def _sleep_can(ctx, t):
+def _bed_can(ctx, t):
     """🛏 能不能睡/躺 —— **只看"这格是不是一张能睡的床"**。
 
-    ⚠️ **不把"现在几点"写进 `can()`**：`can()` 管"能不能"，几点该睡是**排序**的事
-    （`_sleep_weight`）。混进来 = 白天这一行**整条消失**，AI 想午休都找不到
+    ⚠️ **不把"够不够急"写进 `can()`**：`can()` 管"能不能"，急不急是**排序**的事
+    （`_lie_weight`）。混进来 = 体力好的时候这行**整条消失**，AI 想躺下等人/等时间都找不到
     —— 那是"藏起来"，不是"排后面"，两回事。
     """
     return CAN_YES if (t or {}).get("bed") else CAN_NO
@@ -352,27 +352,22 @@ def _bed_desc(t) -> str:
     return f"（{o}的床）" if o else ""
 
 
-def _sleep_show(ctx, t):
-    return "睡觉" + _bed_desc(t)
+def _lie_weight(ctx) -> int:
+    """🛏 「躺一下」的权重：平时**跟别的家具交互差不多**；**血/体力低了抬到最前**。
 
-
-def _sleep_reason(ctx, t):
-    return f"现在 {ctx.time} · **过夜**：日结束、存档 · 会请房主 ready"
-
-
-def _sleep_weight(ctx) -> int:
-    """夜里顶到最前（恒：「当前场景有就该置顶」）；**白天压到工作动作之下**。
-
-    ⚠️ 白天**不是不给**（`can()` 照旧 True），只是别让一个**不可逆**的过夜
-    第一眼就撞在手上 —— 恒那条「菜单是强暗示、别给不划算的路」。
+    ⚠️ 这条判据**不是想当然**（反编译 `Farmer.cs:7637`）——躺下**真的回**：
+        `if (isInBed && Game1.IsMultiplayer && shouldTimePass()) { regenTimer = 500;
+          stamina++; health++; }` ⇒ **联机下每 500ms 回 1 点体力 + 1 点血**。
+        所以"快没体力了 ⇒ 躺一下"是**真有用**的路，不是"能用但不划算"那种。
+    ⚠️ 上限读不出来（0）时**不误判成低**（除零/瞎报警都是"拿错尺子"）。
     """
-    return 92 if _is_nightish(ctx) else 55
-
-
-def _exec_sleep(ctx, targets, run):
-    t = targets[0]
-    return _receipt_from_helper("睡觉", _bed_desc(t),
-                                run("go_sleep", {"who": _bed_owner(t)}))
+    try:
+        low = any(m and v / m < _LIE_LOW_FRAC
+                  for v, m in ((ctx.stamina, ctx.max_stamina),
+                               (ctx.health, ctx.max_health)))
+    except Exception:
+        low = False
+    return 96 if low else 68
 
 
 def _lie_show(ctx, t):
@@ -380,7 +375,9 @@ def _lie_show(ctx, t):
 
 
 def _lie_reason(ctx, t):
-    return "**不过夜**：只是歇着，想走开就走开（日不结束）"
+    # ⚠️ 把"它到底回不回"**说清楚** —— 免得 AI 以为躺一下＝过夜（那两条后果天差地别）。
+    return (f"现在 {ctx.time} · **不过夜**（日不结束）：躺在床格里"
+            f"**每 500ms 回 1 体力 + 1 血**（联机）· 想走开就走开")
 
 
 def _exec_lie(ctx, targets, run):
@@ -1511,10 +1508,8 @@ VERBS: list = [
     #    ⚠️ 差别靠**措辞**写死（理由栏一个"过夜"一个"不过夜"），不靠藏 —— 同 `坐`/`搬走` 并排。
     #    ⚠️ **不进"家具"组**（恒："没有办法放在交互家具的选项里"）⇒ `group=""`，
     #       靠 `_apply_groups` 的"高权重可以越过组"排到最前（夜里 92）。
-    Verb("sleep",   "睡觉",  86, _sleep_can,   _sleep_reason,   _sleep_show,   "tile",
-         exec=_exec_sleep, weight_fn=_sleep_weight),
-    Verb("lie",     "躺一下", 50, _sleep_can,   _lie_reason,     _lie_show,     "tile",
-         exec=_exec_lie),
+    Verb("lie",     "躺一下", 68, _bed_can,     _lie_reason,     _lie_show,     "tile",
+         exec=_exec_lie, weight_fn=_lie_weight),
     # 🛋 搬走：**目录行**（一屋子家具一件一行 ⇒ 顶层只留一行报总数，点开才发号）。
     Verb("pickup_f", "搬走", 68, _pickup_can, _pickup_reason, _pickup_show, "tile",
          subs=_pickup_subs, count=_pickup_count, merge=True,
@@ -2331,7 +2326,9 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
                stamina=p.get("stamina") or 0, max_items=p.get("maxItems") or 0,
                money=p.get("money") or 0,
                caps=caps or {}, zh=zh, shop=shop,
-               time=_clock_of(state))
+               time=_clock_of(state),
+               health=p.get("health") or 0, max_health=p.get("maxHealth") or 0,
+               max_stamina=p.get("maxStamina") or 0)
 
 
 def _clock_of(state) -> str:
@@ -2859,31 +2856,46 @@ def _selftest():
     pet_line = next((l for l in top2.splitlines() if "摸 还没摸的动物" in l), "")
     ok.append(("🐾 情境动词那行不写「手持」", "手持" not in pet_line))
 
-    # 🛏 床（2026-09-29 恒：「床的重要性比其他家具大得多，**没有办法放在交互家具的选项里**。
-    #    反而是，**当前场景有就该置顶**。」）—— 数据来自 `crawl_bed locate`（谁的床 + 在哪格）。
+    # 🛏 床（2026-09-29 恒：「床的重要性比其他家具大得多，**没有办法放在交互家具的选项里**」）。
+    #    ⚠️ **只有「躺一下」**：`睡觉` **故意不进单子** —— 它的 `who` 是"**去哪儿**"不是"点哪个"
+    #       （不在那栋屋会跨图走过去），而菜单的号是**眼前那一格的号** ⇒ 两个坐标系；
+    #       而且单子一列就等于**替 AI 把"今晚睡谁家"这个意图先答了**
+    #       （恒：「不然肯定往自己家钻」）；姜岛的 `who` 更是另一套语义（大通铺 = "挤到谁床上"）。
+    #       ⇒ 过夜走原路线 `daily sleep who=…`，**AI 自己带着意图**去调（想睡恒的床也点得到）。
     bedctx = _fixture()
     bedctx.tiles[(20, 20)] = {"x": 20, "y": 20,
                               "bed": {"x": 20, "y": 20, "owner": "轮回"},
                               "furniture": {"name": "蓝白条纹双人床", "x": 20, "y": 20,
-                                            "width": 3, "height": 3}}
-    bedctx.time = "22:10"                       # 夜里：该置顶
-    reset_menu()
-    bm = render_menu(bedctx, n=40)
-    ok.append(("🛏 本场景有床 ⇒ 出「睡觉」", "睡觉" in bm))
-    ok.append(("🛏 也出「躺一下」（两项分开、不合成目录行）", "躺一下" in bm))
-    ok.append(("🛏 理由栏写死**过夜**这条代价", "过夜" in bm))
-    ok.append(("🛏 说的是**谁的床**（`go_sleep` 吃 who 不吃坐标）", "轮回的床" in bm))
-    # ⚠️ **夜里要真能"越过组"排到最前面**：`_apply_groups` 原来把"不进组"的一律垫底
-    #    ⇒ 屋里同时有 设备/家具 两组时，`睡觉` 会被压到 `搬走` 后面（恒要的"置顶"到不了顶）。
-    b_first = next((l for l in bm.splitlines() if l.strip()[:1].isdigit()), "")
-    ok.append(("🛏 夜里「睡觉」**排在第一行**（越过分组）", "睡觉" in b_first))
-    # 反面：**白天别把不可逆的过夜摆在最顺手的位置**（恒那条"菜单是强暗示、别给不划算的路"）。
+                                            "width": 3, "height": 3, "furnitureType": 15}}
     bedctx.time = "13:20"
     reset_menu()
-    dm_bed = render_menu(bedctx, n=40)
-    d_first = next((l for l in dm_bed.splitlines() if l.strip()[:1].isdigit()), "")
-    ok.append(("🛏 白天**不顶在最前**", "睡觉" not in d_first))
-    ok.append(("🛏 但白天**照样在**（是「排后面」不是「藏起来」）", "睡觉" in dm_bed))
+    bm = render_menu(bedctx, n=40)
+    ok.append(("🛏 本场景有床 ⇒ 出「躺一下」", "躺一下" in bm))
+    ok.append(("⛔ **单子上没有「睡觉」**（它该走原路线 `daily sleep who=…`）", "睡觉" not in bm))
+    ok.append(("🛏 说的是**谁的床**（`lie_bed` 吃 who 不吃坐标）", "轮回的床" in bm))
+    ok.append(("🛏 理由栏写清**不过夜**（跟过夜后果天差地别，别让 AI 猜）", "不过夜" in bm))
+    # 🛏 **低血/低体力 ⇒ 抬权重**（恒：「能不能是低 hp/体力的时候，权重提高？」）。
+    #    游戏代码背书（`Farmer.cs:7637`：躺床格上、联机、时间在走 ⇒ 每 500ms 体力+1、血+1）。
+    def _lw(stam, ms, hp, mh):
+        c = _fixture()
+        c.stamina, c.max_stamina, c.health, c.max_health = stam, ms, hp, mh
+        return _lie_weight(c)
+    ok.append(("🛏 平时**跟别的家具差不多**（不顶在最前）", _lw(400, 474, 180, 180) == 68))
+    ok.append(("🛏 **体力低 ⇒ 抬到最前**", _lw(100, 474, 180, 180) == 96))
+    ok.append(("🛏 **血低 ⇒ 也抬**", _lw(400, 474, 40, 180) == 96))
+    # ⚠️ 边界两侧都钉住（474×0.3 = 142.2 ⇒ 142 在下、143 在上）——
+    #    只钉一侧的话，判据写成 `<=` 也照样绿。
+    ok.append(("🛏 边界：**差一点就抬**（142/474 < 三成）", _lw(142, 474, 180, 180) == 96))
+    ok.append(("🛏 边界：**刚好过三成不抬**（143/474）", _lw(143, 474, 180, 180) == 68))
+    ok.append(("🛏 上限读不出来（0）**不误判**成低", _lw(400, 0, 180, 0) == 68))
+    # ⚠️ 抬权重**得真能把组越过去**（`_apply_groups` 原来把"不进组"的一律垫底）。
+    lowctx = _fixture()
+    lowctx.tiles[(20, 20)] = bedctx.tiles[(20, 20)]
+    lowctx.stamina, lowctx.max_stamina = 50, 474
+    reset_menu()
+    lowm = render_menu(lowctx, n=40)
+    ok.append(("🛏 体力低时「躺一下」**真排到第一行**（越过分组）",
+               "躺一下" in next((l for l in lowm.splitlines() if l.strip()[:1].isdigit()), "")))
     # 🛏 **床永不进「搬走」**（恒：「没办法放在交互家具的选项里」）——真拿也拿不动。
     ok.append(("🛏 床**不进「搬走」**", _pickup_can(bedctx, bedctx.tiles[(20, 20)]) == CAN_NO))
     # ⚠️ **儿童床也要挡**（2026-09-29 真机：只用 `crawl_bed` 那条时，两张儿童床照样漏在候选里
@@ -2892,34 +2904,22 @@ def _selftest():
                _pickup_can(bedctx, {"furniture": {"name": "儿童床", "furnitureType": 15}}) == CAN_NO))
     ok.append(("🛋 反面：同格的**非床**家具照旧给「搬走」",
                _pickup_can(bedctx, {"furniture": {"name": "木椅"}}) == CAN_YES))
-    # 🛏 敲下去要带**对的那个 who**（不带 who = 睡错床/报错）。
-    calls.clear()
-    bedctx.time = "22:10"
-    reset_menu()
-    render_menu(bedctx, n=40)
-    do_row(_no_of("睡觉"), act_run, bedctx)
-    ok.append(("🛏 睡觉 走 `go_sleep` 且 `who` 是床边那个人",
-               any(c[0] == "go_sleep" and c[1].get("who") == "轮回" for c in calls)))
+    # 🛏 敲下去要带**对的那个 who**（不带 who = 躺错床/报错）。
     calls.clear()
     reset_menu()
     render_menu(bedctx, n=40)
     do_row(_no_of("躺一下"), act_run, bedctx)
-    ok.append(("🛏 躺一下 走 `lie_bed`（不是 go_sleep —— 它不过夜）",
-               any(c[0] == "lie_bed" for c in calls)
-               and not any(c[0] == "go_sleep" for c in calls)))
+    ok.append(("🛏 躺一下 走 `lie_bed` 且 `who` 是床边那个人",
+               any(c[0] == "lie_bed" and c[1].get("who") == "轮回" for c in calls)))
     # 🕐 钟点（2026-09-29 真机当场照出来的）：
     # ⚠️⚠️ `/state` 的 `time` **是字典不是字符串**（`{"timeOfDay": 1320, …}`）。
     #    我原来写 `str(state["time"])` ⇒ 理由栏印出 `现在 {'timeOfDay': 1320, …}`；
-    #    **更坏的是它不报错** —— 解析失败 ⇒ 恒回"白天" ⇒ **夜里"睡觉"永远上不去**，
-    #    整条功能静默失效而屏上一切正常。同族坑：`/state` 瘦 `/menu` 详。
+    #    **更坏的是它不报错** —— 解析失败是**静默**的（当时用来喂"夜里才顶上去"的判据，
+    #    恒回"白天" ⇒ 那条规则永远不生效，而屏上一切正常）。同族坑：`/state` 瘦 `/menu` 详。
     # ⚠️ 这条**必须走 `ctx_from`**（喂真的 `/state` 形状）—— 夹具里直接 `ctx.time = "22:10"`
     #    会**绕过**这段转换，那正是真机上漏掉它的原因。
     ok.append(("🕐 `ctx_from` 从 `/state` 的**字典**里取出钟点",
                ctx_from({"time": {"timeOfDay": 1320}, "player": {}, "location": {}}, {}).time == "13:20"))
-    for _t, _want in (("22:10", True), ("13:20", False), ("", False)):
-        _c = _fixture()
-        _c.time = _t
-        ok.append((f"🕐 夜里判据认得「{_t or '空'}」⇒ {_want}", _is_nightish(_c) is _want))
     reset_menu()
     render_menu(ctx, n=40)
     # ⚡⚡ **`×N` 只许给"真会全做"的动词**（2026-09-29 真机：`锄地 ×185` 按下去

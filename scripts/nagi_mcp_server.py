@@ -20995,9 +20995,12 @@ def _im_run(op, args):
         "harvest_crops": lambda: harvest_crops(radius=args.get("radius") or 25),
         # ⛏ 单格锄：`_farm_till(x,y)` —— x/y 必填、缺省 1×1，**单格恒走拟人逐格**。
         "farm_till": lambda: _farm_till(x=args.get("x"), y=args.get("y")),
-        # 🛏 睡 / 躺（2026-09-29）：两个都只吃 `who`（**谁的床**，不是坐标）——
-        #    单子上那两行的 `desc` 里那句「（谁的床）」就是它。
-        "go_sleep": lambda: go_sleep(who=args.get("who") or ""),
+        # 🛏 躺（2026-09-29）：只吃 `who`（**谁的床**，不是坐标）。
+        #    ⚠️ **「睡觉」故意不进单子**（恒 2026-09-29）——`who` 是"**去哪儿**"不是"点哪个"
+        #    （不在那栋屋会跨图走过去），而菜单的号是"眼前这一格的号"⇒ 两个坐标系；
+        #    而且单子一列就等于**替 AI 把"今晚睡谁家"这个意图先答了**（"不然肯定往自己家钻"）；
+        #    姜岛的 `who` 更是另一套语义（大通铺，= "挤到谁床上"）。
+        #    ⇒ 过夜走原路线 `daily sleep who=…`，AI **自己带着意图**去调（想睡恒的床也点得到）。
         "lie_bed": lambda: lie_bed(who=args.get("who") or ""),
     }
     # 🛒 买卖走**裸端点**（回 dict，回执要逐条报数字），只是外面多两道闸门。
