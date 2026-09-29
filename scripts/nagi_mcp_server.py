@@ -20888,7 +20888,39 @@ def _im_ctx():
     animals = safe(lambda: api._ai_get("/animals"), {})
     return intent_menu.ctx_from(state, surr, machines, chests, caps=_im_caps(),
                                 seats=seats, furniture=furniture, animals=animals,
-                                shop=_im_shop(state))
+                                shop=_im_shop(state), beds=_im_beds(state))
+
+
+def _im_beds(state: dict) -> list:
+    """🛏 **本场景里"能睡的床"**，每张带**是谁的** → `[{x, y, owner}]`。
+
+    做法（2026-09-29，恒：「床…当前场景有就该置顶」）：
+      1. `crawl_bed locate`（**不带 player**）一次拿全：`farmers[]` 里每人一个 `bedLoc`
+         —— 那就是"**他的床在哪个图**"（唯一图名）。
+      2. `bedLoc == 本图 uniqueName` 的**才是这个场景里的床**（一张都没有就直接返回，不多打）。
+      3. 再逐个 `crawl_bed locate player=<他>` 拿**床的坐标** + **归属**。
+
+    ⚠️ **为什么不数错**：`go_sleep/lie_bed` 吃的是 `who`（名字）不是坐标 ⇒
+    菜单要的是"**谁的**床在这儿"，而 `farmers[].bedLoc` 正是游戏给的答案。
+    ⚠️ `crawl_bed` 走 `FindMasterBed` ⇒ **儿童床天然不在里面**（它本来就不能睡）。
+    ⚠️ 这函数**任何一步失败都返回 `[]`**：单子上少两行，绝不整个崩
+       （同 `_im_ctx` 那条"算不出 ⇒ 那行不出现"的规矩）。
+    """
+    try:
+        here = ((state or {}).get("location") or {}).get("uniqueName") or ""
+        if not here:
+            return []
+        loc = api._ai_post("/crawl_bed", {"action": "locate"}) or {}
+        owners = [f.get("name") for f in (loc.get("farmers") or [])
+                  if f.get("name") and f.get("bedLoc") == here]
+        out = []
+        for who in owners:
+            b = (api._ai_post("/crawl_bed", {"action": "locate", "player": who}) or {}).get("bed") or {}
+            if isinstance(b.get("x"), int) and isinstance(b.get("y"), int):
+                out.append({"x": b["x"], "y": b["y"], "owner": who})
+        return out
+    except Exception:
+        return []
 
 
 # 🔌 裸端点里**要 POST** 的那几个（其余 GET）。
@@ -20963,6 +20995,10 @@ def _im_run(op, args):
         "harvest_crops": lambda: harvest_crops(radius=args.get("radius") or 25),
         # ⛏ 单格锄：`_farm_till(x,y)` —— x/y 必填、缺省 1×1，**单格恒走拟人逐格**。
         "farm_till": lambda: _farm_till(x=args.get("x"), y=args.get("y")),
+        # 🛏 睡 / 躺（2026-09-29）：两个都只吃 `who`（**谁的床**，不是坐标）——
+        #    单子上那两行的 `desc` 里那句「（谁的床）」就是它。
+        "go_sleep": lambda: go_sleep(who=args.get("who") or ""),
+        "lie_bed": lambda: lie_bed(who=args.get("who") or ""),
     }
     # 🛒 买卖走**裸端点**（回 dict，回执要逐条报数字），只是外面多两道闸门。
     raw_ops = {
