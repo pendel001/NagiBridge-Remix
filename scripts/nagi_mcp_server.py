@@ -20858,8 +20858,21 @@ def _im_ctx():
                                 shop=_im_shop(state))
 
 
-# 🔌 裸端点里**要 POST** 的那几个（其余 GET）。写错方法 = 游戏那边 404/405，白跑一趟。
-_IM_POST_OPS = {"select", "store", "chest_take", "eat", "use", "walk_to", "drop"}
+# 🔌 裸端点里**要 POST** 的那几个（其余 GET）。
+#
+# ⚠️⚠️ **写错方法 ≠ 404 白跑一趟，而是"参数静默消失"**（2026-09-29 真机抓到，见下）：
+#   C# 的 `ReadJson()` **只读 HTTP body**（`ModEntry.cs:3065`，`GetParamOr` 也只从那个 dict 取），
+#   而路由表**只认路径不看方法** ⇒ GET 敲同一个端点**照样执行**，只是 `x/y/location/count`
+#   全落在 query string 上**没人读** ⇒ C# 拿到默认值**照默认值干**。
+#   实证：`machine_collect` 少列在这儿 ⇒ `location` 变 `""`
+#   ⇒ `ResolveLocations("")` 从"脚下这张图"变成**农场+所有建筑室内+地窖**——
+#   单子上写 `×20`，按下去收了 **678 台**，背包当场爆掉、377 件留在原地。
+#   ⇒ 判据：**只要 C# 是从 body 读参数的，就必须 POST**。新接裸端点时先看 `ReadJson`。
+_IM_POST_OPS = {"select", "store", "chest_take", "eat", "use", "walk_to", "drop",
+                "machine_collect",
+                # ⚠️ `chest_open` 这版 C# 还没有（在批次里，`caps` 把着关 ⇒ 那行现在不出现）。
+                #    提前列在这儿：它接的是 x/y，**C# 那边必然是 ReadJson** ⇒ 天然要 POST。
+                "chest_open"}
 
 
 def _im_buy(item, qty):

@@ -247,6 +247,53 @@ def main():
     res.append(ok("do 不带编号 → 报错 + 给下一步",
                   "❌" in M.intent(ops="do", kw={}) and "code" in M.intent(ops="do", kw={})))
 
+    # ⑨ 🚨 方法闸：**凡是从 body 读参数的裸端点，必须 POST**
+    #
+    # 2026-09-29 真机抓到：`machine_collect` 漏在 `_IM_POST_OPS` 外 ⇒ `_im_run` 拿它当 GET 打
+    # ⇒ 参数落在 **query string** 上，而 C# 的 `ReadJson()` **只读 body**（`GetParamOr` 也只
+    # 从那个 dict 取）⇒ `location` 静默变 `""` ⇒ `ResolveLocations("")` 从"脚下这张图"
+    # 变成 **农场+所有建筑室内+地窖** —— 单子写 `×20`，按下去收了 **678 台**、背包当场爆掉。
+    #
+    # ⚠️ 判据**不是**"端点一律要 POST"：`/surroundings` 这类**读 QueryString** 的端点
+    #    （`HandleSurroundings` 用的就是 `ctx.Request.QueryString`），GET 带参本来就对。
+    #    所以这里只静态扫 `intent_menu` 里**写死了参数**的 `run(op, {...})`，要求它们
+    #    要么是 POST 名单里的、要么是**根本不过 HTTP 的 helper**（Python 函数，不走网络）。
+    #    ⇒ 以后新接一个裸端点，不在这儿过一道就红了。
+    import ast as _ast
+
+    _here = os.path.dirname(os.path.abspath(__file__))
+
+    def _non_http_ops():
+        """`_im_run` 里**不走通用 GET/POST 分派**的那些 op——**从源码读**，改名不用改这里。
+
+        两类：`helpers`（Python 函数，压根不过网络）、`raw_ops`（自己 `_ai_post`，
+        方法已经写死在函数体里 ⇒ 不受 `_IM_POST_OPS` 管）。
+        """
+        tree = _ast.parse(open(os.path.join(_here, "nagi_mcp_server.py"), encoding="utf-8").read())
+        names, out = {"helpers", "raw_ops"}, set()
+        for node in _ast.walk(tree):
+            if isinstance(node, _ast.Assign) and isinstance(node.value, _ast.Dict):
+                if any(isinstance(t, _ast.Name) and t.id in names for t in node.targets):
+                    out |= {k.value for k in node.value.keys
+                            if isinstance(k, _ast.Constant) and isinstance(k.value, str)}
+        return out
+
+    helpers = _non_http_ops()
+    bad = []
+    for node in _ast.walk(_ast.parse(open(os.path.join(_here, "intent_menu.py"),
+                                          encoding="utf-8").read())):
+        if not (isinstance(node, _ast.Call) and isinstance(node.func, _ast.Name)
+                and node.func.id == "run" and len(node.args) >= 2):
+            continue
+        op, argd = node.args[0], node.args[1]
+        # 只看**写死了 op 名 + 参数非空**的那种；变量 op（`_exec_select_then` 的 `ep`）扫不到，
+        # 它由 `_IM_POST_OPS` 里的 eat/use 覆盖。
+        if (isinstance(op, _ast.Constant) and isinstance(op.value, str)
+                and isinstance(argd, _ast.Dict) and argd.keys
+                and op.value not in M._IM_POST_OPS and op.value not in helpers):
+            bad.append(f"{op.value}(L{node.lineno})")
+    res.append(ok(f"带参裸端点一律 POST（没过的：{'、'.join(bad) if bad else '无'}）", not bad))
+
     print(f"\n{sum(res)}/{len(res)} 过")
     return all(res)
 
