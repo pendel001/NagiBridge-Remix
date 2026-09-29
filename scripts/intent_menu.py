@@ -35,7 +35,7 @@ can() 的三档
 第三档不透支信任：宁可这一条不出现，也不给一个可能错的选项。
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable, Optional
 
 # ── can() 的三档 ──────────────────────────────────────────────────────
@@ -224,6 +224,10 @@ class Verb:
     # 🗂 目录行那截「（N 件）」的出处：(Ctx, targets) -> str。
     #    不写 = 数下一层有几行。容器要报的是**箱里几件**（见 `Row.count_text`）。
     count: Callable = None
+    # 🗂 分组（2026-09-29 恒：「嵌套还要分一下设备和家具」）。空 = 不进任何组。
+    #    ⚠️ **只在同一层真的两组都出现时才印组头** —— 农场那种清一色的图**原样不动**
+    #    （排序是照权重精心排的；没必要的分组只会把"最近的要先做"这条理由搅浑）。
+    group: str = ""
 
 
 # ── 以下每个 can() 都只用**端点已经吐出来的**字段，一个都不用猜 ──────────
@@ -479,6 +483,38 @@ def _exec_pickup(ctx, targets, run):
     f = targets[0]["furniture"]
     r = run("furniture_pickup", {"x": f.get("x"), "y": f.get("y")})
     return _receipt_from_helper("搬走家具", f.get("name") or "", r)
+
+
+# 🛋 顶层那一行只报总数（`搬走…（34 件）`）——**一条一行的活在下一层**
+#    ⚠️ 恒 2026-09-29 拍板：「移动家具做单行」。
+#    理由不是好看：一屋子家具 30+ 行，会把「收机器 / 开箱子」这些**一下能做完的**
+#    挤成"还有 35 项"——第一屏的承诺是**动作面**，不该被"点开还有一层"占满。
+PICKUP_ITEM_V = Verb("pickup_one", "搬走", 0, _pickup_can, _pickup_reason, _pickup_show,
+                     "tile", exec=_exec_pickup, group="家具")
+
+
+def _pickup_reason_many(ctx, targets):
+    """合一那行的理由：**最近一件几步**（同"20 处 · 最近 6 步"那个口径）。"""
+    return f"最近 {min(_dist(ctx, t) for t in targets)} 步"
+
+
+def _pickup_count(ctx, targets):
+    return f"{len(targets)} 件"
+
+
+def _pickup_subs(ctx, targets):
+    """🛋 「搬走」的下一层：**屋里能拿走的东西，一件一行**。
+
+    ⚠️ 排序只用**距离**（近的先搬，省得来回跑）——这一层没有权重表可用，
+       距离是这里**唯一"合法且可审计"**的理由（跟顶层同一条规矩：理由要有出处）。
+    """
+    rows = [Row(PICKUP_ITEM_V, [t], _pickup_show(ctx, t), _pickup_reason(ctx, t),
+                _dist(ctx, t), group="家具")
+            for t in targets if t.get("furniture")]
+    if not rows:
+        return None
+    rows.sort(key=lambda r: r.dist)
+    return Level(rows, title=f"🛋 搬走哪一件？（{len(rows)} 件 · 敲了就搬走）")
 
 
 def _animals_left(ctx):
@@ -1242,9 +1278,9 @@ VERBS: list = [
     #    而单子第一屏的承诺是"**动作面**"（按了就成）。农场/主屋常态有 5+ 个箱子，
     #    权重一高，第一屏就被"点开还有一层"占满，真正能一下做完的（收机器）反被挤到"还有 N 项"。
     Verb("chest", "箱子", 80, _chest_can, _chest_reason, _chest_show, "tile",
-         subs=_chest_subs, count=_chest_count),
+         subs=_chest_subs, count=_chest_count, group="设备"),
     Verb("collect", "收 已好的机器", 88, _collect_can, _collect_reason, _collect_show, "tile",
-         exec=_exec_collect, merge=True, reason_many=_collect_reason_many),
+         exec=_exec_collect, merge=True, reason_many=_collect_reason_many, group="设备"),
     # ⚠️ 下面这些**只有渲染没有执行**（`exec=None`）⇒ **不上单子**，只在 `at(x,y)` 里
     #    标「⏳ 还没接执行」——**那行就是缺口探测器**（见 `render_at` 的注释）。
     #    没接的原因**不是懒**，是这两族各有各的形状问题：
@@ -1261,9 +1297,11 @@ VERBS: list = [
          exec=_exec_pets),
     # 🪑 坐 / 🛋 搬家具（逐格）——2026-09-29 接线
     Verb("sit",     "坐",     70, _sit_can,     _sit_reason,     _sit_show,     "tile",
-         exec=_exec_sit),
-    Verb("pickup_f", "搬走家具", 68, _pickup_can, _pickup_reason, _pickup_show, "tile",
-         exec=_exec_pickup),
+         exec=_exec_sit, group="家具"),
+    # 🛋 搬走：**目录行**（一屋子家具一件一行 ⇒ 顶层只留一行报总数，点开才发号）。
+    Verb("pickup_f", "搬走", 68, _pickup_can, _pickup_reason, _pickup_show, "tile",
+         subs=_pickup_subs, count=_pickup_count, merge=True,
+         reason_many=_pickup_reason_many, group="家具"),
     # 🌿 捡 / 🌾 收作物：**聚合行**（一次一片，端点的语义本来就不是逐格）
     Verb("pick",    "捡 地上的东西", 90, _pick_can, _pick_reason, _pick_show, "tile",
          exec=_exec_pick, merge=True, reason_many=_pick_reason_many),
@@ -1340,11 +1378,40 @@ class Row:
     # **箱里有多少件**，不是"点开有几个动作"——两个数并排就是"拿错尺子"的温床
     # （2026-09-27 真机照出来过：同屏两个"格"两个意思）。
     count_text: str = None
+    # 🗂 这行归哪一组（从 `verb.group` 抄来）——渲染时决定要不要印组头。
+    group: str = ""
 
 
 def _dist(ctx: Ctx, t) -> int:
     """走几步——**曼哈顿**。4 向移动下这才是"几步路"，直线距离会骗人。"""
     return abs((t.get("x") or 0) - ctx.px) + abs((t.get("y") or 0) - ctx.py)
+
+
+def _row_for(ctx: Ctx, v, targets: list, label=None) -> "Row":
+    """把「一个动词 × 一批目标」变成一行 —— **单子和逃生口共用这一条路**。
+
+    ⚠️ 共用的理由不是省几行，是**别让两张屏的号漂开**：`at x,y` 那屏也是"敲编号"，
+       它发出来的号必须和单子的号是同一种东西（2026-09-29 真机照出来的洞：
+       逃生口那屏压根没进栈 ⇒ 敲它的号打的是**上一屏**）。
+    """
+    # 🌍 情境动词的 targets 是 `[None]`（没有格）⇒ 距离 0、定位留空，理由由动词自己看 ctx 说。
+    world = bool(targets) and targets[0] is None
+    near = None if world else min(targets, key=lambda t: _dist(ctx, t))
+    dist = 0 if world else _dist(ctx, near)
+    if v.merge and not world:
+        reason = v.reason_many(ctx, targets) if v.reason_many else v.reason(ctx, near)
+    else:
+        reason = v.reason(ctx, near)
+    # 🗂 目录行的下一层**在这就算出来**（顶层要拿它报 `（N 件）`，也得知道它长不长）。
+    lv = v.subs(ctx, targets) if v.subs else None
+    # 标签照抄原来的三档：情境动词拿 `show(ctx, None)`（它不指某一格），
+    # 合一的（merge）用动词自己的名字当正文，其余用**最近那个**目标的正文
+    # ——同桶里所有目标的正文本来就一样（那是分桶的键）。
+    if label is None:
+        label = v.label if v.merge else v.show(ctx, None if world else near)
+    return Row(verb=v, targets=targets,
+               label=label, reason=reason, dist=dist, level=lv, group=v.group,
+               count_text=v.count(ctx, targets) if (v.count and lv) else None)
 
 
 def _candidates(ctx: Ctx) -> list:
@@ -1376,23 +1443,8 @@ def _candidates(ctx: Ctx) -> list:
                 if v.can(ctx, t) is True:
                     buckets.setdefault((v.key, None if v.merge else v.show(ctx, t)), []).append(t)
 
-    rows = []
-    for (vkey, label), targets in buckets.items():
-        v = _VERB_BY_KEY[vkey]
-        # 🌍 情境动词的 targets 是 `[None]`（没有格）⇒ 距离 0、定位留空，理由由动词自己看 ctx 说。
-        world = bool(targets) and targets[0] is None
-        near = None if world else min(targets, key=lambda t: _dist(ctx, t))
-        dist = 0 if world else _dist(ctx, near)
-        if v.merge and not world:
-            reason = v.reason_many(ctx, targets) if v.reason_many else v.reason(ctx, near)
-        else:
-            reason = v.reason(ctx, near)
-        # 🗂 目录行的下一层**在这就算出来**（顶层要拿它报 `（N 件）`，也得知道它长不长）。
-        lv = v.subs(ctx, targets) if v.subs else None
-        rows.append(Row(verb=v, targets=targets,
-                        label=label or v.label, reason=reason, dist=dist,
-                        level=lv,
-                        count_text=v.count(ctx, targets) if (v.count and lv) else None))
+    rows = [_row_for(ctx, _VERB_BY_KEY[vkey], targets, label)
+            for (vkey, label), targets in buckets.items()]
     # 排序：先按动词权重，再按**距离**。
     # ⚠️ 距离是个**合法且可审计**的排序理由（"近的先做"）——比一个黑盒启发式诚实得多。
     #    而且同权重的一批（20 台机器）全靠它拉开，否则前 N 条就是**随便挑的**。
@@ -1483,11 +1535,45 @@ def reset_menu():
     _LAST_ROWS.clear()
 
 
+# 🗂 子层一次给几条。**顶层是"决策屏"（越短越好），子层是"你刚点开的那一摞"（要看完）**。
+#
+# ⚠️ 2026-09-29 真机照出来的洞：子层由 `do_row` 写死 `n=5` 渲染，而**没有任何法子翻页**
+#    ⇒ 尾巴那句「—— 还有 36 项（more）」是个**空承诺**（`more` 压根不存在）。
+#    单独看只是难看；**跟"搬走收成一行"撞在一起就成了骗人**：
+#    把 41 件家具收进目录行、点开却只给 5 件 ⇒ AI 想搬第 6 件时**无路可走**
+#    （`at x,y` 也得先知道坐标）。⇒ 子层一次给够。
+#    顶层仍按调用方给的 `n`（默认 5）——那才是"一屏之内做决定"的地方。
+_SUB_N = 60
+
+
 _LEVEL_HINT = {
     "act": "> 敲编号，或 at x,y",
     "pick": "> 敲编号，可以多选（`1,4`）",
     "qty": "> 写「号=数量」（`1=1,4=4`）—— **只写号不认**",
 }
+
+
+# 🗂 组名（恒 2026-09-29：「移动家具做单行。甚至嵌套还要分一下设备和家具。」）
+_GROUPS = ("设备", "家具")
+
+
+def _apply_groups(lv: Level) -> bool:
+    """把一屏里的行按 `设备` / `家具` 拢成两块。**返回这一屏到底分没分组。**
+
+    ⚠️ 只在**两块都非空**时才动 —— 农场那种清一色的图（只有农活、或只有家具）
+       原样不动：排序是照权重精心排的，没必要的分组只会把"最近的要先做"这条理由搅浑。
+    ⚠️ 组间先后按**组内最高权重**，不是写死"设备在前" —— 权重表才是"急不急"的正主。
+    ⚠️ 只在 `act` 层分：选/填那一层是**刚点开的一小撮**，别在里面再分家。
+    """
+    if lv.mode != "act":
+        return False
+    parts = {g: [r for r in lv.rows if r.group == g] for g in _GROUPS}
+    if not all(parts.values()):
+        return False
+    rest = [r for r in lv.rows if r.group not in _GROUPS]
+    order = sorted(_GROUPS, key=lambda g: -max(r.verb.weight for r in parts[g]))
+    lv.rows = [r for g in order for r in parts[g]] + rest
+    return True
 
 
 def _render_level(ctx: Ctx, lv: Level, n: int = 5) -> str:
@@ -1496,10 +1582,16 @@ def _render_level(ctx: Ctx, lv: Level, n: int = 5) -> str:
     if lv.title:
         lines.append(lv.title)
 
+    grouped = _apply_groups(lv)
     shown = lv.rows[:n]
+    group_now = None
     for i, r in enumerate(shown, 1):
         # ⚠️ 行号是**动作编号**，不是背包位次——两个数字混用就是"拿错尺子"。
         r.no = r.no if lv.keep_no else i
+        # 🗂 组头**不占号**（号只发给我们真能敲的行）
+        if grouped and r.group and r.group != group_now:
+            lines.append(f"  ── {r.group} ──")
+            group_now = r.group
         if r.level is not None:
             # 🗂 目录行：句尾 `…` = 这行还要选。**只报数量，不发号**——号点开才印在眼前
             #    ⇒（a）AI 永远不用数数；（b）号不跨屏，"短命句柄"从风险变成设计。
@@ -1725,7 +1817,7 @@ def do_row(code, run: Callable, ctx: Ctx = None) -> str:
             _STACK[:] = _STACK[:1]          # 做完了 ⇒ 收回顶层
             return out
         sub, e = _open_qty(ctx, lv, [n for n, _ in sel])
-        return e if e else _render_level(ctx, sub, 5)
+        return e if e else _render_level(ctx, sub, _SUB_N)
 
     no = sel[0][0]
     row = _row_by_no(lv, no)
@@ -1734,9 +1826,11 @@ def do_row(code, run: Callable, ctx: Ctx = None) -> str:
                 f"   想指别的东西，用 at x,y")
 
     # 🗂 目录行：点开下一层（**本身不执行任何东西**）
+    # ⚠️ 子层用 `_SUB_N`（不是 5）：这是"AI 刚点开的那一摞"，**要能看完**
+    #    ——写死 5 会让尾巴那句「还有 N 项（more）」变成空承诺（没有 `more` 这个口子）。
     if row.level is not None:
         _push_level(row.level, ctx)          # ⚠️ 推栈必须盖指纹，否则"再看一眼"就把这层砍掉
-        return _render_level(ctx, row.level, 5)
+        return _render_level(ctx, row.level, _SUB_N)
 
     if row.verb.exec is None:
         return f"❌ 「{row.label}」还没接执行"
@@ -1779,16 +1873,21 @@ def render_at(ctx: Ctx, x: int, y: int) -> str:
             (ready if (v.exec or v.subs) else pending).append(v)
     ready.sort(key=lambda v: -v.weight)
 
-    lines = [head]
+    title = head
     if not ready:
-        lines.append("  （这里没有它能做的动作）")
-    for i, v in enumerate(ready, 1):
-        mark = "…" if (v.subs and not v.exec) else ""
-        lines.append(f" {i}  {v.show(ctx, t)}{mark}   ← {v.reason(ctx, t)}")
+        title += "\n  （这里没有它能做的动作）"
     if pending:
-        lines.append("  ⏳ 还没接执行：" + "、".join(v.label for v in pending))
-    lines.append(" 0  返回")
-    return "\n".join(lines)
+        # ⏳ 这行仍是**缺口探测器**：AI 老指着某类东西而我们接不上 = 动词表欠的账。
+        title += "\n  ⏳ 还没接执行：" + "、".join(v.label for v in pending)
+
+    # ⚠️⚠️ **必须推栈**（2026-09-29 真机照出来的洞）：这一屏也有号、也写着"敲编号"，
+    #    不推栈的话号是**悬空的** —— `do(1)` 会落到 `_STACK[-1]`，也就是**上一屏**的第 1 行。
+    #    实测：`at 24 26`（椅子上）显示「1 坐 胡桃木椅子」，敲 `1` **却去收了机器**。
+    #    **屏幕上有号、号指向别处** —— 正是 166③ 花大力气删掉的那类静默错误动作。
+    #    ⇒ 走**和单子同一条造行路径**（`_row_for`），保证两屏的号是同一种东西。
+    lv = Level([_row_for(ctx, v, [t]) for v in ready], title=title)
+    _push_level(lv, ctx)
+    return _render_level(ctx, lv, max(9, len(lv.rows)))
 
 
 def render_receipt(action: str, target_desc: str, ok: bool,
@@ -2107,6 +2206,23 @@ def _selftest():
         VERBS.remove(gapv)
         _VERB_BY_KEY.pop("probe_gap", None)
 
+    # 🚨 逃生口那屏的号**必须打在那一格上**（2026-09-29 真机照出来的洞）
+    #    `render_at` 原来**不推栈** ⇒ 敲它的号会落到 `_STACK[-1]`，也就是**上一屏**的第 N 行。
+    #    实测：`at 24 26`（椅子上）显示「1 坐 胡桃木椅子」，敲 `1` **去收了机器**。
+    #    屏幕上有号、号指向别处 = 166③ 说好要删掉的那类静默错误动作。
+    reset_menu()
+    render_menu(ctx, n=40)                       # 先摆一屏"上一屏"（敲错就会打到它）
+    render_at(ctx, 14, 13)                       # 木椅那格 → 该屏 1 号 = 坐
+    at_calls = []
+
+    def at_run(ep, payload):
+        at_calls.append((ep, payload))
+        return {"ok": True, "text": "它自己的话"}
+
+    do_row(1, at_run, ctx)
+    ok.append(("🚨 逃生口那屏的号打在**那一格**上（不是上一屏）",
+               bool(at_calls) and at_calls[0][0] == "sit"))
+
     # ⑥ 回执必须回显对象
     rc = render_receipt("卖出", "草莓×5", True, "+600g", "背包③ 现在是 菠萝×2")
     ok.append(("回执回显对象/数量", "草莓×5" in rc))
@@ -2119,6 +2235,10 @@ def _selftest():
         calls.append((ep, payload))
         return {"ok": True, "collected": 2, "skippedFull": 0}
 
+    # ⚠️ 2026-09-29：`at x,y` 现在**会推栈**了（逃生口那屏的号必须能敲，见 `render_at`）
+    #    ⇒ 上面那几发 `at` 把栈留在了"那一格"上。这儿要**回顶层**再验单子，
+    #    否则 `_no_of` 找的是那一格的单子（测试自己的假红）。
+    reset_menu()
     render_menu(ctx, n=40)                      # 先看一眼，才有单子可敲
     # ⚠️ 按**标签**找那一行，不写死 1 号（2026-09-29 加容器行后，1 号已经变成箱子了）
     out = do_row(_no_of("收 已好的机器"), fake_run, ctx)
@@ -2372,7 +2492,10 @@ def _selftest():
     reset_menu()
     top2 = render_menu(ctx, n=40)
     ok.append(("🪑 「坐 木椅」在单子上", "坐 木椅" in top2))
-    ok.append(("🛋 「搬走 红沙发」在单子上", "搬走 红沙发" in top2))
+    # 🛋 2026-09-29 恒拍板「移动家具做单行」⇒ 顶层只剩**一行**「搬走…」，
+    #    家具一件一行挪到**下一层**（原来 30+ 行会把"收机器/开箱子"挤成"还有 N 项"）。
+    ok.append(("🛋 顶层只有一行「搬走…」（不再一件一行）",
+               "搬走…" in top2 and "搬走 红沙发" not in top2))
     ok.append(("🐾 摸动物只数**只算没摸过的**（2 头里 1 头摸过了）",
                "摸 还没摸的动物" in top2 and "1 只" in top2))
     ok.append(("🐾 猫狗那一行也在", "摸 猫狗" in top2))
@@ -2385,10 +2508,30 @@ def _selftest():
 
     reset_menu()
     render_menu(ctx, n=40)
+    sub = do_row(_no_of("搬走"), act_run, ctx)     # 点开目录行 → 下一层发号
+    ok.append(("🛋 点开「搬走…」→ 下一层把家具印出来", "搬走 红沙发" in sub))
+    reset_menu()
+    render_menu(ctx, n=40)
+    do_row(_no_of("搬走"), act_run, ctx)           # 再点开一次，才有号可敲
     calls.clear()
     r_fur = do_row(_no_of("搬走 红沙发"), act_run, ctx)
     ok.append(("搬家具 走 `furniture_pickup`", any(c[0] == "furniture_pickup" for c in calls)))
     ok.append(("搬家具 不回编结果", "它自己的话" in r_fur))
+
+    # 🗂 子层**要能看完**（2026-09-29 真机照出来的洞）：子层原来写死 `n=5`，而**没有翻页的口子**
+    #    ⇒ 尾巴那句「还有 N 项（more）」是**空承诺**（`more` 压根不存在）。
+    #    单独看只是难看；**跟"搬走收成一行"撞在一起就成了骗人**——41 件收进目录行、点开只给 5 件。
+    many = dict(ctx.tiles)
+    for i in range(9):
+        many[(20 + i, 20)] = {"x": 20 + i, "y": 20,
+                              "furniture": {"name": f"柜{i}", "x": 20 + i, "y": 20,
+                                            "width": 1, "height": 1, "furnitureType": 0}}
+    mctx = replace(ctx, tiles=many)
+    reset_menu()
+    render_menu(mctx, n=40)
+    sub_many = do_row(_no_of("搬走"), act_run, mctx)
+    ok.append((f"子层把 10 件家具**全印出来**（不是只给 5 条）",
+               "还有" not in sub_many and sub_many.count("搬走 柜") == 9))
 
     reset_menu()
     render_menu(ctx, n=40)
