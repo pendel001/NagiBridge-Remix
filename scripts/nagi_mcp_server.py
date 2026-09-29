@@ -8182,7 +8182,18 @@ def cancel() -> str:
         r = api.ai_cancel_sleep()
         if not (isinstance(r, dict) and r.get("ok")):
             return _with_state(f"❌ 取消就绪失败: {r}")
-        return _with_state("🚶 已取消（关掉睡觉就绪屏，撤了就绪、夜没过）。若不想躺再 walk_to 走离床格")
+        # ⚠️⚠️ **"走离床格"这句必须有** —— 2026-09-30 真机把因果走通了：
+        #    `/cancel_sleep` **确实设了** `isInBed.Value = false`（`HandleCancelSleep`，
+        #    服务端原话 `{"ok":true,"action":"cancelled","wokeUp":true}`），
+        #    **但** `Farmer.Update` **每一 tick 按脚下那格重算**：
+        #      `isInBed = currentLocation.doesTileHaveProperty(x, y, "Bed", "Back") != null`
+        #      （`Farmer.cs:7553`）⇒ **还站在床格上，下一 tick 就被重设回 true**。
+        #    实测：取消后原地 `isInBed=True`；`walk_to` 走开一格 ⇒ `isInBed=False`。
+        #    ⇒ **"下床"的判据是"走离床格"，不是那个字段**。服务端那句 `wokeUp:true` 是空话。
+        #    （我一度按单次观测把这句删了 —— **删错了**，它是对的。别再删。）
+        return _with_state("🚶 已取消就寝（屏关了、就绪撤了、夜没过）。"
+                           "⚠️ 还站在床格上的话，`isInBed` 会被**下一 tick 重设回 true**"
+                           "—— 想真下来就 `walk_to` 走离床格")
     # 其它菜单：通用取消键 + menu_close
     try:
         api.key("cancel", 1)
