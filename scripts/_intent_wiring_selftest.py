@@ -39,9 +39,16 @@ SURR = {
     "tiles": [{"x": 13, "y": 12, "passable": True, "forage": True, "object": "野莓"}],
     "npcs": [{"name": "喵喵", "kind": "pet", "x": 15, "y": 12}],
 }
-CHESTS = [{"x": 13, "y": 13, "name": "矿石箱", "capacity": 36, "used": 1, "freeSlots": 35,
-           "items": [{"name": "Diamond", "displayName": "钻石", "count": 2,
-                      "qualifiedId": "(O)72"}]}]
+CHESTS = [
+    {"x": 13, "y": 13, "name": "矿石箱", "capacity": 36, "used": 1, "freeSlots": 35,
+     "items": [{"name": "Diamond", "displayName": "钻石", "count": 2,
+                "qualifiedId": "(O)72"}]},
+    # ⚠️ **必须两个箱子**：只有一个时 `_chest_overview` 会走"单箱直通动作面"那条捷径
+    #    （再套一层"一览"是白点一下）⇒ 那条路测不到"先一览再进动作面"这个主形状。
+    {"x": 11, "y": 13, "name": "木材箱", "capacity": 36, "used": 30, "freeSlots": 6,
+     "items": [{"name": "Wood", "displayName": "木材", "count": 300,
+                "qualifiedId": "(O)388"}]},
+]
 SEATS = {"seats": [{"kind": "furniture", "name": "木椅", "x": 14, "y": 13,
                     "capacity": 1, "free": 1, "face": False, "dist": 2}],
          "me": {"sitting": False}}
@@ -145,20 +152,30 @@ def main():
     _stub()
     out = M.intent(ops="show")
     res.append(ok("show 出单子（抬头报位置/体力）", "🎯 FarmHouse (12,12)" in out and "🔋268" in out))
-    res.append(ok("单子列了容器行", "矿石箱(13,13)" in out))
+    # ⚠️ 2026-09-29 恒「箱子好多哇！…接到 storage 的原有功能去」⇒ **箱子合一**：
+    #    顶层只剩一行「箱子…」，点开是**一览**（一行一箱），再点才是动作面。
+    res.append(ok("单子只列**一行**容器（箱子合一）",
+                  "箱子…" in out and "矿石箱" not in out))
 
     # ④ do：**敲号要真打到那个动作上**
+    def _top_chest():
+        return next(r.no for r in M.intent_menu._LAST_ROWS if (r.label or "") == "箱子")
+
     _stub()
     M.intent(ops="show")
-    box_no = next(r.no for r in M.intent_menu._LAST_ROWS if "矿石箱" in r.label)
-    into_box = M.intent(ops="do", kw={"code": str(box_no)})
-    res.append(ok("敲容器行 → 进它的动作面（**不是**又做了一遍顶层的事）",
+    ov = M.intent(ops="do", kw={"code": str(_top_chest())})
+    res.append(ok("敲容器行 → 先出**一览**（一行一箱，带箱里是什么）",
+                  "矿石箱" in ov and "木材箱" in ov and "钻石" in ov))
+    chest_no = next(r.no for r in M.intent_menu._LAST_ROWS if "矿石箱" in (r.label or ""))
+    into_box = M.intent(ops="do", kw={"code": str(chest_no)})
+    res.append(ok("再敲那一只 → 进动作面（**不是**又做了一遍顶层的事）",
                   "取…" in into_box and "矿石箱 (13,13)" in into_box))
     # 取：pick → qty → 真打到 /chest_take
     M.intent_menu.reset_menu()
     M.intent(ops="show")
-    box_no = next(r.no for r in M.intent_menu._LAST_ROWS if "矿石箱" in r.label)
-    M.intent(ops="do", kw={"code": str(box_no)})
+    M.intent(ops="do", kw={"code": str(_top_chest())})
+    M.intent(ops="do", kw={"code": str(next(r.no for r in M.intent_menu._LAST_ROWS
+                                            if "矿石箱" in (r.label or "")))})
     take_no = next(r.no for r in M.intent_menu._LAST_ROWS if "取" in (r.label or ""))
     M.intent(ops="do", kw={"code": str(take_no)})
     M.intent(ops="do", kw={"code": "1"})              # 选"钻石"

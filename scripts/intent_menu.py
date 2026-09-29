@@ -38,6 +38,9 @@ can() 的三档
 from dataclasses import dataclass, field, replace
 from typing import Callable, Optional
 
+# 🎨 色名（🟪粉 / 🟪紫 那种）——**和 storage 域共用同一份**，别在这儿再抄一张表。
+from storage_common import _color_display
+
 # ── can() 的三档 ──────────────────────────────────────────────────────
 CAN_YES: bool = True
 CAN_NO: bool = False
@@ -985,18 +988,103 @@ def _chest_reason(ctx, t):
 
 
 def _chest_count(ctx, targets):
-    """目录行那截计数 = **箱里几件**（不是"点开有几个动作"）。
+    """目录行那截计数（**合一那行**）= `N 个 · 共 X 件 · 空 Y 格`。
 
     ⚠️ 数不出来时回 `""`（**不印**），**不是**回 `None` —— 回 None 会掉进
     `_render_level` 的兜底 `len(rows)`，那就变成另一个意思了（两把尺子）。
     """
+    used = [(_box(t) or {}).get("used") for t in targets]
+    free = [(_box(t) or {}).get("freeSlots") for t in targets]
+    bits = [f"{len(targets)} 个"]
+    if all(u is not None for u in used):
+        bits.append(f"共 {sum(used)} 件")
+    if all(f is not None for f in free):
+        bits.append(f"空 {sum(free)} 格")
+    return " · ".join(bits)
+
+
+def _chest_reason_many(ctx, targets):
+    """合一那行的理由：**最近一个箱子几步**（同"20 处 · 最近 6 步"那个口径）。"""
+    return f"最近 {min(_dist(ctx, t) for t in targets)} 步"
+
+
+def _chest_one_count(ctx, targets):
+    """一览里那一行的计数 = **`已用/容量 格`**（理由栏只留"箱里是什么"）。
+
+    ⚠️ 必须显式给（不能靠 `_render_level` 的兜底）：兜底是数**下一层有几行**
+       ⇒ 印出来是「2 件」（=取/存两条动作），而那只箱子其实有 3 件 ——
+       两把尺子并排（2026-09-29 自验当场照出来的）。
+    ⚠️ 容量放**计数位**、内容放**理由栏**：两个都是"几件"的数摆在一行里
+       就是同一个数说两遍（同族于"两把尺子"）。
+    """
     b = _box(targets[0]) or {}
-    return f"{b.get('used')} 件" if b.get("used") is not None else ""
+    return _slots_text(b.get("used"), b.get("capacity"))
 
 
 def _chest_show(ctx, t):
     b = _box(t) or {}
     return f"{b.get('name') or '箱子'}({t.get('x')},{t.get('y')})"
+
+
+def _chest_tag(box) -> str:
+    """一箱的标签：**色名 + 人工名（优先）/ 自动类目标签**。
+
+    ⚠️ 口径**照抄 `storage_layout`**（服务器那边那份"当前场景箱子一览"）——
+       同一批箱子在两张屏上不能长得不一样，不然就是两把尺子。
+       ⚠️ 那边多一个 `⭐`（本场景默认箱）——那个记号归 storage 域，单子这边**不搬**：
+          默认箱是"存去哪"的设置，不是"这里有什么"。
+    """
+    emo, czh = _color_display((box or {}).get("color") or "")
+    tag = (emo + czh) if czh else "⬜"
+    if box.get("name"):
+        tag += f"「{box['name']}」"        # 人工标注的名字优先（同 storage_layout）
+    elif box.get("autoTag"):
+        tag += f"【{box['autoTag']}】"
+    return tag
+
+
+def _chest_overview(ctx, targets):
+    """📦 「箱子」那行的下一层 —— **当前场景箱子一览**（一行一箱，点开才是取/存）。
+
+    ⚠️ 恒 2026-09-29：「**箱子好多哇！**…选择该项应该是接到 storage 的原有功能去
+       （本来就是**当前图的所有箱子一览**）」⇒ 顶层只留**一行**（报总箱数/总余格），
+       点开是**一览**，再点才是动作面。（原来一箱一行，5 个箱子就把第一屏占满了。）
+    ⚠️ 只有**一个**箱子时**直接给动作面**（`_chest_subs`）——再套一层"一览"是白点一下。
+    """
+    if len(targets) == 1:
+        return _chest_subs(ctx, targets)
+    rows = []
+    for t in targets:
+        b = _box(t) or {}
+        slots = _slots_text(b.get("used"), b.get("capacity"))
+        label = " ".join(x for x in (_chest_tag(b), f"({t.get('x')},{t.get('y')})") if x)
+        items = b.get("items") or []
+        if items:
+            # ⚠️ 印 **displayName（中文）**，不是 `name`（英文内部名）——单子上的东西一律用
+            #    AI 看得懂的那个名字（同 `_collect_reason_many` 的口径）。
+            #    ⚠️ `storage_layout`（storage 域那张屏）印的是 `name` ⇒ 同一批箱子两张屏
+            #       长得不一样，是**旧账**，记在 CHANGELOG 里待收，别在这儿跟着错。
+            head = "、".join(f"{i.get('displayName') or i.get('name')}×{i.get('count')}"
+                             for i in items[:4])
+            reason = head + (f"…共{len(items)}种" if len(items) > 4 else "")
+        else:
+            reason = "空箱"
+        # ⚠️ `level=` 必须**当场算出来**（`_chest_subs`）—— 一览里这一行的下一层就是
+        #    那只箱子的动作面。忘了挂 = 行在、点开是空（2026-09-29 自验当场抓到）。
+        # ⚠️ `count_text` 也得显式给（手动造行不走 `_row_for`）——不给就会掉进
+        #    `_render_level` 的兜底"下一层有几行"，印成「2 件」冒充"箱里几件"。
+        rows.append(Row(BOX_V, [t], label, reason, _dist(ctx, t),
+                        level=_chest_subs(ctx, [t]), count_text=slots, group="设备"))
+    if not rows:
+        return None
+    rows.sort(key=lambda r: r.dist)
+    return Level(rows, title=f"📦 箱子一览（{len(rows)} 个 · 敲开哪一个）")
+
+
+# 📦 一览里"某一只箱子"那一行 —— 点开就是它的动作面（取/存）。
+#    和顶层的「箱子」分开：顶层是**合一**的目录行（报总数），这只是**一只**。
+BOX_V = Verb("chest_box", "箱子", 0, _chest_can, _chest_reason, _chest_show, "tile",
+             subs=_chest_subs, count=_chest_one_count, group="设备")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1277,8 +1365,11 @@ VERBS: list = [
     # ⚠️ 权重**故意低于 `collect`(88)**（2026-09-29 审查）：容器行是**目录行**（点开还有一层），
     #    而单子第一屏的承诺是"**动作面**"（按了就成）。农场/主屋常态有 5+ 个箱子，
     #    权重一高，第一屏就被"点开还有一层"占满，真正能一下做完的（收机器）反被挤到"还有 N 项"。
+    # 📦 箱子：**顶层只一行**（`箱子… ← 5 个 · 共 93 件 · 空 87 格`），点开才是**一览**，
+    #    再点才是动作面（恒 2026-09-29：「箱子好多哇！…接到 storage 的原有功能去」）。
     Verb("chest", "箱子", 80, _chest_can, _chest_reason, _chest_show, "tile",
-         subs=_chest_subs, count=_chest_count, group="设备"),
+         subs=_chest_overview, count=_chest_count, merge=True,
+         reason_many=_chest_reason_many, group="设备"),
     Verb("collect", "收 已好的机器", 88, _collect_can, _collect_reason, _collect_show, "tile",
          exec=_exec_collect, merge=True, reason_many=_collect_reason_many, group="设备"),
     # ⚠️ 下面这些**只有渲染没有执行**（`exec=None`）⇒ **不上单子**，只在 `at(x,y)` 里
@@ -2118,6 +2209,17 @@ def _selftest():
                 + " / ".join((r.label or "?") for r in _LAST_ROWS))
         return no
 
+    def _open_box(name, run, c):
+        """点**两下**把某只箱子开出来：顶层「箱子…」→ 一览里那**一只**。
+
+        ⚠️ 2026-09-29 箱子合一之后，顶层不再有「矿石箱(13,13)」这行了
+           （恒：「箱子好多哇！…选择该项应该是接到 storage 的原有功能去」）。
+        """
+        reset_menu()
+        render_menu(c, n=40)
+        do_row(_no_of("箱子"), run, c)
+        return do_row(_no_of(name), run, c)
+
     # ① 三档：真 / 假 / 连接级未知
     empty_tile = {"x": 12, "y": 11, "passable": True}
     ok.append(("空地（键不在）→ CAN_NO", _pick_can(ctx, empty_tile) is CAN_NO))
@@ -2272,16 +2374,26 @@ def _selftest():
     ok.append(("act 层多选 → 拒", "一次只能敲一个" in do_row("1,2", fake_run, ctx)))
     ok.append(("越界的号 → 拒并给出路", "at x,y" in do_row(97, fake_run, ctx)))
 
-    # ⑪ 📦 容器（166 ⑤）——一个箱子一行，点开是它的动作面
+    # ⑪ 📦 容器（166 ⑤ / 2026-09-29 恒：**箱子合一**）
+    #    顶层只一行「箱子…」→ 点开是**一览**（一行一箱）→ 再点才是动作面（取/存）。
     reset_menu()
     top = render_menu(ctx, n=40)
-    ok.append(("📦 容器是**目录行**（句尾 `…`）", "矿石箱(13,13)…" in top))
-    ok.append(("📦 目录行的计数是**箱里几件**", "3 件" in top))
-    ok.append(("📦 理由栏给的是空位数", "空 33 格" in top))
+    ok.append(("📦 顶层只有**一行**箱子（不再一箱一行）",
+               "箱子…" in top and "矿石箱" not in top))
+    ok.append(("📦 那一行报的是**总箱数 / 总件数 / 总余格**",
+               "2 个" in top and "共 39 件" in top and "空 33 格" in top))
 
     n_before = len(calls)
+    ov = do_row(_no_of("箱子"), fake_run, ctx)
+    ok.append(("📦 点开 → **一览**：一行一箱、带箱里是什么（本身什么都不做）",
+               "矿石箱" in ov and "满箱" in ov and "钻石" in ov
+               and len(calls) == n_before))
+    # ⚠️ 一览那行的计数必须是 **`已用/容量 格`**：不给 `count_text` 会掉进
+    #    `_render_level` 的兜底"下一层有几行" ⇒ 印成「2 件」（=取/存两条动作）冒充"箱里几件"。
+    ok.append(("📦 一览报的是**箱里几件**（不是「点开有几条动作」）",
+               "3/36 格" in ov and "2 件" not in ov))
     box = do_row(_no_of("矿石箱"), fake_run, ctx)
-    ok.append(("点开容器 → 进动作面，**本身什么都不做**",
+    ok.append(("📦 一览里再点 → 进动作面",
                "矿石箱" in box and len(calls) == n_before))
     ok.append(("动作面里有「取」", " 1  取…" in box or "取…" in box))
     ok.append(("动作面里有「存」", "存…" in box))
@@ -2298,7 +2410,7 @@ def _selftest():
 
     do_row(0, fake_run, ctx)                       # 0 = 这些都不是（回顶层）
     render_menu(ctx, n=40)
-    do_row(_no_of("矿石箱"), fake_run, ctx)
+    _open_box("矿石箱", fake_run, ctx)
     pick = do_row(_no_of("取"), fake_run, ctx)
     ok.append(("「取」点开 → 列箱里的东西（号印在眼前）", "钻石" in pick and "翡翠" in pick))
     q = do_row("1,2", fake_run, ctx)
@@ -2311,7 +2423,7 @@ def _selftest():
     # 满箱 ⇒ 「存」那条行**不出现**（不赌"能叠上去"）
     do_row(0, fake_run, ctx)
     render_menu(ctx, n=40)
-    full = do_row(_no_of("满箱"), fake_run, ctx)
+    full = _open_box("满箱", fake_run, ctx)
     ok.append(("满箱（freeSlots=0）⇒ 「存」不出现", "存…" not in full))
     ok.append(("满箱仍能「取」", "取…" in full))
     ok.append(("满箱**说清下一步**（报缺了要给出路）", "箱子满了" in full and "先取点" in full))
@@ -2325,7 +2437,7 @@ def _selftest():
     capok.caps = dict(capok.caps, chest_open=True)
     reset_menu()
     render_menu(capok, n=40)
-    lv = do_row(_no_of("矿石箱"), fake_run, capok)
+    lv = _open_box("矿石箱", fake_run, capok)
     ok.append(("有 `chest_open` 能力位 ⇒ 「看」出现", "走过去开箱" in lv))
     calls.clear()
     op = do_row(_no_of("看（走过去开箱）"), open_run, capok)
@@ -2336,7 +2448,7 @@ def _selftest():
     # 存：背包 ∩ 容器收的 ∩ 放得下
     do_row(0, fake_run, ctx)
     render_menu(ctx, n=40)
-    do_row(_no_of("矿石箱"), fake_run, ctx)
+    _open_box("矿石箱", fake_run, ctx)
     spick = do_row(_no_of("存"), fake_run, ctx)
     ok.append(("「存」点开的候选来自**背包**", "草莓" in spick))
     # ⚠️ `/store` 默认 keepTools=True 会**静默跳过工具** ⇒ 工具不进候选（否则是"按了不成"的行）
@@ -2403,7 +2515,7 @@ def _selftest():
     nospace.max_items = 0                          # 老 DLL：算不出背包容量
     reset_menu()
     render_menu(nospace, n=40)
-    lv0 = do_row(_no_of("矿石箱"), fake_run, nospace)
+    lv0 = _open_box("矿石箱", fake_run, nospace)
     ok.append(("背包容量**算不出** ⇒ 「取」不出现（第三档同「不」）", "取…" not in lv0))
     # ⚠️ 但"算不出"**不解释**（那是连接级的事）；只有"算得出装不下"才给一句+下一步
     ok.append(("算不出 ⇒ **不编解释**", "背包满了" not in lv0))
@@ -2412,7 +2524,7 @@ def _selftest():
     fullbag.max_items = len(fullbag.inv)           # 背包**满了**（算得出）
     reset_menu()
     render_menu(fullbag, n=40)
-    lv1 = do_row(_no_of("矿石箱"), fake_run, fullbag)
+    lv1 = _open_box("矿石箱", fake_run, fullbag)
     ok.append(("背包满（算得出）⇒ 「取」不出现", "取…" not in lv1))
     ok.append(("背包满 ⇒ 说清下一步", "背包满了" in lv1 and "先卖或存" in lv1))
 
@@ -2420,7 +2532,7 @@ def _selftest():
     # (a) ⚠️ 子层被"再看一眼"砍掉 ⇒ 号会悄悄换意思
     reset_menu()
     render_menu(ctx, n=40)
-    do_row(_no_of("矿石箱"), fake_run, ctx)
+    _open_box("矿石箱", fake_run, ctx)
     again = render_menu(ctx, n=40)                  # 模拟 AI 又看一眼单子
     ok.append(("⚠️ 再看一眼单子**仍停在子层**（号不换意思）", "取…" in again))
 
@@ -2455,7 +2567,7 @@ def _selftest():
         {"name": "Diamond", "displayName": "钻石", "count": 5, "qualifiedId": "(O)72"})
     reset_menu()
     render_menu(dupctx, n=40)
-    lv_dup = do_row(_no_of("矿石箱"), fake_run, dupctx)
+    lv_dup = _open_box("矿石箱", fake_run, dupctx)
     ok.append(("同名两摞 ⇒ **如实说**挑出去了几摞", "同名但不同品质" in lv_dup))
     ok.append(("同名两摞确实没进候选", "钻石" not in do_row(_no_of("取"), fake_run, dupctx)))
 
@@ -2468,7 +2580,7 @@ def _selftest():
 
     reset_menu()
     render_menu(ctx, n=40)
-    do_row(_no_of("矿石箱"), fake_run, ctx)
+    _open_box("矿石箱", fake_run, ctx)
     do_row(_no_of("取"), fake_run, ctx)
     do_row("1", fake_run, ctx)
     dshort = do_row("1=5", short_run, ctx)
@@ -2481,7 +2593,7 @@ def _selftest():
     badbox.tiles[(13, 13)]["chest"].pop("capacity")
     reset_menu()
     render_menu(badbox, n=40)
-    lv_none = do_row(_no_of("矿石箱"), fake_run, badbox)
+    lv_none = _open_box("矿石箱", fake_run, badbox)
     ok.append(("字段缺 ⇒ 不印 `None`", "None" not in lv_none))
 
     # ⑯ 2026-09-29 接线：坐 / 搬家具 / 摸（agent 说的"全转接个大概"）
@@ -2812,9 +2924,10 @@ def _selftest():
     print(render_at(ctx, 12, 13))
     print("\n> at 13,13   （指着一个箱子：目录动词也列出来）")
     print(render_at(ctx, 13, 13))
-    print("\n> do(箱子)   （点开它——里面的行**由处境算**，不是模板）")
+    print("\n> do(箱子) → do(矿石箱)   （箱子合一：先一览，再进那一只的动作面）")
     reset_menu()
     render_menu(ctx, n=40)
+    print(do_row(_no_of("箱子"), lambda e, p: {"ok": True}, ctx))
     print(do_row(_no_of("矿石箱"), lambda e, p: {"ok": True}, ctx))
 
     print("\n> 站在柜台前（商店 menu 开着）—— 买/卖怎么长")
