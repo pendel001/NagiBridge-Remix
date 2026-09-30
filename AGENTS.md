@@ -66,6 +66,12 @@ C:\Users\Administrator\.claude\projects\G--wingheng-Claude-NagiBridge-NagiBridge
 
 1. 导航：地面 `walk_to` / 矿洞 `position` / 跨图 `map_go`；别用 `/move+BFS`
 2. **改 `ModEntry.cs`（C#）必须 `rm -rf bin obj` 重编 + DLL 复制到 C+F 双盘**，否则"改了没生效"
+   - 📌 **判据**：`Get-FileHash` 比三处（`bin\Debug\net6.0` / C盘 Mods / **F盘 `F:\Stardew Valley 2nd\Mods`**），
+     **必须同一个哈希**（⚠️ 本机**活的那份在 F 盘**）
+   - ⚠️ **游戏跑着时 F 盘拷不进去**（`文件正由另一进程使用` —— DLL 被游戏锁着）
+     ⇒ 只能**先拷 C 盘，等恒关了游戏再补拷 F 盘**（2026-09-30 现场踩过）。**别催他关游戏**，他会挑时候
+   - ⚠️ **覆盖前先把 F 盘那份备份**进 `_dll_backup/NagiBridge.<hash8>.dll`
+     （2026-09-30 漏过一次：把"真机验过的"那版直接覆盖了，想回滚只能回到更早的）
 3. 对话推进用 `/click(no_mouse)` 或 `press_key(ok)`，别用 `key confirm`
 4. 敲一下 → 检查 → 碎了停，不硬编码次数
 5. 长脚本便利工具自动注入 `--port` AI 端口（防挪到房主角色）
