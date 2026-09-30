@@ -3136,6 +3136,11 @@ public class ModEntry : Mod
                 ["machines_heldItemDisplay"] = true, // 🏭 /machines 的 heldItemDisplay（中文显示名）
                 ["store_slot_quality"] = true,       // 📦 /store · /chest_take 认 slot/quality
                 ["scan_chests_type"] = true,         // 🗄️ /scan_chests 箱子层带 typeId/typeName
+                // 🗄️ /scan_chests **物品层**带 `slot`（真实格号）+ `quality`
+                //    ⚠️ 和上面 `store_slot_quality` 是**两件事**、别并成一个键：
+                //       那个说"端点**收**不收 slot"，这个说"一览**给**不给格号"。
+                //       消费方要的是后者（拿不到号就没法指），并成一个键以后只改一头就会骗人。
+                ["scan_chests_item_slot"] = true,
             }
         };
     }

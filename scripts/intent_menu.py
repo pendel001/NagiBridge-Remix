@@ -929,8 +929,16 @@ def _exec_take_multi(ctx, pairs, run):
     for row, cnt in pairs:
         it, box = row.targets[0]["item"], row.targets[0]["box"]
         cn = it.get("displayName") or it.get("name")
-        r = run("chest_take", {"x": box["x"], "y": box["y"],
-                               "name": it.get("name"), "count": cnt}) or {}
+        payload = {"x": box["x"], "y": box["y"], "count": cnt, "name": it.get("name")}
+        # 🆕 2026-09-30(178)：有**真实格号**就按格号指（同名两摞才分得开）。
+        # ⚠️ `name`/`quality` **一起给**、不是二选一：万一"列出来 → 按下去"之间箱子被动过，
+        #    `slot` 会指到别的东西 —— 此时三个判据对不上 ⇒ **一件都取不到**（如实报），
+        #    而不是"悄悄拿错一摞"（那正是这条老账最怕的形状）。
+        if isinstance(it.get("slot"), int):
+            payload["slot"] = it["slot"]
+            if isinstance(it.get("quality"), int):
+                payload["quality"] = it["quality"]
+        r = run("chest_take", payload) or {}
         took = r.get("taken") or 0
         if r.get("ok") and took:
             ok_n += 1
@@ -955,8 +963,15 @@ def _exec_store_multi(ctx, pairs, run):
     for row, cnt in pairs:
         slot, box = row.targets[0]["slot"], row.targets[0]["box"]
         cn = slot.get("name") or slot.get("raw", {}).get("name")
-        r = run("store", {"x": box["x"], "y": box["y"],
-                          "name": _held_name(slot), "count": cnt, "keepTools": True}) or {}
+        payload = {"x": box["x"], "y": box["y"], "count": cnt,
+                   "name": _held_name(slot), "keepTools": True}
+        # 🆕 2026-09-30(178)：`/store` 认 `slot`（= **背包格号** `idx`）之后，同名两摞分得开了。
+        #    ⚠️ `quality` 用 `_quality_of()`：**缺字段 ⇒ -1（不限）**，别拿 0 当默认
+        #       （`0` 在端点那边是**硬筛"只要普通品质"**，会把银/金星那摞挑掉）。同理给 name 兜底。
+        if slot.get("idx"):
+            payload["slot"] = slot["idx"]
+            payload["quality"] = _quality_of(slot)
+        r = run("store", payload) or {}
         got = sum(s.get("count") or 0 for s in (r.get("stored") or []))
         if r.get("ok") and got:
             ok_n += 1
@@ -1071,7 +1086,14 @@ def _chest_subs(ctx, targets):
 
     # ② 取…：容器里有 ∩ 背包放得下
     mine = [it for it in (box.get("items") or []) if (it.get("count") or 0) > 0]
-    mine, amb = _unambiguous(mine, lambda it: it.get("name"))
+    # 🆕 2026-09-30(178)：**能不能按格号指哪一摞**是**连接级**的事 —— 问 `caps`，别从格子里猜：
+    #    · 新 DLL：`/scan_chests` 给每样东西带了**真实格号** `slot`（+星级 `quality`），
+    #      `/chest_take` 也认 `slot` ⇒ 同名两摞**分得开了** ⇒ 不用再挑出去，**全都列**。
+    #    · 老 DLL：没有格号，端点只按名字认 ⇒ 同名两摞**照样不许列**
+    #      （宁缺勿编：印出来一样的两行，AI 指哪摞都解析不出，端点会按自己的遍历顺序拿一摞）。
+    amb = 0
+    if not ctx.cap("scan_chests_item_slot"):
+        mine, amb = _unambiguous(mine, lambda it: it.get("name"))
     pack = _pack_space(ctx)
     if mine and pack is CAN_YES:
         rows.append(Row(TAKE_V, [t], "取", f"背包 {len(ctx.inv)}/{ctx.max_items}", 0,
@@ -1083,8 +1105,8 @@ def _chest_subs(ctx, targets):
         notes.append(f"背包满了（{len(ctx.inv)}/{ctx.max_items} 格）"
                      f"—— 先卖或存掉点东西，「取」才放得下")
     if amb:
-        notes.append(f"有 {amb} 摞**同名但不同品质**的没列出来 —— 端点只按名字认，"
-                     f"认不出是哪一摞（要精确挑就用 storage 域）")
+        notes.append(f"有 {amb} 摞**同名但不同品质**的没列出来 —— 这版 DLL 拿不到箱子里的格号，"
+                     f"端点只按名字认，认不出是哪一摞（要精确挑就用 storage 域）")
 
     # ③ 存…：背包 ∩ 容器收的 ∩ 容器放得下
     space = _box_space(box)
@@ -1095,7 +1117,10 @@ def _chest_subs(ctx, targets):
         #    判据问游戏（`catNum == -99`）；**问不出（None）也不列**（同三档：不透支信任）。
         can = [s for s in ctx.inv
                if s.get("idx") and is_tool(s) is False and _box_accepts(box, s) is True]
-        can, amb2 = _unambiguous(can, _held_name)
+        # 同 ②：`/store` 认 `slot`（= **背包格号** `idx`）之后，同名两摞也分得开了
+        amb2 = 0
+        if not ctx.cap("store_slot_quality"):
+            can, amb2 = _unambiguous(can, _held_name)
         if can:
             rows.append(Row(STORE_V, [t], "存", f"箱空 {box.get('freeSlots')} 格", 0,
                             level=Level([_slot_row(s, dict(box, x=x, y=y), STORE_V) for s in can],
@@ -1104,7 +1129,7 @@ def _chest_subs(ctx, targets):
                             where="", count_text=f"{len(can)} 种"))
         if amb2:
             notes.append(f"背包里有 {amb2} 摞**同名但不同品质**的没列出来 —— "
-                         f"端点只按名字认，认不出是哪一摞")
+                         f"这版 DLL 的 `/store` 不认格号，只按名字认，认不出是哪一摞")
     elif space is CAN_NO:
         notes.append(f"箱子满了（{box.get('used')}/{box.get('capacity')} 格）"
                      f"—— 先取点东西出来，「存」才放得下")
@@ -2869,6 +2894,45 @@ def _selftest():
     lv_dup = _open_box("矿石箱", fake_run, dupctx)
     ok.append(("同名两摞 ⇒ **如实说**挑出去了几摞", "同名但不同品质" in lv_dup))
     ok.append(("同名两摞确实没进候选", "钻石" not in do_row(_no_of("取"), fake_run, dupctx)))
+
+    # (f2) 🆕 2026-09-30(178)：这版 DLL 给了**箱子里的真实格号** ⇒ 同名两摞**分得开了**：
+    #      ① 该**列出来**（不再挑出去）；② 按下去**必须真的按格号指** ——
+    #      光"列出来"不指格号，跟以前一样还是拿错那一摞（**同一个意图只落地一半** = 本项目老账）。
+    slotctx = _fixture()
+    slotctx.caps = dict(slotctx.caps, scan_chests_item_slot=True, store_slot_quality=True)
+    slotctx.tiles[(13, 13)]["chest"]["items"] = [
+        {"name": "Diamond", "displayName": "钻石", "count": 5, "qualifiedId": "(O)72",
+         "slot": 0, "quality": 0},
+        {"name": "Diamond", "displayName": "钻石", "count": 2, "qualifiedId": "(O)72",
+         "slot": 7, "quality": 2},
+    ]
+    reset_menu()
+    render_menu(slotctx, n=40)
+    lv_slot = _open_box("矿石箱", fake_run, slotctx)
+    ok.append(("有格号 ⇒ 同名两摞**不再挑出去**（那句「没列出来」不该再出现）",
+               "同名但不同品质" not in lv_slot))
+    calls.clear()
+    do_row(_no_of("取"), fake_run, slotctx)
+    do_row("1,2", fake_run, slotctx)
+    do_row("1=5,2=2", take_run, slotctx)
+    sent = [p for ep, p in calls if ep == "chest_take"]
+    ok.append(("取：同名两摞**各按自己的格号**指（slot 0/7 + 星级一起给、名字也一并给）",
+               len(sent) == 2 and {p.get("slot") for p in sent} == {0, 7}
+               and {p.get("quality") for p in sent} == {0, 2}
+               and all(p.get("name") == "Diamond" for p in sent)))
+
+    # (f3) 存的同名两摞同理：有 `store_slot_quality` ⇒ 列出来**并带背包格号** `idx`
+    calls.clear()
+    do_row(0, fake_run, slotctx)
+    render_menu(slotctx, n=40)
+    _open_box("矿石箱", fake_run, slotctx)
+    do_row(_no_of("存"), fake_run, slotctx)
+    do_row("1", fake_run, slotctx)
+    do_row("1=1", take_run, slotctx)
+    sents = [p for ep, p in calls if ep == "store"]
+    ok.append(("存：带上**背包格号** `slot` + `quality`（缺字段时给 -1「不限」，绝不拿 0 硬筛）",
+               len(sents) == 1 and isinstance(sents[0].get("slot"), int)
+               and isinstance(sents[0].get("quality"), int)))
 
     # (g) 取少了：**只报差额，不替游戏编原因**（装不下也会少给，不只是"箱里没有"）
     def short_run(ep, payload):
