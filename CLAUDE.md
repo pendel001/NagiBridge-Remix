@@ -1,7 +1,7 @@
 # NagiBridge — 星露谷 AI 远程控制 + MCP 文游化接口
 
 ## 概述
-SMAPI mod（C# HTTP API）+ Python MCP 服务器（130 工具）让 AI 像真人一样操控星露谷：拟人走位、受限、自主决策。AI=farmhand(7843)，恒=房主(7842)。
+SMAPI mod（C# HTTP API）+ Python MCP 服务器（AI 只见 **16 个工具**：13 域入口 + `intent`/`screenshot`/`help`）让 AI 像真人一样操控星露谷：拟人走位、受限、自主决策。AI=farmhand(7843)，恒=房主(7842)。
 
 ## 结构
 - ModEntry.cs — SMAPI mod：HTTP API/控制/聊天/导航

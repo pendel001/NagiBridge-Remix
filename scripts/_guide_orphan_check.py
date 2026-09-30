@@ -122,8 +122,14 @@ def main() -> int:
     params = all_param_names()
     allowed = all_ops | params | set(DOMAINS) | _ALLOW
 
+    # ⚠️ 2026-10-01：**只要求"AI 够得着的域"有指南** —— 整域收编（`session`→settings）之后，
+    #    那个域的指南是**故意删掉**的（留壳会让 `_dispatch_keys` 把 help 反查成一个隐藏域）。
+    #    ⚠️ 但**不能静默跳过**：收编清单要打出来，否则"没查"会伪装成"查过没问题"。
+    _visible = [d for d in DOMAINS if d in M._KEEP_TOOLS]
+    _subsumed = [d for d in DOMAINS if d not in M._KEEP_TOOLS]
+
     problems, notes = [], []
-    for d in DOMAINS:
+    for d in _visible:
         guide = M._DOMAIN_GUIDES.get(d, "")
         if not guide:
             problems.append(f"  [{d}] 没有指南（AI 的 help({d}) 会是空的）")
@@ -139,7 +145,10 @@ def main() -> int:
             hint = f"　←　疑似近失：{'/'.join(near)}" if near else ""
             problems.append(f"  [{d}] 指南里的「{tok}(」在该域 dispatch 里不存在{hint}")
 
-    print(f"  · 扫描 {len(DOMAINS)} 个域的指南，域别名合计 {len(all_ops)} 个，参数名合计 {len(params)} 个")
+    print(f"  · 扫描 {len(_visible)} 个域的指南，域别名合计 {len(all_ops)} 个，参数名合计 {len(params)} 个")
+    if _subsumed:
+        print(f"  · 已收编、不查指南（AI 够不着）: {', '.join(_subsumed)}"
+              f"（它们的 op 由 domain_selftest 的 _SUBSUMED_DOMAINS 逐条审）")
     if problems:
         print("\n❌ 可疑（可能是文档孤儿，AI 照调会报未知 op）:")
         for p in problems:

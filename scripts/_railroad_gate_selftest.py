@@ -76,7 +76,9 @@ try:
     _s = _spring[0] if _spring else ""
     _m = _summer[0] if _summer else ""
     ck("…**不列温泉**（石堆还堵着）", "温泉" not in _s, _s)
-    ck("…但另两条路都在（吃 / 睡）", "daily ops=eat" in _s and "cabin ops=sleep" in _s, _s)
+    # ⚠️ 2026-10-01：`cabin` 撤出顶层（cook→daily、其余→scene/farm/daily/check）⇒ 这行文案
+    #    从 `cabin ops=sleep` 改成 `daily ops=sleep`。「吃 / 睡」这两条路本身没变。
+    ck("…但另两条路都在（吃 / 睡）", "daily ops=eat" in _s and "daily ops=sleep" in _s, _s)
     ck("…**整套浴场攻略不再长在警告里**（「推更衣室门/蹭进泳池」那两句没了）",
        "更衣室" not in _s and "泳池" not in _s, _s)
     ck("…整个警告明显变短（< 120 字）", len(_s) < 120, f"{len(_s)} 字: {_s}")

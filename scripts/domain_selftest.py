@@ -50,6 +50,90 @@ PROBLEMS = []
 NOTES = []
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# 🗜️ 被撤下顶层的**整个域**：必须**逐 op 写明替代路**（2026-10-01 加）
+# ═══════════════════════════════════════════════════════════════════════
+# 为什么单开这一张表，而不是往 `_KNOWN_SUBSUMED` 里塞个域名了事：
+#   `_KNOWN_SUBSUMED` 是个**字符串黑名单**——塞进去就静默通过。本来是"人工核实过"的白名单，
+#   但对**整域收编**它就是个**万能后门**：塞一个域名，几十条 op 的替代路一条都不用写。
+#   2026-10-01 实测过（`_guardrail_sim.py`）：撤 `social` 会报 1 条断档，
+#   而「撤 social + 写进 _KNOWN_SUBSUMED」报 **0 条** —— 唯一的护栏就这么没了，且看不出来。
+#   ⇒ 整域收编改走这张表：**键 = 该域 dispatch 里的每个 value 函数名，
+#      值 = 替代路（一句人能核的话）**。少写一条就报错 ⇒ 它是**逐 op 审计表**，不是后门。
+#
+# ⚠️ 判据是"**覆盖该域 dispatch 的全部 value**"，不是"字段看着差不多"——
+#    漏掉的那条恰好就是"AI 够不着、也没人发现"的那条（域 op 断档那个病的正身）。
+_SUBSUMED_DOMAINS = {
+    # 🧠 2026-10-01 恒拍板：session 三条 op 并进 `settings`（**消除重复**，不是搬家）——
+    #    `settings_status` 早在印会话设置，而 `settings(setting="context_turns")` 与
+    #    `session set max_turns` 改的是同一个 `SESSION_CFG`。
+    "session": {
+        "_session_status": "settings(ops='session_status')（settings_status 本来就印着会话那两行）",
+        "_session_set":    "settings(ops='session_set', kw={setting,value})；老路 settings(setting='context_turns') 仍可",
+        "_session_exportop": "settings(ops='session_export')（**给人看的 md 子集**；实时全量档案 session_<ts>.jsonl 本来就一直落盘 ⇒ 恒 2026-10-01 确认：真正有用的只有 max_turns）",
+    },
+    # 🏠 2026-10-01 恒拍板：`cabin` 撤出顶层（"能收就收"）——
+    #    它 11 条 op 里**有 9 条本来就是别的域的同一个函数**（scene/farm/daily 都有同名 op），
+    #    真正只在 cabin 的只有 `_cabin_enum`（扫屋待收）和 `_cabin_collect`（收本屋机器），
+    #    而这两条的能力**由 check + 单子覆盖**。⚠️ `cook` 是这次唯一**搬家**的：
+    #    恒指定进 `daily`（"做饭是吃的上游"，daily 本来就有 eat）。
+    "cabin": {
+        "cook":              "daily(ops='cook', kw={recipe_name,count}) —— 2026-10-01 恒指定搬进 daily",
+        "go_sleep":          "daily(ops='sleep', kw={who})（同一函数；过夜意图由 AI 自己带）",
+        "blessing_statue":   "farm(ops='statue')（同一函数）",
+        "interact_at":       "scene(ops='at'/'interact', kw={tile_x,tile_y})（同一函数）",
+        "place_item":        "scene(ops='place', kw={name,x,y})（同一函数）",
+        "break_tile":        "scene(ops='break', kw={x,y,steps,radius})（同一函数）",
+        "decor_report":      "scene(ops='decor')（同一函数；地板/墙纸真值表）",
+        "furniture_pickup":  "scene(ops='pickup')（同一函数）或单子「搬走…」",
+        "scan_furniture":    "scene(ops='furniture')（同一函数）",
+        "_cabin_collect":    "单子「收 已好的机器」/ farm(ops='collect') —— 本屋那条快捷路已并入（同一个 machine_collect）",
+        "_cabin_enum":       "check(what='machines') + 单子「收 已好的机器」—— 扫屋待收的聚合视图已由这两条覆盖",
+    },
+}
+
+
+def _domain_op_values(domain: str) -> set:
+    """某域 dispatch 里的全部 value 函数名（复用 `_collect_dict_values` 的 AST 口径）。"""
+    fn = getattr(M, domain, None)
+    if fn is None:
+        return set()
+    return _collect_dict_values(fn)
+
+
+def _check_subsumed_domains(hidden: set) -> None:
+    """撤下去的域：逐 op 必须写明替代路（见 `_SUBSUMED_DOMAINS` 那段）。"""
+    for d in sorted(hidden & set(DOMAINS)):
+        book = _SUBSUMED_DOMAINS.get(d)
+        if book is None:
+            PROBLEMS.append(
+                f"  域「{d}」不在 _KEEP_TOOLS 里，却**没有** _SUBSUMED_DOMAINS 审计表 → "
+                f"请逐条写明它的每个 op 现在走哪条路（别往 _KNOWN_SUBSUMED 塞域名了事）")
+            continue
+        ops = _domain_op_values(d)
+        miss = sorted(ops - set(book))
+        extra = sorted(set(book) - ops)
+        if miss:
+            PROBLEMS.append(
+                f"  _SUBSUMED_DOMAINS['{d}'] 漏了 {len(miss)} 个 op 的替代路: {', '.join(miss)}"
+                f" → 收编一个域时**每条 op 都要有一句话**（漏的正是没人发现的那条）")
+        if extra:
+            NOTES.append(f"  _SUBSUMED_DOMAINS['{d}'] 里这几条不是它的 op（改名了？）: {', '.join(extra)}")
+        if not miss:
+            print(f"  ✅ 撤下去的域「{d}」{len(ops)} 个 op 全写了替代路")
+
+
+def _check_no_domain_backdoor() -> None:
+    """域名**不许**走 `_KNOWN_SUBSUMED` 后门（那会把整域审计变成一句话）。"""
+    bad = sorted(set(_KNOWN_SUBSUMED) & set(DOMAINS))
+    if bad:
+        PROBLEMS.append(
+            f"  _KNOWN_SUBSUMED 里混进了域名 {', '.join(bad)} → 整域收编请走 _SUBSUMED_DOMAINS "
+            f"逐 op 写清；塞域名会让「无断档」检查静默通过（唯一的护栏就没了）")
+    else:
+        print(f"  ✅ _KNOWN_SUBSUMED 里没有域名（整域收编只能走审计表）")
+
+
 def _fn_source(fn):
     return inspect.getsource(fn)
 
@@ -230,7 +314,14 @@ def main():
     reachable = dom_reachable()
     hidden = registered - set(M._KEEP_TOOLS)
     stranded = sorted(hidden - reachable)
-    real_stranded = [s for s in stranded if not s.startswith("_") and s not in _KNOWN_SUBSUMED]
+    # ⚠️ 2026-10-01：**整域收编**（`_SUBSUMED_DOMAINS` 里有审计表的）**不算断档** ——
+    #    但它的"没断档"由 4b 那张**逐 op 审计表**证明，比这条函数级检查**更严**（这是关键：
+    #    不能因为"域名本身没人引用"就把它当断档，也不能因为"我写了张表"就放过没写的 op）。
+    subsumed_domains = sorted(set(stranded) & set(_SUBSUMED_DOMAINS))
+    real_stranded = [s for s in stranded
+                     if not s.startswith("_")
+                     and s not in _KNOWN_SUBSUMED
+                     and s not in _SUBSUMED_DOMAINS]
     subsume_stranded = [s for s in stranded if s in _KNOWN_SUBSUMED]
     priv_stranded = [s for s in stranded if s.startswith("_")]
     if real_stranded:
@@ -238,10 +329,16 @@ def main():
             PROBLEMS.append(f"  被隐藏工具「{s}」无任何域 op 可达 → 功能断档（需加进 _KEEP_TOOLS 或补域 op）")
     else:
         print(f"  ✅ 被隐藏的 {len(hidden)} 个工具都能被 {len(reachable)} 个域 op 引用到达（或无断档）")
+    if subsumed_domains:
+        NOTES.append(f"  整域收编（走 _SUBSUMED_DOMAINS 逐 op 审计，不算断档）: {', '.join(subsumed_domains)}")
     if subsume_stranded:
         NOTES.append(f"  已被域 op 覆盖、安全隐藏: {', '.join(subsume_stranded)}")
     if priv_stranded:
         NOTES.append(f"  下划线内部注册工具未被子域引用（容忍，仅无 AI 直调入口）: {', '.join(priv_stranded)}")
+
+    # 4b. 🗜️ 撤下顶层的**整域**：逐 op 审计表 + 域名不许走 _KNOWN_SUBSUMED 后门（2026-10-01）
+    _check_subsumed_domains(hidden)
+    _check_no_domain_backdoor()
 
     # 5. 🔴 持 `_bg_lock` 时调 `_with_state` = 自锁死（2026-09-12 真机踩到）
     #    机理：`_with_state` 要拼状态条 → 走 `_bg_activity_line()` → 那里也 `with _bg_lock:`，
@@ -348,8 +445,15 @@ def main():
         print(f"  ✅ 意图检索回归样本 {len(_cases)}/{len(_cases)} 通过")
 
     # 11. 汇总
+    # ⚠️ 域/独立的条数**算出来**，别写死（原来硬编码 15 —— 2026-10-01 收编 session 之后
+    #    它会印出「13 域 + 4 独立」这种假账，而独立其实只有 3 个）。
+    _vis = [d for d in DOMAINS if d in M._KEEP_TOOLS]
+    _hidden_dom = [d for d in DOMAINS if d not in M._KEEP_TOOLS]
     print(f"  · 注册工具总数: {len(registered)}")
-    print(f"  · keep-set 白名单: {len(M._KEEP_TOOLS)}（15 域 + {len(M._KEEP_TOOLS) - 15} 独立）")
+    print(f"  · keep-set 白名单: {len(M._KEEP_TOOLS)}"
+          f"（{len(_vis)} 域 + {len(M._KEEP_TOOLS) - len(_vis)} 独立）")
+    if _hidden_dom:
+        print(f"  · 已撤下顶层的域: {', '.join(_hidden_dom)}（函数仍在，走审计表的替代路）")
 
     if NOTES:
         print("  ℹ️ 提示:")

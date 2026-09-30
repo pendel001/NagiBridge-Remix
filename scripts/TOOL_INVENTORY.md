@@ -1,10 +1,10 @@
-# NagiBridge MCP 域工具速查手册（2026-08-22 重写 · keep-set **17** 个 · 09-02 合并 script/session 域 · 09-06 `--full` 退役 · 09-11 收编 advance_story/which_role/profile）
+# NagiBridge MCP 域工具速查手册（2026-08-22 重写 · keep-set **16** 个 · 09-02 合并 script 域 · 09-06 `--full` 退役 · 09-11 收编 advance_story/profile/which_role · **10-01 收编 session→settings、cabin→scene/farm/daily/check**）
 
-> 域工具速查手册：AI 现在**默认只看到 17 个工具**（15 域入口 + 2 独立工具 screenshot/help），
+> 域工具速查手册：AI 现在**默认只看到 16 个工具**（13 域入口 + 3 独立工具 `intent`/`screenshot`/`help`），
 > 其余旧独立工具**全部收进域入口**（函数还在，只是 AI 不再直调）。
 > 记住一句话：**"想做 X → 调对应域的 ops"**。旧工具名大多能在域里找到等价物（见文末对照表）。
 > 🔍 **想查某域详细 ops/坑/参数 → `help(域名)`**（如 help(farm)；docstring 已精简，深度靠这个查）。
-> 📐 **2026-09-11 起：15 个域全部补了「参数速查」**（每条 op 的 `kw` 键名 + 默认值 + 取值），
+> 📐 **2026-09-11 起：每个域都补了「参数速查」**（每条 op 的 `kw` 键名 + 默认值 + 取值），
 > 本手册与 `help(域)` **两处同源**——改一处记得改另一处。⚠️ 参数键名**必须 = 函数签名参数名**，
 > 写错会被 `_ops_run` **静默丢掉、不报错**（这是本项目最容易踩且最难发现的坑）。
 
@@ -12,7 +12,7 @@
 
 ## 🧭 一、总纲（先读这段）
 
-- **域模式恒开**（`--full` / `NAGI_FULL_TOOLS` 已退役 2026-09-06，没有"全量回退"了；AI 就只见下面这套 20 个）。
+- **域模式恒开**（`--full` / `NAGI_FULL_TOOLS` 已退役 2026-09-06，没有"全量回退"了；AI 就只见下面这套 16 个）。
 - **每个"域"就是一把瑞士军刀**：`farm(ops="till plant water")` 一次做多件事，ops 空格/逗号分隔。
 - **AI 调用 = 域名 + ops**，不是工具名。例：想点一个格子 → `scene(ops="at", tile_x=8, tile_y=24)`；想推进剧情 → `menu(ops="advance")`。
 - **✦ 域工具的子参数会收进 `kw`**：FastMCP 对带 `**kw` 的域工具生成 `{ops, kw}` 结构。Claude Code 自动处理（实际是 `farm(ops="till", kw={…})`），你**只需理解、不用手动拼**；但用脚本直调时子参数要放进 `kw`（如 `fish(ops="go", kw={"location":"Beach"})`），否则报 `kw Field required`。
@@ -20,7 +20,15 @@
 
 ---
 
-## ⚙️ 二、15 个域入口（ops 列表）
+## ⚙️ 二、13 个域入口（ops 列表）
+
+> 🗜️ **2026-10-01 撤下顶层两个域**（**函数没删**，只是 AI 不再直调；逐 op 的替代路见 `domain_selftest._SUBSUMED_DOMAINS`）：
+> **`cabin`** → `cook`→`daily cook` · `sleep`→`daily sleep` · `statue`→`farm statue` ·
+> `interact/place/break/furniture/decor`→`scene` 同名 op · `pickup`→`scene pickup`/单子「搬走…」 ·
+> `collect`→单子「收 已好的机器」/`farm collect` · `enum`→`check(what="machines")`（+ 单子）。
+> **`session`** → 三条 op 全进 **`settings`**（`session_status`/`session_set`/`session_export`）——
+> 这不是简化而是**消除重复**：`settings status` 早在印会话设置，
+> 而 `settings(setting="context_turns")` 与 `session set max_turns` 改的是同一个变量。
 
 ### `check(what)` — 查询（状态/背包/机器/收藏）　*注意：这是 `what` 不是 `ops`*
 | what | 干嘛的 |
@@ -128,20 +136,6 @@
 - 爆炸范围：樱桃 = 边长 7 的**十字**（缺 4 角）/ 黑 = **11×11 方块** / 超级 = **15×15 方块**。
   ⚠️ 黑和超级**会炸伤自己**：实测黑弹掉 3 血（可接受），超级更大更痛。
 
-### `cabin(ops)` — 小屋引导 **只在 小屋/农场屋里**　不传=扫屋
-`enum`(扫屋待收) `collect`(收机器) `statue`(雕像) `furniture`(扫家具) `decor`(🪵地板/墙纸真值表) `interact`(点家具) `pickup`(拿起家具) `place`/`break`(放置/拆) `sleep`(睡觉) `cook`(做饭)
-
-**📐 `cabin` 参数速查**
-
-| op | 参数（括号内=默认） | 说明 |
-|---|---|---|
-| `interact` / `pickup` | `tile_x`,`tile_y`（**必填**） | ⚠️ 参数名是 `tile_x`/`tile_y`，**不是 `x`/`y`** |
-| `cook` | `recipe_name`（必填）`count`(1) | 做饭（⚠️ 在 `cabin` 域，**不在 `menu`**）|
-| `sleep` | `who`（**必填**） | 传自己名 = 睡自己床；传别人名 = 睡那个人的床（一起睡 + 🌹彩蛋）。**传对名字就不用先回家**——不在那栋屋会自动走过去。名字写错 → 报错并列出可选名。🏝️ **在姜岛是另一套**（大通铺、没有"谁的床"）：传**正躺在床上的别人** = 挤他那张（姜岛版彩蛋）；传自己 / 那人还没躺 = 挑一张空床**安静睡** |
-| `place` / `break` | 同 `scene` 同名 op | `name`,`x`,`y` ／ `x`,`y`,`steps`,`radius` |
-
-> 其余（`enum`/`collect`/`statue`/`furniture`/`decor`）**无参**。
-
 ### `social(ops)` — 社交
 `chat`(跟NPC搭话) `gift`(送礼物) `give`(给物品玩家·手持右键正式赠予) `hand`(递给玩家·走过去丢他脚边·磁吸自动收·可整叠) `send`(发聊天消息) `emote`(表情) `friendship`(查好感) `movie`/`snack`(电影院知识)
 
@@ -226,7 +220,7 @@
 | `minigame` / `minigame_state` | 赌场小游戏点按钮 / 读牌面·转盘 |
 | `levelup_choose` | 技能升级选职业分支（5/10 级）|
 
-> ⚠️ **`cook`（做饭）不在 `menu` 域，在 `cabin` 域**（早期版本列错在此，已删）。旧版 `claim_swap`（替换领取）也已退役。
+> ⚠️ **`cook`（做饭）不在 `menu` 域，在 `daily` 域**（2026-10-01 从已撤顶层的 `cabin` 收编进来）。旧版 `claim_swap`（替换领取）也已退役。
 
 **📐 `menu` 参数速查**
 
@@ -265,17 +259,10 @@
 > ⚠️ 长任务便利工具**自动后台**（别手动后台）；进度**自动播报**（收工带总时长），**不需要轮询 `status`**（`status` 已于 09-05 删除）。
 > ⚠️ 参数放 `kw`，别拼进 ops 串。
 
-### `session(ops)` — 会话缓冲（多数不用）
-`status`(看条数/设置) `set`(改设置) `export`(手动导出记忆)
-
-**📐 `session` 参数速查**
-
-| op | 参数 | 说明 |
-|---|---|---|
-| `set` | `setting`,`value`（都是字符串） | 改会话设置 |
-| `status` / `export` | 无参 | 看缓冲 / 手动导出记忆 |
-
-> 💡 这个域**多数情况不用**。
+> 🗜️ **2026-10-01：`session` 域已撤下顶层**，三条 op 全进 **`settings`** ——
+> `settings(ops="session_status"/"session_set"/"session_export")`。
+> 理由不是"简化"，是**本来就在做同一件事**：`settings status` 早在印会话设置，
+> 而 `settings(setting="context_turns")` 跟 `session set max_turns` 改的是同一个变量。
 
 ### `storage(ops)` — 箱子
 `view`(看箱) `store`(存) `take`(取) `find`(模糊查哪箱有) `default`(设/清默认箱) `tag`(改名+改色)
@@ -306,6 +293,7 @@
 |---|---|---|
 | `sleep` / `lie_bed` | `who`（**必填**） | `sleep` = 真过夜；`lie_bed` = **只躺不睡**（想离开随时 `map walk` 走离床格，`isInBed` 自动变 false）。`who`：传自己名 = 自己床；传别人名 = 那人的床（一起睡 + 🌹彩蛋）。**传对名字就不用先回家**——不在那栋屋会自动走过去（map_go 跨图→门口→推门→床边）。名字写错 → 报错并列出可选名（不会默默睡成别人的床）。🏝️ **在姜岛是另一套**（`IslandFarmHouse` 大通铺，岛上**没有"谁的床"**）：传**正躺在床上的别人** = 挤他那张（姜岛版爬床彩蛋）；传自己 / 那人还没躺 = 挑一张**空床安静睡**（不播报）；全占满 → 报错点名谁在哪张床；导航走 `map_go("IslandFarmHouse")`，**不是**回大陆那个家 |
 | `eat` | `name`("") `item_name`("") | 吃食物回血/体力 |
+| `cook` | `recipe_name`（**必填**；食谱用英文原名）`count`(1) | 做饭（🆕10-01 从 `cabin` 收编进来）；**会先走到厨房**，走不过去直接报错；满包会被前置拦下不吃材料 |
 | `wear` | `name`(None) `slot`(None) `hand`(None) | `name` = 穿上（**自动判槽位**，替下的回背包）；`slot` = 脱下该槽（`boots`/`leftRing`/`rightRing`/`trinket`/`hat`）；`hand` = **仅戒指**，`1`/`left` 或 `2`/`right`，或传"要换掉的那枚戒指名"（自动找它在哪只手）|
 | `heartbeat` | `minutes`(5) | 0 = 每次工具返回都显示 |
 | `pause` | `out_of_focus`(False) | False = 后台也完整运行（走位/菜单/锻造都行，**不抢前台焦点**）|
@@ -352,7 +340,7 @@
 > 其余（`today`/`next`/`go`/`info`/`shop`/`eggs`/`help`/`prep`/`poi`/`maze`/`ice_fish`）**无参**。
 
 ### `settings(ops)` — 系统/设置（合并"捏脸设置"进来，不再拆）
-`status`(看所有设置+退役工具) `retire`(退役工具) `reactivate`(召回) `appearance`(捏脸) `customize`(起名) `color`(颜色条) `hair`/`shirt`/`pants`/`hat`/`colorpreset`(外观参考) `confirm_look`(核对捏人形象)
+`status`(看所有设置+退役工具) `retire`(退役工具) `reactivate`(召回) `appearance`(捏脸) `customize`(起名) `color`(颜色条) `hair`/`shirt`/`pants`/`hat`/`colorpreset`(外观参考) `confirm_look`(核对捏人形象) **`session_status`/`session_set`/`session_export`(🧠 会话缓冲，🆕10-01 从 `session` 域收编进来)**
 
 **📐 `settings` 参数速查**
 
@@ -364,9 +352,12 @@
 | `hair` / `shirt` / `pants` / `hat` / `colorpreset` | — | 外观编号参考表 |
 | `confirm_look` | — | **核对捏人形象，`ok` 前必做** |
 | `retire` / `reactivate` | — | 退役工具 / 召回 |
+| `session_set` | `setting`,`value`（**都是字符串**） | 改会话缓冲设置；`setting` **只有** `max_turns` / `export_format`（`auto_export`/`include_npc` 2026-10-01 删了：它们是**死旋钮**，设了只会拿到假成功）|
+| `session_status` / `session_export` | — | 看缓冲条数/最近3条/文件路径 ／ 导出**给人看的 md**（⚠️ 实时 `session_<时间戳>.jsonl` **本来就是全量**；这份是内存 ≤`max_turns` 条的子集，默认 `export_format=jsonl` 时它**不写文件并如实说明**）|
 
 > ⚠️ **捏脸 = 创建定型**：`ok` 之后 `set_appearance` / 捏人**自动退役、不可逆**。
 > 旧配置路径仍可用：`settings(setting="async", value="on")`（heartbeat/context_turns/async/state_interval/mode/auto_sleep/auto_sleep_time/pin/moss）。
+> 🧠 `session_set max_turns` 与老路 `settings(setting="context_turns")` 改的是**同一个数**（现在只有这一条路，因为 `session` 域已撤出顶层）。
 
 ### `fish(ops)` — 钓鱼（2026-08-22 修复注册，现已可达）
 `go`(去钓) `info`(查某地鱼) `spots`(钓点) `bobber`(浮漂样式) `rod`(鱼竿:看/上饵钓具) `crab`(蟹笼总览) `crab_water`(找水) `crab_place`(放笼) `crab_bait`(放饵) `crab_collect`(收笼) `crab_diag`(诊断笼/定位挂饵) `crab_retract`(回收笼/清搁浅)
@@ -390,17 +381,24 @@
 
 ---
 
-## 🛠️ 三、2 个独立工具（无域等价物，直接调）
+## 🛠️ 三、3 个独立工具（无域等价物，直接调）
 
 | 工具 | 干嘛的 |
 |---|---|
+| `intent` | 🎯 **意图选项单**（"看单子 → 敲编号"）：见下节 |
 | `screenshot` | 截图看画面（AI 的"眼睛"）|
 | `help` | 查某域详细 ops/坑（docstring 精简后的细节兜底；不传=列话题）|
+
+> 🎯 **`intent`**：`show` 看这一刻能做的事（一行一件，`←` 后面是理由）/ `do` 敲编号（`1` · `1,4` 多选 · `1=1,4=4` 各多少）/ `at x y` 指哪打哪（问"这一格能做什么"）/ `help`。
+> ⚠️ 它的详细玩法看**域内的 `intent` 指南**（`help(intent)`），别在这儿抄第二份。
 
 > 🗜️ **2026-09-11 收编**：原顶层 `which_role` / `advance_story` / `profile` 已全部进域（20→17）——
 > **`advance_story` → `menu(ops="advance")`**（menu 的 dispatch 本就直指同一函数，留着=两条路做同一件事）；
 > **`profile` → `check(what="profile")`**、**`which_role` → `check(what="role")`**（都是"查我自己"，归查询域）。
 > ⚠️ 三个函数照旧注册、只是不再给 AI 直调；引导文案已同步（状态条 🎬 剧情行、menu/check/fish/daily 域 help）。
+> 🗜️ **2026-10-01 收编（18→16）**：**`session`→`settings`**、**`cabin`→`scene`/`farm`/`daily`/`check`**（`cook` 搬进 `daily`）。
+> 判据是"功能已被别的路替代（能收就收）"，逐 op 的替代路写在 `domain_selftest._SUBSUMED_DOMAINS`
+> ——那是**闸门**：漏一条就报错；**不许**把域名塞 `_KNOWN_SUBSUMED`（那会让检查静默通过）。
 
 ---
 
@@ -456,7 +454,7 @@
 | `scan_chests` / `chest_store` / `chest_take` | `storage(ops="scan"/"store"/"take")` |
 | ~~`list_quests` / `quest_progress`~~（2026-09-01 已退役：任务/进度改 `menu(ops="journal"/"read")` 读 QuestLog 卡，卡上含每子目标 current/max；`menu(ops="know")` 查详情，原 quest 域 09-02 并入 menu） | 接单走板上 `menu click(button=accept…)`（accept_quest 已退役） |
 | `run_script` / `script_start` / `script_status` / `script_stop` / `async_config`（09-02 五合一；09-05 删 status、09-06 continue 取代 run/start） | `script(ops="continue"/"stop"/"async")` |
-| `session_status` / `session_set` / `session_export`（09-02 三合一） | `session(ops="status"/"set"/"export", kw={setting,value})` |
+| `session_status` / `session_set` / `session_export`（09-02 三合一，**10-01 起进 `settings`**） | `settings(ops="session_status" / "session_set" / "session_export", kw={setting,value})` |
 | `chat_npc` / `gift_npc` / `give_item` / `hand_item` / `send_chat` / `emote` / `check_friendship` | `social(ops="chat"/"gift"/"give"/"hand"/"send"/"emote"/"friendship")` |
 | `moss_run` / `berry_run` / `spot_run` / `pickup_scene` | `scene(ops="moss"/"berry"/"spot"/"pickup_scene")` |
 | `rock_run`（室外镐击） | `scene(ops="rock")`（08-29 新增） |

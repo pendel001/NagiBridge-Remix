@@ -8,7 +8,7 @@
 
 1. **游戏层**：Stardew Valley 1.6 + NagiBridge C# mod（SMAPI）
 2. **桥接层**：`ModEntry.cs` — HTTP API（~120 端点）+ Harmony 补丁（IsActive/表情/聊天/节日提示/10048端口修复/拾取检测）
-3. **智能层**：`scripts/nagi_mcp_server.py` — MCP 服务器（streamable-http :8000，18 工具/15 域入口 + `intent`）+ 状态注入（`_with_state`）+ 心跳 + 节日/导航/脚本编排
+3. **智能层**：`scripts/nagi_mcp_server.py` — MCP 服务器（streamable-http :8000，**16 工具**/13 域入口 + 3 独立）+ 状态注入（`_with_state`）+ 心跳 + 节日/导航/脚本编排
 
 外加 `scripts/` 下大量**自动化脚本**（矿洞/炸矿/钓鱼/农夫），Python 直接调 HTTP API。
 
@@ -27,12 +27,16 @@
 
 AI **不需要**重新学这套端点怎么用——直接调 MCP 域工具：
 
-- 域模式恒开，只露 **18 个**（15 域入口 + 3 独立）；`--full` / `NAGI_FULL_TOOLS` 已退役
-- 15 域入口：`check/ farm/ mine/ cabin/ social/ scene/ menu/ storage/ daily/ map/ festival/ fish/ settings + script/ session`（care→farm、quest→menu 已并 09-02）
+- 域模式恒开，只露 **16 个**（13 域入口 + 3 独立）；`--full` / `NAGI_FULL_TOOLS` 已退役
+- 13 域入口：`check/ farm/ mine/ social/ scene/ menu/ storage/ daily/ map/ festival/ fish/ settings/ script`（care→farm、quest→menu 09-02 并；**session→settings、cabin→scene/farm/daily/check 10-01 并**）
 - 3 独立：**`intent`（🎯 意图选项单，"看单子 → 敲编号"，`senses` 分支那套的主入口）/ `screenshot` / `help`**
   （09-11 收编：`advance_story`→`menu advance`、`profile`/`which_role`→`check(what="profile"/"role")`）
+  （10-01 收编：`cook`→`daily cook`、会话三条→`settings(ops="session_status"/"session_set"/"session_export")`）
   ⚠️ 判据以 `scripts/nagi_mcp_server.py` 的 `_KEEP_TOOLS` 为准（`domain_selftest.py` 会 import 它校验完整性）；
-  本行曾长期写着"17 个 / 2 独立"，把 `intent` 漏在外面 —— **加工具时记得同步这里**。
+  **收编一个域要同时做四件事**：① `_KEEP_TOOLS` 去掉它 ② 新家能调到（`daily`/`settings` dispatch 里加 op）
+  ③ 删掉它的 `_DOMAIN_GUIDES` 条目 + 改掉 `_HELP_ALIAS`/`_INTENT_INDEX`/状态条文案（**留一处 = AI 照旧文案调隐藏名 = 当场卡死**）
+  ④ 在 `domain_selftest._SUBSUMED_DOMAINS` 里**逐 op 写替代路**（漏一条就报错；**不许**塞 `_KNOWN_SUBSUMED` 走后门）。
+  本行曾长期写着"17 个 / 2 独立"、后来又写成"18 个" —— **动 keep-set 时记得同步这里**。
 - 域调用 = `域名(ops, kw={...})`，子参数进 `kw`。例：`daily(ops="wear", name="铁头靴")`
 - ⚠️ **原始端点 `/state /interact /click /position /menu` 不是 AI 能直调的 MCP 工具**，只是坐标/动作提示——AI 一律走域工具。
 

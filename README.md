@@ -318,9 +318,15 @@ New-NetFirewallRule -DisplayName "NagiBridge MCP 8000" -Direction Inbound -Proto
 | 文件 | 是什么 | 何时有 |
 |---|---|---|
 | `scripts/sessions/session_<时间戳>.jsonl` | 实时全量记录，**每行一条**（谁说了什么、发生了什么） | ✅ 玩的过程中一直在写 |
-| `scripts/sessions/session_<时间戳>.md` | 可读的复盘/记忆归档（按说话人 + 时间整理） | 🔧 把 `SESSION_CFG.export_format` 设成 `markdown`/`both`，或用 `session_export` 工具导出时 |
+| `scripts/sessions/session_<时间戳>.md` | 可读的复盘/记忆归档（按说话人 + 时间整理） | 🔧 先 `settings(ops="session_set", kw={"setting":"export_format","value":"markdown"})`，再 `settings(ops="session_export")` |
 
-**想把记忆带到别的 AI 前端 / 新会话接着聊**：找到这次启动时间戳的 `session_*.jsonl`，把内容喂给那个前端（贴进它的上下文），AI 就能接着记住你们一起经历的日子。想要一份给人看的版本，就调 `session_export` 或把导出格式设成 `markdown`。
+**想把记忆带到别的 AI 前端 / 新会话接着聊**：找到这次启动时间戳的 `session_*.jsonl`，把内容喂给那个前端（贴进它的上下文），AI 就能接着记住你们一起经历的日子。想要一份给人看的版本，就按上表那两步导一份 `.md`。
+
+> ⚠️ **2026-10-01 澄清（恒问「会话导出有必要吗，服务器应该是实时生成日志的吧」——问得对）**：
+> `session_*.jsonl` **本来就是全量、每写一条就落盘**，所以「导全量」这件事**不需要导出**；
+> 那份 `.md` 是**内存里最近 `max_turns`（默认 50）条**的子集，唯一增量是 markdown 排版。
+> 默认 `export_format=jsonl` 时导出**一个字节都不写**（旧版还会回一句「已导出 N 条」—— **假回执，已修**）。
+> 另：`auto_export` / `include_npc` 两个旋钮**从来没接上**（代码里没有读取点），已删。
 
 > ⚠️ 别跟同一个目录里的 `session_log.jsonl` 搞混——那是**工具调用日志**（记每次调用返回多少字节，给开发/回归分析用的），不是聊天记录。
 >

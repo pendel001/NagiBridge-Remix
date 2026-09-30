@@ -143,9 +143,14 @@ SESSION_CFG = {
     # 🧠 上下文记忆轮次（2026-08-17 恒：200→50）。只限内存 _session_context（FIFO 丢旧），
     #    不影响 session_*.jsonl 实时记录（那份缓存照常全量写盘，方便 user 同步，别动）。
     "max_turns": 50,
+    # 📄 只影响**手动导出**那份给人看的 `.md`（`_session_export`）。
+    #    ⚠️ 实时那份 `session_<ts>.jsonl` **永远全量落盘**、跟这个旋钮无关（恒 2026-10-01 确认过）。
     "export_format": "jsonl", # jsonl / markdown / both
-    "auto_export": True,      # 游戏退出自动导出
-    "include_npc": True,      # 记录 NPC 对话（false 只记玩家间的）
+    # ⛔ 2026-10-01 删掉两个**死旋钮**（恒：「服务器应该是实时生成日志的吧…那确实就是这个 max turns 而已了」）：
+    #    · `auto_export`  —— **从来没接上**：代码里**没有一处读它**（没有退出钩子），
+    #      而 AI 设它会拿到「✅ auto_export = False」的**假成功**（本项目最恨的那类：报成功而事没发生）。
+    #    · `include_npc`  —— 同上，只在默认值/文档/显示里出现，**没有读取点**。
+    #    ⇒ 删掉它们，比留着一个"看着能调、调了没反应"的旋钮好。
 }
 
 
@@ -278,7 +283,11 @@ _MENU_GATE_OPS_OK = {
     #    小游戏是**脚本自己开的**、不是 AI 忘了关的菜单，闸门这层"提醒"方向就是反的（见 `_close_hint`）。
     "script": {"stop", "停", "continue", "继续"},
     "map": {"warp_safe", "逃脱"},
-    "session": {"status", "看"},
+    # 🧠 2026-10-01：原来这儿有条 `"session": {"status", "看"}` —— **删了**：
+    #    session 整体收编进 settings，而 `settings` 是**整域放行**（`_MENU_GATE_DOMAINS_FULL_OK`）
+    #    ⇒ 会话那三条 op 天然可用。给一个不在顶层的工具留闸门配置 = 死配置
+    #    （⚠️ 而且**同一个键写两遍**时后者会静默盖掉前者 —— 我第一版就把上面 script 那条盖了，
+    #       当场会把 `continue/继续` 的放行弄丢。dict 字面量的这个坑，改这里时盯一眼）。
 }
 _MENU_GATE_CACHE = {"ts": 0.0, "menu": None}
 _MENU_GATE_TTL = 1.5     # 秒：短缓存，别让每个工具都多打一次 /state
@@ -2386,7 +2395,7 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
             _ways = "🍽️ 吃东西 `daily ops=eat`"
             if locations.railroad_open(_t.get("season"), _t.get("dayOfMonth"), _t.get("year")):
                 _ways += " / ♨️ 泡温泉 `map go 温泉`（进去站水里泡，回体力最快）"
-            _ways += " / 🛏️ 回家睡 `cabin ops=sleep`"
+            _ways += " / 🛏️ 回家睡 `daily ops=sleep`"
             lines.append(f"🚨 血量/体力危险（血{_hp_pct * 100:.0f}% 体{_st_pct * 100:.0f}%）！"
                          f"禁作弊别硬闯——解：{_ways}")
     except Exception:
@@ -8287,7 +8296,8 @@ def session_status() -> str:
     """
     lines = [f"🧠 会话缓冲: {len(_session_context)} 条"]
     lines.append(f"  📁 文件: sessions/{os.path.basename(_session_file) if _session_file else f'session_{_session_ts}.jsonl'}")
-    lines.append(f"  ⚙️ 设置: max_turns={SESSION_CFG['max_turns']} | export={SESSION_CFG['export_format']} | auto={SESSION_CFG['auto_export']} | npc={SESSION_CFG['include_npc']}")
+    lines.append(f"  ⚙️ 设置: max_turns={SESSION_CFG['max_turns']} | export={SESSION_CFG['export_format']}"
+                 f"（实时档案 sessions/session_<时间戳>.jsonl **永远全量**，跟这两个旋钮无关）")
     if _session_context:
         lines.append("  最近 3 条:")
         for rec in _session_context[-3:]:
@@ -8297,11 +8307,14 @@ def session_status() -> str:
 
 def session_set(setting: str, value: str) -> str:
     """🧠 改会话缓冲设置
-    setting: max_turns(缓冲区轮次) / export_format(jsonl/markdown/both) / auto_export(true/false) / include_npc(true/false)
+    setting: max_turns(内存缓冲轮次) / export_format(jsonl/markdown/both)
+
+    ⚠️ 2026-10-01：`auto_export` / `include_npc` **删了** —— 它们从来没有读取点，
+       设了只会拿到一句"✅ 改好了"（假成功）。要恢复得先把读取点接上，别只加回旋钮。
 
     Args:
         setting: 设置项名
-        value: 新值（max_turns 用数字，其余用 true/false 或格式名）
+        value: 新值（max_turns 用数字，其余用格式名）
     """
     global SESSION_CFG
     if setting in ("max_turns",):
@@ -8313,19 +8326,32 @@ def session_set(setting: str, value: str) -> str:
         if value not in ("jsonl", "markdown", "both"):
             return _with_state("❌ export_format 要 jsonl/markdown/both")
         SESSION_CFG[setting] = value
-    elif setting in ("auto_export", "include_npc"):
-        SESSION_CFG[setting] = str(value).lower() in ("true", "1", "yes")
     else:
-        return _with_state(f"❌ 未知设置项「{setting}」（max_turns/export_format/auto_export/include_npc）")
+        return _with_state(f"❌ 未知设置项「{setting}」（只有 max_turns / export_format）")
     return _with_state(f"🧠 {setting} = {SESSION_CFG[setting]}")
 
 
 def session_export() -> str:
-    """📤 手动导出会话缓冲（供 LLM 前端记忆归档）
-    游戏结束自动导出（auto_export=true 时），也可手动调。
+    """📤 手动导出会话缓冲**给人看的那份 `.md`**（按说话人+时间整理）。
+
+    ⚠️⚠️ 2026-10-01 修的**假回执**（恒问「会话导出有必要吗，服务器应该是实时生成日志的吧」）：
+       实时那份 `session_<ts>.jsonl` **本来就是全量落盘**（`_session_append` 每写一条就落盘），
+       而这份导出的内容是**内存里那 ≤`max_turns` 条**（默认 50）= 实时档案的**子集**，
+       唯一增量是 markdown 排版。更糟的是：默认 `export_format="jsonl"` ⇒
+       `_session_export()` **一个字节都不写**，旧文案却回「📤 已导出 N 条会话」。
+       ⇒ 现在**只有真写出文件才算导出**；没写就如实说清楚（并给下一步）。
     """
+    if not _session_context:
+        return _with_state("📤 会话缓冲是空的，没有可导出的东西（实时档案在 sessions/session_<时间戳>.jsonl）")
+    if SESSION_CFG["export_format"] == "jsonl":
+        return _with_state(
+            "ℹ️ 当前 export_format=jsonl ⇒ **只写实时档案**（`sessions/session_<时间戳>.jsonl`，"
+            "那份本来就是全量、每写一条就落盘，不用导）。\n"
+            "   想要一份给人看的 markdown：先 `settings(ops=\"session_set\", "
+            "kw={\"setting\":\"export_format\",\"value\":\"markdown\"})` 再调一次本 op。")
     _session_export()
-    return _with_state(f"📤 已导出 {len(_session_context)} 条会话（session_{_session_ts}）")
+    return _with_state(f"📤 已导出 {len(_session_context)} 条会话 → sessions/session_{_session_ts}.md"
+                       f"（⚠️ 只是内存里这 {len(_session_context)} 条；全量在 session_{_session_ts}.jsonl）")
 
 
 # ═══════════════════════════════════════════
@@ -8345,7 +8371,12 @@ def _session_exportop():
 
 @mcp.tool()
 def session(ops: str = "", kw: dict | None = None) -> str:
-    """🧠 会话域（多数不用）。status 看缓冲 / set 改设置 / export 导出记忆。→ help(session)。
+    """🧠 会话域 —— ⚠️ **2026-10-01 已收编进 `settings`**（AI 别直调本工具）。
+
+    三条 op 全在 `settings` 域里（`session_status` / `session_set` / `session_export`）。
+    收编理由不是"简化"，是**原本就重复**：`settings status` 早在印会话设置，
+    而 `settings(setting="context_turns")` 跟 `session set max_turns` 改的是**同一个变量**。
+    函数保留注册只为兼容旧前端/旧文案，**AI 一律走 `settings(ops="session_status"/…)`**。
 
     Args:
         ops: status/set/export
@@ -8483,7 +8514,8 @@ def settings_status() -> str:
     lines.append(f"  ⏰ 异步唤醒: {'开' if _bg_cfg.get('enabled', True) else '关'} / 间隔 {_bg_cfg.get('wake_interval', 30)}s"
                  f" / 长脚本自动异步 {'开' if _bg_cfg.get('auto_async', True) else '关'}(settings async_tools)")
     lines.append(f"  🧠 会话 max_turns: {SESSION_CFG['max_turns']}")
-    lines.append(f"  📤 会话导出: {SESSION_CFG['export_format']} / auto={SESSION_CFG['auto_export']} / npc={SESSION_CFG['include_npc']}")
+    lines.append(f"  📤 会话导出(md): {SESSION_CFG['export_format']}"
+                 f"（jsonl = 只写实时全量档案、不另存 md）")
     lines.append(f"  🖱️ 失焦暂停: 关（后台完整运行）")
     lines.append("  🔧 退役工具: " + (", ".join(sorted(_retired_tools)) if _retired_tools else "无"))
     lines.append("💡 一次性工具（捏脸等）用完 settings retire 退役；settings reactivate 召回")
@@ -10078,21 +10110,21 @@ def _cabin_enum() -> str:
                      if m.get("status") == "ready" and m.get("location_unique") == cur_u]
             if ready:
                 names = ", ".join(dict.fromkeys(MACHINE_CN.get(m.get("type", "?"), m.get("type", "?")) for m in ready))
-                lines.append(f"⚙️ 待收机器 {len(ready)} 台：{names}（cabin collect 收）")
+                lines.append(f"⚙️ 待收机器 {len(ready)} 台：{names}（`intent` 单子「收 已好的机器」/ `farm ops=collect`）")
             else:
                 lines.append("⚙️ 屋里没有待收机器")
         except Exception:
             pass
         # 2) 雕像 —— ⚠️ **必须扫 object 层**（和 blessing_statue.py 同源；那只认能给增益的那种）。
         #    原来扫 /furniture，会把**装饰雕像**（家具层 (F)xxxx，如「莉亚做的雕像」）也算进来，
-        #    然后引导 AI 去 `cabin statue` —— 那边扫的是 object 层，必然报"没找到"。
+        #    然后引导 AI 去摸雕像（当年是 `cabin statue`，现走 `farm ops=statue`）—— 那边扫的是 object 层，必然报"没找到"。
         #    2026-09-11 真机：enum 报「雕像 1 座」/ statue 报「没找到雕像」，两边打架。
         try:
             su = api._get("/surroundings", {"radius": 30})   # 端点 radius 上限就是 30，够盖住小屋
             stats = [t for t in (su.get("tiles") or []) if "Statue" in (t.get("object") or "")]
             if stats:
                 names = ", ".join(dict.fromkeys(t.get("object") for t in stats))
-                lines.append(f"🗿 雕像 {len(stats)} 座：{names}（cabin statue 摸）")
+                lines.append(f"🗿 雕像 {len(stats)} 座：{names}（`farm ops=statue` 摸）")
             else:
                 lines.append("🗿 屋里没有雕像")
         except Exception:
@@ -10108,7 +10140,7 @@ def _cabin_enum() -> str:
                 tags.append(f"{n}({f.get('x')},{f.get('y')}){tag}")
             if tags:
                 lines.append(f"🪑 家具 {len(tags)} 件：{', '.join(tags[:8])}{'…' if len(tags) > 8 else ''}")
-                lines.append("   交互→scene at(x,y)（📺电视/📅日历/壁炉）；摆弄→cabin pickup(x,y) 拿起")
+                lines.append("   交互→scene at(x,y)（📺电视/📅日历/壁炉）；摆弄→scene pickup(x,y) 拿起")
             else:
                 lines.append("🪑 屋里没有家具")
         except Exception:
@@ -10122,7 +10154,15 @@ def _cabin_enum() -> str:
 
 @mcp.tool()
 def cabin(ops: str = "", kw: dict | None = None) -> str:
-    """🏠 小屋/家域（屋内）。sleep 睡觉 / cook 做饭 / 布置家居 / 收放设备 / 摸雕像 等 → help(cabin)。"""
+    """🏠 小屋/家域 —— ⚠️ **2026-10-01 已撤出顶层**（AI 别直调本工具）。
+
+    每条 op 现在都有别的家（**函数没删，只是不给 AI 直调**）：
+      `cook`→`daily cook` · `sleep`→`daily sleep` · `statue`→`farm statue` ·
+      `interact`/`place`/`break`/`furniture`/`decor`→`scene` 同名 op ·
+      `pickup`→`scene pickup` 或单子「搬走…」 · `collect`→单子「收 已好的机器」 ·
+      `enum`（扫屋待收）→`check(what="machines")`。
+    保留注册只为兼容旧前端；逐 op 的替代路另有审计（`domain_selftest._SUBSUMED_DOMAINS`）。
+    """
     dispatch = {
         "enum": _cabin_enum, "看": _cabin_enum, "引导": _cabin_enum,
         "collect": _cabin_collect, "收": _cabin_collect, "机器": _cabin_collect,
@@ -11211,7 +11251,7 @@ def storage(ops: str = "", kw: dict | None = None) -> str:
 
 @mcp.tool()
 def daily(ops: str = "", kw: dict | None = None) -> str:
-    """🗿 日常域。sleep 睡觉 / eat 吃 / wear 穿脱衣物 / lie_bed 躺床不过夜 / heartbeat 心跳间隔 / peek 看 host 在干嘛。全 ops → help(daily)。"""
+    """🗿 日常域。sleep 睡觉 / eat 吃 / **cook 做饭** / wear 穿脱衣物 / lie_bed 躺床不过夜 / heartbeat 心跳间隔 / peek 看 host 在干嘛。全 ops → help(daily)。"""
     dispatch = {
         "sleep": go_sleep, "睡": go_sleep,
         "settle": confirm_settlement, "结算": confirm_settlement,
@@ -11226,6 +11266,11 @@ def daily(ops: str = "", kw: dict | None = None) -> str:
         "wb_pin": whiteboard_pin, "钉白板": whiteboard_pin,
         "wb_clear": whiteboard_clear, "清白板": whiteboard_clear,
         "appearance": set_appearance, "捏脸": set_appearance,
+        # 🍳 2026-10-01 恒拍板：**`cook` 从 `cabin` 收编进 `daily`** ——
+        #    理由是"**做饭是吃的上游**"：`daily` 本来就有 `eat`，一进一出同一条链。
+        #    顺带解开 `cabin`：它剩下的 op 全都有家了（interact/place/break/furniture/decor→scene、
+        #    sleep→daily、statue→farm、enum/collect→check+单子）⇒ cabin 可以整个撤出顶层。
+        "cook": cook, "做饭": cook, "烹饪": cook,
     }
     return _with_state(_ops_run(ops, dispatch, kw))
 
@@ -13940,7 +13985,7 @@ def _decor_place_check(name: Optional[str], x: int, y: int) -> str:
                 f"**物品没消耗。**")
     return (f"❌ 「{disp}」铺不了 @({x},{y})：这格不是{label}格{why}**物品没消耗、没动过。**\n"
             f"🧱 能铺的{label}格（**认房间不认格**，同一间随便挑一格都行）：{_decor_examples(rooms)}\n"
-            # ⚠️ 文案**不写死域名**：`place`/`decor` 在 scene/farm/cabin 三个域都有，
+            # ⚠️ 文案**不写死域名**：`place`/`decor` 在 scene/farm 两个域都有（cabin 已撤出顶层），
             #    而这个函数是被哪一路调进来的只有调用方知道 —— 写死 "scene ops=…" 会让
             #    站在屋里（cabin 域）的 AI 以为自己要换个域。
             # ⚠️ 回显**限定 id**（`(FL)1`），不是显示名「地板」——
@@ -13979,7 +14024,7 @@ def decor_report() -> str:
             cur = r.get("applied")
             lines.append(f"    room={rid} 现在={cur if cur is not None else '?'} "
                          f"共 {r.get('count')} 格，例：{pts}")
-    # ⚠️ 同上：**不写死域名**（这个 op scene/farm/cabin 都有）
+    # ⚠️ 同上：**不写死域名**（这个 op scene/farm 都有；cabin 已撤出顶层）
     lines.append("👉 铺：ops=place kw={name:\"地板\", x:…, y:…}（背包里显示名是「地板」/「壁纸」）")
     return _with_state("\n".join(lines))
 
@@ -14097,7 +14142,7 @@ def place_item(name: Optional[str] = None, x: Optional[int] = None, y: Optional[
     ⚠️ **只能放可放置/可种物**（箱子、机器、蟹笼、树种、作物种子等）；书/纸条等不可放置物会失败且**不消耗**（安全，不会丢地上收不回）。
     🪵 **地板/墙纸是特例**：只能点在**装饰房间的格**上——地板要点**地板格**、墙纸要点**靠墙那圈墙格**，
        点错了游戏**静默不理**（连错在哪都不说）。拿不准先 `ops=decor` 看这间屋子能铺哪
-       （`decor` 在本 op 所在的每个域都有：scene/farm/cabin）；
+       （`decor` 在本 op 所在的每个域都有：scene/farm；cabin 已撤出顶层）；
        点错时本工具会直接告诉你"这格其实是墙不是地板"并给出能铺的格。
     🧍 **够得着才放**：目标格要在你**身边 2 格内**（照抄游戏 `Utility.playerCanPlaceItemHere` 的判据，
        地板/墙纸豁免——游戏自己对它不判距离）。够不着会给你"先走过去"的那一步。
@@ -14472,7 +14517,7 @@ def _interact_at_core(tile_x: int, tile_y: int) -> str:
                 )
             return _with_state(
                 f"⚠️ ({tile_x},{tile_y}) 上有「{_obj}」，但 interact 没触发它（**不是那里空着**）。"
-                f"换条路：机器→cabin/farm 的 collect；家具→看类型走对应交互；NPC→social 域。"
+                f"换条路：机器→`intent` 单子「收 已好的机器」/ farm 的 collect；家具→看类型走对应交互；NPC→social 域。"
             )
         return _with_state(f"⚠️ 该位置没有可交互的东西（actionTriggered=false）")
     except Exception as e:
@@ -15286,6 +15331,16 @@ _SETTINGS_DISPATCH = {
     "hat": list_hats_ref, "帽子": list_hats_ref,
     "colorpreset": list_color_presets, "调色": list_color_presets,
     "confirm_look": confirm_look, "核对": confirm_look, "确认捏脸": confirm_look, "确认形象": confirm_look,
+    # 🧠 2026-10-01 恒拍板：**`session` 域收编进来**（AI 不再直调 `session`）。
+    #    为什么是"消除重复"而不是"搬家"——它跟 settings **本来就在做同一件事**：
+    #      · `settings_status()` 早就在印「🧠 会话 max_turns / 📤 会话导出」两行；
+    #      · 老的 `settings(setting="context_turns", value=N)` 和
+    #        `session(ops="set", kw={"setting": "max_turns"})` **改的是同一个 `SESSION_CFG`**。
+    #    ⇒ 两条路做同一件事 = 恒 09-11 那条收编判据的正身。搬进来之后**一处真相**。
+    #    ⚠️ `session` 那个工具函数**保留注册**（只是不给 AI 直调）——同 `advance_story` 的先例。
+    "session_status": _session_status, "会话状态": _session_status, "会话缓冲": _session_status,
+    "session_set": _session_set, "会话设置": _session_set,
+    "session_export": _session_exportop, "导出会话": _session_exportop,
 }
 
 
@@ -15295,17 +15350,25 @@ _DOMAIN_GUIDES = {
 "check": "查询域，what=...：status(完整状态) backpack(逐格价值/星级) worn(穿戴) machines(全场机器清单) mine(下矿进度) silo(干草) mastery(精通) buildings(木匠建筑) quest(开任务日志) chests(当前图箱) storage(箱子网络) look(环视周围) profile(我的技能等级+职业分支,如是否 Luremaster 蟹笼免饵) role(端口↔角色确认:我是谁/恒是谁)。⚠️查概览用 status，查逐格用 backpack，别都调浪费 token。📌profile/role 一律走 check（不叫 profile()/which_role()）。📐这个域的参数叫 **what**，**不是 ops**。带参的只有两个: chests(chest=N 看第N个箱) / look(radius=10 环视半径)；其余(status/backpack/worn/machines/mine/silo/mastery/buildings/quest/storage/profile/role)**全无参**。⚠️查概览用 status、查逐格用 backpack，别都调一遍浪费 token。",
 "farm": "农活域(🌱必走，别手动挥工具组合，用域 ops)：till(锄地) plant(种,跳过已种;带 layout 就按洒水器布局种) water(浇,自动跳雨+水壶没水先装满) harvest(收) scythe(镰刀收蒜/花/茶) fertilize(化肥) clear(清杂草石树桩;坐标同 till，也可 `radius=N` 走**圆形**；**会自动往外多清 2 格**——田边的杂草会长进田里把作物顶掉，不用自己放大) plot(连通域规划) plan(方形规划,纯算格) chop(砍树)。⚠️**锄地/播种各只有一个实现**：锄地=`till`（`hoe`/`布局锄`/`tillfield`/`蓄力锄` 都是它的别名）、播种=`plant`（`sow`/`plantlayout`/`播种规划` 都是它的别名）；⛔ 没有 `till_plant`——要锄+种写 `ops=\"till plant\"`。 clearground(清单格) collect(一键收机器:只收不放,全农场瞬收不走路) load(放原料) building(一屋收放:拟人走进去收+放料,item留空=只收不放) break(拆/敲同scene,镐子敲可破物/翻已耕地) place(放置/播种同scene) pond/pond_add/pond_feed/pond_collect/pond_fish(鱼塘)。⚠️漏格DLL自动补；**缺的格会被点名「被什么挡着」**（🌿草/杂草/🪨石头/🪵树枝→**先 `clear` 清一遍再 till/plant**；🏗️洒水器/箱子等设施→⛔别清、那是规划该绕开的格）——草占着地格时锄头是锄不出 HoeDirt 的，别对着「缺失N格」发呆。只在 Farm/温室/姜岛。带参 op(plant 的 seed_name、till/clear 的 x/y/rows、fertilize 的 fertilizer_name、place 的 name、building 的 location、collect 的 machine_type、pond_add 的 item)→ kw={'参数名':值}。🐄动物: animals(摸+收) 喂水/碗(宠物水,🌧️雨天自动跳过——雨会把碗填满) milk(挤奶剪毛) buy(买动物,豁免建议) doors(关门) hay(干草) pet(猫狗) petwalk(拟人摸) 畜舍/这间(这间屋动物) statue(祈福)——⚠️farm water=浇地,动物水用 喂水; farm building=机器收放,这屋动物用 畜舍。📐参数键名: till/clear/plant/fertilize 都是 x,y(**必填**),rows,length,direction（till/plant 也可用 x1,y1,x2,y2 直接给矩形两角）；plant 另有 seed_name,layout,direct,trellis；harvest/scythe=radius；plot=x,y,radius,all_plots；chop=area(**值写几个数**：4 个数=矩形两角 / 3 个数=圆心+半径，逗号空格都认)；collect=machine_type,location；load=item,machine_type,location；building=location,item,machine_type；place=name,x,y；break=x,y,steps,radius；pond_add=item+x,y（pond_feed/collect/fish 只要 x,y）；buy=animal_type,name,building；petwalk=include_petted；hay=dry_run。⚠️direction 只认 horizontal(默认)/vertical 两个值,别写'横'/'竖'。💡大田洒水器布局(可选,纯自动化建议)：要按洒水器留格/留走道就 plan→till→plant 三件套——plan(x1,y1,x2,y2,layout=0,hoe_level=-1,trellis=False) **纯算格不动机器**先看要锄/种哪些; till(x1,y1,x2,y2,layout=0) 按布局锄; plant(x1,y1,x2,y2,seed_name,**layout**) 按布局种（layout=0 整块/1 初级十字/2 高级/3 铱；direct=True 瞬移快、默认走位拟人）。想一次说完就 `ops=\"till plant\"`（**一份 kw 共用**，锄地会自动点名忽略 seed_name）。**layout 四档**: 0=标准整块(不预留洒水器,锄法蛇形逐格走位,任何锄头等级都行) 1=初级(十字稀疏,每台覆盖上下左右4格;锄法=精确锄每台4格,**与锄头等级无关**) 2=高级(优质,田宽高先裁成**3的倍数**,每3×3中心1台覆盖8格,整块蓄力锄) 3=铱(裁成**5的倍数**,每5×5中心1台覆盖24格;⚠️爬架作物不适用)。hoe_level: 0→1格 1→3线 2→5线 3→3×3 4→6×3,-1=自动读手持。trellis=True=爬架作物(啤酒花/青豆/葡萄,不可通过格)⇒自动**种2留1**留走道让AI能进田浇收。只管种不摆洒水器就直接 plant,不用 plan 那套。⚠️已知限制: layout 0/2/3 碰上金/铱锄(hoe_level>=3)会报**0处锄地站位**并自打一行'落点未实测校准,暂不规划蓄力站位'——**那是刻意不猜不是出错**; layout 1 不吃蓄力站位不受影响。",
 "mine": "下矿域(⚒️ 矿井/头骨/火山)：go(去挖矿:mode=rush冲层/farm刷矿,start起始层,target目标层,ore,cycles圈数) progress(进度) bomb_status/bomb_plan/bomb_place/bomb_collect/bomb_ladder/bomb_retreat(单步炸,**都要 bomb_ 前缀**) bomb_mine(自动) bomb_volcano(火山) organize(整理背包)。🔁**刷矿=mode=go(mode=farm)**：定点刷指定矿→ore=Copper铜(21层)/Iron铁(41层)/Gold金(71层)；**煤靠 farm 铁层(41)顺手清尘埃精灵/蝙蝠掉**（不是 ore 选项，跑 auto 内部刷）。🏃下矿=mode=go(mode=rush,start可选≤电梯上限+5倍数,target默认120)。⚠️无镐/血低硬拦；梯子 /ladder+confirm。⚔️贴身(3×3)自卫=游戏自己每 tick 挥刀(go/bomb_mine/bomb_escort/bomb_volcano 四个脚本都自开自关,**只转向不移动**;手上是锤子且冷却好了会重砸6×6)；2格外的怪仍靠脚本扫描,别站桩。🍽️**自定义吃食**：go/bomb_mine/bomb_volcano 都可传 food_hp/food_sta=**逗号分隔、靠前的先吃**(如 food_hp=「奶酪,鱼肉卷」)。血低只看 food_hp、体力低只看 food_sta(**两张表分开别混**)。点名后就只在这几样里挑——**防止自动挑把你留着卖的吃了**(山羊奶酪最典型)；整串都没货会明确报一句再退回自动挑。⚠️bomb_mine 没炸弹+host在同矿井→自动转【内部】协同(跟随host+帮忙敲矿/打怪)不撤退出矿(bomb_escort 不对外暴露、AI 不主动启用)；bomb_retreat 结束协同+停脚本+脱离矿井回门口。⚠️接「深处的危险」重置电梯→起始层动态从1起(内置脚本自动读，不暴露工具)；刷矿目标层不可直达会上报，需先冲层带回或改浅层。📐带参速查: go(mode=rush冲层/farm刷矿, start起始层, target目标层, ore=Copper铜/Iron铁/Gold金, cycles圈数, hp_threshold, food_sta, food_hp, resume) bomb_plan(radius,min_covered,top) bomb_place(x,y **必填**) bomb_collect(max_items) bomb_mine(target,bomb,min_covered,follow_host,lead,autodrop,one_floor,food_hp,food_sta) bomb_volcano(bomb,min_covered,hp_threshold,max_minutes,poll,food_hp,food_sta) organize(disable,reset)。💣bomb 三个取值 'Cherry Bomb'樱桃/'Bomb'黑/'Mega Bomb'超级——**点名的包里没有就按 黑>超级>樱桃 自动换成有的**(不会误报没炸弹)；范围 樱桃=边长7十字 / 黑=11x11方块 / 超级=15x15方块，⚠️黑和超级**会炸伤自己**(实测黑掉3血)。⚠️bomb_volcano **要求 host 已在矿/火山里**才放行(火山瓦片没法程序化换层)。⚠️bomb_mine one_floor=True=逐层模式(同步,只跑一层出摘要,不撤退)；**默认冲层模式=异步后台跑,推荐**。💡出发前占位物：提前放1个可堆叠物(铱矿/铱锭/五彩碎片)在包，满包时同种战利品自动堆叠吸附、少触发满包停；别拿银河之魂这类带死亡会丢的稀有物当占位。",
-"cabin": "小屋引导域(🏠 FarmHouse/Cabin/岛屋；不传=扫屋)：enum(扫**本屋**查待收) collect(收**本屋**机器;要全农场→farm collect) statue(雕像) furniture(扫家具) interact(点家具,tile_x/tile_y) pickup(拿起家具,tile_x/tile_y) cook(做饭,recipe_name) sleep(睡觉,**who=谁床必填**：传自己名=睡自己床,传别人名=睡那个人的床/一起睡；不在那栋屋会自动走过去；🏝️姜岛例外=共用小屋大通铺) cook(做饭,recipe_name,count) place/break(同scene) decor(🪵**地板/墙纸真值表**——这屋哪些格能铺+现在铺的什么,**铺之前先查这**;铺地板点**地板格**、铺墙纸点**靠墙那圈墙格**,点错游戏**静默不理**)。📐参数键名: interact/pickup=**tile_x,tile_y(不是x,y)** cook=recipe_name,count sleep=who place=name,x,y break=x,y,steps,radius；enum/collect/statue/furniture/decor 无参。kw={'参数名':值}。",
+# 🏠 2026-10-01：`"cabin"` 这条**删掉了** —— 整个域撤出顶层（恒：能收就收）。
+#    它每个 op 的新家：cook→**daily**（做饭是吃的上游）· sleep→daily · statue→farm ·
+#    interact/place/break/furniture/decor→**scene** · pickup→单子「搬走…」/scene ·
+#    collect→单子「收 已好的机器」/farm · enum→check(what=machines)。
+#    ⚠️ 同 session：**别在这儿留空壳条目** —— `_dispatch_keys()` 会照它把 help 反查成
+#       一个 AI 够不着的域名。逐 op 的替代路由 `domain_selftest._SUBSUMED_DOMAINS` 审。
 "social": "社交域：chat(搭话,name=NPC名) gift(送礼,npc_name/item_name) give(送玩家物品,手持右键正式赠予,一次要等同意) hand(递给玩家,走过去丢他脚边,磁吸自动收,可整叠) send(发消息,message,**恒窗口必见——回恒就用它,别只在自己的前端回**) emote(表情,name) friendship(查好感,npc_name) movie(影院,npc)。📐参数键名: chat=name / gift=npc_name+item_name / give=player_name+item_name / hand=player_name+item_name+count(0=整叠) / send=message / emote=name(默认爱心) / friendship=name / movie=npc。⚠️**give vs hand**：give=面对面正式赠予(手持右键,一次一个)——**它发的是「赠送提议」,对方点同意东西才过去**(没点会退回;回报会明说「等他点同意」,看到这句别当成已经送到)；hand=走过去丢他脚边(磁吸自动收,**可整叠**,不用对方操作)——想整叠给/对方不在手边就用 hand。kw={'参数名':值}。",
 "scene": "场景交互域(点东西/工具/转身/捡/坐)：at(tile_x,tile_y)(点指定格/柜台) interact(点面前) use(挥工具) face(转向0上1右2下3左) select(拿手上) sit(x,y[,face])(**坐椅子**:自动走到座位旁再坐,上不了会明确报错;状态条「🪑 可交互：sit(x,y)」给坐标;可选 face=坐下朝向0上1右2下3左,**只对「朝向来自坐下那刻面朝方向」的座位生效**(反编译:stool 类/opposite 长椅/名字带Stool的家具),其它写死——吃不吃由端点回的 face 字段说了算,不生效会在回报里点名) stand(**起身**:坐着时用,没坐着明确报错,带动画+轮询确认) seats(radius=12)(扫附近能坐的椅子/长凳/沙发,✋=可改朝向) pickup(拿起家具) pickup_scene(捡当前场景物,**只扫你周围方形±30格**) berry(摇浆果) spot(挖蚯蚓点) moss(绿雨搜苔藓) rock(室外镐击:敲当前图可破物,采石场/挖掘场/蚌矿场跳普通石,dig/dry,battle-free) garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物:一种 name+count / 多种 items=逗号分隔) decor(🪵地板/墙纸真值表:这间屋哪些格能铺+现在铺的什么,**铺前先查这**) furniture(扫家具) place(放置/播种:name=物品名,x/y=目标格→箱子/树种/蟹笼落地或种下,只放可放置物;🪵**地板/墙纸是特例**——只能点在**地板格**(地板)/**靠墙那圈墙格**(墙纸)上,点错游戏**静默不理**;点错时回报会直接告诉你「这格其实是墙不是地板」并给出能铺的格) break(拆/敲:x,y=目标格,steps=挥击次,radius=方圆→镐子敲石头/翻已耕地,跳过箱子/容器格) maze(迷宫视图r半径,gx/gy目标格→ASCII棋盘#墙.可走P自己G目标) maze_seg(走法链gx,gy目标→拆直走廊列表+拼「左/右上/下走到(x,y)」多段链,AI按段walk_to) maze_walk(走迷宫 waypoints=「x,y x,y…」依次walk_to;⚠️**它其实是通用多段走位,主门牌已挪到 `map walk_multi/闲逛`**(闲逛遛弯/绕人转圈/泳池绕圈游),此处保留旧名为兼容) pan(淘金/淘盘:本图水下闪光点→岸边走位面水→铜锅淘金收掉落) front/rummage(分别是interact/garbage的别名)。📌**坐着想起来：scene stand**（别拿 at 猜一个够得着的格子——那条路会静静失败）。📐带参速查(键名必须=下面这些,**写错会被静默丢掉、不报错**): at(tile_x,tile_y) **⚠️是 tile_x/tile_y 不是 x/y** / pickup(tile_x,tile_y **同 at 用 tile_**) / use(name) / face(direction 0上1右2下3左) / select(name) / sit(x,y,face) / seats(radius=12) / pickup_scene(max_items=30) / moss(radius,target_max,rounds,dry_run) / rock(dig,radius,max_break,break_stone) / garbage(loc,pos,wait,dry_run) / pan(dry_run,radius,timeout) / drop(name,count,items=多种一起丢) / place(name,x,y) / decor(无参) / break(x,y,steps,radius) / maze(radius,gx,gy) / maze_seg(gx,gy,radius) / maze_walk(waypoints,location,max_wait,max_seg)。kw={'参数名':值}。",
 "menu": "菜单/界面域(开→看→点)：read(看菜单) advance(推进剧情/对话,一句句) **skip(整段跳过剧情/事件,事件 skippable=true 才跳得动)** click(option/item/button/xy 点;action=claim领/action=discard丢桶腾格;slot=序号领指定格) key(ok/esc/数字按键) cancel(关弹窗/撤就绪) shop(逛店) sell(卖商店) bin(投出货箱) craft(合成) recipes(菜谱) craftables(配方) forge(锻造) geode/geodes(砸晶球) customize(捏人) bundle(献祭缺口·**只读存档不走路**) bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读消耗品:书/秘密纸条/日记残页,统一走右键读 name=物品名) levelup_choose(技能升级职业选择 5/10级:不带参读左右选项,side=left/right 或 profession=职业id 定分支;普通升级自会确认OK) number(数量输入:展览会兑换台/转盘押注 NumberSelectionMenu) minigame(赌场小游戏点按钮 action=hit/stand/bet10/…) minigame_state(读牌面/转盘) display_fill(农展台放满 items='钻石,山羊奶酪') display_takeback(收好) journal(开任务日志→menu read 读卡,翻页=click(button=forward/back),领奖励=click(button=rewardBox)) know(查特别订单详情/知识库SPECIAL_ORDERS,如menu know 岛屿食材)。📐参数键名: click=option,button,x,y,item,right,quantity,action,real,slot,category(**action=claim领 / discard丢桶腾格**;button 用按钮名 ok/upperRightCloseButton/forward/back/rewardBox/mainButton) / key=key,count,hold / number=value,confirm / shop=place,want / sell=name(**多选隔逗号/分号,中英文都行;别用空格**),count(-1=全卖;**sell_all=True 一次卖完这家店收的,不收的一根不动**) / bin=name,sell_all / craft=item_name,count / forge=item1,item2,mode,target / geodes=count / customize=name,farmname,favorite / bundle=area / bundle_kb=query / read_book=name / levelup_choose=side,profession(**不带参=只读当前左右选项**,供配 check(what=profile) 分析后再决定) / minigame=action,x,y / display_fill=items。⚠️cook(做饭)**不在 menu 在 cabin**。🚫满包接鱼/领箱:**click action=discard 丢桶腾格(回收返金)+action=claim 领取(或用 slot 领指定格;不想要直接 button=ok 关掉)**。🧾关闭菜单一律 click(button=upperRightCloseButton)（ItemGrabMenu/交付容器用 button=ok 确认才关）；订单交付容器(QuestContainerMenu)=点背包对应物品格(见slots的坐标)→放进→点 button=ok 结算；任务日志领钱=点击已完成的有钱任务卡后 click(button=rewardBox)；兑奖机兑换=click(button=mainButton)；特别订单领奖链=日志领钱(上面)→社区板旁领奖箱(60,93)拿兑奖券→刘易斯家兑奖机(mainButton)兑换。",
 "storage": "箱子域：view(看箱,box=N看单箱全清单) store(存:what/items限定存哪些,名可带xN数量只存那N份,留空=归位只存已有同类堆,target指定箱/**全存腾空间=all=True——`all` 是参数不是物品名,别写 items=\"all\"**/**工具(镐斧锄壶镰竿)不能丢不能卖,但点名就能存进箱子借人: items=\"十字镐\"**) take(取:x,y+name单箱 或 items批量) find(模糊查哪箱有某物) default(设/清默认箱 clear=清) tag(改名,可带color改色)。📐参数键名(view=box / store=what,items,target,keepTools默认True,all / take=items 或 x+y+name+count默认999 / find=name / default=x,y,clear / tag=tag,target**必填**,color)。🤖存取统一走位：store/take都会先走到相关箱旁(批量只走到第一个),不区分拟人/原子,别靠编号逐箱翻。⭐每个箱子前自动带【类目标签】(内容过半归类):矿/古物/鱼/种子/作物/农产/建材/料理/装备——AI按标签定位箱,找东西用find。⚠️改色别染纯#000000(=默认木纹,识别成未染色);要黑箱用暗灰#303030。",
-"daily": "过日子域：sleep(睡觉) eat(吃食物回血体力,name/item_name) wear(穿/脱衣物,name/slot/hand) lie_bed(躺床不过夜) settle(确认过夜结算) heartbeat(心跳间隔,minutes) pause(后台不暂停,out_of_focus) peek(看恒干嘛) whiteboard(写白板,content) wb_read/wb_pin/wb_clear。📐参数键名: sleep/lie_bed=who eat=name,item_name wear=name,slot,hand(**hand 仅戒指**:1/left 或 2/right,或传「要换掉的那枚戒指名」自动找手) heartbeat=minutes pause=out_of_focus whiteboard/wb_pin=content appearance=hair,hair_color,skin,shirt,pants,hat,acc,eye_color,pants_color；settle/peek/wb_read/wb_clear 无参。kw={'参数名':值}。📌sleep/lie_bed 的 who **必填**（名字随存档变，现读现传）：传自己名字=睡自己床；传别人名字=睡那个人的床(一起睡+🌹彩蛋)。⚠️名字写错会报错并列出可选名(不会默默睡成别人的床)。**传对名字就不用先回家**——不在那栋屋会自动走过去(map_go跨图→门口→推门→床边，全程走)。lie_bed 只躺不睡，想离开随时 walk_to 走离床格即可。🏝️**在姜岛是另一套**：岛上共用一间小屋(大通铺)，没有「谁的床」——who 传**正躺在床上的别人**=挤他那张(姜岛版爬床彩蛋)；否则(传自己/那人还没躺)=随便挑一张空床安静睡。⚠️睡别人床/协作前先 check(what=\"role\") 确认端口↔角色（端口按启动顺序分配，重启可能翻转，认错角色=挪了恒的人）。",
+"daily": "过日子域：sleep(睡觉) eat(吃食物回血体力,name/item_name) **cook(做饭 — 2026-10-01 从 cabin 收编进来；会先走到厨房，走不过去就明确报错)** wear(穿/脱衣物,name/slot/hand) lie_bed(躺床不过夜) settle(确认过夜结算) heartbeat(心跳间隔,minutes) pause(后台不暂停,out_of_focus) peek(看恒干嘛) whiteboard(写白板,content) wb_read/wb_pin/wb_clear。📐参数键名: sleep/lie_bed=who eat=name,item_name **cook=recipe_name(必填;食谱用英文原名),count(默认1)** wear=name,slot,hand(**hand 仅戒指**:1/left 或 2/right,或传「要换掉的那枚戒指名」自动找手) heartbeat=minutes pause=out_of_focus whiteboard/wb_pin=content appearance=hair,hair_color,skin,shirt,pants,hat,acc,eye_color,pants_color；settle/peek/wb_read/wb_clear 无参。kw={'参数名':值}。📌sleep/lie_bed 的 who **必填**（名字随存档变，现读现传）：传自己名字=睡自己床；传别人名字=睡那个人的床(一起睡+🌹彩蛋)。⚠️名字写错会报错并列出可选名(不会默默睡成别人的床)。**传对名字就不用先回家**——不在那栋屋会自动走过去(map_go跨图→门口→推门→床边，全程走)。lie_bed 只躺不睡，想离开随时 walk_to 走离床格即可。🏝️**在姜岛是另一套**：岛上共用一间小屋(大通铺)，没有「谁的床」——who 传**正躺在床上的别人**=挤他那张(姜岛版爬床彩蛋)；否则(传自己/那人还没躺)=随便挑一张空床安静睡。⚠️睡别人床/协作前先 check(what=\"role\") 确认端口↔角色（端口按启动顺序分配，重启可能翻转，认错角色=挪了恒的人）。",
 "map": "导航域(🗺️跨图唯一入口)：lookup(查地点功能+出口) query(功能反查) go(走到目标/多段寻路+交通) walk(走到POI **或给x,y走同图坐标**) walk_multi(多段走位:喂一串坐标依次走) npc(找NPC) warp_safe(紧急逃脱)。⚠️出口走出口前一格；交通图腾柱>矿车>走路。📐参数全放kw对象(**别拼进ops串**,键名: go=destination地点名/POI 或 npc=NPC名(二选一)、walk=poi_name 或 x+y(二选一,坐标=只走同图;跨图用go)、walk_multi=waypoints(\"x,y x,y …\"空格/分号分隔),location,max_wait,max_seg、npc=name、lookup=location、query=function、warp_safe 无参)。⚠️walk 到 POI 会**自动应用结构化站位+朝向**(水池朝右/柜台朝上),但交互仍要 AI 自己 scene at/interact 触发。🫧walk_multi 别名 **闲逛/多段走**（旧名 festival/scene 的 maze_walk/走迷宫 仍可用）：正事=万灵节迷宫按段走；**活人感**=闲逛遛弯·绕着人转圈示好·浴场泳池绕圈游。",
 "festival": "节日域(🎪)：today(今天节日) next(下一个) go(去) info(实况) interact(互动) answer(应答) shop(节日商店) eggs(找蛋) egg_note(纸条) egg_run(捡蛋) dance(跳舞邀请) strength(力量测试 delay=毫秒) ice_fish(冰雪节冰钓自动化) help(玩法) prep(备战) poi(限定点) maze(迷宫坐标奇偶年) maze_walk(走迷宫 waypoints=「x,y x,y…」依次walk_to;⚠️**通用多段走位已搬到 `map walk_multi/闲逛`**,此处保留旧名兼容) strength(力量测试,delay=毫秒) display_fill/display_takeback(农展台放满/收好)。📐参数键名: interact=name answer=answer egg_run/egg_note=route dance=target strength=delay maze_walk=waypoints,location,max_wait,max_seg display_fill=items；today/next/go/info/shop/eggs/help/prep/poi/maze/ice_fish/display_takeback 无参。",
 "fish": "钓鱼域(🎣)：go(去钓 location=) info(查某地鱼) spots(钓点) bobber(浮漂样式) rod(鱼竿:看/上饵钓具 item=名) crab(蟹笼总览) crab_water(找水) crab_place(放笼) crab_bait(放饵) crab_collect(收笼) crab_diag(诊断笼/定位挂饵) crab_retract(回收笼/清搁浅 location=可选)。⚠️**crab_bait/crab_collect/crab_retract 不带坐标 = 处理「当前图**全部**」的笼**(不是附近几个;一天真机在海滩 32 只被一次收光)——只想动一只就传 x+y。📐参数键名: go=location(None=**就地钓**,须自己已站到水边;指定 Beach/Mountain/Forest/Town=先 map_go 走真实路径到校准钓点再钓,不是warp,**就这四个,填别的名字(如River)会当场报错**),max_casts(0=不限),no_sleep(True) / info=location / bobber=style(默认dice) / rod=action+item / crab_place=count+radius+bait / crab_bait=bait / crab_water=radius / crab_diag=location / crab_retract=x+y+location。⚠️鱼塘在 farm 域不在 fish。带参 op(go 的 location、rod 的 item、crab 的 count)→ kw={'参数名':值}。🧬**挂饵前先 check(what=\"profile\")**：若是 Luremaster(职业11) 蟹笼免饵，crab_bait/crab_place 挂饵是空操作，别浪费。",
-"settings": "系统/设置域(⚙️ 合并捏脸进来)：status(看所有设置+退役工具) retire(退役工具) reactivate(召回) appearance(捏脸) customize(捏人) **confirm_look(核对捏人形象,ok前必做)** color(颜色条) hair/shirt/pants/hat/colorpreset(外观参考)。⚠️捏脸=创建定型:ok后set_appearance/捏人自动退役(不可逆);旧配置 settings(setting='async', value='on') 仍可。🪓**砍树放行**：settings(setting='chop', value='蘑菇树,桃花心木') 放行特殊树种（默认只砍橡/枫/松；none 收回 / all 全放行慎用；不传 value 看当前）——管 farm 砍树 + clear_area。📐参数键名: appearance/customize=同 daily 那套(appearance 是 hair,hair_color,skin,shirt,pants,hat,acc,eye_color,pants_color；customize 是 name,farmname,favorite)；color=hue/sat/val(0-100 滑块)或 hex；retire/reactivate=tool_name；hair/shirt/pants/hat/colorpreset/confirm_look 无参。",
-"session": "会话域(🧠 上下文缓冲，多数情况不用)：status(看缓冲条数/设置) set(改设置 setting,value) export(手动导出记忆)。📐参数键名: set=setting+value(**都是字符串**)，status/export 无参。",
+"settings": "系统/设置域(⚙️ 合并捏脸进来)：status(看所有设置+退役工具) retire(退役工具) reactivate(召回) appearance(捏脸) customize(捏人) **confirm_look(核对捏人形象,ok前必做)** color(颜色条) hair/shirt/pants/hat/colorpreset(外观参考)。⚠️捏脸=创建定型:ok后set_appearance/捏人自动退役(不可逆);旧配置 settings(setting='async', value='on') 仍可。🪓**砍树放行**：settings(setting='chop', value='蘑菇树,桃花心木') 放行特殊树种（默认只砍橡/枫/松；none 收回 / all 全放行慎用；不传 value 看当前）——管 farm 砍树 + clear_area。📐参数键名: appearance/customize=同 daily 那套(appearance 是 hair,hair_color,skin,shirt,pants,hat,acc,eye_color,pants_color；customize 是 name,farmname,favorite)；color=hue/sat/val(0-100 滑块)或 hex；retire/reactivate=tool_name；hair/shirt/pants/hat/colorpreset/confirm_look 无参。🧠**会话缓冲**（2026-10-01 从 `session` 域收编进来，AI 不再直调 session）：session_status(看缓冲条数/最近3条/文件路径) session_set(setting,value) session_export(手动导出记忆)。📐参数键名: session_set=setting+value(**都是字符串**;setting 只有 max_turns / export_format)，session_status/session_export 无参。⚠️**别以为 session_export 能拿到全量**：实时档案 sessions/session_<时间戳>.jsonl **本来就是全量、每条都落盘**；导出那份是**内存里 ≤max_turns 条**的 md 子集（默认 export_format=jsonl 时它不写文件、会如实告诉你）。⚠️老的 settings(setting='context_turns', value=N) 和 session_set max_turns 改的是**同一个数**（现在只有这一条路）。",
+# 🧠 2026-10-01：`"session"` 这条**删掉了** —— 整个域收编进 settings（见 `_SETTINGS_DISPATCH` 那三条）。
+#    ⚠️ **别在这儿留"已收编"的空壳条目**：`_dispatch_keys()` 会照 `_DOMAIN_GUIDES` 的键去解析
+#       dispatch，留个壳就会把 `help(status/set/export)` 反查成**一个 AI 够不着的域名**
+#       —— 那正是"文案把你指去隐藏工具、当场卡死"的形状（09-11 收编时立过的规矩）。
 "script": "脚本/异步域(🚀被动异步优先)：continue(继续阻塞:确认脚本在跑/续跑,不新建不碰层数) stop(停任务,job_id空=停最近在跑) async(自动异步白名单 show/add/remove/enable=on|off)。进度自动播报(运行中+收工含总时长)，无需查。⚠️跑脚本用对应便利工具域 op——短任务(耕/浇/收/砍/清/摸动物)走 farm/scene 域 op(同步)、长任务(钓鱼/挖矿/炸矿/机器收放)走 mine/fish/farm 域便利工具(白名单自动后台)；start/run 已砍(改 continue 确认继续阻塞)；跑脚本时别用走动/挥工具同步工具，但聊天/看状态/开背包/整理背包没问题；📐参数键名: continue/stop=job_id(空=停最近在跑的那个) async=show,add,remove,enable。一次只跑一个脚本。⚠️参数放kw别拼ops(如 script(ops=\"continue\", kw={job_id})。",
 }
 
@@ -15326,8 +15389,13 @@ _HELP_ALIAS = {
     "社交": "social", "送礼": "social", "好感": "social", "聊天": "social",
     "场景": "scene", "交互": "scene", "采集": "scene", "捡": "scene", "点": "scene",
     "查询": "check", "状态": "check", "看情况": "check",
-    "家": "cabin", "小屋": "cabin", "农舍": "cabin",
-    "脚本": "script", "脚本域": "script", "会话": "session", "缓冲": "session",
+    # 🏠 2026-10-01：`cabin` 撤出顶层 ⇒ 这三条**改指 `map`** —— "我的家在哪 / 怎么回去"
+    #    本来就是导航问题（`cabin` 那些屋内动作已分给 scene/farm/daily）。**不能悬空**。
+    "家": "map", "小屋": "map", "农舍": "map",
+    "脚本": "script", "脚本域": "script",
+    # 🧠 2026-10-01：`session` 收编进 settings ⇒ 这两条别名跟着改指（**不能悬空**，
+    #    domain_selftest 第 8 条会按"值 ∈ 域键"逐条对）。
+    "会话": "settings", "缓冲": "settings", "会话缓冲": "settings", "记忆": "settings",
 }
 
 
@@ -15388,7 +15456,7 @@ _INTENT_INDEX = [
      "kw={'name':物} 卖光那一类（**多选隔逗号/分号,中英文都行**）；**kw={'sell_all':True} 一次卖完这家店收的**"
      "（不收的一根不动；先 menu read 看「这店收」哪些）"),
     ("投出货箱,出货,卖箱子", "menu", "bin", "kw={'name':物} 或 sell_all=True"),
-    ("做东西,制作,合成,造物", "menu", "craft", "做饭不在这儿**在 cabin cook**"),
+    ("做东西,制作,合成,造物", "menu", "craft", "做饭不在这儿**在 daily cook**（2026-10-01 从 cabin 收编）"),
     ("特别订单,订单详情,这个订单要什么", "menu", "know", "查特别订单知识库"),
     ("升级选职业,技能分支,5级10级选什么", "menu", "levelup_choose", "不带参=只读当前左右选项"),
 
@@ -15453,7 +15521,7 @@ _INTENT_INDEX = [
     ("睡觉,去睡觉,过夜", "daily", "sleep",
      "**who 必填**（名字随存档变）：传自己名=自己床，传别人名=一起睡；不在那栋屋会自动走过去"),
     ("躺床,躺一下", "daily", "lie_bed", "只躺不睡；想离开直接 walk_to 走离床格"),
-    ("做饭,煮菜,炒菜", "cabin", "cook", "⚠️**做饭在 cabin 域不在 menu**；满包会被前置拦下不吃材料"),
+    ("做饭,煮菜,炒菜", "daily", "cook", "⚠️**做饭在 daily 域**（2026-10-01 从 cabin 收编；`cabin` 已撤出顶层）；会先走到厨房，满包会被前置拦下不吃材料"),
     ("吃东西,回血,回体力,吃点", "daily", "eat", "kw={'name':食物名}"),
     ("穿衣服,换衣服,戴帽子,脱下来", "daily", "wear", "hand 仅戒指；名字见 list_hair_ref 之类参考"),
     ("恒在干嘛,看恒在做什么", "daily", "peek", "无参"),
@@ -21217,16 +21285,34 @@ def intent(ops: str = "show", kw: dict | None = None) -> str:
 
 #   模块常量：domain_selftest.py 直接 import 校验 keep-set 完整性。
 _KEEP_TOOLS = {
-    # 13 域 dispatcher（2026-09-02 合并：quest→menu, care→farm）
-    "check", "farm", "mine", "cabin", "social", "scene",
+    # 11 域 dispatcher（09-02 quest→menu/care→farm；10-01 session→settings、cabin→scene/farm/daily/check）
+    "check", "farm", "mine", "social", "scene",
     "menu", "storage", "daily", "map", "festival", "fish", "settings",
     # 🎯 2026-09-29：意图选项单（`senses` 分支那套「动作空间恒定」）——**必须在这儿**，
     #    否则注册了也够不着 = 域op断档那个病（工具存在、AI 看不见）。
     #    ⚠️ 名字**不能叫 `menu`**（那是"界面/菜单域"，早占了）；这一层叫 `intent`。
     "intent",
-    # 🧭 2026-09-02 合并：script(五合一)/session(三合一)——run_script/script_start/status/stop/async_config→script；
-    #   session_status/set/export→session。⚠️旧工具名已隐藏，AI 别直调。
-    "script", "session",
+    # 🧭 2026-09-02 合并：script(五合一)——run_script/script_start/status/stop/async_config→script。
+    #   ⚠️旧工具名已隐藏，AI 别直调。
+    "script",
+    # 🧠 2026-10-01 恒拍板：**`session` 移出顶层**（三条 op 并进 `settings`）——
+    #    它不是"简化"，是**消除重复**：`settings status` 早在印会话设置，
+    #    而 `settings(setting="context_turns")` 跟 `session set max_turns` 改同一个变量。
+    #    ⚠️ 同时改了三处文案（**漏一处就是"文案把你指去隐藏工具"**）：
+    #      · `_DOMAIN_GUIDES` 删掉 "session" 键（留壳会让 `help(status/set/export)` 反查成隐藏域）
+    #      · settings 的 guide 补上三条 op + 参数速查
+    #      · `_HELP_ALIAS` 的 会话/缓冲 → settings（不能悬空，domain_selftest 第 8 条会抓）
+    #      · `_MENU_GATE_OPS_OK` 里那条 `"session": {...}` 一起删（域名已不在顶层，留着是死配置）
+    # 🏠 2026-10-01 恒拍板：**`cabin` 撤出顶层** —— 依据是"**能收就收**：功能已被别的路替代"：
+    #      · `cook` → **daily**（做饭是吃的上游；daily 本来就有 eat）
+    #      · `sleep` → daily（本来就是同一个 `go_sleep`）
+    #      · `statue` → farm（同一个 `blessing_statue`）
+    #      · `interact`/`place`/`break`/`furniture`/`decor` → **scene**（全都是同一批函数）
+    #      · `pickup` → 单子「搬走…」/ scene；`collect` → 单子「收 已好的机器」/ farm collect
+    #      · `enum`（扫屋待收）→ `check(what="machines")` + 单子
+    #    ⚠️ 逐 op 的替代路写在 **`domain_selftest._SUBSUMED_DOMAINS`**（那张表是**判据**：
+    #       漏一条就报错）。**别把域名塞 `_KNOWN_SUBSUMED`** —— 那会让"无断档"检查静默通过，
+    #       唯一的护栏就没了（2026-10-01 实测过，见 `_guardrail_sim.py`）。
     # 无任何域 op 等价物的必需独立工具（系统/控制/感知/单点）
     #   buy_item 已退役（2026-08-16 直购作弊，买走真实商店 shop_visit/menu click）；sprinklers 本无此工具
     #   2026-08-22 收编: wear/lie_bed→daily ops, bundle_kb/donate/read_book→menu ops（域内可调，不再占顶层槽位）
