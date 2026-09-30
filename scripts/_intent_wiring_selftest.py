@@ -41,13 +41,21 @@ SURR = {
 }
 CHESTS = [
     {"x": 13, "y": 13, "name": "矿石箱", "capacity": 36, "used": 1, "freeSlots": 35,
+     # 🆕 2026-09-30(178)：箱子层现在带身份（`typeId`/`typeName`）+ 色/标签 —— 形照真机回包
+     "typeId": "(BC)130", "typeName": "宝箱", "autoTag": "矿", "color": "#303030",
      "items": [{"name": "Diamond", "displayName": "钻石", "count": 2,
-                "qualifiedId": "(O)72"}]},
+                "qualifiedId": "(O)72", "slot": 0, "quality": 0}]},
     # ⚠️ **必须两个箱子**：只有一个时 `_chest_overview` 会走"单箱直通动作面"那条捷径
     #    （再套一层"一览"是白点一下）⇒ 那条路测不到"先一览再进动作面"这个主形状。
     {"x": 11, "y": 13, "name": "木材箱", "capacity": 36, "used": 30, "freeSlots": 6,
+     "typeId": "(BC)130", "typeName": "宝箱", "autoTag": "", "color": "",
      "items": [{"name": "Wood", "displayName": "木材", "count": 300,
-                "qualifiedId": "(O)388"}]},
+                "qualifiedId": "(O)388", "slot": 0, "quality": 0}]},
+    # 🆕 **没人工名的小冰箱**：专门验"没人起名时印容器类型"那条 —— 真机上三台小冰箱
+    #    原来只能印 `⬜ (18,23)`，分不出"这是台小冰箱"。
+    {"x": 12, "y": 14, "name": "", "capacity": 36, "used": 0, "freeSlots": 36,
+     "typeId": "(BC)216", "typeName": "迷你冰箱", "autoTag": "", "color": "",
+     "items": []},
 ]
 SEATS = {"seats": [{"kind": "furniture", "name": "木椅", "x": 14, "y": 13,
                     "capacity": 1, "free": 1, "face": False, "dist": 2}],
@@ -184,6 +192,20 @@ def main():
     into_box = M.intent(ops="do", kw={"code": str(chest_no)})
     res.append(ok("再敲那一只 → 进动作面（**不是**又做了一遍顶层的事）",
                   "取…" in into_box and "矿石箱 (13,13)" in into_box))
+    # 🆕 2026-09-30(178)：**"搬进 tile 时被白名单吃掉字段"** 的回归。
+    #    ⚠️ 这个洞**单元用例抓不到**——它长在 `scan_world` → `ctx_from` → 渲染那条**全链**上，
+    #    而手搓 box 字典的用例正好绕开它（`_chest_tag` 单测是绿的、真机却是 `⬜ (18,23)`）。
+    #    真机实证：C# 吐了 `typeName`，屏②/屏③ 都印「迷你冰箱」，唯独单子印不出。
+    _tw = M.intent_menu.scan_world({}, [], [{
+        "x": 9, "y": 9, "name": "", "typeId": "(BC)216", "typeName": "迷你冰箱",
+        "autoTag": "建材", "color": "#303030", "capacity": 36, "used": 1,
+        "freeSlots": 35, "items": []}])
+    _cb = (_tw.get((9, 9)) or {}).get("chest") or {}
+    res.append(ok("`scan_world` 搬箱子时**不许丢掉** color/autoTag/typeName",
+                  _cb.get("typeName") == "迷你冰箱" and _cb.get("autoTag") == "建材"
+                  and _cb.get("color") == "#303030"))
+    res.append(ok("一览那一行印得出**容器类型**（没人工名时用 `typeName`，不再只剩 `⬜ (x,y)`）",
+                  "迷你冰箱" in ov))
     # 取：pick → qty → 真打到 /chest_take
     M.intent_menu.reset_menu()
     M.intent(ops="show")

@@ -1047,15 +1047,44 @@ def _unambiguous(objs, *keyfns):
     return kept, len(objs) - len(kept)
 
 
+def _q_prefix(slot) -> str:
+    """星级标签：`[银]/[金]/[铱]`，无品质/读不到 → 空串。
+
+    ⚠️ 档位照抄**项目唯一那张表**（`nagi_mcp_server` 的拾取小新闻里那份）：
+    **0=无 · 1=银 · 2=金 · 4=铱**，`3` 是**空的**（1.6 里不存在）——
+    老表把 3 当铱 ⇒ `quality=4` 查不到、标没了（CHANGELOG 2026-09-25 那条真机账）。
+    4 是真值、3 留着防老档/控制台手搓值。
+    """
+    q = slot.get("quality")
+    if not isinstance(q, int) or q <= 0:
+        return ""
+    return {1: "[银]", 2: "[金]", 3: "[铱]", 4: "[铱]"}.get(q, "")
+
+
+def _name_with_q(slot) -> str:
+    """给人看的物品名 = **星级前缀 + 显示名**。
+
+    ⚠️ 2026-09-30(178) 真机：箱里三摞啤酒花（铱 ×150 / 金 ×281 / 普通 ×256）在候选里
+    印成**三行一模一样的「啤酒花」**——格号是能指准了，可 AI **看不出哪摞是哪摞**
+    （"菜单是强暗示"那条：给了就得让人分得清）。
+    ⚠️ **幂等**：`/state` 那条路的 `displayName` 有的**自带** `[金]` 前缀（拾取小新闻就是），
+    箱内那份**不带**（反编译：`Object.DisplayName` 只是本地化名，不含星级）⇒
+    已经带 `[` 开头就不再加，**绝不叠成 `[金][金]`**。
+    """
+    nm = slot.get("displayName") or slot.get("name") or "?"
+    p = _q_prefix(slot)
+    return nm if nm.startswith("[") else f"{p}{nm}"
+
+
 def _item_row(it, box, verb):
     """容器里的一样东西 = pick 层的一行。**不在世界里 ⇒ 不印定位**（印"手持"就是撒谎）。"""
-    cn = it.get("displayName") or it.get("name")
-    return Row(verb, [{"item": it, "box": box}], cn, f"箱里 ×{it.get('count')}", 0, where="")
+    return Row(verb, [{"item": it, "box": box}], _name_with_q(it),
+               f"箱里 ×{it.get('count')}", 0, where="")
 
 
 def _slot_row(slot, box, verb):
     """背包里的一样东西 = pick 层的一行，目标是"存进这个容器"。"""
-    return Row(verb, [{"slot": slot, "box": box}], slot.get("name"),
+    return Row(verb, [{"slot": slot, "box": box}], _name_with_q(slot),
                f"背包 ×{slot.get('stack')}", 0, where="")
 
 
@@ -1134,7 +1163,7 @@ def _chest_subs(ctx, targets):
         notes.append(f"箱子满了（{box.get('used')}/{box.get('capacity')} 格）"
                      f"—— 先取点东西出来，「存」才放得下")
 
-    title = f"📦 {box.get('name') or '箱子'} {here}"
+    title = f"📦 {_chest_label(box)} {here}"
     slots = _slots_text(box.get("used"), box.get("capacity"))
     if slots:
         title += f" · {slots}"
@@ -1196,9 +1225,20 @@ def _chest_one_count(ctx, targets):
     return _slots_text(b.get("used"), b.get("capacity"))
 
 
+def _chest_label(box) -> str:
+    """这只容器**叫什么**（给人看的）：**人工名 > 容器类型名 > 「箱子」**。
+
+    ⚠️ 2026-09-30(178)：原先只有 `name or '箱子'` ⇒ 一台小冰箱的动作面标题和它那一行
+    也印成「箱子」，跟屏②/屏③（都印「迷你冰箱」）**又是两把尺子**。
+    类型名一律问游戏要（`/scan_chests` 的 `typeName`），**不在这儿编表**；老 DLL 没有 ⇒ 落到「箱子」。
+    """
+    b = box or {}
+    return b.get("name") or b.get("typeName") or "箱子"
+
+
 def _chest_show(ctx, t):
     b = _box(t) or {}
-    return f"{b.get('name') or '箱子'}({t.get('x')},{t.get('y')})"
+    return f"{_chest_label(b)}({t.get('x')},{t.get('y')})"
 
 
 def _chest_tag(box) -> str:
@@ -2300,6 +2340,17 @@ def scan_world(surr: dict, machines: list = None, chests: list = None,
             "capacity": c.get("capacity"),
             "used": c.get("used"),
             "freeSlots": c.get("freeSlots"),
+            # 🆕 2026-09-30(178) **真机抓到的洞**：这四个字段原先被上面那张白名单**丢掉了**，
+            #    而 `_chest_tag()` 正是照 `storage_layout` 的口径去读 `color`/`autoTag`/`typeName` 的
+            #    ⇒ 166 写的"一览的标签照抄 storage_layout"**从来没成立过**：一览里一直只剩
+            #    色块位 `⬜` 和人工名（`autoTag` 也一直是空的，只是没人注意）。
+            #    实证（178 真机同一时刻）：屏① 印 `⬜ (25,23)`，屏②/屏③ 同一只箱子印 `⬜迷你冰箱`。
+            #    ⚠️ **摘字段是静默的**——外面看不出"少读了什么"，所以这张白名单只许**加**、
+            #    加的时候顺手在 `_chest_tag` 那边也扫一眼它读哪些键。
+            "color": c.get("color"),
+            "autoTag": c.get("autoTag"),
+            "typeId": c.get("typeId"),
+            "typeName": c.get("typeName"),
         }
 
     # 🪑 座位（`/sittable`）。判据在 C# 里照抄游戏（`GetSeatCapacity()` + `mapSeats`），
@@ -2912,6 +2963,14 @@ def _selftest():
     ok.append(("有格号 ⇒ 同名两摞**不再挑出去**（那句「没列出来」不该再出现）",
                "同名但不同品质" not in lv_slot))
     calls.clear()
+    _pick = do_row(_no_of("取"), fake_run, slotctx)
+    # 🆕 2026-09-30(178) 真机：格号能指准了，但三行印成**一模一样的「啤酒花」** ⇒ AI 看不出哪摞是哪摞。
+    ok.append(("候选行带**星级前缀** ⇒ 同名两摞一眼分得开",
+               "[金]钻石" in _pick and "钻石" in _pick and _pick.count("钻石") == 2))
+    ok.append(("无品质的**不加前缀**（别给普通也扣个帽子）", "[金]钻石" in _pick and "[银]钻石" not in _pick))
+    reset_menu()
+    render_menu(slotctx, n=40)
+    _open_box("矿石箱", fake_run, slotctx)
     do_row(_no_of("取"), fake_run, slotctx)
     do_row("1,2", fake_run, slotctx)
     do_row("1=5,2=2", take_run, slotctx)
