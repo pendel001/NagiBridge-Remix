@@ -12,6 +12,9 @@ x=80 超出合法范围 → walk_to 到不了 → "到 BusStop 失败"。根因=
 """
 import sys, os, json, time
 
+# 「这张图尺寸未知（内室/锁图）」的判据串 —— `check()` 与 `main()` 共用一份，别写两遍（会漂）。
+_UNKNOWN = "无尺寸(内室/锁图,未验证)"
+
 # ── 各图真实尺寸(瓦片数 = DisplayWidth/64)。--refresh 可重扫。Farm 尺寸随农场类型变,其余固定。 ──
 MAP_DIMS = {
     "Farm": (80, 65), "BusStop": (65, 30), "Backwoods": (50, 40), "Town": (130, 110),
@@ -65,7 +68,7 @@ def check(sizes):
                 sz = sizes.get(probe)
                 x, y = c
                 if not sz:
-                    hits.append((loc, label, c, "无尺寸(内室/锁图,未验证)"))
+                    hits.append((loc, label, c, _UNKNOWN))
                     continue
                 w, h = sz
                 bad = []
@@ -86,11 +89,22 @@ def main():
     refresh = "--refresh" in sys.argv
     sizes = _refresh_dims(list(MAP_DIMS)) if refresh else dict(MAP_DIMS)
     hits = check(sizes)
-    if not hits:
-        print("✅ MAP_LINKS 坐标全部边界内(越界 0 处)")
+    # ⚠️ 2026-09-30：把"**真越界**"和"**尺寸未知、压根没验**"分开 —— 它们是两件事：
+    #    · 真越界 = 静态就能定案的 bug（2026-08-31 的 Farm→BusStop (80,17) 就是它）⇒ 红；
+    #    · 尺寸未知（内室/锁图）= **缺条件**：那几张图的尺寸只有游戏开着、`--refresh` 走一遍才拿得到
+    #      ⇒ 如实报 `⏭ 没条件测`，**既不包装成绿，也不留一条永远红的检查**把人训练成"看见红就跳过"。
+    unknown = [h for h in hits if h[3] == _UNKNOWN]
+    bad = [h for h in hits if h[3] != _UNKNOWN]
+    if unknown:
+        print(f"⏭ 没条件测：{len(unknown)} 处尺寸未知（内室/锁图）—— 静态查不了；"
+              f"要验就开游戏跑 `python scripts/map_bounds_selftest.py --refresh`")
+        for loc, label, c, why in unknown:
+            print(f"  [{loc}] {label}{c[0]},{c[1]}  {why}")
+    if not bad:
+        print("✅ MAP_LINKS 已知尺寸的坐标全部边界内（真越界 0 处）")
         return 0
-    print(f"⚠️ 发现 {len(hits)} 处越界/未验证坐标:")
-    for loc, label, c, why in hits:
+    print(f"❌ 真越界 {len(bad)} 处：")
+    for loc, label, c, why in bad:
         print(f"  [{loc}] {label}{c[0]},{c[1]}  {why}")
     return 1
 

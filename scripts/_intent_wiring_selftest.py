@@ -71,7 +71,8 @@ MENU_SHOP = {
 }
 
 
-def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=False):
+def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=False,
+          caps=None):
     CALLS.clear()
     state = dict(STATE)
     if shop:
@@ -84,7 +85,9 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
                 raise RuntimeError("模拟：商店开着但 /menu 读不出来")
             return MENU_SHOP
         return {
-            "/status": {"ok": True, "build": build},
+            # 🆕 2026-09-30：新 DLL 会带 `caps`（能力位）；`caps=None` = **老 DLL 的形状**（只有 build）。
+            "/status": ({"ok": True, "build": build} if caps is None
+                        else {"ok": True, "build": build, "caps": caps}),
             "/state": state,
             "/surroundings": SURR,
             "/machines": {"machines": []},
@@ -130,10 +133,21 @@ def main():
     caps = M._im_caps()
     res.append(ok("有构建标记 ⇒ 认 forage/diggable/harvestable",
                   caps.get("forage") and caps.get("diggable") and caps.get("harvestable")))
-    res.append(ok("⚠️ 但**不认** `chest_open`（端点还没写，认了就是骗自己）",
+    res.append(ok("⚠️ 但**不认** `chest_open`（这一份是**老 DLL 的兜底**，那版没有这个端点）",
                   "chest_open" not in caps))
     _stub(build="未生成(非 MSBuild 构建)")
     res.append(ok("不是我们编的 DLL ⇒ **空表**（什么都不敢认）", M._im_caps() == {}))
+
+    # ①-b 🆕 2026-09-30：新 DLL 直接把 `caps` 报出来 ⇒ **问游戏，别再猜构建标记**
+    _stub(caps={"forage": True, "chest_open": True, "store_slot_quality": False})
+    c2 = M._im_caps()
+    res.append(ok("有 `caps` ⇒ 以 DLL 自报的为准（`chest_open` 认了 ⇒ 「看」那行才长）",
+                  c2.get("chest_open") is True and c2.get("forage") is True))
+    res.append(ok("`caps` 里**显式为假**的键不当真（缺键 / 假值 = 这版不会）",
+                  "store_slot_quality" not in c2))
+    _stub(caps={})
+    res.append(ok("`caps` 是**空表**也算 DLL 自报 ⇒ 空表，**不许**退回构建标记多认",
+                  M._im_caps() == {}))
 
     # ② 世界快照：六种料都要拼进 Ctx
     _stub()

@@ -160,14 +160,15 @@ class Ctx:
     #    （C# `if (objForage) tile["forage"] = true;`）⇒ 单看一格，
     #    「这格不是」和「这版不给」**长得一模一样**。想在逐格层面分辨，
     #    结论只能是编的——那是这一层最不能犯的错。
-    #    （等 C# 批次里加一个 build 能力位，就能自动填了。）
+    #    ✅ 2026-09-30：C# `/status.caps` 已落地 ⇒ 服务器那份 `_im_caps()` 改成**问游戏**填这张表
+    #       （老 DLL 才退回构建标记猜）。这里只管**问**（`ctx.cap(name)`），不管怎么填。
     caps: dict = field(default_factory=dict)
     # 🀄 英文物品名 → 中文显示名（**缺就用英文**，不编）。
     #    来源全是"我们手里已经有的数据"：AI 背包的 displayName + 本图箱子里物品的
-    #    displayName。**不为此新打 HTTP**。
-    #    ⚠️ 正解是让 C# 的 `/machines` 直接吐 `heldItemDisplay`（复用现成的
-    #    `IngredientLabel`——`/machines` 的 `heldItemId` 都给全了，一行的事）。
-    #    进 C# 批次，**别在这儿堆名单**（名单会烂，本项目的老病）。
+    #    displayName + **机器的 `heldItemDisplay`**。**不为此新打 HTTP**。
+    #    ✅ 2026-09-30：最后那一份就是正解 —— 原先机器产物只能靠"别处碰巧有同名物品"
+    #    才凑得出中文（真机实拍过 `翡翠×17、Diamond×1、Iridium Ore×1`），现由 `/machines` 直供。
+    #    ⇒ **别在这儿堆名单**（名单会烂，本项目的老病）。
     zh: dict = field(default_factory=dict)
     # 💰 钱包（`/state` 的 `player.money`）——买那条行要给"买得起吗"的判断面。
     #    同 `max_items`：**问游戏要**，不写死。
@@ -973,17 +974,19 @@ def _exec_chest_open(ctx, targets, run):
        ② 他那边看着像人在操作（拟人的验收判据）。
     ⚠️ 这里**只走路 + 开**，不读内容——内容由 `/menu` 另外读，
        两条通道分开（一次调用干两件事，接了也能漂）。
-    ⚠️ 端点 `/chest_open` **这版 C# 还没有**（在批次里）⇒ 由 `caps` 把关，那行不出现。
-       真接上了，这里也要先 `/walk_to` 走到箱子边再开（拟人那条）。
+    ⚠️ **拟人的走位在服务器侧**（`_im_chest_open` → `_walk_to_chest`，会**等到真的站到箱边**，
+       因为 C# 的 `/walk_to` 是发射后不管的）。这儿只管敲一下，把它的话**如实带回来**
+       —— 连那行走位实况也要带出来（吞掉就等于"嘴上说开好了、人还在半路"）。
     """
     t = targets[0]
     x, y = t.get("x"), t.get("y")
     r = run("chest_open", {"x": x, "y": y}) or {}
+    walk = (r.get("walk") or "").strip()
     if not r.get("ok"):
-        return render_receipt("开箱", f"({x},{y})", False,
-                              note=f"游戏回：{r.get('error') or r}")
-    return render_receipt("开箱", f"({x},{y})", True,
-                          note="菜单开着（不关）—— 内容用 menu read 看")
+        note = "\n   ".join(s for s in (walk, f"游戏回：{r.get('error') or r}") if s)
+        return render_receipt("开箱", f"({x},{y})", False, note=note)
+    note = "\n   ".join(s for s in (walk, "菜单开着（不关）—— 内容用 menu read 看") if s)
+    return render_receipt("开箱", f"({x},{y})", True, note=note)
 
 
 # 「看 / 取 / 存」三个动作——**只长在容器那一层里**，不进顶层动词表：
@@ -1174,19 +1177,26 @@ def _chest_show(ctx, t):
 
 
 def _chest_tag(box) -> str:
-    """一箱的标签：**色名 + 人工名（优先）/ 自动类目标签**。
+    """一箱的标签：**色名 + 人工名（优先）/ 类型名 + 自动类目标签**。
 
-    ⚠️ 口径**照抄 `storage_layout`**（服务器那边那份"当前场景箱子一览"）——
-       同一批箱子在两张屏上不能长得不一样，不然就是两把尺子。
+    ⚠️ 口径**照抄 `storage_layout`**——✅ 2026-09-30 起反过来：`storage_layout` **调这一个**，
+       同一批箱子在两张屏上**不可能**再长得不一样（以前是"两份代码 + 注释里互相提醒"，迟早要漂）。
        ⚠️ 那边多一个 `⭐`（本场景默认箱）——那个记号归 storage 域，单子这边**不搬**：
           默认箱是"存去哪"的设置，不是"这里有什么"。
+    ⚠️ `typeName`（2026-09-30 的新 DLL 才有）：**没人起名时印容器类型**（宝箱/迷你冰箱/石箱）。
+       起因：屋里三台小冰箱原来只能印 `⬜ (18,23)`——分不出"这是台小冰箱"。
+       ⚠️ 类型的显示名一律**问游戏要**（`/scan_chests` 的 `typeName`），**不在 Python 里编表**。
+       ⚠️ 老 DLL 没这个键 ⇒ 这段自然为空（不是"这箱没类型"，是"这版问不出来"，同三档）。
     """
     emo, czh = _color_display((box or {}).get("color") or "")
     tag = (emo + czh) if czh else "⬜"
     if box.get("name"):
-        tag += f"「{box['name']}」"        # 人工标注的名字优先（同 storage_layout）
-    elif box.get("autoTag"):
-        tag += f"【{box['autoTag']}】"
+        tag += f"「{box['name']}」"        # 人工标注的名字优先（同 storage_layout，别双标）
+    else:
+        if box.get("typeName"):
+            tag += box["typeName"]        # 🆕 容器类型（游戏给的显示名）
+        if box.get("autoTag"):
+            tag += f"【{box['autoTag']}】"
     return tag
 
 
@@ -2353,6 +2363,16 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
             n, dn = ci.get("name"), ci.get("displayName")
             if n and dn:
                 zh.setdefault(n, dn)
+    # 🆕 2026-09-30：**机器里那件产物**也进对照表。
+    #    原先它只能靠"背包/箱子里碰巧有同名物品"才凑得出中文 ⇒ 真机实拍过中英混排的丑行：
+    #    `翡翠×17、Diamond×1、Iridium Ore×1`（`Diamond` 当时背包和箱子里都没有 ⇒ 查不到）。
+    #    现在 `/machines` 直接吐 `heldItemDisplay`（**问游戏要的名字**）——
+    #    ✅ 消费侧零改动：`_collect_show` / `_collect_reason_many` 本来就走 `ctx.zh_of()`。
+    #    ⚠️ **不在这儿堆名单**（名单会烂，本项目的老病：1.6 矿节点 ID、`Jewels Of The Sea`）。
+    for m in machines or []:
+        n, dn = m.get("heldItem"), m.get("heldItemDisplay")
+        if n and dn:
+            zh.setdefault(n, dn)
 
     # 🐾 猫狗（宠物）：`/surroundings` 的 `npcs` 里 `kind == "pet"` 那几个。
     #    它们**不是** NPC、也不在 tiles 上 ⇒ 世界级（`target="world"` 的动词看这个）。

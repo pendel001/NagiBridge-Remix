@@ -16049,7 +16049,13 @@ def scan_chests(chest: int = -1) -> str:
             emo, czh = _color_display(c.get("color", ""))
             ctag = (emo + czh) if czh else "⬜"
             # ⚠️ 2026-09-04 恒：有 AI 人工标注名字就只显示名字，自动类目标签被覆盖，别双标
-            tag = "" if c.get("name") else (f"【{c['autoTag']}】" if c.get("autoTag") else "")
+            # 🆕 2026-09-30：没人起名时**先印容器类型**（宝箱/迷你冰箱/石箱）—— 同 `_chest_tag` 的口径。
+            #    不加这个，小冰箱在这张屏上也只能印 `⬜ (18,23)`（屋里三台长得一模一样）。
+            #    ⚠️ 类型名问游戏要（`/scan_chests` 的 `typeName`），老 DLL 没有自然为空，**别编表**。
+            if c.get("name"):
+                tag = ""
+            else:
+                tag = (c.get("typeName") or "") + (f"【{c['autoTag']}】" if c.get("autoTag") else "")
             nm = (c.get("name") or "")
             nmtxt = f" {nm}" if nm else ""
             items = c.get("items", [])
@@ -16382,12 +16388,10 @@ def storage_layout() -> str:
         dflt = _storage_default_for_loc()
         for c in chests:
             pos = f"({c['x']},{c['y']})"
-            emo, czh = _color_display(c.get("color", ""))
-            tag = (emo + czh) if czh else "⬜"   # 🆕 2026-09-03 恒：带中文色名（🟪粉 vs 🟪紫），AI 分得清粉/紫/蓝
-            if c.get("name"):
-                tag += f"「{c['name']}」"   # ⚠️ 2026-09-04 恒：AI 人工标注的名字优先——自动类目标签被覆盖，别双标
-            elif c.get("autoTag"):
-                tag += f"【{c['autoTag']}】"
+            # ⚠️ 2026-09-30：标签**调单子那一份**（`intent_menu._chest_tag`），不再自己写一遍 ——
+            #    以前两处各写各的、靠注释互相提醒"口径要一致"，那迟早要漂（同族：两把尺子）。
+            #    ⭐（本场景默认箱）仍由这边加：那是"存去哪"的设置，不是"这里有什么"。
+            tag = intent_menu._chest_tag(c)
             star = " ⭐" if dflt and (c["x"], c["y"]) == (dflt.get("x"), dflt.get("y")) else ""
             items = c.get("items", [])
             if items:
@@ -20865,23 +20869,39 @@ def profile() -> str:
 #
 # ⚠️ `caps`（"这版 DLL 会不会吐某字段"）**只能由版本信息填，不许从格子里猜**：
 #    那几个键是"**只在为真时才写**"的 ⇒ 单看一格，「这格不是」和「这版不给」长得一模一样。
-#    现在拿 `/status.build` 当闸门：有构建标记（= 跑的是**我们自己编的** DLL）才认。
 #    📌 这不是"编表"：它陈述的是**我们自己端点的 schema**（源码在仓库，可核对），不是游戏规则。
-#    ⚠️ **残留风险**：我们自己**老一版**的 DLL 也会蒙混过关（标记在、字段缺）——
-#       真正的解法是 C# 批次里补一个能力位，到那时这里换成"问游戏"。
+#    ✅ 2026-09-30：正解已落地 —— C# `/status` 直接吐 **`caps`**（`_dll_backup/NagiBridge.81d91d38.dll`
+#       那版还没有；新 DLL `78bf7383` 起有）⇒ `_im_caps()` 改成**先问游戏**。
+#       下面 `_IM_CAPS_WHEN_OURS` 只剩**老 DLL 的兜底**（它会蒙混过关，见该表注释）。
 _IM_CAPS_WHEN_OURS = {
     "forage": True, "diggable": True, "harvestable": True,
-    # ⚠️ `chest_open`（走过去真开箱）**故意不在这儿** —— 那个端点还没写，
-    #    现在声明它有 = 骗自己 ⇒ 「看」那一行不会出现（等 C# 批次补上再开）。
+    # ⚠️ `chest_open`（走过去真开箱）**故意不在这儿** —— 这一份是**老 DLL 的兜底**，
+    #    而那版 C# 确实没有这个端点。声明它有 = 骗自己 ⇒ 「看」那一行会变成"按了不成"。
+    #    （✅ 2026-09-30：新 DLL 的 `/status.caps` 会**如实**说它有 —— 走上面那条路。）
 }
 
 
 def _im_caps() -> dict:
-    """这版 DLL 认哪些字段。读不到 / 不是我们编的 ⇒ **空表**（= 什么都不敢认，宁缺勿编）。"""
+    """这版 DLL 认哪些字段。**先问游戏**（`/status.caps`），问不到才退回构建标记猜。
+
+    ⚠️ 三档，**宁缺勿编**：
+      · `/status.caps` **是 dict**  ⇒ **以它为准**（DLL 自己报的，源码在仓库、可核对）；
+      · 没有 `caps` **键**（老 DLL）⇒ 退回 `_IM_CAPS_WHEN_OURS` —— 这条路**会蒙混过关**
+        （我们自己**老一版**的 DLL 也带构建标记、字段却缺），所以才要有 `caps`；
+      · 读不到 / 不是我们编的     ⇒ **空表**（什么都不敢认）。
+    ⚠️ `caps` 只认**显式为真的**键：缺键 = 这版不会（同 `/surroundings` 那套"只在为真时才写"，
+       别把"没这个键"读成"有"）。
+    ⚠️ **`caps` 是空表也算"DLL 自报"，不许退回构建标记猜**：退回那条路**会多认**
+       （老表里躺着 forage/diggable/harvestable），而认错的方向必须是**让 ✅ 变少**、
+       不能变多（同族：宁可少一行，也不给一行按了不成的）。
+    """
     try:
         st = api._ai_get("/status") or {}
     except Exception:
         return {}
+    caps = st.get("caps")
+    if isinstance(caps, dict):
+        return {k: True for k, v in caps.items() if v}
     build = str(st.get("build") or "").strip()
     if not build or "未生成" in build:
         return {}
@@ -21018,6 +21038,31 @@ def _im_sell(name):
     return api._ai_post("/sell_to_shop", {"name": name})
 
 
+def _im_chest_open(x, y):
+    """👀 走到箱边**真开**（画面通道）。→ `{"ok", "error", "walk", ...}`。
+
+    ⚠️ **拟人那条在这儿**：C# `/chest_open` 只管开（`ShowMenu()` 没有距离前置条件），
+       走位归导航 ⇒ 这里先 `_walk_to_chest`（复用现成那份，别在端点或 exec 里再写一遍）。
+    ⚠️ `_walk_to_chest` 会**等到真的站到箱边**——这很关键：C# 的 `/walk_to` 是
+       **发射后不管**的（挂上路线就返回），不等就会"人还在半路、箱子已经开了"，
+       恒一眼看出不是人在走（见 `_walk_to_chest` 的注释）。
+    ⚠️ 内容**不在这儿读**：开箱是画面通道，内容走 `/menu`（数据通道）——一次调用干两件事，接了也会漂。
+    """
+    if x is None or y is None:
+        return {"ok": False, "error": "缺 x/y（开哪个箱子）"}
+    try:
+        walk = _walk_to_chest(int(x), int(y))
+    except Exception as e:
+        walk = f"  ⚠️ 走位这步炸了（{type(e).__name__}: {e}）"
+    try:
+        _ensure_background()      # 后台也要能开（菜单动画/结算），同 buy/sell
+        r = api._ai_post("/chest_open", {"x": int(x), "y": int(y)}) or {}
+    except Exception as e:
+        r = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    r["walk"] = walk
+    return r
+
+
 def _im_run(op, args):
     """单子敲下去**要执行的那一下**（合同：`(op 名, 参数字典) -> dict`）。
 
@@ -21055,6 +21100,10 @@ def _im_run(op, args):
     raw_ops = {
         "buy": lambda: _im_buy(args.get("item"), args.get("quantity") or 1),
         "sell": lambda: _im_sell(args.get("name")),
+        # 👀 开箱：**拟人那条**（先走过去、等到站到箱边，再开）—— 见 `_im_chest_open`。
+        #    ⚠️ 它必须走 `raw_ops`（回 dict）而不是 `helpers`（回一句话）：
+        #       `_exec_chest_open` 要拿 `ok` / `error` 逐条报，别把游戏的话揉成一句。
+        "chest_open": lambda: _im_chest_open(args.get("x"), args.get("y")),
     }
     if op in raw_ops:
         try:

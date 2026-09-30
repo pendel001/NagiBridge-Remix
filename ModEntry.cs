@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -2936,6 +2936,7 @@ public class ModEntry : Mod
                 "/name_chest" => HandleNameChest(ctx),
                 "/chest_color" => HandleChestColor(ctx),
                 "/chest" => HandleChest(ctx),
+                "/chest_open" => HandleChestOpen(ctx),   // 👀 真开箱（`Chest.ShowMenu()`，一行的事）—— 「看」那行的落点
                 "/chest_take" => HandleChestTake(ctx),
                 "/chest_take_list" => HandleChestTakeList(ctx),
                 "/scan_chests" => HandleScanChests(),
@@ -3117,7 +3118,25 @@ public class ModEntry : Mod
             build = BuildStamp,   // 防倒退：/status 报构建标记，旧 DLL/原作者版会显示不同/无此字段
             port = _port,
             worldReady = Context.IsWorldReady,
-            isMultiplayer = Context.IsMultiplayer
+            isMultiplayer = Context.IsMultiplayer,
+            // 🆕 能力位 `caps`：让调用方**问**这一版 DLL 会什么，别再拿构建标记猜。
+            //    ⚠️ 这里只准陈述**我们自己端点的 schema**（"会不会吐某字段 / 认某参数"，
+            //       源码在仓库、可核对）——**不许**陈述游戏规则（那要反过来问游戏）。
+            //    ⚠️ 起因：Python 的 `_im_caps()` 原先只有"有构建标记 ⇒ 认这一批字段"这一条路，
+            //       而我们**老一版**自己的 DLL 也会带着标记蒙混过关（标记在、字段缺）⇒ 静默少一行。
+            //    ⚠️ **加/改端点时必须同步这里**，否则下游重演同一个坑。
+            caps = new Dictionary<string, bool>
+            {
+                // /surroundings 的字段
+                ["forage"] = true,
+                ["diggable"] = true,
+                ["harvestable"] = true,
+                // 各端点
+                ["chest_open"] = true,               // 👀 /chest_open（真开箱）
+                ["machines_heldItemDisplay"] = true, // 🏭 /machines 的 heldItemDisplay（中文显示名）
+                ["store_slot_quality"] = true,       // 📦 /store · /chest_take 认 slot/quality
+                ["scan_chests_type"] = true,         // 🗄️ /scan_chests 箱子层带 typeId/typeName
+            }
         };
     }
 
@@ -10434,6 +10453,12 @@ public class ModEntry : Mod
         var name = GetParamOr(p, "name", "");
         var count = GetParamOr(p, "count", int.MaxValue);
         var keepTools = GetParamOr(p, "keepTools", true);
+        // 🆕 精确挑「哪一摞」：只给名字时，**同名不同品质的两摞分不开** ⇒ 调用方只能"不列出来"。
+        //    `slot` = **背包格号**（`/state` 里 backpack 的序号，和玩家看到的格子一致）；
+        //    `quality` = 星级（0普通/1银/2金/4铱），只对 Object 有意义。
+        //    ⚠️ 两个都是**显式**参数：不传 = 不挑（行为跟以前完全一样，**不引入新默认值**）。
+        var slot = GetParamOr(p, "slot", -1);
+        var quality = GetParamOr(p, "quality", -1);
 
         if (!Context.IsWorldReady)
             throw new InvalidOperationException("World not ready");
@@ -10457,6 +10482,9 @@ public class ModEntry : Mod
             {
                 var item = farmer.Items[i];
                 if (item == null) continue;
+                // 🆕 精确挑摞（不传就是不挑）
+                if (slot >= 0 && i != slot) continue;
+                if (quality >= 0 && (item as StardewValley.Object)?.Quality != quality) continue;
                 if (keepTools && item is Tool) continue;
                 // ⚠️ 2026-09-03 恒：中英混双——背包/箱子显示中文(DisplayName)，AI 可能传中文或英文，两者都匹配
                 if (!string.IsNullOrEmpty(name)
@@ -11431,10 +11459,25 @@ public class ModEntry : Mod
                 var chests = new List<object>();
                 foreach (var (chest, tile, label) in CollectStorageChests(loc))
                 {
-                    var items = chest.Items
-                        .Where(i => i != null)
-                        .Select(i => new { name = i.Name, displayName = i.DisplayName, count = i.Stack, qualifiedId = i.QualifiedItemId })
-                        .ToList();
+                    // ⚠️ 格号必须**在过滤前**取：`.Where(...)` 之后再编号，号就跟箱子里真实的
+                    //    `chest.Items[i]` 对不上了 —— 而 `/chest_take` 的 `slot` 认的正是**真实格号**。
+                    //    （旧写法先 `Where` 再 `Select`，号是"第几个非空格"，调用方拿它去指哪一摞必然指错
+                    //      ⇒ 端到端就是"同名两摞只能不列出来"那个病的另一半。）
+                    var items = new List<object>();
+                    for (int idx = 0; idx < chest.Items.Count; idx++)
+                    {
+                        var it = chest.Items[idx];
+                        if (it == null) continue;
+                        items.Add(new
+                        {
+                            name = it.Name,
+                            displayName = it.DisplayName,
+                            count = it.Stack,
+                            qualifiedId = it.QualifiedItemId,
+                            slot = idx,                                              // 🆕 真实格号
+                            quality = (it as StardewValley.Object)?.Quality ?? 0,    // 🆕 星级（同名不同品质靠它分）
+                        });
+                    }
                     int used = items.Count;
                     chests.Add(new
                     {
@@ -11445,6 +11488,11 @@ public class ModEntry : Mod
                         used,
                         location = loc.Name,
                         name = DisplayChestName(chest, label),
+                        // 🆕 箱子**自己**那层原先没有身份 ⇒ 一览里三台小冰箱只能印 `⬜ (18,23)`
+                        //    （`name` 对默认名是空串，`autoTag` 对空箱也是空）——分不出"这是台小冰箱"。
+                        //    照物品层的口径给两个：**机器认 id、人认中文显示名**。
+                        typeId = chest.QualifiedItemId,
+                        typeName = chest.DisplayName,
                         color = ChestColorHex(chest),
                         // 🆕 2026-09-03 恒：自动预设标签（内容过半归一大类；混放/空箱为 ""）——AI 看标签不靠编号翻
                         autoTag = ChestAutoTag(chest),
@@ -11463,6 +11511,63 @@ public class ModEntry : Mod
     }
 
     /// <summary>
+    /// POST /chest_open  { "x": 30, "y": 15 }
+    /// 👀 **真开箱**：把这个箱子在游戏里开起来（**画面通道**），内容另用 `/menu` 读（数据通道）。
+    ///
+    /// ⚠️ **拟人那条在调用方（Python）**：先 `/walk_to` 走到箱子边、手够得着，再敲这个端点。
+    ///    这里**只管开** —— 端点里不做走位（走位是导航的活，两处各写一份必然漂）。
+    /// 机制（反编译 `Chest.cs:919`，C 盘 1.6.15）：`ShowMenu()` 是 `public virtual`，
+    ///    本体只是按 `SpecialChestType` 挂一个 `ItemGrabMenu` 到 `Game1.activeClickableMenu`
+    ///    —— **没有**距离前置条件、也**不吃** `GetMutex()`（那套是"玩家右键碰箱子"走的路）。
+    /// ⚠️ 恒 2026-09-28 拍板「**开完不关**」：① 很多操作本来就要点菜单
+    ///    ② 他那边看着像人在操作（拟人的验收判据）。
+    /// </summary>
+    private object HandleChestOpen(HttpListenerContext ctx)
+    {
+        var p = ReadJson(ctx);
+        var cx = GetParam<int>(p, "x");
+        var cy = GetParam<int>(p, "y");
+
+        if (!Context.IsWorldReady)
+            throw new InvalidOperationException("World not ready");
+
+        var tcs = new TaskCompletionSource<object>();
+        EnqueueMainThread(() =>
+        {
+            try
+            {
+                var loc = Game1.player.currentLocation;
+                var tileVec = new Vector2(cx, cy);
+
+                if (!loc.objects.TryGetValue(tileVec, out var obj) || obj is not Chest chest)
+                {
+                    tcs.SetResult(new { ok = false, error = $"No chest at ({cx},{cy})" });
+                    return;
+                }
+
+                chest.ShowMenu();
+                // ⚠️ 拿**开完的实况**当回执，不是拿"我调过 ShowMenu"当回执 ——
+                //    已有别的菜单挂着时它会被顶掉，`ok:true` 就成了假话。
+                bool opened = Game1.activeClickableMenu is ItemGrabMenu;
+                tcs.SetResult(new
+                {
+                    ok = opened,
+                    opened,
+                    x = cx,
+                    y = cy,
+                    name = ChestBaseName(chest),
+                    error = opened ? null : "菜单没起来（可能已有别的菜单开着，先 menu_close 再试）"
+                });
+            }
+            catch (Exception ex)
+            {
+                tcs.SetResult(new { ok = false, error = ex.Message });
+            }
+        });
+        return tcs.Task.GetAwaiter().GetResult();
+    }
+
+    /// <summary>
     /// POST /chest_take  { "x": 30, "y": 15, "name": "Stone", "count": 10 }
     /// 从箱子取出物品。不指定 count 则全部取出。
     /// </summary>
@@ -11471,11 +11576,22 @@ public class ModEntry : Mod
         var p = ReadJson(ctx);
         var cx = GetParam<int>(p, "x");
         var cy = GetParam<int>(p, "y");
-        var name = GetParam<string>(p, "name");
+        // ⚠️ `name` 从"必填"改成**可选**：现在 `slot` 也能指东西（见下）。
+        var name = GetParamOr(p, "name", "");
         var count = GetParamOr(p, "count", int.MaxValue);
+        // 🆕 精确挑「哪一摞」：`slot` = **箱子里的格号**（`/scan_chests` 的 items 序号）；
+        //    `quality` = 星级（0普通/1银/2金/4铱），只对 Object 有意义。
+        //    原本只认名字 ⇒ 同名不同品质的 8 摞**列不出来**（点上去只按名字认，挑不中想要的那摞）。
+        var slot = GetParamOr(p, "slot", -1);
+        var quality = GetParamOr(p, "quality", -1);
 
         if (!Context.IsWorldReady)
             throw new InvalidOperationException("World not ready");
+
+        // 两种指法都**没给** = 调用方没说清要拿什么 ⇒ **明确报错**。
+        // ⚠️ 别默认成"全拿"：兜底只把问题挪到下游（同名两摞时拿错还报成功）。
+        if (slot < 0 && string.IsNullOrEmpty(name))
+            return new { ok = false, error = "要么给 name（物品名），要么给 slot（箱子里的格号）" };
 
         var tcs = new TaskCompletionSource<object>();
         EnqueueMainThread(() =>
@@ -11493,14 +11609,20 @@ public class ModEntry : Mod
                 }
 
                 int taken = 0;
+                string takenName = "";
                 for (int i = 0; i < chest.Items.Count; i++)
                 {
                     var item = chest.Items[i];
                     if (item == null) continue;
+                    // 🆕 精确挑摞（不传就是不挑）
+                    if (slot >= 0 && i != slot) continue;
+                    if (quality >= 0 && (item as StardewValley.Object)?.Quality != quality) continue;
                     // ⚠️ 2026-09-03 恒：中英混双——AI 可能传中文(DisplayName)或英文(Name)，都匹配
-                    if (!item.Name.Equals(name, StringComparison.OrdinalIgnoreCase)
+                    if (!string.IsNullOrEmpty(name)
+                        && !item.Name.Equals(name, StringComparison.OrdinalIgnoreCase)
                         && !(item.DisplayName ?? "").Equals(name, StringComparison.OrdinalIgnoreCase))
                         continue;
+                    if (takenName == "") takenName = item.Name;
 
                     int want = count == int.MaxValue ? item.Stack : Math.Min(count - taken, item.Stack);
                     if (want <= 0) break;
@@ -11527,7 +11649,10 @@ public class ModEntry : Mod
                 {
                     ok = true,
                     taken,
-                    item = name,
+                    // ⚠️ 报**真拿到手的那件**的名字：走 `slot` 时调用方压根没给 name，
+                    //    原样回一句空名字等于什么都没说。
+                    item = !string.IsNullOrEmpty(name) ? name : takenName,
+                    slot = slot >= 0 ? slot : -1,
                     chestAt = new { x = cx, y = cy }
                 });
             }
@@ -16510,9 +16635,13 @@ public class ModEntry : Mod
     // ── Quest System ──
 
     /// <summary>是否存储箱（宝箱/大箱子/石箱）。
-    /// 只排除祝尼魔箱(JunimoChest)和迷你出货箱(MiniShippingBin)——出货箱会把物品当出货卖掉、祝尼魔箱内容互通。
+    /// 只排除祝尼魔箱(JunimoChest)、迷你出货箱(MiniShippingBin) 和**富集器(Enricher)**——
+    /// 前者内容互通、后两者"收什么"跟普通箱不一样（出货箱=卖、富集器=只收肥料且只有 1 格）。
     /// 大箱子=SpecialChestType.BigChest 是存储箱，必须保留（曾误杀：!=None 把大箱子全滤掉了）。
-    /// 运行时它们都是 Chest 类型，靠 SpecialChestType / itemId 区分（130宝箱/232石箱/BigStoneChest大箱/248迷你出货箱）。</summary>
+    /// ⚠️ **自动装载器(AutoLoader) 不排**：它挂的筛子是 `InventoryMenu.highlightAllItems`＝全收（同普通箱）。
+    /// 运行时它们都是 Chest 类型，靠 SpecialChestType / itemId 区分（130宝箱/232石箱/BigStoneChest大箱/248迷你出货箱）。
+    /// 判据来源：反编译 `Chest.cs:22`（`enum SpecialChestTypes`）+ `Chest.cs:919 ShowMenu()` 的筛子分支，
+    /// 见 CHANGELOG 2026-09-29(167)① —— **别按名字编表**。</summary>
     private static bool IsStorageChest(Chest c)
     {
         // 语义过滤：SpecialChestType 属性（反射读，防编译依赖）
@@ -16522,7 +16651,7 @@ public class ModEntry : Mod
             if (prop != null)
             {
                 var v = prop.GetValue(c)?.ToString() ?? "None";
-                if (v == "JunimoChest" || v == "MiniShippingBin")
+                if (v == "JunimoChest" || v == "MiniShippingBin" || v == "Enricher")
                     return false;
             }
         }
@@ -18527,6 +18656,10 @@ public class ModEntry : Mod
             if (obj.heldObject.Value != null)
             {
                 entry["heldItem"] = obj.heldObject.Value.Name;
+                // 🆕 显示名（中文）：`heldItem` 是**内部英文名**，调用方原先得自己凑中文
+                //    ⇒ 真机实拍过中英混排的丑行：`翡翠×17、Diamond×1、Iridium Ore×1`。
+                //    人看的那份名字由游戏给，别在调用方硬编表。
+                entry["heldItemDisplay"] = obj.heldObject.Value.DisplayName;
                 entry["heldItemId"] = obj.heldObject.Value.QualifiedItemId;
                 entry["heldQuality"] = (obj.heldObject.Value as StardewValley.Object)?.Quality ?? 0;
             }

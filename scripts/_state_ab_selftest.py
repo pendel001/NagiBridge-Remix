@@ -80,6 +80,20 @@ def main():
     with open(old_path, "wb") as f:
         f.write(src.stdout)
 
+    # ⏭ 2026-09-30：这个 A/B 的**前提会过期** —— 它比的是"HEAD 那份 vs 工作区那份"。
+    #    2026-09-23 抽 `_state_suffix()` 当天，工作区改过、HEAD 还是旧的 ⇒ 有信息量。
+    #    **改动一提交，HEAD 就等于工作区** ⇒ 四条用例全退化成"自己跟自己比"：
+    #    前三条**永远绿**（假绿），而"空正文按设计少一条分隔线"那条反而**必然红**
+    #    （旧版不再多那个前缀）。2026-09-30 实测复核过：把工作区 stash 成纯 HEAD，红的还是它。
+    #    ⇒ 判据：两份**逐字节相同**就直说"已过期"，别留一条永远红的检查把人训练成
+    #      "看见红就跳过"（同族教训：别把红的检查记成既有误报长期跳过）。
+    with open(os.path.join(HERE, "nagi_mcp_server.py"), "rb") as _wf:
+        if _wf.read() == src.stdout:
+            print("⏭ 已过期：HEAD 那份与工作区**逐字节相同** ⇒ 这个 A/B 不再有信息量。")
+            print("   （它验的是 2026-09-23 抽 `_state_suffix()` 那次重构的逐字一致性；")
+            print("     那次改动早已提交 ⇒ OLD 与 NEW 是同一份代码，四条用例都成了自比自。）")
+            return 0
+
     import nagi_mcp_server as NEW
     OLD = _load(old_path, "_old_server_ab")
 
@@ -88,7 +102,6 @@ def main():
         ("普通调用", "🧹 清完了", False),
         ("强制全量", "📊 状态速报", True),
         ("多行正文", "行1\n行2\n\n行3", False),
-        ("空正文（截图新路）", "", False),
     ]:
         _stub(OLD)
         _stub(NEW)
@@ -96,19 +109,29 @@ def main():
         NEW._last_full_date = ("spring", 1, 1)
         a = OLD._with_state(body, force) if force else OLD._with_state(body)
         b = NEW._with_state(body, force) if force else NEW._with_state(body)
-        if not body:
-            # 这一条**故意不同**：空正文时新版不加分隔线（旧版没有调用方会这么用）。
-            # 判据 = 旧版恰好比新版多一个"只由换行和 ╌ 组成"的前缀，其余逐字相同。
-            prefix = a[:len(a) - len(b)] if len(a) > len(b) else ""
-            ok = (b and len(prefix) > 0 and set(prefix) <= {"\n", "╌"}
-                  and a[len(prefix):] == b)
-        else:
-            ok = a == b
+        ok = a == b
         print(("  ✅ " if ok else "  ❌ ") + label + (f"  ({len(a)} vs {len(b)} 字节)" if ok else ""))
         if not ok:
             fails.append(label)
             print("     OLD:", repr(a[:220]))
             print("     NEW:", repr(b[:220]))
+
+    # ⏭ 2026-09-30 **退役**原来那条「空正文（截图新路）」的 OLD-vs-NEW 比对。
+    #    它验的是 2026-09-23 抽 `_state_suffix()` 时**故意引入的那点不同**（空正文不加分隔线）。
+    #    那点不同**早已随那次重构进了 HEAD** ⇒ `git show HEAD:` 拿到的是**新版**，
+    #    OLD 永远不可能再多出那个前缀 ⇒ 这条比对**再也无法通过**。实测复核过（2026-09-30）：
+    #    把工作区 stash 成纯 HEAD，红的还是它 —— 不是"暂时红"，是**前提没了**。
+    #    ⇒ 改成**直接锁当前行为**（不依赖 OLD）：空正文时**不许**以分隔线开头。
+    #    （同族教训：别把红的检查记成既有误报长期跳过 —— 也别让它以"永远红"的形式烂在那儿。）
+    _stub(NEW)
+    NEW._last_full_date = ("spring", 1, 1)
+    b = NEW._with_state("")
+    stripped = b.lstrip("\n")
+    ok = bool(b) and not stripped.startswith("╌")
+    print(("  ✅ " if ok else "  ❌ ") + "空正文 ⇒ 新版**不加分隔线**（锁当前行为，不再比 OLD）")
+    if not ok:
+        fails.append("空正文")
+        print("     NEW:", repr(b[:220]))
 
     print()
     if fails:

@@ -44,6 +44,20 @@ AI **不需要**重新学这套端点怎么用——直接调 MCP 域工具：
 | 当前工具 & 域结构 | 本文件 + `scripts/nagi_mcp_server.py` 的 `_KEEP_TOOLS` |
 | 工具调用日志（性能/回归） | `scripts/sessions/session_log.jsonl` |
 | 聊天记录（AI 记忆） | `scripts/sessions/session_<时间戳>.jsonl`（实时）/ `.md`（导出） |
+| **跨会话记忆（不在 repo）** | 仓库外记忆库 —— 见下节「跨会话记忆库」 |
+
+## 跨会话记忆库（在仓库外 · 开局必读）
+
+记忆库**不在 repo 里**（过程记录 / 当前进行中 / 用户偏好），路径：
+
+```
+C:\Users\Administrator\.claude\projects\G--wingheng-Claude-NagiBridge-NagiBridge-main\memory\
+```
+
+- **开局先读 `MEMORY.md`**（索引）。技术细节一律以仓库 `CHANGELOG.md` 为准，索引只放 repo 记不住的。
+- 要细节再 `grep` 那个目录或 read 单个文件 —— 文件名＝「主题-日期.md」，如 `pending-restart-0924-and-ghost-chests.md`（验收总账）。
+- **新记忆写回同一目录**，沿用同一命名；**别在 repo 里另起一份**（两份会漂移）。索引里对应加一行。
+- ⚠️ 这份记忆是**平台无关**的：Claude Code 与 DSH 共用，谁改都写这里。
 
 ## 关键不变量（坑 · 改了几处会"没生效"）
 
@@ -68,7 +82,7 @@ AI **不需要**重新学这套端点怎么用——直接调 MCP 域工具：
 |---|---|
 | **连不上** | `README.md` 第 5 节：curl 自测 / Streamable HTTP（不是 SSE）/ 防火墙放行 8000 / 同局域网 |
 | **改的 tools/引导不生效** | **重启 MCP 服务器**（Python 启动时 import） |
-| **改了 mod 没效果** | 确认 DLL **C+F 两处**都复制了（游戏跑哪个盘？查记忆 `game-drive-c-2026-08`） |
+| **改了 mod 没效果** | 确认 DLL **C+F 两处**都复制了：`C:\Program Files (x86)\Steam\steamapps\common\Stardew Valley\Mods\NagiBridge\` + **`F:\Stardew Valley 2nd\Mods\NagiBridge\`**（⚠️**本机活的那份在 F 盘**；两边 `Get-FileHash` 比一下最快） |
 | **手机 java 报错 / 404** | URL 少了 `/mcp` 或客户端用了 SSE → 补 `/mcp` + 传输改 Streamable HTTP |
 | **AI 状态条慢 / token 大** | 看 `scripts/sessions/session_log.jsonl`（工具返回字节）；`settings ops=status` 看配置/退役 |
 | **双开 10048 端口冲突** | 确认两个窗口用不同端口（Harmony Lidgren 补丁已修常规竞态） |
