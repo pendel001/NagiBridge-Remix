@@ -248,7 +248,15 @@ mcp = FastMCP(
 # ⚠️ 实现=**猴补 `mcp.tool`**，位置必须在**所有 `@mcp.tool()` 之前** ——
 #    这样每个工具注册时自动包一层，不用去动上百处装饰器。
 _MENU_GATE_TOOLS_OK = {"menu", "social", "check", "help", "screenshot",
-                       "which_role", "role", "profile", "cancel"}
+                       "which_role", "role", "profile", "cancel",
+                       # 🎯 2026-09-30：**`intent` 整条放行**（它自己会守菜单态）。
+                       #   起因=真机抓到的**假门**：站在皮埃尔柜台前（ShopMenu 开着），
+                       #   单子照常列 `1 卖… / 2 买…`，而这道闸门把 `intent do` 整个挡掉
+                       #   ⇒ **看得见、按不动**，正好踩在恒那条「单子上出现的那条，按了就成」上。
+                       #   ⚠️ 放行的**前提**是判据收到了 `intent_menu` 里那两处：
+                       #     ① `_candidates` 菜单态只列 `menu_ok` 的动词（买/卖）；
+                       #     ② `do_row` 执行侧兜底挡旧号（号不跨屏，但 `_LAST_ROWS` 可能隔了一屏）。
+                       "intent"}
 # ⚙️ 2026-09-22 恒拍板：**整个 settings 域放行**（不写成 op 白名单）。
 #   起因：捏脸/起名/核对/查参考**全在 settings 域**，而创建角色时 CharacterCustomization **必然开着**
 #   ⇒ 老名单里没有 settings，等于"建角色的每一步都被自家闸门拦死"，AI 卡在第一格

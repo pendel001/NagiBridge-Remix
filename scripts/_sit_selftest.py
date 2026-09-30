@@ -23,6 +23,15 @@ import nagi_mcp_server as M
 #      打成恒等：本文件要验的是 **sit/seats 的逻辑**，状态条（及其背后的角色探测）不是被测对象。
 M._with_state = lambda s: s
 
+# ⚠️ 2026-09-30：**同一个病的第二处**（上面那条只修了状态条那一半）。
+#    菜单闸门 `_menu_gate` 会去读**真机**的 `/state` 判"现在有没有菜单开着" ——
+#    游戏开着、且**正好有菜单开着**时（实测：站在商店柜台前），
+#    `sit`/`seats`/`scene` 全被闸门挡掉，本文件 **15 项一起红**，
+#    而**产品一点问题都没有**（症状极具迷惑性：看着像"全项目炸了"）。
+#    ⇒ 跟 `_with_state` 一样打桩：这里要验的是 sit/seats 的**逻辑**，闸门不是被测对象。
+#    （`_menu_gate` 里两处调用：`_menu_gate_now()` 与 `_menu_gate_now(fresh=True)`，都要吃掉。）
+M._menu_gate_now = lambda *a, **k: None
+
 fails = []
 
 

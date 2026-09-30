@@ -254,8 +254,14 @@ class Verb:
     #    —— 最典型的是「睡觉」（2026-09-29 恒：「床…当前场景有就该置顶」）：
     #    夜里它该顶在第一行，**中午顶在第一行就是把不可逆的过夜摆在最顺手的位置**
     #    （正是恒那条「菜单是强暗示、别给不划算的路」要挡的）。静态 int 表达不了这个。
-    #    ⚠️ 排序**只走 `_weight_of()` 这一条路**，别的地方别再直接读 `.weight`。
+    # ⚠️ 排序**只走 `_weight_of()` 这一条路**，别的地方别再直接读 `.weight`。
     weight_fn: Callable = None
+    # 🚧 **菜单态可做**：True = 这个动词**本来就是通过菜单干活**的（买/卖走 `/menu/click`、`/sell_to_shop`），
+    #    所以"菜单开着"对它**不是障碍**。
+    #    ⚠️ 2026-09-30 之前**没有这个位**，于是菜单开着时单子照样把世界动作（坐/搬/收）列出来、
+    #       而 MCP 的菜单闸门又把 `intent do` 整个挡掉 ⇒ 整屏都是**按不动的行**。
+    #       现在判据收到 `_candidates`：菜单态**只列 `menu_ok` 的**（其余整行不出现，不是灰掉）。
+    menu_ok: bool = False
 
 
 # ── 以下每个 can() 都只用**端点已经吐出来的**字段，一个都不用猜 ──────────
@@ -1633,9 +1639,9 @@ def _exec_sell_multi(ctx, pairs, run):
 #    而子层的目标是"这个容器"。买卖没有"格子"：它在 **world** 这一档（问的是"现在这个处境"），
 #    顶层和子层指向的是同一个东西 ⇒ 一个对象就够，分成两个反而多一处会漂的重复。
 BUY_V = Verb("buy", "买", 72, _buy_can, _buy_reason, lambda c, t: "买", "world",
-             subs=_buy_subs, count=_buy_count, exec_multi=_exec_buy_multi)
+             subs=_buy_subs, count=_buy_count, exec_multi=_exec_buy_multi, menu_ok=True)
 SELL_V = Verb("sell", "卖", 74, _sell_can, _sell_reason, lambda c, t: "卖", "world",
-              subs=_sell_subs, count=_sell_count, exec_multi=_exec_sell_multi)
+              subs=_sell_subs, count=_sell_count, exec_multi=_exec_sell_multi, menu_ok=True)
 
 
 VERBS: list = [
@@ -1821,9 +1827,18 @@ def _candidates(ctx: Ctx) -> list:
     返回**已排序但未截断**——截断是 render 的事，而且它必须把砍掉的数量报出来。
     """
     buckets = {}
+    # 🚧 菜单开着时，**只留"本来就是通过菜单干活"的动词**（`menu_ok`，目前是 买/卖）。
+    #    ⚠️ 2026-09-30 真机抓到的**假门**：站在皮埃尔柜台前（ShopMenu 开着），
+    #       单子照常列出 `1 卖… / 2 买…`，可 **`intent do` 被 MCP 的菜单闸门整个挡掉**
+    #       ⇒ 看得见、按不动 —— 正好踩在恒那条「单子上出现的那条，**按了就成**」上。
+    #    根因不是闸门太严，是**这层把不该出现的行也列出来了**（同一屏还列着 `坐 stool/couch/chair`
+    #    三条商店家具 —— 菜单态下那些根本按不了）。⇒ 判据收到这里：**菜单态就只列菜单态能做的**。
+    menu_open = bool(getattr(ctx, "menu", None))
     for v in VERBS:
         # 「接了」= 有 exec（动作行）**或** 有 subs（目录行）。两个都没有 = 看得见按不动，不上单子。
         if v.exec is None and v.subs is None:
+            continue
+        if menu_open and not getattr(v, "menu_ok", False):
             continue
         if v.target == "world":
             # 🌍 **情境动词**：不属于某一格，也不属于手持那件——它问的是"现在这个处境"。
@@ -2255,6 +2270,23 @@ def do_row(code, run: Callable, ctx: Ctx = None) -> str:
 
     if lv.mode == "qty":
         return _do_qty(ctx, lv, sel, run)
+
+    # 🚧 **菜单态守卫**（2026-09-30）：菜单开着时只放行"本来就通过菜单干活"的动词。
+    #    ⚠️ 为什么**执行这一层还要判一次**：号虽然不跨屏，但 `_LAST_ROWS` 可能是
+    #       **菜单开起来之前**那一屏留下来的 ⇒ AI 敲一个旧号，就会在菜单开着的时候
+    #       跑一个世界动作（那正是 MCP 那道菜单闸门要挡的事）。
+    #       根因已经收在 `_candidates`（菜单态只列 `menu_ok`），这里是**执行侧兜底**。
+    if getattr(ctx, "menu", None) and lv.mode == "act":
+        _bad = []
+        for _no, _c in sel:
+            _r = _row_by_no(lv, _no)
+            if _r is not None and _r.verb is not None and not getattr(_r.verb, "menu_ok", False):
+                _bad.append(str(_no))
+        if _bad:
+            _m = (ctx.menu or {}).get("type") or "?"
+            return (f"🚧 菜单开着（{_m}）—— {'、'.join(_bad)} 号是**菜单态做不了**的动作，先别敲。\n"
+                    f"   菜单态能做的只有 **买 / 卖**；`show` 看一眼当前这屏（它会只列能做的）。\n"
+                    f"   不想逛了就 `menu` 域把它关掉，再回来敲这一屏。")
 
     if any(c is not None for _, c in sel):
         return ("❌ 这一层没有数量要填 —— 直接写号就行（`1` 或 `1,4`）。\n"
@@ -3416,6 +3448,10 @@ def _selftest():
                      "price": 50, "stock": 3},
                 ]),
                 "sellable": (list(sellable) if sellable is not None else None)}
+        # ⚠️ 2026-09-30：**商店开着 = `activeMenu` 就是 ShopMenu**（`ctx_from` 从 `/state` 读的那个）。
+        #    夹具原先只填 `c.shop`、`c.menu` 留 None ⇒ 跟真机**不是同一个处境**，
+        #    于是"菜单态只列买卖"这条判据在自验里**永远走不到**（假绿）。
+        c.menu = {"type": "ShopMenu"}
         return c
 
     sctx = _shopctx()
@@ -3425,6 +3461,21 @@ def _selftest():
     ok.append(("🏪 顶层**只报几样**、不发号", "3 样" in top))
     ok.append(("🏪 理由栏给钱包（从游戏读的）", "钱包 1234g" in top))
     ok.append(("💰 「卖」也在（背包里有这家收的）", "卖…" in top))
+    # 🚧 2026-09-30 真机抓到的**假门**：菜单开着时这层照样把世界动作（坐/搬/收）列出来，
+    #    而 MCP 的菜单闸门把 `intent do` 整个挡掉 ⇒ 整屏按不动。判据收到 `_candidates`：
+    #    **菜单态只列 `menu_ok`（买/卖）的**。
+    ok.append(("🚧 商店开着 ⇒ 单子**只剩买卖**（`坐 stool` 那种世界动作整行不出现）",
+               "坐" not in top and "搬走" not in top))
+    # ⚠️ 执行侧兜底：号不跨屏，但 `_LAST_ROWS` 可能是**菜单开起来之前**那一屏留下的
+    #    ⇒ 拿一个"世界动作"的旧屏 + 菜单态的 ctx 去敲，必须被挡住，不能真跑。
+    _stale = _fixture()                      # 菜单 None 的一屏（含坐/搬走…）
+    reset_menu()
+    render_menu(_stale, n=40)
+    _stale.menu = {"type": "ShopMenu"}       # 菜单**现在**开着（模拟"旧屏 + 新状态"）
+    _hit = next((r.no for r in _LAST_ROWS
+                 if r.verb is not None and not getattr(r.verb, "menu_ok", False)), None)
+    ok.append(("🚧 菜单态敲**旧屏**的世界动作 ⇒ 挡住（不真跑）",
+               _hit is not None and "菜单开着" in do_row(_hit, fake_run, _stale)))
 
     # ⚠️⚠️ 三态不许折叠：没开商店 / 开着读不出来 —— **两种情况都不许出现「买」**，
     #    但原因不一样（一个是"没有"，一个是"不知道"）。混成一个就是静默。
