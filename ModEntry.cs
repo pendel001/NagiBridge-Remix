@@ -10473,9 +10473,9 @@ public class ModEntry : Mod
         {
             var farmer = Game1.player;
             var loc = farmer.currentLocation;
-            var tileVec = new Vector2(cx, cy);
 
-            if (!loc.objects.TryGetValue(tileVec, out var obj) || obj is not StardewValley.Objects.Chest chest)
+            var chest = FindStorageChestAt(loc, cx, cy);
+            if (chest == null)
             {
                 tcs.SetResult(new { ok = false, error = $"No chest at ({cx},{cy})" });
                 return;
@@ -11515,6 +11515,33 @@ public class ModEntry : Mod
         return tcs.Task.GetAwaiter().GetResult();
     }
 
+    /// <summary>按格子找**存储容器**：先看 `loc.objects`，再看 `CollectStorageChests`。
+    ///
+    /// ⚠️ 2026-09-30：**内置冰箱不在 `loc.objects` 里**（它是 `FarmHouse.fridge` 那个 NetRef 字段，
+    ///    坐标靠 `fridgePosition`）⇒ 只查 `objects` 的端点**永远够不着它**。
+    ///    真机实证：`/scan_chests` 能列出「内置冰箱」，而 `/store`/`/chest_take` 按同一格去找
+    ///    回的是 `No chest at (x,y)` —— 列得出、打不着。
+    /// 📌 通式：**"列得出来"和"够得着"是两件事**，中间隔着一个"它到底在不在 objects 里"。
+    /// </summary>
+    private static Chest? FindStorageChestAt(GameLocation loc, int x, int y)
+    {
+        var tile = new Vector2(x, y);
+        try
+        {
+            if (loc.objects.TryGetValue(tile, out var obj) && obj is Chest c)
+                return c;
+        }
+        catch { }
+        try
+        {
+            foreach (var (chest, t, _) in CollectStorageChests(loc))
+                if ((int)t.X == x && (int)t.Y == y)
+                    return chest;
+        }
+        catch { }
+        return null;
+    }
+
     /// <summary>
     /// POST /chest_open  { "x": 30, "y": 15 }
     /// 👀 **真开箱**：把这个箱子在游戏里开起来（**画面通道**），内容另用 `/menu` 读（数据通道）。
@@ -11542,9 +11569,9 @@ public class ModEntry : Mod
             try
             {
                 var loc = Game1.player.currentLocation;
-                var tileVec = new Vector2(cx, cy);
 
-                if (!loc.objects.TryGetValue(tileVec, out var obj) || obj is not Chest chest)
+                var chest = FindStorageChestAt(loc, cx, cy);
+                if (chest == null)
                 {
                     tcs.SetResult(new { ok = false, error = $"No chest at ({cx},{cy})" });
                     return;
@@ -11605,9 +11632,9 @@ public class ModEntry : Mod
             {
                 var farmer = Game1.player;
                 var loc = farmer.currentLocation;
-                var tileVec = new Vector2(cx, cy);
 
-                if (!loc.objects.TryGetValue(tileVec, out var obj) || obj is not StardewValley.Objects.Chest chest)
+                var chest = FindStorageChestAt(loc, cx, cy);
+                if (chest == null)
                 {
                     tcs.SetResult(new { ok = false, error = $"No chest at ({cx},{cy})" });
                     return;
@@ -16729,7 +16756,13 @@ public class ModEntry : Mod
             //    📌 通式：**"这个对象存在" ≠ "它在世界里"** —— NetRef 字段常年非空，可达性要另判。
             if (loc is FarmHouse fh && fh.fridge?.Value is Chest fr && IsStorageChest(fr)
                 && fh.fridgePosition != Point.Zero)
-                list.Add((fr, fr.TileLocation, "内置冰箱"));
+                // 🐛 2026-09-30 真机：坐标原来报的是 `fr.TileLocation`，而那个字段**恒是 (0,0)**
+                //    （冰箱 Chest 不在 `loc.objects` 里、游戏从没给它设过 TileLocation）
+                //    ⇒ 单子上印「内置冰箱 (0,0)」，而 `/store`·`/chest_take` 按那格去找**什么都找不到**
+                //    ⇒ 「存/取 内置冰箱」**必然失败**（不是"存进看不见的容器"，是压根打不着）。
+                //    正解＝用**游戏自己的** `fridgePosition`（`GetFridgePositionFromMap()` 扫 Buildings 层
+                //    找 tile index 173，换房屋等级时重算）—— 别在 Python 拿 `x==0&&y==0` 当判据。
+                list.Add((fr, new Vector2(fh.fridgePosition.X, fh.fridgePosition.Y), "内置冰箱"));
         }
         catch { }
         return list;
@@ -18645,6 +18678,12 @@ public class ModEntry : Mod
             var entry = new Dictionary<string, object?>
             {
                 ["type"] = obj.Name,
+                // 🆕 2026-09-30：**类型的中文显示名**（`obj.DisplayName`）。
+                //    起因（真机）：「本图 箱×5 … 机×96(就绪20): 小桶×53 复制机×18 烘干机×18
+                //    **Mini-Fridge×3** 等8种」—— 中英混排，因为调用方那张 `MACHINE_CN` 是**手编名单**、
+                //    漏了 Mini-Fridge。📌 通式同 `heldItemDisplay`：**名字问游戏要，别编表**
+                //    （名单会烂，本项目栽过：1.6 矿节点 ID、`Jewels Of The Sea`）。
+                ["typeDisplay"] = obj.DisplayName,
                 ["name"] = obj.Name,
                 ["location"] = locationKey,
                 // ⚠️ 同名建筑（多间 Cabin）光靠 location 名字**区分不开**——唯一名才是身份
@@ -18737,12 +18776,46 @@ public class ModEntry : Mod
                     }
                 }
 
+                // 🆕 2026-09-30：**棚里还没摸的**（按建筑汇总，只报非零的）。
+                //    起因（真机）：站 `Farm (40,0)` 时这条回 **0 条**（它只看**当前图**），
+                //    而 `/farm_report` 同一时刻是 **24 只待摸**（全在 Deluxe Coop / Deluxe Barn 里）
+                //    ⇒ 单子上「摸 还没摸的动物」**整行不出现**（`_pet_can` 只看当前图），
+                //      可 `_exec_pet` 本来就会自己走进棚里去摸 —— **判据比执行器窄**。
+                //    ⇒ 补一份**汇总**（不是完整列表）：完整列表太肥，会在每次 `intent show` 上白烧 token。
+                //  ⚠️ 走 `Utility.ForEachLocation` 而不是 `Game1.locations`：**cabin/barn 的室内是
+                //     instanced interior、压根不在 `Game1.locations` 里**（CHANGELOG 80 那条老账）。
+                //  ⚠️ lambda **必须恒 `return true`** —— 返回 false 是**中止整个遍历**（同上）。
+                var inBuildings = new Dictionary<string, int>();
+                try
+                {
+                    Utility.ForEachLocation(l =>
+                    {
+                        if (l is AnimalHouse ahh)
+                        {
+                            int n = 0;
+                            foreach (var a in ahh.animals.Values)
+                                if (!a.wasPet.Value) n++;
+                            if (n > 0)
+                            {
+                                // ⚠️ 多栋同名（两间 Coop）用**名字**会并成一条 ⇒ 带唯一名
+                                var key = string.IsNullOrEmpty(ahh.Name) ? ahh.NameOrUniqueName : ahh.Name;
+                                inBuildings[key ?? "?"] = inBuildings.TryGetValue(key ?? "?", out var had)
+                                    ? had + n : n;
+                            }
+                        }
+                        return true;
+                    });
+                }
+                catch { }
+
                 tcs.SetResult(new
                 {
                     ok = true,
                     location = loc.Name,
                     count = animals.Count,
-                    animals
+                    animals,
+                    // 🆕 只给**汇总**：`{"Deluxe Coop": 12, "Deluxe Barn": 12}`
+                    inBuildings
                 });
             }
             catch (Exception ex)

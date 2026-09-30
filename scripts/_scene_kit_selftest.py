@@ -107,6 +107,23 @@ try:
     ck("…**不含任何机器坐标**（设备那一半一个括号都没有）",
        "(" not in out.replace("(就绪1)", ""), out)
 
+    # 🆕 2026-09-30 真机：`MACHINE_CN` 是**手编名单**、漏了 Mini-Fridge ⇒ 印出 `Mini-Fridge×3`
+    #    （中英混排）。判据改成**先问游戏**（`/machines` 的 `typeDisplay` = `obj.DisplayName`），
+    #    名单降级成**老 DLL 兜底**。📌 通式同 `heldItemDisplay`/`typeName`：**名字别编表**。
+    print("\n⑤ 机器名：**先问游戏**（typeDisplay），老 DLL 才退回 MACHINE_CN")
+    fresh()
+    M.api = KitApi(chests=[], machines=[
+        {"type": "Mini-Fridge", "status": "empty", "typeDisplay": "迷你冰箱"},
+        {"type": "Keg", "status": "ready", "typeDisplay": "小桶"},
+    ])
+    out = M._scene_kit_hint("Farm")
+    ck("…有 `typeDisplay` ⇒ 用它（`迷你冰箱`，不再漏成英文）", "迷你冰箱×1" in out, out)
+    fresh()
+    M.api = KitApi(chests=[], machines=[M1, M2, M3])       # 老 DLL：没有 typeDisplay
+    out = M._scene_kit_hint("Farm")
+    ck("…老 DLL（没这字段）⇒ **退回 `MACHINE_CN`**（行为跟以前一样）",
+       "小桶×2" in out and "熔炉×1" in out, out)
+
     # ── ⑤ 室内照样报（与 _forage_summary 相反）──────────────────
     print("\n⑤ 室内照样报 —— 箱子/设备大多在屋里，照抄可采集那条的室内跳过会把最该报的地方全跳过")
     fresh()

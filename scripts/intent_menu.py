@@ -149,6 +149,12 @@ class Ctx:
     # 🐾 本图的宠物（猫狗）——来自 `/surroundings` 的 `npcs` 里 `kind=="pet"` 的那几个。
     #    它们是**世界级**的（不属于某一格的动作），所以不进 tiles。
     pets: list = field(default_factory=list)
+    # 🐄 **棚里还没摸的**（按建筑汇总：`{"Deluxe Coop": 12}`）。
+    #    ⚠️ 2026-09-30 真机抓的缺口：`/animals` 只扫**当前图** ⇒ 站在农场上它回 0 条，
+    #    而同一刻 `/farm_report` 是 24 只待摸（全在 Coop/Barn 里）⇒ 「摸 还没摸的动物」**整行不出现**，
+    #    可 `_exec_pet` 本来就会自己走进棚里摸 —— **判据比执行器窄**。
+    #    ⚠️ 只存**汇总**（不存完整列表）：完整列表太肥，会在每次 `intent show` 上白烧 token。
+    animals_away: dict = field(default_factory=dict)
     stamina: int = 0
     # 🎒 背包容量（游戏 `Farmer.MaxItems`：12/24/36 三档）。
     #    “取”那条行要判“背包放得下吗”——**只能问游戏要**，写死 36 就是编表。
@@ -719,12 +725,30 @@ def _pickup_subs(ctx, targets):
 
 
 def _animals_left(ctx):
-    """还没摸的牲畜——`/animals` 的 `wasPetToday`（**游戏自己的字段**，不是我们记的账）。"""
+    """**眼前**还没摸的牲畜——`/animals` 的 `wasPetToday`（**游戏自己的字段**，不是我们记的账）。
+
+    ⚠️ 只看**当前图**。棚里的那些在 `ctx.animals_away` 里（见 `_pet_can`）。
+    """
     return [t for t in ctx.tiles.values() if (t.get("animal") or {}).get("wasPetToday") is False]
 
 
+def _away_total(ctx) -> int:
+    """棚里还没摸的**总数**（`ctx.animals_away` 是 `{建筑名: 只数}`）。"""
+    try:
+        return sum(int(v) for v in (ctx.animals_away or {}).values())
+    except Exception:
+        return 0
+
+
 def _pet_can(ctx, t):
-    return CAN_YES if _animals_left(ctx) else CAN_NO
+    """🐄 摸动物：**眼前有** 或 **棚里有**（后者要走进棚，`_exec_pet` 本来就会走）。
+
+    ⚠️ 2026-09-30 真机抓的缺口：原来只看 `_animals_left(ctx)`（= 当前图的 `/animals`）⇒
+       站 `Farm (40,0)` 时它回 **0 条**（动物都在 Coop/Barn 里），而 `/farm_report` 同刻 **24 只待摸**
+       ⇒ 那行**整行不出现**。可 `_exec_pet` → `_pet_animals_in_building()` **本来就会自己走进棚里摸**
+       ⇒ **判据比执行器窄**（同一件事两个视野）。恒的偏好是"必要信息主动注入"，这条正好反着。
+    """
+    return CAN_YES if (_animals_left(ctx) or _away_total(ctx)) else CAN_NO
 
 
 def _pet_show(ctx, t):
@@ -737,13 +761,18 @@ def _pet_reason(ctx, t):
     for a in left:
         ty = (a.get("animal") or {}).get("type") or "?"
         cnt[ty] = cnt.get(ty, 0) + 1
-    return f"{len(left)} 只（" + "、".join(f"{k}×{v}" for k, v in cnt.items()) + "）"
+    if cnt:
+        return f"{len(left)} 只（" + "、".join(f"{k}×{v}" for k, v in cnt.items()) + "）"
+    # 眼前没有 ⇒ 说清"在棚里"（**别只报个 0**：那等于什么都没说，AI 也不知道该往哪走）
+    away = ctx.animals_away or {}
+    return f"在棚里 {_away_total(ctx)} 只（" + "、".join(f"{k}×{v}" for k, v in away.items()) + "）"
 
 
 def _exec_pet(ctx, targets, run):
     left = _animals_left(ctx)
     r = run("pet_animals", {})
-    return _receipt_from_helper("摸动物", "", r, planned=f"{len(left)} 只")
+    planned = f"{len(left)} 只" if left else f"棚里 {_away_total(ctx)} 只"
+    return _receipt_from_helper("摸动物", "", r, planned=planned)
 
 
 def _pets_can(ctx, t):
@@ -1419,11 +1448,19 @@ def _sellable_here(ctx):
 
 
 def _stock_text(g):
-    """库存那截。`stock < 0` = **无限量**（游戏用 `-1` 表示）⇒ 一个字都不印。"""
+    """库存那截。**无限量** ⇒ 一个字都不印。
+
+    ⚠️ 2026-09-30 真机：原来只认 `stock < 0`（"游戏用 `-1` 表示无限"），
+    可**真机吐的是 `2147483647`（`int.MaxValue`）** ⇒ 单子上印出 `剩 2147483647`
+    （防风草种子那种"无限供应"的货）。⇒ 判据补上 `int.MaxValue` 这一种。
+    📌 通式：**"我以为是 -1" ≠ "游戏真的给 -1"** —— 拿真机数据核一遍再用。
+    """
     st = g.get("stock")
-    if isinstance(st, int) and st >= 0:
-        return f"剩 {st}"
-    return ""
+    if not isinstance(st, int):
+        return ""
+    if st < 0 or st >= 2 ** 31 - 1:      # -1（老写法）与 int.MaxValue（真机）都是**无限**
+        return ""
+    return f"剩 {st}"
 
 
 def _price_text(g) -> str:
@@ -2565,6 +2602,9 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
                menu=(state or {}).get("activeMenu"),
                sitting=bool(((seats or {}).get("me") or {}).get("sitting")),
                pets=pets,
+               # 🆕 2026-09-30：棚里还没摸的（`/animals` 的 `inBuildings` 汇总）——
+               #    老 DLL 没这个键 ⇒ `{}` ⇒ 行为跟以前一模一样（不留新默认值）。
+               animals_away=(animals or {}).get("inBuildings") or {},
                stamina=p.get("stamina") or 0, max_items=p.get("maxItems") or 0,
                money=p.get("money") or 0,
                caps=caps or {}, zh=zh, shop=shop,
@@ -3498,6 +3538,23 @@ def _selftest():
     ok.append(("🏪 货架行带**单价**", "100g" in shelf))
     ok.append(("🏪 有限量的报**库存**", "剩 5" in shelf))
     ok.append(("🏪 无限量（stock=-1）**不印库存**", "剩 -1" not in shelf))
+    # 🆕 2026-09-30 真机：无限量**真机给的是 `int.MaxValue`**，老判据只认 `-1`
+    #    ⇒ 单子上印出 `剩 2147483647`（防风草种子那种无限供应的货）。
+    ok.append(("🏪 真机的 `int.MaxValue`（也是无限）**同样不印**",
+               _stock_text({"stock": 2147483647}) == "" and _stock_text({"stock": 5}) == "剩 5"))
+
+    # 🐄 2026-09-30 真机缺口：站 `Farm (40,0)` 时 `/animals` 回 **0 条**（只看当前图），
+    #    而棚里 **24 只待摸** ⇒ 那行**整行不出现**；可 `_exec_pet` 本来就会走进棚里摸。
+    _away = _fixture()
+    _away.tiles = {k: v for k, v in _away.tiles.items() if not v.get("animal")}
+    _away.animals_away = {"Deluxe Coop": 12, "Deluxe Barn": 12}
+    ok.append(("🐄 眼前没动物、**棚里有** ⇒ 照样给那一行", _pet_can(_away, None) == CAN_YES))
+    ok.append(("🐄 理由栏说清「**在棚里** 24 只」（不是光报个 0）",
+               "在棚里 24 只" in _pet_reason(_away, None)))
+    _none = _fixture()
+    _none.tiles = {k: v for k, v in _none.tiles.items() if not v.get("animal")}
+    ok.append(("🐄 眼前没有、棚里也没有 ⇒ **不给**（别没事喊狼来了）",
+               _pet_can(_none, None) == CAN_NO))
 
     q = do_row("1,3", fake_run, sctx)
     ok.append(("🛒 多选 `1,3` → 进「各多少」那层", "各多少" in q))

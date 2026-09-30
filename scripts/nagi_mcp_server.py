@@ -3003,7 +3003,17 @@ def _scene_kit_hint(loc_name: str = "") -> str:
             if m.get("status") == "ready":
                 ready += 1
         top = sorted(agg.items(), key=lambda kv: (-kv[1], kv[0]))[:4]
-        kinds = " ".join(f"{MACHINE_CN.get(k, k)}×{v}" for k, v in top)
+        # 🆕 2026-09-30：**名字优先问游戏**（`/machines` 的 `typeDisplay` = `obj.DisplayName`），
+        #    `MACHINE_CN` 降级成**老 DLL 兜底**。起因（真机）：「…烘干机×18 **Mini-Fridge×3** 等8种」
+        #    —— 中英混排，因为那张名单是**手编的**、漏了 Mini-Fridge。
+        #    📌 同族：`heldItemDisplay`、`typeName`；**名单会烂**（1.6 矿节点 ID、`Jewels Of The Sea`）。
+        disp = {}
+        for m in machines:
+            t = m.get("type") or "?"
+            d = m.get("typeDisplay")
+            if d and t not in disp:
+                disp[t] = d
+        kinds = " ".join(f"{disp.get(k) or MACHINE_CN.get(k, k)}×{v}" for k, v in top)
         tail = f" 等{len(agg)}种" if len(agg) > len(top) else ""
         parts.append(f"机×{len(machines)}" + (f"(就绪{ready})" if ready else "") + f": {kinds}{tail}")
 
