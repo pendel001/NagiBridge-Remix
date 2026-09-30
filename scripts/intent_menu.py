@@ -219,7 +219,10 @@ class Verb:
     can: Callable                    # (Ctx, target) -> True/False/None
     reason: Callable                 # (Ctx, target) -> str    ← 那截理由
     show: Callable                   # (Ctx, target) -> str    ← 正文（不含编号）
-    target: str = "tile"             # 'tile' | 'held'
+    target: str = "tile"             # 'tile' | 'held' | 'inv' | 'world'
+    #   'inv' = **逐个背包格**（2026-09-30 为"饿极了列全部能吃的"加的，见 `_eat_can`）；
+    #          ⚠️ 用它的动词**必须**让 `show()` 带上能区分的名字（星级前缀），
+    #          否则两格同名会被并成一行、而执行器只吃 `targets[0]` = 假承诺。
     # ⚠️ **没有 exec 的动词不进单子**（所见即所得：单子上有的，按了就成）。
     #    宁可单子短，也不列"看得见按不动"的东西——那跟旧接口"列出来再说不行"是一回事。
     exec: Callable = None            # (Ctx, targets, run) -> str 回执
@@ -377,6 +380,21 @@ def _bed_desc(t) -> str:
     return f"（{o}的床）" if o else ""
 
 
+def _is_low(ctx) -> bool:
+    """⚖️ **"资源见底"的唯一判据**：体力或血**任一**低于 `_LIE_LOW_FRAC`（三成）。
+
+    ⚠️ 2026-09-30：`躺一下` 和 `吃` 都用它 —— **同一根判据别写两份**（写两份必然漂：
+    一个改了另一个忘，症状是"同一件事两行说法不一致"，本项目最不缺这种）。
+    ⚠️ 上限读不出来（0）时**不误判成低**（除零 / 瞎报警都是"拿错尺子"）。
+    """
+    try:
+        return any(m and v / m < _LIE_LOW_FRAC
+                   for v, m in ((ctx.stamina, ctx.max_stamina),
+                                (ctx.health, ctx.max_health)))
+    except Exception:
+        return False
+
+
 def _lie_weight(ctx) -> int:
     """🛏 「躺一下」的权重：平时**跟别的家具交互差不多**；**血/体力低了抬到最前**。
 
@@ -387,15 +405,8 @@ def _lie_weight(ctx) -> int:
         `if (isInBed && Game1.IsMultiplayer && shouldTimePass()) { regenTimer = 500;
           stamina++; health++; }` ⇒ **联机下每 500ms 回 1 点体力 + 1 点血**。
         所以"快没体力了 ⇒ 躺一下"是**真有用**的路，不是"能用但不划算"那种。
-    ⚠️ 上限读不出来（0）时**不误判成低**（除零/瞎报警都是"拿错尺子"）。
     """
-    try:
-        low = any(m and v / m < _LIE_LOW_FRAC
-                  for v, m in ((ctx.stamina, ctx.max_stamina),
-                               (ctx.health, ctx.max_health)))
-    except Exception:
-        low = False
-    return 96 if low else 68
+    return 96 if _is_low(ctx) else 68
 
 
 def _lie_show(ctx, t):
@@ -491,7 +502,31 @@ def _exec_collect(ctx, targets, run):
 
 
 def _eat_can(ctx, t):
-    return is_edible(t) if t else CAN_NO
+    """🍽 吃：**手上那件**随时可吃；**饿扁扁 / 快死**（`_is_low`）时，背包里**能吃的全上单子**。
+
+    ⚠️ 恒 2026-09-30 拍板：「ai 饿扁扁或者快死的时候，把吃食物的权重提到最前」，
+       并选了**扁平**形状（`1 吃海藻汤 / 2 吃沙拉`，**不再套一层"吃食…"目录行**）——理由：
+         ① 铁律是"**按了就成**"：扁平每行都是直接动作，**紧急时少点一层**；
+         ② 他自己点的：**下矿有自动吃食兜底** ⇒ 单子上不必为"挑哪种"留一层（省地方）。
+    ⚠️ 平时**只列手持那件**（省地方；而且"此刻最该吃哪份"本来就是手上那份）。
+    ⚠️ `is_edible` 的**算不出（None）照原样往上传**（三档别折叠成"不能吃"）。
+    """
+    if not t:
+        return CAN_NO
+    ed = is_edible(t)
+    if ed is not True:
+        return ed
+    if ctx is not None and t is getattr(ctx, "held", None):
+        return CAN_YES
+    return CAN_YES if _is_low(ctx) else CAN_NO
+
+
+def _eat_weight(ctx) -> int:
+    """🍽 吃的权重：平时 **50**（跟"看"同档、压在家具批之下）；**资源见底抬到 99（最前）**。
+
+    ⚠️ 判据就是 `_is_low`（跟「躺一下」**同一根**）—— 同族教训：同一件事别写两份判据。
+    """
+    return 99 if _is_low(ctx) else 50
 
 
 def _eat_reason(ctx, t):
@@ -505,7 +540,10 @@ def _eat_reason(ctx, t):
 
 
 def _eat_show(ctx, t):
-    return f"吃 {t.get('name')}"
+    # ⚠️ 带**星级前缀**（`_name_with_q`）：两摞同名不同星的食物是两个背包格，
+    #    标签一模一样就会被 `_render_level` 并成一行（而执行器只吃 `targets[0]`）
+    #    ⇒ 那就成了"印了 ×2 却只吃一份"的假承诺。
+    return f"吃 {_name_with_q(t)}"
 
 
 def _read_can(ctx, t):
@@ -1207,9 +1245,28 @@ def _chest_count(ctx, targets):
     return " · ".join(bits)
 
 
+def _chest_weight(ctx) -> int:
+    """📦 容器行的权重：平时 **80**（**故意压在 `collect` 88 之下**——它是目录行，理由见 VERBS 那段）；
+    **满包时抬到 90**（恒 2026-09-30 拍板：「把「箱子…」提前 + 理由点明」）。
+
+    ⚠️ 为什么满包该压过"收机器"：满包时**收根本收不进去**（`_exec_collect` 只会报
+       "背包满了，还有 N 件没收"）⇒ 那一刻的**唯一正解**是先去存/卖。
+       「菜单是强暗示」要挡的正是"给了但按了白按"的排位。
+    ⚠️ 判据用 `_pack_space`（跟「取」那条行**同一根**），别另写一个 `len(inv) >= max_items`。
+    """
+    return 90 if _pack_space(ctx) is CAN_NO else 80
+
+
 def _chest_reason_many(ctx, targets):
-    """合一那行的理由：**最近一个箱子几步**（同"20 处 · 最近 6 步"那个口径）。"""
-    return f"最近 {min(_dist(ctx, t) for t in targets)} 步"
+    """合一那行的理由：**最近一个箱子几步**；**满包时点明"背着满了"**（恒 2026-09-30）。
+
+    ⚠️ 补这一句的原因（真机实测）：背包 36/36 时状态条有 `🎒 36/36格⚠️`，
+       而**菜单里一个字都没提**该去存 —— 状态条和单子是两张屏，别指望 AI 自己串起来。
+    """
+    bits = [f"最近 {min(_dist(ctx, t) for t in targets)} 步"]
+    if _pack_space(ctx) is CAN_NO:
+        bits.append("背着满了，先存点")
+    return " · ".join(bits)
 
 
 def _chest_one_count(ctx, targets):
@@ -1591,7 +1648,7 @@ VERBS: list = [
     #    再点才是动作面（恒 2026-09-29：「箱子好多哇！…接到 storage 的原有功能去」）。
     Verb("chest", "箱子", 80, _chest_can, _chest_reason, _chest_show, "tile",
          subs=_chest_overview, count=_chest_count, merge=True,
-         reason_many=_chest_reason_many, group="设备"),
+         reason_many=_chest_reason_many, group="设备", weight_fn=_chest_weight),
     Verb("collect", "收 已好的机器", 88, _collect_can, _collect_reason, _collect_show, "tile",
          exec=_exec_collect, merge=True, batch=True,          # 整图 20 台**全收**（真机验过）
          reason_many=_collect_reason_many, group="设备"),
@@ -1654,8 +1711,8 @@ VERBS: list = [
     #     共用同一个执行器形状（见 `_exec_select_then`）。
     #     ⚠️ 它们能不能出现，取决于 `ctx.held` —— 而 `ctx_from` 原先读 `currentTool`
     #     （书/食物都不是 Tool）⇒ **这两条结构性永不出现**。今晚一并修了（见 `ctx_from`）。
-    Verb("eat",     "吃",     50, _eat_can,     _eat_reason,     _eat_show,     "held",
-         exec=_exec_eat),
+    Verb("eat",     "吃",     50, _eat_can,     _eat_reason,     _eat_show,     "inv",
+         exec=_exec_eat, weight_fn=_eat_weight),
     Verb("read",    "看",     40, _read_can,    _read_reason,    _read_show,    "held",
          exec=_exec_read),
     # 🏪 买 / 卖（**只在商店开着时才有**，见上面那段商店说明）。两条都是**目录行**。
@@ -1778,6 +1835,13 @@ def _candidates(ctx: Ctx) -> list:
             t = ctx.held
             if t and v.can(ctx, t) is True:
                 buckets.setdefault((v.key, None if v.merge else v.show(ctx, t)), []).append(t)
+        elif v.target == "inv":
+            # 🎒 **背包格**目标：一行一件。`吃` 在资源见底时列**全部能吃的**（判据在 `_eat_can`），
+            #    平时它只放行"手上那件" ⇒ 这里通常还是只有一行。
+            #    ⚠️ 只吃 `can(...) is True`：`None`（算不出）**不上单子**，跟别的目标同一套三档。
+            for t in ctx.inv:
+                if v.can(ctx, t) is True:
+                    buckets.setdefault((v.key, None if v.merge else v.show(ctx, t)), []).append(t)
         else:
             for t in ctx.tiles.values():
                 if v.can(ctx, t) is True:
@@ -1823,10 +1887,19 @@ def _addressable_fact(ctx: Ctx) -> str:
     return "、".join(bits)
 
 
-def _where(t) -> str:
-    """目标那一格写清楚——**不带方位词猜**（"面前"要朝向数据，宁可写坐标）。"""
+def _where(t, ctx=None) -> str:
+    """目标**在哪**——**不带方位词猜**（"面前"要朝向数据，宁可写坐标）。
+
+    ⚠️ 2026-09-30：加了 `inv`（背包格）目标之后，**"不是坐标"不再等于"手持"**了 ——
+       背包里**没拿在手上**的那件也会走到这儿（`吃` 饿极了时列全部能吃的）。
+       判据 = `t is ctx.held`：`ctx_from` 里 `held` 就是 `inv` 里的**同一个对象**、不是副本。
+       ⚠️ **拿不到 ctx 就退回"手持"**（老行为）——宁可退回，也别印成空串：
+          空串比错更难查（肉眼看不见它少了一截）。
+    """
     if isinstance(t, dict) and isinstance(t.get("x"), int):
         return f"({t['x']},{t['y']})"
+    if ctx is not None and t is not None and t is not getattr(ctx, "held", None):
+        return "背包"
     return "手持"
 
 
@@ -1973,7 +2046,7 @@ def _render_level(ctx: Ctx, lv: Level, n: int = 5) -> str:
         many = n_t > 1
         disp = r.label + (f" ×{n_t}" if (many and r.verb.batch) else "")
         if many and not r.verb.batch:
-            loc = r.where if r.where is not None else _where(r.targets[0])
+            loc = r.where if r.where is not None else _where(r.targets[0], ctx)
             tail = " · ".join(x for x in (loc, f"附近另有 {n_t - 1} 格", r.reason,
                                           "一次做一格") if x)
             lines.append(f" {r.no}  {disp}   ← {tail}")
@@ -1985,7 +2058,7 @@ def _render_level(ctx: Ctx, lv: Level, n: int = 5) -> str:
             #    会印成「**手持 20 只**（Rabbit×2、Duck×3…）」—— 牛成了"拿在手里"的。
             #    "手持"只对 `held` 动词成立：那一层 `None` **就是**手持那件。
             loc = (r.where if r.where is not None
-                   else ("" if r.verb.target == "world" else _where(r.targets[0])))
+                   else ("" if r.verb.target == "world" else _where(r.targets[0], ctx)))
             tail = " ".join(x for x in (loc, r.reason) if x)
         else:
             # 多目标 → 坐标**省掉**（省了才有你说的那个效果），只给"几处 + 最近几格"。
@@ -3103,8 +3176,32 @@ def _selftest():
     lowctx.time = "13:20"          # ⚠️ 得是白天：钟读不出/过了 20:00 ⇒ 那行压根不给（见上面那条闸）
     reset_menu()
     lowm = render_menu(lowctx, n=40)
-    ok.append(("🛏 体力低时「躺一下」**真排到第一行**（越过分组）",
-               "躺一下" in next((l for l in lowm.splitlines() if l.strip()[:1].isdigit()), "")))
+    # ⚠️ **2026-09-30 按恒的拍板改了这条**（不是回归）：恒说「ai 饿扁扁或者快死的时候，
+    #    **把吃食物的权重提到最前**」⇒ 资源见底时 `吃`(99) 压过 `躺一下`(96)，
+    #    第一行由 `吃` 占。原来只钉"躺一下 在第一行"，新决定一来它必然红 ——
+    #    那是**产品按他要求改了、测试没跟上**（老病），所以这儿改钉**两者都越过了分组**。
+    _nums = [l for l in lowm.splitlines() if l.strip()[:1].isdigit()]
+    _top2 = _nums[:2]
+    ok.append(("🍽🛏 资源见底时「吃」(99) 压过「躺一下」(96)、**两者都排到分组之前**",
+               len(_top2) == 2 and "吃" in _top2[0] and "躺一下" in _top2[1]))
+    # 🆕 2026-09-30：**平时只列手持那件**能吃的 —— "把背包里所有食物都摆上单子"是
+    #    **资源见底才开的闸**（否则背包里几份干粮就把第一屏占了）。
+    norm = _fixture()          # held = 古书（不是吃的）、背包里有草莓（能吃）
+    reset_menu()
+    _nm = render_menu(norm, n=40)
+    ok.append(("🍽 平时（资源够）**不列**背包里没拿在手上的食物", "吃 草莓" not in _nm))
+
+    # 🆕 2026-09-30 恒拍板（⑦）：**满包时把「箱子…」抬到"收机器"之上 + 理由点明**。
+    ok.append(("📦 平时容器行权重 80（**故意压在收机器 88 之下**）", _chest_weight(_fixture()) == 80))
+    _full = _fixture()
+    _full.inv = list(_full.inv) * 12          # 3×12 = 36 = max_items ⇒ 满
+    ok.append(("📦 **满包 ⇒ 抬到 90**（压过「收 已好的机器」88）", _chest_weight(_full) == 90))
+    reset_menu()
+    _fm = render_menu(_full, n=40)
+    ok.append(("📦 满包时理由栏**点明**「背着满了」（状态条和单子是两张屏，别指望 AI 自己串）",
+               "背着满了" in _fm))
+    ok.append(("📦 平时**不点**这句（别没事喊狼来了）",
+               "背着满了" not in render_menu(_fixture(), n=40)))
     # 🛏 **床永不进「搬走」**（恒：「没办法放在交互家具的选项里」）——真拿也拿不动。
     ok.append(("🛏 床**不进「搬走」**", _pickup_can(bedctx, bedctx.tiles[(20, 20)]) == CAN_NO))
     # ⚠️ **儿童床也要挡**（2026-09-29 真机：只用 `crawl_bed` 那条时，两张儿童床照样漏在候选里
