@@ -6534,6 +6534,10 @@ def _milk_shear_animals(skip_grabber: bool = False) -> str:
             if not _has_tool(cn):
                 return f"{emoji} 没带{cn}——去玛妮牧场买"
             got = []
+            # ⚠️ 2026-10-01 真机（`挤奶 15/8 只`）：兜底那些行原来也 append 进 `got`
+            #    ⇒ **把"几只"这个数吹大了**（8 只牛报成 15，分母比分子还小 = 一眼假）。
+            #    ⇒ 兜底单独攒一份，挂在计数后面（**不占分子**）：`… 8/8 只（…） · 走位兜底：…`
+            notes = []
             for a in animals:
                 try:
                     # ⚠️ 恒 2026-08-16：每轮重新取动物当前位置（动物会走，初始位置过期 → /use 落空）
@@ -6551,13 +6555,12 @@ def _milk_shear_animals(skip_grabber: bool = False) -> str:
                         continue
                     ax, ay = cur.get("x", 0), cur.get("y", 0)
                     # 🚶 2026-10-01：**先走过去**（拟人）；走不到/动物中途挪窝才 position 兜底，
-                    #    而且那次兜底**点名进报告**（`_walk_to_animal` 回的 note）。
+                    #    而且那次兜底**点名进报告**（`_walk_to_animal` 回的 note）——**但不进计数**。
                     _arrived, _walknote = _walk_to_animal(ax, ay)
-                    if not _arrived:
-                        got.append(f"{a.get('name', '?')}[{_walknote}]")
-                        continue
                     if _walknote:
-                        got.append(f"{a.get('name', '?')}[{_walknote}]")
+                        notes.append(f"{a.get('name', '?')}{_walknote}")
+                    if not _arrived:
+                        continue
                     # 再重查一次它现在在哪（走过去这段它可能又挪了）——面朝它才够得着
                     try:
                         _fresh2 = api.animals().get("animals", [])
@@ -6581,16 +6584,16 @@ def _milk_shear_animals(skip_grabber: bool = False) -> str:
                     elif py == ay and px == ax + 1:
                         fd = 3          # 人在它右边 → 面朝左
                     else:
-                        # 走到手边却没站成卡迪纳尔（动物又跑了）⇒ 兜一次相邻格，**如实点名**
+                        # 走到手边却没站成卡迪纳尔（动物又跑了）⇒ 兜一次相邻格，**如实点名**（不进计数）
                         _spot = _animal_adjacent_spot(ax, ay)
                         if not _spot:
-                            got.append(f"{a.get('name', '?')}[⚠️ 站不到它旁边，跳过]")
+                            notes.append(f"{a.get('name', '?')}[⚠️ 站不到它旁边，跳过]")
                             continue
                         api.position(_spot[0], _spot[1])
                         time.sleep(0.3)
                         px, py = _spot
-                        got.append(f"{a.get('name', '?')}[⚠️ 站位不对，position 兜底"
-                                   f"（{px},{py}）]")
+                        notes.append(f"{a.get('name', '?')}[⚠️ 站位不对，position 兜底"
+                                     f"（{px},{py}）]")
                         fd = (2 if (px == ax and py == ay - 1) else
                               0 if (px == ax and py == ay + 1) else
                               1 if (py == ay and px == ax - 1) else 3)
@@ -6637,7 +6640,12 @@ def _milk_shear_animals(skip_grabber: bool = False) -> str:
                     time.sleep(0.3)  # 每只后多歇一会，稳（恒 2026-08-16）
                 except Exception:
                     continue
-            return f"{emoji} {verb} {len(got)}/{len(animals)} 只（{'、'.join(got) if got else '无'}）"
+            out = (f"{emoji} {verb} {len(got)}/{len(animals)} 只"
+                   f"（{'、'.join(got) if got else '无'}）")
+            # 兜底那几行挂在后面（**不占分子**）——`挤奶 15/8 只` 那个假数就是这么来的
+            if notes:
+                out += " · 走位兜底：" + "；".join(notes)
+            return out
 
         if cows:
             reports.append(_do(("挤奶桶", "Milk Pail"), cows, "🐮", "挤奶"))
@@ -6872,6 +6880,8 @@ def milk_shear() -> str:
     warp_log = _warp_home_if_needed("Farm")
     buildings = _find_animal_buildings()
     report_parts = []
+    # 🚪 出棚有没有**确认**回到 Farm（洞 A：`api.warp` 的回包早于生效，读到的是"还在棚里"）
+    _left_ok = True
     if not buildings:
         # ⚠️ 不再 return：**棚里没有也要管室外那批**（动物全在外面时棚里本来就是空的）
         report_parts.append("⚠️ 没找到动物建筑（鸡舍/畜棚）")
@@ -6881,29 +6891,51 @@ def milk_shear() -> str:
             dx, dy = b.get("doorX", b["x"]), b.get("doorY", b["y"])
             ok, enter_log = _enter_building(b)
             if not ok:
-                report_parts.append(f"  ❌ {b['type']} 进不去")
+                # ⚠️ 洞 B（2026-10-01 真机）：这里原来只印「❌ X 进不去」，把 `_enter_building`
+                #    回的**真正原因**（走不到门口 / 门没开 / interact 没成…）整个吞了
+                #    ⇒ 违反「警告必须带路」。**原话带出来**（哪怕两行）。
+                report_parts.append(f"  ❌ {b['type']} 进不去 —— {enter_log}")
                 continue
+            report_parts.append(f"  {enter_log}")
             ms = _milk_shear_animals()
             report_parts.append(f"\n--- {b['type']} ---\n  {ms}")
             try:
                 api.warp("Farm", dx, dy + 1)
-                time.sleep(0.5)
-            except Exception:
-                pass
+                # ⚠️⚠️ 洞 A（2026-10-01 真机）：`api.warp` 的 **HTTP 回包早于 warp 生效**
+                #     （2026-09-16 就记过这条；`care_animals` 那边早改成 `_wait_on_map("Farm", 6)`）。
+                #     这里原来只 `sleep(0.5)` ⇒ 下一拍读 `/animals` 时人**还在棚里**
+                #     ⇒ 室外那批被跳过，而且报的还是**编出来的原因**（"人还在「Deluxe Barn」"，
+                #       而状态条那一刻明明写着 `📍 Farm`）。⇒ 必须**等确认站上 Farm** 再往下走。
+                if not _wait_on_map("Farm", timeout=6):
+                    _left_ok = False
+                    _cur = ""
+                    try:
+                        _cur = (api.state().get("location") or {}).get("name") or ""
+                    except Exception:
+                        pass
+                    report_parts.append(
+                        f"  ⚠️ 出了「{b['type']}」但**没确认回到农场**（等了 6 秒，读到的是"
+                        f"「{_cur or '?'}」）—— 下一步：`map(ops=\"go\", kw={{\"destination\": \"Farm\"}})`"
+                        f" 回农场，再 `farm(ops=\"milk\")`（室外那批要人在 Farm 上才读得到）")
+                else:
+                    report_parts.append("  ✅ 出门（已确认站上 Farm）")
+            except Exception as e:
+                _left_ok = False
+                report_parts.append(f"  ⚠️ 出门失败: {e} —— 下一步：`map(ops=\"go\", "
+                                    f"kw={{\"destination\": \"Farm\"}})` 回农场再 `farm(ops=\"milk\")`")
 
     # 🌾 **室外放牧那批**（2026-10-01 恒）：结构照 `_grazing_care` ——
     #    人真的在 Farm 上才读 `/animals`；不在就**明说没做**（读不着 ≠ 没有）。
+    if not _left_ok:
+        # ⚠️ 上面已经**如实说清**是"没确认回到农场"（不编"人还在某建筑"这种读早一步的原因）——
+        #    这里不再补第二句，免得同一件事两个说法。
+        return _with_state(f"{warp_log}挤奶/剪毛：\n" + "\n".join(report_parts))
     try:
         _cur = (api.state().get("location") or {}).get("name") or ""
     except Exception:
         _cur = ""
-    if not buildings and _cur != "Farm":
-        report_parts.append(f"⚠️ 室外放牧那批也没做：人还在「{_cur or '?'}」不在 Farm —— "
-                            f"`/animals` 只报**当前位置**这张图的动物，在这儿读会把"
-                            f"「跑 Farm 放牧的牲畜」误判成「没有」（要挤室外的："
-                            f"`map(ops=\"go\", kw={{\"destination\": \"Farm\"}})` 之后再 `farm(ops=\"milk\")`）")
-    elif _cur != "Farm":
-        report_parts.append(f"⚠️ 室外放牧那批没做：人还在「{_cur}」不在 Farm（`/animals` 只报当前图）"
+    if _cur != "Farm":
+        report_parts.append(f"⚠️ 室外放牧那批没做：人还在「{_cur or '?'}」不在 Farm（`/animals` 只报当前图）"
                             f"—— 要挤室外的：先 `map(ops=\"go\", kw={{\"destination\": \"Farm\"}})`")
     else:
         _out = _milk_shear_animals(skip_grabber=True)

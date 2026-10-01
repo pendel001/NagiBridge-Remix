@@ -1,20 +1,28 @@
 # -*- coding: utf-8 -*-
 """🐮🐑 挤奶/剪毛自验 —— **不吃游戏**（打桩；出口另有 `_net_guard` 兜底）。
 
-被验的三件事（恒 2026-10-01：「**没做的话就跟 pet_animals 一样做**。差别应该就是挤奶剪毛
-仍然只用处理绵羊、山羊、牛」）：
+被验的事（恒 2026-10-01：「**没做的话就跟 pet_animals 一样做**。差别应该就是挤奶剪毛
+仍然只用处理绵羊、山羊、牛」+ 真机第一跑照出的两个洞 A/B）：
   ① **室外放牧那批也会被走上**：棚里空着（动物全在外面）时，`milk_shear` 不能再只回一句「没有动物」
      —— 它要照 `_grazing_care` 的结构处理 `/animals` 报的那批（`skip_grabber=True`，室外没有自动采集器）。
   ② **走位兜底要点名**：站位改成"走过去"（照 `pet_walk` 的真机形状）；只有走不到/动物挪窝才
-     `/position` 兜底，而且那次兜底必须在报告里点名（`⚠️ 走不到 (x,y)，position 兜底`）——
-     不许像以前那样**对每只都直接瞬移**（那是审计出来的"隔空改世界"）。
+     `/position` 兜底，而且那次兜底必须在报告里点名 —— 不许像以前那样**对每只都直接瞬移**。
   ③ **人不在 Farm 时如实报**，不许把"读不着"装成"没有动物"（同 `_grazing_care` 那条账）。
   ④ 对象不变：牛/山羊 → 挤奶桶、绵羊 → 剪刀；猪/鸡/鸭/兔/恐龙不碰。
+  ⑤ 🔴 **洞 A**（真机 23:0x）：`api.warp` 的**回包早于生效** ⇒ 出棚后必须 `_wait_on_map` 等到
+     **确认站上 Farm** 再读 `/animals`；等不到就如实说「没确认回到农场」，
+     **不许**把它写成「人还在<某建筑>」（那是读早一步**编出来的原因**）。
+  ⑥ 🔴 **洞 B**（同日）：`❌ X 进不去` 原来把 `_enter_building()` 回的**真原因**吞了
+     ⇒ 现在原话带出来（警告必须带路）。
+
+⚠️ 写这个自验踩过的三个桩坑（都留了注释，别再踩）：`_has_tool` 读 `/state` **顶层** inventory；
+   走位桩**不搬人**会把成功路径测成失败路径；`_find_animal_buildings`/`CALLS` **必须每个用例重置**。
 
 用法: PYTHONIOENCODING=utf-8 python scripts/_milk_shear_selftest.py     （退出码 全过=0）
 """
 import io
 import os
+import re
 import sys
 
 if sys.stdout.encoding and sys.stdout.encoding.lower().startswith("gbk"):
@@ -31,12 +39,17 @@ INDOOR = [{"name": "牛牛", "type": "White Cow", "x": 11, "y": 14},
           {"name": "猪猪", "type": "Pig", "x": 13, "y": 14}]
 # 室外放牧那批：一头山羊（也要挤）
 OUTDOOR = [{"name": "羊羊", "type": "Goat", "x": 40, "y": 40}]
-CALLS = []          # 桩记下的调用（对比"有没有真出网"没用 —— 闸管那个；这里看**行为**）
+CALLS = []          # 桩记下的调用（看**行为**：有没有瞬移、有没有轮询）
 
 
 def _stub(loc="Farm", indoor=None, outdoor=None, has_tool=True, walk_ok=True,
-          grabber=False):
-    """把 `milk_shear` 会碰到的出口全接上桩。`/animals` 按"人现在在哪张图"给不同的一批。"""
+          grabber=False, warp_lag=0, enter_ok=True,
+          enter_log="（桩：进门）", find_buildings=None):
+    """把 `milk_shear` 会碰到的出口全接上桩。`/animals` 按"人现在在哪张图"给不同的一批。
+
+    `warp_lag=N` = **warp 回包早于生效**（2026-09-16/10-01 真机那个形状）：调过 `api.warp` 之后
+    头 N 次 `/state` **仍然报"还在棚里"**，第 N+1 次才报 Farm ⇒ 用来验"必须等确认再读"。
+    """
     indoor = INDOOR if indoor is None else indoor
     outdoor = OUTDOOR if outdoor is None else outdoor
     CALLS.clear()      # ⚠️ 每个用例从头记（不清的话上一个用例的 `/position` 会被算进来 = 假红）
@@ -48,15 +61,29 @@ def _stub(loc="Farm", indoor=None, outdoor=None, has_tool=True, walk_ok=True,
              "inventory": inv,
              "location": {"name": loc}, "time": {"timeOfDay": 900, "season": "summer",
                                                  "weather": 0}}
+    # 🚪 warp 状态机：`pend` = 还差几次 `/state` 才"生效"；`cur` = **此刻在哪张图**（`/animals` 用它）
+    S = {"pend": 0, "cur": loc}
+
+    def _loc_now():
+        """此刻 `/state` 会报的地图（**会推进 warp 状态机**，模拟"回包早于生效"）。"""
+        if S["pend"] > 0:
+            S["pend"] -= 1
+            S["cur"] = "Deluxe Barn"        # warp 还没生效：先报"还在棚里"
+            return S["cur"]
+        S["cur"] = loc
+        return S["cur"]
 
     def g(ep, params=None):
         CALLS.append(("GET", ep))
         if ep == "/farm_buildings":
             return {"ok": True, "count": len(BUILDINGS), "buildings": BUILDINGS}
         if ep == "/state":
-            return dict(state, player=dict(state["player"]))
+            return dict(state, location={"name": _loc_now()},
+                        player=dict(state["player"]))
         if ep == "/animals":
-            return {"animals": (outdoor if loc == "Farm" else indoor), "count": 1}
+            # ⚠️ `/animals` 只报**玩家当前所在图**那批（棚内 = indoor / Farm = outdoor）——
+            #    第一版拿"有没有 landed"当判据 ⇒ 站棚里也回室外那批，四条老用例当场假红。
+            return {"animals": (outdoor if S["cur"] == "Farm" else indoor), "count": 1}
         if ep == "/machines":
             return {"machines": ([{"type": "Auto-Grabber"}]) if grabber else []}
         if ep == "/menu":
@@ -72,14 +99,21 @@ def _stub(loc="Farm", indoor=None, outdoor=None, has_tool=True, walk_ok=True,
         return {"ok": True}
     api._ai_get, api._ai_post = g, p
     api._get, api._post = g, p
-    api.animals = lambda: g("/animals")
-    api.machines = lambda: g("/machines")
-    api.menu = lambda: g("/menu")
-    api.state = lambda light=False: g("/state")
+    # ⚠️ 都带 `**kw`：`_with_state` 拼状态条时会用**关键字**调它们（不带就漏一句
+    #    "状态读取失败: unexpected keyword argument"，虽然不影响断言但很吵）。
+    api.animals = lambda **kw: g("/animals")
+    api.machines = lambda **kw: g("/machines")
+    api.menu = lambda **kw: g("/menu")
+    api.state = lambda **kw: g("/state")
     api.use_item = lambda: p("/use")
     api.face = lambda d: p("/face", {"direction": d})
     api.position = lambda x, y: p("/position", {"x": x, "y": y})
-    api.warp = lambda *a, **k: {"ok": True}
+
+    def _warp(*a, **k):
+        # ⚠️ 回包恒 `ok`（真机也这样）——**它早于 warp 生效**，所以后面必须靠 `/state` 确认
+        S["pend"] = int(warp_lag)
+        return {"ok": True, "actual": {"location": "Deluxe Barn"}}
+    api.warp = _warp
     # 走位：默认"走到了" **并且把玩家真的挪到动物下方那格**（`_walk_and_wait` 在真机上就是干这个的）。
     # ⚠️ 第一版只回 `(True, "")`、玩家坐标恒不动 ⇒ 站位永远不是卡迪纳尔相邻 ⇒ 触发"站位不对，
     #    position 兜底"那条路，两条用例假红 —— **桩不搬人 = 把成功路径测成了失败路径**。
@@ -90,7 +124,11 @@ def _stub(loc="Farm", indoor=None, outdoor=None, has_tool=True, walk_ok=True,
         return True, ""
     M._walk_and_wait = _walk
     M._warp_home_if_needed = lambda loc_: "（桩：不用回家）"
-    M._enter_building = lambda b: (True, "（桩：进门）")
+    M._enter_building = lambda b: (enter_ok, enter_log)
+    # ⚠️ **建筑列表也要在这儿桩**（默认 BUILDINGS）：第一版只在个别用例里设，
+    #    结果上一个用例留下的 `lambda: []` 被下一个用例读到 ⇒ 三组用例假红（自验当场逮到）。
+    M._find_animal_buildings = lambda: (BUILDINGS if find_buildings is None
+                                        else find_buildings)
     return state
 
 
@@ -101,14 +139,14 @@ def ck(name, cond, extra=""):
 
 def main():
     res = []
+    _orig_ms = M._milk_shear_animals
+    _orig_wait = M._wait_on_map
 
     # ① 室外那半：棚里没有建筑时**也要**处理室外那批（原来直接 return「没找到动物建筑」）
-    _stub(loc="Farm")
+    _stub(loc="Farm", find_buildings=[])
     _called = []
-    _orig_ms = M._milk_shear_animals
     M._milk_shear_animals = lambda skip_grabber=False: (
         _called.append(skip_grabber), "🐐 挤奶 1/1 只（羊羊）")[1]
-    M._find_animal_buildings = lambda: []
     _out = M.milk_shear()
     M._milk_shear_animals = _orig_ms
     res.append(ck("🌾 没找到动物建筑时**照样**处理室外那批（不再 early-return）",
@@ -122,18 +160,16 @@ def main():
     _called2 = []
     M._milk_shear_animals = lambda skip_grabber=False: (
         _called2.append(skip_grabber), "🐮 挤奶 1/1 只")[1]
-    M._find_animal_buildings = lambda: BUILDINGS
     M.milk_shear()
     M._milk_shear_animals = _orig_ms
     res.append(ck("🐄 有建筑 ⇒ 棚内一次 + 室外一次（顺序：先棚内后室外）",
                   _called2 == [False, True], _called2))
 
     # ③ 人不在 Farm ⇒ **如实说没做**，不许静默跳过（也不许说"没有动物"）
-    _stub(loc="Deluxe Barn")
+    _stub(loc="Deluxe Barn", find_buildings=[])
     _called3 = []
     M._milk_shear_animals = lambda skip_grabber=False: (
         _called3.append(skip_grabber), "🐮 挤奶 0/0 只")[1]
-    M._find_animal_buildings = lambda: []
     _out3 = M.milk_shear()
     M._milk_shear_animals = _orig_ms
     res.append(ck("🚫 人不在 Farm ⇒ **明说「室外那批没做」**（不静默、不装成没有）",
@@ -141,6 +177,8 @@ def main():
     res.append(ck("🚫 而且**不许**说成「没有动物」", "没有动物" not in _out3, _out3[:200]))
     res.append(ck("🚫 给了下一步（能直接照抄的 `map go` + `farm milk`）",
                   "map(ops=" in _out3 and 'destination' in _out3, _out3[:240]))
+    res.append(ck("🚫 人不在 Farm ⇒ **不**去读 `/animals`（室外那批不跑）",
+                  _called3 == [], _called3))
 
     # ④ 走位兜底**要点名**（人不在它旁边时不许悄悄瞬移）
     _stub(loc="Farm", walk_ok=False)
@@ -157,23 +195,30 @@ def main():
     res.append(ck("🚶 走得到 ⇒ **一次都不瞬移**（原实现对每只都直接 position）",
                   not _pos2, _pos2))
     res.append(ck("🚶 走得到 ⇒ 报告里**没有**兜底那句", "position 兜底" not in _td2, _td2[:160]))
+    # ⚠️ 2026-10-01 真机逮到的假数：`挤奶 15/8 只` —— 兜底那些行原来也算进分子（分母比分子还小）。
+    #    判据：**分子 ≤ 分母**，且兜底单独挂在"走位兜底："后面。
+    def _ratio(txt):
+        m = re.search(r"(\d+)/(\d+) 只", txt)
+        return (int(m.group(1)), int(m.group(2))) if m else (None, None)
+    _n_bad, _m_bad = _ratio(_td)
+    res.append(ck("🔢 有兜底时**分子也不许超过分母**（`15/8 只` 那种假数）",
+                  _n_bad is not None and _n_bad <= _m_bad, (_n_bad, _m_bad)))
+    res.append(ck("🔢 兜底那几行挂在「走位兜底：」后面（**不占分子**）",
+                  "走位兜底：" in _td, _td[:220]))
 
     # ⑤ 对象不变：牛/山羊 → 挤奶桶；绵羊 → 剪刀；猪**不碰**
     _stub(loc="Farm")
-    _sel = [c[2].get("name") for c in CALLS if c[0] == "POST" and c[1] == "/select"]
     _td3 = M._milk_shear_animals(skip_grabber=True)     # 室外那批 = 山羊
     _sel = [c[2].get("name") for c in CALLS if c[0] == "POST" and c[1] == "/select"]
     res.append(ck("🐐 山羊 ⇒ 挤奶桶（`/select 挤奶桶`）", "挤奶桶" in _sel, _sel))
-    res.append(ck("🐐 只对山羊/牛走这条：猪/鸡/鸭/兔/恐龙**不在**名单里",
-                  "Pig" not in str(M.__dict__.get("_milk_targets", "")), _td3[:120]))
     # 室内那批（牛 + 羊 + 猪）：应出现**挤奶桶和剪刀**、且**不碰猪**
     _stub(loc="Deluxe Barn", indoor=INDOOR, outdoor=[])
     _td4 = M._milk_shear_animals()                       # 人在棚里 ⇒ 读的是室内那批
     _sel4 = [c[2].get("name") for c in CALLS if c[0] == "POST" and c[1] == "/select"]
     res.append(ck("🐮🐑 棚内 ⇒ 挤奶桶（牛）+ 剪刀（羊）都出现过",
                   "挤奶桶" in _sel4 and "剪刀" in _sel4, _sel4))
-    res.append(ck("🐷 猪**不碰**（`/select`/`/use` 只发生在牛和羊身上）",
-                  "猪猪" not in _td4, _td4[:200]))
+    res.append(ck("🐷 猪**不碰**（回执里不出现猪）", "猪猪" not in _td4, _td4[:200]))
+    res.append(ck("🐮🐑 数目照旧报 `n/m 只`", "/" in _td4 and "只" in _td4, _td4[:160]))
     # 没带工具 ⇒ 明说去哪买（老行为，别改坏）
     _stub(loc="Deluxe Barn", indoor=INDOOR, outdoor=[], has_tool=False)
     _td5 = M._milk_shear_animals()
@@ -187,6 +232,47 @@ def main():
     _td7 = M._milk_shear_animals(skip_grabber=True)
     res.append(ck("🤖 但室外那批（skip_grabber=True）**不受**采集器判据影响",
                   "自动采集器" not in _td7, _td7[:160]))
+
+    # ⑥ 🔴 洞 A（2026-10-01 真机）：**warp 回包早于生效** ⇒ 出棚后必须等确认再读 `/animals`
+    #    桩：调过 `api.warp` 之后**头一拍 `/state` 仍报"还在 Deluxe Barn"**，第二拍才报 Farm。
+    _stub(loc="Farm", warp_lag=1)
+    _called6 = []
+    M._milk_shear_animals = lambda skip_grabber=False: (
+        _called6.append(skip_grabber), "🐐 挤奶 1/1 只（羊羊）")[1]
+    _out6 = M.milk_shear()
+    M._milk_shear_animals = _orig_ms
+    res.append(ck("🔴 出棚后**等确认站上 Farm**（warp 头一拍还报棚里 ⇒ 不能就此下结论）",
+                  "已确认站上 Farm" in _out6, _out6[:260]))
+    res.append(ck("🔴 等到了 ⇒ **室外那批照跑**（`skip_grabber=True` 那一发在）",
+                  _called6 == [False, True], _called6))
+    res.append(ck("🔴 而且要真的**轮询**过（不是靠固定 sleep 蒙的）",
+                  any(c[1] == "/state" for c in CALLS)))
+
+    # ⑦ 🔴 洞 A 的"没等到"那一支：**如实说"没确认回到农场"**，不许编"人还在<某建筑>"
+    _stub(loc="Farm", warp_lag=99)          # 永远不生效
+    M._wait_on_map = lambda *a, **k: False  # 桩掉等待，免得白等 6 秒（等待本身由 ⑥ 验）
+    _called7 = []
+    M._milk_shear_animals = lambda skip_grabber=False: (
+        _called7.append(skip_grabber), "🐐 挤奶 1/1 只")[1]
+    _out7 = M.milk_shear()
+    M._milk_shear_animals = _orig_ms
+    M._wait_on_map = _orig_wait
+    res.append(ck("🔴 没等到 ⇒ 如实说「**没确认回到农场**」", "没确认回到农场" in _out7, _out7[:280]))
+    res.append(ck("🔴 而且**不许**编原因（不能写成人还在某栋建筑里）",
+                  "人还在「Deluxe Barn」不在 Farm" not in _out7, _out7[:280]))
+    res.append(ck("🔴 没确认 ⇒ 给下一步（`map go Farm` + `farm milk`）",
+                  "map(ops=" in _out7 and 'destination' in _out7, _out7[:300]))
+    res.append(ck("🔴 没确认 ⇒ **不乱猜地去读 `/animals`**（室外那一发 `skip_grabber=True` 不出现）",
+                  True not in _called7, _called7))
+
+    # ⑧ 🔴 洞 B：进不去时**把 `_enter_building` 的日志原样带出来**（不许吞原因）
+    _stub(loc="Farm", enter_ok=False,
+          enter_log="⚠️ 没走到门格：目标(52,16) 实际(50,20)")
+    _out8 = M.milk_shear()
+    res.append(ck("🔴 进不去 ⇒ 回执里**带出真原因**（原话）",
+                  "没走到门格" in _out8 and "(52,16)" in _out8, _out8[:260]))
+    res.append(ck("🔴 而且「进不去」这句话本身还在（不许把失败说成成功）",
+                  "进不去" in _out8, _out8[:200]))
 
     print(f"\n{sum(res)}/{len(res)} 过")
     return all(res)
