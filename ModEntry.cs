@@ -2987,6 +2987,7 @@ public class ModEntry : Mod
                 "/farm_report" => HandleFarmReport(),
                 "/machine_collect" => HandleMachineCollect(ctx),
                 "/machine_load" => HandleMachineLoad(ctx),
+                "/machine_reqs" => HandleMachineReqs(ctx),
                 "/animals" => HandleAnimals(),
                 "/scan" => HandleScan(),
                 "/petbowl" => HandlePetBowl(),
@@ -5233,6 +5234,11 @@ public class ModEntry : Mod
                         //    大型可制造物和所有非 Object 的件（帽/衣/戒/饰品）。给 AI 的那张"投哪件"
                         //    的单子**必须**用这一位，否则列出来的大半是"按了不成"（真机抓到过）。
                         ["shippable"] = i.canBeShipped(),
+                        // 🪨 2026-10-01：**能不能拿去铁匠铺砸**（游戏自己的 `Utility.IsGeode()`，
+                        //    `GeodeMenu.HighlightItems` 用的同一把尺子）。判据**不许在消费侧编 id 名单**
+                        //    （本项目栽过：1.6 矿节点 ID、`Jewels Of The Sea`；C# 里那份
+                        //    `{535,536,537,749,791,887,891}` 也是编的，已换成这个函数）。
+                        ["isGeode"] = StardewValley.Utility.IsGeode(i),
                         ["stats"] = DescribeItemStats(i),
                         ["slotIndex"] = x.slotIdx   // 真实背包槽位（点坐标用这个，不是列表 index）
                     };
@@ -16292,11 +16298,15 @@ public class ModEntry : Mod
             {
                 var farmer = Game1.player;
                 // ⚠️ 2026-08-16 恒：砸晶球列表加 金色椰子(791)/谜之盒(887)/金色谜之盒(891)
-                int[] geodeIds = { 535, 536, 537, 749, 791, 887, 891 };
+                // 🆕 2026-10-01：**手抄的 id 名单换成游戏自己的判据** `Utility.IsGeode()`
+                //    （`Utility.cs:6508`，`GeodeMenu.HighlightItems` 用的就是它 —— 同一把尺子）。
+                //    老名单是我照记忆编的（含 791/887/891，正好是"特殊晶球"那族），
+                //    而 `IsGeode` 连 `GeodeDrops` 内容一起看 ⇒ 新版本加晶球它自动跟上。
+                //    📌 通式：名单会烂（1.6 矿节点 ID / `Jewels Of The Sea` 都栽过）⇒ 判据问游戏。
 
                 for (int i = 0; i < farmer.Items.Count; i++)
                 {
-                    if (farmer.Items[i] is StardewValley.Object obj && geodeIds.Contains(obj.ParentSheetIndex))
+                    if (farmer.Items[i] is StardewValley.Object obj && StardewValley.Utility.IsGeode(obj))
                     {
                         // type 过滤：给了就只砸匹配的（名称/DisplayName/ID 任一匹配）
                         if (!string.IsNullOrEmpty(type))
@@ -16360,15 +16370,14 @@ public class ModEntry : Mod
             try
             {
                 var farmer = Game1.player;
-                // ⚠️ 2026-08-16 恒：砸晶球列表加 金色椰子(791)/谜之盒(887)/金色谜之盒(891)
-                int[] geodeIds = { 535, 536, 537, 749, 791, 887, 891 };
+                // 🆕 2026-10-01：同 `/process_geode` —— 手抄 id 名单换成游戏自己的 `Utility.IsGeode()`。
                 const int COST = 25;
 
                 // 先统计可用晶球数量
                 var geodeSlots = new List<(int idx, int geodeId, int stack)>();
                 for (int i = 0; i < farmer.Items.Count; i++)
                 {
-                    if (farmer.Items[i] is StardewValley.Object obj && geodeIds.Contains(obj.ParentSheetIndex))
+                    if (farmer.Items[i] is StardewValley.Object obj && StardewValley.Utility.IsGeode(obj))
                         geodeSlots.Add((i, obj.ParentSheetIndex, obj.Stack));
                 }
 
@@ -16394,7 +16403,7 @@ public class ModEntry : Mod
                 {
                     if (remaining <= 0) break;
                     var slotObj = farmer.Items[slotIdx] as StardewValley.Object;
-                    if (slotObj == null || !geodeIds.Contains(slotObj.ParentSheetIndex)) continue;
+                    if (slotObj == null || !StardewValley.Utility.IsGeode(slotObj)) continue;
 
                     int take = Math.Min(remaining, slotObj.Stack);
                     int crackedInSlot = 0;
@@ -19127,6 +19136,113 @@ public class ModEntry : Mod
                     item = rawId,
                     remaining = CountItem(farmer, qid)   // 背包里剩的
                 });
+            }
+            catch (Exception ex)
+            {
+                tcs.SetResult(new { ok = false, error = ex.Message });
+            }
+        });
+        return tcs.Task.GetAwaiter().GetResult();
+    }
+
+    /// <summary>POST /machine_reqs { type?, x?, y?, location?, item? } —— 这台机器**放料还要什么额外消耗**。
+    ///
+    /// 用途（2026-10-01 · 恒：「锻造的话，铱锭够/不够/没开饰品精通都检查一下有没有写好」）：
+    ///   **铁砧**（`(BC)Anvil`）每次重铸饰品要 **3 铱锭** —— 不够时 `PlaceInMachine` 只弹一句红字、
+    ///   东西**放不进去** ⇒ 调用方看到的就是"按了没反应"（09-12 火山晶石那次同一个病：
+    ///   报错不说真原因，AI 无从下手）。⇒ 把游戏那把尺子报出来：**要几个 / 有几个 / 够不够**。
+    ///
+    /// ⚠️ 数量**一律来自游戏内容数据**（`MachineData.AdditionalConsumedItems` + `Items.CountId`），
+    ///   不许在这儿写死「3」（换机器/换版本自动跟着变）。
+    /// ⚠️ 给了 `item` 就顺手做一次**只问不做**的探针：`Object.PlaceInMachine(..., probe: true, ...)`
+    ///   —— 那是游戏自己的原语，**不改任何状态**，只回答"这样放进去成不成"。
+    /// ⚠️ 默认只看**当前这张图**（AI 站在机器旁边问它）；给了 `location` 才按 `/machine_load` 那套解析换图。
+    /// </summary>
+    private object HandleMachineReqs(HttpListenerContext ctx)
+    {
+        var p = ReadJson(ctx);
+        var type = GetParamOr(p, "type", "");
+        var cx = GetParamOr(p, "x", -1);
+        var cy = GetParamOr(p, "y", -1);
+        var location = GetParamOr(p, "location", "");
+        var itemName = GetParamOr(p, "item", "");
+
+        if (!Context.IsWorldReady)
+            throw new InvalidOperationException("World not ready");
+
+        var tcs = new TaskCompletionSource<object>();
+        EnqueueMainThread(() =>
+        {
+            try
+            {
+                var farmer = Game1.player;
+                var locs = string.IsNullOrEmpty(location)
+                    ? new List<GameLocation> { farmer.currentLocation }
+                    : ResolveLocations(location);
+                Item? probeItem = null;
+                if (!string.IsNullOrEmpty(itemName))
+                {
+                    probeItem = FindItemByNameOrId(itemName);
+                    if (probeItem == null)
+                    {
+                        tcs.SetResult(new { ok = false, error = $"背包里没有「{itemName}」" });
+                        return;
+                    }
+                }
+
+                var found = new List<object>();
+                foreach (var (loc, tile, obj) in EnumerateMachines(locs, type))
+                {
+                    if (cx >= 0 && (int)tile.X != cx) continue;
+                    if (cy >= 0 && (int)tile.Y != cy) continue;
+                    var md = obj.GetMachineData();
+
+                    var reqs = new List<object>();
+                    bool allEnough = true;
+                    var addl = md?.AdditionalConsumedItems;
+                    if (addl != null)
+                    {
+                        foreach (var r in addl)
+                        {
+                            int have = farmer.Items.CountId(r.ItemId);
+                            bool enough = have >= r.RequiredCount;
+                            if (!enough) allEnough = false;
+                            reqs.Add(new
+                            {
+                                id = r.ItemId,
+                                name = ItemRegistry.GetDataOrErrorItem(r.ItemId).DisplayName,
+                                need = r.RequiredCount,
+                                have,
+                                enough,
+                            });
+                        }
+                    }
+
+                    bool? canPlace = null;
+                    if (probeItem != null && md != null)
+                    {
+                        try { canPlace = obj.PlaceInMachine(md, probeItem, true, farmer, false, false); }
+                        catch { canPlace = false; }   // 探针炸了 = 放不进去（**不谎报能放**）
+                    }
+
+                    found.Add(new Dictionary<string, object?>
+                    {
+                        ["type"] = obj.Name,
+                        ["typeDisplay"] = obj.DisplayName,
+                        ["location"] = loc.Name,
+                        ["location_unique"] = loc.NameOrUniqueName,
+                        ["x"] = (int)tile.X,
+                        ["y"] = (int)tile.Y,
+                        ["empty"] = obj.heldObject.Value == null && obj.MinutesUntilReady <= 0
+                                    && !obj.readyForHarvest.Value,
+                        ["heldItem"] = obj.heldObject.Value?.DisplayName,
+                        ["minutesLeft"] = obj.MinutesUntilReady,
+                        ["requirements"] = reqs,
+                        ["requirementsMet"] = allEnough,
+                        ["canPlace"] = canPlace,
+                    });
+                }
+                tcs.SetResult(new { ok = true, count = found.Count, machines = found });
             }
             catch (Exception ex)
             {
