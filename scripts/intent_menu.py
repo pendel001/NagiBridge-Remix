@@ -262,6 +262,11 @@ class Ctx:
     #    ⚠️ `False` **同时**代表"关门"和"读不到"（两种都**不给那一行**，见 `_geode_can`）：
     #       方向是"宁可少给一行"，不是"没有"——所以这儿不做三态（跟 `shop` 那个三态不是一回事）。
     clint_open: bool = False
+    # 🌾 **这一刻"能不能铺干草"**（恒 2026-10-01：「支持上单子」）。`{}` = 不给那一行。
+    #    有值时形如 `{"silo": 3, "bench_used": 3, "bench_total": 12}`。
+    #    ⚠️ **由服务器算好递进来**（`_im_hay` → `feed_hay.read_hay_status()`，**脚本铺草前读的
+    #       同一份判据**；只在**动物建筑内**才推）⇒ 这一层不打 HTTP、也不自己扫 Trough。
+    hay: dict = field(default_factory=dict)
     # 🐾 本图的宠物（猫狗）——来自 `/surroundings` 的 `npcs` 里 `kind=="pet"` 的那几个。
     #    它们是**世界级**的（不属于某一格的动作），所以不进 tiles。
     pets: list = field(default_factory=list)
@@ -2925,6 +2930,46 @@ MILK_V = Verb("milk", "挤奶 / 剪毛", 62,
                             " · 会先走到动物旁边再动手（棚里那批也一起）"),
               lambda c, t: "挤奶 / 剪毛", "world",
               exec=lambda c, t, run: _exec_chore(c, t, run, "milk", "挤奶剪毛"))
+
+
+# 7) 🌾 铺 干草（`farm ops="hay"` → `feed_hay()`；恒 2026-10-01：「**支持上单子**」）
+#    can：**人此刻在动物建筑内**（服务器只在 `FARM_ANIMAL_BUILDINGS` 里推这笔账）+
+#         **筒仓有干草** + **喂食台没满**。权重 68：**它不喂也饿不着**（动物在外面吃草）
+#         ⇒ 别去抢"每天一次"那几档（蟹笼 72 / 放牧 84 / 收作物 88…）的位。
+#    ⚠️ 理由栏**只报数字 + 下一步**：恒刚说过那个槽的机制（「不会补的，那个槽只是方便你取草
+#       铺上去」）⇒ **机制一句都不许写**（不写"会/不会自己补"），只说事实与动作。
+def _hay_can(ctx, t):
+    d = ctx.hay or {}
+    if int(d.get("silo") or 0) <= 0:
+        return CAN_NO                      # 筒仓空了 ⇒ 按了也是白跑（`feed_hay` 会当场劝退）
+    if int(d.get("bench_total") or 0) <= 0:
+        return CAN_NO                      # 这间没有喂食台 ⇒ 没得铺
+    if int(d.get("bench_used") or 0) >= int(d.get("bench_total") or 0):
+        return CAN_NO                      # 槽已经满了
+    return CAN_YES
+
+
+def _hay_show(ctx, t):
+    return "铺 干草"
+
+
+def _hay_reason(ctx, t):
+    """只报**数字** + 下一步；**不写机制断言**（"槽会不会自己补"这类一句都不提）。"""
+    d = ctx.hay or {}
+    silo = int(d.get("silo") or 0)
+    used = int(d.get("bench_used") or 0)
+    total = int(d.get("bench_total") or 0)
+    head = f"筒仓 {silo} 草 · 喂食台 {used}/{total} 格有草"
+    if silo <= 0:
+        # 警告必须带下一步（单子上一般看不到这一支：silo=0 时 `can()` 就不给行，
+        # 这一句是给"点开时刚好用光"和自验用的）
+        return (head + "；**先去弄草**：`farm(ops=\"clear\", kw={\"x\":…, \"y\":…})` 割草，"
+                       "或去皮埃尔买干草")
+    return head + "；铺一次把槽填上"
+
+
+HAY_V = Verb("hay", "铺 干草", 68, _hay_can, _hay_reason, _hay_show, "world",
+             exec=lambda c, t, run: _exec_chore(c, t, run, "hay", "铺干草"))
 # ⚠️ 两个 Verb 的 `key` 只是**单子这一层的稳定标识**（`key` 决定排序/去重，不是 op 名）；
 #    它们跑起来**打的是同一个 op**：`run("doors", …)`（见 `_doors_exec`）——
 #    C# 那边本来就只有 `/toggle_doors` 一个**翻转**端点，**没有**"保证开/保证关"两条路。
@@ -3062,6 +3107,8 @@ VERBS: list = [
     # 🌿 2026-10-01 恒「接吧」：P1 那批**空参行**（早就有的 6 个 op，一直没上单子）。
     #    判据全在 `Ctx.chores`（服务器算好的账）；执行只调现成 op —— 见上面那一段的账。
     BERRY_V, SPOT_V, MOSS_V, CRAB_V, PAN_V, MILK_V,
+    # 🌾 2026-10-01 恒「支持上单子」：**铺 干草**（只在动物建筑内、筒仓有草、槽没满时出现）。
+    HAY_V,
 ]
 
 
@@ -4038,7 +4085,8 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
              animals: dict = None, shop: dict = None, beds: list = None,
              menu_exit: str = "", menu_hint: str = "", worn: dict = None,
              menu_data: dict = None, reforge: dict = None, mwork: dict = None,
-             doors: dict = None, chores: dict = None, clint_open: bool = False) -> Ctx:
+             doors: dict = None, chores: dict = None, clint_open: bool = False,
+             hay: dict = None) -> Ctx:
     """把 `/state`(**full**) + `/surroundings`(+`/machines`/`/scan_chests`) 拼成 Ctx。
 
     ⚠️ 只搬运，**不补默认值**：缺什么就让它缺着（`can()` 遇到缺失自然回 假/？）。
@@ -4126,6 +4174,8 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
                chores=chores or {},
                # 🏪 铁匠铺营业中吗（同上：服务器算好递进来；`False` = 关门**或**读不到）。
                clint_open=bool(clint_open),
+               # 🌾 铺干草那行的账（同上：`feed_hay.read_hay_status()` 那份，服务器递进来）。
+               hay=hay or {},
                sitting=bool(((seats or {}).get("me") or {}).get("sitting")),
                worn=(worn or {}),
                pets=pets,

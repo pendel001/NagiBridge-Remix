@@ -140,7 +140,8 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
           caps=None, menu="", menu_raw=None, menu_extra=None, event=None,
           chests=None, inv=None, machines=None, mastery=None, loc=None,
           farm_buildings=(), time_dict=None, doors_open=False, walk_ok=True,
-          chore_tiles=None, crab_ready=0, ore_pan=None, chore_animals=None, money=None):
+          chore_tiles=None, crab_ready=0, ore_pan=None, chore_animals=None, money=None,
+          silo=None, troughs=None, trough_filled=0, trough_raise=False):
     CALLS.clear()
     WALK_CALLS.clear()
     state = dict(STATE)
@@ -195,6 +196,24 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
             return {"ok": True, "count": crab_ready, "location": "Farm",
                     "pots": [{"x": 20 + i, "y": 21, "readyForHarvest": True,
                               "bait": "鱼饵"} for i in range(int(crab_ready))]}
+        if ep == "/silo":
+            # 🌾 `/silo` 真回包形状（`silo_status()` 读的就是这几个键）
+            return ({"ok": True, "noSilo": True} if silo is None and troughs is not None
+                    else dict({"ok": True, "silos": 1, "capacity": 240, "room": 237,
+                               "full": False}, **(silo or {"hay": 3})))
+        if ep == "/tile_props":
+            if trough_raise:
+                raise RuntimeError("模拟：/tile_props 读不到")
+            return {"ok": True, "scan": "Trough",
+                    "hits": [{"x": x, "y": y} for x, y in (troughs or [])]}
+        if ep == "/dump_tile":
+            # 前 `trough_filled` 格有干草（判据 = 那格的物件 id 是不是 Hay `(O)178`）
+            _x = int(((params or {}).get("x")) or -1)
+            _y = int(((params or {}).get("y")) or -1)
+            _idx = ([tuple(t) for t in (troughs or [])].index((_x, _y))
+                    if (_x, _y) in [tuple(t) for t in (troughs or [])] else -1)
+            _has = 0 <= _idx < int(trough_filled)
+            return {"ok": True, "tile": {"object": {"qualifiedId": "(O)178" if _has else None}}}
         if str(ep).startswith("/process_geode_batch"):
             # 🪨 砸晶球（那条 op 把 count 放在 query 里，所以按前缀匹配）
             return {"ok": True, "processed": 3, "cost": 75, "remainingGold": 1234,
@@ -1685,6 +1704,55 @@ def main():
                                          "dayOfMonth": 6, "weather": 0})
     res.append(ok(f"🪱 单子那行把**半径写进理由栏**（附近 {M._SPOT_RADIUS} 格内）",
                   "挖 远古斑点" in _Lspot and f"附近 {M._SPOT_RADIUS} 格内" in _Lstxt, _Lstxt[:200]))
+
+    # ⑮ 🌾 「铺 干草」（193b · 恒「支持上单子」）——
+    #     判据复用 `feed_hay.read_hay_status()`（**脚本铺草前读的同一份**），
+    #     只在**动物建筑内**推；五条分支各钉一头。
+    _TROUGHS = [(8, 3), (9, 3), (10, 3), (11, 3)]      # 「喂食台 4 格」那种真值表
+
+    def _hay_row(**kw):
+        """在棚内/棚外看单子上有没有那一行 → (有没有, 单子正文)。"""
+        _stub(farm_buildings=FARM_BUILDINGS, time_dict={"timeOfDay": 900, "season": "summer",
+                                                       "dayOfMonth": 6, "weather": 0}, **kw)
+        _o = M.intent(ops="show", kw={"n": 40})
+        return ("铺 干草" in _o), _o
+
+    _h_in, _h_txt = _hay_row(loc="Deluxe Coop", silo={"hay": 3, "capacity": 240}, troughs=_TROUGHS,
+                             trough_filled=1)
+    res.append(ok("🌾 在棚内 + 筒仓有草 + 槽没满 ⇒ 给「铺 干草」", _h_in, _h_txt[:200]))
+    res.append(ok("🌾 理由栏只报**数字**（`筒仓 3 草 · 喂食台 1/4 格有草`）+ 下一步「铺一次把槽填上」",
+                  "筒仓 3 草" in _h_txt and "喂食台 1/4" in _h_txt and "铺一次把槽填上" in _h_txt,
+                  _h_txt[:240]))
+    res.append(ok("🌾 理由栏**不提槽的机制**（不写「会不会自己补」那类断言）",
+                  "自己补" not in _h_txt and "自动补" not in _h_txt, _h_txt[:200]))
+    _h_no, _ = _hay_row(loc="Deluxe Coop", silo={"hay": 0, "capacity": 240}, troughs=_TROUGHS,
+                        trough_filled=1)
+    res.append(ok("🌾 筒仓 0 ⇒ **不给**（按了也是白跑）", not _h_no))
+    _h_full, _ = _hay_row(loc="Deluxe Coop", silo={"hay": 3, "capacity": 240}, troughs=_TROUGHS,
+                          trough_filled=4)
+    res.append(ok("🌾 喂食台**已满** ⇒ 不给", not _h_full))
+    _h_out, _ = _hay_row(loc="FarmHouse", silo={"hay": 3, "capacity": 240}, troughs=_TROUGHS,
+                         trough_filled=1)
+    res.append(ok("🌾 **不在动物建筑内** ⇒ 不给（服务器只在 `FARM_ANIMAL_BUILDINGS` 里推这笔账）",
+                  not _h_out))
+    _h_bad, _ = _hay_row(loc="Deluxe Coop", silo={"hay": 3, "capacity": 240}, troughs=_TROUGHS,
+                         trough_raise=True)
+    res.append(ok("🌾 读不到（`/tile_props` 炸）⇒ 不给", not _h_bad))
+    # 筒仓 0 时那句"先去弄草"（给"点开时刚好用光"与自检用；单子上看不到这一支）
+    _stub(loc="Deluxe Coop", silo={"hay": 0, "capacity": 240}, troughs=_TROUGHS, trough_filled=1,
+          time_dict={"timeOfDay": 900, "season": "summer", "dayOfMonth": 6, "weather": 0})
+    _ctx0 = M._im_ctx()
+    res.append(ok("🌾 筒仓 0 时那行**带下一步**（割草 / 买草 —— 警告必须带路）",
+                  "先去弄草" in M.intent_menu._VERB_BY_KEY["hay"].reason(_ctx0, None), _ctx0.hay))
+    res.append(ok("🌾 账推对了：`{silo, bench_used, bench_total}` 三个数来自同一次读数",
+                  _ctx0.hay == {"silo": 0, "bench_used": 1, "bench_total": 4}, _ctx0.hay))
+    # 执行：`_im_run` 认 `hay`，且**调的是现成的 `feed_hay()`**（不是裸端点）
+    _fh0 = M.feed_hay
+    M.feed_hay = lambda *a, **k: "🌾（桩：feed_hay 跑了）"
+    _rh = M._im_run("hay", {})
+    M.feed_hay = _fh0
+    res.append(ok("🔌 `_im_run` 认 `hay`（回一句话，且走的是现成的 `feed_hay()`）",
+                  isinstance(_rh, dict) and "feed_hay 跑了" in str(_rh.get("text")), _rh))
 
     print(f"\n{sum(res)}/{len(res)} 过")
     return all(res)

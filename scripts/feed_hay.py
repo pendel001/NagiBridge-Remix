@@ -32,22 +32,47 @@ import sys
 import time
 import argparse
 
-parser = argparse.ArgumentParser(description="[feed] 加干草")
-parser.add_argument("--port", type=int, default=None, help="NagiBridge 端口（默认 7843）")
-parser.add_argument("--dry-run", action="store_true", help="只报不操作")
-args = parser.parse_args()
+parser = None      # ⚠️ 见下：argparse **移进 `__main__`**，import 期不再吃 argv
 
+
+def _cli_args():
+    p = argparse.ArgumentParser(description="[feed] 加干草")
+    p.add_argument("--port", type=int, default=None, help="NagiBridge 端口（默认 7843）")
+    p.add_argument("--dry-run", action="store_true", help="只报不操作")
+    return p.parse_args()
+
+
+# ⚠️⚠️ 2026-10-01：原来这里是**模块级** `args = parser.parse_args()` —— 那会在 **import 期**吃 argv。
+#    现在服务器要 `import feed_hay` 复用 `read_hay_status()`（"判据只一处"，见那个函数），
+#    带着服务器自己的 argv 去 import 会**当场 SystemExit(2)**。
+#    ⇒ 解析挪进 `__main__`（CLI 行为一字未变：`python feed_hay.py --port 7843 --dry-run` 照旧）。
 if hasattr(sys.stdout, 'reconfigure'):
     try:
         sys.stdout.reconfigure(encoding='utf-8')
     except Exception:
         pass
 
-os.environ.setdefault("NAGI_URL", f"http://localhost:{args.port or 7843}")
+# ⚠️⚠️ 这里**故意不写 env**（老代码是模块级 `os.environ.setdefault("NAGI_URL", …7843)`）：
+#    一旦在 import 期把 env 填成 7843，后面 CLI 的 `--port 7842` 就**永远 setdefault 不上**
+#    ⇒ 2026-10-01 我拿 `--port 7999` 冒烟时**打到了真机 7843**（见 `_apply_port` 那段）。
 import requests
 
-NAGI = os.environ["NAGI_URL"]
+# `NAGI` 只是**脚本自带 get/post** 用的默认地址；服务器那一路
+# （`_im_hay` → `read_hay_status(api._ai_get)`）**根本不看它**。
+NAGI = os.environ.get("NAGI_URL") or "http://localhost:7843"
 HAY_QID = "(O)178"
+
+
+def _apply_port(port):
+    """CLI 的 `--port` → `NAGI_URL`（**显式给的 env 仍然优先**，同老行为）。
+
+    ⚠️ 只有在 env 里**没有** `NAGI_URL` 时才采用 `--port` —— 这样
+       `python feed_hay.py --port 7842` 打的是 7842，而"调用方显式 export 了 NAGI_URL"也不会被顶掉。
+    """
+    global NAGI
+    if port and not os.environ.get("NAGI_URL"):
+        os.environ["NAGI_URL"] = f"http://localhost:{port}"
+    NAGI = os.environ.get("NAGI_URL") or "http://localhost:7843"
 
 
 def log(msg):
@@ -74,13 +99,49 @@ def hay_in_inventory():
     return sum(int(i.get("stack", 1)) for i in s.get("inventory", []) if i.get("name") == "Hay")
 
 
-def tile_object(x, y):
+def tile_object(x, y, get_fn=None):
     """回读一格上的物件 id（没有=空字符串）。**判据用它，不用工具回包。**"""
     try:
-        t = get("/dump_tile", {"x": x, "y": y}).get("tile") or {}
+        t = (get_fn or get)("/dump_tile", {"x": x, "y": y}).get("tile") or {}
         return ((t.get("object") or {}).get("qualifiedId")) or ""
     except Exception:
         return ""
+
+
+def read_hay_status(get_fn=None):
+    """🌾 **筒仓 + 喂食台**的一次读数 —— **判据只此一处**。
+
+    返回：
+      · 读到了 → `{"ok":True,"silo":N,"silo_cap":M,"bench_used":X,"bench_total":T,
+                   "troughs":[(x,y)…],"empty":[(x,y)…]}`
+      · 读不到 → `{"ok":False,"why":"…"}`（调用方**不许**拿默认值兜底：单子那边就不给那一行）
+
+    ⚠️ 脚本自己的 `main()`（先报状态再逐格铺）与 **MCP 单子那行「铺 干草」共用它** ——
+       别再各算一套（本项目的老病：同一个事实两处算法，早晚漂）。
+    ⚠️ `get_fn` = 取端点的函数：脚本传自己的 `get`；**服务器传 `api._ai_get`**（只读 + 钉在 AI 端口）。
+    ⚠️ "喂食台某格有没有草"的判据 = **那一格的物件 id 是不是 Hay**（`/dump_tile`），
+       跟 `main()` 里铺完回读用的是**同一条**（`tile_object(...) == HAY_QID`）。
+    """
+    g = get_fn or get
+    try:
+        silo = g("/silo") or {}
+    except Exception as e:
+        return {"ok": False, "why": f"`/silo` 读不到（{type(e).__name__}: {e}）"}
+    no_silo = bool(silo.get("noSilo"))
+    try:
+        troughs = [(int(h["x"]), int(h["y"]))
+                   for h in ((g("/tile_props", {"scan": "Trough"}) or {}).get("hits") or [])]
+    except Exception as e:
+        return {"ok": False, "why": f"`/tile_props scan=Trough` 读不到（{type(e).__name__}: {e}）"}
+    troughs.sort()
+    empty = [c for c in troughs if tile_object(c[0], c[1], g) != HAY_QID]
+    return {"ok": True,
+            "silo": int(silo.get("hay") or 0),
+            "silo_cap": int(silo.get("capacity") or 0),
+            "no_silo": no_silo,
+            "bench_used": len(troughs) - len(empty),
+            "bench_total": len(troughs),
+            "troughs": troughs, "empty": empty}
 
 
 def me():
@@ -142,7 +203,7 @@ def hold_a_tool():
     return False
 
 
-def main():
+def main(dry_run=False):
     try:
         st = get("/status")
         if not st.get("worldReady"):
@@ -152,28 +213,19 @@ def main():
         log(f"❌ 连不上游戏: {e}")
         sys.exit(1)
 
-    # 1) 筒仓状态
-    silo = {}
-    try:
-        silo = get("/silo")
-    except Exception as e:
-        log(f"⚠️ /silo 不可用: {e}")
-    if silo.get("noSilo"):
+    # 1) 筒仓状态  2) 扫喂食台（Trough 真值表）+ 饲料槽
+    # ⚠️ 状态读数**走共用的 `read_hay_status()`**（单子那行读的也是它）——这里只负责打印/流程。
+    _hs = read_hay_status()
+    if not _hs.get("ok"):
+        log(f"⚠️ 状态读不到：{_hs.get('why')}")
+    silo = {"hay": _hs.get("silo", 0), "capacity": _hs.get("silo_cap", 0)}
+    if _hs.get("no_silo"):
         log("🌾 还没建筒仓——干草没地方存，建议先建一个")
-    elif silo:
-        log(f"🌾 筒仓×{silo.get('silos')} | 干草 {silo.get('hay')}/{silo.get('capacity')}"
-            f" | 空余 {silo.get('room')}" + (" ⚠️满了" if silo.get("full") else ""))
-
-    # 2) 扫喂食台（Trough 真值表）+ 饲料槽
+    elif _hs.get("ok"):
+        log(f"🌾 筒仓 | 干草 {_hs.get('silo')}/{_hs.get('silo_cap')}")
     s = get("/state")
     loc = (s.get("location") or {}).get("name", "")
-    troughs = []
-    try:
-        for hit in (get("/tile_props", {"scan": "Trough"}).get("hits") or []):
-            troughs.append((hit["x"], hit["y"]))
-    except Exception as e:
-        log(f"⚠️ 扫 Trough 失败: {e}")
-    troughs.sort()
+    troughs = list(_hs.get("troughs") or [])
     d = get("/surroundings", {"radius": 30})
     hoppers = [(t["x"], t["y"]) for t in d.get("tiles", [])
                if "Feed Hopper" in (t.get("object") or "")]
@@ -182,8 +234,8 @@ def main():
         log("  这图没有喂食台（不在畜棚/鸡舍里？）——先 map go 畜棚/鸡舍 走进去再加")
         return
 
-    empty = [c for c in troughs if tile_object(*c) != HAY_QID]
-    if args.dry_run:
+    empty = list(_hs.get("empty") or [])
+    if dry_run:
         log(f"  空着的喂食台格: {len(empty)}/{len(troughs)}（dry-run 不动）")
         return
     if not empty:
@@ -260,4 +312,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # ⚠️ argparse 在这儿解析（见文件上方那段：import 期解析会吃服务器的 argv、当场 SystemExit）
+    _args = _cli_args()
+    _apply_port(_args.port)
+    main(dry_run=_args.dry_run)

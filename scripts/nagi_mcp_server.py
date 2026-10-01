@@ -21817,6 +21817,33 @@ def _im_clint_open() -> bool:
         return False
 
 
+def _im_hay(state: dict) -> dict:
+    """🌾 「铺 干草」那行的账 → `{"silo": N, "bench_used": X, "bench_total": M}` / `{}`。
+
+    ⚠️ 判据**复用 `feed_hay.read_hay_status()`**（脚本自己铺草前读的就是它，`get_fn` 传
+       `api._ai_get` ⇒ 只读 + 钉在 AI 端口）——**别在这儿重算一套**（本项目的老病）。
+    ⚠️ 只在**动物建筑内**读：那个槽要进棚才够得着（`locations.FARM_ANIMAL_BUILDINGS` 是
+       导航/服务器共用的**单一名单**）；在外面/别的图读 `/tile_props scan=Trough` 也是空的。
+    ⚠️ 读不到（silo 或 tile_props 任一炸）⇒ `{}` ⇒ 那行**不出现**（宁缺勿编）。
+    """
+    try:
+        loc = ((state or {}).get("location") or {}).get("name") or ""
+    except Exception:
+        loc = ""
+    if loc not in tuple(getattr(locations, "FARM_ANIMAL_BUILDINGS", ()) or ()):
+        return {}
+    try:
+        import feed_hay as _fh          # ⚠️ 它 import 期不再解析 argv（见那个文件上方那段）
+        st = _fh.read_hay_status(api._ai_get)
+    except Exception:
+        return {}
+    if not st.get("ok"):
+        return {}
+    return {"silo": int(st.get("silo") or 0),
+            "bench_used": int(st.get("bench_used") or 0),
+            "bench_total": int(st.get("bench_total") or 0)}
+
+
 def _im_chores(state: dict, surr: dict, animals: dict) -> dict:
     """🌿 六件"顺手就做"的活 —— **单子那 6 行的账**（判据全在这一处算好递进 `Ctx.chores`）。
 
@@ -21954,6 +21981,9 @@ def _im_ctx():
                                 # 🏪 铁匠铺营业中吗（「砸晶球」那行的新门禁之一，
                                 #    判据：现成的休息日表 + `SHOP_HOURS` 前导时段）
                                 clint_open=_im_clint_open(),
+                                # 🌾 「铺 干草」那行的账（只在**动物建筑内**读；判据复用 `feed_hay`
+                                #    的 `read_hay_status()`，见那儿）。
+                                hay=_im_hay(state),
                                 worn=worn)
 
 
@@ -22509,6 +22539,9 @@ def _im_run(op, args):
         "pan": lambda: _pan_run(),
         "crab": lambda: _crab_collect(),
         "milk": lambda: milk_shear(),
+        # 🌾 铺 干草（2026-10-01 恒：「支持上单子」）：调现成的 `feed_hay()`（筒仓→背包→逐格走过去铺）。
+        #    ⚠️ 它也是**同步长活**（逐格走位铺），跟 `milk` 同一条账。
+        "hay": lambda: feed_hay(),
     }
     # 🛒 买卖走**裸端点**（回 dict，回执要逐条报数字），只是外面多两道闸门。
     raw_ops = {
