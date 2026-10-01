@@ -199,6 +199,12 @@ class Ctx:
     #       `at` 指出来的世界动作，`do_row` 的菜单态守卫**全挡**。那是**假门**
     #       （2026-10-01 真机三步走完：show 空 → at 给"坐椅子" → do 被挡）。
     menu_hint: str = ""
+    # 📋 **开着的菜单里摊出来的东西**（2026-10-01 · P-menus）。
+    #    ⚠️ **由服务器挑好递进来**（`_im_menu_data`），这一层**不自己打 `/menu`、也不认菜单名**
+    #       —— 跟 `menu_exit`/`shop`/`caps` 同一个形状：判据只有一处，消费侧只管用。
+    #    `{}` = 没开菜单 / 开的这种菜单**没有能摊的东西**（老行为一字不动）。
+    #    现在会填的只有容器那一种（`items`）。
+    menu_data: dict = field(default_factory=dict)
     # 🎬 **正在播的剧情/事件**（`/state` 的 `activeEvent`，没有就是 `None`）。
     #    ⚠️ 必须跟 `menu` 分开看：事件**不是菜单**（`activeMenu` 那时可能是 null），
     #       而且节日期间 `activeEvent` **恒在播** —— 那是"这一刻的事实"，不是"有个弹窗挡路"。
@@ -1197,7 +1203,12 @@ def _exec_chest_open(ctx, targets, run):
     if not r.get("ok"):
         note = "\n   ".join(s for s in (walk, f"游戏回：{r.get('error') or r}") if s)
         return render_receipt("开箱", f"({x},{y})", False, note=note)
-    note = "\n   ".join(s for s in (walk, "菜单开着（不关）—— 内容用 menu read 看") if s)
+    # ⚠️ 2026-10-01（P-menus）：这句原来写死「内容用 `menu read` 看」—— 现在容器菜单的内容
+    #    **就摊在单子上**（「箱子里…」那一行）⇒ 还劝人去 `menu read` 是指错路。
+    #    但**这一刻的 `ctx` 是开箱之前拍的**（菜单是执行中才开的），拿它判不出摊没摊
+    #    ⇒ 改成一句**两边都真**的话：让 AI 去看单子本身。单子若真的什么都没有，
+    #      它会照 `_close_hint` 的原话把路指出来（"内容怎么读"的判据只有那一处）。
+    note = "\n   ".join(s for s in (walk, "菜单开着（不关）—— 敲 `show` 看单子：这一刻能按的都列在上面") if s)
     return render_receipt("开箱", f"({x},{y})", True, note=note)
 
 
@@ -1846,6 +1857,150 @@ CLOSE_V = Verb("close_menu", "关掉界面", 30, _close_can, _close_reason, _clo
                exec=_exec_close, menu_ok=True)
 
 
+# ═══════════════════════════════════════════════════════════════════
+# 📋 菜单摊开：**开着的容器菜单里有什么**（2026-10-01 · P-menus 第一刀）
+# ═══════════════════════════════════════════════════════════════════
+# 恒 2026-10-01：「**我怕 ai 并不会同时又看选项又看工具**……开着菜单直接把相关内容摊给它」
+# 真机病根（`_verify_menu_state_menu.py`）：开箱那一刻单子**一屏空** —— 菜单态只放行
+# `menu_ok` 的动词（买/卖），而买/卖要 `ctx.shop`，`ItemGrabMenu` 时它是 `None`。
+# ⇒ AI 只能自己去 `menu read`，再把那 500 行文本解析成"箱里有什么"。
+#
+# ⚠️⚠️ 这条路**只有一条**：开着的容器菜单里点物品 = **领取侧**
+#    （`ModEntry.cs` 的 `wantClaim` → `slot=序号`；C# 自己的报错原文就是
+#     「领取菜单没有槽位 N（**领取侧共 X 格；read_menu 看 items 序号**）」）。
+#    ⇒ `items[].index` **就是**能点的槽位号。所以这里**不套** `_unambiguous`：
+#      那是"老 DLL 拿不到格号、端点只按名字认"时的将就，而这条路天生认格号
+#      —— 同名两摞（`quality` 相同、`count` 不同）也**点得准**。
+#
+# ⚠️ 为什么顶层是**一行目录行**、不是把 34 件摊在第一屏：恒那条「菜单是多路口的强暗示」
+#    —— 一屏 34 行「取 X」就是在喊"全拿走"。顶层只留一行「箱子里…（34 件）」，
+#    点开才是"取哪一件"（同 `箱子…`/`搬走…` 那个形状；`_SUB_N=60` 一次看得完）。
+def _menu_box_items(ctx) -> list:
+    """开着的容器菜单里**能取的东西**（服务器递进来的 `/menu.items`）。
+
+    ⚠️ 只认 `index` 在的（那是能点的槽位号）。`/menu` 的 `items` 还有**另一种形状**
+       （老 DLL 的反射兜底：`{index, field, name, id, stack}`，没有真实格号）
+       —— 那种**不认**：列出来就是"点了不知道点的是哪一摞"。
+    """
+    out = []
+    for it in (ctx.menu_data or {}).get("items") or []:
+        if isinstance(it, dict) and it.get("index") is not None:
+            out.append(it)
+    return out
+
+
+def _menu_take_can(ctx, t):
+    """能不能取这一件 —— 判据只有一条：**它有槽位号**（`slot` 是执行那条路的钥匙）。"""
+    if not isinstance(t, dict):
+        return CAN_NO
+    return CAN_YES if t.get("index") is not None else CAN_NO
+
+
+def _menu_take_show(ctx, t):
+    # 同 `_item_row` 的规矩：正文只写名字（**带星级前缀**，否则同名的两摞印成一样的两行），
+    # 个数走理由栏 —— 见下。
+    return f"取 {_name_with_q(t)}"
+
+
+def _menu_take_reason(ctx, t):
+    # 个数写成 `箱内 ×N`：**跟现成的容器行同一套措辞**（`_item_row` 就是 `箱里 ×{count}`）。
+    # ⚠️ 别把它写成正文里的 `×N` —— 那个记号在单子正文里的语义是"这一按会把 N 个都做了"
+    #    （`Verb.batch`），两个意思挤在同一列就是"拿错尺子"。
+    n = t.get("count")
+    return f"箱内 ×{n}" if n else "箱内"
+
+
+def _exec_menu_take_multi(ctx, pairs, run):
+    """取走选中的那几摞（都在这一个开着的容器菜单里）。
+
+    ⚠️ 一回一件、**逐件核实**：C# 的 `claimed` 就是"那件东西还在不在领取侧"
+       （它自己回读），我们只转述 —— `ok:true` ≠ 东西动了，这是本项目的老教训。
+    ⚠️ 一行可能并着两摞（同名同品质同数量）⇒ 按 `row.targets` 全做，做完如实报几摞。
+    """
+    got, bad = [], []
+    for row, _cnt in pairs:
+        for t in (row.targets or []):
+            nm = _name_with_q(t)
+            try:
+                r = run("menu_take", {"slot": t.get("index")})
+            except Exception as e:                 # noqa: BLE001
+                bad.append(f"{nm}（{type(e).__name__}: {e}）")
+                continue
+            if not isinstance(r, dict) or not r.get("ok"):
+                err = (r or {}).get("error") if isinstance(r, dict) else repr(r)
+                bad.append(f"{nm}（游戏回：{err}）")
+                continue
+            if r.get("claimed") is False:
+                # 点了，但那件还在领取侧 ⇒ **没动**（背包满 / 该格被压实挪位）。
+                bad.append(f"{nm}（点了，但箱里那摞**没动**——多半是背包满了）")
+                continue
+            got.append(nm)
+    if got and not bad:
+        return _receipt_from_helper("取", "、".join(got),
+                                    {"ok": True, "st": "yes",
+                                     "text": f"已经从开着的箱子里取走 {len(got)} 摞。"})
+    if got and bad:
+        return _receipt_from_helper("取", "、".join(got),
+                                    {"ok": False, "st": "maybe",
+                                     "text": "取到了 " + "、".join(got)
+                                             + "；**没成的是**：" + "；".join(bad)})
+    return _receipt_from_helper("取", "", {"ok": False, "st": "no",
+                                          "text": "一件都没取到：" + "；".join(bad)})
+
+
+def _menu_box_can(ctx, t):
+    """该不该给「箱子里…」这一行 —— **只看服务器递没递 `items`**，不看菜单名。
+
+    ⚠️ 这正是"判据只有一处"那条：哪个菜单该摊、摊哪一份，是**服务器**（挨着 C# 契约）
+       决定的；这一层照着数据出行为。在这儿再写一遍菜单名名单 = 早晚漂。
+    """
+    if not ctx.menu:
+        return CAN_NO
+    return CAN_YES if _menu_box_items(ctx) else CAN_NO
+
+
+def _menu_box_reason(ctx, t):
+    items = _menu_box_items(ctx)
+    total = sum(int(i.get("count") or 0) for i in items)
+    return f"共 {total} 个" if total else ""
+
+
+def _menu_box_count(ctx, targets):
+    """目录行那截计数 —— **报的是"箱里有几摞"**（`Row.count_text` 那段：别拿"点开有几条"冒充）。"""
+    return f"{len(_menu_box_items(ctx))} 摞"
+
+
+def _menu_box_show(ctx, t):
+    return "箱子里"
+
+
+def _menu_box_subs(ctx, targets):
+    """「箱子里…」的下一层 —— **一摞一行**（每行一个能点的槽位）。
+
+    ⚠️ 形状照 `_sell_subs`：`mode="pick"` + `exec_on_pick`（**敲了当场做，不再进数量层**）。
+       为什么**不给数量层**：单击整摞取走是**游戏自己定的**量，给一屏能填数量的假界面
+       = 填了不生效、还不报错（那条老陷阱）。
+    """
+    items = _menu_box_items(ctx)
+    rows = [Row(MENU_TAKE_V, [it], _menu_take_show(ctx, it), _menu_take_reason(ctx, it),
+                0, where="") for it in items]
+    return Level(rows, title="📦 取哪几摞？（可以多选，如 `1,4`）—— **整摞进背包**",
+                 mode="pick", verb=MENU_TAKE_V, exec_on_pick=True,
+                 hint="> 敲编号，可以多选（`1,4`）—— 敲了就取，**那一摞整个进背包**")
+
+
+MENU_BOX_V = Verb("menu_box", "箱子里", 58, _menu_box_can, _menu_box_reason, _menu_box_show,
+                  "world", subs=_menu_box_subs, count=_menu_box_count, menu_ok=True)
+# ⚠️ **只给 `exec_multi`、不给 `exec`** —— 这不是省事，是**它不配出现在顶层**：
+#    `_candidates` 的判据是「有 exec **或** 有 subs」（两个都没有 = 看得见按不动），
+#    给了 `exec` 它就会被顶层扫出来 —— 真机当场照出过一屏 `取 [金]啤酒花 / 取 蔓越莓…`
+#    （`_menu_box_items` 的目标是**全箱**，跟"哪一格"无关）⇒ 顶层 34 行、目录行反而被淹。
+#    ⚠️ 这也正是现成的 `TAKE_V`/`STORE_V` 的做法（它们同样只有 `exec_multi`）：
+#      **只活在子层里**的动词，就该长成"顶层扫不到"的样子。
+MENU_TAKE_V = Verb("menu_take", "取", 58, _menu_take_can, _menu_take_reason, _menu_take_show,
+                   "menu", exec_multi=_exec_menu_take_multi) 
+
+
 # 👕 「穿戴」（2026-10-01）—— **一行目录行包办 穿 / 脱**。
 #
 # 形状是**恒自己的规矩**推出来的，不是我省事：
@@ -2192,6 +2347,10 @@ VERBS: list = [
     #    而且"投哪件"是个取舍 ⇒ 压在 穿戴(38) 之下，别抢第一屏。
     Verb("bin", "投出货箱", 36, _bin_can, _bin_reason, _bin_show, "world",
          subs=_bin_subs, count=_bin_count),
+    # 📋 菜单摊开（2026-10-01 · P-menus）：**开着的容器菜单**里的东西。
+    #    权重 58：菜单开着时 `_candidates` 只剩 menu_ok 的行，这一刻它就是正事
+    #    （压在 关掉界面(30) 之上 —— "先看看箱里有什么"比"马上关掉"更常是下一步）。
+    MENU_BOX_V, MENU_TAKE_V,
 ]
 
 
@@ -2281,6 +2440,9 @@ def _row_for(ctx: Ctx, v, targets: list, label=None) -> "Row":
         label = v.label if v.merge else v.show(ctx, None if world else near)
     return Row(verb=v, targets=targets,
                label=label, reason=reason, dist=dist, level=lv, group=v.group,
+               # 📋 菜单里的项**不在世界里**：定位列留空（同货架上的商品）。
+               #    ⚠️ 不能留给 `_where` 兜底 —— 它认不出这种目标，会印成"手持"（撒谎）。
+               where=("" if v.target == "menu" else None),
                count_text=v.count(ctx, targets) if (v.count and lv) else None)
 
 
@@ -2322,6 +2484,13 @@ def _candidates(ctx: Ctx) -> list:
             #    平时它只放行"手上那件" ⇒ 这里通常还是只有一行。
             #    ⚠️ 只吃 `can(...) is True`：`None`（算不出）**不上单子**，跟别的目标同一套三档。
             for t in ctx.inv:
+                if v.can(ctx, t) is True:
+                    buckets.setdefault((v.key, None if v.merge else v.show(ctx, t)), []).append(t)
+        elif v.target == "menu":
+            # 📋 **开着的菜单里摊出来的东西**（2026-10-01 P-menus）：不在世界里、也不在背包里，
+            #    所以它既不能走 tile 那支（`_where` 会印成"手持"）、也不能走 inv 那支。
+            #    ⚠️ 目标清单取自服务器递进来的 `menu_data`（`_menu_box_items` 只管"有没有格号"）。
+            for t in _menu_box_items(ctx):
                 if v.can(ctx, t) is True:
                     buckets.setdefault((v.key, None if v.merge else v.show(ctx, t)), []).append(t)
         else:
@@ -2377,6 +2546,9 @@ def _where(t, ctx=None) -> str:
        判据 = `t is ctx.held`：`ctx_from` 里 `held` 就是 `inv` 里的**同一个对象**、不是副本。
        ⚠️ **拿不到 ctx 就退回"手持"**（老行为）——宁可退回，也别印成空串：
           空串比错更难查（肉眼看不见它少了一截）。
+    ⚠️ 2026-10-01：`menu`（菜单里的项）目标**不走这里** —— `_row_for` 给它们把 `where`
+       直接定成 `""`（既不在世界里也不在背包里，印"手持"就是撒谎）。
+       这里认不出那种目标，别指望这条兜底能救。
     """
     if isinstance(t, dict) and isinstance(t.get("x"), int):
         return f"({t['x']},{t['y']})"
@@ -2532,9 +2704,15 @@ def _render_level(ctx: Ctx, lv: Level, n: int = 5) -> str:
             # ⚠️ 「附近另有 N 格」只对**世界里的格子**成立。`read` 2026-10-01 扩到背包
             #    （`target="inv"`）之后，同一支会把背包里的两件印成"附近另有 1 格"
             #    —— 那件东西压根不在世界里。措辞**跟目标档走**，别一句话管两种目标。
-            _more = (f"背包另有 {n_t - 1} 件" if r.verb.target == "inv"
-                     else f"附近另有 {n_t - 1} 格")
-            tail = " · ".join(x for x in (loc, _more, r.reason, "一次做一格") if x)
+            #    📋 `menu` 是 2026-10-01 P-menus 加的第三种：菜单里两摞并成一行时，
+            #       执行器**会把两摞都取走** ⇒ 说"这一按取 2 摞"，而**没有**"一次做一格"那回事。
+            if r.verb.target == "menu":
+                _more, _once = f"这一按取 {n_t} 摞", ""
+            else:
+                _more = (f"背包另有 {n_t - 1} 件" if r.verb.target == "inv"
+                         else f"附近另有 {n_t - 1} 格")
+                _once = "一次做一格"
+            tail = " · ".join(x for x in (loc, _more, r.reason, _once) if x)
             lines.append(f" {r.no}  {disp}   ← {tail}")
             continue
         if n_t == 1:
@@ -2785,6 +2963,21 @@ def _recheck(ctx: Ctx, row: "Row"):
         if fresh is None:
             return (f"⏳ 「{row.label}」{which}**已经不在背包里了**"
                     f"（你手上那张单子是**上一次**看的）。\n"
+                    f"   敲 `show` 重开一张 —— 号会当场重发，别按着旧号敲。")
+    elif v.target == "menu":
+        # 📋 菜单里的那一摞：**按格号**在"现在这个菜单"里找同一个槽位。
+        #    ⚠️ 必须复验：菜单可能已经关了（`_fingerprint` 只清**子层**，`_LAST_ROWS` 是上一屏的），
+        #       也可能那格已经被拿走/压实挪位 ⇒ 不复验就会"以为在取钻石、取的是翡翠"。
+        want = t0.get("index") if isinstance(t0, dict) else None
+        fresh = None
+        for it in _menu_box_items(ctx):
+            if it.get("index") == want:
+                fresh = it
+                break
+        which = "箱内那一摞"
+        if fresh is None:
+            return (f"⏳ 「{row.label}」{which}**已经不在这个菜单里了**"
+                    f"（菜单关了，或者那格已经被拿走 / 挪位了）。\n"
                     f"   敲 `show` 重开一张 —— 号会当场重发，别按着旧号敲。")
     else:
         x, y = t0.get("x"), t0.get("y")
@@ -3092,7 +3285,8 @@ def scan_world(surr: dict, machines: list = None, chests: list = None,
 def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None,
              caps: dict = None, seats: dict = None, furniture: dict = None,
              animals: dict = None, shop: dict = None, beds: list = None,
-             menu_exit: str = "", menu_hint: str = "", worn: dict = None) -> Ctx:
+             menu_exit: str = "", menu_hint: str = "", worn: dict = None,
+             menu_data: dict = None) -> Ctx:
     """把 `/state`(**full**) + `/surroundings`(+`/machines`/`/scan_chests`) 拼成 Ctx。
 
     ⚠️ 只搬运，**不补默认值**：缺什么就让它缺着（`can()` 遇到缺失自然回 假/？）。
@@ -3166,6 +3360,8 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
                event=(state or {}).get("activeEvent"),
                # 🚪 界面出口（服务器算好的；`""` = 这一刻不该给这一行）。
                menu_exit=menu_exit or "", menu_hint=menu_hint or "",
+               # 📋 菜单内容（同上：服务器挑好递进来，这里**不猜**）。
+               menu_data=menu_data or {},
                sitting=bool(((seats or {}).get("me") or {}).get("sitting")),
                worn=(worn or {}),
                pets=pets,

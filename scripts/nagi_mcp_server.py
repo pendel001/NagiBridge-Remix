@@ -342,6 +342,53 @@ def _close_stray_gamemenu(tries: int = 3) -> bool:
     return False
 
 
+# 📋 `ItemGrabMenu` 的**行为函数名 → 点物品会发生什么**（2026-10-01 · P-menus）。
+#
+# ⚠️⚠️ **表只有这一份**（两个消费方）：`read_menu` 拿它写字给 AI 看，
+#    `_im_menu_data` 拿它判"这个菜单能不能摊成「取」那一行"。
+#
+# ⚠️ 判据是 **`grabBehavior`（行为函数叫什么）**，**不是 `gift`**：
+#    真机上**普通宝箱也是 `gift=true`**（`Chest.cs` 设了 `grabItemFromInventory`）
+#    —— 我第一版拿 `gift` 当闸门，真机当场照出"开了箱、单子上没有箱子里…"。
+#    （`gift = reverseGrab || behaviorFunction != null`，`ModEntry.cs:12845`。）
+#
+# 名字逐个从**反编译源码**核过（`decomp/full`，1.6.15），不是猜的：
+#   · `grabItemFromInventory`      —— `Chest.cs:925/928/932/941/944`（开箱/冰箱）、
+#                                     `Object.cs:3878/4059`、`Utility.cs:2084`、`Building.cs:763`、
+#                                     `JunimoHut.cs:330`                              → **取**
+#   · `GrabItemFromInventory`      —— `StorageFurniture.cs:71`（**梳妆台/储物家具**，注意**大写 G**）
+#                                                                                     → **取**
+#   · `grabItemFromPlayerInventory` —— `Cabin.cs:142`（小屋自带储物）                  → **取**
+#   · `shipItem`                   —— `ShippingBin.cs:158`、`IslandWest.cs:313`（投出去就卖掉）→ 别的
+#   · `clickToAddItemToLuauSoup`   —— `Event.cs:13295`（放下去就定了）                 → 别的
+#   · `chooseSecretSantaGift`      —— `Event.cs:13100`（送出就定了）                   → 别的
+# ⚠️ 还有一大族**没有行为函数**的 `ItemGrabMenu`（奖励/接鱼/菜谱那一堆，`reverseGrab:false` 且
+#    `behaviorFunction == null`，例 `AdventureGuild.cs:281`、`FishingRod.cs:2348`）
+#    —— `ItemGrabMenu.cs:851` 是总闸：**只有** `reverseGrab || behaviorFunction != null` 才调行为函数，
+#    否则走它自己的默认"拿起" ⇒ 那一族**也是能取的**（见 `_grab_is_take`）。
+_GRAB_BEHAVIOR = {
+    "grabItemFromInventory": ("take", "从箱子里**取出**"),
+    "GrabItemFromInventory": ("take", "从储物家具里**取出**"),
+    "grabItemFromPlayerInventory": ("take", "**取出**"),
+    "shipItem": ("other", "投进出货箱（**投了就卖掉**）"),
+    "clickToAddItemToLuauSoup": ("other", "加进百乐汤（**放下去就定了**）"),
+    "chooseSecretSantaGift": ("other", "送出冬星节礼物（**送出就定了**）"),
+}
+
+
+def _grab_is_take(m: dict) -> bool:
+    """这个开着的 `ItemGrabMenu`，**「点物品」= 把东西从容器里取出来** 吗？
+
+    ⚠️ 认不出来的一律**当"不能取"**（宁缺勿编）：判错方向的代价是**把东西投出去/送出去**，
+       而那种错**不可逆**（投进出货箱当晚就卖掉了）。
+    """
+    gb = m.get("grabBehavior")
+    if gb:
+        return _GRAB_BEHAVIOR.get(gb, ("other", ""))[0] == "take"
+    # 没有行为函数、又不是 reverseGrab ⇒ 走 `ItemGrabMenu` **自己的默认"拿起"**（见上面那段）。
+    return not m.get("gift")
+
+
 def _close_hint(menu: str) -> str:
     """「这个菜单该怎么处理掉」——**按类型给**，别一刀切。
 
@@ -15387,7 +15434,7 @@ _SETTINGS_DISPATCH = {
 
 # 📖 详细域指引（2026-08-22：docstring 精简后，深度/坑靠 help 查，不丢细节）
 _DOMAIN_GUIDES = {
-"intent": "🎯 意图选项单（**先看单子、再敲编号**）：`intent(ops=\"show\")` 看这一刻能做的事（一行一件，`←` 后面是理由）；`intent(ops=\"do\", kw={\"code\":\"1\"})` 敲第 1 行；`intent(ops=\"at\", kw={\"x\":12,\"y\":30})` 指哪打哪（逃生口，问「这一格能做什么」）。敲法：`1` 一行 · `1,4` **多选**（选哪些，顺序无所谓）· `1=2,4=7` **各多少**（号=数量，配对，顺序也无所谓）· `0` = 这些都不是（子层里 = 返回上一层）。⚠️**目录行句尾带 `…`**（点开还有下一层，顶层只报个数不发号）；**号是当场发的、不跨屏** —— 敲之前先 `show` 看一眼当前那一屏，别记着上一屏的号去敲。⚠️单子上**出现的那条，按了就成**；没出现 = 这一刻算不出来（不是「不行」）。覆盖：收机器 / 开箱子（取·存）/ 吃 / 看书（**背包里没拿手上的也算**）/ 捡 / 收作物 / 坐·**起身** / 搬家具 / 摸动物 / 摸猫狗 / **穿戴（穿·脱）** / **买·卖**（只在商店 menu 开着时才出现）/ **推进对话**（有对话框或剧情在播时）/ **确认结算**（过夜结算屏 ShippingMenu）/ **投出货箱**（站在农场 + 背包里有投得进去的）/ **关掉界面**（任何界面开着时的出口）。⚠️**要规划的那些农活不在单子上**（锄地/播种/施肥/清场/砍树）—— 它们得按矩形/布局算落点、还要挑蓄力站位，走 `farm` 域（`farm ops=till, kw={x1,y1,x2,y2,layout}` 这种），**单子上一格一格敲比它慢得多、还更费体力**。挖蚯蚓/远古斑点走 `scene ops=spot`（一次全挖）。⚠️**买**是两层（选哪几样 → 各多少）；**卖**只有一层（选哪几摞 → 敲了就卖，**整摞走**——游戏单击就是卖整摞，别试 `1=2` 那种写法，那一层不收数量）。",
+"intent": "🎯 意图选项单（**先看单子、再敲编号**）：`intent(ops=\"show\")` 看这一刻能做的事（一行一件，`←` 后面是理由）；`intent(ops=\"do\", kw={\"code\":\"1\"})` 敲第 1 行；`intent(ops=\"at\", kw={\"x\":12,\"y\":30})` 指哪打哪（逃生口，问「这一格能做什么」）。敲法：`1` 一行 · `1,4` **多选**（选哪些，顺序无所谓）· `1=2,4=7` **各多少**（号=数量，配对，顺序也无所谓）· `0` = 这些都不是（子层里 = 返回上一层）。⚠️**目录行句尾带 `…`**（点开还有下一层，顶层只报个数不发号）；**号是当场发的、不跨屏** —— 敲之前先 `show` 看一眼当前那一屏，别记着上一屏的号去敲。⚠️单子上**出现的那条，按了就成**；没出现 = 这一刻算不出来（不是「不行」）。覆盖：收机器 / 开箱子（取·存）/ **箱子里…**（容器界面**开着**时，箱内容**直接摊成一行行「取」**——那儿有格号，同名不同星的两摞也点得准；不用再 `menu read` 自己解析）/ 吃 / 看书（**背包里没拿手上的也算**）/ 捡 / 收作物 / 坐·**起身** / 搬家具 / 摸动物 / 摸猫狗 / **穿戴（穿·脱）** / **买·卖**（只在商店 menu 开着时才出现）/ **推进对话**（有对话框或剧情在播时）/ **确认结算**（过夜结算屏 ShippingMenu）/ **投出货箱**（站在农场 + 背包里有投得进去的）/ **关掉界面**（任何界面开着时的出口）。⚠️**要规划的那些农活不在单子上**（锄地/播种/施肥/清场/砍树）—— 它们得按矩形/布局算落点、还要挑蓄力站位，走 `farm` 域（`farm ops=till, kw={x1,y1,x2,y2,layout}` 这种），**单子上一格一格敲比它慢得多、还更费体力**。挖蚯蚓/远古斑点走 `scene ops=spot`（一次全挖）。⚠️**买**是两层（选哪几样 → 各多少）；**卖**只有一层（选哪几摞 → 敲了就卖，**整摞走**——游戏单击就是卖整摞，别试 `1=2` 那种写法，那一层不收数量）。",
 "check": "查询域，what=...：status(完整状态) backpack(逐格价值/星级) worn(穿戴) machines(全场机器清单) mine(下矿进度) silo(干草) mastery(精通) buildings(木匠建筑) quest(开任务日志) chests(当前图箱) storage(箱子网络) look(环视周围) profile(我的技能等级+职业分支,如是否 Luremaster 蟹笼免饵) role(端口↔角色确认:我是谁/恒是谁)。⚠️查概览用 status，查逐格用 backpack，别都调浪费 token。📌profile/role 一律走 check（不叫 profile()/which_role()）。📐这个域的参数叫 **what**，**不是 ops**。带参的只有两个: chests(chest=N 看第N个箱) / look(radius=10 环视半径)；其余(status/backpack/worn/machines/mine/silo/mastery/buildings/quest/storage/profile/role)**全无参**。⚠️查概览用 status、查逐格用 backpack，别都调一遍浪费 token。",
 "farm": "农活域(🌱必走，别手动挥工具组合，用域 ops)：till(锄地) plant(种,跳过已种;带 layout 就按洒水器布局种) water(浇,自动跳雨+水壶没水先装满) harvest(收) scythe(镰刀收蒜/花/茶) fertilize(化肥) clear(清杂草石树桩;坐标同 till，也可 `radius=N` 走**圆形**；**会自动往外多清 2 格**——田边的杂草会长进田里把作物顶掉，不用自己放大) plot(连通域规划) plan(方形规划,纯算格) chop(砍树)。⚠️**锄地/播种各只有一个实现**：锄地=`till`（`hoe`/`布局锄`/`tillfield`/`蓄力锄` 都是它的别名）、播种=`plant`（`sow`/`plantlayout`/`播种规划` 都是它的别名）；⛔ 没有 `till_plant`——要锄+种写 `ops=\"till plant\"`。 clearground(清单格) collect(一键收机器:只收不放,全农场瞬收不走路) load(放原料) building(一屋收放:拟人走进去收+放料,item留空=只收不放) break(拆/敲同scene,镐子敲可破物/翻已耕地) place(放置/播种同scene) pond/pond_add/pond_feed/pond_collect/pond_fish(鱼塘)。⚠️漏格DLL自动补；**缺的格会被点名「被什么挡着」**（🌿草/杂草/🪨石头/🪵树枝→**先 `clear` 清一遍再 till/plant**；🏗️洒水器/箱子等设施→⛔别清、那是规划该绕开的格）——草占着地格时锄头是锄不出 HoeDirt 的，别对着「缺失N格」发呆。只在 Farm/温室/姜岛。带参 op(plant 的 seed_name、till/clear 的 x/y/rows、fertilize 的 fertilizer_name、place 的 name、building 的 location、collect 的 machine_type、pond_add 的 item)→ kw={'参数名':值}。🐄动物: animals(摸+收) 喂水/碗(宠物水,🌧️雨天自动跳过——雨会把碗填满) milk(挤奶剪毛) buy(买动物,豁免建议) doors(关门) hay(干草) pet(猫狗) petwalk(拟人摸) 畜舍/这间(这间屋动物) statue(祈福)——⚠️farm water=浇地,动物水用 喂水; farm building=机器收放,这屋动物用 畜舍。📐参数键名: till/clear/plant/fertilize 都是 x,y(**必填**),rows,length,direction（till/plant 也可用 x1,y1,x2,y2 直接给矩形两角）；plant 另有 seed_name,layout,direct,trellis；harvest/scythe=radius；plot=x,y,radius,all_plots；chop=area(**值写几个数**：4 个数=矩形两角 / 3 个数=圆心+半径，逗号空格都认)；collect=machine_type,location；load=item,machine_type,location；building=location,item,machine_type；place=name,x,y；break=x,y,steps,radius；pond_add=item+x,y（pond_feed/collect/fish 只要 x,y）；buy=animal_type,name,building；petwalk=include_petted；hay=dry_run。⚠️direction 只认 horizontal(默认)/vertical 两个值,别写'横'/'竖'。💡大田洒水器布局(可选,纯自动化建议)：要按洒水器留格/留走道就 plan→till→plant 三件套——plan(x1,y1,x2,y2,layout=0,hoe_level=-1,trellis=False) **纯算格不动机器**先看要锄/种哪些; till(x1,y1,x2,y2,layout=0) 按布局锄; plant(x1,y1,x2,y2,seed_name,**layout**) 按布局种（layout=0 整块/1 初级十字/2 高级/3 铱；direct=True 瞬移快、默认走位拟人）。想一次说完就 `ops=\"till plant\"`（**一份 kw 共用**，锄地会自动点名忽略 seed_name）。**layout 四档**: 0=标准整块(不预留洒水器,锄法蛇形逐格走位,任何锄头等级都行) 1=初级(十字稀疏,每台覆盖上下左右4格;锄法=精确锄每台4格,**与锄头等级无关**) 2=高级(优质,田宽高先裁成**3的倍数**,每3×3中心1台覆盖8格,整块蓄力锄) 3=铱(裁成**5的倍数**,每5×5中心1台覆盖24格;⚠️爬架作物不适用)。hoe_level: 0→1格 1→3线 2→5线 3→3×3 4→6×3,-1=自动读手持。trellis=True=爬架作物(啤酒花/青豆/葡萄,不可通过格)⇒自动**种2留1**留走道让AI能进田浇收。只管种不摆洒水器就直接 plant,不用 plan 那套。⚠️已知限制: layout 0/2/3 碰上金/铱锄(hoe_level>=3)会报**0处锄地站位**并自打一行'落点未实测校准,暂不规划蓄力站位'——**那是刻意不猜不是出错**; layout 1 不吃蓄力站位不受影响。",
 "mine": "下矿域(⚒️ 矿井/头骨/火山)：go(去挖矿:mode=rush冲层/farm刷矿,start起始层,target目标层,ore,cycles圈数) progress(进度) bomb_status/bomb_plan/bomb_place/bomb_collect/bomb_ladder/bomb_retreat(单步炸,**都要 bomb_ 前缀**) bomb_mine(自动) bomb_volcano(火山) organize(整理背包)。🔁**刷矿=mode=go(mode=farm)**：定点刷指定矿→ore=Copper铜(21层)/Iron铁(41层)/Gold金(71层)；**煤靠 farm 铁层(41)顺手清尘埃精灵/蝙蝠掉**（不是 ore 选项，跑 auto 内部刷）。🏃下矿=mode=go(mode=rush,start可选≤电梯上限+5倍数,target默认120)。⚠️无镐/血低硬拦；梯子 /ladder+confirm。⚔️贴身(3×3)自卫=游戏自己每 tick 挥刀(go/bomb_mine/bomb_escort/bomb_volcano 四个脚本都自开自关,**只转向不移动**;手上是锤子且冷却好了会重砸6×6)；2格外的怪仍靠脚本扫描,别站桩。🍽️**自定义吃食**：go/bomb_mine/bomb_volcano 都可传 food_hp/food_sta=**逗号分隔、靠前的先吃**(如 food_hp=「奶酪,鱼肉卷」)。血低只看 food_hp、体力低只看 food_sta(**两张表分开别混**)。点名后就只在这几样里挑——**防止自动挑把你留着卖的吃了**(山羊奶酪最典型)；整串都没货会明确报一句再退回自动挑。⚠️bomb_mine 没炸弹+host在同矿井→自动转【内部】协同(跟随host+帮忙敲矿/打怪)不撤退出矿(bomb_escort 不对外暴露、AI 不主动启用)；bomb_retreat 结束协同+停脚本+脱离矿井回门口。⚠️接「深处的危险」重置电梯→起始层动态从1起(内置脚本自动读，不暴露工具)；刷矿目标层不可直达会上报，需先冲层带回或改浅层。📐带参速查: go(mode=rush冲层/farm刷矿, start起始层, target目标层, ore=Copper铜/Iron铁/Gold金, cycles圈数, hp_threshold, food_sta, food_hp, resume) bomb_plan(radius,min_covered,top) bomb_place(x,y **必填**) bomb_collect(max_items) bomb_mine(target,bomb,min_covered,follow_host,lead,autodrop,one_floor,food_hp,food_sta) bomb_volcano(bomb,min_covered,hp_threshold,max_minutes,poll,food_hp,food_sta) organize(disable,reset)。💣bomb 三个取值 'Cherry Bomb'樱桃/'Bomb'黑/'Mega Bomb'超级——**点名的包里没有就按 黑>超级>樱桃 自动换成有的**(不会误报没炸弹)；范围 樱桃=边长7十字 / 黑=11x11方块 / 超级=15x15方块，⚠️黑和超级**会炸伤自己**(实测黑掉3血)。⚠️bomb_volcano **要求 host 已在矿/火山里**才放行(火山瓦片没法程序化换层)。⚠️bomb_mine one_floor=True=逐层模式(同步,只跑一层出摘要,不撤退)；**默认冲层模式=异步后台跑,推荐**。💡出发前占位物：提前放1个可堆叠物(铱矿/铱锭/五彩碎片)在包，满包时同种战利品自动堆叠吸附、少触发满包停；别拿银河之魂这类带死亡会丢的稀有物当占位。",
@@ -18310,14 +18357,9 @@ def read_menu() -> str:
         #    ⇒ 按日期关一定会漏。**真正的判据是行为函数叫什么**（C# 报 `grabBehavior`）⇒ 按它给具体指引。
         if m.get("gift"):
             _gb = m.get("grabBehavior") or ""
-            _what = {
-                "clickToAddItemToLuauSoup": "加进百乐汤（**放下去就定了**）",
-                "chooseSecretSantaGift": "送出冬星节礼物（**送出就定了**）",
-                "grabItemFromInventory": "从箱子里**取出**",
-                "GrabItemFromInventory": "从储物家具里**取出**",
-                "grabItemFromPlayerInventory": "**取出**",
-                "shipItem": "投进出货箱（**投了就卖掉**）",
-            }.get(_gb)
+            # ⚠️ 这张表**只有一份**（`_GRAB_BEHAVIOR`）—— 单子那边判"能不能摊成「取」"
+            #    用的是同一个字典，别再在这儿抄一遍（抄两遍 = 早晚漂，本项目的老病）。
+            _what = (_GRAB_BEHAVIOR.get(_gb) or (None, None))[1]
             if _what:
                 lines.append(f"  🎁 点物品 = {_what}（menu click item=物品名）——**不是拿起**；别点 okButton/收起")
             else:
@@ -21094,6 +21136,10 @@ def _im_ctx():
                                 shop=_im_shop(state), beds=_im_beds(state),
                                 menu_exit=_menu_exit_of(_mt),
                                 menu_hint=(_close_hint(_mt) if _mt else ""),
+                                # 📋 菜单里的东西（2026-10-01 · P-menus）：**只有菜单开着时
+                                #    才多打一次 `/menu`**，没菜单时一个字都不多花
+                                #    （`_im_menu_data` 进去就先看 `activeMenu`）。
+                                menu_data=_im_menu_data(state),
                                 worn=worn)
 
 
@@ -21299,6 +21345,10 @@ def _im_run(op, args):
         #    ⚠️ 它必须走 `raw_ops`（回 dict）而不是 `helpers`（回一句话）：
         #       `_exec_chest_open` 要拿 `ok` / `error` 逐条报，别把游戏的话揉成一句。
         "chest_open": lambda: _im_chest_open(args.get("x"), args.get("y")),
+        # 📋 从**开着的容器菜单**里取走第 N 格（2026-10-01 · P-menus）。
+        #    ⚠️ 回 dict 而不是一句话：`claimed`（C# 自己回读的"那件还在不在领取侧"）
+        #       是回执唯一能说"东西真动了"的证据。
+        "menu_take": lambda: _im_menu_take(args.get("slot")),
     }
     if op in raw_ops:
         try:
@@ -21327,6 +21377,58 @@ def _im_run(op, args):
         return api._ai_get(f"/{op}", args)
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def _im_menu_take(slot):
+    """📋 从**开着的容器菜单**里取走第 `slot` 格 → C# `/menu/click` 的**原始 dict**。
+
+    ⚠️ 走 `action="claim"` + `slot=序号`：C# 那条领取侧分支（`wantClaim`）就是给
+       `ItemGrabMenu` 用的路 —— **按格号点**，不依赖坐标、不挪 OS 光标。
+       （C# 自己的报错原文：「领取菜单没有槽位 N（领取侧共 X 格；**read_menu 看 items 序号**）」，
+         所以单子里那个 `index` 和这儿的 `slot` 是**同一个坐标系**。）
+    ⚠️ **不传 `item=`（按名字点）**：那对同名两摞是碰运气（谁先被遍历到今天就是谁），
+       而这条路手里**有格号** —— 有准的就不用不准的。
+    ⚠️ 回包里 `claimed` 是它自己回读的"那件东西还在不在领取侧" ⇒ 回执拿它说话，
+       `ok:true` **不等于**东西动了（本项目的老教训）。
+    """
+    _ensure_background()
+    return api._ai_post("/menu/click", {"action": "claim", "slot": slot})
+
+
+def _im_menu_data(state: dict) -> dict:
+    """📋 **开着的菜单里能摊到单子上的东西**（2026-10-01 · P-menus）→ dict（没有 = `{}`）。
+
+    现在只摊**一种**：开着的容器菜单里"点一下就取出来"的那些。判据**全在 C# 的回包里**，
+    这一层不认名字、不猜：
+
+      · `type == "ItemGrabMenu"` —— 容器 / 送礼 / 投箱 / 百乐汤**全是这个类型**，光看类型不够；
+      · `_grab_is_take(raw)` —— **看行为函数叫什么**（`grabBehavior`，表在 `_GRAB_BEHAVIOR`）：
+        `grabItemFromInventory`（开箱/冰箱）那三个是"取"，`shipItem` / 加汤 / 冬星节礼物**不是**。
+        ⚠️ **别拿 `gift` 当判据**：真机上普通宝箱也是 `gift=true`（第一版就栽在这儿，
+           真机当场照出"开了箱、单子上却没有箱子里…"）。
+      · `items[].index` —— 就是能点的**槽位号**（见 `_im_menu_take`）。
+    ⚠️ 别顺手把"不是取"的那些也摊出去：那是**另一种语义**（投出去/送出去），
+       单子上写成「取」= 让 AI 把东西**送走**，而这条错**不可逆**。
+    ⚠️ `items` 还有**第二种形状**（老 DLL 的反射兜底：`{index, field, name, id, stack}`，
+       没有真格号）⇒ 在这儿就把没 `index` 的滤掉，别把"点了不知道点哪摞"的东西递下去。
+    """
+    mt = ((state or {}).get("activeMenu") or {}).get("type") or ""
+    if not mt:
+        return {}
+    try:
+        raw = api._ai_get("/menu") or {}
+    except Exception:
+        return {}
+    if (raw.get("type") or "") != "ItemGrabMenu" or not _grab_is_take(raw):
+        return {}
+    # ⚠️ `items` 有**两种形状**，判据是 `field` 这个键：
+    #    · 主 pass（`ItemsToGrabMenu.actualInventory`）= `{index,name,count,quality,id}` ⇒ 信得过；
+    #    · 反射兜底 pass = `{index,field,name,id,stack}` ⇒ `index` 是**那个被反射到的列表**的位次，
+    #      而那个列表可能是**我自己那侧**（`inventory`）⇒ 拿它当"领取侧槽位"就会点错边。
+    #    ⇒ 带 `field` 的一律不要（宁可这一行不出现，也别点错东西）。
+    items = [it for it in (raw.get("items") or [])
+             if isinstance(it, dict) and it.get("index") is not None and "field" not in it]
+    return {"items": items} if items else {}
 
 
 def _im_head(ctx) -> str:

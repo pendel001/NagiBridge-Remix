@@ -86,9 +86,33 @@ MENU_SHOP = {
     "sellableHere": ["草莓"],
 }
 
+# 📋 开着的**容器**菜单（`/menu` 的真回包形状，2026-10-01 真机照下来的）——
+#    `items` 是**领取侧**（`ItemsToGrabMenu.actualInventory`），`index` 就是能点的槽位号。
+#    ⚠️ 第 4 条是**反射兜底那条 pass 的形状**（带 `field`）：真机上它可能指向**我自己那侧**
+#       ⇒ 必须被滤掉（列出去就是"点了不知道点的是哪一边"）。
+MENU_BOX = {
+    "ok": True, "open": True, "type": "ItemGrabMenu",
+    "dialogue": None, "responses": None, "shopItems": None, "isChoice": False,
+    "buttons": [{"name": "okButton", "x": 1116, "y": 616},
+                {"name": "trashCan", "x": 1116, "y": 500}],
+    "items": [
+        # ⚠️ `name` 是**显示名**（C# 那条 pass 写的是 `DisplayName ?? Name`，`ModEntry.cs:13347`）
+        #    —— 桩里照抄成中文，才测得到"真机那份形状"（英文名是另一条路）。
+        {"index": 0, "name": "啤酒花", "count": 150, "quality": 2, "id": "(O)304"},
+        {"index": 1, "name": "啤酒花", "count": 281, "quality": 1, "id": "(O)304"},
+        {"index": 2, "name": "钻石", "count": 1, "quality": 0, "id": "(O)72"},
+        {"index": 3, "field": "inventory", "name": "木材", "id": "(O)388", "stack": 9},
+    ],
+    "slots": [], "letterTitle": None, "letterBody": None, "letterFrom": None,
+    # ⚠️⚠️ **`gift` 是真机宝箱的真实值（True）** —— `Chest.cs` 给箱子设了
+    #    `grabItemFromInventory`，于是 `gift = reverseGrab || behaviorFunction != null` 为真。
+    #    我第一版拿 `gift` 当"能不能摊"的闸门 ⇒ 真机上开了箱、单子上**什么都没有**。
+    "gift": True, "grabBehavior": "grabItemFromInventory", "menuTitle": None,
+}
+
 
 def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=False,
-          caps=None, menu=""):
+          caps=None, menu="", menu_raw=None):
     CALLS.clear()
     state = dict(STATE)
     if shop:
@@ -102,7 +126,7 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
         if ep == "/menu":
             if menu_get_raises:
                 raise RuntimeError("模拟：商店开着但 /menu 读不出来")
-            return MENU_SHOP
+            return MENU_SHOP if menu_raw is None else menu_raw
         return {
             # 🆕 2026-09-30：新 DLL 会带 `caps`（能力位）；`caps=None` = **老 DLL 的形状**（只有 build）。
             "/status": ({"ok": True, "build": build} if caps is None
@@ -522,6 +546,75 @@ def main():
     res.append(ok("🎬 事件在播 ⇒ 单子给「推进对话」（那一刻没菜单也照样给）",
                   "推进对话" in _eo))
     api._ai_get = _orig_g
+
+    # ⑭ 📋 菜单摊开：开着的**容器**菜单（2026-10-01 · P-menus 第一刀）
+    #    恒：「**开着菜单直接把相关内容摊给它**」——开箱那一刻单子原来是一屏空的。
+    _stub(menu="ItemGrabMenu", menu_raw=MENU_BOX)
+    _bo = M.intent(ops="show", kw={"n": 40})
+    res.append(ok("📋 容器菜单开着 ⇒ 顶层给「箱子里…」", "箱子里…" in _bo))
+    # 3 摞 = 三条真格号；第 4 条是**反射兜底形状**（带 `field`）⇒ 必须被滤掉
+    res.append(ok("📋 目录行报**几摞**（带 `field` 的兜底形状被滤掉 ⇒ 3）", "3 摞" in _bo))
+    res.append(ok("📋 那一刻**也**给「关掉界面」（两行同屏，不互相顶掉）", "关掉界面" in _bo))
+    res.append(ok("📋 目录行不印 `at x,y`（菜单态那是假门）", "at x,y" not in _bo))
+    _bn = next((r.no for r in M.intent_menu._LAST_ROWS if (r.label or "") == "箱子里"), None)
+    res.append(ok("📋 「箱子里」拿得到号", _bn is not None))
+    # ⚠️⚠️ 真机上抓到的**我自己的错**：给「取」配了 `exec` ⇒ 它被顶层扫出来，
+    #    一屏 34 行 `取 [金]啤酒花 / 取 蔓越莓…`，目录行反而被淹掉。
+    #    判据是 `_candidates` 那条「有 exec **或** subs 才上单子」⇒ 只能给 `exec_multi`。
+    res.append(ok("📋 顶层**不许**直接列「取 …」（它只活在子层里）",
+                  "取 [金]啤酒花" not in _bo and "取 钻石" not in _bo))
+    _bl = M.intent(ops="do", kw={"code": str(_bn)})
+    res.append(ok("📋 「箱子里…」那一层是 pick + `exec_on_pick`"
+                  "（敲了当场取，**不编一个填了没用的数量层**）",
+                  M.intent_menu._STACK[-1].mode == "pick"
+                  and M.intent_menu._STACK[-1].exec_on_pick is True))
+    res.append(ok("📋 点开 ⇒ 标星的两摞**分得开**（[金]/[银]）",
+                  "取 [金]啤酒花" in _bl and "取 [银]啤酒花" in _bl))
+    res.append(ok("📋 点开 ⇒ 个数在理由栏（`箱内 ×150`），不在正文里冒充 `×N`",
+                  "箱内 ×150" in _bl and "啤酒花 ×150" not in _bl))
+    res.append(ok("📋 点开 ⇒ 带 `field` 那条**不列**（点它不知道点的是哪一侧）",
+                  "木材" not in _bl))
+    # 敲下去：真打到 `/menu/click` 的**领取侧**，且用的是**格号**（不是名字）
+    _dn = next((r.no for r in M.intent_menu._LAST_ROWS if (r.label or "") == "取 钻石"), None)
+    _do = M.intent(ops="do", kw={"code": str(_dn)})
+    _clicks = [c for c in CALLS if c[0] == "POST" and c[1] == "/menu/click"]
+    res.append(ok("📋 「取 钻石」真打到 `/menu/click` 的领取侧 + 格号",
+                  bool(_clicks) and _clicks[-1][2].get("action") == "claim"
+                  and _clicks[-1][2].get("slot") == 2, _clicks[-1][2] if _clicks else None))
+    res.append(ok("📋 回执说清取了什么", "✅" in _do and "钻石" in _do))
+    # 🔍 复验：菜单关了 / 那格没了 ⇒ 旧号必须被拒（`_recheck` 那条新分支）。
+    #    ⚠️ 得**先真进到子层**（就是"看着旧号敲"那个处境），**不能**重开单子 ——
+    #       重开就等于替 AI 刷新了世界，那测的就不是复验了。
+    _stub(menu="ItemGrabMenu", menu_raw=MENU_BOX)
+    M.intent(ops="show", kw={"n": 40})
+    _bn2 = next((r.no for r in M.intent_menu._LAST_ROWS if (r.label or "") == "箱子里"), None)
+    M.intent(ops="do", kw={"code": str(_bn2)})
+    _dn2 = next((r.no for r in M.intent_menu._LAST_ROWS if (r.label or "") == "取 钻石"), None)
+    _g2 = api._ai_get                       # 世界变了：箱子**空了**（单子还停在上一屏）
+    api._ai_get = lambda ep, params=None: (dict(MENU_BOX, items=[])
+                                           if ep == "/menu" else _g2(ep, params))
+    _stale = M.intent(ops="do", kw={"code": str(_dn2)})
+    res.append(ok("📋 箱里那摞没了 ⇒ 敲旧号被**拦住**（不复验就会点错格）",
+                  _stale.startswith("⏳") and "已经不在这个菜单里" in _stale,
+                  (_stale.splitlines() or [""])[0]))
+    # ⚠️⚠️ 这一族是**真机当场照出来的教训**：普通宝箱 `gift=True` **照样要摊**
+    #    ⇒ 判据只能是**行为函数叫什么**（`grabBehavior`），不是 `gift`。
+    _stub(menu="ItemGrabMenu", menu_raw=dict(MENU_BOX, gift=True))
+    res.append(ok("📋 `gift=True` 的**普通宝箱**照样摊（判据是行为函数名，不是 gift）",
+                  "箱子里…" in M.intent(ops="show", kw={"n": 40})))
+    # 🚫 同样 `type=ItemGrabMenu`、同样 `gift=True`，但点物品**不是"取"** ⇒ 一个字都不许摊
+    #    （写着「取 钻石」= 让 AI 把钻石投进箱/加进汤/当礼物送掉，**不可逆**）
+    for _gb, _cn in (("shipItem", "投出货箱"), ("clickToAddItemToLuauSoup", "百乐汤"),
+                     ("chooseSecretSantaGift", "冬星节礼物"), ("SomeNewBehavior", "没见过的行为")):
+        _stub(menu="ItemGrabMenu", menu_raw=dict(MENU_BOX, gift=True, grabBehavior=_gb))
+        _xo = M.intent(ops="show", kw={"n": 40})
+        res.append(ok(f"🚫 `{_gb}`（{_cn}）⇒ **不摊**（认不出来也当不能取）",
+                      "箱子里" not in _xo and "取 钻石" not in _xo))
+    # 没开菜单时**一个字节都不多花**（不能为了这个新功能给每次 show 都加一次 `/menu`）
+    _stub()
+    M.intent(ops="show", kw={"n": 40})
+    res.append(ok("📋 没开菜单 ⇒ **不打** `/menu`",
+                  not [c for c in CALLS if c[1] == "/menu"]))
 
     print(f"\n{sum(res)}/{len(res)} 过")
     return all(res)
