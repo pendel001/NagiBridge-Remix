@@ -605,8 +605,30 @@ def run(items, machine_type="", location="", count=0, no_enter=False, here=False
         msg += " · 没带原料，只收"
     if left_empty:
         msg += f" · 还有 {left_empty} 台空着" + (f"（{stop_msg}）" if stop_msg else "")
-    msg += f" · 未办成 {skipped} 台"
+    # ⚠️ 2026-10-01 真机：这一发收了 62 件、`未办成 34 台`——**没说为什么**。
+    #    当场量出来的原因是**背包满**（36/36）：ready 的机器收到了也放不进背包
+    #    （日志里那几行 `来的时候是 ready，摸完是 ready，没动` 就是这么来的）。
+    #    ⇒ 报缺必须给出路（恒的规矩）：满包就把"先去卖或存"写在这句里，别让 AI 干瞪眼。
+    if skipped and _bag_full():
+        msg += f" · **背包满了**（还有 {skipped} 台没收到——先去卖或存，回来再敲一次）"
+    else:
+        msg += f" · 未办成 {skipped} 台"
     api.log(msg)
+
+
+def _bag_full() -> bool:
+    """背包此刻是不是**真的满了**（`/state` 的 `inventory` 条数 ≥ `player.maxItems`）。
+
+    ⚠️ 只用来**解释"未办成"**（报缺必须给出路）——判据是游戏给的数，不猜。
+       读不到 ⇒ `False`（**不谎报"满了"**：宁可只说"未办成 N 台"）。
+    """
+    try:
+        st = api.state()
+        inv = st.get("inventory") or []
+        maxi = int(((st.get("player") or {}).get("maxItems")) or 0)
+        return bool(maxi) and len(inv) >= maxi
+    except Exception:
+        return False
 
 
 def _walk_to_tile(loc, tx, ty):
