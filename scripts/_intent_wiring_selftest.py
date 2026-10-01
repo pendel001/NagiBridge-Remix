@@ -677,6 +677,107 @@ def main():
     res.append(ok("📍 状态条 📍 那行**用的也是它**（不是各写一份）",
                   'lines.append(f"📍 {loc_name}{_pos_seg}' in _worn_src))
 
+    # ⑯ 🗳 对话选项各一行（2026-10-01 真机撞上的：罗宾那句「美学 vs 浪费」）
+    #    ⚠️ 顺带钉一个**真 bug 的回归**：原来 `_advance_can` 把"事件在播"排在"有选项"前面
+    #    ⇒ 有选项时照样给「推进对话」，可按下去只会把同一屏选项读回来（看得见、按了白按）。
+    _opts = ["美学设计棒极了", "四根柱子看起来有点浪费"]
+    _stub(menu="DialogueBox", event={"id": "1053978", "skippable": True},
+          menu_extra={"dialogue": "你觉得呢？", "speaker": "罗宾", "responses": list(_opts)})
+    _ol = M.intent(ops="show", kw={"n": 20})
+    res.append(ok("🗳 有选项 ⇒ **不给「推进对话」**（事件在播也一样 —— 按了只会读回同一屏）",
+                  "推进对话" not in _ol))
+    res.append(ok("🗳 两个答案各一行、引号里是原话",
+                  "「美学设计棒极了」" in _ol and "「四根柱子看起来有点浪费」" in _ol))
+    res.append(ok("🗳 那一刻「跳过整段」还在（退路不丢）", "跳过整段" in _ol))
+    _o1 = next((r.no for r in M.intent_menu._LAST_ROWS if "美学设计棒极了" in (r.label or "")), None)
+    # ⚠️ 桩要**模拟"点了之后那屏才过去"**：复验看的是**点之前**的世界（选项还在），
+    #    而 helper 的回读看的是**点之后**的世界（选项没了）。一个静态桩两处都喂同一份，
+    #    就变成"复验把这一敲拦下来"，测的就不是这条路了。
+    _g3 = api._ai_get
+    _p3 = api._ai_post
+    _flip = {"done": False}
+
+    def _g3x(ep, params=None):
+        if ep == "/state":
+            return dict(STATE, activeMenu=(
+                {"type": "DialogueBox", "dialogue": "谢谢！", "speaker": "罗宾"} if _flip["done"]
+                else {"type": "DialogueBox", "dialogue": "你觉得呢？", "speaker": "罗宾",
+                      "responses": list(_opts)}))
+        return _g3(ep, params)
+
+    def _p3x(ep, data=None):
+        r = _p3(ep, data)
+        if ep == "/menu/click":
+            _flip["done"] = True
+        return r
+
+    api._ai_get, api._ai_post = _g3x, _p3x
+    _oo = M.intent(ops="do", kw={"code": str(_o1)})
+    _clicks = [c for c in CALLS if c[0] == "POST" and c[1] == "/menu/click"]
+    res.append(ok("🗳 敲它 = `/menu/click` 带**位次**（option=0）",
+                  bool(_clicks) and _clicks[-1][2].get("option") == 0,
+                  _clicks[-1][2] if _clicks else None))
+    res.append(ok("🗳 回执**回读核实**（说清选了哪个 + 选项那屏过了）",
+                  "✅" in _oo and "美学设计棒极了" in _oo and "已经过去了" in _oo,
+                  (_oo.splitlines() or [""])[-1]))
+    # 🔍 复验：对话往下走了 ⇒ 同一个位次上**换成了另一句** ⇒ 旧号必须被拦
+    #    （只核位次会"以为在选 A、实际选了 B"）
+    _stub(menu="DialogueBox", menu_extra={"dialogue": "你觉得呢？", "speaker": "罗宾",
+                                          "responses": list(_opts)})
+    M.intent(ops="show", kw={"n": 20})
+    _o1b = next((r.no for r in M.intent_menu._LAST_ROWS if "美学设计棒极了" in (r.label or "")), None)
+    _g4 = api._ai_get
+    api._ai_get = lambda ep, params=None: (
+        dict(STATE, activeMenu={"type": "DialogueBox", "dialogue": "换个问题", "speaker": "罗宾",
+                                "responses": ["要", "不要"]})
+        if ep == "/state" else _g4(ep, params))
+    _st = M.intent(ops="do", kw={"code": str(_o1b)})
+    res.append(ok("🗳 选项换了一批 ⇒ 旧号被**拦住**（位次+文字一起核）",
+                  _st.startswith("⏳") and "已经不在这一屏了" in _st,
+                  (_st.splitlines() or [""])[0]))
+    # ⚠️ 两条选项**一字不差**时不许并成一行（执行器只发一个答案 = 假承诺）
+    _stub(menu="DialogueBox", menu_extra={"dialogue": "?", "speaker": "罗宾",
+                                          "responses": ["好", "好"]})
+    _dup = M.intent(ops="show", kw={"n": 20})
+    res.append(ok("🗳 一字不差的两条选项**不并成一行**（补位次区分）",
+                  "（第 1 个）" in _dup and "（第 2 个）" in _dup))
+    res.append(ok("🗳 `_im_run` 认 `menu_option` 且走 `_im_menu_option`（回读到 `_ai_get`）",
+                  '"menu_option": lambda: _im_menu_option(args.get("option"), args.get("real"))'
+                  in _worn_src))
+    # 🗳⚠️ `real=true` 那一档（真机 2026-10-01：不带 real 时 C# 回 ok:true 而**选项还在屏上**）：
+    #    判据由**服务器**给（`_question_needs_real`），执行照它发。
+    for _qk, _want in (("ask", True), ("npc", True), (None, None), ("plain", None)):
+        _extra = {"dialogue": "你觉得呢？", "speaker": "罗宾", "responses": list(_opts)}
+        if _qk:
+            _extra["questionKind"] = _qk
+        _stub(menu="DialogueBox", menu_extra=_extra)
+        M.intent(ops="show", kw={"n": 20})
+        _n2 = next((r.no for r in M.intent_menu._LAST_ROWS
+                    if "美学设计棒极了" in (r.label or "")), None)
+        M.intent(ops="do", kw={"code": str(_n2)})
+        _c2 = [c for c in CALLS if c[0] == "POST" and c[1] == "/menu/click"]
+        _got = _c2[-1][2].get("real") if _c2 else "没发"
+        res.append(ok(f"🗳 questionKind={_qk!r} ⇒ 执行带 real={_want!r}（猜错=静默点空）",
+                      _got == _want, _c2[-1][2] if _c2 else None))
+    # 判据只有一处：`_menu_advice` 的**说法**和它必须同源（不然又是一处漂）
+    res.append(ok("🗳 `_question_needs_real` 与 `_menu_advice` 的说法**同源**",
+                  M._question_needs_real({"questionKind": "ask"}) is True
+                  and M._question_needs_real({"questionKind": "npc"}) is True
+                  and M._question_needs_real({}) is None
+                  and "real=true" in M._menu_advice("dialoguebox",
+                                                    {"responses": ["a"], "questionKind": "ask"}, {})
+                  and "real=true" in M._menu_advice("dialoguebox",
+                                                    {"responses": ["a"], "questionKind": "npc"}, {})))
+    # ❓ 问句读不出来时（游戏那一档 `getCurrentString()` 就是空串）⇒ 用**手里那份真事实**
+    #    （台词缓冲的"上一句"）如实顶上，**不冒充"这就是问句"**。
+    _stub(menu="DialogueBox", menu_extra={"dialogue": None, "speaker": None,
+                                          "responses": list(_opts)})
+    M._story_buffer[:] = ["罗宾「你说，是不是大家看着都觉得赏心悦目？」"]
+    _sq = M.intent(ops="show", kw={"n": 20})
+    res.append(ok("❓ 问句读不出来 ⇒ 抬头如实说「刚说的：上一句」（不冒充问句）",
+                  "刚说的" in _sq and "赏心悦目" in _sq))
+    M._story_buffer[:] = []
+
     print(f"\n{sum(res)}/{len(res)} 过")
     return all(res)
 

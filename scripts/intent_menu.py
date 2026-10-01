@@ -2033,7 +2033,60 @@ def _exec_skip(ctx, targets, run):
 
 
 SKIP_V = Verb("skip_event", "跳过整段", 74, _skip_can, _skip_reason, _skip_show, "world",
-              exec=_exec_skip, menu_ok=True) 
+              exec=_exec_skip, menu_ok=True)
+
+
+# 🗳 「选 …」——**对话选项各一行**（2026-10-01 真机：罗宾那句「美学设计棒极了 / 四根柱子有点浪费」）。
+#
+# 为什么非有不可：`_advance_can` 在有选项时**故意不给「推进」**（按了只会读回同一屏），
+# 那一刻要是选项也不上单子，单子就只剩「跳过整段」—— 等于**把 AI 领进一个自己不给路的状态**
+# （同「坐着没给起身」那次的病）。
+#
+# ⚠️ 选项数据从 `/state.activeMenu.responses` 来（**字符串数组**，`ModEntry.cs:5323`），
+#    服务器已把它整成 `[{index, text}]` —— `index` 就是 C# 点选项用的那个号
+#    （`selectedResponse = option` → `responseCCs[option]`），所以**位次即答案号**。
+# ⚠️ 执行走 `/menu/click {option: N}`（就是状态条一直在教 AI 的那条路），
+#    **不自己发明按键**（`confirm` 选不了选项，那是老坑）。
+def _menu_options(ctx) -> list:
+    """这一刻能选的答案（没有就空）。"""
+    opts = ((ctx.menu_data or {}).get("dialogue") or {}).get("options") or []
+    return [o for o in opts if isinstance(o, dict) and o.get("index") is not None]
+
+
+def _option_can(ctx, t):
+    return CAN_YES if (isinstance(t, dict) and t.get("index") is not None) else CAN_NO
+
+
+def _option_show(ctx, t):
+    txt = t.get("text") or "?"
+    # ⚠️ 两条选项**一字不差**时会撞车（同一个桶键 ⇒ 并成一行，而执行器只发一个答案）。
+    #    真出现时补个位次区分 —— 只在撞车时才付这个字数（同 `_eat_show` 那条星级前缀的理由）。
+    same = [o for o in _menu_options(ctx) if (o.get("text") or "") == (t.get("text") or "")]
+    return f"「{txt}」" if len(same) < 2 else f"「{txt}」（第 {t.get('index', 0) + 1} 个）"
+
+
+def _option_reason(ctx, t):
+    n = len(_menu_options(ctx))
+    return f"选它（{t.get('index', 0) + 1}/{n}）"
+
+
+def _exec_option(ctx, targets, run):
+    """🗳 选一个答案 —— 回执走 helper 那条（**它自己会回读核实**：选项那屏过没过）。
+
+    ⚠️ 别在这儿替它下结论，也别自己拼"键发出去了"那种话（本项目的老账：
+       `ok:true` ≠ 事真发生了）。
+    """
+    t = targets[0] if targets else {}
+    txt = t.get("text") or "?"
+    # 🗳 「要不要 real=true」由**服务器**算好递进来（判据 `_question_needs_real`）——
+    #    这一层**不自己认框种类**（猜错就是静默点空，真机 2026-10-01 当场照过一次）。
+    _d = (ctx.menu_data or {}).get("dialogue") or {}
+    r = run("menu_option", {"option": t.get("index"), "real": _d.get("real")})
+    return _receipt_from_helper("选", f"「{txt}」", r)
+
+
+OPTION_V = Verb("menu_option", "选", 76, _option_can, _option_reason, _option_show,
+                "option", exec=_exec_option, menu_ok=True) 
 
 
 # 👕 「穿戴」（2026-10-01）—— **一行目录行包办 穿 / 脱**。
@@ -2144,11 +2197,18 @@ WEAR_OFF_V = Verb("wear_off", "脱", 0, lambda c, t: CAN_YES,
 #    给了「推进对话」，按下去只会原地读回同一屏选项 —— 那是"看得见、按了白按"。
 #    没这一行时空白屏会印 `_close_hint` 的原话，那里面就写着"有选项走 click(option=N)"。
 def _advance_can(ctx, t):
+    m = ctx.menu or {}
+    # ⚠️⚠️ 2026-10-01 真机抓到的洞：**有选项时不许给「推进」** —— 而原来"事件在播"那条
+    #    排在**前面**，于是"事件 + 选项"这个组合（真机就是它：罗宾那句美学 vs 浪费）
+    #    照样给行 ⇒ 按下去 `advance_story` 走到选项就**停**、只把同一屏选项读回来
+    #    = **看得见、按了白按**（这段注释的下半段早就写着这条规矩，是**顺序**把它架空了）。
+    #    ⇒ 判据顺序改成：**选项优先**（那一刻该按的是「选 …」那几行）。
+    if m.get("type") == "DialogueBox" and m.get("responses"):
+        return CAN_NO
     if (ctx.event or {}).get("id"):
         return CAN_YES                      # 事件在播（节日期间恒真，那是事实不是挡路）
-    m = ctx.menu or {}
     if m.get("type") == "DialogueBox":
-        return CAN_NO if m.get("responses") else CAN_YES
+        return CAN_YES
     return CAN_NO
 
 
@@ -2380,6 +2440,9 @@ VERBS: list = [
     # ⏭ 跳过整段（恒：「1 接 advance、2 跳过」）——**排在 advance 后面**（74 < 76），
     #    那一刻的正事是接着看，跳过是退路（见上面那一段）。
     SKIP_V,
+    # 🗳 对话选项（真机罗宾那句"美学 vs 浪费"）——权重**跟 advance 同档 76**：两者
+    #    **互斥**（有选项时 `_advance_can` 故意不给），所以同权重不会打架。
+    OPTION_V,
     # 🧾 确认结算（**只长在 ShippingMenu 上**，见上面那一段）。权重 78：
     #    结算屏那一刻它是**唯一**该按的（那一屏别的行全被菜单态过滤掉了）。
     Verb("settle", "确认结算", 78, _settle_can, _settle_reason, _settle_show, "world",
@@ -2481,9 +2544,9 @@ def _row_for(ctx: Ctx, v, targets: list, label=None) -> "Row":
         label = v.label if v.merge else v.show(ctx, None if world else near)
     return Row(verb=v, targets=targets,
                label=label, reason=reason, dist=dist, level=lv, group=v.group,
-               # 📋 菜单里的项**不在世界里**：定位列留空（同货架上的商品）。
-               #    ⚠️ 不能留给 `_where` 兜底 —— 它认不出这种目标，会印成"手持"（撒谎）。
-               where=("" if v.target == "menu" else None),
+               # 📋 菜单里的项 / 对话选项**都不在世界里**：定位列留空（同货架上的商品）。
+               #    ⚠️ 不能留给 `_where` 兜底 —— 它认不出这两种目标，会印成"手持"（撒谎）。
+               where=("" if v.target in ("menu", "option") else None),
                count_text=v.count(ctx, targets) if (v.count and lv) else None)
 
 
@@ -2532,6 +2595,11 @@ def _candidates(ctx: Ctx) -> list:
             #    所以它既不能走 tile 那支（`_where` 会印成"手持"）、也不能走 inv 那支。
             #    ⚠️ 目标清单取自服务器递进来的 `menu_data`（`_menu_box_items` 只管"有没有格号"）。
             for t in _menu_box_items(ctx):
+                if v.can(ctx, t) is True:
+                    buckets.setdefault((v.key, None if v.merge else v.show(ctx, t)), []).append(t)
+        elif v.target == "option":
+            # 🗳 **对话选项**（同一份 `menu_data`，另一档）：一条答案一行。
+            for t in _menu_options(ctx):
                 if v.can(ctx, t) is True:
                     buckets.setdefault((v.key, None if v.merge else v.show(ctx, t)), []).append(t)
         else:
@@ -2749,6 +2817,10 @@ def _render_level(ctx: Ctx, lv: Level, n: int = 5) -> str:
             #       执行器**会把两摞都取走** ⇒ 说"这一按取 2 摞"，而**没有**"一次做一格"那回事。
             if r.verb.target == "menu":
                 _more, _once = f"这一按取 {n_t} 摞", ""
+            elif r.verb.target == "option":
+                # 🗳 一字不差的选项撞在一起（`_option_show` 会给它们补位次 ⇒ 正常撞不上；
+                #    真撞上时执行器**只发一个答案**）⇒ 说清，别写成"附近另有 N 格"。
+                _more, _once = f"（同一句有 {n_t} 条，只发一条）", ""
             else:
                 _more = (f"背包另有 {n_t - 1} 件" if r.verb.target == "inv"
                          else f"附近另有 {n_t - 1} 格")
@@ -3025,6 +3097,21 @@ def _recheck(ctx: Ctx, row: "Row"):
         if fresh is None:
             return (f"⏳ 「{row.label}」{which}**已经不在这个菜单里了**"
                     f"（菜单关了，或者那格已经被拿走 / 挪位了）。\n"
+                    f"   敲 `show` 重开一张 —— 号会当场重发，别按着旧号敲。")
+    elif v.target == "option":
+        # 🗳 对话选项：按**位次 + 文字**两条一起核。⚠️ 只核位次不够 ——
+        #    对话往下走了之后，同一个位次上**换成了另一句**，那就会"以为在选 A、实际选了 B"。
+        want = t0.get("index") if isinstance(t0, dict) else None
+        want_txt = (t0.get("text") or "") if isinstance(t0, dict) else ""
+        fresh = None
+        for o in _menu_options(ctx):
+            if o.get("index") == want and (o.get("text") or "") == want_txt:
+                fresh = o
+                break
+        which = "那个选项"
+        if fresh is None:
+            return (f"⏳ 「{row.label}」{which}**已经不在这一屏了**"
+                    f"（对话往下走了，选项换了一批）。\n"
                     f"   敲 `show` 重开一张 —— 号会当场重发，别按着旧号敲。")
     else:
         x, y = t0.get("x"), t0.get("y")

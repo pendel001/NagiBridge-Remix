@@ -376,6 +376,24 @@ _GRAB_BEHAVIOR = {
 }
 
 
+def _question_needs_real(active_menu: dict):
+    """这一刻的对话选项**要不要 `real=true`**？→ `True` / `False` / `None`（旧 DLL 分不出）。
+
+    ⚠️ 判据**只有这一处**（`_menu_advice` 的说法和单子那边的执行都读它）——原来的推理
+       （反编译 + 恒真机实证）完整留在 `_menu_advice` 那两段注释里，别搬走：
+       · `"ask"`（问句框，`createQuestionDialogue` 那档）⇒ 必须真实点击才走对回调；
+       · `"npc"`（选项挂在 `Dialogue` 上）⇒ **也是** `real=true`（`Dialogue.chooseResponse`
+         走的就是 `answerDialogueQuestion`，而 mod 自己那条路靠"面朝对方"找 NPC，没朝向就静默点空）；
+       · 没这个键（旧 DLL）⇒ 分不出，**如实说分不出**，给"点不动再加 real=true 再点一次"。
+    """
+    qk = (active_menu or {}).get("questionKind")
+    if qk in ("ask", "npc"):
+        return True
+    if qk is None:
+        return None
+    return False
+
+
 def _grab_is_take(m: dict) -> bool:
     """这个开着的 `ItemGrabMenu`，**「点物品」= 把东西从容器里取出来** 吗？
 
@@ -1495,12 +1513,14 @@ def _menu_advice(menu_type: str, active_menu: dict, active_event: dict = None) -
             #   `GameLocation.afterQuestion != null` / `Game1.eventUp`），Python 照读，**不再猜**——
             #   猜错就是点空（2026-08-23 恒实测跳舞邀请）。恒："怕 AI 实际不知道怎么选"。
             qk = active_menu.get("questionKind")
-            if qk == "ask":
+            # ⚠️ 判据走 `_question_needs_real`（**只有那一处**）—— 下面分支只负责**措辞**。
+            _real = _question_needs_real(active_menu)
+            if _real is True and qk == "ask":
                 # "问句框"（不在 NPC 的 Dialogue 上）：**真实点击才走对回调**——
                 # 地点级（afterQuestion：跳舞邀请/克林特菜单）与事件脚本级（lastQuestionKey：
                 # 转盘/星星币店）**两支都要 real=true**（恒 08-23 实测星星币店）。
                 return "🗳️ 问句框（跳舞邀请/摊位/转盘…）：menu click(option=N, **real=true**) 选择"
-            if qk == "npc":
+            if _real is True:
                 # 选项挂在 `Dialogue` 上（节日里「什么事？」等）。
                 # ✅ 2026-09-13 深夜**定案：也要 `real=true`**（反编译 + 可观测副作用双重实证）：
                 #   · `Dialogue.cs:1613` 真实点击 → `Dialogue.chooseResponse` → 调的就是
@@ -21390,6 +21410,10 @@ def _im_run(op, args):
         #    ⚠️ 归 `helpers`（回**一句话**）而不是 `raw_ops`（回 dict）——
         #       它要做的是"回读核实再如实报"，不是把端点的原始 dict 摊出去。
         "close_menu": lambda: _im_close_menu(),
+        # 🗳 选对话选项（2026-10-01）：单子「选 「…」」那几行按下去走这里。
+        #    ⚠️ 走 `helpers`（回一句话）而不是 `raw_ops`：回执要"点了哪个 + 成没成"，
+        #       不是把 C# 那坨 `{clicked:"response", option, key, method}` 摊给 AI 看。
+        "menu_option": lambda: _im_menu_option(args.get("option"), args.get("real")),
     }
     # 🛒 买卖走**裸端点**（回 dict，回执要逐条报数字），只是外面多两道闸门。
     raw_ops = {
@@ -21449,6 +21473,59 @@ def _im_menu_take(slot):
     return api._ai_post("/menu/click", {"action": "claim", "slot": slot})
 
 
+def _im_menu_option(option, real=None):
+    """🗳 点某个**对话选项**（`/menu/click {option: N[, real]}`）→ 一句话（供 `_receipt_from_helper`）。
+
+    ⚠️ `real` **必须由调用方给**（判据 = `_question_needs_real`，服务器在 `_im_menu_data` 里
+       算好递进 ctx）。为什么要它：`"ask"`/`"npc"` 那两档**必须真实点击**才走对回调，
+       不带就静默点空（真机 2026-10-01：C# 回 `ok:true, method=event_answerDialogueQuestion`，
+       而**选项还在一屏上**）。`real=None` = 旧 DLL 分不出 ⇒ 按普通点，点不动由回读如实报。
+    ⚠️ 打完**回读核实**（"选项那屏过没过"）—— 只报"键发出去了"正是本项目最坑的那种回执。
+    """
+    if option is None:
+        return "❌ 缺 option（要选第几个答案）"
+    body = {"option": int(option)}
+    if real is True:
+        body["real"] = True
+    # 📸 点**之前**先拍一张"这一屏长什么样"—— 回读要靠它分辨"没生效"和"换了一批新问题"。
+    def _snap():
+        try:
+            m = ((api._ai_get("/state") or {}).get("activeMenu") or {})
+            return list(m.get("responses") or []), (m.get("dialogue") or "")
+        except Exception:
+            return None, ""
+    before, _txt0 = _snap()
+    try:
+        r = api._ai_post("/menu/click", body) or {}
+    except Exception as e:
+        return f"❌ 选不了：{type(e).__name__}: {e}"
+    if not r.get("ok"):
+        return f"❌ 没选上：{r.get('error') or r}"
+    # ⚠️⚠️ 回读**必须等它转场**：选完之后游戏还要跑 `questionFinishPauseTimer`（事件 600ms）
+    #    + 事件下一批命令 —— **立刻读会读到上一屏**。
+    #    真机 2026-10-01 我就在这儿误报过：明明选成了，回执说"没生效"（**假警报**，
+    #    而假警报比不报还坏：它会让 AI 再点一次，把下一屏也点掉）。
+    #    ⇒ 轮询到"选项变了 / 台词变了 / 选项没了"为止（上限 ~2.4s）。
+    after, txt = None, ""
+    for _ in range(8):
+        time.sleep(0.3)
+        after, txt = _snap()
+        if after != before:
+            break
+    _how = ""
+    if r.get("method") == "event_answerDialogueQuestion":
+        _how = "（走的是事件那条 answerDialogueQuestion）"
+    _n = int(option) + 1
+    if before is None:
+        # 点之前那张快照就没拍到 ⇒ **判断不了**，如实说"没核成"（别硬报成功也别硬报失败）
+        return f"✅ 第 {_n} 个答案发出去了{_how}（没能回读核实：读不到菜单状态）"
+    if after and after == before and txt == _txt0:
+        return (f"⚠️ 点了第 {_n} 个答案{_how}，但**这一屏一个字没变** —— 没生效。"
+                + ("这档要 `menu click(option=N, real=true)` 才点得中" if real is not True else
+                   "框种类可能认错了，`menu read` 看一眼再决定"))
+    return f"✅ 第 {_n} 个答案已经发出去了{_how}，这一屏已经过去了"
+
+
 def _im_menu_data(state: dict) -> dict:
     """📋 **开着的菜单里能摊到单子上的东西**（2026-10-01 · P-menus）→ dict（没有 = `{}`）。
 
@@ -21480,9 +21557,20 @@ def _im_menu_data(state: dict) -> dict:
     #       `[{index,key,text,bounds}]` **形状不同**（`ModEntry.cs:5323` vs `:12474`）；
     #       列表**位次就是选项号**（C# 点选项用的是 `responseCCs[option]`）⇒ 够用。
     if "dialoguebox" in mt.lower():
+        # ⚠️ `/state` 的 `responses` 是**字符串数组**（`responseText`），跟 `/menu` 那份
+        #    `[{index,key,text,bounds}]` **形状不同**（`ModEntry.cs:5323` vs `:12474`）。
+        #    ⇒ 在这儿整成**同一档形状**（`[{index, text}]`），单子那边只管认 `index`/`text`；
+        #      位次就是 C# 点选项用的号（`selectedResponse = option` → `responseCCs[option]`）。
+        opts = [{"index": i, "text": t}
+                for i, t in enumerate(am.get("responses") or [])]
         return {"dialogue": {"speaker": am.get("speaker") or "",
                              "text": am.get("dialogue") or "",
-                             "options": list(am.get("responses") or [])}}
+                             # 🗳 点这些选项要不要 `real=true`（判据在 `_question_needs_real`）——
+                             #    由服务器算好递下去，**执行侧不许自己猜**（猜错就是**静默点空**：
+                             #    真机 2026-10-01 我先没带 real，C# 回 `ok:true` 而**选项还在屏上**，
+                             #    是回读那一步把它抓住的）。
+                             "real": _question_needs_real(am),
+                             "options": opts}}
     try:
         raw = api._ai_get("/menu") or {}
     except Exception:
@@ -21518,6 +21606,15 @@ def _im_head(ctx) -> str:
     if txt:
         who = d.get("speaker") or ""
         head += f"\n💬 {who}：{txt}" if who else f"\n💬 {txt}"
+    elif d.get("options") and _story_buffer:
+        # ❓ **游戏在问一句、但问句不在菜单状态里**（2026-10-01 真机 + 反编译：
+        #    `createQuestionDialogue` 那档 `DialogueBox` 的 `getCurrentString()` 返回空串
+        #    —— `BuildQuestionKind()` 报 `"ask"` 的条件正是 `characterDialogue == null`，
+        #    而那时问句那一行已经不在框里了）。⇒ **光看两个选项答不了题**。
+        #    手里唯一的**真事实**是"上一句说了什么"（`_story_buffer`，`advance_story` 推过去时收的）
+        #    ⇒ **如实标成「刚说的」**，不冒充"这就是问句"。
+        #    ⚠️ 它是**内存里的**：MCP 重启过就没了 —— 那时这行不出现（**不编**）。
+        head += f"\n💬 刚说的：{_story_buffer[-1]}"
     return head
 
 
