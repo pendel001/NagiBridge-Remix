@@ -1048,16 +1048,57 @@ def _peer_pos_get(cur_loc: str):
     return (c["name"], c["x"], c["y"])
 
 
+def _coord_usable(x, y) -> bool:
+    """这个坐标**印出来有用吗**？判据只有一条：**它在图里吗**（地图坐标不会为负）。
+
+    ⚠️ 2026-10-01 真机照出来的：**演出期间** `/state` 的 `player.x/y` 是 `(-99,-99)`（哨兵）。
+       那不是"多了个没用的数"，是**假的** —— AI 会真拿它去 `at -99 -99`。
+       ⇒ 恒：「**进剧情要不要藏掉坐标？反正也不给移动**」——要藏。
+    ⚠️ **判据刻意不用"是不是在演剧情"**：脚本把人摆到某格时坐标是真有用的，
+       一刀切会连真的也藏掉。"坐标为负"是**只有那种时候**才会出现的硬信号。
+    ⚠️ 这一条**四个消费方共用**（单子抬头 / 状态条 📍 / 同伴坐标两处）——
+       同一个事实写两处就必须两处都改，不然就是**同一屏自己打自己**
+       （真机：抬头已经藏了，下面状态条还在印 `(-99,-99)`）。
+    """
+    return not (x is None or y is None
+                or (isinstance(x, int) and x < 0) or (isinstance(y, int) and y < 0))
+
+
+def _coord_seg(x, y, active_event) -> str:
+    """📍（单子抬头 / 状态条）后面那截 —— **这一刻的坐标能不能给 AI 看，只此一处判**。
+
+    两件事**都算"不给"**（各自独立成立，别只留一条）：
+      · **有事件在播** —— 恒：「进剧情要不要藏掉坐标？反正也不给移动」。那时移动本来就被
+        菜单闸门挡着，而游戏会把玩家挪到图外（真机就是 `(-99,-99)`）⇒ 这个坐标既不能用、
+        也不代表"人在哪"。**演出期间一律换成 `· 🎬 演出中`**（那才是 AI 该知道的事）。
+      · **坐标本身不在图里**（负数/空）—— 防的是"**没事件**但值照样是垃圾"那种。
+    ⚠️ ★ 我自己在这儿踩过一次：先写成"演出在播就藏"，回头"简化"成"只看坐标"——
+       桩里坐标是好的 ⇒ 演出期间照样印。**恒要的那条（进剧情就藏）当场没了**，
+       自验当场报红。⇒ 别把两条独立判据"简化"掉一条。
+    """
+    if (active_event or {}).get("id"):
+        return " · 🎬 演出中"
+    return f" ({x},{y})" if _coord_usable(x, y) else ""
+
+
 def _peer_pos_seg(cur_loc: str) -> str:
     """状态条 📍 行尾那截：` | 🧑 恒 (7,93)`；不同图/读不到 → 空串。"""
     r = _peer_pos_get(cur_loc)
-    return f" | 🧑 {r[0] or '他'} ({r[1]},{r[2]})" if r else ""
+    if not r:
+        return ""
+    if not _coord_usable(r[1], r[2]):
+        return f" | 🧑 {r[0] or '他'}（同图·坐标不可用）"
+    return f" | 🧑 {r[0] or '他'} ({r[1]},{r[2]})"
 
 
 def _peer_pos_suffix(cur_loc: str) -> str:
     """句子尾巴那截（心跳/peek）：`（7,93）`；不同图/读不到 → 空串。"""
     r = _peer_pos_get(cur_loc)
-    return f"（{r[1]},{r[2]}）" if r else ""
+    if not r:
+        return ""
+    if not _coord_usable(r[1], r[2]):
+        return "（同图·坐标不可用）"
+    return f"（{r[1]},{r[2]}）"
 
 
 def _ai_loc_name(ai_data: dict) -> str:
@@ -2157,7 +2198,10 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
         pass
     # 🧑🤝🧑 同图时把另一位玩家的坐标跟在 📍 后面（恒 2026-09-24：「我还希望玩家在同图时报玩家坐标」）
     _peer_seg = _peer_pos_seg(loc_name)
-    lines.append(f"📍 {loc_name} ({x},{y}){_peer_seg} | ⏰ {time_str} | {weather_text} · {s_icon}{season.title()} | {day_label}{year_str}{luck_str}{_solo_tag}")
+    # ⚠️ 2026-10-01：坐标不可用就**不印**（判据**只有一处**：`_coord_seg`）。
+    #    ⚠️ 这行原来照抄 `({x},{y})`，而单子抬头那边已经改了 ⇒ 同一屏印出两种说法。
+    _pos_seg = _coord_seg(x, y, active_event)
+    lines.append(f"📍 {loc_name}{_pos_seg}{_peer_seg} | ⏰ {time_str} | {weather_text} · {s_icon}{season.title()} | {day_label}{year_str}{luck_str}{_solo_tag}")
 
     # 📬 邮箱在哪（只在 AI 人不在邮箱旁边时出，见 `_mailbox_line`）——跟日期/位置一样是常驻上下文，
     #    因为"读信"这件事随时可能被 reminder 提起来，而邮箱坐标**AI 无从自己查**。
@@ -21309,6 +21353,11 @@ def _im_run(op, args):
         #    ⚠️ 调现成的 `advance_story()` —— 它自己会回读确认、分「卡住/出选项/结束」三种结局，
         #       这一层**不另写一套**，也不替它下结论。
         "advance": lambda: advance_story(),
+        # ⏭ 跳过整段（2026-10-01）：单子「跳过整段」按下去走这里。
+        #    ⚠️ 调现成的 `skip_event()` —— **别在单子这层自己按 ESC**：
+        #       没事件时 `skipEvent()` 会退化成"按 ESC 关菜单"（另一件事），
+        #       而 `skip_event()` 会把这种情况如实报出来。
+        "skip": lambda: skip_event(),
         # 🧾 确认过夜结算（2026-10-01）：结算屏（ShippingMenu）上「确认结算」按下去走这里。
         "settle": lambda: confirm_settlement(),
         # 🗑 投出货箱（2026-10-01）：单子「投出货箱…」点开那行走这里（`name` = 内部名）。
@@ -21398,8 +21447,12 @@ def _im_menu_take(slot):
 def _im_menu_data(state: dict) -> dict:
     """📋 **开着的菜单里能摊到单子上的东西**（2026-10-01 · P-menus）→ dict（没有 = `{}`）。
 
-    现在只摊**一种**：开着的容器菜单里"点一下就取出来"的那些。判据**全在 C# 的回包里**，
-    这一层不认名字、不猜：
+    现在摊**两种**（都在这儿判，`intent_menu` 只管照着数据出行为）：
+      · **💬 对话**（`DialogueBox`）→ `{"dialogue": {speaker, text, options}}`
+        —— 正文与说话人**进抬头**（恒的底线：不看内容就选 = 瞎选）。
+      · **📦 容器**（`ItemGrabMenu`，且"点物品 = 取出来"）→ `{"items": [...]}` → 单子给「箱子里…」。
+
+    === 容器那一档的判据（全在 C# 的回包里，这一层不认名字、不猜）===
 
       · `type == "ItemGrabMenu"` —— 容器 / 送礼 / 投箱 / 百乐汤**全是这个类型**，光看类型不够；
       · `_grab_is_take(raw)` —— **看行为函数叫什么**（`grabBehavior`，表在 `_GRAB_BEHAVIOR`）：
@@ -21415,6 +21468,16 @@ def _im_menu_data(state: dict) -> dict:
     mt = ((state or {}).get("activeMenu") or {}).get("type") or ""
     if not mt:
         return {}
+    am = (state or {}).get("activeMenu") or {}
+    # 💬 对话/剧情（2026-10-01 · P-menus 第二刀）：**全从 `/state` 拿**（`activeMenu` 里就带
+    #    `dialogue`/`speaker`/`responses`）—— 打 `/menu` 是白花一次调用。
+    #    ⚠️ `/state` 的 `responses` 是**字符串数组**（`responseText`），跟 `/menu` 那份
+    #       `[{index,key,text,bounds}]` **形状不同**（`ModEntry.cs:5323` vs `:12474`）；
+    #       列表**位次就是选项号**（C# 点选项用的是 `responseCCs[option]`）⇒ 够用。
+    if "dialoguebox" in mt.lower():
+        return {"dialogue": {"speaker": am.get("speaker") or "",
+                             "text": am.get("dialogue") or "",
+                             "options": list(am.get("responses") or [])}}
     try:
         raw = api._ai_get("/menu") or {}
     except Exception:
@@ -21432,8 +21495,25 @@ def _im_menu_data(state: dict) -> dict:
 
 
 def _im_head(ctx) -> str:
-    """单子抬头：**我在哪、还剩多少体力**（都是游戏给的数）。"""
-    return f"🎯 {ctx.loc or '?'} ({ctx.px},{ctx.py}) · 🔋{ctx.stamina}"
+    """单子抬头：**我在哪、还剩多少体力**（都是游戏给的数）+ **这一刻的正文**。
+
+    ⚠️ 2026-10-01（P-menus 第二刀）：恒问「**进剧情要不要藏掉坐标？反正也不给移动**」——
+       要藏，而且这比"噪音"严重：真机照到演出期间 `/state` 报的是 **`(-99,-99)`**（哨兵），
+       那不是"多了个没用的数"，是**假的** —— AI 会真拿它去 `at -99 -99`。
+       判据 = `_coord_seg`（**演出在播、或这数不在图里，都不印**；有事件时换说 `🎬 演出中`
+       —— 那一刻移动本来就被菜单闸门挡着，这句才是 AI 该知道的事）。
+
+    ⚠️ **正文进抬头**是恒定的那条底线：「选项选哪个取决于正文，抬头只放'我在哪+体力'
+       等于把内容藏起来」。数据全在 `/state.activeMenu` 里（`dialogue`/`speaker`），
+       **不用多打一次 `/menu`**（服务器 `_im_menu_data` 递进来的）。
+    """
+    head = f"🎯 {ctx.loc or '?'}{_coord_seg(ctx.px, ctx.py, ctx.event)} · 🔋{ctx.stamina}"
+    d = (ctx.menu_data or {}).get("dialogue") or {}
+    txt = (d.get("text") or "").rstrip()
+    if txt:
+        who = d.get("speaker") or ""
+        head += f"\n💬 {who}：{txt}" if who else f"\n💬 {txt}"
+    return head
 
 
 @mcp.tool()

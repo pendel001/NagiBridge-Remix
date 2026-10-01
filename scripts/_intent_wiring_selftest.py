@@ -112,14 +112,20 @@ MENU_BOX = {
 
 
 def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=False,
-          caps=None, menu="", menu_raw=None):
+          caps=None, menu="", menu_raw=None, menu_extra=None, event=None):
     CALLS.clear()
     state = dict(STATE)
     if shop:
         state = dict(STATE, activeMenu={"type": "ShopMenu"})
     elif menu:
         # 🚪 2026-10-01：**菜单态**用例要能指定是哪种界面（出口行给不给看类型）。
-        state = dict(STATE, activeMenu={"type": menu})
+        #    `menu_extra` = 那个菜单的**内容**（对话正文/说话人/选项…），形照 `/state.activeMenu`。
+        state = dict(STATE, activeMenu=dict({"type": menu}, **(menu_extra or {})))
+    elif menu_extra:
+        state = dict(STATE, activeMenu=dict(menu_extra))
+    if event is not None:
+        # 🎬 `/state.activeEvent` 的真形状：`{id, skippable, message}`
+        state = dict(state, activeEvent=event)
 
     def g(ep, params=None):
         CALLS.append(("GET", ep, params))
@@ -615,6 +621,52 @@ def main():
     M.intent(ops="show", kw={"n": 40})
     res.append(ok("📋 没开菜单 ⇒ **不打** `/menu`",
                   not [c for c in CALLS if c[1] == "/menu"]))
+
+    # ⑮ 🎬 对话/演出摊开（2026-10-01 · 恒：「**进剧情要不要藏掉坐标？反正也不给移动**」
+    #    + 「**给选项的话就给 1 接 advance、2 跳过 好了**」）
+    _stub(menu="DialogueBox", event={"id": "1053978", "skippable": True},
+          menu_extra={"dialogue": "瞧！我的最新作品。", "speaker": "罗宾", "responses": None})
+    _dl = M.intent(ops="show", kw={"n": 20})
+    res.append(ok("🎬 演出中 ⇒ 抬头**不印坐标**（真机那一刻是 `-99,-99` 哨兵，照印=让 AI 去 at 它）",
+                  "(-99,-99)" not in _dl and "🎬 演出中" in _dl))
+    res.append(ok("🎬 正文 + 说话人**进抬头**（不看内容就选 = 瞎选）",
+                  "💬 罗宾：瞧！我的最新作品。" in _dl))
+    _adv = next((r.no for r in M.intent_menu._LAST_ROWS if r.verb.key == "advance"), None)
+    _skp = next((r.no for r in M.intent_menu._LAST_ROWS if r.verb.key == "skip_event"), None)
+    res.append(ok("🎬 就是恒要的那个形状：**1=推进、2=跳过**",
+                  _adv == 1 and _skp == 2, f"advance={_adv} skip={_skp}"))
+    res.append(ok("🎬 「跳过」的理由写清**代价**（剧情就不播了）", "剧情就不播了" in _dl))
+    # ⚠️ 跳不动就不给那一行（`skipEvent()` 没这个位会退化成"按 ESC 关菜单"= 另一件事）
+    _stub(menu="DialogueBox", event={"id": "9", "skippable": False},
+          menu_extra={"dialogue": "嗯。", "speaker": "罗宾"})
+    _ns = M.intent(ops="show", kw={"n": 20})
+    res.append(ok("🎬 `skippable=false` ⇒ **没有**「跳过整段」（不是灰掉，是整行不出现）",
+                  "跳过整段" not in _ns and "推进对话" in _ns))
+    # 没事件、只是普通搭话 ⇒ 坐标照常印，且只有「推进对话」
+    _stub(menu="DialogueBox", menu_extra={"dialogue": "早啊。", "speaker": "罗宾"})
+    _nd = M.intent(ops="show", kw={"n": 20})
+    res.append(ok("💬 普通对话（没事件）⇒ 坐标**照常印**、只有「推进对话」",
+                  "(12,12)" in _nd and "推进对话" in _nd and "跳过整段" not in _nd))
+    # 对话那份数据**从 `/state` 拿**（`/state.activeMenu` 里就带 dialogue/speaker）——
+    # 多打一次 `/menu` 是白花一次调用
+    _stub(menu="DialogueBox", menu_extra={"dialogue": "嗯。", "speaker": "罗宾"})
+    M.intent(ops="show", kw={"n": 20})
+    res.append(ok("💬 对话**不打** `/menu`（`/state` 里就有）",
+                  not [c for c in CALLS if c[1] == "/menu"]))
+    # 执行侧：跳过调的是现成的 `skip_event()`（**不自己按 ESC** —— 没事件时那是另一件事）。
+    # ⚠️ 这里**只查源码不真调**：`skip_event()` 走 `api.state()`（`_get` 不是 `_ai_get`），
+    #    桩换不掉它 ⇒ 真调会打到**正在跑的游戏**（7842 = 恒）—— 自验绝不许碰游戏。
+    res.append(ok("⏭ `_im_run` 认 `skip` 且调的是 `skip_event()`",
+                  '"skip": lambda: skip_event()' in _worn_src))
+    # 📍 坐标那条判据**只有一处**（`_coord_seg`）：真机上我改完抬头、忘了状态条，
+    #    同一屏就印出两种说法（抬头 `🎬 演出中`、状态条 `(-99,-99)`）——恒一眼看得见。
+    res.append(ok("📍 `_coord_seg` 四种组合都对（演出在播 / 坐标不在图里 / 都正常）",
+                  M._coord_seg(12, 12, None) == " (12,12)"
+                  and M._coord_seg(-99, -99, None) == ""
+                  and M._coord_seg(12, 12, {"id": "1"}) == " · 🎬 演出中"
+                  and M._coord_seg(-99, -99, {"id": "1"}) == " · 🎬 演出中"))
+    res.append(ok("📍 状态条 📍 那行**用的也是它**（不是各写一份）",
+                  'lines.append(f"📍 {loc_name}{_pos_seg}' in _worn_src))
 
     print(f"\n{sum(res)}/{len(res)} 过")
     return all(res)

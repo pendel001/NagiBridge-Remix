@@ -1998,7 +1998,42 @@ MENU_BOX_V = Verb("menu_box", "箱子里", 58, _menu_box_can, _menu_box_reason, 
 #    ⚠️ 这也正是现成的 `TAKE_V`/`STORE_V` 的做法（它们同样只有 `exec_multi`）：
 #      **只活在子层里**的动词，就该长成"顶层扫不到"的样子。
 MENU_TAKE_V = Verb("menu_take", "取", 58, _menu_take_can, _menu_take_reason, _menu_take_show,
-                   "menu", exec_multi=_exec_menu_take_multi) 
+                   "menu", exec_multi=_exec_menu_take_multi)
+
+
+# ⏭ 「跳过整段」（2026-10-01 · 恒要的第二行）。
+#
+# 恒原话：「**给选项的话就给 1 接 advance、2 跳过 好了**」——所以它必须**排在「推进对话」后面**
+# （advance 76，这个 74），而不是抢在它前面：那一刻的正事是"接着看"，跳过是**退路**。
+#
+# ⚠️ 判据 = 游戏自己的 `skippable`（`/state.activeEvent.skippable`）——
+#    `menu skip` 走 `currentEvent.skipEvent()`，**没有这个位就跳不动**（跳不动它会明说）。
+#    没事件时**整行不出现**（不是灰掉）：`skipEvent()` 那时会退化成"按 ESC 关菜单"，
+#    那是**另一件事**，写在这一行上就是假承诺。
+# ⚠️ 理由栏**必须写代价**（恒那条"警告/危险必须带路、带代价"）：跳过 = 这段剧情**不播了**。
+def _skip_can(ctx, t):
+    ev = ctx.event or {}
+    if not ev.get("id"):
+        return CAN_NO
+    return CAN_YES if ev.get("skippable") else CAN_NO
+
+
+def _skip_show(ctx, t):
+    return "跳过整段"
+
+
+def _skip_reason(ctx, t):
+    ev = ctx.event or {}
+    return f"这场演出可跳过（{ev.get('id')}）—— **剧情就不播了**"
+
+
+def _exec_skip(ctx, targets, run):
+    r = run("skip", {})
+    return _receipt_from_helper("跳过整段", "", r)
+
+
+SKIP_V = Verb("skip_event", "跳过整段", 74, _skip_can, _skip_reason, _skip_show, "world",
+              exec=_exec_skip, menu_ok=True) 
 
 
 # 👕 「穿戴」（2026-10-01）—— **一行目录行包办 穿 / 脱**。
@@ -2124,7 +2159,10 @@ def _advance_show(ctx, t):
 def _advance_reason(ctx, t):
     if (ctx.event or {}).get("id"):
         e = ctx.event or {}
-        return f"剧情在播（{e.get('id')}）" + ("· 可整段跳" if e.get("skippable") else "")
+        # ⚠️ 2026-10-01：这里原来尾巴挂着「· 可整段跳」—— 歧义（说的是"这个事件**可以**跳"，
+        #    读起来像"这一按会整段跳"）。**整段跳现在有自己的行**（`SKIP_V`）⇒ 这句只说
+        #    它自己干什么：一句句往下推，**到选项或演完为止**（`advance_story` 是循环，不是推一句）。
+        return f"剧情在播（{e.get('id')}）—— 一句句往下推，**到选项或演完为止**"
     return "对话框开着，一句句推"
 
 
@@ -2339,6 +2377,9 @@ VERBS: list = [
     #     76 只在"事件在播、单子照常全量"那种处境里起作用，那时它就该靠前）。
     Verb("advance", "推进对话", 76, _advance_can, _advance_reason, _advance_show, "world",
          exec=_exec_advance, menu_ok=True),
+    # ⏭ 跳过整段（恒：「1 接 advance、2 跳过」）——**排在 advance 后面**（74 < 76），
+    #    那一刻的正事是接着看，跳过是退路（见上面那一段）。
+    SKIP_V,
     # 🧾 确认结算（**只长在 ShippingMenu 上**，见上面那一段）。权重 78：
     #    结算屏那一刻它是**唯一**该按的（那一屏别的行全被菜单态过滤掉了）。
     Verb("settle", "确认结算", 78, _settle_can, _settle_reason, _settle_show, "world",
