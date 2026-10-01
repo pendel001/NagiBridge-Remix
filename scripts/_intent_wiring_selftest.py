@@ -1129,6 +1129,29 @@ def main():
                   "—— 只传 item 会撒进所有收得下它的机器、还会去点缝纫机",
                   bool(_lm_calls) and _lm_calls[-1].get("item") == "Starfruit"
                   and _lm_calls[-1].get("machine_type") == "Keg", _lm_calls))
+    # 📥📤 存 / 取：**必须先走过去**（恒 2026-10-01：「当时说先接 store，**没把前面的跑过去箱子
+    #    接进来**。那就补吧」）—— C# 那两条都是**不校验距离**的原子直操，不走位 = 隔空动箱子。
+    _walk0, _post0 = M._walk_to_chest, api._ai_post
+    _seq = []
+    M._walk_to_chest = lambda x, y: (_seq.append(("walk", x, y)), "  🚶 已走到箱边")[1]
+    api._ai_post = lambda ep, data=None: (
+        _seq.append(("post", ep)), {"ok": True, "stored": [{"count": 3}]})[1]
+    _rs = M._im_run("store", {"x": 58, "y": 16, "name": "Purple Mushroom", "count": 3})
+    res.append(ok("📥 「存」**先走过去再存**（顺序：walk → post /store）",
+                  _seq and _seq[0][0] == "walk" and _seq[-1] == ("post", "/store")
+                  and _rs.get("ok") is True, _seq))
+    _seq.clear()
+    api._ai_post = lambda ep, data=None: (
+        _seq.append(("post", ep)), {"ok": True, "taken": 2})[1]
+    M._im_run("chest_take", {"x": 58, "y": 16, "name": "Purple Mushroom", "count": 2})
+    res.append(ok("📤 「取」也**先走过去再取**（同一条拟人路）",
+                  _seq and _seq[0][0] == "walk" and _seq[-1] == ("post", "/chest_take"), _seq))
+    _seq.clear()
+    _rn = M._im_run("store", {"name": "Purple Mushroom"})      # 没 x/y ⇒ 不猜、直接报错
+    res.append(ok("📥 缺 x/y ⇒ 明说「缺 x/y」，**不发请求也不瞎走**",
+                  _rn.get("ok") is False and "缺 x/y" in str(_rn.get("error")) and _seq == [],
+                  _rn))
+    M._walk_to_chest, api._ai_post = _walk0, _post0
     # 🧵 类型门：**传类型 = 只伺候那类**；不传 = 缝纫机也在名单里（真机就是它去点了）
     import machine_loader as ML
     _ms0 = ML.api.machines

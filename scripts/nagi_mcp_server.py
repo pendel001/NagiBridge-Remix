@@ -21420,6 +21420,34 @@ def _im_close_menu() -> str:
             f"   {_close_hint(after)}")
 
 
+def _im_chest_op(op: str, args: dict) -> dict:
+    """📥📤 **走到箱边**再做 `/store` 或 `/chest_take`（拟人那条）。
+
+    ⚠️ 为什么必须有这一层（2026-10-01 恒：「当时说先接 store，**没把前面的跑过去箱子接进来**。
+       那就补吧」）：C# 的 `HandleStore`/`HandleChestTake` 都是**原子直操**
+       （`farmer.Items` ↔ `chest.addItem/Remove`，**不校验距离**）⇒ 人站在半张图外也能
+       把东西塞进箱子、或从箱子里拿走 —— 恒一眼看出不是人在走。
+    ⚠️ 走位归导航 ⇒ 复用 `_walk_to_chest`（**别在端点或 exec 里再写一遍**），而且它
+       **会等到真的站到箱边**：C# 的 `/walk_to` 是发射后不管的，不等就会"人还在半路、
+       东西已经进箱"（`_im_chest_open` 同款理由）。
+    ⚠️ 回 **dict**（不是一句话）：`_exec_store_multi`/`_exec_take_multi` 要拿
+       `stored`/`taken` **逐条报数字**，揉成一句话就没法核了。
+    """
+    x, y = args.get("x"), args.get("y")
+    if x is None or y is None:
+        return {"ok": False, "error": f"缺 x/y（{op} 哪个箱子）"}
+    try:
+        walk = _walk_to_chest(int(x), int(y))
+    except Exception as e:
+        walk = f"  ⚠️ 走位这步炸了（{type(e).__name__}: {e}）"
+    try:
+        r = api._ai_post(f"/{op}", dict(args)) or {}
+    except Exception as e:
+        r = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    r["walk"] = walk
+    return r
+
+
 def _im_chest_open(x, y):
     """👀 走到箱边**真开**（画面通道）。→ `{"ok", "error", "walk", ...}`。
 
@@ -21739,6 +21767,12 @@ def _im_run(op, args):
         #    ⚠️ 回 dict 而不是一句话：`claimed`（C# 自己回读的"那件还在不在领取侧"）
         #       是回执唯一能说"东西真动了"的证据。
         "menu_take": lambda: _im_menu_take(args.get("slot")),
+        # 📥📤 存 / 取：**都先走过去**（拟人那条）—— 2026-10-01 恒：「当时说先接 store，
+        #    没把前面的跑过去箱子接进来。那就补吧」。
+        #    ⚠️ 这两条 C# 都是**原子直操、不校验距离**（隔半张图也能动箱子）⇒ 必须走位。
+        #    ⚠️ 回 dict（不是一句话）：回执要逐条报"进去几个 / 到手几个"。
+        "store": lambda: _im_chest_op("store", args),
+        "chest_take": lambda: _im_chest_op("chest_take", args),
     }
     if op in raw_ops:
         try:

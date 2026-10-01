@@ -1158,6 +1158,10 @@ def _storable_slots(ctx, box):
 def _exec_take_multi(ctx, pairs, run):
     """🧺 取：**逐条报**（哪条成了、哪条没成）。
 
+    ✅ **2026-10-01 同「存」一起补上走位**：这一层打的 `chest_take` op，服务器那边先
+       `_walk_to_chest` 再 `/chest_take`（`_im_chest_op`）—— C# 那条同样是**不校验距离**的原子直操。
+       （"看"那行（`_exec_chest_open`）本来就走过去，所以旧流程下常常"人已经在箱边"、
+        看不出这个洞；但单子上从**箱子目录**直接按「取」时，人是站的别处。）
     ⚠️ 不许整批报成功、也不许整批回滚——两个都是替 AI 圆场（166 ④ 配套硬要求）。
     ⚠️ **只报事实，不替游戏编原因**（2026-09-29 审查）：`took < cnt` 既可能是箱里不够，
     也可能是**背包中途塞满**（`HandleChestTake` 装不下就提前 break）——
@@ -1190,12 +1194,11 @@ def _exec_take_multi(ctx, pairs, run):
 def _exec_store_multi(ctx, pairs, run):
     """📥 存：同样**逐条报**。
 
-    ⚠️⚠️ **这是快捷路，不是拟人路**（同「收放」那段记账：**同一件事有两条路时，接的是哪条要写清**）：
-    C# `HandleStore`（`ModEntry.cs:10429`）是**原子直操**——`farmer.Items` ↔ `chest.addItem`，
-    **不校验距离** ⇒ 人站在半张图外也能"存进去"。
-    拟人那条是 MCP 工具 `chest_store`（`nagi_mcp_server.py` 里先 `_walk_to_chest` 再 `/store`）。
-    ⇒ **接线时必须补 `/walk_to`**（或直接改调 `chest_store`），否则恒一眼看出不是人在走。
-      今晚没补：走路是**观感**，没真机验过的走路不该先写死一套"走多近、站哪边"。
+    ✅ **2026-10-01 补上走位了**（恒：「当时说先接 store，**没把前面的跑过去箱子接进来**。
+       那就补吧」）：这一层打的 `store` op，服务器那边**先 `_walk_to_chest` 再 `/store`**
+       （`_im_chest_op`）—— 因为 C# `HandleStore`（`ModEntry.cs:10429`）是**原子直操**
+       （`farmer.Items` ↔ `chest.addItem`，**不校验距离**），人站半张图外也能"存进去"。
+    ⚠️ 判据只有一处：走位在服务器那一层做（`_im_chest_op`），**这一层不许再写一套"走多近、站哪边"**。
     """
     lines, ok_n = [], 0
     for row, cnt in pairs:
