@@ -6845,10 +6845,19 @@ def harvest_crops(radius: int = 15) -> str:
 
 @mcp.tool()
 def collect_machines(machine_type: str = "", location: str = "") -> str:
-    """⚙️ 一键收机器产物（=只收不放，全农场一遍瞬收，不走路）
+    """⛔ **已退役（2026-10-01）** —— 别再往这儿加东西，AI 已经够不着它了。
+
+    退役理由（恒真机，一句话）：**「不是撤掉非拟人了吗！还是一键收了hhh」** ——
+    它是 `farmer.addItemToInventory(held)`（C# `/machine_collect`），**不要求角色在机器旁边**，
+    所以 AI 会"隔着半个屋子把 20 台机器一次收干净"，一眼就看得出不是人在干活。
+    ⇒ 收放**只剩一条**：`load_machines`（`machine_loader.py --here`，拟人走过去逐台真交互）；
+       单子上那行「收 已好的机器」也走它。`farm` 域的 `collect` op 已摘（见那段的 ⛔ 记账）。
+    ⚠️ 函数**留着不删**（`_cabin_collect` 等旧别名还指着它，而且日后要做"作弊模式"可能还要用），
+       但**不再对 AI 暴露**。
+
+    原 docstring：⚙️ 一键收机器产物（=只收不放，全农场一遍瞬收，不走路）
     遍历所有机器，把已完成的产品直接收进背包（返回带当前品质，Cask 用）。
     只收 readyForHarvest 的机器，陈化中的 Cask 不取。
-    ⚠️ vs building：这是原子瞬收（不走路/不拟人）；要进屋逐台拟人收放(收+放料)走 building。
 
     Args:
         machine_type: 机器类型（Keg / Cask / Preserves Jar…，留空全收）
@@ -6872,21 +6881,34 @@ def collect_machines(machine_type: str = "", location: str = "") -> str:
 
 
 @mcp.tool()
-def load_machines(item: str, machine_type: str = "", location: str = "", count: int = 0) -> str:
-    """⚙️ 批量往空机器放原料（游戏原生路径：warp过去→选中→interact）
+def load_machines(item: str, machine_type: str = "", location: str = "", count: int = 0,
+                  here: bool = False) -> str:
+    """⚙️ 批量往空机器放原料（游戏原生路径：选中→interact，**拟人走位逐台真交互**）
     把背包里的原料装进匹配的空机器，加工时间由游戏自己算（Keg酿酒/Cask陈化）。
-    每台机器都真实走过去操作（warp 快速移动），100% 走游戏交互逻辑。
-    ⚠️ 原料**彻底用尽**就整轮提前收工（不再拿空手把剩余空机器逐台试一遍）。
+    ⚠️ **它是「收放一条过」**：好了的收、空着的放，**同一趟路办完**（`machine_loader.py`，
+       恒 2026-09-27 定的规矩）；**原料用尽只是停止放、继续把剩下的收完**，
+       不会像 `fruit_round` 那样提前收工。`item` 留空 ⇒ 只收不放。
+    每台机器都真实走过去操作，100% 走游戏交互逻辑。
     ⚠️ 品质不影响：`/select` 每次都重新选，普通品质那栈用完了自然选到金/银星那栈。
 
     Args:
         item: 原料英文名（如 Starfruit；Cask 用成品如 Starfruit Wine）。
-              **可逗号给多个**按优先级依次用完，如 "Ancient Fruit,Starfruit"（恒 2026-09-16）
-        machine_type: 目标机器类型（Keg / Cask / Preserves Jar…，留空试所有空机器）
+              **可逗号给多个**按优先级依次用完，如 "Ancient Fruit,Starfruit"（恒 2026-09-16）。
+              **留空 = 只收不放**（那也一样是拟人走过去收）。
+        machine_type: 目标机器类型（Keg / Cask / Preserves Jar / Crystalarium…；留空试所有机器）。
+              ⚠️⚠️ **这一档是 AI 手里的那个旋钮，别省**（2026-10-01 真机两句话钉的）：
+              恒「**怎么把裁缝机也交互了**」（不传 ⇒ 空机器集是"本图**所有**空机器"，
+              AI 挨个去点缝纫机/花盆；游戏不收、只白摸一下，**但屏幕上看得见**）+
+              恒「**罐头瓶和酒桶控制不了分别放不同水果**」（不传 ⇒ 一件料撒进**所有**收得下它的机器）。
+              ⇒ 单子那一层**按机器类型发号**（类型由 `/machine_reqs` 的 `canPlace` 算出来）。
         location: 限定地点（Cellar / Big Shed…；**留空=当前场景/建筑**，不跑全农场——恒 2026-08-13）
         count: **最多装几台**（0=不限）。想"就放 50 台"就传 50——恒 2026-09-16
+        here: **只伺候脚下这间屋**（2026-10-01 加）。数据源从 `/farm_report` 换成 `/machines`。
+              ⚠️ 为什么必须有这一档：`/farm_report` 的范围是「农场+建筑室内+地窖」，
+              **压根不含房主的 FarmHouse** ⇒ 站在家里传 `location=FarmHouse` 会扫到 **0 台**
+              （2026-09-27 真机就是这么空跑两千多次的，`machine_loader.py:46-56` 有全账）。
     """
-    if not location:
+    if not here and not location:
         # 默认只装当前场景/建筑（AI 在哪装哪，别到处乱串全农场同机器）
         try:
             location = api.state().get("location", {}).get("name", "")
@@ -6899,24 +6921,29 @@ def load_machines(item: str, machine_type: str = "", location: str = "", count: 
         args_list += ["--location", location]
     if count:
         args_list += ["--count", str(int(count))]
+    if here:
+        args_list += ["--here"]
     out = _run_script("machine_loader", [item] + args_list, timeout=600, async_ok=True)
     if out.startswith("🚀"):
         return _with_state(out)   # 长脚本自动异步：立即返回 job_id
-    return _with_state(f"⚙️ 放置原料 {item}：\n{out[:600]}")
+    _what = f"放 {item}" if item else "只收"
+    return _with_state(f"⚙️ {location or '脚下这间'} 收放（{_what}）：\n{out[:600]}")
 
 
 @mcp.tool()
 def work_building(location: str, item: str = "", machine_type: str = "") -> str:
-    """🏠 拟人收放一轮（进屋⇒收⇒放，逐台严格交互，真走位）
+    """⛔ **已退役（2026-10-01）** —— 别再往这儿加东西，AI 已经够不着它了。
+
+    退役理由（两条，都是真机量出来的）：
+      ① 它跑的是 `fruit_round.py`：**"待放物品用完 / 机器不收这件"就提前收工**
+         —— 跟恒定的「**收放一条过**」（料用尽只停放、继续把剩下的收完）**不是一套**；
+      ② 同一件事现在有**唯一一条**拟人路：`load_machines`（`machine_loader.py --here`），
+         拟人、收放一条过、料用尽继续收，单子那行也走它。
+    ⇒ `farm` 域的 `building` op 已摘（见那段的 ⛔ 记账）。函数留着不删（内部备用）。
+
+    原 docstring：🏠 拟人收放一轮（进屋⇒收⇒放，逐台严格交互，真走位）
     走到建筑门口开门进去 → 收完该屋所有机器产物 → 把背包原料放进该屋空机器。
     走的是 4 邻+斜对角 8 方向真 checkAction（不是直加作弊）。站过道格一趟处理一圈。
-    一屋一轮（单地点），AI 决定去哪些屋子、按什么顺序。
-    ⚠️ vs collect：这是拟人走位(逐台真交互)；要全农场一遍瞬收(只收不放)用 collect。
-    ⚠️ 2026-09-16 恒：**留空 item = 只收不放**，那就跟 collect 重复了（collect 还不用走路）
-       ⇒ 只收请直接用 collect；本 op 的价值在"收完顺手放"，**收放请务必传 item**。
-    ⚠️ 同批：脚本现在会在**放不下去**时提前收工返回，不再把整间屋走完——
-       ①待放物品用完（背包里没这个 item 了）②机器不收这东西（游戏 `actionTriggered=false`）。
-       两种情况都会在日志里写明 `⏹ 提前收工` + 报"已走 N/M 格"。
 
     Args:
         location: 屋子/地点名（Big Shed / Cabin / Cellar / Farm…）
@@ -6940,7 +6967,7 @@ def machine_report() -> str:
     """⚙️ 全农场机器清点（按类型统计总数 + 按建筑分组待收清单），只报数量不逐台列坐标
     「烘干机 共x台 闲置y 加工z 完成w；…」按类型聚合；「📥 已就绪待收 N台：农舍: 小桶×3 烘干机×1 / 温室: 酿酒桶×5」按建筑分组；「🐟 鱼塘: 鲑鱼子×1」。
     ⚠️ 2026-08-28 恒：1450台机器逐台报坐标会爆 token——不逐台列坐标/持有物，只报建筑+类型+数量；
-    真正收机器用 collect_machines / farm collect（内部扫坐标），本工具只给 AI 决策"哪该收"。
+    真正收机器：敲单子那行「收 已好的机器」（拟人逐台，走 `load_machines`），本工具只给 AI 决策"哪该收"。
     覆盖所有建筑室内 + 温室 + 地窖。随时可查，不受每日首次调用限制。2026-08-31 加鱼塘产出。
     """
     try:
@@ -6968,7 +6995,7 @@ def machine_report() -> str:
         ready = [m for m in ml if m.get("status") == "ready"]
         if ready:
             # 📥 就绪清单：按建筑/场景分组只报数量——1450台机器逐台报坐标会爆 token（2026-08-28 恒）。
-            #    具体坐标留给 collect_machines / farm collect 内部扫，AI 只需知道"哪、几台、啥"来决策收不收。
+            #    具体坐标留给「收 已好的机器」（`load_machines`，拟人逐台）内部扫，AI 只需知道"哪、几台、啥"来决策收不收。
             rl = {}
             for m in ready:
                 loc = m.get("location", "?")
@@ -10176,7 +10203,7 @@ def bundle_kb(query: str = "") -> str:
 
 @mcp.tool()
 def farm(ops: str = "", kw: dict | None = None) -> str:
-    """🌾 农活域（农场/温室/姜岛）。till 锄地 / plant 种(可带 layout 按洒水器布局) / water 浇地 / harvest 收 / fertilize 施化肥 / clear 清杂草石头树桩(**在哪就在哪清**，不必先回农场) / collect 收机器(一键只收,不走路) / building 一屋收放(拟人走) / chop 砍树。动物：animals 摸+收 / 喂水 宠物碗 / milk 挤奶剪毛 / **买动物**(会先走到玛妮柜台再下单，柜台 9:00~18:00 才开)。全 ops → help(farm)。⚠️带尺寸 op(till/plant/clear/fertilize)：**x/y 必填**（不传直接报错，不再兜底成"玩家面向格"）；rows×length 缺省只做 1 格，要多大自己传。animal water 用 喂水，water=浇地。💡**多 op 一次调用共用一份 kw**（如 ops="till plant"），各自只吃自己认识的参数、属于别人的会**点名忽略**。"""
+    """🌾 农活域（农场/温室/姜岛）。till 锄地 / plant 种(可带 layout 按洒水器布局) / water 浇地 / harvest 收 / fertilize 施化肥 / clear 清杂草石头树桩(**在哪就在哪清**，不必先回农场) / load 收放机器(拟人走过去逐台；`item` 留空=只收不放) / chop 砍树。动物：animals 摸+收 / 喂水 宠物碗 / milk 挤奶剪毛 / **买动物**(会先走到玛妮柜台再下单，柜台 9:00~18:00 才开)。全 ops → help(farm)。⚠️带尺寸 op(till/plant/clear/fertilize)：**x/y 必填**（不传直接报错，不再兜底成"玩家面向格"）；rows×length 缺省只做 1 格，要多大自己传。animal water 用 喂水，water=浇地。💡**多 op 一次调用共用一份 kw**（如 ops="till plant"），各自只吃自己认识的参数、属于别人的会**点名忽略**。⛔ 2026-10-01 退役两个：`collect`（一键瞬收、不走路）与 `building`（fruit_round 那套会提前收工）——**收放只剩 `load` 这一条**。"""
     op_list = [o for o in re.split(r"[\s,，]+", (ops or "").strip()) if o]
     if not op_list:
         return _with_state("❌ ops 为空（如 farm(ops=\"till plant water\")）")
@@ -10216,9 +10243,17 @@ def farm(ops: str = "", kw: dict | None = None) -> str:
         "plan": plan_farm_layout_tool, "方形规划": plan_farm_layout_tool,
         "chop": chop_trees, "砍树": chop_trees,
         "clearground": clear_ground, "清格": clear_ground,
-        "collect": collect_machines, "机器": collect_machines,
-        "load": load_machines, "上料": load_machines,
-        "building": work_building, "收放": work_building,
+        # ⛔ 2026-10-01 **退役**（恒：「做完给其他收放路打一下退役标吧」）：
+        #    · `collect`（`collect_machines` → C# `/machine_collect`）：**原子瞬收、不走路**
+        #      —— 恒真机一眼看出「不是撤掉非拟人了吗！还是一键收了hhh」。
+        #    · `building`（`work_building` → `fruit_round.py`）：**另一条拟人收放**，
+        #      但它在"料用尽/机器不收"时**提前收工**，跟「收放一条过」不是一套；
+        #      而且过道格那套只管一栋屋子。
+        #    ⇒ 收放**只剩一条**：`load`（`load_machines` → `machine_loader.py --here`）——
+        #      拟人、收放一条过、料用尽只停放继续收；单子上那行「收 已好的机器」也走它。
+        #      旧的那两个函数**留着不删**（内部可能有别的调用方），但**不再对 AI 暴露**。
+        #    （"上料"仍叫 `load`：给 `item` 就是收放，留空就是只收。）
+        "load": load_machines, "上料": load_machines, "收放": load_machines,
         "break": break_tile, "拆": break_tile, "敲": break_tile,
         "place": place_item, "放": place_item, "放置": place_item,
         # 🐟 鱼塘（养殖业，2026-08-16 恒拍板归 farm 域；需新 DLL）
@@ -10228,7 +10263,7 @@ def farm(ops: str = "", kw: dict | None = None) -> str:
         "pond_collect": _pond_collect, "领籽": _pond_collect,
         "pond_fish": _pond_fish, "塘钓": _pond_fish,
         # 🐄 动物照料（2026-09-02 care 域退役并入 farm；"water"=浇地/"building"=机器收放已占，
-        #    动物水/畜舍用 喂水/畜舍 不冲突：farm water 浇地，farm 喂水 宠物碗，farm building 一屋收放，farm 畜舍 这间屋动物）
+        #    动物水/畜舍用 喂水/畜舍 不冲突：farm water 浇地，farm 喂水 宠物碗，farm load 机器收放，farm 畜舍 这间屋动物）
         "animals": care_animals, "摸动物": care_animals,
         "畜舍": care_building, "这间": care_building,
         "pet": pet_pet, "摸摸": pet_pet, "摸猫狗": pet_pet,
@@ -10279,12 +10314,16 @@ def _cur_loc_unique() -> str:
 
 def _cabin_collect() -> str:
     """收**当前屋**的待收机器（限定当前地点，不全农场乱跑）。
+
+    ⚠️ 2026-10-01：跟着「一键瞬收」一起**改走拟人那条**（`load_machines(here=True)`
+       → `machine_loader.py`，`here` 用 `/machines` 就是"脚下这间"）。
+       旧实现调的是 `collect_machines`（原子瞬收、不走路）—— 恒真机一眼看出「一键收了」。
     ⚠️ 传**唯一名**而不是显示名——理由见 `_cur_loc_unique`。C# `FindLocationByName` 也相应改成
     「先认玩家当前所在 → 再认唯一名 → 最后才退回按名字扫」（对齐游戏自己的 getLocationFromName）。"""
     cur = _cur_loc_unique()
     if not cur:
         return "❌ 读不到当前屋的唯一名（Mod DLL 太旧，要更新 Mod）——按名字过滤会收到别间小屋去，所以不猜。"
-    return collect_machines(location=cur)
+    return load_machines(item="", location=cur, here=True)
 
 
 def _cabin_enum() -> str:
@@ -13355,7 +13394,7 @@ def _machine_ready_hint(loc_name: str = "") -> str:
 
         # 🐟 鱼塘产出:现只在日报(morning_report)里报(农场实时已按恒拍板移除,不做本图实时)。
         parts = [f"{k}×{v}" for k, v in sorted(agg.items(), key=lambda kv: -kv[1])]
-        return f"🔔 本图新就绪: {' '.join(parts)} —— work_building({loc_name}) 收"
+        return f"🔔 本图新就绪: {' '.join(parts)} —— 敲单子那行「收 已好的机器」（拟人逐台）"
     except Exception:
         return ""
 
@@ -15549,7 +15588,7 @@ _SETTINGS_DISPATCH = {
 _DOMAIN_GUIDES = {
 "intent": "🎯 意图选项单（**先看单子、再敲编号**）：`intent(ops=\"show\")` 看这一刻能做的事（一行一件，`←` 后面是理由）；`intent(ops=\"do\", kw={\"code\":\"1\"})` 敲第 1 行；`intent(ops=\"at\", kw={\"x\":12,\"y\":30})` 指哪打哪（逃生口，问「这一格能做什么」）。敲法：`1` 一行 · `1,4` **多选**（选哪些，顺序无所谓）· `1=2,4=7` **各多少**（号=数量，配对，顺序也无所谓）· `0` = 这些都不是（子层里 = 返回上一层）。⚠️**目录行句尾带 `…`**（点开还有下一层，顶层只报个数不发号）；**号是当场发的、不跨屏** —— 敲之前先 `show` 看一眼当前那一屏，别记着上一屏的号去敲。⚠️单子上**出现的那条，按了就成**；没出现 = 这一刻算不出来（不是「不行」）。覆盖：收机器 / 开箱子（取·存）/ **箱子里…**（容器界面**开着**时，箱内容**直接摊成一行行「取」**——那儿有格号，同名不同星的两摞也点得准；不用再 `menu read` 自己解析）/ **存…**（同一个界面里往这只箱子放东西：跟箱子**关着**时同一套「选哪几样 → 各多少」；放进去屏幕上是**当场看得见**的）/ 吃 / 看书（**背包里没拿手上的也算**）/ 捡 / 收作物 / 坐·**起身** / 搬家具 / 摸动物 / 摸猫狗 / **穿戴（穿·脱）** / **买·卖**（只在商店 menu 开着时才出现）/ **推进对话**（有对话框或剧情在播时）/ **确认结算**（过夜结算屏 ShippingMenu）/ **投出货箱**（站在农场 + 背包里有投得进去的）/ **关掉界面**（任何界面开着时的出口）。⚠️**要规划的那些农活不在单子上**（锄地/播种/施肥/清场/砍树）—— 它们得按矩形/布局算落点、还要挑蓄力站位，走 `farm` 域（`farm ops=till, kw={x1,y1,x2,y2,layout}` 这种），**单子上一格一格敲比它慢得多、还更费体力**。挖蚯蚓/远古斑点走 `scene ops=spot`（一次全挖）。⚠️**买**是两层（选哪几样 → 各多少）；**卖**只有一层（选哪几摞 → 敲了就卖，**整摞走**——游戏单击就是卖整摞，别试 `1=2` 那种写法，那一层不收数量）。",
 "check": "查询域，what=...：status(完整状态) backpack(逐格价值/星级) worn(穿戴) machines(全场机器清单) mine(下矿进度) silo(干草) mastery(精通) buildings(木匠建筑) quest(开任务日志) chests(当前图箱) storage(箱子网络) look(环视周围) profile(我的技能等级+职业分支,如是否 Luremaster 蟹笼免饵) role(端口↔角色确认:我是谁/恒是谁)。⚠️查概览用 status，查逐格用 backpack，别都调浪费 token。📌profile/role 一律走 check（不叫 profile()/which_role()）。📐这个域的参数叫 **what**，**不是 ops**。带参的只有两个: chests(chest=N 看第N个箱) / look(radius=10 环视半径)；其余(status/backpack/worn/machines/mine/silo/mastery/buildings/quest/storage/profile/role)**全无参**。⚠️查概览用 status、查逐格用 backpack，别都调一遍浪费 token。",
-"farm": "农活域(🌱必走，别手动挥工具组合，用域 ops)：till(锄地) plant(种,跳过已种;带 layout 就按洒水器布局种) water(浇,自动跳雨+水壶没水先装满) harvest(收) scythe(镰刀收蒜/花/茶) fertilize(化肥) clear(清杂草石树桩;坐标同 till，也可 `radius=N` 走**圆形**；**会自动往外多清 2 格**——田边的杂草会长进田里把作物顶掉，不用自己放大) plot(连通域规划) plan(方形规划,纯算格) chop(砍树)。⚠️**锄地/播种各只有一个实现**：锄地=`till`（`hoe`/`布局锄`/`tillfield`/`蓄力锄` 都是它的别名）、播种=`plant`（`sow`/`plantlayout`/`播种规划` 都是它的别名）；⛔ 没有 `till_plant`——要锄+种写 `ops=\"till plant\"`。 clearground(清单格) collect(一键收机器:只收不放,全农场瞬收不走路) load(放原料) building(一屋收放:拟人走进去收+放料,item留空=只收不放) break(拆/敲同scene,镐子敲可破物/翻已耕地) place(放置/播种同scene) pond/pond_add/pond_feed/pond_collect/pond_fish(鱼塘)。⚠️漏格DLL自动补；**缺的格会被点名「被什么挡着」**（🌿草/杂草/🪨石头/🪵树枝→**先 `clear` 清一遍再 till/plant**；🏗️洒水器/箱子等设施→⛔别清、那是规划该绕开的格）——草占着地格时锄头是锄不出 HoeDirt 的，别对着「缺失N格」发呆。只在 Farm/温室/姜岛。带参 op(plant 的 seed_name、till/clear 的 x/y/rows、fertilize 的 fertilizer_name、place 的 name、building 的 location、collect 的 machine_type、pond_add 的 item)→ kw={'参数名':值}。🐄动物: animals(摸+收) 喂水/碗(宠物水,🌧️雨天自动跳过——雨会把碗填满) milk(挤奶剪毛) buy(买动物,豁免建议) doors(关门) hay(干草) pet(猫狗) petwalk(拟人摸) 畜舍/这间(这间屋动物) statue(祈福)——⚠️farm water=浇地,动物水用 喂水; farm building=机器收放,这屋动物用 畜舍。📐参数键名: till/clear/plant/fertilize 都是 x,y(**必填**),rows,length,direction（till/plant 也可用 x1,y1,x2,y2 直接给矩形两角）；plant 另有 seed_name,layout,direct,trellis；harvest/scythe=radius；plot=x,y,radius,all_plots；chop=area(**值写几个数**：4 个数=矩形两角 / 3 个数=圆心+半径，逗号空格都认)；collect=machine_type,location；load=item,machine_type,location；building=location,item,machine_type；place=name,x,y；break=x,y,steps,radius；pond_add=item+x,y（pond_feed/collect/fish 只要 x,y）；buy=animal_type,name,building；petwalk=include_petted；hay=dry_run。⚠️direction 只认 horizontal(默认)/vertical 两个值,别写'横'/'竖'。💡大田洒水器布局(可选,纯自动化建议)：要按洒水器留格/留走道就 plan→till→plant 三件套——plan(x1,y1,x2,y2,layout=0,hoe_level=-1,trellis=False) **纯算格不动机器**先看要锄/种哪些; till(x1,y1,x2,y2,layout=0) 按布局锄; plant(x1,y1,x2,y2,seed_name,**layout**) 按布局种（layout=0 整块/1 初级十字/2 高级/3 铱；direct=True 瞬移快、默认走位拟人）。想一次说完就 `ops=\"till plant\"`（**一份 kw 共用**，锄地会自动点名忽略 seed_name）。**layout 四档**: 0=标准整块(不预留洒水器,锄法蛇形逐格走位,任何锄头等级都行) 1=初级(十字稀疏,每台覆盖上下左右4格;锄法=精确锄每台4格,**与锄头等级无关**) 2=高级(优质,田宽高先裁成**3的倍数**,每3×3中心1台覆盖8格,整块蓄力锄) 3=铱(裁成**5的倍数**,每5×5中心1台覆盖24格;⚠️爬架作物不适用)。hoe_level: 0→1格 1→3线 2→5线 3→3×3 4→6×3,-1=自动读手持。trellis=True=爬架作物(啤酒花/青豆/葡萄,不可通过格)⇒自动**种2留1**留走道让AI能进田浇收。只管种不摆洒水器就直接 plant,不用 plan 那套。⚠️已知限制: layout 0/2/3 碰上金/铱锄(hoe_level>=3)会报**0处锄地站位**并自打一行'落点未实测校准,暂不规划蓄力站位'——**那是刻意不猜不是出错**; layout 1 不吃蓄力站位不受影响。",
+"farm": "农活域(🌱必走，别手动挥工具组合，用域 ops)：till(锄地) plant(种,跳过已种;带 layout 就按洒水器布局种) water(浇,自动跳雨+水壶没水先装满) harvest(收) scythe(镰刀收蒜/花/茶) fertilize(化肥) clear(清杂草石树桩;坐标同 till，也可 `radius=N` 走**圆形**；**会自动往外多清 2 格**——田边的杂草会长进田里把作物顶掉，不用自己放大) plot(连通域规划) plan(方形规划,纯算格) chop(砍树)。⚠️**锄地/播种各只有一个实现**：锄地=`till`（`hoe`/`布局锄`/`tillfield`/`蓄力锄` 都是它的别名）、播种=`plant`（`sow`/`plantlayout`/`播种规划` 都是它的别名）；⛔ 没有 `till_plant`——要锄+种写 `ops=\"till plant\"`。 clearground(清单格) load(收放机器:**拟人走过去逐台**、收放一条过;`item` 留空=只收不放) break(拆/敲同scene,镐子敲可破物/翻已耕地) place(放置/播种同scene) pond/pond_add/pond_feed/pond_collect/pond_fish(鱼塘)。⚠️漏格DLL自动补；**缺的格会被点名「被什么挡着」**（🌿草/杂草/🪨石头/🪵树枝→**先 `clear` 清一遍再 till/plant**；🏗️洒水器/箱子等设施→⛔别清、那是规划该绕开的格）——草占着地格时锄头是锄不出 HoeDirt 的，别对着「缺失N格」发呆。只在 Farm/温室/姜岛。带参 op(plant 的 seed_name、till/clear 的 x/y/rows、fertilize 的 fertilizer_name、place 的 name、load 的 item/machine_type/here、pond_add 的 item)→ kw={'参数名':值}。🐄动物: animals(摸+收) 喂水/碗(宠物水,🌧️雨天自动跳过——雨会把碗填满) milk(挤奶剪毛) buy(买动物,豁免建议) doors(关门) hay(干草) pet(猫狗) petwalk(拟人摸) 畜舍/这间(这间屋动物) statue(祈福)——⚠️farm water=浇地,动物水用 喂水; farm load=机器收放,这屋动物用 畜舍。📐参数键名: till/clear/plant/fertilize 都是 x,y(**必填**),rows,length,direction（till/plant 也可用 x1,y1,x2,y2 直接给矩形两角）；plant 另有 seed_name,layout,direct,trellis；harvest/scythe=radius；plot=x,y,radius,all_plots；chop=area(**值写几个数**：4 个数=矩形两角 / 3 个数=圆心+半径，逗号空格都认)；collect=machine_type,location；load=item,machine_type,location,here；place=name,x,y；break=x,y,steps,radius；pond_add=item+x,y（pond_feed/collect/fish 只要 x,y）；buy=animal_type,name,building；petwalk=include_petted；hay=dry_run。⚠️direction 只认 horizontal(默认)/vertical 两个值,别写'横'/'竖'。💡大田洒水器布局(可选,纯自动化建议)：要按洒水器留格/留走道就 plan→till→plant 三件套——plan(x1,y1,x2,y2,layout=0,hoe_level=-1,trellis=False) **纯算格不动机器**先看要锄/种哪些; till(x1,y1,x2,y2,layout=0) 按布局锄; plant(x1,y1,x2,y2,seed_name,**layout**) 按布局种（layout=0 整块/1 初级十字/2 高级/3 铱；direct=True 瞬移快、默认走位拟人）。想一次说完就 `ops=\"till plant\"`（**一份 kw 共用**，锄地会自动点名忽略 seed_name）。**layout 四档**: 0=标准整块(不预留洒水器,锄法蛇形逐格走位,任何锄头等级都行) 1=初级(十字稀疏,每台覆盖上下左右4格;锄法=精确锄每台4格,**与锄头等级无关**) 2=高级(优质,田宽高先裁成**3的倍数**,每3×3中心1台覆盖8格,整块蓄力锄) 3=铱(裁成**5的倍数**,每5×5中心1台覆盖24格;⚠️爬架作物不适用)。hoe_level: 0→1格 1→3线 2→5线 3→3×3 4→6×3,-1=自动读手持。trellis=True=爬架作物(啤酒花/青豆/葡萄,不可通过格)⇒自动**种2留1**留走道让AI能进田浇收。只管种不摆洒水器就直接 plant,不用 plan 那套。⚠️已知限制: layout 0/2/3 碰上金/铱锄(hoe_level>=3)会报**0处锄地站位**并自打一行'落点未实测校准,暂不规划蓄力站位'——**那是刻意不猜不是出错**; layout 1 不吃蓄力站位不受影响。",
 "mine": "下矿域(⚒️ 矿井/头骨/火山)：go(去挖矿:mode=rush冲层/farm刷矿,start起始层,target目标层,ore,cycles圈数) progress(进度) bomb_status/bomb_plan/bomb_place/bomb_collect/bomb_ladder/bomb_retreat(单步炸,**都要 bomb_ 前缀**) bomb_mine(自动) bomb_volcano(火山) organize(整理背包)。🔁**刷矿=mode=go(mode=farm)**：定点刷指定矿→ore=Copper铜(21层)/Iron铁(41层)/Gold金(71层)；**煤靠 farm 铁层(41)顺手清尘埃精灵/蝙蝠掉**（不是 ore 选项，跑 auto 内部刷）。🏃下矿=mode=go(mode=rush,start可选≤电梯上限+5倍数,target默认120)。⚠️无镐/血低硬拦；梯子 /ladder+confirm。⚔️贴身(3×3)自卫=游戏自己每 tick 挥刀(go/bomb_mine/bomb_escort/bomb_volcano 四个脚本都自开自关,**只转向不移动**;手上是锤子且冷却好了会重砸6×6)；2格外的怪仍靠脚本扫描,别站桩。🍽️**自定义吃食**：go/bomb_mine/bomb_volcano 都可传 food_hp/food_sta=**逗号分隔、靠前的先吃**(如 food_hp=「奶酪,鱼肉卷」)。血低只看 food_hp、体力低只看 food_sta(**两张表分开别混**)。点名后就只在这几样里挑——**防止自动挑把你留着卖的吃了**(山羊奶酪最典型)；整串都没货会明确报一句再退回自动挑。⚠️bomb_mine 没炸弹+host在同矿井→自动转【内部】协同(跟随host+帮忙敲矿/打怪)不撤退出矿(bomb_escort 不对外暴露、AI 不主动启用)；bomb_retreat 结束协同+停脚本+脱离矿井回门口。⚠️接「深处的危险」重置电梯→起始层动态从1起(内置脚本自动读，不暴露工具)；刷矿目标层不可直达会上报，需先冲层带回或改浅层。📐带参速查: go(mode=rush冲层/farm刷矿, start起始层, target目标层, ore=Copper铜/Iron铁/Gold金, cycles圈数, hp_threshold, food_sta, food_hp, resume) bomb_plan(radius,min_covered,top) bomb_place(x,y **必填**) bomb_collect(max_items) bomb_mine(target,bomb,min_covered,follow_host,lead,autodrop,one_floor,food_hp,food_sta) bomb_volcano(bomb,min_covered,hp_threshold,max_minutes,poll,food_hp,food_sta) organize(disable,reset)。💣bomb 三个取值 'Cherry Bomb'樱桃/'Bomb'黑/'Mega Bomb'超级——**点名的包里没有就按 黑>超级>樱桃 自动换成有的**(不会误报没炸弹)；范围 樱桃=边长7十字 / 黑=11x11方块 / 超级=15x15方块，⚠️黑和超级**会炸伤自己**(实测黑掉3血)。⚠️bomb_volcano **要求 host 已在矿/火山里**才放行(火山瓦片没法程序化换层)。⚠️bomb_mine one_floor=True=逐层模式(同步,只跑一层出摘要,不撤退)；**默认冲层模式=异步后台跑,推荐**。💡出发前占位物：提前放1个可堆叠物(铱矿/铱锭/五彩碎片)在包，满包时同种战利品自动堆叠吸附、少触发满包停；别拿银河之魂这类带死亡会丢的稀有物当占位。",
 # 🏠 2026-10-01：`"cabin"` 这条**删掉了** —— 整个域撤出顶层（恒：能收就收）。
 #    它每个 op 的新家：cook→**daily**（做饭是吃的上游）· sleep→daily · statue→farm ·
@@ -15672,8 +15711,11 @@ _INTENT_INDEX = [
     ("砍树,砍掉这棵树", "farm", "chop", "特殊树种(蘑菇树/桃花心木)默认保护，要砍先 settings chop 放行"),
     ("清杂草,清石头,清树枝,清出一块地", "farm", "clear",
      "x/y 同 till，或 radius=N 走圆形；**会自动往外多清 2 格**（不用自己放大）"),
-    ("收机器,收小桶,收桶,收酿酒桶", "farm", "collect", "一键全农场瞬收，不走路"),
-    ("放原料,给机器加料,往桶里放", "farm", "load", "kw={'item':物,'machine_type':机型}"),
+    ("收机器,收小桶,收桶,收酿酒桶", "farm", "load", "**拟人走过去逐台**（`item` 留空=只收不放）；"
+                                                    "单子上那行「收 已好的机器」也是它"),
+    ("放原料,给机器加料,往桶里放", "farm", "load",
+     "kw={'item':物,'machine_type':机型,'here':True}——**要放哪类机器必须写 machine_type**"
+     "（不然一件料会撒进所有收得下它的机器；而且会去点缝纫机那些不收的）"),
     ("摸动物,摸猫,摸狗,喂水,宠物碗", "farm", "animals",
      "动物水用 `farm(ops='喂水')`（雨天自动跳过）；farm water=浇地，别混"),
     ("挤奶,剪羊毛,剃毛", "farm", "milk", "手上要拿对工具"),
@@ -21257,6 +21299,9 @@ def _im_ctx():
                                 #    ⚠️ 先过一遍便宜的闸门（精通/本图有铁砧/背包有饰品）再问游戏，
                                 #       平时**一次都不多花**（同 `_im_shop` 只在商店开着时读 `/menu`）。
                                 reforge=_im_reforge_probe(state, machines),
+                                # 🧺 收机器那行的账（2026-10-01 定形）：只报"好了几台/空着几台"，
+                                #    **不再探针**（"放料"整个撤出单子，走原路线 `farm load`）。
+                                mwork=_im_mwork(state, machines),
                                 worn=worn)
 
 
@@ -21398,6 +21443,40 @@ def _im_chest_open(x, y):
         r = {"ok": False, "error": f"{type(e).__name__}: {e}"}
     r["walk"] = walk
     return r
+
+
+# 🧺🔁 「收放」那行的账（2026-10-01 恒拍板 (b)）。
+#
+# 来历：恒「不是撤掉非拟人了吗！还是一键收了hhh」+「我叫你统一成收放，还做了三种状况
+#   （料不够但继续收完全屋 / 料够边放边收 / 只收）…就是这条分支时候才做的啊」
+#   ⇒ 他说得对：那三种状况 = `machine_loader.py` 2026-09-27 的「收放一条过」
+#     （165 这条分支上验的「拟人收放 100 台小桶一条过」）。而单子上那条「收 已好的机器」
+#     接的是 **09-27 之前的快捷路**（`/machine_collect` 原子瞬收、不走路）——**没人回头换**。
+# ⇒ (b) = 单子那条改成 **「收放…」**：先挑**放什么料**，然后走 `machine_loader --here`
+#   拟人逐台收放（三种状况交给游戏/脚本，不在这一层分情况）。
+def _im_mwork(state: dict, machines: list) -> dict:
+    """「收 已好的机器」那行的账 → `{"ready","empty","products"}` / `{}`（没可收的）。
+
+    判据**问游戏**：好了几台 / 空着几台 = `/machines` 的 `status`（C# 由 `readyForHarvest` 定）。
+
+    ⚠️⚠️ **这里曾经还探过"背包里哪件能放进哪类机器"**（给"挑料 → 挑机器"那张目录行用）——
+       2026-10-01 恒把这套**整个撤了**：「这个传参好像还是有点复杂的……要传料又要传机器」+
+       「场景交互也很多，这样动可能要每次都走三级 1.收放→选机器→选料」。
+       ⇒ **放料是规划**，交给原路线 `farm load`（AI 自己带 `item`/`machine_type`/`here`，
+         同 `farm till` / `daily sleep`）；单子只留**收**这一件不带参数的动作。
+       ⇒ 那条 `/machine_reqs` 探针（一件一发）也随之下线：`intent show` 在机器房里
+         **不再多发请求**（`_MWORK_CACHE` 那套也跟着删了，别再挂回来）。
+    """
+    ms = machines or []
+    ready = [m for m in ms if (m.get("status") or "") == "ready"]
+    empty = [m for m in ms if (m.get("status") or "") == "empty"]
+    if not ready and not empty:
+        return {}
+    out = {"ready": len(ready), "empty": len(empty), "products": {}}
+    for m in ready:
+        nm = m.get("heldItemDisplay") or m.get("item") or "?"
+        out["products"][nm] = out["products"].get(nm, 0) + 1
+    return out
 
 
 def _bag_trinkets(state: dict) -> list:
@@ -21636,6 +21715,17 @@ def _im_run(op, args):
         #    ⚠️ 走 `helpers`（回一句话）：回执要的是"进去了没 / 扣了几块铱锭"，
         #       不是把几个端点的原始 dict 摊给 AI 看。
         "reforge": lambda: _im_reforge(args.get("x"), args.get("y"), args.get("item")),
+        # 🧺🔁 收放（2026-10-01 恒拍板 (b)：单子那条「收放…」挑完料按下去走这里）。
+        #    ⚠️ 走 `machine_loader --here` = **只伺候脚下这间屋**的**拟人收放一条过**：
+        #       好了的收、空着的放，**料用尽只停放、继续收**（恒那三种状况在脚本里，不在这层）。
+        #       `--here` 不是可选项：`/farm_report` 不含房主 FarmHouse ⇒ 传名字会扫到 0 台
+        #       （2026-09-27 真机空跑两千多次的账，见 `machine_loader.py:46-56`）。
+        #    ⚠️ 它是**长脚本（在异步白名单里）**⇒ 回的是 job 号，回执里**别说成"收完了"**。
+        #       `item` 留空 = 只收不放（单子上那行「只收不放」）。
+        "mwork": lambda: load_machines(item=str(args.get("item") or ""),
+                                       machine_type=str(args.get("machine_type") or ""),
+                                       location=str(args.get("location") or ""),
+                                       here=True),
     }
     # 🛒 买卖走**裸端点**（回 dict，回执要逐条报数字），只是外面多两道闸门。
     raw_ops = {

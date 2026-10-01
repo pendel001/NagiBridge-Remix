@@ -1066,6 +1066,93 @@ def main():
                   '["canReforge"] = CanReforgeTrinket(i)' in _src
                   and "GetTrinketData()?.CanBeReforged" in _src))
 
+    # ── 🧺🔁 收放（2026-10-01 恒拍板 (b)：单子那条改成"挑料 → 拟人收放"）──
+    #    判据全在服务器 `_im_mwork`：ready/empty 来自 `/machines` 的 status，
+    #    **"可放什么"来自游戏探针**（`/machine_reqs` 的 `canPlace`）。
+    _mst = {"location": {"uniqueName": "FarmHouse"},
+            "inventory": [
+                {"name": "Jade", "displayName": "翡翠", "stack": 17, "catNum": -2},
+                {"name": "Hoe", "displayName": "锄头", "stack": 1, "catNum": -99},
+                {"name": "BasiliskPaw", "displayName": "蜥怪的爪子", "stack": 1,
+                 "catNum": 0, "isTrinket": True},
+            ]}
+    _mms = [{"type": "Crystalarium", "typeDisplay": "宝石复制机", "status": "ready",
+             "heldItemDisplay": "翡翠"},
+            {"type": "Crystalarium", "typeDisplay": "宝石复制机", "status": "empty"},
+            {"type": "Keg", "typeDisplay": "小桶", "status": "empty"}]
+    _p_reqs, _asked = M._machine_reqs, []
+
+    def _fake_reqs(type_="", item=""):
+        _asked.append(item)
+        if item == "Jade":
+            # ⚠️ 形照 **`/machine_reqs` 的真实回包**：它给的是 `empty`（bool），**没有 `status`**
+            #    （`status` 是 `/machines` 的字段）—— 第一版夹具写了 `status: empty`，
+            #    于是自验绿、真机上那行不出现（真机当场逮到）。
+            return {"ok": True, "machines": [
+                {"type": "Crystalarium", "typeDisplay": "宝石复制机", "empty": True,
+                 "canPlace": True},
+                {"type": "Keg", "typeDisplay": "小桶", "empty": True, "canPlace": False}]}
+        return {"ok": True, "machines": [{"type": "Keg", "empty": True, "canPlace": False}]}
+
+    M._machine_reqs = _fake_reqs
+    _d = M._im_mwork(_mst, _mms)
+    res.append(ok("🧺 收机器：本图「好了几台 / 空着几台」数对得上（判据= `/machines` 的 status）",
+                  _d.get("ready") == 1 and _d.get("empty") == 2, _d))
+    res.append(ok("🧺 产物按名字摊开（`翡翠×1`）", _d.get("products") == {"翡翠": 1}, _d.get("products")))
+    res.append(ok("🧺 **一次探针都不发**（放料撤出单子后，`/machine_reqs` 那套整个下线）",
+                  _asked == [] and "loadable" not in _d, _asked))
+    # 什么都没得做 ⇒ `{}` ⇒ 那行不出现
+    res.append(ok("🧺 本图没机器 ⇒ `{}`（单子那行不出现）",
+                  M._im_mwork(_mst, []) == {}))
+    res.append(ok("🧺 有机器但没一台好了 ⇒ 只报空着几台（`ready=0` ⇒ 那行不给）",
+                  M._im_mwork(_mst, [_mms[1]]) == {"ready": 0, "empty": 1, "products": {}}))
+    M._machine_reqs = _p_reqs
+    # 🔌 单子↔服务器 的合同：单子那行**不带参数**（item/machine_type 都空 = 只收），
+    #    服务器调到 `load_machines(..., here=True)`。
+    #    ⚠️ `--here` 不是可选项：`/farm_report` 不含房主 FarmHouse ⇒ 传名字会扫到 0 台
+    #       （2026-09-27 真机空跑两千多次的账）。
+    _lm0, _lm_calls = M.load_machines, []
+    M.load_machines = lambda **kw: (_lm_calls.append(kw), "🚀 已后台启动 job 7")[1]
+    M._im_run("mwork", {"item": "", "machine_type": "", "location": "FarmHouse"})
+    M.load_machines = _lm0
+    res.append(ok("🔌 单子那行 **只收**（item/machine_type 皆空）⇒ 服务器调 "
+                  "`load_machines(item='', machine_type='', here=True)`"
+                  "（**漏了 `here` 就是 09-27 那个 0 台**）",
+                  bool(_lm_calls) and _lm_calls[-1].get("item") == ""
+                  and _lm_calls[-1].get("machine_type") == ""
+                  and _lm_calls[-1].get("here") is True, _lm_calls))
+    _lm_calls.clear()
+    M.load_machines = lambda **kw: (_lm_calls.append(kw), "🚀 已后台启动 job 7")[1]
+    M._im_run("mwork", {"item": "Starfruit", "machine_type": "Keg", "location": "Big Shed"})
+    M.load_machines = _lm0
+    res.append(ok("🔌 放料那条（AI 自己调的 `farm load`）参数也照传（item + machine_type 一起）"
+                  "—— 只传 item 会撒进所有收得下它的机器、还会去点缝纫机",
+                  bool(_lm_calls) and _lm_calls[-1].get("item") == "Starfruit"
+                  and _lm_calls[-1].get("machine_type") == "Keg", _lm_calls))
+    # 🧵 类型门：**传类型 = 只伺候那类**；不传 = 缝纫机也在名单里（真机就是它去点了）
+    import machine_loader as ML
+    _ms0 = ML.api.machines
+    ML.api.machines = lambda: {"machines": [
+        {"x": 1, "y": 1, "type": "Crystalarium", "status": "empty"},
+        {"x": 2, "y": 2, "type": "SewingMachine", "status": "empty"},
+        {"x": 3, "y": 3, "type": "SewingMachine", "status": "ready"}]}
+    _tg, _ = ML.get_serviceable_machines("Crystalarium", with_items=["Jade"], here=True)
+    _tg2, _ = ML.get_serviceable_machines("", with_items=["Jade"], here=True)
+    ML.api.machines = _ms0
+    _k1 = sorted((m["x"], m["y"]) for m in _tg)
+    _k2 = sorted((m["x"], m["y"]) for m in _tg2)
+    res.append(ok("🧵 传了 `machine_type` ⇒ **只伺候那一类**（缝纫机不进名单）",
+                  _k1 == [(1, 1)], _k1))
+    res.append(ok("🧵 不传类型 ⇒ 本图**所有**空机器都在名单里（缝纫机 (2,2) 就是真机被点的那台）"
+                  "—— 所以单子那一层**必须发类型**",
+                  _k2 == [(1, 1), (2, 2), (3, 3)], _k2))
+    _mm_src = open(os.path.join(_here, "intent_menu.py"), encoding="utf-8").read()
+    res.append(ok("🔌 单子那侧真的打的是 `mwork`，且**旧的一键收执行器已下线**"
+                  "（找 `_exec_collect`/`_collect_can` —— 注释里提 `machine_collect` 不算，"
+                  "那正是记账用的）",
+                  'run("mwork"' in _mm_src and "MACHINE_V = Verb(" in _mm_src
+                  and "_exec_collect" not in _mm_src and "_collect_can" not in _mm_src))
+
     print(f"\n{sum(res)}/{len(res)} 过")
     return all(res)
 

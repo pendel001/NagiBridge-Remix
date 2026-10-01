@@ -44,6 +44,12 @@ _KNOWN_SUBSUMED = {
                             #    （原工具=存进指定格 (x,y) 的箱子；该能力现由 storage store 的 target 参数给）
                             #    ⇒ 此函数**已无调用者**，是死包装，**留着只为兼容、可删**
     "storage_default_clear",# ⚠️ 同上：清默认箱的能力现由 `storage_default(clear=True)` 给 ⇒ **死包装，可删**
+    # ⛔ 2026-10-01 恒：「**做完给其他收放路打一下退役标吧**」——两条旧收放路都撤下顶层，功能并进 `load`：
+    "collect_machines",     # → farm ops="load"（`load_machines`）：**同一件事的拟人版**。
+                            #   旧的是 C# `/machine_collect` 原子瞬收、**不要求人在机器旁边**
+                            #   （恒真机：「不是撤掉非拟人了吗！还是一键收了hhh」）。
+    "work_building",        # → farm ops="load"（同上）：旧的跑 `fruit_round.py`，**料尽/机器不收会提前收工**，
+                            #   跟恒定的「收放一条过」不是一套；而且同一件事只该有一条拟人路。
 }
 
 PROBLEMS = []
@@ -87,7 +93,7 @@ _SUBSUMED_DOMAINS = {
         "decor_report":      "scene(ops='decor')（同一函数；地板/墙纸真值表）",
         "furniture_pickup":  "scene(ops='pickup')（同一函数）或单子「搬走…」",
         "scan_furniture":    "scene(ops='furniture')（同一函数）",
-        "_cabin_collect":    "单子「收 已好的机器」/ farm(ops='collect') —— 本屋那条快捷路已并入（同一个 machine_collect）",
+        "_cabin_collect":    "单子「收 已好的机器」/ farm(ops='load', kw={'here': True}) —— **2026-10-01 起改走拟人那条**（同一个 machine_loader，不再是一键瞬收）",
         "_cabin_enum":       "check(what='machines') + 单子「收 已好的机器」—— 扫屋待收的聚合视图已由这两条覆盖",
     },
 }

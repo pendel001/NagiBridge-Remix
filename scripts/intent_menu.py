@@ -217,6 +217,14 @@ class Ctx:
     #    ⚠️ **由服务器探针算好递进来**（`/machine_reqs` 的 `canPlace` + `AdditionalConsumedItems`，
     #       **只问不做**）：这一层不许自己打 HTTP（`can()` 是纯函数），也不许编"3"这个数。
     reforge: dict = field(default_factory=dict)
+    # 🧺🔁 **这一刻"收放"这回事**（2026-10-01 · 恒拍板 (b)：单子那条改成"先挑放什么料 →
+    #    走 `machine_loader --here` 拟人收放"）。`{}` = 本图没机器可伺候（那行不出现）。
+    #    有值时形如 `{"ready": 19, "empty": 12, "products": {"翡翠": 17},
+    #                "loadable": [{"name": "Jade", "display_name": "翡翠", "count": 17,
+    #                              "machines": "宝石复制机×18"}]}`。
+    #    ⚠️ **由服务器算好递进来**（`/machines` 的 `status` + `/machine_reqs` 的 `canPlace`
+    #       探针 = 游戏自己的 `PlaceInMachine(probe:true)`）：这一层是纯函数，不打 HTTP、不编。
+    mwork: dict = field(default_factory=dict)
     # 🎬 **正在播的剧情/事件**（`/state` 的 `activeEvent`，没有就是 `None`）。
     #    ⚠️ 必须跟 `menu` 分开看：事件**不是菜单**（`activeMenu` 那时可能是 null），
     #       而且节日期间 `activeEvent` **恒在播** —— 那是"这一刻的事实"，不是"有个弹窗挡路"。
@@ -555,66 +563,61 @@ def _exec_lie(ctx, targets, run):
                                 run("lie_bed", {"who": _bed_owner(t)}))
 
 
-def _collect_can(ctx, t):
-    """📦 收机器：`/machines` 的 `status`（C# 由 `readyForHarvest` 定，见 ModEntry 18503）。"""
-    if not t:
-        return CAN_NO
-    m = t.get("machine")
-    if m is None:
-        return CAN_NO
-    st = m.get("status")
-    if st is None:
-        return CAN_MAYBE
-    return CAN_YES if st == "ready" else CAN_NO
+# 🧺 **「收 已好的机器」**（2026-10-01 定形 · 恒：「完全撤出选项你觉得怎么样？」）
+#
+# 这一条只干一件事：**拟人走过去，把好了的机器收掉**（`machine_loader --here`，逐台真交互）。
+#
+# ⚠️⚠️ **"放料"故意不在单子上**（三轮改形的结论，别再往这儿加选项）：
+#   · 最早它接的是**快捷路** `/machine_collect`（原子瞬收、不走路）⇒ 恒真机：「不是撤掉非拟人了吗！
+#     还是一键收了hhh」；
+#   · 改成"先挑料 → 再挑机器"的目录行后，恒：「这个传参好像还是有点复杂的……要传料又要传机器」+
+#     「场景交互也很多，这样动可能要每次都走三级 1.收放→选机器→选料」；
+#   · ⇒ **放料是"规划"**（哪件进哪类机器），按恒退役「锄」那条规矩交给原路线：
+#     `farm(ops="load", kw={"item": "Starfruit", "machine_type": "Keg", "here": True})`
+#     —— AI 自己带意图去调（同 `farm till` / `daily sleep`：`item`/`who` 这类"放什么/去哪儿"
+#     本来就不进单子）。单子只把**出路**写在理由栏里。
+#
+# ⚠️ 判据全在 `Ctx.mwork`（服务器算的 `/machines` 的 status）——这一层是纯函数，不打 HTTP。
 
 
-def _collect_reason(ctx, t):
-    # 产物名已经在**标签**里了（`收 钻石`），别在理由栏再说一遍。
-    return "机器已好"
+def _mwork_can(ctx, t):
+    """这一刻有没有可收的 = **本图有 ready 的机器**（`/machines` 的 status）。"""
+    d = ctx.mwork or {}
+    return CAN_YES if int(d.get("ready") or 0) > 0 else CAN_NO
 
 
-def _collect_show(ctx, t):
-    m = t.get("machine") or {}
-    item = m.get("item")
-    return f"收 {ctx.zh_of(item) if item else (t.get('object') or '机器')}"
+def _mwork_show(ctx, t):
+    return "收 已好的机器"
 
 
-def _collect_reason_many(ctx, targets):
-    """把一行里的产物按数量摊开——恒要的「可以收的钻石×1，翡翠×n」。
+def _mwork_reason(ctx, t):
+    """理由栏 = **这批是什么**（产物摊开）+ 空着几台 + **放料的出路**（警告必须带路）。"""
+    d = ctx.mwork or {}
+    parts = []
+    r, e = int(d.get("ready") or 0), int(d.get("empty") or 0)
+    prod = "、".join(f"{k}×{v}" for k, v in
+                     sorted((d.get("products") or {}).items(), key=lambda x: -x[1]))
+    parts.append(f"本图 {r} 台好了" + (f"（{prod}）" if prod else ""))
+    if e:
+        parts.append(f"{e} 台空着")
+    parts.append("拟人逐台收；要**收完顺手放料**走 `farm load`（`item` + `machine_type`）")
+    return " · ".join(parts)
 
-    ⚠️ 摊在**理由栏**，不摊在标签里：标签是**动作**（收 已好的机器），
-    理由是**这批是什么**。两件事别混（同屏两个"格"两个意思那种病）。
+
+def _exec_mwork(ctx, targets, run):
+    """🧺 收：走 `machine_loader --here`（**拟人、只伺候脚下这间**），把它的话原样带回来。
+
+    ⚠️ 走 `helpers` 那档（回一句话）⇒ `_im_run` 照它**开头**判 yes/maybe/no，
+       所以这里**不替它下结论**（它可能回"已后台启动 job N"——那也必须照原样说）。
+    ⚠️ `item` 留空 = **只收不放**（要放料是 AI 自己调 `farm load`，见上面那段）。
     """
-    cnt = {}
-    for t in targets:
-        it = (t.get("machine") or {}).get("item") or "?"
-        cnt[it] = cnt.get(it, 0) + 1
-    return "、".join(f"{ctx.zh_of(k)}×{v}"
-                     for k, v in sorted(cnt.items(), key=lambda x: -x[1]))
+    r = run("mwork", {"item": "", "machine_type": "", "location": ctx.loc}) or {}
+    return _receipt_from_helper("收机器", f"{int((ctx.mwork or {}).get('ready') or 0)} 台好了",
+                                r)
 
 
-def _exec_collect(ctx, targets, run):
-    """🧺 收机器——**复用现成的 `/machine_collect`**。
-
-    ⚠️⚠️ **这是快捷路，不是拟人路。** C# 里是 `farmer.addItemToInventory(held)`
-    （`ModEntry.cs:18725`），**不要求角色在机器旁边**——AI 会"隔着半个屋子把 20 台
-    机器一次收干净"。拟人那条（走过去逐台 `interact`）在 `machine_loader.py` 里，
-    **一个字没动**。恒 2026-09-27 拍板「暂时复用现在的那个」，所以就这儿接。
-
-    ⇒ **要换拟人时只改这一个函数**——单子、动词表、can() 全都不用动。
-
-    ⚠️ 执行器是**整屋批量**的 ⇒ 这一行必须 `merge=True`，**不能假装能只挑三台收**。
-    """
-    r = run("machine_collect", {"location": ctx.loc})
-    if not r.get("ok"):
-        return render_receipt("收机器", ctx.loc, False,
-                              note=f"游戏回：{r.get('error') or r}")
-    n, skip = r.get("collected", 0), r.get("skippedFull", 0)
-    note = f"实际收到 {n} 件"
-    if skip:
-        # ⚠️ 背包满**不是成功**，而且必须同时说清**下一步**（报缺了要给出路，别让 AI 干瞪眼）
-        note += f" · 背包满了，还有 {skip} 件没收 —— 先去卖或存，回来再敲一次"
-    return render_receipt("收机器", ctx.loc, True, note=note)
+MACHINE_V = Verb("mwork", "收 已好的机器", 88, _mwork_can, _mwork_reason, _mwork_show,
+                 "world", exec=_exec_mwork, group="设备")
 
 
 def _eat_can(ctx, t):
@@ -1187,7 +1190,7 @@ def _exec_take_multi(ctx, pairs, run):
 def _exec_store_multi(ctx, pairs, run):
     """📥 存：同样**逐条报**。
 
-    ⚠️⚠️ **这是快捷路，不是拟人路**（同 `_exec_collect` 的记账）：
+    ⚠️⚠️ **这是快捷路，不是拟人路**（同「收放」那段记账：**同一件事有两条路时，接的是哪条要写清**）：
     C# `HandleStore`（`ModEntry.cs:10429`）是**原子直操**——`farmer.Items` ↔ `chest.addItem`，
     **不校验距离** ⇒ 人站在半张图外也能"存进去"。
     拟人那条是 MCP 工具 `chest_store`（`nagi_mcp_server.py` 里先 `_walk_to_chest` 再 `/store`）。
@@ -1460,8 +1463,8 @@ def _chest_weight(ctx) -> int:
     """📦 容器行的权重：平时 **80**（**故意压在 `collect` 88 之下**——它是目录行，理由见 VERBS 那段）；
     **满包时抬到 90**（恒 2026-09-30 拍板：「把「箱子…」提前 + 理由点明」）。
 
-    ⚠️ 为什么满包该压过"收机器"：满包时**收根本收不进去**（`_exec_collect` 只会报
-       "背包满了，还有 N 件没收"）⇒ 那一刻的**唯一正解**是先去存/卖。
+    ⚠️ 为什么满包该压过「收放」：满包时**收根本收不进去**（收放那条走脚本，它自己会报
+       「背包满了，还有 N 件没收」）⇒ 那一刻的**唯一正解**是先去存/卖。
        「菜单是强暗示」要挡的正是"给了但按了白按"的排位。
     ⚠️ 判据用 `_pack_space`（跟「取」那条行**同一根**），别另写一个 `len(inv) >= max_items`。
     """
@@ -1551,7 +1554,7 @@ def _chest_overview(ctx, targets):
         items = b.get("items") or []
         if items:
             # ⚠️ 印 **displayName（中文）**，不是 `name`（英文内部名）——单子上的东西一律用
-            #    AI 看得懂的那个名字（同 `_collect_reason_many` 的口径）。
+            #    AI 看得懂的那个名字（同「收放」理由栏那套口径）。
             #    ⚠️ `storage_layout`（storage 域那张屏）印的是 `name` ⇒ 同一批箱子两张屏
             #       长得不一样，是**旧账**，记在 CHANGELOG 里待收，别在这儿跟着错。
             head = "、".join(f"{i.get('displayName') or i.get('name')}×{i.get('count')}"
@@ -2633,9 +2636,11 @@ VERBS: list = [
     Verb("chest", "箱子", 80, _chest_can, _chest_reason, _chest_show, "tile",
          subs=_chest_overview, count=_chest_count, merge=True,
          reason_many=_chest_reason_many, group="设备", weight_fn=_chest_weight),
-    Verb("collect", "收 已好的机器", 88, _collect_can, _collect_reason, _collect_show, "tile",
-         exec=_exec_collect, merge=True, batch=True,          # 整图 20 台**全收**（真机验过）
-         reason_many=_collect_reason_many, group="设备"),
+    # 🧺 **收 已好的机器**（2026-10-01 定形）：不带参数的一行动作（**拟人逐台收**）。
+    #    **放料不在单子上**（"哪件进哪类机器"是规划 ⇒ 走原路线 `farm load`）——
+    #    三轮改形的全部理由在 `MACHINE_V` 上面那一大段，别再把选项加回来。
+    #    ⚠️ 权重**沿用 88**：`_chest_weight`（满包 90 压过它）与各处的排序说明都按这个数写的。
+    MACHINE_V,
     # ⚠️ 下面这些**只有渲染没有执行**（`exec=None`）⇒ **不上单子**，只在 `at(x,y)` 里
     #    标「⏳ 还没接执行」——**那行就是缺口探测器**（见 `render_at` 的注释）。
     #    没接的原因**不是懒**，是这两族各有各的形状问题：
@@ -2658,7 +2663,7 @@ VERBS: list = [
     # 🪑 起身：**坐着才出现**（见上面 `_stand_can` 那段）——它是「坐」的**出口**，
     #    没有它，单子就把 AI 留在一个自己不给路的状态里。
     # ⚠️ 权重贴着 `sit`(70) 下面一点：同一个"姿势"家族，坐/起 该挨着看。
-    #    压不过 收机器(88)/箱子(80) 是对的 —— 坐着不影响收机器（`_collect_can` 不看坐姿）。
+    #    压不过 收放(88)/箱子(80) 是对的 —— 坐着不影响收放（`_mwork_can` 不看坐姿）。
     Verb("stand",   "起身",   66, _stand_can,   _stand_reason,   _stand_show,   "world",
          exec=_exec_stand),
     # 🛏 床（2026-09-29 恒：「床的重要性比其他家具大得多…当前场景有就该置顶」）。
@@ -3720,7 +3725,7 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
              caps: dict = None, seats: dict = None, furniture: dict = None,
              animals: dict = None, shop: dict = None, beds: list = None,
              menu_exit: str = "", menu_hint: str = "", worn: dict = None,
-             menu_data: dict = None, reforge: dict = None) -> Ctx:
+             menu_data: dict = None, reforge: dict = None, mwork: dict = None) -> Ctx:
     """把 `/state`(**full**) + `/surroundings`(+`/machines`/`/scan_chests`) 拼成 Ctx。
 
     ⚠️ 只搬运，**不补默认值**：缺什么就让它缺着（`can()` 遇到缺失自然回 假/？）。
@@ -3776,7 +3781,7 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
     #    原先它只能靠"背包/箱子里碰巧有同名物品"才凑得出中文 ⇒ 真机实拍过中英混排的丑行：
     #    `翡翠×17、Diamond×1、Iridium Ore×1`（`Diamond` 当时背包和箱子里都没有 ⇒ 查不到）。
     #    现在 `/machines` 直接吐 `heldItemDisplay`（**问游戏要的名字**）——
-    #    ✅ 消费侧零改动：`_collect_show` / `_collect_reason_many` 本来就走 `ctx.zh_of()`。
+    #    ✅ 消费侧（「收放」理由栏）直接用服务器递来的 `products` —— 中文名由 `/machines` 直供。
     #    ⚠️ **不在这儿堆名单**（名单会烂，本项目的老病：1.6 矿节点 ID、`Jewels Of The Sea`）。
     for m in machines or []:
         n, dn = m.get("heldItem"), m.get("heldItemDisplay")
@@ -3798,6 +3803,8 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
                menu_data=menu_data or {},
                # 🔨 铁砧能不能重铸（同上：服务器探针算好递进来，「铱锭要几块」这种数**不在这儿编**）。
                reforge=reforge or {},
+               # 🧺🔁 收放那行的账（同上：`/machines` + `/machine_reqs` 探针，服务器算好递进来）。
+               mwork=mwork or {},
                sitting=bool(((seats or {}).get("me") or {}).get("sitting")),
                worn=(worn or {}),
                pets=pets,
@@ -3886,7 +3893,15 @@ def _fixture():
     return Ctx(px=12, py=12, loc="FarmHouse", inv=inv, held=inv[0],
                tiles=tiles, stamina=268, max_items=36,
                pets=[{"name": "喵喵", "kind": "pet"}],
-               caps={"forage": True, "diggable": True, "harvestable": True})
+               caps={"forage": True, "diggable": True, "harvestable": True},
+               # 🧺🔁 收放那行的账（2026-10-01 (b)）：形照**服务器** `_im_mwork` 的产物
+               #    （`/machines` 的 status + `/machine_reqs` 的 canPlace 探针）。
+               #    ⚠️ 这一层**自己不算**这个字典 —— 夹具手写 = 跟真机那一处**必然漂**
+               #    （所以 `_intent_wiring_selftest.py` 那边还有一条**走真探针**的用例）。
+               mwork={"ready": 2, "empty": 1, "products": {"钻石": 2},
+                      "loadable": [{"name": "Jade", "display_name": "翡翠", "count": 7,
+                                    "type": "Crystalarium", "type_display": "宝石复制机",
+                                    "n": 1}]})
 
 
 def _selftest():
@@ -3948,7 +3963,7 @@ def _selftest():
     finally:
         VERBS.remove(probe)
         _VERB_BY_KEY.pop("probe_unwired", None)
-    ok.append(("接了的动词在单子上", "收 已好的机器" in menu))
+    ok.append(("接了的动词在单子上（收 已好的机器）", "收 已好的机器" in menu))
     # 🍽📖 2026-09-29：吃/看**接上执行了** ⇒ 手持那件（fixture 是古书）该出现
     ok.append(("接了的「看」在单子上（手持是书）", "看 古书" in menu))
     # 🌿🌾 同一天接的：捡/收作物（**聚合行**）
@@ -3957,8 +3972,8 @@ def _selftest():
     # ⛔ 原来这儿有一条 `接了的「锄」在单子上` —— 2026-09-29 随动词退役一起**删掉**了。
     #    ⚠️ 别改成 `not in` 就完事：那是**另一条闸**（"不许回来"，在下面），
     #    混在这里会让人以为"锄本来就该在、只是今天不在"。
-    ok.append(("两台同产物 → 聚合成一行", "×2" in menu))
-    ok.append(("产物摊在**理由**栏（Diamond×2）", "Diamond×2" in menu))
+    ok.append(("两台同产物 → 理由栏里聚合成一条", "×2" in menu))
+    ok.append(("产物摊在**理由**栏（钻石×2）", "钻石×2" in menu))
     ok.append(("单子带理由列", "←" in menu))
     ok.append(("单子留 0 出口", "做点别的" in menu))
 
@@ -4065,18 +4080,43 @@ def _selftest():
     reset_menu()
     render_menu(ctx, n=40)                      # 先看一眼，才有单子可敲
     # ⚠️ 按**标签**找那一行，不写死 1 号（2026-09-29 加容器行后，1 号已经变成箱子了）
-    out = do_row(_no_of("收 已好的机器"), fake_run, ctx)
-    ok.append(("do_row 打的是批量端点", bool(calls) and calls[0][0] == "machine_collect"))
-    ok.append(("do_row 报实际收到几件", "收到 2 件" in out))
-    ok.append(("敲越界的号 → 拒绝并给出路", "at x,y" in do_row(len(_LAST_ROWS) + 5, fake_run, ctx)))
+    # 🧺🔁 2026-10-01 恒拍板 (b)：这条从**动作行**（「收 已好的机器」→ 一键 `machine_collect`）
+    #    换成了**目录行**（「收放…」→ 挑放什么料 → `machine_loader --here` 拟人收放）。
+    #    ⇒ 用例跟着换成：**点开 → 挑料 → 打 `mwork`**（+ 挑「只收不放」那条打空 item）。
+    # 🧺 2026-10-01 定形（恒：「完全撤出选项你觉得怎么样？」）：**不带参数的一行动作**。
+    #    三轮改形都记在 `MACHINE_V` 上面那段 —— 这里只锁最终形状：
+    #    ① 单子上**没有目录层**（放料撤出单子，走原路线 `farm load`）；
+    #    ② 执行打的是 `mwork`（拟人那条），`item`/`machine_type` 都空 = 只收；
+    #    ③ 理由栏必须**给出放料的出路**（警告必须带路）。
+    def fake_mwork(ep, payload):
+        calls.append((ep, payload))
+        return {"st": "yes", "text": "🏠 收机器：收了 2 台（拟人走位）"}
 
-    # ⑧ 背包满**不是成功**，且必须说清下一步（报缺了要给出路）
-    def full_run(ep, payload):
-        return {"ok": True, "collected": 1, "skippedFull": 7}
-
+    reset_menu()
+    screen = render_menu(ctx, n=40)
+    out_m = do_row(_no_of("收 已好的机器"), fake_mwork, ctx)
+    ok.append(("🧺 单子上是**不带参数的一行动作**「收 已好的机器」（敲一下就开跑，没有目录层）",
+               bool(calls) and calls[-1][0] == "mwork"
+               and calls[-1][1].get("item") == "" and calls[-1][1].get("machine_type") == ""))
+    ok.append(("🧺 它是**拟人**那条（`mwork` → `machine_loader --here`），"
+               "不再是旧的一键 `machine_collect`",
+               not any(c[0] == "machine_collect" for c in calls)))
+    ok.append(("🧺 回执把脚本的原话带回来（长脚本，**不许说成收完了**）", "收了 2 台" in out_m))
+    ok.append(("🧺 理由栏**给出放料的出路**（警告必须带路：`farm load` + 两个参数）",
+               "farm load" in screen and "machine_type" in screen))
+    # ⚠️ 越界那条要**回顶层**再敲（上面刚执行过，层级已经不是顶层了）
+    reset_menu()
     render_menu(ctx, n=40)
-    ok.append(("背包满 → 说清下一步",
-               "先去卖或存" in do_row(_no_of("收 已好的机器"), full_run, ctx)))
+    ok.append(("敲越界的号 → 拒绝并给出路", "at x,y" in do_row(len(_LAST_ROWS) + 5, fake_mwork, ctx)))
+
+    # ⑧ ⚠️ 2026-10-01：回执**照原样转述脚本的话**（脚本报"没收完"时不许替它编成功）
+    def warn_mwork(ep, payload):
+        return {"st": "no", "text": "⚠️ 背包满了，还有 7 件没收 —— 先去卖或存，回来再敲一次"}
+
+    reset_menu()
+    render_menu(ctx, n=40)
+    ok.append(("🧺 脚本报「没收完」⇒ 回执**照原样转述**（替它编成功就是老病）",
+               "先去卖或存" in do_row(_no_of("收 已好的机器"), warn_mwork, ctx)))
 
     # ⑨ 不崩：空世界 + 没单子就敲
     render_menu(Ctx())
@@ -4568,7 +4608,7 @@ def _selftest():
     ok.append(("📦 平时容器行权重 80（**故意压在收机器 88 之下**）", _chest_weight(_fixture()) == 80))
     _full = _fixture()
     _full.inv = list(_full.inv) * 12          # 3×12 = 36 = max_items ⇒ 满
-    ok.append(("📦 **满包 ⇒ 抬到 90**（压过「收 已好的机器」88）", _chest_weight(_full) == 90))
+    ok.append(("📦 **满包 ⇒ 抬到 90**（压过「收放」88）", _chest_weight(_full) == 90))
     reset_menu()
     _fm = render_menu(_full, n=40)
     ok.append(("📦 满包时理由栏**点明**「背着满了」（状态条和单子是两张屏，别指望 AI 自己串）",
