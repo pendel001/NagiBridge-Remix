@@ -3529,6 +3529,9 @@ def _bg_any_running() -> bool:
 #    ⚠️ **不是 `diggable`**：那是**地图属性**（真机 Farm 上 194 格都 true、而斑点 0 个）
 #       —— 2026-09-29 `dig` 那一行就是因为这个被撤掉的（整片农田都提示"可挖"= 噪音）。
 _SPOT_IDS = ("(O)590", "590", "(O)SeedSpot", "SeedSpot")
+# 🪱 「挖 远古斑点」那行**只扫身边**（恒 2026-10-01：「不需要特定跑大老远锄！**扫一下周围** ——
+#    差不多现在轮回到宠物碗的半径就好了」）——切比雪夫半径（方形），**可调**，别散在多处。
+_SPOT_RADIUS = 8
 
 
 def _forage_counts(tiles: list, show_moss: bool, has_hoe: bool) -> dict:
@@ -3544,7 +3547,7 @@ def _forage_counts(tiles: list, show_moss: bool, has_hoe: bool) -> dict:
     """
     c = {"bush": 0, "spot": 0, "ginger": 0, "onion": 0, "truffle": 0,
          "moss_tree": 0, "greenrain_tree": 0, "moss_big": 0, "moss_small": 0,
-         "forage": {}}
+         "forage": {}, "dig_tiles": []}
     moss_big_tiles = set()
     counts = c["forage"]
     for t in tiles or []:
@@ -3553,6 +3556,7 @@ def _forage_counts(tiles: list, show_moss: bool, has_hoe: bool) -> dict:
             continue
         if has_hoe and t.get("forageCrop") == "2":
             c["ginger"] += 1
+            c["dig_tiles"].append((t.get("x"), t.get("y")))
             continue
         if t.get("forageCrop") == "1" and t.get("harvestable"):
             c["onion"] += 1
@@ -3576,6 +3580,7 @@ def _forage_counts(tiles: list, show_moss: bool, has_hoe: bool) -> dict:
             continue
         if has_hoe and t.get("objId") in _SPOT_IDS:
             c["spot"] += 1
+            c["dig_tiles"].append((t.get("x"), t.get("y")))
             continue
         # 🍄 2026-09-01 猪松露：isPassable()=false（Category -81 动物产物不在游戏 passable 白名单）
         #    → passable 判定会甩掉它；松露=直接可捡的第一等采集物，按 objId 认、不依赖 passable。
@@ -21772,6 +21777,46 @@ def _im_doors(state: dict) -> dict:
             "winter": season == "winter"}
 
 
+# 🏪 「砸晶球」那行新加的门禁之一：**克林特现在营业吗**（恒 2026-10-01：「做成背包检测：
+#    有各种晶球**且克林特营业中**可以报」）。
+_CLINT_SHOP_KEY = "铁匠铺 (Clint)"      # `calendar_data.SHOPS` 里那把 key（休息日表用的就是它）
+
+
+def _im_clint_open() -> bool:
+    """🏪 克林特**今天/此刻**营业吗 → True/False。
+
+    ⚠️ 判据**全问现成那两份数据**（一个新表都不编；恒：「时间表问现成那份商店时间数据」）：
+      · **休息日**：`calendar_data.get_closed_shops_today_v2(day_index)`
+        —— 状态条那句「🏪休: 铁匠铺 (Clint)」用的就是它（`day_index = (day-1) % 7`，同 `_calendar_line`）；
+      · **营业时段**：`locations.SHOP_HOURS["Blacksmith"]` 的**前导** `H:MM-H:MM`
+        （表里就长这样：`"9:00-16:00"`；后面那截中文注解不参与判断）。
+    ⚠️ 读不到（时钟/日历/表） ⇒ **False**（= 那一行不出现）——方向照老规矩：
+       宁可少给一行，也不给一行"跑过去发现关门"的（那是"按了不成"）。
+    """
+    try:
+        t = (api.state().get("time") or {})
+        tod = int(t.get("timeOfDay"))
+        day = int(t.get("dayOfMonth"))
+    except Exception:
+        return False
+    try:
+        day_index = (day - 1) % 7            # 0=周一 … 6=周日（同 `_calendar_line` 那份算法）
+        if _CLINT_SHOP_KEY in (calendar_data.get_closed_shops_today_v2(day_index) or []):
+            return False
+    except Exception:
+        return False
+    try:
+        _h = str(locations.SHOP_HOURS.get("Blacksmith") or "")
+        _m = re.match(r"\s*(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})", _h)
+        if not _m:
+            return False
+        _open = int(_m.group(1)) * 100 + int(_m.group(2))
+        _close = int(_m.group(3)) * 100 + int(_m.group(4))
+        return _open <= tod < _close
+    except Exception:
+        return False
+
+
 def _im_chores(state: dict, surr: dict, animals: dict) -> dict:
     """🌿 六件"顺手就做"的活 —— **单子那 6 行的账**（判据全在这一处算好递进 `Ctx.chores`）。
 
@@ -21809,9 +21854,21 @@ def _im_chores(state: dict, surr: dict, animals: dict) -> dict:
         _c = {}
     if _c.get("bush"):
         out["berry"] = int(_c["bush"])
-    _dig = int(_c.get("spot") or 0) + int(_c.get("ginger") or 0)
-    if _dig:
-        out["spot"] = _dig
+    # 🪱 斑点那笔账**只算身边**（切比雪夫 ≤ `_SPOT_RADIUS`）——恒：「不需要特定跑大老远锄」。
+    #    ⚠️ 过滤用的是 `_forage_counts` 回的那份**坐标**（分类判据仍只一处），别在这儿重认一遍 objId。
+    try:
+        _px = int(((state or {}).get("player") or {}).get("x") or 0)
+        _py = int(((state or {}).get("player") or {}).get("y") or 0)
+    except Exception:
+        _px = _py = 0
+    _near = [(x, y) for (x, y) in (_c.get("dig_tiles") or [])
+             if isinstance(x, int) and isinstance(y, int)
+             and max(abs(x - _px), abs(y - _py)) <= _SPOT_RADIUS]
+    if _near:
+        out["spot"] = len(_near)
+        # ⚠️ 半径也递下去（单子那行的理由栏要写出来：`附近 8 格内 N 处`）——
+        #    常量只有 `_SPOT_RADIUS` 一处，`intent_menu` 那边不import服务器（会成环）。
+        out["spot_r"] = int(_SPOT_RADIUS)
     _moss = int(_c.get("moss_tree") or 0) + int(_c.get("moss_big") or 0) + int(_c.get("moss_small") or 0)
     if _show_moss and _moss:
         out["moss"] = _moss
@@ -21894,6 +21951,9 @@ def _im_ctx():
                                 #    判据全问游戏（`/surroundings` + `/crab_pots` + `/state.orePan`
                                 #    + `/animals`），分类跟状态条「🌿 可采集」**共用一份**。
                                 chores=_im_chores(state, surr, animals),
+                                # 🏪 铁匠铺营业中吗（「砸晶球」那行的新门禁之一，
+                                #    判据：现成的休息日表 + `SHOP_HOURS` 前导时段）
+                                clint_open=_im_clint_open(),
                                 worn=worn)
 
 

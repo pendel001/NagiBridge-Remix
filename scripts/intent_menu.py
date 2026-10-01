@@ -256,6 +256,12 @@ class Ctx:
     #       也不许自己编"哪些算斑点/苔藓"的名单 —— 那几个字段的判据跟状态条「🌿 可采集」
     #       **共用 `_forage_counts()` 一份**。
     chores: dict = field(default_factory=dict)
+    # 🏪 **铁匠铺现在营业吗**（恒 2026-10-01：「砸晶球…做成背包检测：有各种晶球**且克林特营业中**
+    #    可以报」）。判据由服务器算好递进来（`_im_clint_open()`：现成的休息日表 + `SHOP_HOURS`
+    #    前导时段）——这一层不打 HTTP。
+    #    ⚠️ `False` **同时**代表"关门"和"读不到"（两种都**不给那一行**，见 `_geode_can`）：
+    #       方向是"宁可少给一行"，不是"没有"——所以这儿不做三态（跟 `shop` 那个三态不是一回事）。
+    clint_open: bool = False
     # 🐾 本图的宠物（猫狗）——来自 `/surroundings` 的 `npcs` 里 `kind=="pet"` 的那几个。
     #    它们是**世界级**的（不属于某一格的动作），所以不进 tiles。
     pets: list = field(default_factory=list)
@@ -388,6 +394,17 @@ def _pick_can(ctx, t):
     ⚠️ 这个键**只在为真时才写**（C# `if (objForage) tile["forage"] = true;`）
     ⇒ 键不在 = **这格不可捡**（不是"不知道"）。"不知道"只可能是整版 DLL 老，
     那是**连接级**的事 → 查 `ctx.cap`，别在图里找。
+
+    ⚠️ **蛋 / 毛 / 兔脚套不上这一行**（恒 2026-10-01 问「放宽到鸡蛋/鸭毛/兔脚能不能套用」）：
+      **能套用同一行的形状，缺的是判据** —— `Object.isForage()` 对**动物产物**返回 false
+      （`isForage` 只认"地图上可手捡的采集物/掉落物"那一族），所以 `/surroundings` 的 `forage`
+      键**根本不会给蛋/毛点亮** ⇒ 现在这行"看不见脚边的蛋"。
+      ⇒ 这不是 Python 侧能修的（读不到"这格物件可捡"这个事实），**记 C# 批次待办**：
+        给 `/surroundings` 每格补一个 **"这格物件能不能捡"** 的字段
+        （照抄游戏那条判定：`Object.performToolAction`/`isPlaceable` 之外的"走过去就能捡"，
+         或干脆 `farmer.CanGrabItem(obj)` 那一族），补上之后这一行**一个字都不用改**就会亮。
+      📌 **本档没有样本**：恒这档两个棚都装了**自动采集器** ⇒ 蛋/毛被自动收走、**不落地**
+        ⇒ "棚内捡蛋"在这档**真机验不了**（别写成"验过了"）。
     """
     if not t:
         return CAN_NO
@@ -2499,12 +2516,22 @@ def _geode_total(ctx) -> int:
 
 
 def _geode_can(ctx, t):
-    if ctx.loc != "Blacksmith":
-        return CAN_NO             # 别处不给（同「投出货箱」：只在自己那张图给）
+    """🪨 砸晶球：**背包里有晶球 + 钱够 + 克林特营业中**（恒 2026-10-01 新门禁）。
+
+    ⚠️ 老形状是"**只有站在铁匠铺里**才给"——恒：「**不建议放农场**，做成背包检测：
+       有各种晶球**且克林特营业中**可以报」⇒ 现在两条任一路：
+         · **在铁匠铺**（老判据，保留：人在店里/营业时段内）；
+         · **背包检测**：有晶球 + `ctx.clint_open`（服务器用现成的休息日表 + `SHOP_HOURS` 算的）。
+       ⚠️ 但**农场不给**（恒那句"不建议放农场"）：那是"顺路顺手"的地方，跑一趟铁匠铺是**规划**。
+    """
+    if ctx.loc == "Farm":
+        return CAN_NO
     n = _geode_total(ctx)
     if not n:
         return CAN_NO
-    return CAN_YES if int(ctx.money or 0) >= GEODE_COST else CAN_NO
+    if int(ctx.money or 0) < GEODE_COST:
+        return CAN_NO
+    return CAN_YES if (ctx.loc == "Blacksmith" or ctx.clint_open) else CAN_NO
 
 
 def _geode_show(ctx, t):
@@ -2513,7 +2540,10 @@ def _geode_show(ctx, t):
 
 def _geode_reason(ctx, t):
     n = _geode_total(ctx)
-    return f"背包共 {n} 颗 · {GEODE_COST}g/颗" if n else ""
+    if not n:
+        return ""
+    _shop = "（铁匠铺营业中，走过去砸）" if (ctx.clint_open and ctx.loc != "Blacksmith") else ""
+    return f"背包共 {n} 颗 · {GEODE_COST}g/颗{_shop}"
 
 
 def _geode_count(ctx, targets):
@@ -2581,6 +2611,11 @@ GEODE_V = Verb("geode", "砸晶球", 72, _geode_can, _geode_reason, _geode_show,
 def _reforge_can(ctx, t):
     """这一刻**能不能重铸** —— 判据 = 服务器探针递进来的那一份（`Ctx.reforge`）。
 
+    ⚠️ **三条门禁全在服务器那一处**（`_im_reforge_probe`，恒 2026-10-01 复述的形状）：
+       ① **战斗精通已领**（`_mastery_claimed("combat")` —— 没领就 `{}`，这一行不出现）；
+       ② 背包里有**能重铸**的饰品（`/state.inventory[].isTrinket` + `canReforge`）；
+       ③ 场景里有一台**空着的**铁砧 + 铱锭够（`/machine_reqs` 的 `canPlace`/`requirements` 只问不做）。
+       ⇒ 这一层只读 `can is True`（**别自己再判一次精通**：判据只有一处，两处必然漂）。
     ⚠️⚠️ 必须 `can is True`，**不能只看"有 item"**：`Ctx.reforge` 在**铱锭不够**时也带着
         `item`（那是抬头要用来说缺口的信息）⇒ 只看 item 就会把"按了不成"的那一行摆上去。
        （这条是自验当场逮到的：`🔨 铱锭不够 ⇒ 不给` 报了红。判据要盯**动作能不能做**，
@@ -2666,6 +2701,11 @@ SELL_V = Verb("sell", "卖", 74, _sell_can, _sell_reason, lambda c, t: "卖", "w
 # ⚠️ **两行打的是同一个 op**（`run("doors", …)`）：C# `/toggle_doors` **忽略 action、纯翻转**，
 #    端点就一个 ⇒ 方向只能是**这一行的意图**，由 exec **看回执里的门态按目标态最多再翻一次**
 #    （见 `_doors_exec`）；**不许**再长出"保证开/保证关"的第二条实现（名字带方向却翻成反面=谎报）。
+# ⚠️ **两行都缺一条"沉底"判据**（恒 2026-10-01：「门已经开着就沉底」/「关好之后沉底」）——
+#    它要**只读门态**，而 C# 里**没有**：`/toggle_doors` 是**翻转**端点，读一次 = 翻一下。
+#    ⇒ **这版不做**；记成 C# 批次待办（跟 `building.animalDoor` 的偏移一起）：
+#      给 `/farm_buildings` 补 `animalDoorOpen`（只读）+ `animalDoorX/Y`；
+#      拿到之后这两行就能按"当前门态 vs 本行目标态"沉底（已经是目标态 ⇒ 不给行/压到最底）。
 _DOORS_OPEN_H0, _DOORS_OPEN_H1 = 6, 15     # 放牧：06:00–15:00（含两端）
 _DOORS_CLOSE_H = 17                        # 关棚门：≥17:00 或 <06:00
 
@@ -2806,7 +2846,7 @@ def _exec_close_doors(ctx, targets, run):
     return _doors_exec(ctx, targets, run, want=False)
 
 
-OPEN_DOORS_V = Verb("opendoors", "放牧（开棚门）", 70, _doors_open_can,                    _doors_open_reason, _doors_open_show, "world", exec=_exec_open_doors)
+OPEN_DOORS_V = Verb("opendoors", "放牧（开棚门）", 84, _doors_open_can,                    _doors_open_reason, _doors_open_show, "world", exec=_exec_open_doors)
 CLOSE_DOORS_V = Verb("doors", "关棚门", 70, _doors_close_can,
                      _doors_close_reason, _doors_close_show, "world", exec=_exec_close_doors)
 
@@ -2845,9 +2885,12 @@ BERRY_V = Verb("berry", "摇 浆果丛", 66,
                lambda c, t: "摇 浆果丛", "world",
                exec=lambda c, t, run: _exec_chore(c, t, run, "berry", "摇浆果丛"))
 # 2) 挖 远古斑点（`scene ops="spot"` → `spot_run`；**要带锄头**，没锄头服务器不给这笔账）
+#    ⚠️ **只算身边**（恒 2026-10-01：「不需要特定跑大老远锄！**扫一下周围**」）——
+#       半径由服务器递（`chores["spot_r"]`，常量在 `_SPOT_RADIUS` 一处），理由栏**写出来**。
 SPOT_V = Verb("spot", "挖 远古斑点", 64,
               lambda c, t: CAN_YES if _chore_n(c, "spot") else CAN_NO,
-              lambda c, t: (f"本图 {_chore_n(c, 'spot')} 处**可挖的斑点/姜点**（锄头在手）"
+              lambda c, t: (f"附近 {int((c.chores or {}).get('spot_r') or 0)} 格内 "
+                            f"{_chore_n(c, 'spot')} 处**可挖的斑点/姜点**（锄头在手）"
                             f" · 出古物/矿物/季节种子 · 敲了逐格挖完，不用给坐标"),
               lambda c, t: "挖 远古斑点", "world",
               exec=lambda c, t, run: _exec_chore(c, t, run, "spot", "挖斑点"))
@@ -2859,9 +2902,9 @@ MOSS_V = Verb("moss", "刮 苔藓", 58,
               lambda c, t: "刮 苔藓", "world",
               exec=lambda c, t, run: _exec_chore(c, t, run, "moss", "刮苔藓"))
 # 4) 收 蟹笼（`fish ops="crab_collect"`；只算 `readyForHarvest` 的那几个）
-CRAB_V = Verb("crab", "收 蟹笼", 68,
+CRAB_V = Verb("crab", "收 蟹笼", 72,
               lambda c, t: CAN_YES if _chore_n(c, "crab") else CAN_NO,
-              lambda c, t: (f"本图 {_chore_n(c, 'crab')} 个蟹笼**有货**"
+              lambda c, t: (f"本图 {_chore_n(c, 'crab')} 个蟹笼**有货**（收完笼是空的）"
                             f" · 收完笼是空的 —— 想继续抓得再放饵（`fish ops=\"crab_bait\"`）"),
               lambda c, t: "收 蟹笼", "world",
               exec=lambda c, t, run: _exec_chore(c, t, run, "crab", "收蟹笼"))
@@ -2915,7 +2958,7 @@ VERBS: list = [
     #    `wasPetToday` 就在 `/animals` 里 ⇒ "今天摸过没"**问得到**（PENDING 里那句是旧的）。
     Verb("pet",     "摸 还没摸的动物", 84, _pet_can,  _pet_reason,  _pet_show,  "world",
          exec=_exec_pet),
-    Verb("pet_pets", "摸 猫狗",      83, _pets_can, _pets_reason, _pets_show, "world",
+    Verb("pet_pets", "摸 猫狗",      87, _pets_can, _pets_reason, _pets_show, "world",
          exec=_exec_pets),
     # 🪑 坐 / 🛋 搬家具（逐格）——2026-09-29 接线
     # ⚠️ `batch=False`：`_exec_sit` 只吃 `targets[0]`（人只能坐一张）
@@ -2948,7 +2991,7 @@ VERBS: list = [
     Verb("pick",    "捡 地上的东西", 90, _pick_can, _pick_reason, _pick_show, "tile",
          exec=_exec_pick, merge=True, batch=True,             # 帮手一片全捡（真机：×2 捡到 2）
          reason_many=_pick_reason_many),
-    Verb("harvest", "收 成熟作物", 85, _harvest_can, _harvest_reason, _harvest_show, "tile",
+    Verb("harvest", "收 成熟作物", 88, _harvest_can, _harvest_reason, _harvest_show, "tile",
          exec=_exec_harvest, merge=True, batch=True,          # `harvest_crops` 是半径批量
          reason_many=_harvest_reason_many),
     # ⛔ **「锄」2026-09-29 摘掉了，别再往上加**（恒拍板，理由比"它没用"重要得多）：
@@ -3995,7 +4038,7 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
              animals: dict = None, shop: dict = None, beds: list = None,
              menu_exit: str = "", menu_hint: str = "", worn: dict = None,
              menu_data: dict = None, reforge: dict = None, mwork: dict = None,
-             doors: dict = None, chores: dict = None) -> Ctx:
+             doors: dict = None, chores: dict = None, clint_open: bool = False) -> Ctx:
     """把 `/state`(**full**) + `/surroundings`(+`/machines`/`/scan_chests`) 拼成 Ctx。
 
     ⚠️ 只搬运，**不补默认值**：缺什么就让它缺着（`can()` 遇到缺失自然回 假/？）。
@@ -4081,6 +4124,8 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
                # 🌿 六件"顺手活"那 6 行的账（同上：服务器算好递进来 ——
                #    这一层不认"哪些算斑点/苔藓"，也不打 HTTP）。
                chores=chores or {},
+               # 🏪 铁匠铺营业中吗（同上：服务器算好递进来；`False` = 关门**或**读不到）。
+               clint_open=bool(clint_open),
                sitting=bool(((seats or {}).get("me") or {}).get("sitting")),
                worn=(worn or {}),
                pets=pets,

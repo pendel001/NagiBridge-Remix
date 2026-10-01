@@ -140,7 +140,7 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
           caps=None, menu="", menu_raw=None, menu_extra=None, event=None,
           chests=None, inv=None, machines=None, mastery=None, loc=None,
           farm_buildings=(), time_dict=None, doors_open=False, walk_ok=True,
-          chore_tiles=None, crab_ready=0, ore_pan=None, chore_animals=None):
+          chore_tiles=None, crab_ready=0, ore_pan=None, chore_animals=None, money=None):
     CALLS.clear()
     WALK_CALLS.clear()
     state = dict(STATE)
@@ -171,6 +171,9 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
     # 🌿 六件"顺手活"（P1 那批）的料：`/state.player.orePan` + 追加的采集格
     if ore_pan is not None:
         state = dict(state, player=dict(state.get("player") or {}, orePan=ore_pan))
+    if money is not None:
+        # 💰 用例要"买不起/砸不起"就传 money=0（`_geode_can` 用 `ctx.money` 判 25g/颗）
+        state = dict(state, player=dict(state.get("player") or {}, money=money))
     if chore_animals is None:
         _animals_fixture = ANIMALS
     elif isinstance(chore_animals, list):
@@ -1478,7 +1481,9 @@ def main():
     _HOE = [{"slotIndex": 4, "name": "Hoe", "displayName": "锄头", "itemId": "(T)Hoe",
              "catNum": -99, "stack": 1, "sellable": False, "shippable": False}]
     _T_BUSH = {"x": 75, "y": 10, "terrain": "Bush", "bushBloom": True}
-    _T_SPOT = {"x": 60, "y": 18, "objId": "(O)590", "object": "Artifact Spot"}
+    # ⚠️ 斑点那一格要摆在**人身边**（`_SPOT_RADIUS` = 8 格）：第一版摆了 (60,18)、人 (12,12)
+    #    ⇒ 新加的"只扫周围"当场把它滤掉，两条老用例假红（自验逮到）。
+    _T_SPOT = {"x": 14, "y": 14, "objId": "(O)590", "object": "Artifact Spot"}
     _T_MOSS = {"x": 23, "y": 9, "terrain": "Tree:1", "moss": True}
     _PAN = {"hasGlint": True, "x": 33, "y": 36, "hasPan": True, "panUpgrade": 1}
     _MOO = {"animals": [{"name": "牛牛", "type": "White Cow", "x": 11, "y": 14, "productReady": True},
@@ -1594,6 +1599,92 @@ def main():
     res.append(ok("🚪 判不出来 ⇒ 如实说原因（不是「外面没有」）",
                   _ro_unk.get("blocked") is True and "没关门" in str(_ro_unk.get("text"))
                   and "不在农场" in str(_ro_unk.get("text")), _ro_unk))
+
+    # ⑭ 193 批：排序 / 砸晶球门禁 / 重铸精通 / 斑点只扫周围
+    def _w(key):
+        return M.intent_menu._VERB_BY_KEY[key].weight
+
+    res.append(ok("⚖️ 193：`收 成熟作物` 85 → **88**（做完就不播了 ⇒ 往前挪）", _w("harvest") == 88,
+                  _w("harvest")))
+    res.append(ok("⚖️ 193：`摸 猫狗` 83 → **87**", _w("pet_pets") == 87, _w("pet_pets")))
+    res.append(ok("⚖️ 193：`放牧（开棚门）` 70 → **84**（早晨跟摸动物一个档）",
+                  _w("opendoors") == 84, _w("opendoors")))
+    res.append(ok("⚖️ 193：`收 蟹笼` 68 → **72**（有货时可抬）", _w("crab") == 72, _w("crab")))
+    res.append(ok("⚖️ 其余别跟着动（关棚门仍 70 / 浆果 66 / 斑点 64 / 挤奶 62 / 淘金 60 / 苔藓 58）",
+                  (_w("doors"), _w("berry"), _w("spot"), _w("milk"), _w("pan"), _w("moss"))
+                  == (70, 66, 64, 62, 60, 58)))
+
+    # 🏪 克林特营业中：**现成两份数据**（休息日表 + SHOP_HOURS 前导时段），别编新表
+    _stub(time_dict={"timeOfDay": 1000, "season": "summer", "dayOfMonth": 6, "weather": 0})
+    res.append(ok("🏪 周六 10:00（不在休息日表里、且在 9:00-16:00 内）⇒ 营业中",
+                  M._im_clint_open() is True))
+    _stub(time_dict={"timeOfDay": 1700, "season": "summer", "dayOfMonth": 6, "weather": 0})
+    res.append(ok("🏪 周六 17:00（过了 16:00 打烊）⇒ **不营业**", M._im_clint_open() is False))
+    _stub(time_dict={"timeOfDay": 1000, "season": "summer", "dayOfMonth": 5, "weather": 0})
+    res.append(ok("🏪 周五（休息日表里就是「铁匠铺 (Clint)」，状态条那句「休:」同源）⇒ **不营业**",
+                  M._im_clint_open() is False))
+    _stub(time_dict={"timeOfDay": 800, "season": "summer", "dayOfMonth": 6, "weather": 0})
+    res.append(ok("🏪 周六 08:00（还没开门）⇒ 不营业", M._im_clint_open() is False))
+
+    # 🪨 砸晶球门禁：老那条（在铁匠铺）保留 + 新那条（背包有晶球 + 克林特营业中），农场不给
+    _GEO = [{"slotIndex": 1, "name": "Geode", "displayName": "晶球", "itemId": "(O)535",
+             "catNum": -12, "stack": 4, "isGeode": True, "sellable": True, "shippable": True},
+            {"slotIndex": 2, "name": "Iridium Bar", "displayName": "铱锭", "itemId": "(O)337",
+             "catNum": -15, "stack": 3, "sellable": True, "shippable": True}]
+
+    def _has_geode(**kw):
+        _stub(**{"inv": _GEO, **kw})     # ⚠️ 合并成一份 dict 再展开（直接写 `inv=_GEO, **kw`
+        _o = M.intent(ops="show", kw={"n": 40})   #    撞上用例自己传的 inv 会 TypeError，自验逮到）
+        return "砸 晶球" in _o, _o
+
+    _ok_g, _ = _has_geode(loc="Blacksmith", time_dict={"timeOfDay": 1000, "season": "summer",
+                                                      "dayOfMonth": 6, "weather": 0})
+    res.append(ok("🪨 在铁匠铺（老判据保留）⇒ 给「砸 晶球」", _ok_g))
+    _ok_g2, _g2 = _has_geode(loc="Town", time_dict={"timeOfDay": 1000, "season": "summer",
+                                                   "dayOfMonth": 6, "weather": 0})
+    res.append(ok("🪨 **背包有晶球 + 克林特营业中**（人在镇上）⇒ 也给（新判据）", _ok_g2, _g2[:200]))
+    _ok_g3, _ = _has_geode(loc="Town", time_dict={"timeOfDay": 1700, "season": "summer",
+                                                 "dayOfMonth": 6, "weather": 0})
+    res.append(ok("🪨 打烊后（非铁匠铺）⇒ **不给**", not _ok_g3))
+    _ok_g4, _ = _has_geode(loc="Town", time_dict={"timeOfDay": 1000, "season": "summer",
+                                                 "dayOfMonth": 5, "weather": 0})
+    res.append(ok("🪨 休息日（非铁匠铺）⇒ **不给**", not _ok_g4))
+    _ok_g5, _ = _has_geode(loc="Farm", time_dict={"timeOfDay": 1000, "season": "summer",
+                                                 "dayOfMonth": 6, "weather": 0})
+    res.append(ok("🪨 **农场不给**（恒：「不建议放农场」）", not _ok_g5))
+    _ok_g6, _ = _has_geode(loc="Town", money=0, time_dict={"timeOfDay": 1000, "season": "summer",
+                                                          "dayOfMonth": 6, "weather": 0})
+    res.append(ok("🪨 钱不够 ⇒ 不给（老判据保留：25g/颗）", not _ok_g6))
+    _ok_g7, _ = _has_geode(loc="Town", inv=[_GEO[1]], time_dict={"timeOfDay": 1000,
+                                                                "season": "summer",
+                                                                "dayOfMonth": 6, "weather": 0})
+    res.append(ok("🪨 背包里**没有晶球** ⇒ 不给", not _ok_g7))
+
+    # 🔨 重铸：**战斗精通那一条**（③）在 ⑲ 已有行为用例；这里再钉一条**源码级**的，
+    #    防止哪天有人把 `_im_reforge_probe` 开头那道精通闸删了却没人发现。
+    import inspect as _insp2
+    _rp_src = _insp2.getsource(M._im_reforge_probe)
+    res.append(ok("🔨 重铸探针里**确实有**战斗精通那道闸（`_mastery_claimed(\"combat\")`）",
+                  '_mastery_claimed("combat")' in _rp_src))
+
+    # 🪱 斑点只扫**身边**（切比雪夫 ≤ `_SPOT_RADIUS`；恒：「不需要特定跑大老远锄」）
+    def _spot_at(dx, dy):
+        """把一格斑点摆在离人 (12,12) 曼哈顿 dx,dy 的位置 → 那笔账里 spot 的数。"""
+        _stub(inv=_HOE, chore_tiles=[{"x": 12 + dx, "y": 12 + dy, "objId": "(O)590"}],
+              time_dict={"timeOfDay": 900, "season": "summer", "dayOfMonth": 6, "weather": 0})
+        M.api.has_item = lambda n: "Hoe" in str(n)
+        return int((M._im_ctx().chores or {}).get("spot") or 0)
+
+    res.append(ok(f"🪱 身边 {M._SPOT_RADIUS} 格内的斑点 ⇒ 算（理由栏写半径）",
+                  _spot_at(0, M._SPOT_RADIUS) == 1, _spot_at(0, M._SPOT_RADIUS)))
+    res.append(ok(f"🪱 {M._SPOT_RADIUS + 1} 格外的斑点 ⇒ **不算**（不跑大老远）",
+                  _spot_at(0, M._SPOT_RADIUS + 1) == 0, _spot_at(0, M._SPOT_RADIUS + 1)))
+    res.append(ok("🪱 半径常量**只有一处**（`M._SPOT_RADIUS`），可调", isinstance(M._SPOT_RADIUS, int)))
+    _Lspot, _Lstxt = _labels2(inv=_HOE, chore_tiles=[{"x": 14, "y": 12, "objId": "(O)590"}],
+                              time_dict={"timeOfDay": 900, "season": "summer",
+                                         "dayOfMonth": 6, "weather": 0})
+    res.append(ok(f"🪱 单子那行把**半径写进理由栏**（附近 {M._SPOT_RADIUS} 格内）",
+                  "挖 远古斑点" in _Lspot and f"附近 {M._SPOT_RADIUS} 格内" in _Lstxt, _Lstxt[:200]))
 
     print(f"\n{sum(res)}/{len(res)} 过")
     return all(res)
