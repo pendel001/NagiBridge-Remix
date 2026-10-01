@@ -139,7 +139,8 @@ MENU_BOX = {
 def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=False,
           caps=None, menu="", menu_raw=None, menu_extra=None, event=None,
           chests=None, inv=None, machines=None, mastery=None, loc=None,
-          farm_buildings=(), time_dict=None, doors_open=False, walk_ok=True):
+          farm_buildings=(), time_dict=None, doors_open=False, walk_ok=True,
+          chore_tiles=None, crab_ready=0, ore_pan=None, chore_animals=None):
     CALLS.clear()
     WALK_CALLS.clear()
     state = dict(STATE)
@@ -167,6 +168,18 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
     if loc is not None:
         # 🗺 换图（用例：砸晶球只在铁匠铺给那一行）
         state = dict(state, location={"name": loc, "uniqueName": loc})
+    # 🌿 六件"顺手活"（P1 那批）的料：`/state.player.orePan` + 追加的采集格
+    if ore_pan is not None:
+        state = dict(state, player=dict(state.get("player") or {}, orePan=ore_pan))
+    if chore_animals is None:
+        _animals_fixture = ANIMALS
+    elif isinstance(chore_animals, list):
+        # ⚠️ 端点真形状是 `{"animals":[…]}` —— 用例里图省事传 list 也认（第一版直接把 list
+        #    当回包发出去 ⇒ `_im_chores` 里 `list.get` 当场炸、6 行全空，自验当场逮到）。
+        _animals_fixture = {"animals": chore_animals}
+    else:
+        _animals_fixture = chore_animals
+    _tiles_fixture = list(SURR.get("tiles") or []) + list(chore_tiles or [])
 
     def g(ep, params=None):
         CALLS.append(("GET", ep, params))
@@ -174,6 +187,11 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
             if menu_get_raises:
                 raise RuntimeError("模拟：商店开着但 /menu 读不出来")
             return MENU_SHOP if menu_raw is None else menu_raw
+        if ep == "/crab_pots":
+            # 🦀 真回包形状：`{ok, count, location, pots:[{...readyForHarvest...}]}`
+            return {"ok": True, "count": crab_ready, "location": "Farm",
+                    "pots": [{"x": 20 + i, "y": 21, "readyForHarvest": True,
+                              "bait": "鱼饵"} for i in range(int(crab_ready))]}
         if str(ep).startswith("/process_geode_batch"):
             # 🪨 砸晶球（那条 op 把 count 放在 query 里，所以按前缀匹配）
             return {"ok": True, "processed": 3, "cost": 75, "remainingGold": 1234,
@@ -183,12 +201,12 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
             "/status": ({"ok": True, "build": build} if caps is None
                         else {"ok": True, "build": build, "caps": caps}),
             "/state": state,
-            "/surroundings": SURR,
+            "/surroundings": dict(SURR, tiles=_tiles_fixture),
             "/machines": {"machines": MACHINES if machines is None else machines},
             "/scan_chests": {"chests": CHESTS if chests is None else chests},
             "/sittable": SEATS,
             "/furniture": FURNITURE,
-            "/animals": ANIMALS,
+            "/animals": _animals_fixture,
             "/worn": WORN,
             # 🚪🐄 农场建筑（`/farm_buildings` 的真回包形状）：`type` = `Data/Buildings` 的键。
             #    默认**空表** = "这个档没有动物建筑" ⇒ 放牧/关棚门那两行不出现（老用例一个字不变）。
@@ -1341,9 +1359,14 @@ def main():
 
     # ④ 敲下去真走**那一个翻转 op**（`doors`）：`_im_run` 认它、别掉进裸端点兜底；
     #    两行的**方向**由 exec 看回执里的门态收敛（最多再翻一次）。
-    def _doors_hit(tod, sub, doors_open):
-        """敲那一行 → (回执, 打了几次 `/toggle_doors`, 那几次的 (方法, 端点), 全部端点)。不出网。"""
+    def _doors_hit(tod, sub, doors_open, chore_animals=None):
+        """敲那一行 → (回执, 打了几次 `/toggle_doors`, 那几次的 (方法, 端点), 全部端点)。不出网。
+
+        `chore_animals` = 站在农场时 `/animals` 报的那批（= 棚外那批）——
+        「关棚门」那行现在会先看它（外面有动物就不关），所以要能按用例指定。
+        """
         _stub(loc="Farm", farm_buildings=FARM_BUILDINGS, doors_open=doors_open,
+              chore_animals=chore_animals,
               time_dict={"timeOfDay": tod, "season": "summer", "weather": 0})
         M.intent(ops="show", kw={"n": 40})
         _rc = M.intent(ops="do", kw={"code": str(_no_of(sub))})
@@ -1368,11 +1391,11 @@ def main():
                   _n_open2 == 2 and "门现在是：Deluxe Coop 开" in _r_open2
                   and "目标=全开" in _r_open2, (_n_open2, _r_open2[:160])))
 
-    _r_close, _n_close, _, _ = _doors_hit(1900, "关棚门", doors_open=True)
+    _r_close, _n_close, _, _ = _doors_hit(1900, "关棚门", doors_open=True, chore_animals=[])
     res.append(ok("🚪 敲「关棚门」⇒ 一次收敛，回执报『门现在是：…关』+ 目标=全关",
                   _n_close == 1 and "门现在是：Deluxe Coop 关" in _r_close
                   and "目标=全关" in _r_close, (_n_close, _r_close[:160])))
-    _r_close2, _n_close2, _, _ = _doors_hit(1900, "关棚门", doors_open=False)
+    _r_close2, _n_close2, _, _ = _doors_hit(1900, "关棚门", doors_open=False, chore_animals=[])
     res.append(ok("🚪 门本来就关着时敲「关棚门」⇒ **再翻一次收敛到全关**",
                   _n_close2 == 2 and "门现在是：Deluxe Coop 关" in _r_close2,
                   (_n_close2, _r_close2[:160])))
@@ -1449,6 +1472,128 @@ def main():
     res.append(ok("🚪🐄 意图索引里有放牧那条，且指向 `farm.放牧`（= 同一个 doors 函数）",
                   any(d == "farm" and o == "放牧" and "放牧" in k
                       for k, d, o, _ in M._INTENT_INDEX)))
+
+    # ⑫ 🌿 六件"顺手活"（2026-10-01 恒「接吧」＝ P1 那批空参行接上单子）
+    #     判据**全在服务器**（`_im_chores`）→ 先直接验它，再验单子那 6 行与执行参数。
+    _HOE = [{"slotIndex": 4, "name": "Hoe", "displayName": "锄头", "itemId": "(T)Hoe",
+             "catNum": -99, "stack": 1, "sellable": False, "shippable": False}]
+    _T_BUSH = {"x": 75, "y": 10, "terrain": "Bush", "bushBloom": True}
+    _T_SPOT = {"x": 60, "y": 18, "objId": "(O)590", "object": "Artifact Spot"}
+    _T_MOSS = {"x": 23, "y": 9, "terrain": "Tree:1", "moss": True}
+    _PAN = {"hasGlint": True, "x": 33, "y": 36, "hasPan": True, "panUpgrade": 1}
+    _MOO = {"animals": [{"name": "牛牛", "type": "White Cow", "x": 11, "y": 14, "productReady": True},
+                        {"name": "羊羊", "type": "Goat", "x": 12, "y": 14, "productReady": True},
+                        {"name": "毛毛", "type": "Sheep", "x": 13, "y": 14, "productReady": True},
+                        {"name": "猪猪", "type": "Pig", "x": 14, "y": 14, "productReady": True},
+                        {"name": "空牛", "type": "White Cow", "x": 15, "y": 14, "productReady": False}]}
+
+    def _chores(chore_tiles=None, crab_ready=0, ore_pan=None, animals=None, weather=0,
+                hoe=True):
+        # ⚠️ 走**真路径** `_im_ctx()`（不是手搓 state/surr 递给 `_im_chores`）——
+        #    第一版手搓，`api.has_item`/`api._ai_get("/crab_pots")` 两个口子**没桩到**
+        #    ⇒ "没带锄头"那条假红、蟹笼那笔账也拿不到（自验当场逮到）。
+        _stub(chore_tiles=chore_tiles, crab_ready=crab_ready, ore_pan=ore_pan,
+              chore_animals=(animals if animals is not None else []),
+              time_dict={"timeOfDay": 900, "season": "summer", "weather": weather})
+        M.api.has_item = lambda n: bool(hoe) and ("Hoe" in str(n))
+        return M._im_ctx().chores
+
+    _old_expose = M._moss_cfg.get("expose_all_days")
+    M._moss_cfg["expose_all_days"] = False
+    _ch = _chores([_T_BUSH, _T_SPOT, _T_MOSS], crab_ready=4, ore_pan=_PAN,
+                  animals=_MOO, weather=0, hoe=True)
+    res.append(ok("🌿 `_im_chores`：浆果灌木认得出来（`terrain==Bush`+`bushBloom`）",
+                  _ch.get("berry") == 1, _ch))
+    res.append(ok("🌿 斑点按 **objId**（`(O)590`）认，**不是 `diggable`**（地图属性当判据 = 满地噪音）",
+                  _ch.get("spot") == 1, _ch))
+    res.append(ok("🌿 苔藓：**非绿雨天 + 没开 expose_all_days ⇒ 不给**（跟 `moss_run` 同一道闸）",
+                  "moss" not in _ch, _ch))
+    M._moss_cfg["expose_all_days"] = True
+    _ch2 = _chores([_T_BUSH, _T_SPOT, _T_MOSS], weather=0, hoe=True)
+    res.append(ok("🌿 开了 `settings moss on` ⇒ 苔藓那笔账才给", _ch2.get("moss") == 1, _ch2))
+    M._moss_cfg["expose_all_days"] = False
+    _ch3 = _chores([_T_BUSH, _T_SPOT, _T_MOSS], weather=7, hoe=True)
+    res.append(ok("🌿 绿雨天（weather=7）⇒ 苔藓给", _ch3.get("moss") == 1, _ch3))
+    _ch4 = _chores([_T_BUSH, _T_SPOT], crab_ready=0, ore_pan=None, animals=None, hoe=False)
+    res.append(ok("🌿 **没带锄头** ⇒ 斑点/姜那笔账不给（`spot_run` 没锄头不挖）",
+                  "spot" not in _ch4 and _ch4.get("berry") == 1, _ch4))
+    res.append(ok("🦀 蟹笼只数 `readyForHarvest` 的（回包字段）", _ch.get("crab") == 4, _ch))
+    res.append(ok("🪙 淘金看 `/state.player.orePan`（`hasGlint`+`hasPan`），坐标一起递",
+                  (_ch.get("pan") or {}).get("x") == 33, _ch.get("pan")))
+    res.append(ok("🪙 没闪光点 / 没铜锅 ⇒ 不给这笔账",
+                  "pan" not in _chores(ore_pan={"hasGlint": False, "hasPan": True})
+                  and "pan" not in _chores(ore_pan={"hasGlint": True, "hasPan": False})))
+    res.append(ok("🐮🐑 只数 **productReady** 的牛·山羊/绵羊（猪不算、没货的不算）",
+                  _ch.get("milk") == 2 and _ch.get("shear") == 1, _ch))
+    res.append(ok("🌿 什么都没推出来 ⇒ **空账**（那 6 行全不出现）", _chores() == {}, _chores()))
+
+    # 单子那 6 行：有账就出现、执行**只调现成 op 且不带参数**
+    def _labels2(**kw):
+        _stub(**kw)
+        _out = M.intent(ops="show", kw={"n": 40})
+        return [(r.label or "") for r in M.intent_menu._LAST_ROWS], _out
+
+    _L, _Ltxt = _labels2(chore_tiles=[_T_BUSH, _T_SPOT, _T_MOSS], crab_ready=4, ore_pan=_PAN,
+                         chore_animals=_MOO["animals"], inv=_HOE,
+                         time_dict={"timeOfDay": 900, "season": "summer", "weather": 7})
+    for _lab in ("摇 浆果丛", "挖 远古斑点", "刮 苔藓", "收 蟹笼", "淘 金", "挤奶 / 剪毛"):
+        res.append(ok(f"🌿 单子上出现「{_lab}」", _lab in _L, (_L, _Ltxt[:200])))
+    _L0, _ = _labels2(inv=_HOE, time_dict={"timeOfDay": 900, "season": "summer", "weather": 0})
+    res.append(ok("🌿 一件都推不出来 ⇒ **6 行全不出现**（宁缺勿编）",
+                  not [x for x in _L0 if x in ("摇 浆果丛", "挖 远古斑点", "刮 苔藓",
+                                               "收 蟹笼", "淘 金", "挤奶 / 剪毛")], _L0))
+    # 执行：`_im_run` 认这 6 个名字，且**打的是现成 op**（把 op 换成桩看参数）
+    _stubs = {}
+    for _k, _fn in (("berry", "berry_run"), ("spot", "spot_run"), ("moss", "moss_run"),
+                    ("pan", "_pan_run"), ("crab", "_crab_collect"), ("milk", "milk_shear")):
+        _stubs[_fn] = getattr(M, _fn)
+        setattr(M, _fn, (lambda k=_k: (lambda *a, **kw: f"（桩：{k} 跑了）"))())
+    _rr = {k: M._im_run(k, {}) for k in ("berry", "spot", "moss", "pan", "crab", "milk")}
+    for _fn, _o in _stubs.items():
+        setattr(M, _fn, _o)
+    res.append(ok("🔌 `_im_run` 认这 6 个 op（都回一句话，不是裸端点兜底）",
+                  all(isinstance(v, dict) and v.get("text") and "桩" in str(v.get("text"))
+                      for v in _rr.values()), _rr))
+    res.append(ok("🔌 6 个 op **一个参数都不带**（空参行）",
+                  all("{" not in str(v.get("text")) for v in _rr.values()), _rr))
+
+    # ⑬ 🚪 「关棚门」动手前先问游戏：**外面还有动物就不关**（恒 2026-10-01）
+    #     判据只有一处（`_animals_outside()` → `_doors_close_guard()`），执行侧与傍晚提醒共用。
+    _OUT3 = [{"name": "康康", "type": "White Chicken", "x": 73, "y": 12},
+             {"name": "你好鸭", "type": "Duck", "x": 76, "y": 16},
+             {"name": "安妮", "type": "White Chicken", "x": 74, "y": 17}]
+
+    def _close_click(outside_animals, loc="Farm", **kw):
+        """敲一次「关棚门」那一行 → (回执, 打了几次 /toggle_doors)。全打桩。"""
+        _stub(loc=loc, farm_buildings=FARM_BUILDINGS, doors_open=True,
+              chore_animals=outside_animals,
+              time_dict={"timeOfDay": 1900, "season": "summer", "weather": 0}, **kw)
+        M.intent(ops="show", kw={"n": 40})
+        _rc = M.intent(ops="do", kw={"code": str(_no_of("关棚门"))})
+        return _rc, len([c for c in CALLS if c[1] == "/toggle_doors"])
+    _rc_out, _n_out = _close_click(_OUT3)
+    res.append(ok("🚪 棚外还有动物 ⇒ 敲「关棚门」**一次都不翻**（`/toggle_doors` 零调用）",
+                  _n_out == 0, _n_out))
+    res.append(ok("🚪 而且**点名**是哪几只在棚外（带坐标）",
+                  "康康" in _rc_out and "(73,12)" in _rc_out, _rc_out[:220]))
+    res.append(ok("🚪 而且**明说没关门** + 给下一步（先弄回棚）",
+                  "没关门" in _rc_out and "animals" in _rc_out, _rc_out[:260]))
+    res.append(ok("🚪 被拦下时**一个字都不提门态**（没翻也没读 ⇒ 别说成『没读到门态』）",
+                  "门现在是" not in _rc_out and "实际=" not in _rc_out, _rc_out[:200]))
+    _rc_in, _n_in = _close_click([])
+    res.append(ok("🚪 外面没动物 ⇒ 照常翻（`/toggle_doors` 打了一次）", _n_in == 1, _n_in))
+    res.append(ok("🚪 照常翻时回执照旧给「门现在是…」+ 目标/实际",
+                  "门现在是" in _rc_in and "目标=全关" in _rc_in, _rc_in[:220]))
+    # 判不出来 ⇒ **也不许关**（⚠️ 这里**不能**拿单子那行验：`关棚门` 那行本来就要求站在农场，
+    #    人不在农场它根本不在单子上 ⇒ 直接调 op，验"判不出来 ⇒ 不翻 + 如实说原因"）
+    _stub(loc="Deluxe Barn", farm_buildings=FARM_BUILDINGS, doors_open=True, chore_animals=_OUT3,
+          time_dict={"timeOfDay": 1900, "season": "summer", "weather": 0})
+    _ro_unk = M._im_doors_op({"want": "close", "walk": True})
+    _n_unk = len([c for c in CALLS if c[1] == "/toggle_doors"])
+    res.append(ok("🚪 **判不出来也不许关**（人不在农场时不翻）", _n_unk == 0, _n_unk))
+    res.append(ok("🚪 判不出来 ⇒ 如实说原因（不是「外面没有」）",
+                  _ro_unk.get("blocked") is True and "没关门" in str(_ro_unk.get("text"))
+                  and "不在农场" in str(_ro_unk.get("text")), _ro_unk))
 
     print(f"\n{sum(res)}/{len(res)} 过")
     return all(res)

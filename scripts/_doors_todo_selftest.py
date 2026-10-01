@@ -29,21 +29,35 @@ BUILDINGS = [{"type": "Deluxe Coop", "x": 40, "y": 12, "doorX": 44, "doorY": 16}
 DAY = {"v": "summer|3|1"}
 
 
-def _stub(tod=800, season="summer", weather=0, buildings=BUILDINGS, buildings_raise=False):
-    """把两个只读口接上桩（`/state` 的时钟 + `/farm_buildings`）；**一个字节都不出网**。"""
+def _stub(tod=800, season="summer", weather=0, buildings=BUILDINGS, buildings_raise=False,
+          outside=None):
+    """把只读口接上桩（`/state` 的时钟 + `/farm_buildings` + `/animals`）；**一个字节都不出网**。
+
+    `outside` = 站在农场时 `/animals` 报的那批（= **棚外**那批）；`None` = 空（全在棚内）。
+    """
     t = {"timeOfDay": tod, "season": season, "dayOfMonth": 3, "year": 1, "weather": weather}
+    _out = list(outside or [])
 
     def g(ep, params=None):
         if ep == "/farm_buildings":
             if buildings_raise:
                 raise RuntimeError("模拟：/farm_buildings 读不到")
             return {"ok": True, "count": len(buildings), "buildings": buildings}
+        if ep == "/animals":
+            return {"animals": _out, "count": len(_out)}
         if ep == "/state":
             return {"player": {"x": 12, "y": 12}, "location": {"name": "Farm"}, "time": t}
         return {}
     api._ai_get = g
+    # ⚠️ 必桩 `api.state()`/`api.animals()`：`_animals_outside()` 走的就是这两个 ——
+    #    第一版只桩了 `_ai_get`，结果它真去连 7843，**被 `_net_guard` 当场挡住**
+    #    （闸是对的：它替我把这条漏网的出网抓了出来）。
+    api.state = lambda **kw: g("/state")
+    api.animals = lambda **kw: g("/animals")
     api.day_key = lambda: DAY["v"]
     M._DOOR_CLOSE_KEY["last"] = None          # 每个用例从"今天还没报过"开始
+    M._DOOR_OUT_KEY["last"] = None
+    M._DOOR_VISIT.update(loc=None, n=0)
 
 
 def ck(name, cond, extra=""):
@@ -124,6 +138,39 @@ def main():
     res.append(ck("🌙 没有动物建筑 ⇒ 不给", not M._doors_evening_hint("Farm")))
     _stub(tod=1900, buildings_raise=True)
     res.append(ck("🌙 `/farm_buildings` 读不到 ⇒ **不给**", not M._doors_evening_hint("Farm")))
+
+    # ②b 🚪 **外面还有动物**那一档（恒 2026-10-01：「报错不关 + 不消除只报一次的标记，
+    #     等当天下次进农场再次提醒」）—— 这条提醒**不消费**一天一条的标记，按"进农场"去重
+    _OUT = [{"name": "康康", "type": "White Chicken", "x": 73, "y": 12},
+            {"name": "你好鸭", "type": "Duck", "x": 76, "y": 16}]
+    _stub(tod=1900, outside=_OUT)
+    _oe = M._doors_evening_hint("Farm")
+    res.append(ck("🌙 棚外还有动物 ⇒ 那句改说「**先别关门**」", "先别关门" in _oe, _oe))
+    res.append(ck("🌙 而且**点名**是哪几只（带坐标）", "康康" in _oe and "(73,12)" in _oe, _oe))
+    res.append(ck("🌙 而**不消费**「一天一条」的标记（后面全进棚时还要能提醒）",
+                  M._DOOR_CLOSE_KEY["last"] is None, M._DOOR_CLOSE_KEY))
+    res.append(ck("🌙 同一次停留里**不重复刷**（第二条工具调用不再出现）",
+                  not M._doors_evening_hint("Farm")))
+    # "进农场"这个转移：先去别处、再回农场 ⇒ 当天**再提一次**
+    M._doors_evening_hint("Mine")
+    _oe2 = M._doors_evening_hint("Farm")
+    res.append(ck("🌙 **下次进农场**再提一次（转移去重，不是每条调用都刷）", bool(_oe2), _oe2))
+    res.append(ck("🌙 而且再进农场那次也**不消费**标记", M._DOOR_CLOSE_KEY["last"] is None))
+    # 全进棚了 ⇒ 照旧「去关门」且**消费**标记（一天一条）
+    _stub(tod=1900, outside=[])
+    _ce = M._doors_evening_hint("Farm")
+    res.append(ck("🌙 全在棚内 ⇒ 那句回到「**去把棚门关了**」", "去把棚门关了" in _ce, _ce))
+    res.append(ck("🌙 这条**要消费**标记（当天不再提）",
+                  M._DOOR_CLOSE_KEY["last"] is not None
+                  and not M._doors_evening_hint("Farm"), M._DOOR_CLOSE_KEY))
+    # 判不出来（`/animals` 读不到）⇒ 照报去关门，但**如实说明判不出**
+    _stub(tod=1900, outside=[])
+    _orig_an = api.animals
+    api.animals = lambda **kw: (_ for _ in ()).throw(RuntimeError("模拟：/animals 读不到"))
+    _ue = M._doors_evening_hint("Farm")
+    api.animals = _orig_an
+    res.append(ck("🌙 `\u002fanimals` 读不到 ⇒ 照报去关门，但**如实说判不出棚外有没有**",
+                  "去把棚门关了" in _ue and "判不出" in _ue, _ue))
 
     # ③ 文案规矩（AI 看得到的字）：不许出现改动史/日期/人名
     _stub(tod=800)

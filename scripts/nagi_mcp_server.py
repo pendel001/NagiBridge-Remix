@@ -3524,6 +3524,83 @@ def _bg_any_running() -> bool:
         return False
 
 
+# 🪱 「远古斑点」的 id（`spot_run.py:55` 那份是**脚本自带的一份**，这里是服务端这份）：
+#    `(O)590` Artifact Spot + `(O)SeedSpot` Seed Spot（俩中文名都叫「远古斑点」，别按中文名分家）。
+#    ⚠️ **不是 `diggable`**：那是**地图属性**（真机 Farm 上 194 格都 true、而斑点 0 个）
+#       —— 2026-09-29 `dig` 那一行就是因为这个被撤掉的（整片农田都提示"可挖"= 噪音）。
+_SPOT_IDS = ("(O)590", "590", "(O)SeedSpot", "SeedSpot")
+
+
+def _forage_counts(tiles: list, show_moss: bool, has_hoe: bool) -> dict:
+    """把 `/surroundings` 的 tiles 分成"能采/能挖的几类" → 计数字典（**分类只此一处**）。
+
+    返回 `{"bush","spot","ginger","onion","truffle","moss_tree","greenrain_tree",
+            "moss_big","moss_small","forage": {名字: 个数}}`。
+
+    ⚠️ 判据就是状态条「🌿 可采集」那一套 —— 现在**状态条和 `intent` 的三行共用这一份**
+       （「摇 浆果丛 / 挖 远古斑点 / 刮 苔藓」）；各写一遍必漂（本项目的老病）。
+    ⚠️ `show_moss`（苔藓门控：绿雨天或 `settings moss on`）与 `has_hoe`（没锄头挖不了斑点/姜）
+       由**调用方**传进来 —— 判据的门槛只有一处，别在两个调用方各判一次。
+    """
+    c = {"bush": 0, "spot": 0, "ginger": 0, "onion": 0, "truffle": 0,
+         "moss_tree": 0, "greenrain_tree": 0, "moss_big": 0, "moss_small": 0,
+         "forage": {}}
+    moss_big_tiles = set()
+    counts = c["forage"]
+    for t in tiles or []:
+        if t.get("terrain") == "Bush" and t.get("bushBloom"):
+            c["bush"] += 1
+            continue
+        if has_hoe and t.get("forageCrop") == "2":
+            c["ginger"] += 1
+            continue
+        if t.get("forageCrop") == "1" and t.get("harvestable"):
+            c["onion"] += 1
+            continue
+        terr = t.get("terrain") or ""
+        # 🌿 树苔藓（2026-08-21）：长苔藓树 moss:True（镰刀打）+ 苔雨树 greenRainTree:True（斧头砍）；
+        #    单棵树可同时 moss:True+greenRainTree:True（两方都计）。仅 show_moss 时计入。
+        if terr.startswith("Tree:"):
+            if show_moss:
+                if t.get("moss"):
+                    c["moss_tree"] += 1
+                if t.get("greenRainTree"):
+                    c["greenrain_tree"] += 1
+            continue
+        # 🌿 苔藓杂草块（大块=Clump:46 resource(2×2跨4格) / 小块=GreenRainWeeds* 对象(单格)）
+        if show_moss and t.get("resource") == "Clump:46":
+            moss_big_tiles.add((t.get("x"), t.get("y")))
+            continue
+        if show_moss and (t.get("object") or "").startswith("GreenRainWeeds"):
+            c["moss_small"] += 1
+            continue
+        if has_hoe and t.get("objId") in _SPOT_IDS:
+            c["spot"] += 1
+            continue
+        # 🍄 2026-09-01 猪松露：isPassable()=false（Category -81 动物产物不在游戏 passable 白名单）
+        #    → passable 判定会甩掉它；松露=直接可捡的第一等采集物，按 objId 认、不依赖 passable。
+        if t.get("object") == "Truffle" or t.get("objId") in ("430", "(O)430"):
+            c["truffle"] += 1
+            continue
+        # 🌿 2026-09-12：不可站、但**游戏说可手捡**的（水果/贝壳/海胆/珊瑚…）照报 ——
+        #    判据是 C# 抄来的 `Object.isForage()`，不再是本地名单。
+        if not t.get("passable", True) and t.get("forage"):
+            obj = t.get("object")
+            if obj and not any(blk in obj for blk in _FORAGE_BLACKLIST):
+                counts[obj] = counts.get(obj, 0) + 1
+            continue
+        if not t.get("passable", True):
+            continue
+        obj = t.get("object")
+        if not obj:
+            continue
+        if any(blk in obj for blk in _FORAGE_BLACKLIST):
+            continue
+        counts[obj] = counts.get(obj, 0) + 1
+    c["moss_big"] = _count_clump_blocks(moss_big_tiles)
+    return c
+
+
 def _forage_summary(is_green_rain: bool = None) -> str:
     """🌿 当前地图可采集物汇总（有什么、几颗）。**切图时扫一次** + 室内跳过。
     只报告数量不报位置——决定采集后走 pickup_scene 自动走过去捡。
@@ -3555,68 +3632,19 @@ def _forage_summary(is_green_rain: bool = None) -> str:
                 is_green_rain = False
         show_moss = is_green_rain or _moss_cfg.get("expose_all_days", False)
         # 采集/挖掘分类统计（2026-08-17 恒：浆果灌木/斑点/姜/大葱/苔藓树全接入）
-        berry_bushes = 0    # 🍓 灌木季节结果（摇）
-        spot_count = 0      # 🪱 斑点 (O)590 Artifact Spot + (O)SeedSpot Seed Spot（锄；俩中文名都叫「远古斑点」）
-        ginger_count = 0    # 🫚 姜点 forageCrop="2"（锄，hitWithHoe）
-        onion_count = 0     # 🌱 大葱 forageCrop="1" 成熟可收（摘）
-        truffle_count = 0   # 🍄 猪产松露（放在 loc.Objects 的 (O)430，isPassable()=false，不靠 passable 判）
-        moss_tree_count = 0       # 🌿 长苔藓树 moss:True（镰刀打苔藓）
-        greenrain_tree_count = 0  # 🪓 苔雨树 greenRainTree:True（斧头砍）
-        moss_weed_small = 0       # 🌿 苔藓杂草-小块 GreenRainWeeds* 对象（镰刀/剑）
-        moss_big_tiles = set()    # 🌿 苔藓杂草-大块 Clump:46 瓦片坐标（去重后数块数）
-        has_hoe = api.has_item("Hoe")
-        counts = {}
-        for t in r.get("tiles", []):
-            if t.get("terrain") == "Bush" and t.get("bushBloom"):
-                berry_bushes += 1
-                continue
-            if has_hoe and t.get("forageCrop") == "2":
-                ginger_count += 1
-                continue
-            if t.get("forageCrop") == "1" and t.get("harvestable"):
-                onion_count += 1
-                continue
-            terr = t.get("terrain") or ""
-            # 🌿 树苔藓（2026-08-21）：长苔藓树 moss:True（镰刀打）+ 苔雨树 greenRainTree:True（斧头砍）；
-            #    单个树可同时 moss:True+greenRainTree:True（两方都计）。仅 show_moss 时计入。
-            if terr.startswith("Tree:"):
-                if show_moss:
-                    if t.get("moss"):
-                        moss_tree_count += 1
-                    if t.get("greenRainTree"):
-                        greenrain_tree_count += 1
-                continue
-            # 🌿 苔藓杂草块（2026-08-21 恒确认：大块/小块是不同类型）——大块=Clump:46 resource(2×2跨4格)，小块=GreenRainWeeds* 对象(单格)
-            if show_moss and t.get("resource") == "Clump:46":
-                moss_big_tiles.add((t.get("x"), t.get("y")))
-                continue
-            if show_moss and (t.get("object") or "").startswith("GreenRainWeeds"):
-                moss_weed_small += 1
-                continue
-            if has_hoe and t.get("objId") in ("(O)590", "590", "(O)SeedSpot", "SeedSpot"):
-                spot_count += 1
-                continue
-            # 🍄 2026-09-01 猪松露：isPassable()=false（Category -81 动物产物不在游戏 passable 白名单）
-            #    → passable 判定会甩掉它；松露=直接可捡的第一等采集物，按 objId 认、不依赖 passable。
-            if t.get("object") == "Truffle" or t.get("objId") in ("430", "(O)430"):
-                truffle_count += 1
-                continue
-            # 🌿 2026-09-12：不可站、但**游戏说可手捡**的（水果/贝壳/海胆/珊瑚…）照报 —— 判据是
-            #    C# 抄来的 `Object.isForage()`，不再是本地名单（名单的由来与坑见上面 `_NONPASS_FORAGE` 注释处）。
-            if not t.get("passable", True) and t.get("forage"):
-                obj = t.get("object")
-                if obj and not any(blk in obj for blk in _FORAGE_BLACKLIST):
-                    counts[obj] = counts.get(obj, 0) + 1
-                continue
-            if not t.get("passable", True):
-                continue
-            obj = t.get("object")
-            if not obj:
-                continue
-            if any(blk in obj for blk in _FORAGE_BLACKLIST):
-                continue
-            counts[obj] = counts.get(obj, 0) + 1
-        moss_weed_big = _count_clump_blocks(moss_big_tiles)
+        # ⚠️ 2026-10-01：分类**抽成 `_forage_counts()` 了**（`intent` 的三行要和这儿共用一份判据）——
+        #    这里只拿结果回来排版，别再往回写一遍分类。
+        _c = _forage_counts(r.get("tiles", []), show_moss, api.has_item("Hoe"))
+        berry_bushes = _c["bush"]
+        spot_count = _c["spot"]
+        ginger_count = _c["ginger"]
+        onion_count = _c["onion"]
+        truffle_count = _c["truffle"]
+        moss_tree_count = _c["moss_tree"]
+        greenrain_tree_count = _c["greenrain_tree"]
+        counts = _c["forage"]
+        moss_weed_big = _c["moss_big"]
+        moss_weed_small = _c["moss_small"]
         if not counts and not berry_bushes and not spot_count and not ginger_count \
                 and not onion_count and not truffle_count and not moss_tree_count \
                 and not greenrain_tree_count and not moss_weed_big and not moss_weed_small:
@@ -6437,22 +6465,30 @@ def _has_tool(name: str) -> bool:
         return False
 
 
-def _animal_adjacent_spot(ax: int, ay: int) -> tuple:
-    """动物 (ax,ay) 四邻里**能站**的最近一格 → `(x, y)` / `None`。
-
-    抄 `pet_walk.py:pos_to_adjacent` 的判据（那是真机调出来的）：
-      · 先看人是不是**已经**卡迪纳尔相邻（interact 唯一够得着的站位关系）——是就别动；
-      · 候选只取四邻、用 **`/passable`** 过滤（`/position` 直接改坐标、不做校验，
-        四邻全是小桶时硬传 = "反复落到同一格 + 不停 warp"，2026-08-26 真机见过）；
-      · 按离当前位置的曼哈顿距离排序（就近落，少一次穿墙观感）。
-    """
+def _player_xy() -> tuple:
+    """人现在在哪格 → `(x, y)`（读不到给 (0,0)，**不猜**）。"""
     try:
         p = (api.state().get("player") or {})
-        px, py = int(p.get("x") or 0), int(p.get("y") or 0)
+        return int(p.get("x") or 0), int(p.get("y") or 0)
     except Exception:
-        px = py = 0
-    if (px == ax and abs(py - ay) == 1) or (py == ay and abs(px - ax) == 1):
-        return (px, py)
+        return 0, 0
+
+
+def _is_cardinal_to(ax: int, ay: int) -> bool:
+    """人是不是站在动物的**正上下左右**（`interact`/`use` 够得着的唯一站位关系）。"""
+    px, py = _player_xy()
+    return (px == ax and abs(py - ay) == 1) or (py == ay and abs(px - ax) == 1)
+
+
+def _animal_side_tile(ax: int, ay: int) -> tuple:
+    """动物 (ax,ay) 四邻里**能站**的最近一格 → `(x, y)` / `None`。
+
+    ⚠️ 它现在**只当"走位目标"用**（重走那一次请求它）——**不再是瞬移目标**：
+       2026-10-01 恒「不兜底了，走到附近做个样子就 ok」⇒ `/position` 那条路整个撤掉。
+    判据照 `pet_walk.py:pos_to_adjacent`：四邻过 **`/passable`**（权威判据）+ 按离人最近排序
+       （`/passable` 才是权威，2026-08-26 那条账；`/surroundings` 的 passable 别拿来判站位）。
+    """
+    px, py = _player_xy()
     cands = [(ax + 1, ay), (ax - 1, ay), (ax, ay + 1), (ax, ay - 1)]
     ok = []
     for c in cands:
@@ -6467,34 +6503,40 @@ def _animal_adjacent_spot(ax: int, ay: int) -> tuple:
     return ok[0]
 
 
-def _walk_to_animal(ax: int, ay: int, timeout: int = 12) -> tuple:
-    """🐄 **走过去**站到动物旁边（拟人）→ `(到位?, 那一行说明)`。
+def _walk_to_animal(ax: int, ay: int, tries: int = 2, timeout: int = 12) -> tuple:
+    """**走过去**站到动物正旁边（拟人）→ `(站到正旁边了吗, 那一行说明)`。
 
-    ⚠️ 2026-10-01 恒（"跟 pet_animals 一样做"）：这里原来是**对每只都直接 `api.position()`
-       瞬移**到四邻之一 —— 正是审计出来的那类"隔着几十格改世界"，恒一眼看得出不是人。
-       现在照 `pet_walk.py` 的真机形状：**先走**（`/walk_to` 到动物格，动物格是障碍 ⇒ 游戏会
-       停在它旁边），走不到/动物中途挪窝**才** `/position` 兜底 —— 而且**那次兜底要点名**
-       （`⚠️ X 走不到 (x,y)，position 兜底`），不许悄悄瞬移。
+    ⚠️ 2026-10-01 恒：「**不兜底了，走到附近做个样子就 ok**」⇒ **`/position` 兜底整个撤掉**：
+       ① 先走动物格（动物格是障碍 ⇒ 游戏会停在它旁边）；
+       ② 停在对角/隔一格（不在正旁边）⇒ **拿四邻里能站的那格当目标再走一次**（最多 `tries` 次）；
+       ③ 还不行 ⇒ **就地做动作**（`select` → `face_toward` → `use`），并把
+          `⚠️ 没站到正旁边（停在 (x,y)），就地交互了` 交给调用方**如实写进回执**。
+       **一次瞬移都不许有** —— 那正是审计出来的"隔着几十格改世界"。
+    返回：`(True, "")` = 站到正旁边；`(False, "⚠️ …")` = 没站到（调用方照旧做动作，但判据要更严）。
     """
+    loc = "Farm"
     try:
         loc = (api.state().get("location") or {}).get("name") or "Farm"
     except Exception:
-        loc = "Farm"
-    try:
-        ok, note = _walk_and_wait(loc, ax, ay, timeout=timeout)
-    except Exception as e:
-        ok, note = False, f"走位出错（{type(e).__name__}: {e}）"
-    if ok:
-        return True, ""
-    spot = _animal_adjacent_spot(ax, ay)
-    if not spot:
-        return False, f"⚠️ 走不到 ({ax},{ay})，四邻也没有能站的格 —— 这只跳过"
-    try:
-        api.position(spot[0], spot[1])
-        time.sleep(0.3)
-    except Exception as e:
-        return False, f"⚠️ 走不到 ({ax},{ay})，position 兜底也失败（{e}）—— 这只跳过"
-    return True, f"⚠️ 走不到 ({ax},{ay})，position 兜底（{spot[0]},{spot[1]}）"
+        pass
+    why = ""
+    for i in range(max(1, int(tries))):
+        # 第一趟直接走动物格；之后拿"能站的相邻格"当目标（还是**走**，不是瞬移）
+        tx, ty = (ax, ay) if i == 0 else (_animal_side_tile(ax, ay) or (ax, ay))
+        try:
+            ok, note = _walk_and_wait(loc, tx, ty, timeout=timeout)
+        except Exception as e:
+            ok, note = False, f"走位出错（{type(e).__name__}: {e}）"
+        if not ok:
+            why = f"走不到 ({tx},{ty})：{note}"
+            continue
+        if _is_cardinal_to(ax, ay):
+            return True, ""
+        px, py = _player_xy()
+        why = f"停在 ({px},{py})，不在它正旁边"
+    px, py = _player_xy()
+    _why = ("：" + why) if why else ""
+    return False, f"⚠️ 没站到正旁边（停在 ({px},{py}){_why}），就地交互了"
 
 
 def _milk_shear_animals(skip_grabber: bool = False) -> str:
@@ -6554,13 +6596,12 @@ def _milk_shear_animals(skip_grabber: bool = False) -> str:
                     if not cur:
                         continue
                     ax, ay = cur.get("x", 0), cur.get("y", 0)
-                    # 🚶 2026-10-01：**先走过去**（拟人）；走不到/动物中途挪窝才 position 兜底，
-                    #    而且那次兜底**点名进报告**（`_walk_to_animal` 回的 note）——**但不进计数**。
-                    _arrived, _walknote = _walk_to_animal(ax, ay)
+                    # 🚶 2026-10-01 恒：「**不兜底了，走到附近做个样子就 ok**」——
+                    #    **走过去**（走不到就重走，最多 2 次）；还站不到正旁边就**就地做动作**，
+                    #    那行如实进回执；**全程零 `/position`**（一次瞬移都不许有）。
+                    _card, _walknote = _walk_to_animal(ax, ay)
                     if _walknote:
                         notes.append(f"{a.get('name', '?')}{_walknote}")
-                    if not _arrived:
-                        continue
                     # 再重查一次它现在在哪（走过去这段它可能又挪了）——面朝它才够得着
                     try:
                         _fresh2 = api.animals().get("animals", [])
@@ -6569,34 +6610,12 @@ def _milk_shear_animals(skip_grabber: bool = False) -> str:
                             ax, ay = _c2.get("x", ax), _c2.get("y", ay)
                     except Exception:
                         pass
-                    # 站位关系：卡迪纳尔相邻才能 interact 到（`_animal_adjacent_spot` 的判据同源）
+                    # 朝向：不管站没站到正旁边，**都朝它**（`face_toward` 算的是"人→它"）。
+                    # ⚠️ 原来这里是一串卡迪纳尔 if + "站位不对就 position 兜底"——那段**整个撤了**。
                     try:
-                        _p = (api.state().get("player") or {})
-                        px, py = int(_p.get("x") or 0), int(_p.get("y") or 0)
+                        fd = api.face_toward(ax, ay)
                     except Exception:
-                        px, py = ax, ay - 1
-                    if px == ax and py == ay - 1:
-                        fd = 2          # 人在它上方 → 面朝下
-                    elif px == ax and py == ay + 1:
-                        fd = 0          # 人在它下方 → 面朝上
-                    elif py == ay and px == ax - 1:
-                        fd = 1          # 人在它左边 → 面朝右
-                    elif py == ay and px == ax + 1:
-                        fd = 3          # 人在它右边 → 面朝左
-                    else:
-                        # 走到手边却没站成卡迪纳尔（动物又跑了）⇒ 兜一次相邻格，**如实点名**（不进计数）
-                        _spot = _animal_adjacent_spot(ax, ay)
-                        if not _spot:
-                            notes.append(f"{a.get('name', '?')}[⚠️ 站不到它旁边，跳过]")
-                            continue
-                        api.position(_spot[0], _spot[1])
-                        time.sleep(0.3)
-                        px, py = _spot
-                        notes.append(f"{a.get('name', '?')}[⚠️ 站位不对，position 兜底"
-                                     f"（{px},{py}）]")
-                        fd = (2 if (px == ax and py == ay - 1) else
-                              0 if (px == ax and py == ay + 1) else
-                              1 if (py == ay and px == ax - 1) else 3)
+                        fd = 2
                     # 清残留菜单（防止 select 被卡）
                     try:
                         _mm = api.menu()
@@ -6618,6 +6637,11 @@ def _milk_shear_animals(skip_grabber: bool = False) -> str:
                     if not tool_ok:
                         got.append(f"{a.get('name','?')}[工具没切换]")
                         continue
+                    # 🔍 就地交互那条要**诚实判据**（恒：既没弹窗也没产物 ⇒ 算没成、不许进分子）：
+                    #    站到正旁边时人工判据照旧（看弹窗），**就地**那条多看一眼背包里的产物。
+                    _inplace = not _card
+                    _prod = {"挤奶桶": "Milk", "剪刀": "Wool"}.get(cn, "")
+                    _before = _count_item(_prod) if (_inplace and _prod) else 0
                     api.face(fd)
                     time.sleep(0.1)
                     r = api.use_item()
@@ -6629,14 +6653,18 @@ def _milk_shear_animals(skip_grabber: bool = False) -> str:
                         if isinstance(m, dict) and m.get("open") and m.get("type") == "DialogueBox":
                             msg = (m.get("dialogue") or "").strip()
                             break
+                    _after = _count_item(_prod) if (_inplace and _prod) else 0
                     if msg is not None:
                         # ⚠️ 关弹窗用 /menu_close（可靠）——key confirm 可能关掉后又触发世界交互
                         api._post("/menu_close")
                         time.sleep(0.3)
                         tag = "✅" if ("不产" not in msg and "没有" not in msg and "没毛" not in msg) else "⭕"
                         got.append(f"{a.get('name','?')}{tag}{msg[:10]}")
-                    elif r.get("ok"):
+                    elif r.get("ok") and (not _inplace or _after > _before):
                         got.append(a.get("name", "?"))
+                    elif _inplace:
+                        # 就地交互、既没弹窗也没产物 ⇒ **不算成**（进 goes 不进分子）
+                        notes.append(f"{a.get('name', '?')}[⚠️ 就地交互没成：没弹窗也没产物]")
                     time.sleep(0.3)  # 每只后多歇一会，稳（恒 2026-08-16）
                 except Exception:
                     continue
@@ -6657,7 +6685,18 @@ def _milk_shear_animals(skip_grabber: bool = False) -> str:
 
 
 def _enter_building(b: dict) -> tuple:
-    """走进动物建筑，返回 (成功?, 日志)"""
+    """走进动物建筑，返回 (成功?, 日志)
+
+    ⚠️ 2026-10-01 恒（真机偶发"Coop 进不去"的病根）：「**不兜底了…**」，进门这条路也**不再
+       `position` 顶上门格**。老写法是"走位差一格 → `position` 顶到门格 → **立刻** `key confirm`"
+       —— 真机两遍对照：一模一样的序列，一遍成、一遍 `❌ 进门失败（人在 Farm(48,38)，门在(48,38)）`
+       （= 2026-09-10 记过的**同帧**那一族：瞬移落到门格之后那一帧游戏还没把 checkAction 挂上）。
+    ⇒ 现在：**走到门**下方**那格 → `face(0)` 朝门 → `/interact 门格`**（走位触发门 = 最像人；
+       2026-08-26 那条账也写着"开门用 `/interact`，`key confirm` 开不了"）；没成**隔帧重试 1 次**
+       当保险；还不行就把**真实原因**（站位/对白原话/门格坐标）带回去。
+    ⚠️ 跨图那一步**保留 `api.warp("Farm", dx, dy+1)`**（2026-08-26 恒：不这样的话跨图 walk_to 会
+       按 `Game1.locations` 扫到的第一条 warp 落点走，绕到农舍门口去）—— 那不是"顶上门格"。
+    """
     dx, dy = b.get("doorX", b["x"]), b.get("doorY", b["y"])
     logs = []
 
@@ -6676,62 +6715,65 @@ def _enter_building(b: dict) -> tuple:
     except Exception as e:
         logs.append(f"⚠️ 回 Farm 失败: {e}")
 
-    # walk_to 到门瓷砖
-    api.walk_to_coord("Farm", dx, dy)
-    arrived = False
-    for _ in range(20):
-        s = api.state()
-        if s["player"]["x"] == dx and s["player"]["y"] == dy:
-            arrived = True
-            break
-        time.sleep(0.5)
-
-    # ⚠️ 2026-08-26 恒：这行以前是无条件打印"走到门口"——walk_to 没走到也照报，
-    #    把"进门失败"的真实原因（压根没站上门格）盖得死死的。现在报真实落点。
-    #    门格必须精确站上才能进，差几格就 position 顶上去。
-    s = api.state()
-    px, py = s["player"]["x"], s["player"]["y"]
-    if arrived:
-        logs.append(f"走到门口 ({dx},{dy})")
+    # 🚶 走到**门下方那格**（不是门格本身）：门格是"走上去就触发"的，人站它下面正对门最像人
+    _ok_walk, _wnote = _walk_and_wait("Farm", dx, dy + 1, timeout=12)
+    if _ok_walk:
+        logs.append(f"🚶 走到门下方 ({dx},{dy + 1})")
     else:
-        logs.append(f"⚠️ 没走到门格：目标({dx},{dy}) 实际({px},{py})")
-        try:
-            api.position(dx, dy)
-            time.sleep(0.5)
-            s = api.state()
-            px, py = s["player"]["x"], s["player"]["y"]
-            if (px, py) == (dx, dy):
-                logs.append(f"  → position 校正成功 ({px},{py})")
-            else:
-                logs.append(f"  → position 校正后仍在 ({px},{py})")
-        except Exception as e:
-            logs.append(f"  → position 校正失败: {e}")
-
-    # 进门：interact(confirm) → 当场抓"建造中"对话（2026-08-24 恒：进在建建筑按 confirm 会弹它、被后续按键点掉，
-    # 得在它刚出现时抓，别等序列结束后读——对话早已被点没）
-    api.key("confirm")
-    time.sleep(0.4)
+        px, py = _player_xy()
+        logs.append(f"⚠️ 没走到门下方 (dx,dy+1)=({dx},{dy + 1})，人在 ({px},{py})：{_wnote}")
     try:
-        dlg = (api.menu().get("dialogue") or "").strip()
-        low = dlg.lower()
-        if any(k in low for k in ("建造中", "在建", "施工", "未完工", "under construction", "in construction", "being built", "construction")):
-            api.key("confirm")   # 点掉"建造中"对话
-            time.sleep(0.2)
-            logs.append(f"⚠️ 建筑在建中（未完工）：「{dlg}」——跳过")
-            return False, "\n".join(logs)
+        api.face(0)                      # 朝北 = 正对那扇门（SDV 方向：0上/1右/2下/3左）
+        time.sleep(0.2)
     except Exception:
         pass
 
-    api.face(0)
-    time.sleep(0.2)
-    api.key("X")
-    time.sleep(1.5)
+    # 进门：`/interact 门格`（走位触发门那条路）→ **隔帧重试 1 次**当保险；失败**带出原因**
+    _dlg = ""
+    _inside = ""
+    for _try in range(2):
+        try:
+            api.interact_at(dx, dy)
+        except Exception as e:
+            logs.append(f"  ⚠️ /interact 门格失败（第 {_try + 1} 次）：{e}")
+        time.sleep(0.8)
+        # ⚠️ "建造中"对白要**当场抓**（2026-08-24 恒：进在建建筑会弹它，被后续按键点掉就看不见了）
+        try:
+            _d = (api.menu() or {})
+            _dlg = (_d.get("dialogue") or "").strip()
+            _low = _dlg.lower()
+            if any(k in _low for k in ("建造中", "在建", "施工", "未完工", "under construction",
+                                      "in construction", "being built", "construction")):
+                api.key("confirm")   # 点掉"建造中"对话
+                time.sleep(0.2)
+                logs.append(f"⚠️ 建筑在建中（未完工）：「{_dlg}」——跳过")
+                return False, "\n".join(logs)
+        except Exception:
+            pass
+        # 进没进：等图变了（门有动画，给几拍）
+        for _ in range(6):
+            try:
+                _inside = (api.state().get("location") or {}).get("name") or ""
+            except Exception:
+                _inside = ""
+            if _inside and _inside != "Farm":
+                break
+            time.sleep(0.4)
+        if _inside and _inside != "Farm":
+            break
+        if _try == 0:
+            logs.append("  ↻ 第一次没进去，隔一帧再 interact 一次（重试）")
+            time.sleep(0.5)
 
     s = api.state()
     loc = s.get("location", {}).get("name", "")
     if loc == "Farm":
-        # 2026-08-26 恒：带上真实站位——光一句"进门失败"查不出是没站上门格还是门本身没反应
-        logs.append(f"❌ 进门失败（人在 Farm({s['player']['x']},{s['player']['y']})，门在({dx},{dy})）")
+        # 2026-08-26 恒：带上真实站位；2026-10-01：再把**游戏自己那句对白**和门格一起带上
+        _extra = f"；对白「{_dlg}」" if _dlg else ""
+        px, py = _player_xy()
+        logs.append(f"❌ 进门失败（人在 Farm({px},{py})，门在({dx},{dy}){_extra}）"
+                    f" —— 下一步：`scene(ops=\"at\", kw={{\"tile_x\": {dx}, \"tile_y\": {dy}}})` "
+                    f"手动点这扇门试试")
         return False, "\n".join(logs)
 
     logs.append(f"✅ 进入 {loc} ({s['player']['x']},{s['player']['y']})")
@@ -7116,6 +7158,10 @@ close_doors = doors
 _DOOR_MORNING_CLOSE_H = 12      # 早晨那句只在这个点之前给（午后就不是"早晨"了）
 _DOOR_EVENING_H = 19            # 晚上那句 ≥19:00 才给（恒："19 点之后…提醒给动物关门"）
 _DOOR_CLOSE_KEY = {"last": None}   # 🚪 晚上关门提醒去重（一天一条；空档日/雨天照报）
+# 🚪 2026-10-01：「**外面还有动物**」那条提醒**不消费**上面那个一天一条的标记 ——
+#    它按 **(天, 进农场次数)** 去重：当天**下次进农场**还会提，但不会每条工具调用都刷屏。
+_DOOR_VISIT = {"loc": None, "n": 0}
+_DOOR_OUT_KEY = {"last": None}
 
 
 def _farm_animal_building_count() -> int:
@@ -7175,10 +7221,20 @@ def _doors_morning_hint() -> str:
 def _doors_evening_hint(loc_name: str) -> str:
     """🌙 晚上那句（一天一条）：≥19:00 且**人在 Farm**（进农场那一次也算）⇒ 提醒关门。
 
-    ⚠️ **雨夜照报**（雨天不开门 ≠ 不用关门）；没有动物建筑 / 读不到就**不提**。
-    ⚠️ 去重照 `_TRAVEL_CART_KEY`（一天一条，换天复位）；`loc_name != "Farm"` 时**不消费**这一天的名额
-       —— 否则"19 点人在矿里"会把当天那句白白吃掉，等他回农场就不提醒了。
+    ⚠️ **分两档**（恒 2026-10-01：「还有在棚外的话报错不关，然后**不消除"只报一次"的标记**，
+       等当天下次进农场再次提醒」）：
+      · **还有动物在棚外** ⇒ 提「先别关门」+ 点名，而且**不消费**"一天一条"那个标记
+        —— 去重按 **(天, 进农场次数)**：当天**下次进农场**还会提，但**不是每条工具调用都刷屏**。
+      · **全在棚内**（或没动物）⇒ 照旧「天黑了，去关门」，**消费**标记（一天一条）。
+    ⚠️ 判据是 `_animals_outside()`（**跟关门前那道闸同一处**）；读不到时**照报去关门**但如实说明
+       「判不出棚外还有没有」—— 真去关的时候那道闸还会拦（读不到 = 不许关）。
+    ⚠️ **雨夜照报**；没有动物建筑 / 钟点没到就**不提**。
     """
+    # 「进农场」这个转移（从别处 → Farm 记一次）——只给上面"还有动物在棚外"那条去重用
+    _prev = _DOOR_VISIT["loc"]
+    _DOOR_VISIT["loc"] = loc_name
+    if loc_name == "Farm" and _prev not in (None, "Farm"):
+        _DOOR_VISIT["n"] += 1
     if loc_name != "Farm":
         return ""
     tod, _rain, _winter = _door_weather_state()
@@ -7190,12 +7246,22 @@ def _doors_evening_hint(loc_name: str) -> str:
         key = api.day_key()
     except Exception:
         key = None
+    d = _animals_outside()
+    if d.get("ok") and d.get("n"):
+        _vid = (key, _DOOR_VISIT["n"])
+        if _DOOR_OUT_KEY["last"] == _vid:
+            return ""
+        _DOOR_OUT_KEY["last"] = _vid
+        _names = "、".join(f"{n}({x},{y})" for n, x, y in (d.get("names") or [])[:8])
+        return (f"🌙 还有 {d['n']} 只在棚外 —— {_names}：**先别关门**（关了它们今晩进不去）。"
+                f"等它们回棚（或 `farm(ops=\"animals\")` 走一遍）再关")
+    _note = "" if d.get("ok") else f"（⚠️ 判不出棚外还有没有：{d.get('why')}）"
     if key is not None and _DOOR_CLOSE_KEY["last"] == key:
         return ""
     if key is not None:
         _DOOR_CLOSE_KEY["last"] = key
     return ("🌙 天黑了：**去把棚门关了**（防野生动物袭击牲畜）—— `farm(ops=\"doors\")`"
-            "（站到棚门口翻一下；**回执会报执行后每栋的门态**）")
+            "（站到棚门口翻一下；**回执会报执行后每栋的门态**）" + _note)
 
 
 # ═══════════════════════════════════════════
@@ -21706,6 +21772,78 @@ def _im_doors(state: dict) -> dict:
             "winter": season == "winter"}
 
 
+def _im_chores(state: dict, surr: dict, animals: dict) -> dict:
+    """🌿 六件"顺手就做"的活 —— **单子那 6 行的账**（判据全在这一处算好递进 `Ctx.chores`）。
+
+    `{}` = 一件都推不出来（那 6 行**全不出现**）。有值形如：
+      `{"berry": 1, "spot": 2, "moss": 5, "crab": 4, "pan": {"x": 33, "y": 36}, "milk": 2, "shear": 1}`
+
+    判据**全问游戏**，一个名单都不编：
+      · `berry` = `/surroundings` 里**结果的灌木**（`terrain=="Bush"` + `bushBloom`）
+      · `spot`  = 斑点 `objId∈_SPOT_IDS` + 姜点 `forageCrop=="2"` —— **都要带锄头**
+        ⚠️ **不是 `diggable`**：那是地图属性（真机 Farm 194 格 true、斑点 0 个，见 `_SPOT_IDS` 那段）
+      · `moss`  = 长苔藓树 + 苔藓杂草块 —— **跟 `moss_run` 同一道闸**（绿雨天或 `settings moss on`），
+                  否则行出现、按下去只吃一句"今天不是绿雨天…"
+      · `crab`  = `/crab_pots` 里 `readyForHarvest` 的个数（真机回包字段）
+      · `pan`   = `/state.player.orePan`（`hasGlint`+`hasPan`；**已经拉过 `/state`，不用多打一发**）
+      · `milk`/`shear` = **本图** `/animals` 里 `productReady` 的 牛·山羊 / 绵羊
+        （`productReady = currentProduce != null && != "-1"` ⇒ "这只现在有货"；没货就不给行，
+          免得按下去只得到一串「现在没有奶了」）
+    ⚠️ 分类走 `_forage_counts()`（= 状态条「🌿 可采集」那一份，**共用判据**，别重写一遍）。
+    ⚠️ 成本：一次 `intent show` 多一发 `/crab_pots` + 一发 `has_item`（其余都复用已拉的料）。
+    """
+    out = {}
+    # ── 🌿 采集三行（浆果 / 斑点+姜 / 苔藓）──
+    try:
+        _w = ((state or {}).get("time") or {}).get("weather")
+    except Exception:
+        _w = None
+    _show_moss = (_w == 7) or bool(_moss_cfg.get("expose_all_days", False))
+    try:
+        _hoe = bool(api.has_item("Hoe"))
+    except Exception:
+        _hoe = False
+    try:
+        _c = _forage_counts((surr or {}).get("tiles") or [], _show_moss, _hoe)
+    except Exception:
+        _c = {}
+    if _c.get("bush"):
+        out["berry"] = int(_c["bush"])
+    _dig = int(_c.get("spot") or 0) + int(_c.get("ginger") or 0)
+    if _dig:
+        out["spot"] = _dig
+    _moss = int(_c.get("moss_tree") or 0) + int(_c.get("moss_big") or 0) + int(_c.get("moss_small") or 0)
+    if _show_moss and _moss:
+        out["moss"] = _moss
+    # ── 🦀 蟹笼有货 ──
+    try:
+        _pots = (api._ai_get("/crab_pots") or {}).get("pots") or []
+        _ready = sum(1 for x in _pots if (x or {}).get("readyForHarvest"))
+    except Exception:
+        _ready = 0
+    if _ready:
+        out["crab"] = int(_ready)
+    # ── 🪙 淘金：水下闪光点（`/state.player.orePan`）──
+    try:
+        _ore = ((state or {}).get("player") or {}).get("orePan") or {}
+    except Exception:
+        _ore = {}
+    if _ore.get("hasGlint") and _ore.get("hasPan"):
+        out["pan"] = {"x": _ore.get("x"), "y": _ore.get("y")}
+    # ── 🐮🐑 本图能挤能剪（`/animals` 的 productReady）──
+    _a = (animals or {}).get("animals") or []
+    _milk = sum(1 for a in _a if (a or {}).get("productReady")
+                and ("Cow" in str((a or {}).get("type") or "")
+                     or "Goat" in str((a or {}).get("type") or "")))
+    _shear = sum(1 for a in _a if (a or {}).get("productReady")
+                 and str((a or {}).get("type") or "") == "Sheep")
+    if _milk:
+        out["milk"] = int(_milk)
+    if _shear:
+        out["shear"] = int(_shear)
+    return out
+
+
 def _im_ctx():
     """一次把单子要的世界快照凑齐。
 
@@ -21752,6 +21890,10 @@ def _im_ctx():
                                 # 🚪🐄 放牧/关棚门那两行的账（2026-10-01）：本档几个动物建筑 +
                                 #    今天雨不雨/冬不冬。⚠️ 只在**农场**上多打一发 `/farm_buildings`。
                                 doors=_im_doors(state),
+                                # 🌿 六件"顺手活"那 6 行的账（浆果/斑点/苔藓/蟹笼/淘金/挤奶剪毛）：
+                                #    判据全问游戏（`/surroundings` + `/crab_pots` + `/state.orePan`
+                                #    + `/animals`），分类跟状态条「🌿 可采集」**共用一份**。
+                                chores=_im_chores(state, surr, animals),
                                 worn=worn)
 
 
@@ -22123,6 +22265,53 @@ def _count_item(name: str) -> int:
         return 0
 
 
+def _animals_outside() -> dict:
+    """🐄 现在**还有几只牲畜在棚外**（牧场上）→ `{"ok":True,"n":N,"names":[(名,x,y),…]}` /
+    `{"ok":False,"why":"…"}`（**判不出来**）。
+
+    ⚠️ **判据只有这一处**：「关棚门动手前」的闸（`_doors_close_guard`）与「傍晚那句提醒」
+       （`_doors_evening_hint`）**共用它** —— 两处各判一次必然漂。
+    ⚠️ 读的是 **`/animals`**（= 玩家**当前所在图**的动物）：站在农场时它正好就是"棚外放牧那批"
+       （2026-08-24 恒：「忘关门牛羊鸡跑 Farm 上」那批）；**人不在农场 ⇒ 判不出来**（`ok=False`）。
+    ⚠️ 判不出来的方向**故意是"不许关门"**（恒：「读不到…宁报错别兜底」）：
+       宁可报一句"没关门、因为判不出外面还有没有"，也别把动物关在外面过夜。
+    """
+    try:
+        cur = (api.state().get("location") or {}).get("name") or ""
+    except Exception as e:
+        return {"ok": False, "why": f"读不到人在哪（{type(e).__name__}: {e}）"}
+    if cur != "Farm":
+        return {"ok": False,
+                "why": f"人不在农场（在「{cur}」）—— `/animals` 只报当前图那批，判不出棚外还有没有"}
+    try:
+        data = api.animals() or {}
+    except Exception as e:
+        return {"ok": False, "why": f"`/animals` 读不到（{type(e).__name__}: {e}）"}
+    al = data.get("animals")
+    if not isinstance(al, list):
+        return {"ok": False, "why": "`/animals` 回包里没有 animals 列表"}
+    return {"ok": True, "n": len(al),
+            "names": [(a.get("name") or "?", a.get("x"), a.get("y")) for a in al]}
+
+
+def _doors_close_guard() -> str:
+    """「关棚门」动手前的闸 → `""` = 可以关；否则一句**带下一步的拒绝话**（并且**不翻**）。
+
+    恒 2026-10-01：「**还有在棚外的话报错不关**，然后不消除"只报一次"的标记，等当天下次进农场再次提醒」。
+    """
+    d = _animals_outside()
+    if not d.get("ok"):
+        return (f"⚠️ **没关门**：{d.get('why')} —— 判不出来的时候**不许关**"
+                f"（站到农场再看一眼：`check(what=\"status\")`）。"
+                f"站上农场确认外面没动物了，再敲一次 `intent` 的「关棚门」")
+    if d.get("n"):
+        _names = "、".join(f"{n}({x},{y})" for n, x, y in (d.get("names") or [])[:8])
+        return (f"⚠️ **没关门**：还有 {d['n']} 只在棚外 —— {_names}。"
+                f"先把它们弄回棚（`farm(ops=\"animals\")` 走一遍 / 等它们自己回去）"
+                f"或者确认它们今晚不进棚也安全，再敲「关棚门」")
+    return ""
+
+
 def _im_doors_op(args: dict) -> dict:
     """🚪🐄 单子那两行 exec 打的 op（**同一个翻转**，但把门态一起递出去）。
 
@@ -22132,6 +22321,15 @@ def _im_doors_op(args: dict) -> dict:
     ⚠️ `walk=True`（默认）**先走到棚门口再翻**（拟人，见 `_walk_to_animal_door`）；
        exec 收敛的**第二下**传 `walk=False` —— 人已经站在门口了，再走一次纯属白等 15 秒。
     """
+    # 🚪 带"关"意图的那条路（单子「关棚门」）**先问游戏再动手**：外面还有动物就**报错、不翻**
+    #    （恒 2026-10-01：「还有在棚外的话报错不关」）。
+    #    ⚠️ 闸放在**走位之前**：判出来不让关就别白跑一趟；判据在 `_doors_close_guard()` 那一处
+    #       （傍晚那句提醒共用它，**别在 op 和 exec 里各写一份**）。
+    if str((args or {}).get("want") or "").lower() == "close":
+        _blk = _doors_close_guard()
+        if _blk:
+            return {"ok": False, "st": "maybe", "blocked": True, "walk": "",
+                    "doors": {}, "snap": [], "text": _blk}
     walk_line = ""
     if bool((args or {}).get("walk", True)):
         _n, walk_line = _walk_to_animal_door()
@@ -22236,6 +22434,21 @@ def _im_run(op, args):
         #       `isinstance(_res, dict)` 那条（helpers 那档为此多认一种形状）。
         #    ⚠️ `walk=True` 先走到棚门口（拟人）；收敛的**第二下**传 `walk=False`（人已经在门口了）。
         "doors": lambda: _im_doors_op(args),
+        # 🌿 六件"顺手活"（2026-10-01 恒「接吧」）：单子上这 6 行**都走现成的域 op**，
+        #    这里只是"把域 op 挂成单子能敲的名字"——**不在 exec 里另写一套 HTTP**。
+        #    ⚠️ 都是**文本型**（回一句话）⇒ `_im_run` 按开头三档判成没成（❌/⚠️/其余）。
+        #    ⚠️ `berry`/`spot`/`moss` 走的是**长脚本**（`_run_script`，在异步白名单里）⇒
+        #       回包可能是「🚀 已后台启动 job N」，回执**别说成"做完了"**（`_receipt_from_helper`
+        #       照原话回，见它那段）。
+        #    ⚠️ `milk` 是**同步长活**（真机实测一次 118~126 秒：要走遍棚 + 走位到每只动物旁）。
+        #       单子敲它 = 这 2 分钟 :8000 这个事件循环在忙（本项目已知的同步工具代价）——
+        #       先照恒的拍板上单子，要异步得另开一批（`_ASYNC_SCRIPTS` 只收脚本，它不吃 Python 流程）。
+        "berry": lambda: berry_run(),
+        "spot": lambda: spot_run(),
+        "moss": lambda: moss_run(),
+        "pan": lambda: _pan_run(),
+        "crab": lambda: _crab_collect(),
+        "milk": lambda: milk_shear(),
     }
     # 🛒 买卖走**裸端点**（回 dict，回执要逐条报数字），只是外面多两道闸门。
     raw_ops = {

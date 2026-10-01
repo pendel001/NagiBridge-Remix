@@ -247,6 +247,15 @@ class Ctx:
     #       所以这儿不分开（不同于 `shop` 那三态：那个折叠会让 AI 以为"这店不收东西"）。
     #    ⚠️ 读的必须是 **AI 自己那端**（`_ai_get`）——穿戴物是"我的"，不是恒的。
     worn: dict = field(default_factory=dict)
+    # 🌿 **六件"顺手就做"的活**（2026-10-01 恒「接吧」= 把 P1 那批**空参行**接上单子）。
+    #    `{}` = 一件都推不出来（那 6 行**全不出现**）。有值形如：
+    #      `{"berry": 1, "spot": 2, "moss": 5, "crab": 4, "pan": {"x": 33, "y": 36},
+    #        "milk": 2, "shear": 1}`
+    #    ⚠️ **由服务器算好递进来**（`_im_chores`：`/surroundings` + `/crab_pots` + `/state.orePan`
+    #       + `/animals`）：这一层是**纯函数**，`can()` 不许打 HTTP（同 `caps`/`shop`/`doors`），
+    #       也不许自己编"哪些算斑点/苔藓"的名单 —— 那几个字段的判据跟状态条「🌿 可采集」
+    #       **共用 `_forage_counts()` 一份**。
+    chores: dict = field(default_factory=dict)
     # 🐾 本图的宠物（猫狗）——来自 `/surroundings` 的 `npcs` 里 `kind=="pet"` 的那几个。
     #    它们是**世界级**的（不属于某一格的动作），所以不进 tiles。
     pets: list = field(default_factory=list)
@@ -2753,7 +2762,12 @@ def _doors_exec(ctx, targets, run, want: bool):
     ⚠️ 回执把话说全：**目标态 + 实际门态**（读不到就明说读不到），没到目标态时给下一步。
     """
     verm, tgt = ("开棚门", "全开") if want else ("关棚门", "全关")
-    r = run("doors", {"walk": True}) or {}
+    # 🚪 「关棚门」带上**意图**：服务器那侧会先问游戏"外面还有动物吗"——
+    #    有（或判不出来）就**报错、不翻**（恒 2026-10-01：「还有在棚外的话报错不关」）。
+    _args = {"walk": True}
+    if not want:
+        _args["want"] = "close"
+    r = run("doors", _args) or {}
     d = (r.get("doors") if isinstance(r, dict) else None) or {}
     if d and not _doors_at_target(d, want):
         r2 = run("doors", {"walk": False}) or {}
@@ -2772,6 +2786,10 @@ def _doors_exec(ctx, targets, run, want: bool):
         f"{k} " + ("开" if v is True else ("关" if v is False else "**未确认**"))
         for k, v in d.items()) or "**没读到门态**"
     head = _receipt_from_helper(verm, f"（目标 {tgt}）", r)
+    # ⚠️ 被"外面还有动物"那道闸拦下时（`blocked`）：**一个字都不许提门态** ——
+    #    我们压根没翻、也没读门态，"实际=没读到门态"读起来像"翻了但读不到"（两回事）。
+    if isinstance(r, dict) and r.get("blocked"):
+        return head
     line = f"\n   🎯 目标={tgt} · 实际={got}"
     if d and not _doors_at_target(d, want):
         line += "—— 还没到就**再敲一次** `farm(ops=\"doors\")`（翻转端点，敲一次变一次）"
@@ -2788,10 +2806,82 @@ def _exec_close_doors(ctx, targets, run):
     return _doors_exec(ctx, targets, run, want=False)
 
 
-OPEN_DOORS_V = Verb("opendoors", "放牧（开棚门）", 70, _doors_open_can,
-                    _doors_open_reason, _doors_open_show, "world", exec=_exec_open_doors)
+OPEN_DOORS_V = Verb("opendoors", "放牧（开棚门）", 70, _doors_open_can,                    _doors_open_reason, _doors_open_show, "world", exec=_exec_open_doors)
 CLOSE_DOORS_V = Verb("doors", "关棚门", 70, _doors_close_can,
                      _doors_close_reason, _doors_close_show, "world", exec=_exec_close_doors)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 🌿 六件"顺手就做"的活（2026-10-01 恒「接吧」＝ 把 P1 那批**空参行**接上单子）
+# ═══════════════════════════════════════════════════════════════════════
+# 这些 op **早就有了**（`scene ops="berry"/"spot"/"moss"/"pan"` · `fish ops="crab_collect"`
+# · `farm ops="milk"`），`_INTENT_INDEX` 里也一直指着它们 —— **只是没上单子**。
+# ⚠️ 判据**全在 `Ctx.chores`**（服务器 `_im_chores` 算好的）——这一层不打 HTTP、不认名单。
+# ⚠️ 执行**只调现成 op**（`run("berry"/"spot"/…)`，`_im_run` 里挂的就是那几个域 op）——
+#    **不在 exec 里另写一套 HTTP**。
+# ⚖️ 权重按"顺手 + 收益"分开给（别堆同一个数）：蟹笼 68（有货就是钱、且就在水边）·
+#    浆果 66（走过去摇一下就有）· 斑点 64（收益高但要带锄头、要逐格挖）· 挤奶剪毛 62（日常，慢）·
+#    淘金 60（点固定、要先有闪光点）· 苔藓 58（只有绿雨/开了设置才有）。
+def _chore_n(ctx, key):
+    """那笔账里的个数（读不出来 → 0）。"""
+    try:
+        return int((ctx.chores or {}).get(key) or 0)
+    except Exception:
+        return 0
+
+
+def _exec_chore(ctx, targets, run, op, cn):
+    """🌿 顺手活：**只调现成的那个 op**，把它的话原样带回来（不替它下结论）。"""
+    r = run(op, {})
+    return _receipt_from_helper(cn, "", r)
+
+
+# 1) 摇 浆果丛（`scene ops="berry"` → `berry_run` 现成脚本）
+BERRY_V = Verb("berry", "摇 浆果丛", 66,
+               lambda c, t: CAN_YES if _chore_n(c, "berry") else CAN_NO,
+               lambda c, t: (f"本图扫到 {_chore_n(c, 'berry')} 棵**结果的灌木**"
+                             f" · 摇完果子直接进背包（拟人：逐棵走过去摇）"
+                             f" · 敲了就摇，不用给参数"),
+               lambda c, t: "摇 浆果丛", "world",
+               exec=lambda c, t, run: _exec_chore(c, t, run, "berry", "摇浆果丛"))
+# 2) 挖 远古斑点（`scene ops="spot"` → `spot_run`；**要带锄头**，没锄头服务器不给这笔账）
+SPOT_V = Verb("spot", "挖 远古斑点", 64,
+              lambda c, t: CAN_YES if _chore_n(c, "spot") else CAN_NO,
+              lambda c, t: (f"本图 {_chore_n(c, 'spot')} 处**可挖的斑点/姜点**（锄头在手）"
+                            f" · 出古物/矿物/季节种子 · 敲了逐格挖完，不用给坐标"),
+              lambda c, t: "挖 远古斑点", "world",
+              exec=lambda c, t, run: _exec_chore(c, t, run, "spot", "挖斑点"))
+# 3) 刮 苔藓（`scene ops="moss"` → `moss_run`；**只有绿雨天或 `settings moss on` 才有账**）
+MOSS_V = Verb("moss", "刮 苔藓", 58,
+              lambda c, t: CAN_YES if _chore_n(c, "moss") else CAN_NO,
+              lambda c, t: (f"本图 {_chore_n(c, 'moss')} 处苔藓（长苔藓树/苔藓杂草块）"
+                            f" · 出 Moss · 敲了自己扫图刮，不用给半径"),
+              lambda c, t: "刮 苔藓", "world",
+              exec=lambda c, t, run: _exec_chore(c, t, run, "moss", "刮苔藓"))
+# 4) 收 蟹笼（`fish ops="crab_collect"`；只算 `readyForHarvest` 的那几个）
+CRAB_V = Verb("crab", "收 蟹笼", 68,
+              lambda c, t: CAN_YES if _chore_n(c, "crab") else CAN_NO,
+              lambda c, t: (f"本图 {_chore_n(c, 'crab')} 个蟹笼**有货**"
+                            f" · 收完笼是空的 —— 想继续抓得再放饵（`fish ops=\"crab_bait\"`）"),
+              lambda c, t: "收 蟹笼", "world",
+              exec=lambda c, t, run: _exec_chore(c, t, run, "crab", "收蟹笼"))
+# 5) 淘 金（`scene ops="pan"` → `_pan_run`；账里带闪光点坐标 + 铜锅在手）
+PAN_V = Verb("pan", "淘 金", 60,
+             lambda c, t: CAN_YES if (c.chores or {}).get("pan") else CAN_NO,
+             lambda c, t: ("水下闪光点 ({x},{y}) · 铜锅在手 · 淘完**回到出发那岸**"
+                           " · 敲了自己走过去淘，不用给坐标").format(
+                               x=(c.chores.get("pan") or {}).get("x"),
+                               y=(c.chores.get("pan") or {}).get("y")),
+             lambda c, t: "淘 金", "world",
+             exec=lambda c, t, run: _exec_chore(c, t, run, "pan", "淘金"))
+# 6) 挤奶 / 剪毛（`farm ops="milk"`；只算 **本图** `productReady` 的牛·山羊/绵羊）
+MILK_V = Verb("milk", "挤奶 / 剪毛", 62,
+              lambda c, t: CAN_YES if (_chore_n(c, "milk") or _chore_n(c, "shear")) else CAN_NO,
+              lambda c, t: ("本图能挤 " + str(_chore_n(c, "milk")) + " 只（牛/山羊）"
+                            " · 能剪 " + str(_chore_n(c, "shear")) + " 只（绵羊）"
+                            " · 会先走到动物旁边再动手（棚里那批也一起）"),
+              lambda c, t: "挤奶 / 剪毛", "world",
+              exec=lambda c, t, run: _exec_chore(c, t, run, "milk", "挤奶剪毛"))
 # ⚠️ 两个 Verb 的 `key` 只是**单子这一层的稳定标识**（`key` 决定排序/去重，不是 op 名）；
 #    它们跑起来**打的是同一个 op**：`run("doors", …)`（见 `_doors_exec`）——
 #    C# 那边本来就只有 `/toggle_doors` 一个**翻转**端点，**没有**"保证开/保证关"两条路。
@@ -2926,6 +3016,9 @@ VERBS: list = [
     #    两条互斥（钟点分，见上面那段的账）：早上 06:00–15:00 给开、≥17:00/<06:00 给关，
     #    16:00 那一小时两行都不给。判据全在 `Ctx.doors`（服务器递进来），这一层不打 HTTP。
     OPEN_DOORS_V, CLOSE_DOORS_V,
+    # 🌿 2026-10-01 恒「接吧」：P1 那批**空参行**（早就有的 6 个 op，一直没上单子）。
+    #    判据全在 `Ctx.chores`（服务器算好的账）；执行只调现成 op —— 见上面那一段的账。
+    BERRY_V, SPOT_V, MOSS_V, CRAB_V, PAN_V, MILK_V,
 ]
 
 
@@ -3902,7 +3995,7 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
              animals: dict = None, shop: dict = None, beds: list = None,
              menu_exit: str = "", menu_hint: str = "", worn: dict = None,
              menu_data: dict = None, reforge: dict = None, mwork: dict = None,
-             doors: dict = None) -> Ctx:
+             doors: dict = None, chores: dict = None) -> Ctx:
     """把 `/state`(**full**) + `/surroundings`(+`/machines`/`/scan_chests`) 拼成 Ctx。
 
     ⚠️ 只搬运，**不补默认值**：缺什么就让它缺着（`can()` 遇到缺失自然回 假/？）。
@@ -3985,6 +4078,9 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
                # 🚪🐄 放牧/关棚门那两行的账（同上：`/state.time` 的天气季节 + `/farm_buildings`，
                #    服务器算好递进来 —— 这里**不猜**"哪些建筑算动物建筑"）。
                doors=doors or {},
+               # 🌿 六件"顺手活"那 6 行的账（同上：服务器算好递进来 ——
+               #    这一层不认"哪些算斑点/苔藓"，也不打 HTTP）。
+               chores=chores or {},
                sitting=bool(((seats or {}).get("me") or {}).get("sitting")),
                worn=(worn or {}),
                pets=pets,

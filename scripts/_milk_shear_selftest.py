@@ -39,12 +39,14 @@ INDOOR = [{"name": "牛牛", "type": "White Cow", "x": 11, "y": 14},
           {"name": "猪猪", "type": "Pig", "x": 13, "y": 14}]
 # 室外放牧那批：一头山羊（也要挤）
 OUTDOOR = [{"name": "羊羊", "type": "Goat", "x": 40, "y": 40}]
-CALLS = []          # 桩记下的调用（看**行为**：有没有瞬移、有没有轮询）
+CALLS = []          # 桩记下的调用（看**行为**：有没有瞬移、有没有轮询、走位请求的是哪格）
+WALK_CALLS = []     # 走位请求过的目标格（验"重走"与"进棚请求门下方那格"）
 
 
 def _stub(loc="Farm", indoor=None, outdoor=None, has_tool=True, walk_ok=True,
           grabber=False, warp_lag=0, enter_ok=True,
-          enter_log="（桩：进门）", find_buildings=None):
+          enter_log="（桩：进门）", find_buildings=None,
+          popup=None, use_adds_milk=False):
     """把 `milk_shear` 会碰到的出口全接上桩。`/animals` 按"人现在在哪张图"给不同的一批。
 
     `warp_lag=N` = **warp 回包早于生效**（2026-09-16/10-01 真机那个形状）：调过 `api.warp` 之后
@@ -53,6 +55,7 @@ def _stub(loc="Farm", indoor=None, outdoor=None, has_tool=True, walk_ok=True,
     indoor = INDOOR if indoor is None else indoor
     outdoor = OUTDOOR if outdoor is None else outdoor
     CALLS.clear()      # ⚠️ 每个用例从头记（不清的话上一个用例的 `/position` 会被算进来 = 假红）
+    WALK_CALLS.clear()
     # ⚠️ `_has_tool` 读的是 **`/state` 顶层**的 `inventory`（不是 `player.inventory`）——
     #    第一版放错层 ⇒ 每只都判"没带挤奶桶"，四条用例假红（自验当场逮到）。
     inv = [{"name": "Milk Pail", "displayName": "挤奶桶"},
@@ -87,12 +90,16 @@ def _stub(loc="Farm", indoor=None, outdoor=None, has_tool=True, walk_ok=True,
         if ep == "/machines":
             return {"machines": ([{"type": "Auto-Grabber"}]) if grabber else []}
         if ep == "/menu":
-            return {"open": False}
+            return ({"open": True, "type": "DialogueBox", "dialogue": popup} if popup
+                    else {"open": False})
         return {}
 
     def p(ep, data=None):
         CALLS.append(("POST", ep, data))
         if ep == "/use":
+            # 就地交互"有产物"那条：往包里塞一个 Milk（`_count_item` 靠它判成没成）
+            if use_adds_milk:
+                state["inventory"].append({"name": "Milk", "displayName": "牛奶", "stack": 1})
             return {"ok": True}
         if ep == "/passable":
             return {"passable": True}
@@ -118,11 +125,14 @@ def _stub(loc="Farm", indoor=None, outdoor=None, has_tool=True, walk_ok=True,
     # ⚠️ 第一版只回 `(True, "")`、玩家坐标恒不动 ⇒ 站位永远不是卡迪纳尔相邻 ⇒ 触发"站位不对，
     #    position 兜底"那条路，两条用例假红 —— **桩不搬人 = 把成功路径测成了失败路径**。
     def _walk(loc_, x, y, timeout=25):
+        WALK_CALLS.append((loc_, x, y))
         if not walk_ok:
             return False, "走位超时没到"
         state["player"]["x"], state["player"]["y"] = x, y - 1     # 站到它正下方，面朝上
         return True, ""
     M._walk_and_wait = _walk
+    # ⚠️ 就地交互那条**绝不许瞬移** ⇒ 任何 `/position` 调用都记下来（用例会断言"零命中"）
+    api.position = lambda x, y: p("/position", {"x": x, "y": y})
     M._warp_home_if_needed = lambda loc_: "（桩：不用回家）"
     M._enter_building = lambda b: (enter_ok, enter_log)
     # ⚠️ **建筑列表也要在这儿桩**（默认 BUILDINGS）：第一版只在个别用例里设，
@@ -141,6 +151,9 @@ def main():
     res = []
     _orig_ms = M._milk_shear_animals
     _orig_wait = M._wait_on_map
+    # ⚠️ ⑨ 要跑**真的** `_enter_building`（前面每个 `_stub()` 都会把它换成桩）⇒ 先留一份原件
+    _orig_enter = M._enter_building
+    _orig_pxy = M._player_xy
 
     # ① 室外那半：棚里没有建筑时**也要**处理室外那批（原来直接 return「没找到动物建筑」）
     _stub(loc="Farm", find_buildings=[])
@@ -180,26 +193,45 @@ def main():
     res.append(ck("🚫 人不在 Farm ⇒ **不**去读 `/animals`（室外那批不跑）",
                   _called3 == [], _called3))
 
-    # ④ 走位兜底**要点名**（人不在它旁边时不许悄悄瞬移）
-    _stub(loc="Farm", walk_ok=False)
-    _td = M._milk_shear_animals(skip_grabber=True)
-    _pos = [c for c in CALLS if c[0] == "POST" and c[1] == "/position"]
-    res.append(ck("🚶 走不到 ⇒ 报告里**点名**那次 position 兜底（带坐标）",
-                  "position 兜底" in _td and "羊羊" in _td, _td[:200]))
-    res.append(ck("🚶 兜底确实打的是 `/position`（只此一条路，且只在走不到时）",
-                  len(_pos) >= 1, _pos[:2]))
-    # 走得到 ⇒ **一次都不该瞬移**
-    _stub(loc="Farm", walk_ok=True)
-    _td2 = M._milk_shear_animals(skip_grabber=True)
-    _pos2 = [c for c in CALLS if c[0] == "POST" and c[1] == "/position"]
-    res.append(ck("🚶 走得到 ⇒ **一次都不瞬移**（原实现对每只都直接 position）",
-                  not _pos2, _pos2))
-    res.append(ck("🚶 走得到 ⇒ 报告里**没有**兜底那句", "position 兜底" not in _td2, _td2[:160]))
-    # ⚠️ 2026-10-01 真机逮到的假数：`挤奶 15/8 只` —— 兜底那些行原来也算进分子（分母比分子还小）。
-    #    判据：**分子 ≤ 分母**，且兜底单独挂在"走位兜底："后面。
+    # ④ 🚫 **不兜底了**（恒 2026-10-01：「走到附近做个样子就 ok」）——
+    #    够不着 ⇒ 重走（最多 2 次）⇒ 还够不着就**就地交互**；**全程零 `/position`**。
+    def _pos_calls():
+        return [c for c in CALLS if c[0] == "POST" and c[1] == "/position"]
+
     def _ratio(txt):
         m = re.search(r"(\d+)/(\d+) 只", txt)
         return (int(m.group(1)), int(m.group(2))) if m else (None, None)
+
+    _stub(loc="Farm", walk_ok=False)                      # 怎么走都站不到正旁边
+    _td = M._milk_shear_animals(skip_grabber=True)
+    res.append(ck("🚫 走不到 ⇒ **一次 `/position` 都没有**（瞬移那条路整个撤掉）",
+                  not _pos_calls(), _pos_calls()))
+    res.append(ck("🚫 走不到 ⇒ 报告里**如实点名**「没站到正旁边…就地交互了」",
+                  "没站到正旁边" in _td and "就地交互了" in _td, _td[:220]))
+    res.append(ck("🚫 走不到 ⇒ 先**重走**过（走位请求 ≥2 次，不是走一次就放弃）",
+                  len(WALK_CALLS) >= 2, WALK_CALLS))
+    res.append(ck("🔢 就地交互**没弹窗也没产物** ⇒ **不算进分子**（`0/1 只`）",
+                  _ratio(_td) == (0, 1), (_ratio(_td), _td[:200])))
+    res.append(ck("🔢 而且这件事也写进回执（「就地交互没成」）",
+                  "就地交互没成" in _td, _td[:260]))
+    # 就地交互**有产物** ⇒ 该算成（判据看背包里的 Milk 多没多）
+    _stub(loc="Farm", walk_ok=False, use_adds_milk=True)
+    _td_prod = M._milk_shear_animals(skip_grabber=True)
+    res.append(ck("🔢 就地交互**出产物**（背包多了 Milk） ⇒ 算成（`1/1 只`）",
+                  _ratio(_td_prod) == (1, 1), _ratio(_td_prod)))
+    res.append(ck("🔢 有产物那条同样**零 `/position`**", not _pos_calls(), _pos_calls()))
+    # 就地交互**有弹窗** ⇒ 也算成（老判据：弹窗 = 有反应）
+    _stub(loc="Farm", walk_ok=False, popup="现在没有奶了。")
+    _td_pop = M._milk_shear_animals(skip_grabber=True)
+    res.append(ck("🔢 就地交互**有弹窗**（「现在没有奶了。」） ⇒ 也算成（`1/1 只`）",
+                  _ratio(_td_pop) == (1, 1), _ratio(_td_pop)))
+    # 走得到 ⇒ 零瞬移、零"就地"那句
+    _stub(loc="Farm", walk_ok=True)
+    _td2 = M._milk_shear_animals(skip_grabber=True)
+    res.append(ck("🚶 走得到 ⇒ **一次都不瞬移**（原实现对每只都直接 position）",
+                  not _pos_calls(), _pos_calls()))
+    res.append(ck("🚶 走得到 ⇒ 报告里**没有**「就地交互」那句", "就地交互" not in _td2, _td2[:160]))
+    # ⚠️ 2026-10-01 真机逮到的假数：`挤奶 15/8 只` —— 兜底那些行原来也算进分子（分母比分子还小）。
     _n_bad, _m_bad = _ratio(_td)
     res.append(ck("🔢 有兜底时**分子也不许超过分母**（`15/8 只` 那种假数）",
                   _n_bad is not None and _n_bad <= _m_bad, (_n_bad, _m_bad)))
@@ -273,6 +305,67 @@ def main():
                   "没走到门格" in _out8 and "(52,16)" in _out8, _out8[:260]))
     res.append(ck("🔴 而且「进不去」这句话本身还在（不许把失败说成成功）",
                   "进不去" in _out8, _out8[:200]))
+
+    # ⑨ 🔴 `_enter_building` 自己（2026-10-01 恒：真机偶发"Coop 进不去"的病根）——
+    #    **走到门下方那格 → face 朝门 → `/interact 门格`**，**不再 `position` 顶上门格**；
+    #    失败**隔帧重试 1 次**并把**真实原因**带回来。这里跑的是**真函数**，只桩传输层。
+    _BUILD9 = {"type": "Deluxe Coop", "x": 44, "y": 34, "doorX": 48, "doorY": 38,
+               "indoorsName": "Deluxe Coop"}
+    M._enter_building = _orig_enter      # 跑真函数（前面那些 `_stub()` 把它换成了桩）
+
+    def _setup_enter(land=True, dlg=None):
+        """桩：`/state` 起初在 Farm；`land=True` 时**第一次 interact 之后**就报已进棚。"""
+        _S = {"loc": "Farm", "interacts": [], "faces": [], "keys": []}
+
+        def _g(ep, params=None):
+            if ep == "/state":
+                return {"location": {"name": _S["loc"]},
+                        "player": {"x": 48, "y": 39, "currentTool": ""}}
+            if ep == "/menu":
+                return {"open": bool(dlg), "type": "DialogueBox", "dialogue": dlg} if dlg \
+                    else {"open": False}
+            return {}
+        api._ai_get, api._ai_post = _g, _g
+        api._get, api._post = _g, _g
+        api.state = lambda **kw: _g("/state")
+        api.menu = lambda **kw: _g("/menu")
+        api.warp = lambda *a, **k: {"ok": True}
+        api.face = lambda d: (_S["faces"].append(d), {"ok": True})[1]
+
+        def _interact(x, y):
+            _S["interacts"].append((x, y))
+            if land:
+                _S["loc"] = "Deluxe Coop"       # 门开了、人进去了（真机会晚一两拍，这里立刻）
+            return {"ok": True, "actionTriggered": True}
+        api.interact_at = _interact
+        api.key = lambda k, *a, **kw: (_S["keys"].append(k), {"ok": True})[1]
+        api.position = lambda x, y: (_S.__setitem__("pos", (x, y)), {"ok": True})[1]
+        M._walk_and_wait = lambda loc_, x, y, timeout=25: (
+            WALK_CALLS.append((loc_, x, y)), (True, ""))[1]
+        M._player_xy = lambda: (48, 39)
+        return _S
+
+    _S9 = _setup_enter(land=True)
+    _ok9, _log9 = M._enter_building(_BUILD9)
+    res.append(ck("🚪 进棚：**走位请求的是门下方那格** (48,39)，不是门格 (48,38)",
+                  WALK_CALLS and WALK_CALLS[-1][1:] == (48, 39), WALK_CALLS))
+    res.append(ck("🚪 进棚：进门靠 **`/interact 门格`**", _S9["interacts"] == [(48, 38)],
+                  _S9["interacts"]))
+    res.append(ck("🚪 进棚：**没有 `position` 顶格**那一步", "pos" not in _S9, _S9.get("pos")))
+    res.append(ck("🚪 进棚：面向门（face 0 = 朝北）", 0 in _S9["faces"], _S9["faces"]))
+    res.append(ck("🚪 进棚成功 ⇒ 返回 True + 日志说清了进了哪", _ok9 is True and "进入" in _log9,
+                  _log9))
+    # 失败那条：永远进不去 ⇒ **重试 1 次**（两次 interact）+ **带出真实原因**
+    _S9b = _setup_enter(land=False)
+    WALK_CALLS.clear()
+    _ok9b, _log9b = M._enter_building(_BUILD9)
+    res.append(ck("🚪 进不去 ⇒ **隔帧重试 1 次**（`/interact` 打了两次）",
+                  len(_S9b["interacts"]) == 2, _S9b["interacts"]))
+    res.append(ck("🚪 进不去 ⇒ 返回 False 且**如实说**（带站位 + 门格坐标）",
+                  _ok9b is False and "(48,38)" in _log9b and "进门失败" in _log9b, _log9b[:260]))
+    res.append(ck("🚪 进不去 ⇒ **带下一步**（能直接照抄的 `scene at` 手动点门）",
+                  "scene(ops=" in _log9b and "tile_x" in _log9b, _log9b[:300]))
+    res.append(ck("🚪 进不去那条路同样**零 `position`**", "pos" not in _S9b, _S9b.get("pos")))
 
     print(f"\n{sum(res)}/{len(res)} 过")
     return all(res)
