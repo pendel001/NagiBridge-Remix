@@ -94,6 +94,12 @@ def scan_backpack(state: dict) -> list:
             #       真机上照 `sellable` 列「投哪件」，14 件里 6 件根本进不去出货箱。
             #    ⚠️ 老 DLL 没这个键 ⇒ `None` ⇒ 那一行**不出现**（同三档，见 `_bin_can`）。
             "shippable": i.get("shippable"),
+            # 🪨 2026-10-01：**能不能拿去铁匠铺砸**（C# 的 `/state.inventory[].isGeode`，
+            #    游戏自己的 `Utility.IsGeode()` —— `GeodeMenu.HighlightItems` 同一把尺子）。
+            #    ⚠️ **不许在 Python 编 id 名单**（C# 里那份 `{535,536,537,749,791,887,891}`
+            #    就是编的，这一批已换成 `IsGeode`）。
+            #    ⚠️ 这一位 C# **恒写**（真/假都写），所以"所有件都缺它"才等于"这版 DLL 不吐"。
+            "is_geode": i.get("isGeode"),
             "raw": i,
         })
     return out
@@ -205,6 +211,12 @@ class Ctx:
     #    `{}` = 没开菜单 / 开的这种菜单**没有能摊的东西**（老行为一字不动）。
     #    现在会填的只有容器那一种（`items`）。
     menu_data: dict = field(default_factory=dict)
+    # 🔨 **这一刻"能不能在铁砧上重铸一件饰品"**（2026-10-01 · 恒问的那三条铱锭/精通状态）。
+    #    `{}` = 不能（没铁砧 / 没战斗精通 / 背包里没有能重铸的饰品 / **铱锭不够** / 老 DLL 没那端点）。
+    #    有值时形如 `{"item": "仙女盒", "x": 25, "y": 23, "need": 3, "have": 3}`。
+    #    ⚠️ **由服务器探针算好递进来**（`/machine_reqs` 的 `canPlace` + `AdditionalConsumedItems`，
+    #       **只问不做**）：这一层不许自己打 HTTP（`can()` 是纯函数），也不许编"3"这个数。
+    reforge: dict = field(default_factory=dict)
     # 🎬 **正在播的剧情/事件**（`/state` 的 `activeEvent`，没有就是 `None`）。
     #    ⚠️ 必须跟 `menu` 分开看：事件**不是菜单**（`activeMenu` 那时可能是 null），
     #       而且节日期间 `activeEvent` **恒在播** —— 那是"这一刻的事实"，不是"有个弹窗挡路"。
@@ -2436,6 +2448,169 @@ BIN_V = Verb("bin_one", "投出货箱", 0, lambda c, t: CAN_YES,
              "inv", exec=_exec_bin)
 
 
+# 🪨 「砸 晶球…」（2026-10-01 · 恒「**锻造晶球先吧**」）—— 铁匠铺柜台前的**批量**动作。
+#
+# 形状（跟「投出货箱」同族）：顶层一行目录，点开是**一件事**（砸晶球），再进 `各多少` 填数量。
+# ⚠️ 为什么不做成"一件一行"（跟「投」那样）：执行器 `process_geodes(count)` 是**按游戏自己的
+#    顺序**砸的（Geode→Frozen→Magma→Omni），**不收"砸哪一种"** ⇒ 列成一行一件就是
+#    "按了砸的不是你说的那颗"（假承诺）。要精确挑种类得先给那条 op 加 `type`（记进账）。
+# ⚠️ 判据（"背包里哪些是晶球"）**问游戏**：`is_geode` = C# 的 `Utility.IsGeode()`
+#    （`GeodeMenu.HighlightItems` 用的同一把尺子）。**老 DLL 没这一位 ⇒ 整行不出现**。
+# ⚠️ 门禁 = **在铁匠铺**（同「投出货箱」在农场的写法）：砸晶球得站克林特柜台前，
+#    在别处摆这一行 = 劝它跑一趟腿（那是**规划**，不是这一刻的最优解）。
+# ⚠️ `GEODE_COST` 是**游戏常量**（`GeodeMenu.cs:133` `Game.Money >= 25`；C# 那两条
+#    `/process_geode*` 里也是写死的 25）—— 这里复制一份只为"钱不够就别给这一行"。
+#    要彻底干净得让 C# 把它报出来（`/status` 或那条 op 的返回值），**下次动 C# 时收拾**。
+GEODE_COST = 25
+
+
+def _geodes(ctx) -> list:
+    """背包里的晶球（老 DLL / 背包里没有 ⇒ 空表 ⇒ 那一行不出现）。"""
+    return [t for t in ctx.inv if t.get("is_geode") is True]
+
+
+def _geode_total(ctx) -> int:
+    return sum(int(t.get("stack") or 0) for t in _geodes(ctx))
+
+
+def _geode_can(ctx, t):
+    if ctx.loc != "Blacksmith":
+        return CAN_NO             # 别处不给（同「投出货箱」：只在自己那张图给）
+    n = _geode_total(ctx)
+    if not n:
+        return CAN_NO
+    return CAN_YES if int(ctx.money or 0) >= GEODE_COST else CAN_NO
+
+
+def _geode_show(ctx, t):
+    return "砸 晶球"
+
+
+def _geode_reason(ctx, t):
+    n = _geode_total(ctx)
+    return f"背包共 {n} 颗 · {GEODE_COST}g/颗" if n else ""
+
+
+def _geode_count(ctx, targets):
+    n = _geode_total(ctx)
+    return f"{n} 颗" if n else None
+
+
+def _geode_subs(ctx, targets):
+    """下一层 = **一件事**（砸晶球）→ 再进数量层（`号=数量`）。"""
+    n = _geode_total(ctx)
+    if not n:
+        return None
+    return Level([Row(GEODE_V, [None], "砸 晶球",
+                      f"背包共 {n} 颗 · {GEODE_COST}g/颗 · 铁匠铺一次一颗", 0, where="")],
+                 title="🪨 砸晶球（铁匠铺柜台前）", mode="pick", verb=GEODE_V)
+
+
+def _exec_geode_multi(ctx, pairs, run):
+    """🪨 砸：走现成的 `menu geode`（它自己会走到克林特柜台前），**把它的话原样带回来**。
+
+    ⚠️ 走 `helpers` 那档（回一句话）：`_im_run` 照它**开头**判 yes/maybe/no（❌/⚠️/其余），
+       所以这里**不替它下结论** —— 逐条把它的原话贴进回执。
+    """
+    parts, ok_n = [], 0
+    for _row, cnt in pairs:
+        r = run("geode", {"count": int(cnt or 1)}) or {}
+        if r.get("st") == "yes":
+            ok_n += 1
+        parts.append(str(r.get("text") or r.get("error") or "（没回话）").strip())
+    return render_receipt("砸晶球", f"{len(pairs)} 批", ok_n > 0, note="\n".join(parts))
+
+
+GEODE_V = Verb("geode", "砸晶球", 72, _geode_can, _geode_reason, _geode_show, "world",
+               subs=_geode_subs, count=_geode_count, exec_multi=_exec_geode_multi)
+
+
+# 🔨 「重铸饰品」（2026-10-01 · 恒「锻造的话，**铱锭够/不够/没开饰品精通**检查一下有没有写好」）。
+#
+# 游戏事实（真机量的 + wiki/反编译同源，见 CHANGELOG 187）：
+#   · 铁砧（`(BC)Anvil`）**每次重铸吃 3 块铱锭**，10 个游戏分钟后出料（实测：铱锭 3→0）；
+#   · **不是所有饰品都能重铸** —— `Object.OutputAnvil`：`if (!trinket.GetTrinketData().CanBeReforged)`
+#     弹红字返回 null。实测：**蜥怪的爪子（Basilisk Paw）** 就是"交互回报 true 却什么都不做"那颗
+#     （wiki 原话：「other than the Basilisk Paw or Magic Hair Gel」）。
+#     ⚠️ 这一问**不能**拿 `/machine_reqs` 的 `canPlace` 探针代答（我原来正是这么以为的）：
+#        反编译 `PlaceInMachine`（`Object.cs:2472-2476`）是 `if (probe) return true;` ——
+#        探针**在 `OutputMachine` 之前就返回**，而 `CanBeReforged` 在 `OutputMachine` 里；
+#        真机实测蜥怪的爪子探针照样回 `true`。⇒ 判据取 C# `/state.inventory[].canReforge`。
+#   · 铁砧/迷你锻造台/饰品槽都**由战斗精通解锁**（`MasteryTrackerMenu.cs:128` case 4）。
+#
+# ⇒ 三条状态是这么落的：
+#   ① **够** —— 这一行出现，理由栏写「要 3 铱锭（有 3）」；
+#   ② **不够** —— 这一行**不出现**（按了不成的不许上单子），改由**状态条**说清缺几块（见 `_im_reforge_hint`）；
+#   ③ **没开精通** —— 结构上就不可能：没有战斗精通 ⇒ 没有铁砧 ⇒ `_anvils(ctx)` 空 ⇒ 这一行不出现。
+#
+# ⚠️ 判据**全问游戏**：这一行要的两件事——
+#    · "背包里哪颗饰品**能**重铸" = C# `/state.inventory[].isTrinket` + `.canReforge`（见 `_bag_trinkets`）；
+#    · "还要几块铱锭 / 我有几块" = `/machine_reqs` 的 `requirements`（`AdditionalConsumedItems` + `CountId`）。
+#    两件事都在服务器算好后塞进 `Ctx.reforge`（这一层**不许自己打 HTTP**、也不许编"3"这个数）。
+# 🔨 重铸（铁砧）：判据/形状的账写在 `REFORGE_V` 上面那一大段。
+# ⚠️ 背包那侧的判据（"哪几件是饰品"）**不在这一层** —— 在服务器的 `_bag_trinkets()`：
+#    真机量过 `/state` 里饰品是 `catNum: 0`（**不是 -101**）⇒ 曾经那个 `TRINKET_CAT = -101`
+#    是**错的、而且是死代码**（写在这儿没人用，真判据在服务器），已删。
+
+
+def _reforge_can(ctx, t):
+    """这一刻**能不能重铸** —— 判据 = 服务器探针递进来的那一份（`Ctx.reforge`）。
+
+    ⚠️⚠️ 必须 `can is True`，**不能只看"有 item"**：`Ctx.reforge` 在**铱锭不够**时也带着
+        `item`（那是抬头要用来说缺口的信息）⇒ 只看 item 就会把"按了不成"的那一行摆上去。
+       （这条是自验当场逮到的：`🔨 铱锭不够 ⇒ 不给` 报了红。判据要盯**动作能不能做**，
+         不是"这条信息在不在"。）
+    """
+    r = ctx.reforge or {}
+    return CAN_YES if (r.get("can") is True and r.get("item")) else CAN_NO
+
+
+def _reforge_show(ctx, t):
+    return "重铸饰品"
+
+
+def _reforge_reason(ctx, t):
+    r = ctx.reforge or {}
+    if not r.get("item"):
+        return ""
+    return f"要 {r.get('need')} 铱锭（有 {r.get('have')}）· {r.get('item')} · 10 分钟"
+
+
+def _reforge_count(ctx, targets):
+    r = ctx.reforge or {}
+    return f"{r.get('need')} 铱锭" if r.get("item") else None
+
+
+def _reforge_subs(ctx, targets):
+    """一件一行（这一刻**探针说能重铸**的那件）；敲了当场做（**没有数量层**）。"""
+    r = ctx.reforge or {}
+    if r.get("can") is not True or not r.get("item"):
+        return None
+    return Level([Row(REFORGE_V, [dict(r)], f"重铸 {r.get('item')}",
+                      f"({r.get('x')},{r.get('y')}) 的铁砧 · 吃 {r.get('need')} 铱锭",
+                      0, where="")],
+                 title="🔨 重铸哪件饰品？（敲了就开炉 —— **属性会重掷**）",
+                 mode="pick", verb=REFORGE_V, exec_on_pick=True)
+
+
+def _exec_reforge_multi(ctx, pairs, run):
+    """🔨 重铸：走 `_im_reforge`（hold + 走过去 + 交互 + **回读核实**），逐条把原话带回来。"""
+    parts, ok_n = [], 0
+    for row, _cnt in pairs:
+        t = row.targets[0] or {}
+        r = run("reforge", {"x": t.get("x"), "y": t.get("y"), "item": t.get("item")}) or {}
+        if r.get("st") == "yes":
+            ok_n += 1
+        parts.append(str(r.get("text") or r.get("error") or "（没回话）").strip())
+    return render_receipt("重铸饰品", f"{len(pairs)} 件", ok_n > 0, note="\n".join(parts))
+
+
+REFORGE_V = Verb("reforge", "重铸饰品", 76, _reforge_can, _reforge_reason, _reforge_show, "world",
+                 subs=_reforge_subs, count=_reforge_count, exec_multi=_exec_reforge_multi)
+
+
+
+
 # 「买 / 卖」两个动词 = **目录行**（顶层只报有几样，点开才发号）。
 # ⚠️ 它们**同一个对象**既是顶层那条（`subs`/`count`）又是子层的执行者（`exec_multi`）——
 #    容器那边分成了 `chest` / `chest_take` 两个对象，是因为顶层扫的是"图上的格子"（`tile`）
@@ -2566,6 +2741,10 @@ VERBS: list = [
     #    （压在 关掉界面(30) 之上 —— "先看看箱里有什么"比"马上关掉"更常是下一步）。
     #    57 = 「存…」：挨着「箱子里…」排在它后面（取在前、存在后），**都在 关掉界面 之上**。
     MENU_BOX_V, MENU_TAKE_V, MENU_STORE_V, MENU_STORE_ROW_V,
+    # 🪨🔨 2026-10-01（恒「锻造晶球先吧」）：**砸晶球**（铁匠铺柜台前）与**重铸饰品**（铁砧前）。
+    #    两条的判据都**问游戏**（`is_geode` / `/machine_reqs` 的只问不做探针）——
+    #    老 DLL 没这些位 ⇒ **两行都不出现**（宁可不给，也不给一行按了不成的）。
+    GEODE_V, REFORGE_V,
 ]
 
 
@@ -3531,7 +3710,7 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
              caps: dict = None, seats: dict = None, furniture: dict = None,
              animals: dict = None, shop: dict = None, beds: list = None,
              menu_exit: str = "", menu_hint: str = "", worn: dict = None,
-             menu_data: dict = None) -> Ctx:
+             menu_data: dict = None, reforge: dict = None) -> Ctx:
     """把 `/state`(**full**) + `/surroundings`(+`/machines`/`/scan_chests`) 拼成 Ctx。
 
     ⚠️ 只搬运，**不补默认值**：缺什么就让它缺着（`can()` 遇到缺失自然回 假/？）。
@@ -3607,6 +3786,8 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
                menu_exit=menu_exit or "", menu_hint=menu_hint or "",
                # 📋 菜单内容（同上：服务器挑好递进来，这里**不猜**）。
                menu_data=menu_data or {},
+               # 🔨 铁砧能不能重铸（同上：服务器探针算好递进来，「铱锭要几块」这种数**不在这儿编**）。
+               reforge=reforge or {},
                sitting=bool(((seats or {}).get("me") or {}).get("sitting")),
                worn=(worn or {}),
                pets=pets,

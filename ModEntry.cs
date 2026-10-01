@@ -5239,6 +5239,21 @@ public class ModEntry : Mod
                         //    （本项目栽过：1.6 矿节点 ID、`Jewels Of The Sea`；C# 里那份
                         //    `{535,536,537,749,791,887,891}` 也是编的，已换成这个函数）。
                         ["isGeode"] = StardewValley.Utility.IsGeode(i),
+                        // 🎀 2026-10-01：**是不是饰品**（`Trinket`）—— 跟 `isGeode` 同一形状：判据问游戏。
+                        //    ⚠️ 真机量过（恒「锻造晶球先吧」那批的收尾）：饰品在 `/state` 里
+                        //       `catNum`（= `Item.Category`）是 **0**，**不是 -101**（反编译：`Trinket : Object`
+                        //       却没走图鉴分类那条路）⇒ 消费侧照 -101 筛饰品**一件都筛不出来**，
+                        //       「重铸饰品」那行在真机上**永远不会出现**（自验拿 -101 的假数据，全绿）。
+                        ["isTrinket"] = IsTrinket(i),
+                        // 🔨 2026-10-01：**这颗饰品能不能重铸** —— 游戏自己那道门：
+                        //    `Object.OutputAnvil` → `trinket.GetTrinketData().CanBeReforged`（`Object.cs:2235`）。
+                        //    ⚠️⚠️ **为什么不拿 `/machine_reqs` 的 `canPlace` 探针代答**（我原来正是这么以为的，
+                        //       真机+反编译两处一起推翻）：`PlaceInMachine`（`Object.cs:2472-2476`）里
+                        //         `if (probe) return true;` —— 探针**在调 `OutputMachine` 之前就返回了**，
+                        //       而 `CanBeReforged` 那道门在 `OutputMachine` **里面**。
+                        //       真机实测：**蜥怪的爪子探针回 `canPlace=true`**，可它一放就"弹红字、什么都不做"。
+                        //    ⇒「重铸饰品」那一行的候选必须按这一位筛（非饰品恒 false）。
+                        ["canReforge"] = CanReforgeTrinket(i),
                         ["stats"] = DescribeItemStats(i),
                         ["slotIndex"] = x.slotIdx   // 真实背包槽位（点坐标用这个，不是列表 index）
                     };
@@ -6404,6 +6419,19 @@ public class ModEntry : Mod
     {
         var t = i.GetType();
         return t.Name == "Trinket" || t.FullName?.Contains(".Trinket") == true;
+    }
+
+    /// <summary>这颗饰品**能不能重铸**（游戏自己的门：`Object.OutputAnvil`，`Object.cs:2235`）。
+    /// 非饰品恒 false。
+    /// ⚠️⚠️ **不许拿 `PlaceInMachine(probe:true)` 代答这一问**（我原来就是这么以为的，真机 + 反编译一起推翻）：
+    ///   反编译 `Object.cs:2472` 是 `if (probe) return true;` —— 探针**在 `OutputMachine` 之前就返回**，
+    ///   而 `CanBeReforged` 在 `OutputMachine` 里。真机铁证：**蜥怪的爪子（Basilisk Paw）探针回 true**，
+    ///   可它一放进去就是"弹红字、什么都不做"（wiki 同源：唯二不能重铸的饰品）。</summary>
+    private static bool CanReforgeTrinket(Item i)
+    {
+        if (!(i is StardewValley.Objects.Trinkets.Trinket t)) return false;
+        try { return t.GetTrinketData()?.CanBeReforged ?? false; }
+        catch { return false; }
     }
 
     /// <summary>解析 hand 参数 → "left"/"right" 或 null(未指定/未知)。支持 1/left/左手(左)、2/right/右手(右)，

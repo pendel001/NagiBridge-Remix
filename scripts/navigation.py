@@ -724,6 +724,15 @@ def walk_to(poi_name: str = "", x: int = None, y: int = None) -> str:
             #    📌教训：`text=True` **不是**"帮我解码"的同义词，它按本地编码解；
             #    子进程是 UTF-8 时一定要 `encoding="utf-8"`，否则失败方式极其隐蔽（None 而非异常）。
             encoding="utf-8", errors="replace",
+            # ⚠️⚠️ **子进程的 stdout 编码也要一起钉住**（2026-10-01 真机逮到，而且是我自己造的）：
+            #    上一行 `encoding="utf-8"` 只管**父进程怎么解**；子进程写什么，取决于**子进程的 env**。
+            #    `启动NagiBridge.bat` 里有 `set PYTHONIOENCODING=utf-8` ⇒ 官方启动方式下一切正常；
+            #    可 MCP 服务器**重启时若丢掉那个环境变量**（我那天用手工 Start-Process 重启，没带），
+            #    子进程就按 **cp936** 写中文、父进程按 utf-8 + `errors="replace"` 解 ⇒
+            #    回执里出现 `[target] ������(��̨) -> Blacksmith` 这种**给 AI 看的乱码**。
+            #    ⇒ 别指望"启动环境一直对"：**从这儿显式给子进程钉上 UTF-8**（跟 `--port` 同一个道理：
+            #      这一层自己负责，不靠外面记得）。
+            env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"},
         )
         out = (result.stdout or "")[-1000:]
         err = (result.stderr or "")[-500:]

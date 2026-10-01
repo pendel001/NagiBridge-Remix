@@ -71,6 +71,9 @@ ANIMALS = {"animals": [{"name": "牛牛", "type": "White Cow", "x": 11, "y": 14,
 WORN = {"worn": {"shirt": "Blue Shirt", "pants": None, "hat": "Straw Hat",
                  "accessory": None, "boots": {"name": "Old Boots"},
                  "leftRing": None, "rightRing": None, "trinket": None}}
+# 🔧 机器（形照 `/machines` 的真回包）。默认**空表**（老用例一个字都不变）；
+#    铁砧用例显式传 `machines=[...]`。
+MACHINES = []
 
 
 # 🏪 商店那一份（`/menu` 的真回包形状）——货架 + 这家收什么
@@ -113,7 +116,7 @@ MENU_BOX = {
 
 def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=False,
           caps=None, menu="", menu_raw=None, menu_extra=None, event=None,
-          chests=None, inv=None):
+          chests=None, inv=None, machines=None, mastery=None, loc=None):
     CALLS.clear()
     state = dict(STATE)
     if inv is not None:
@@ -132,6 +135,9 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
     if event is not None:
         # 🎬 `/state.activeEvent` 的真形状：`{id, skippable, message}`
         state = dict(state, activeEvent=event)
+    if loc is not None:
+        # 🗺 换图（用例：砸晶球只在铁匠铺给那一行）
+        state = dict(state, location={"name": loc, "uniqueName": loc})
 
     def g(ep, params=None):
         CALLS.append(("GET", ep, params))
@@ -139,20 +145,27 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
             if menu_get_raises:
                 raise RuntimeError("模拟：商店开着但 /menu 读不出来")
             return MENU_SHOP if menu_raw is None else menu_raw
+        if str(ep).startswith("/process_geode_batch"):
+            # 🪨 砸晶球（那条 op 把 count 放在 query 里，所以按前缀匹配）
+            return {"ok": True, "processed": 3, "cost": 75, "remainingGold": 1234,
+                    "results": [{"itemName": "钻石"}, {"itemName": "石英"}, {"itemName": "粘土"}]}
         return {
             # 🆕 2026-09-30：新 DLL 会带 `caps`（能力位）；`caps=None` = **老 DLL 的形状**（只有 build）。
             "/status": ({"ok": True, "build": build} if caps is None
                         else {"ok": True, "build": build, "caps": caps}),
             "/state": state,
             "/surroundings": SURR,
-            "/machines": {"machines": []},
+            "/machines": {"machines": MACHINES if machines is None else machines},
             "/scan_chests": {"chests": CHESTS if chests is None else chests},
             "/sittable": SEATS,
             "/furniture": FURNITURE,
             "/animals": ANIMALS,
             "/worn": WORN,
+            # 🎓 精通（`_mastery_claimed` 的源）：默认**读不到**（= 谁都没领），
+            #    用例要"已领战斗精通"就显式传 `mastery=[...]`。
+            "/mastery": ({"ok": True, "plaques": []} if mastery is None
+                         else {"ok": True, "plaques": mastery}),
         }.get(ep, {})
-
     def p(ep, data=None):
         CALLS.append(("POST", ep, data))
         if ep == "/menu/click":            # 买：C# 回那一坨
@@ -163,13 +176,26 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
             return {"ok": True, "totalGold": 100,
                     "sold": [{"item": (data or {}).get("name"), "sold": 5,
                               "unitPrice": 20, "totalPrice": 100}]}
+        if ep == "/select":                # 拿在手上（重铸那条路的第一步）
+            return {"ok": True, "selected": (data or {}).get("name")}
+        if ep == "/interact":              # 交互（真机形状：ok 恒真、actionTriggered 才是真话）
+            return {"ok": True, "actionTriggered": True, "object": "Anvil"}
         return {"ok": True,
                 "taken": (data or {}).get("count", 1),
                 "stored": [{"item": (data or {}).get("name"),
                             "count": (data or {}).get("count", 1)}]}
 
     api._ai_get, api._ai_post = g, p
+    # 把桩函数也留一份在模块级：有些 op 走的是 **`api._get`**（不是 `_ai_get`），
+    # 用例要临时把 `_get` 也接到同一个桩上（例：`process_geodes`）。
+    global _LAST_G
+    _LAST_G = g
     M._with_state = lambda x, *a, **k: x      # 状态机跟"接线"无关，打桩掉
+    # 🔁 两个**跨用例的缓存**（精通 30s / `/machine_reqs` 10min）在这里清干净：
+    #    它们是给热路径省调用用的，可"上一个用例问到的答案"会被下一个用例读到
+    #    —— 真机不会（世界一直变），桩会 ⇒ **每个用例从头开始**（2026-10-01 自验现场逮到）。
+    M._MASTERY_CACHE.update(ts=0.0, claimed=None)
+    M._MACHINE_REQS_CACHE.update(ok=None, ts=0.0)
     # 这两道闸门跟"接线"无关（它们要真游戏在场）；买卖那条路会过它们，先打桩掉。
     M._ensure_background = lambda *a, **k: None
     M._peer_econ_mute = lambda *a, **k: None
@@ -860,6 +886,185 @@ def main():
                   _src.count("BuildContainerAt(") == 3))
     res.append(ok("🔌 `/store`·`/chest_take` 的品质筛子都只对 `Object` 成立（两处，缺一处就有一族假行）",
                   _src.count("item is StardewValley.Object qObj && qObj.Quality != quality") == 2))
+
+    # ⑲ 🪨🔨 砸晶球 / 重铸饰品（2026-10-01 · 恒「锻造晶球先吧」+「铱锭够/不够/没开饰品精通…」）
+    #    两条的判据都**问游戏**：`is_geode`（C# `Utility.IsGeode()`）与
+    #    `/machine_reqs`（`PlaceInMachine(probe:true)` = **只问不做**）。
+    #    ⚠️ 两个模块级缓存（精通 30s / machine_reqs 10min）会被别的用例污染 ⇒ 每段先清干净。
+    M._MASTERY_CACHE.update(ts=0.0, claimed=None)
+    M._MACHINE_REQS_CACHE.update(ok=None, ts=0.0)
+
+    # ── 🪨 砸晶球：铁匠铺 + 有晶球 + 钱够 ⇒ 顶层一行；别处不给 ──
+    _geo = [dict(i) for i in STATE["inventory"]]
+    _geo.append({"slotIndex": 9, "name": "Geode", "displayName": "晶球", "itemId": "(O)535",
+                 "catNum": -12, "stack": 3, "quality": 0, "sellable": True, "shippable": True,
+                 "isGeode": True})
+    _geo.append({"slotIndex": 10, "name": "Stone", "displayName": "石头", "itemId": "(O)390",
+                 "catNum": -15, "stack": 99, "quality": 0, "sellable": True, "shippable": True,
+                 "isGeode": False})
+    _stub(inv=_geo, loc="Blacksmith")
+    _go = M.intent(ops="show", kw={"n": 40})
+    res.append(ok("🪨 铁匠铺 + 背包有晶球 ⇒ 给「砸 晶球…」", "砸 晶球" in _go))
+    res.append(ok("🪨 计数只数**晶球**（石头不算）", "3 颗" in _go))
+    res.append(ok("🪨 理由栏写清单价（25g/颗）", "25g/颗" in _go))
+    _gn = next((r.no for r in M.intent_menu._LAST_ROWS if (r.label or "") == "砸 晶球"), None)
+    _gl = M.intent(ops="do", kw={"code": str(_gn)})
+    res.append(ok("🪨 点开 = **一件事**（不列「砸哪一颗」——那条 op 不认种类，列了就是假承诺）",
+                  "砸 晶球" in _gl))
+    _g1 = M.intent(ops="do", kw={"code": "1"})
+    res.append(ok("🪨 再进数量层（号=数量）", "各多少" in _g1))
+    _rc0 = M._require_counter
+    M._require_counter = lambda *a, **k: "（桩：已在柜台前）"   # 走路要真游戏 ⇒ 打桩
+    # ⚠️ `process_geodes` 走的是 `api._get`（**不是 `_ai_get`**）⇒ 那个也得打桩，
+    #    否则自验会**真打到正在跑的游戏**（2026-10-01 现场：真机回了一句
+    #    「No geodes in inventory」——自验绝不许碰游戏）。
+    _get0 = api._get
+    api._get = lambda ep, params=None: _LAST_G(ep, params)
+    _g2 = M.intent(ops="do", kw={"code": "1=3"})
+    api._get = _get0
+    M._require_counter = _rc0
+    res.append(ok("🪨 执行走 `menu geode`（回执把它的话带回来）", "✅" in _g2 and "钻石" in _g2))
+    # 🚫 换到别的图 ⇒ 不给（同「投出货箱」的写法：只在自己那张图给，别劝它跑腿）
+    _stub(inv=_geo, loc="FarmHouse")
+    res.append(ok("🚫 不在铁匠铺 ⇒ **不给**「砸晶球…」",
+                  "砸晶球" not in M.intent(ops="show", kw={"n": 40})))
+    # 🚫 老 DLL（没有 `isGeode` 这一位）⇒ 判不出 ⇒ 不给
+    _stub(inv=[dict(i, isGeode=None) for i in _geo], loc="Blacksmith")
+    res.append(ok("🚫 老 DLL 不吐 `isGeode` ⇒ **不给**（不猜「哪些是晶球」）",
+                  "砸晶球" not in M.intent(ops="show", kw={"n": 40})))
+
+    # ── 🔨 重铸饰品：三条状态 ──
+    # ⚠️ 形状照**真机**抄（2026-10-01 逮到的那个 bug）：饰品在 `/state` 里是 `catNum: 0`
+    #    —— **不是 -101**。以前这条假数据写着 -101，于是"按分类号筛饰品"一路全绿，
+    #    可真机上**一件饰品都筛不出来** ⇒ 「重铸饰品」那行永远不出现。
+    _tr = dict(STATE["inventory"][0])
+    _tr.update({"slotIndex": 9, "name": "FairyBox", "displayName": "仙女盒",
+                "itemId": "(TR)FairyBox", "catNum": 0, "isTrinket": True,
+                "canReforge": True, "stack": 1,
+                "sellable": False, "shippable": False})
+    # 🐾 唯一不能重铸的那两颗之一（真机 + wiki + `Object.cs:2235` 三处同源）。
+    #    ⚠️ 它的 `canReforge=False` **探针答不出来**（真机实测 `canPlace=true`）⇒ 只能靠这一位筛。
+    _paw = dict(_tr, slotIndex=12, name="BasiliskPaw", displayName="蜥怪的爪子",
+                itemId="(TR)BasiliskPaw", canReforge=False)
+    # 背包里放 3 块铱锭：回执要报"铱锭 3 → 3"（**回读**那一步得拿得到数）
+    _bar = {"slotIndex": 11, "name": "Iridium Bar", "displayName": "铱锭",
+            "itemId": "(O)337", "catNum": -15, "stack": 3, "quality": 0,
+            "sellable": True, "shippable": True}
+    _bag = [_tr, _bar]
+    _anvil = {"type": "Anvil", "typeDisplay": "铁砧", "x": 25, "y": 23,
+              "location": "FarmHouse", "location_unique": "FarmHouse", "status": "empty"}
+    _cb = {"skill": "combat", "claimed": True}
+    _reqs = {"id": "(O)337", "name": "铱锭", "need": 3, "have": 3, "enough": True}
+
+    def _mreq(can=True, met=True, have=3):
+        """装一次 `/machine_reqs` 的回包（形照 C# 新端点）。"""
+        _p0 = api._ai_post
+        api._ai_post = lambda ep, data=None: (
+            {"ok": True, "count": 1, "machines": [
+                {"type": "Anvil", "x": 25, "y": 23, "empty": True, "canPlace": can,
+                 "requirementsMet": met,
+                 "requirements": [dict(_reqs, have=have, enough=(have >= 3))]}]}
+            if ep == "/machine_reqs" else _p0(ep, data))
+
+    # ① 铱锭够 ⇒ 给那一行
+    _stub(inv=_bag, machines=[_anvil], mastery=[_cb])
+    _mreq()
+    _ro = M.intent(ops="show", kw={"n": 40})
+    res.append(ok("🔨 战斗精通已领 + 铁砧空着 + 饰品能重铸 + 铱锭够 ⇒ 给「重铸饰品…」",
+                  "重铸饰品" in _ro))
+    res.append(ok("🔨 理由栏是**游戏给的那两个数**（要 3 铱锭 / 有 3）",
+                  "要 3 铱锭（有 3）" in _ro))
+    _rn = next((r.no for r in M.intent_menu._LAST_ROWS if (r.label or "") == "重铸饰品"), None)
+    _rl = M.intent(ops="do", kw={"code": str(_rn)})
+    res.append(ok("🔨 点开 = 那件饰品（敲了当场开炉，没有数量层）", "仙女盒" in _rl and "属性会重掷" in _rl))
+    _rc1 = M._require_counter
+    _wk0 = M.navigation.walk_to
+    M.navigation.walk_to = lambda **k: None
+    # 交互之后铁砧要**变成 processing**（C# 的 `/machines` 会这么回）——
+    # 这就是 `_im_reforge` 回读的那一步；不翻这个旗，回读会说"还是空的"。
+    _flip_anvil = {"on": False}
+    _g_ok = api._ai_get
+    _p_ok = api._ai_post
+    api._ai_get = lambda ep, params=None: (
+        {"machines": [dict(_anvil, status="processing" if _flip_anvil["on"] else "empty",
+                           heldItem="FairyBox" if _flip_anvil["on"] else None, minutesLeft=10)]}
+        if ep == "/machines" else _g_ok(ep, params))
+    api._ai_post = lambda ep, data=None: (
+        (_flip_anvil.update(on=True), _p_ok(ep, data))[1] if ep == "/interact" else _p_ok(ep, data))
+    _rr = M.intent(ops="do", kw={"code": "1"})
+    api._ai_get, api._ai_post = _g_ok, _p_ok
+    M.navigation.walk_to = _wk0
+    _MREQ_CALLS = [c for c in CALLS if c[1] == "/select"]
+    res.append(ok("🔨 执行先**拿在手上**（`/select` 打 AI 自己那端）", bool(_MREQ_CALLS),
+                  _MREQ_CALLS[-1][2] if _MREQ_CALLS else None))
+    res.append(ok("🔨 回执**回读**了铁砧（说清进去了 + 扣了几块）", "✅" in _rr and "铱锭 3 → 3" in _rr,
+                  (_rr.splitlines() or [""])[0]))
+    # ② 铱锭不够 ⇒ **不给那一行**，但抬头要如实说（"按了不成"的不许上单子）
+    _stub(inv=_bag, machines=[_anvil], mastery=[_cb])
+    _mreq(can=False, met=False, have=0)
+    _r2 = M.intent(ops="show", kw={"n": 40})
+    res.append(ok("🔨 铱锭不够 ⇒ **不给**「重铸饰品…」", "重铸饰品" not in _r2))
+    res.append(ok("🔨 但抬头**如实说缺口**（要 3 有 0 还差 3 —— 单子上没有它，得有别处说）",
+                  "还差 3" in _r2 and "重铸不了" in _r2))
+    # ⚠️ 真机逮到的第二个 bug：那句缺口语的**后半截忘了 `f`**，`{rf.get('item')}` 原样漏给了 AI。
+    #    自验原来只查"还差 3"和"重铸不了"，正好一个字都没碰到漏出去的那半截 ⇒ 加这条。
+    _hint = next((ln for ln in _r2.splitlines() if "重铸不了" in ln), "")
+    res.append(ok("🔨 缺口语里**带上那件饰品的名字**、且**不漏模板占位符**（`{rf.get(...)}` 那种）",
+                  "仙女盒" in _hint and "rf.get" not in _hint and "{" not in _hint))
+    # ③ 没开战斗精通 ⇒ 结构上就不给（没有铁砧）
+    _stub(inv=_bag, machines=[_anvil], mastery=[{"skill": "farming", "claimed": True}])
+    _mreq()
+    res.append(ok("🔨 没领战斗精通 ⇒ **不给**（铁砧/饰品槽都是它解锁的）",
+                  "重铸饰品" not in M.intent(ops="show", kw={"n": 40})))
+    # ④ **假想**场景：探针说"这台机器不收这件"（`canPlace=false`）而铱锭够 ⇒ 也不给。
+    #    ⚠️ 标注"假想"是认真的：真机上**探针答不了"能不能重铸"**（反编译 `Object.cs:2472`
+    #    `if (probe) return true;` 在 `OutputMachine` 之前就返回）⇒ 这一格游戏未必给得出。
+    #    留着是因为它对"探针说 no"这种回包仍然必须不给（防线不嫌多），但**别把它当主判据**。
+    _stub(inv=_bag, machines=[_anvil], mastery=[_cb])
+    _mreq(can=False, met=True, have=3)
+    res.append(ok("🔨 （假想）万一探针说这机器不收这件（`canPlace=false`）⇒ 也不给",
+                  "重铸饰品" not in M.intent(ops="show", kw={"n": 40})))
+    # ④a **真机逮到的第二个 bug**：唯一不能重铸的两颗之一（蜥怪的爪子）**不许上单子**。
+    #     判据只能是 C# 的 `canReforge`（= `Object.OutputAnvil` 那道门）——
+    #     探针在这颗上也回 `canPlace=true`（真机 + 反编译双证）。
+    _stub(inv=[_paw, _bar], machines=[_anvil], mastery=[_cb])
+    _mreq()
+    res.append(ok("🔨 蜥怪的爪子（`canReforge=false`）**不许上单子**（探针在这颗上回 true，靠不住）",
+                  "重铸饰品" not in M.intent(ops="show", kw={"n": 40}))
+               and ok("🔨 只有它一颗时 ⇒ 这一行整体不出现（不是「列出来让你白按」）",
+                      "重铸饰品" not in M.intent(ops="show", kw={"n": 40})))
+    # ④b **真机形状**：饰品 `catNum=0`（不是 -101）也照样认得出来 —— 判据是 C# 的 `isTrinket`
+    res.append(ok("🔨 饰品在真机 `/state` 里是 `catNum: 0` ⇒ 靠 `isTrinket` 照样认出来"
+                  "（照 -101 筛会一件都筛不出来）",
+                  M._bag_trinkets({"inventory": [_tr]}) == [_tr]
+                  and M._bag_trinkets({"inventory": [dict(_tr, catNum=-101, isTrinket=False)]}) == []))
+    # ④c **老 DLL**（没有 `isTrinket`/`canReforge` 这两位）⇒ 退到游戏自己的类型标签 `(TR)`
+    _old_tr = {k: v for k, v in _tr.items() if k not in ("isTrinket", "canReforge")}
+    _stub(inv=[_old_tr, _bar], machines=[_anvil], mastery=[_cb])
+    _mreq()
+    res.append(ok("🔨 老 DLL 没 `isTrinket`/`canReforge` ⇒ 退到 `(TR)` 类型标签选候选"
+                  "（判据是游戏的 `itemId`，不是手抄名单；那一层洞随下次 DLL 加载消失）",
+                  "重铸饰品" in M.intent(ops="show", kw={"n": 40})))
+    # ⑤ 老 DLL（没有 `/machine_reqs`）⇒ 判不出 ⇒ 不给
+    _stub(inv=_bag, machines=[_anvil], mastery=[_cb])
+    api._ai_post = lambda ep, data=None: (_ for _ in ()).throw(RuntimeError("404")) \
+        if ep == "/machine_reqs" else {"ok": True}
+    res.append(ok("🔨 老 DLL 没有 `/machine_reqs` ⇒ **不给**（不猜「要几块铱锭」）",
+                  "重铸饰品" not in M.intent(ops="show", kw={"n": 40})))
+    M._MACHINE_REQS_CACHE.update(ok=None, ts=0.0)
+    M._MASTERY_CACHE.update(ts=0.0, claimed=None)
+    # 🔌 跨语言契约：C# 那边**真的**有这两样（读源码核，别靠记）
+    res.append(ok("🔌 C# 有 `/machine_reqs` 路由 + 处理器（Python 依赖它）",
+                  '"/machine_reqs" => HandleMachineReqs(ctx)' in _src
+                  and "private object HandleMachineReqs(" in _src))
+    res.append(ok("🔌 C# 的 `/state` 吐 `isGeode`（`Utility.IsGeode`，不是手抄名单）",
+                  '["isGeode"] = StardewValley.Utility.IsGeode(i)' in _src
+                  and "geodeIds" not in _src))
+    res.append(ok("🔌 C# 的 `/state` 吐 `isTrinket`（Python 靠它挑饰品候选；分类号对饰品是 0）",
+                  '["isTrinket"] = IsTrinket(i)' in _src))
+    res.append(ok("🔌 C# 的 `/state` 吐 `canReforge`（= `Object.OutputAnvil` 那道门；探针答不了它）",
+                  '["canReforge"] = CanReforgeTrinket(i)' in _src
+                  and "GetTrinketData()?.CanBeReforged" in _src))
 
     print(f"\n{sum(res)}/{len(res)} 过")
     return all(res)

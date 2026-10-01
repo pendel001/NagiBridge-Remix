@@ -4879,6 +4879,40 @@ def _mastery_claimed(skill: str) -> bool:
     return key in claimed
 
 
+# 🔧 「这台机器放这件东西还要什么」——**问游戏**（C# 的 `/machine_reqs`，187 加的）。
+#
+# ⚠️ 它答的是 2026-10-01 恒问的那三条里最要紧的一条：**铱锭够/不够**。
+#    铁砧（`(BC)Anvil`）每次重铸要 3 块铱锭，而那个数**在游戏内容数据里**
+#    （`MachineData.AdditionalConsumedItems`）—— 我们这边**不许编**（编了就是下一个会烂的名单）。
+# ⚠️ `item` 给了就顺手做**只问不做**的探针（`Object.PlaceInMachine(..., probe:true, ...)`）：
+#    它一次答两件事 —— "这件能不能放进去"（不能重铸的饰品在这里就是 false）+ 缺什么。
+# ⚠️ **老 DLL 没有这个端点** ⇒ `None`（**不是 `{}`**：`{}` 是"问到了、这台机器没有额外消耗"）。
+#    探一次就缓存（同一次会话里不反复撞 404）。
+_MACHINE_REQS_CACHE = {"ok": None, "ts": 0.0}
+
+
+def _machine_reqs(type_: str = "", item: str = "") -> dict | None:
+    """问游戏：这台机器放 `item` 还要什么 → `/machine_reqs` 的回包 / `None`（这版 DLL 没有）。"""
+    if _MACHINE_REQS_CACHE["ok"] is False and time.time() - _MACHINE_REQS_CACHE["ts"] < 600:
+        return None
+    try:
+        body = {}
+        if type_:
+            body["type"] = type_
+        if item:
+            body["item"] = item
+        r = api._ai_post("/machine_reqs", body)
+        if not isinstance(r, dict) or r.get("ok") is not True:
+            _MACHINE_REQS_CACHE.update(ok=False, ts=time.time())
+            return None
+        _MACHINE_REQS_CACHE.update(ok=True, ts=time.time())
+        return r
+    except Exception:
+        # 404 / 连接失败 / 老 DLL ⇒ "这一版没有这条路"，**别把它当成"机器没有要求"**
+        _MACHINE_REQS_CACHE.update(ok=False, ts=time.time())
+        return None
+
+
 # 🏘️ 小镇钥匙隐藏营业时间注入（2026-08-23 恒：有钥匙能随时进镇店，营业时间没意义）。
 # 范围（恒拍板）仅这 9 间——镇上 6 间 + 博物馆/鱼店/公会。居民房(镇长家等)本就不注入，
 # SandyHouse(沙漠)/Mine 不在镇上保留。判据=wallet 特殊物品含 TownKey（specialItems，非 mailReceived flag）。
@@ -21219,6 +21253,10 @@ def _im_ctx():
                                 #    才多打一次 `/menu`**，没菜单时一个字都不多花
                                 #    （`_im_menu_data` 进去就先看 `activeMenu`）。
                                 menu_data=_im_menu_data(state),
+                                # 🔨 铁砧能不能重铸（2026-10-01：恒问的铱锭/精通那三条）。
+                                #    ⚠️ 先过一遍便宜的闸门（精通/本图有铁砧/背包有饰品）再问游戏，
+                                #       平时**一次都不多花**（同 `_im_shop` 只在商店开着时读 `/menu`）。
+                                reforge=_im_reforge_probe(state, machines),
                                 worn=worn)
 
 
@@ -21362,6 +21400,172 @@ def _im_chest_open(x, y):
     return r
 
 
+def _bag_trinkets(state: dict) -> list:
+    """背包里**能重铸**的饰品（Trinket）—— 从 `/state.inventory[]` 里挑。
+
+    判据**问游戏**，两位，都来自 C#：
+      · `isTrinket`（= `IsTrinket(item)`）—— 是不是饰品；
+      · `canReforge`（= `Object.OutputAnvil` 那道门：`GetTrinketData().CanBeReforged`，
+        `Object.cs:2235`）—— **这颗能不能重铸**。
+
+    ⚠️ 为什么要 `isTrinket`（2026-10-01 真机逮到，自验全绿却**真机上永远不会出现**）：
+       这一层原先按**分类号 -101** 筛饰品，可真机 `/state` 里饰品是 `catNum: 0`
+       （反编译：`Trinket : Object`，但没走图鉴分类那条路）⇒ **一件都筛不出来**
+       ⇒「重铸饰品」那行在真机上永远不给。自验的假数据写的是 -101，所以一路绿灯。
+
+    ⚠️⚠️ 为什么要 `canReforge`（同一天**第二个**真机逮到）：我原先以为
+       "`/machine_reqs` 的 `canPlace` 探针正好答'这颗能不能重铸'"——**错的**。
+       反编译 `PlaceInMachine`（`Object.cs:2472-2476`）：`if (probe) return true;`
+       **在调 `OutputMachine` 之前就返回了**，而 `CanBeReforged` 在 `OutputMachine` 里面。
+       真机实测：**蜥怪的爪子探针照样回 `canPlace=true`**，可它一放就"弹红字、什么都不做"
+       （唯二不能重铸的饰品之一）⇒ 探针**答不了这一问**，必须另有这一位。
+
+    ⚠️ **老 DLL 窗口**（没有这两位时）：退到游戏自己的类型标签 `itemId` 前缀 `(TR)`
+       （`ItemRegistry` 的类型标识，跟 `(O)`/`(BC)` 同源 —— **不是手抄名单**），
+       并且**列不出"不能重铸"那一层**（老 DLL 里真没这个数）⇒ 那时可能列出蜥怪的爪子，
+       由 `_im_reforge` 的**回读**照实说（它会说"铁砧还是空的 + 常见原因是不能重铸"）。
+       这一层洞**随下次 DLL 加载自动消失** —— 先写明白，不假装它不在。
+    """
+    out = []
+    for i in ((state or {}).get("inventory") or []):
+        is_tr = i.get("isTrinket")
+        if is_tr is None:                    # 老 DLL：问不到类型，退到游戏的 `(TR)` 标签
+            is_tr = str(i.get("itemId") or "").startswith("(TR)")
+        if not is_tr:
+            continue
+        if i.get("canReforge") is False:     # 游戏说这颗不能重铸 ⇒ 不列（老 DLL 里是 None，列）
+            continue
+        out.append(i)
+    return out
+
+
+def _im_reforge_probe(state: dict, machines: list) -> dict:
+    """🔨 这一刻**能不能在铁砧上重铸一件饰品** → `{"item","x","y","need","have","can"}` / `{}`。
+
+    这是 2026-10-01 恒问的那三条（**铱锭够/不够/没开饰品精通**）的落点，三条都在这一处：
+      · **没开战斗精通** ⇒ 直接 `{}`（铁砧/迷你锻造台/饰品槽都是它解锁的 ⇒ 结构上就没有这一行）；
+      · **铱锭不够** ⇒ 也 `{}`（**不出现**——按了不成的不许上单子），但把 `need/have/can=False`
+        一起递下去，让单子抬头能如实说「要 3 块，你只有 0」；
+      · **够** ⇒ `can=True`，单子给那一行。
+
+    ⚠️ 判据**全问游戏**：`/machine_reqs` 的 `requirements`（= `MachineData.AdditionalConsumedItems`
+       + `Items.CountId`）与 `canPlace`（= `PlaceInMachine(probe:true)`，**只问不做**）。
+       "这颗饰品能不能重铸"就是 `canPlace` 的事 —— **不能重铸的那几颗**（如 `Basilisk Paw`）
+       在探针里正好是 `false`（真机照过：交互回报 true 却什么都不做）。
+    ⚠️ `{}` 有三重含义（没精通 / 没铁砧 / 没有能重铸的饰品 / 老 DLL 没那端点），
+       消费侧**一律不给那一行** —— 这不影响正确性，只影响"能不能多给一句解释"。
+    """
+    try:
+        if not _mastery_claimed("combat"):
+            return {}
+        loc = ((state or {}).get("location") or {}).get("uniqueName") or ""
+        anvils = [m for m in (machines or [])
+                  if (m.get("type") or "") == "Anvil"
+                  and (not loc or not m.get("location_unique") or m.get("location_unique") == loc)]
+        anvils = [m for m in anvils if (m.get("status") or "") == "empty"]
+        if not anvils:
+            return {}
+        tr = _bag_trinkets(state)
+        if not tr:
+            return {}
+        for it in tr:
+            nm = it.get("name") or ""
+            if not nm:
+                continue
+            r = _machine_reqs(type_="Anvil", item=nm)
+            if r is None:
+                return {}                    # 老 DLL / 读不到 ⇒ 这一层给不了判据
+            hits = [m for m in (r.get("machines") or []) if m.get("empty")]
+            if not hits:
+                return {}
+            hit = hits[0]
+            reqs = hit.get("requirements") or []
+            need = sum(int(x.get("need") or 0) for x in reqs)
+            have = min([int(x.get("have") or 0) for x in reqs], default=0)
+            can = hit.get("canPlace") is True
+            if can and hit.get("requirementsMet") is True:
+                return {"item": it.get("displayName") or nm, "name": nm,
+                        "x": hit.get("x"), "y": hit.get("y"),
+                        "need": need, "have": have, "can": True}
+            if hit.get("requirementsMet") is False:
+                # **不够**：这件饰品本身没问题，是铱锭不够 ⇒ 就报这一条（别换下一件了）
+                return {"item": it.get("displayName") or nm, "name": nm,
+                        "x": hit.get("x"), "y": hit.get("y"),
+                        "need": need, "have": have, "can": False}
+            # 够、但这件**不能重铸**（CanBeReforged=false）⇒ 换下一件饰品试
+        return {}
+    except Exception:
+        return {}
+
+
+def _im_reforge(x, y, item) -> str:
+    """🔨 在铁砧上重铸一件饰品（拿在手上 → 走过去 → 交互），**回读核实**。→ 一句话。
+
+    ⚠️ 手势是 2026-10-01 **实测出来的**：`/select` 拿在手上 → 走到铁砧旁 → `/interact`。
+       游戏认可的就是这个（`GameLocation.checkAction` → `CheckForActionOnMachine`）。
+    ⚠️⚠️ **必须回读**：`/interact` 的 `actionTriggered:true` **不等于**东西进去了 ——
+       不能重铸的饰品正是"回报 true、什么都不做"（那一天我先挑了 `Basilisk Paw`，白试一发）。
+       所以这里只认两件真事实：**铁砧的 `heldItem` 是不是这件** + **铱锭少了几块**。
+    ⚠️ `x/y` 缺一个就明说（宁报错别兜底）。
+    """
+    try:
+        xi, yi = int(x), int(y)
+    except (TypeError, ValueError):
+        return f"❌ 缺铁砧坐标（x={x} y={y}）—— 不敢瞎点"
+    if not item:
+        return "❌ 缺 item（要重铸哪件饰品）"
+    _ensure_background()
+    bars_before = _count_item("Iridium Bar")
+    # ⚠️ 打 `_ai_post`（**显式钉住 AI 端口**），不用 `stardew_api.select()` —— 那个走 `_post`
+    #    （靠 import 期/detect_roles 改的 `BASE_URL`）。这层跟 `_im_run` 其余 op 同一条路，
+    #    「打错进程就动到恒身上」这个坑本项目栽过（[[never-bare-import-stardew-api]]）。
+    sel = api._ai_post("/select", {"name": item}) or {}
+    if not sel.get("ok"):
+        return (f"❌ 没拿起来「{item}」（游戏回：{sel.get('error') or sel}）"
+                f"—— 手上没东西就别去点铁砧")
+    try:
+        navigation.walk_to(x=xi, y=yi)
+    except Exception as e:
+        return f"❌ 走不到铁砧 ({xi},{yi})：{type(e).__name__}: {e}"
+    api._ai_post("/interact", {"x": xi, "y": yi})
+    time.sleep(0.7)
+    # ── 回读：只认"铁砧里到底有没有这件" ──
+    st = ""
+    try:
+        for m in ((api._ai_get("/machines") or {}).get("machines") or []):
+            if (m.get("type") == "Anvil" and int(m.get("x")) == xi and int(m.get("y")) == yi):
+                st = m.get("status") or ""
+                held = m.get("heldItem")
+                mins = m.get("minutesLeft")
+                break
+        else:
+            return f"⚠️ 点了 ({xi},{yi})，但**读不到那台铁砧** —— 进去没进去我不知道，自己看一眼"
+        if st in ("processing", "ready"):
+            bars_after = _count_item("Iridium Bar")
+            spent = max(0, bars_before - bars_after)
+            # ⚠️ 报的是**游戏回读到的** `held`（不是我们发出去的那个名字）——回读才有意义。
+            return (f"✅ 铁砧收下了「{held or item}」（{st}"
+                    + (f" · 还要 {mins} 分钟" if mins else "")
+                    + f"）· 铱锭 {bars_before} → {bars_after}（扣了 {spent}）")
+        return (f"⚠️ 铁砧**还是空的**（{st or 'empty'}）—— 这趟没成。"
+                f"常见原因：这件饰品**不能重铸**（如蜥怪的爪子/魔法发胶），"
+                f"或者你**铱锭不够**（铁砧每次要 3 块）")
+    except Exception as e:
+        return f"⚠️ 点了，但回读时出错（{type(e).__name__}: {e}）—— 成没成自己看一眼"
+
+
+def _count_item(name: str) -> int:
+    """背包里某件（按内部名/显示名）的**总数**；读不到 → 0（回执里宁可少说，不编）。"""
+    try:
+        n = 0
+        for i in ((api._ai_get("/state") or {}).get("inventory") or []):
+            if i.get("name") == name or i.get("displayName") == name:
+                n += int(i.get("stack") or 0)
+        return n
+    except Exception:
+        return 0
+
+
 def _im_run(op, args):
     """单子敲下去**要执行的那一下**（合同：`(op 名, 参数字典) -> dict`）。
 
@@ -21424,6 +21628,14 @@ def _im_run(op, args):
         #    ⚠️ 走 `helpers`（回一句话）而不是 `raw_ops`：回执要"点了哪个 + 成没成"，
         #       不是把 C# 那坨 `{clicked:"response", option, key, method}` 摊给 AI 看。
         "menu_option": lambda: _im_menu_option(args.get("option"), args.get("real")),
+        # 🪨 砸晶球（2026-10-01）：单子「砸 晶球…」填完数量按下去走这里。
+        #    ⚠️ 调现成的 `process_geodes(count)` —— 它自己会 `_require_counter` **走到克林特柜台前**
+        #       （拟人那条），不另写一套；缺钱/没晶球它会把自己的话回出来。
+        "geode": lambda: process_geodes(count=int(args.get("count") or 1)),
+        # 🔨 重铸饰品（2026-10-01）：单子「重铸饰品」敲下去走这里（`x/y` = 哪台铁砧，`item` = 哪件）。
+        #    ⚠️ 走 `helpers`（回一句话）：回执要的是"进去了没 / 扣了几块铱锭"，
+        #       不是把几个端点的原始 dict 摊给 AI 看。
+        "reforge": lambda: _im_reforge(args.get("x"), args.get("y"), args.get("item")),
     }
     # 🛒 买卖走**裸端点**（回 dict，回执要逐条报数字），只是外面多两道闸门。
     raw_ops = {
@@ -21650,6 +21862,18 @@ def _im_head(ctx) -> str:
         head += f"\n📧 {lt.get('title') or '（无标题）'} 的信："
         for _ln in (lt.get("body") or "").splitlines():
             head += f"\n   {_ln}"
+    # 🔨 铁砧**这一刻重铸不了**时的那一句（2026-10-01 · 恒问的"铱锭不够"那档）。
+    #    ⚠️ 单子上**没有**那一行（按了不成的不许上单子）⇒ 那句解释得有地方放：
+    #       放抬头（跟正文/信件同一条底线：**决定取决于它**，藏起来 AI 只能瞎猜）。
+    #    ⚠️ 只在"东西都齐了、单差铱锭"时印（`can=False` 且 `need>0`）——
+    #       没铁砧/没饰品那些情况**一个字都不说**（那是"这一刻没这事"，不是"缺什么"）。
+    rf = ctx.reforge or {}
+    if rf and rf.get("can") is not True and (rf.get("need") or 0) > 0:
+        _miss = max(0, int(rf.get("need") or 0) - int(rf.get("have") or 0))
+        head += (f"\n🔨 铁砧（{rf.get('x')},{rf.get('y')}）要 "
+                 f"{rf.get('need')} 块铱锭，你只有 {rf.get('have')}"
+                 + (f"（还差 {_miss}）" if _miss else "")
+                 + f" —— **重铸不了**：「{rf.get('item')}」先留着，铱锭够了再来")
     return head
 
 
