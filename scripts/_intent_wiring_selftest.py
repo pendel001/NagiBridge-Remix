@@ -112,17 +112,23 @@ MENU_BOX = {
 
 
 def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=False,
-          caps=None, menu="", menu_raw=None, menu_extra=None, event=None):
+          caps=None, menu="", menu_raw=None, menu_extra=None, event=None,
+          chests=None, inv=None):
     CALLS.clear()
     state = dict(STATE)
+    if inv is not None:
+        # 🎒 背包换一份（🥕 用例：背包里没东西能存 ⇒ 「存…」那行不该出现）
+        state = dict(state, inventory=inv)
     if shop:
-        state = dict(STATE, activeMenu={"type": "ShopMenu"})
+        state = dict(state, activeMenu={"type": "ShopMenu"})
     elif menu:
         # 🚪 2026-10-01：**菜单态**用例要能指定是哪种界面（出口行给不给看类型）。
         #    `menu_extra` = 那个菜单的**内容**（对话正文/说话人/选项…），形照 `/state.activeMenu`。
-        state = dict(STATE, activeMenu=dict({"type": menu}, **(menu_extra or {})))
+        #    ⚠️ 从 `state` 起（**不是** `STATE`）—— 否则上面刚塞进去的 `inv` 会被**静默盖回**
+        #      （同族：180 那次"同一个 dict 里键写两遍，前一个被吃掉"）。
+        state = dict(state, activeMenu=dict({"type": menu}, **(menu_extra or {})))
     elif menu_extra:
-        state = dict(STATE, activeMenu=dict(menu_extra))
+        state = dict(state, activeMenu=dict(menu_extra))
     if event is not None:
         # 🎬 `/state.activeEvent` 的真形状：`{id, skippable, message}`
         state = dict(state, activeEvent=event)
@@ -140,7 +146,7 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
             "/state": state,
             "/surroundings": SURR,
             "/machines": {"machines": []},
-            "/scan_chests": {"chests": CHESTS},
+            "/scan_chests": {"chests": CHESTS if chests is None else chests},
             "/sittable": SEATS,
             "/furniture": FURNITURE,
             "/animals": ANIMALS,
@@ -795,6 +801,65 @@ def main():
                   "menu read 看内容" not in _lo))
     res.append(ok("📧 信件那一档**确实打了** `/menu`（`/state` 里没这些字段）",
                   bool([c for c in CALLS if c[1] == "/menu"])))
+
+    # ⑱ 📥 「存…」——**开着的容器**那一侧（2026-10-01 · P-menus 第五刀）。
+    #    恒定的形（设计稿 §10.2 那张表）：`ItemGrabMenu` 开着时单子 = 「箱内容摊成行（取/存）」。
+    #    ⚠️ 坐标**不猜**：C# 新报的 `containerAt`（"这个界面属于哪一格容器"）→ 拿坐标回
+    #       `/scan_chests` 那张表里认容器（`_menu_box_at` → `_box`）；认不出 ⇒ **整行不出现**。
+    _at13 = {"x": 13, "y": 13}          # = CHESTS[0]「矿石箱」（freeSlots 35）
+    _stub(menu="ItemGrabMenu", menu_raw=dict(MENU_BOX, containerAt=_at13))
+    _s0 = M.intent(ops="show", kw={"n": 40})
+    res.append(ok("📥 容器开着 ⇒ 顶层多一行「存…」", "存…" in _s0))
+    res.append(ok("📥 排在「箱子里…」后面（取在前、存在后，且压着「关掉界面」）",
+                  _s0.index("箱子里…") < _s0.index("存…") < _s0.index("关掉界面")))
+    _sn = next((r.no for r in M.intent_menu._LAST_ROWS if (r.label or "") == "存"), None)
+    _sl = M.intent(ops="do", kw={"code": str(_sn)})
+    res.append(ok("📥 点开 = 背包里**能存进去**的那几样（工具不进候选）",
+                  "古书" in _sl and "草莓" in _sl and "锄头" not in _sl))
+    res.append(ok("📥 点开那层的形状跟**箱子关着**时同款（多选 + 号=数量）",
+                  "可以多选" in _sl))
+    _s1 = M.intent(ops="do", kw={"code": "1"})
+    res.append(ok("📥 选完进**数量层**（同一套：号=数量）", "各多少" in _s1))
+    _s2 = M.intent(ops="do", kw={"code": "1=1"})
+    _st = [c for c in CALLS if c[0] == "POST" and c[1] == "/store"]
+    # ⚠️⚠️ 这一条钉的是**真机 A/B 照出来的差一位**：单子印的是 1-based 位次（`idx`），
+    #    而 `/store` 的 `slot` 是**游戏那把 0-based 尺子**。以前发 `idx` ⇒ `stored:[]`
+    #    （"按了就成"的行静默不干活）。古书在 `slotIndex=2` ⇒ 发的必须是 **2**（idx=3）。
+    res.append(ok("📥 发的是 **`idx-1`**（位次 3 → 格号 2）——差一位就是静默不干活",
+                  bool(_st) and _st[-1][2].get("slot") == 2, _st[-1][2] if _st else None))
+    res.append(ok("📥 坐标取的是**那只容器**（`/store` 只认坐标）",
+                  bool(_st) and (_st[-1][2].get("x"), _st[-1][2].get("y")) == (13, 13)))
+    res.append(ok("📥 回执如实报存了什么", "✅" in _s2 and "古书" in _s2))
+    # ⚠️ 三档"算不出来就别给"（恒最恨的那类：行出现了、按下去不成）
+    _stub(menu="ItemGrabMenu", menu_raw=MENU_BOX)       # 老 DLL：没有 containerAt
+    res.append(ok("📥 没有 `containerAt`（老 DLL）⇒ **不给**「存…」",
+                  "存…" not in M.intent(ops="show", kw={"n": 40})))
+    _stub(menu="ItemGrabMenu", menu_raw=dict(MENU_BOX, containerAt={"x": 99, "y": 99}))
+    res.append(ok("📥 坐标对不上本图任何容器 ⇒ **不给**（宁缺勿猜一只箱子往里放）",
+                  "存…" not in M.intent(ops="show", kw={"n": 40})))
+    _stub(menu="ItemGrabMenu", menu_raw=dict(MENU_BOX, containerAt=_at13), inv=[])
+    res.append(ok("📥 背包里没东西能存 ⇒ **不给**「存…」（那一刻只有「箱子里…」）",
+                  "存…" not in M.intent(ops="show", kw={"n": 40})))
+    _stub(menu="ItemGrabMenu", menu_raw=dict(MENU_BOX, items=[], containerAt=_at13))
+    _se = M.intent(ops="show", kw={"n": 40})
+    res.append(ok("📥 **空箱子**照样给「存…」（开一只空箱正是要塞东西那一刻）",
+                  "存…" in _se and "箱子里" not in _se))
+    _stub(menu="ItemGrabMenu", menu_raw=dict(MENU_BOX, containerAt={"x": 14, "y": 14}),
+          chests=[dict(CHESTS[0], x=14, y=14, freeSlots=0, used=36, items=[])])
+    res.append(ok("📥 容器满了 ⇒ **不给**「存…」（出路是同屏的「箱子里…」）",
+                  "存…" not in M.intent(ops="show", kw={"n": 40})))
+    # 🔌 跨语言契约（**读 C# 源码核**，别靠记）：
+    #    ① 键名：C# 序列化的那个键 = Python 读的那个键（名字漂了两边都静默）；
+    #    ② `quality` 筛子**只对 `Object` 成立** —— 单子对**每件带 quality 字段的东西**都发
+    #       quality（非 Object 的件 `/state` 也报 0）⇒ 两条必须配套。真机上不配套的样子：
+    #       「存 水手帽 ⇒ stored:[]」「取 铱金鱼竿 ⇒ taken:0」（行都在、按了不成）。
+    res.append(ok("🔌 C# 报的键名 = Python 读的键名（`containerAt`）",
+                  "containerAt = BuildContainerAt(menu)" in _src
+                  and 'raw.get("containerAt")' in _worn_src))
+    res.append(ok("🔌 C# 的 `BuildContainerAt` 有定义 + 两处序列化都调它（/state 与 /menu 共用）",
+                  _src.count("BuildContainerAt(") == 3))
+    res.append(ok("🔌 `/store`·`/chest_take` 的品质筛子都只对 `Object` 成立（两处，缺一处就有一族假行）",
+                  _src.count("item is StardewValley.Object qObj && qObj.Quality != quality") == 2))
 
     print(f"\n{sum(res)}/{len(res)} 过")
     return all(res)

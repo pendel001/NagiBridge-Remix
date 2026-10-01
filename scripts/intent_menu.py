@@ -1120,6 +1120,26 @@ def _pack_space(ctx):
     return CAN_YES if len(ctx.inv) < cap else CAN_NO
 
 
+def _storable_slots(ctx, box):
+    """🎒 背包里**能存进这个容器**的那些格子 → `(留下的, 挑出去几摞)`。
+
+    ⚠️ **两条路共用**：箱子**关着**时（`_chest_subs` ③）和箱子**开着**时（`_menu_store_subs`）
+    —— 这是同一件事（"哪些能放进去"），写两遍必然漂（本项目的老病）。
+    ⚠️ **工具不进这张候选**：`/store` 默认 `keepTools=True`（恒设的保护），它会在端点里
+    **静默跳过工具** ⇒ 列出来就是"按了不成"的行。不在这儿顺手把 `keepTools` 翻成 false
+    —— 那是**动恒设的安全阀**，得他拍板。判据问游戏（`cat_num == -99`）；
+    **问不出（None）也不列**（同三档：不透支信任）。
+    ⚠️ 同名两摞（不同品质）：新版 DLL 的 `/store` 认 `slot`（= **背包格号**）⇒ 分得开；
+    **老 DLL** 才要把认不出的挑出去（`store_slot_quality` 那位不在 = 老 DLL）。
+    """
+    can = [s for s in ctx.inv
+           if s.get("idx") and is_tool(s) is False and _box_accepts(box, s) is True]
+    if not ctx.cap("store_slot_quality"):
+        can, amb = _unambiguous(can, _held_name)
+        return can, amb
+    return can, 0
+
+
 def _exec_take_multi(ctx, pairs, run):
     """🧺 取：**逐条报**（哪条成了、哪条没成）。
 
@@ -1168,11 +1188,21 @@ def _exec_store_multi(ctx, pairs, run):
         cn = slot.get("name") or slot.get("raw", {}).get("name")
         payload = {"x": box["x"], "y": box["y"], "count": cnt,
                    "name": _held_name(slot), "keepTools": True}
-        # 🆕 2026-09-30(178)：`/store` 认 `slot`（= **背包格号** `idx`）之后，同名两摞分得开了。
+        # 🆕 2026-09-30(178)：`/store` 认 `slot`（= 游戏那个**背包格号**）之后，同名两摞分得开了。
+        #    ⚠️⚠️ 2026-10-01 真机 A/B 照出来的**差一位**：传的必须是 **`idx - 1`**，不是 `idx`。
+        #       · `idx` = `slot_of()` 的 **给 AI 看的 1-based 位次**（`slotIndex + 1`，单子上印的就是它）；
+        #       · `/store` 的 `slot` = **游戏那把 0-based 尺子**（C# 直接拿它索引 `farmer.Items`）。
+        #       实证（同一只箱子、同一时刻、同一样东西）：
+        #         `slot=7` ⇒ `stored:[{Moss,3}]`；`slot=8`（= 单子发的 `idx`）⇒ `stored:[]`。
+        #       ⇒ 这一行原来每次都发 `idx` ⇒ **「存」整条路静默不干活**（回包只给 `stored:[]`，
+        #         而单子上那行写着"按了就成"）。⚠️ 两个数字**不能混着当一把尺子**（09-27 `catNum` 同族）。
         #    ⚠️ `quality` 用 `_quality_of()`：**缺字段 ⇒ -1（不限）**，别拿 0 当默认
         #       （`0` 在端点那边是**硬筛"只要普通品质"**，会把银/金星那摞挑掉）。同理给 name 兜底。
-        if slot.get("idx"):
-            payload["slot"] = slot["idx"]
+        #       ⚠️ 非 `Object` 的件（工具/武器/帽子…）也报 `quality: 0`，而端点**只对有品质的东西**
+        #         用这把筛子（`HandleStore` 里 `item is StardewValley.Object` 那一版）——
+        #          两边配套，见那条注释。
+        if slot.get("idx") is not None:
+            payload["slot"] = slot["idx"] - 1
             payload["quality"] = _quality_of(slot)
         r = run("store", payload) or {}
         got = sum(s.get("count") or 0 for s in (r.get("stored") or []))
@@ -1354,16 +1384,9 @@ def _chest_subs(ctx, targets):
     # ③ 存…：背包 ∩ 容器收的 ∩ 容器放得下
     space = _box_space(box)
     if space is CAN_YES:
-        # ⚠️ **工具不进这张候选**：`/store` 默认 `keepTools=True`（恒的保护设置），
-        #    它会在端点里**静默跳过工具** ⇒ 列出来就是"按了不成"的行。
-        #    不在这儿顺手把 `keepTools` 翻成 false ——那是**动恒设的安全阀**，得他拍板。
-        #    判据问游戏（`catNum == -99`）；**问不出（None）也不列**（同三档：不透支信任）。
-        can = [s for s in ctx.inv
-               if s.get("idx") and is_tool(s) is False and _box_accepts(box, s) is True]
-        # 同 ②：`/store` 认 `slot`（= **背包格号** `idx`）之后，同名两摞也分得开了
-        amb2 = 0
-        if not ctx.cap("store_slot_quality"):
-            can, amb2 = _unambiguous(can, _held_name)
+        # ⚠️ "哪些能存"那把尺子**只有一处**（`_storable_slots`）——
+        #    箱子开着时那条「存…」用的是**同一个函数**（别在这儿再抄一遍过滤）。
+        can, amb2 = _storable_slots(ctx, box)
         if can:
             rows.append(Row(STORE_V, [t], "存", f"箱空 {box.get('freeSlots')} 格", 0,
                             level=Level([_slot_row(s, dict(box, x=x, y=y), STORE_V) for s in can],
@@ -2001,6 +2024,93 @@ MENU_TAKE_V = Verb("menu_take", "取", 58, _menu_take_can, _menu_take_reason, _m
                    "menu", exec_multi=_exec_menu_take_multi)
 
 
+# 📥 「存…」——**开着的容器**那一侧（2026-10-01 · P-menus 第五刀）。
+#
+# 恒定的形（设计稿 §10.2 那张表）：`ItemGrabMenu` 开着时单子该长成「箱内容摊成行（取/存）」。
+# 182 只做了「取」（真点领取侧那一下），这一刀把「存」补齐。
+#
+# ⚠️⚠️ **存这一侧不去点界面，走现成的 `/store`** —— 三条理由：
+#   ① 单子上「存」在**箱子关着**时早就有（`_chest_subs` ③，166 ⑤ 那批）⇒ 两条路必须
+#      **同一套语义**（同一个 `_storable_slots` 过滤、同一份逐条回执、同样按 `slot`/`quality`
+#      精确挑摞）。另写一套"点背包格 → 点箱子格"必然跟它漂开（本项目的老病）。
+#   ② 真机实测（2026-10-01，同一只箱子）：菜单开着时 `/store` 放进去的东西
+#      **当场出现在菜单里**（`Chest.GetItemsForPlayer()` 交出去的就是那份 `Items`，
+#      菜单画的正是同一个列表）⇒ 恒在屏幕上**看得见**，不是"数据动了、画面没动"。
+#   ③ 「取」之所以非点界面不可：领取侧那一下**游戏自己会做压实/换格**，直操列表反而会写出
+#      菜单画不出来的状态；而"往里放"这边 `/store` 用的正是游戏自己的 `chest.addItem`。
+#
+# ⚠️ 坐标**不猜**：由服务器递进来的 `menu_data["at"]`（C# 报"这个界面属于哪一格容器"，
+#    判据在 C# 的 `BuildContainerAt`：拿 `ItemGrabMenu` 的 `sourceItem`/`context` 去
+#    `CollectStorageChests` 那张表里认对象身份 —— 冰箱那种"不在 loc.objects 里"的容器
+#    因此也对得上）。拿不到 / 在这张图上对不出容器 ⇒ **整行不出现**（同三档：绝不猜一只箱子往里面放）。
+def _menu_box_at(ctx):
+    """这只开着的容器是**哪一格** → `box`（`/scan_chests` 认过的那份，**带 x/y**）/ `None`。
+
+    ⚠️ `x/y` 是**自己补上去的**：`/scan_chests` 的箱子明细里没有坐标（坐标在 tile 上），
+       而 `/store` 只认坐标 ⇒ 补成 `_chest_subs` 那个形状（`dict(box, x=…, y=…)`），
+       两条路的执行器（`_exec_store_multi`）才吃同一份。
+    """
+    at = (ctx.menu_data or {}).get("at") or {}
+    x, y = at.get("x"), at.get("y")
+    if not (isinstance(x, int) and isinstance(y, int)):
+        return None
+    b = _box(ctx.tile(x, y))
+    return dict(b, x=x, y=y) if b else None
+
+
+def _menu_store_pick(ctx) -> list:
+    """这一刻**放得进去**的背包格子（判据与"箱子关着"那条**同一个函数**）。"""
+    box = _menu_box_at(ctx)
+    if box is None or _box_space(box) is not CAN_YES:
+        return []
+    return _storable_slots(ctx, box)[0]
+
+
+def _menu_store_can(ctx, t):
+    """该不该给「存…」这一行 —— 真判据 = "这一刻**真有东西**放得进去吗"。
+
+    ⚠️ 箱子满了 ⇒ `_menu_store_pick` 是空的 ⇒ 整行不出现（**不是**给一行按了不成的）。
+       那一刻的出路就在同屏的「箱子里…」上（先取点出来）—— 同 `_chest_subs` 那条笔记的用意。
+    """
+    return CAN_YES if _menu_store_pick(ctx) else CAN_NO
+
+
+def _menu_store_show(ctx, t):
+    return "存"
+
+
+def _menu_store_reason(ctx, t):
+    """理由栏 = **容器还剩几格**（跟关着箱子时那条一字不差 —— 同一件事同一把尺子）。"""
+    b = _menu_box_at(ctx) or {}
+    free = b.get("freeSlots")
+    return f"箱空 {free} 格" if free is not None else ""
+
+
+def _menu_store_count(ctx, targets):
+    return f"{len(_menu_store_pick(ctx))} 种"
+
+
+def _menu_store_subs(ctx, targets):
+    """「存…」的下一层 —— 一摞一行，形状**照抄** `_chest_subs` ③（含那个数量层）。"""
+    box = _menu_box_at(ctx) or {}
+    here = f"({box.get('x')},{box.get('y')})"
+    rows = [_slot_row(s, box, MENU_STORE_ROW_V) for s in _menu_store_pick(ctx)]
+    return Level(rows, title=f"存哪几样去 {here}？（可以多选，如 `1,4`）",
+                 mode="pick", verb=MENU_STORE_ROW_V)
+
+
+MENU_STORE_V = Verb("menu_store", "存", 57, _menu_store_can, _menu_store_reason,
+                    _menu_store_show, "world", subs=_menu_store_subs,
+                    count=_menu_store_count, menu_ok=True)
+# ⚠️ 子层那个动词**只给 `exec_multi`**（同 `MENU_TAKE_V`/`STORE_V`）：只活在子层里、
+#    顶层扫不到。它走的是**现成的** `_exec_store_multi` —— 存法一份，两条路共用。
+# ⚠️ `target="inv"`：这一行说的是"背包里那一摞"（复验那条路认得 `idx`）。这里的 `idx`
+#    跟 `_exec_store_multi` 发给端点的是**两把尺子**（1-based 位次 vs 0-based 格号）——
+#    差一位那件事的账记在 `_exec_store_multi` 里，别在这儿再算一遍。
+MENU_STORE_ROW_V = Verb("menu_store_row", "存", 57, _menu_store_can, None,
+                        _menu_store_show, "inv", exec_multi=_exec_store_multi)
+
+
 # ⏭ 「跳过整段」（2026-10-01 · 恒要的第二行）。
 #
 # 恒原话：「**给选项的话就给 1 接 advance、2 跳过 好了**」——所以它必须**排在「推进对话」后面**
@@ -2454,7 +2564,8 @@ VERBS: list = [
     # 📋 菜单摊开（2026-10-01 · P-menus）：**开着的容器菜单**里的东西。
     #    权重 58：菜单开着时 `_candidates` 只剩 menu_ok 的行，这一刻它就是正事
     #    （压在 关掉界面(30) 之上 —— "先看看箱里有什么"比"马上关掉"更常是下一步）。
-    MENU_BOX_V, MENU_TAKE_V,
+    #    57 = 「存…」：挨着「箱子里…」排在它后面（取在前、存在后），**都在 关掉界面 之上**。
+    MENU_BOX_V, MENU_TAKE_V, MENU_STORE_V, MENU_STORE_ROW_V,
 ]
 
 
@@ -4651,7 +4762,15 @@ def _selftest():
     _ev2 = _fixture()
     _ev2.event = {"id": "x", "skippable": True}
     reset_menu()
-    ok.append(("🎬 可整段跳的事件 ⇒ 理由栏说出来", "可整段跳" in render_menu(_ev2, n=40)))
+    # ⚠️ 2026-10-01：这条原来钉的是「理由栏挂着『可整段跳』」——**那半句已经撤了**
+    #    （歧义：读起来像"这一按会整段跳"，而整段跳现在**有自己的行** `SKIP_V`）
+    #    ⇒ 改成钉**撤掉之后**的契约。⚠️ 钉的是行为，不是"某个词在不在"这种易碎的东西：
+    #    ①它说清自己怎么干（一句句推）②不再挂那句有歧义的旧话。
+    #    📌 它红了这么久没人发现，是因为 `intent_menu.py` **不匹配全量 runner 的
+    #      `*selftest*.py`** ⇒ 已把它加进 `_run_all_selftests.py` 的 EXTRA（同一个坑别再踩）。
+    _er2 = render_menu(_ev2, n=40)
+    ok.append(("🎬 理由栏说清它**一句句推**，且不再挂那句有歧义的旧话",
+               "一句句往下推" in _er2 and "可整段跳" not in _er2))
     reset_menu()
     ok.append(("🎬 没有事件也没有对话 ⇒ **不给**这一行",
                "推进对话" not in render_menu(_fixture(), n=40)))

@@ -5368,6 +5368,13 @@ public class ModEntry : Mod
                 grabBehavior = Game1.activeClickableMenu is StardewValley.Menus.ItemGrabMenu gbIgm
                                ? (gbIgm.behaviorFunction?.Method?.Name ?? (gbIgm.reverseGrab ? "reverseGrab" : null))
                                : null,
+                // 📦 这个界面**属于哪一格容器**（2026-10-01 · P-menus 容器「存」侧）。
+                //    ⚠️ 两处序列化（这里 + `/menu`）**共用** `BuildContainerAt` —— 同 `grabBehavior`
+                //      / `mastery`：`/state` 瘦 `/menu` 详各写一份，迟早漂（09-27 那次是喂错源）。
+                //    ⚠️ 只在**真是 grab 菜单**时才算：`CollectStorageChests` 要遍历 `loc.objects`
+                //      （农场能有上百台机器），`/state` 是**每次工具调用**都打的热路径。
+                containerAt = Game1.activeClickableMenu is StardewValley.Menus.ItemGrabMenu
+                              ? BuildContainerAt(Game1.activeClickableMenu) : null,
                 // 🧬 技能升级菜单（LevelUpMenu, 2026-08-30 恒）：含 5/10 级职业选择(isProfessionChooser=true)。
                 //    AI 经 /state 看到 activeMenu.type=LevelUpMenu + 本 levelUp 对象，就知道该选分支了。
                 //    offered[0]=左、offered[1]=右；选完走 menu ops=levelup_choose。
@@ -10503,7 +10510,15 @@ public class ModEntry : Mod
                 if (item == null) continue;
                 // 🆕 精确挑摞（不传就是不挑）
                 if (slot >= 0 && i != slot) continue;
-                if (quality >= 0 && (item as StardewValley.Object)?.Quality != quality) continue;
+                // ⚠️⚠️ 2026-10-01 真机：原来写的是 `(item as StardewValley.Object)?.Quality != quality`
+                //    —— 对**非 `Object`** 的件（工具/武器/帽子/靴/戒/衣/饰品）`as Object` 是
+                //    **null** ⇒ `null != 0` **恒成立** ⇒ 只要调用方带了 `quality` 就永远跳过它。
+                //    而 `/state` 对这些件也报 `quality: 0`（`(i as Object)?.Quality ?? 0`，
+                //    `ModEntry.cs:5228`）⇒ 单子那边照着搬就带上了 ⇒ **那些行"按了不成"**。
+                //    实证（走真单子）：`存 水手帽`(Hat) ⇒ `stored:[]`；不带 quality ⇒ 存进去了。
+                //    ⇒ 品质只对**有品质的东西**有意义（本节自己的 doc 就是这么写的，
+                //      原代码跟自己的话不一致）：没有品质的件一律放行。
+                if (quality >= 0 && item is StardewValley.Object qObj && qObj.Quality != quality) continue;
                 if (keepTools && item is Tool) continue;
                 // ⚠️ 2026-09-03 恒：中英混双——背包/箱子显示中文(DisplayName)，AI 可能传中文或英文，两者都匹配
                 if (!string.IsNullOrEmpty(name)
@@ -11662,7 +11677,10 @@ public class ModEntry : Mod
                     if (item == null) continue;
                     // 🆕 精确挑摞（不传就是不挑）
                     if (slot >= 0 && i != slot) continue;
-                    if (quality >= 0 && (item as StardewValley.Object)?.Quality != quality) continue;
+                    // ⚠️ 同 `/store` 那条（`HandleStore`）：品质只对 `Object` 成立，
+                    //    非 Object 的件**不许**被 `quality` 一票否掉 —— 真机实证
+                    //    「取 铱金鱼竿」(Tool, `/scan_chests` 报 quality=0) ⇒ `taken:0`。
+                    if (quality >= 0 && item is StardewValley.Object qObj && qObj.Quality != quality) continue;
                     // ⚠️ 2026-09-03 恒：中英混双——AI 可能传中文(DisplayName)或英文(Name)，都匹配
                     if (!string.IsNullOrEmpty(name)
                         && !item.Name.Equals(name, StringComparison.OrdinalIgnoreCase)
@@ -13414,6 +13432,8 @@ public class ModEntry : Mod
                     numberSelect,
                     gift = giftMenu,
                     grabBehavior,
+                    // 📦 同上（`/state.activeMenu` 那份）：**同一个 helper**，别另算一遍。
+                    containerAt = BuildContainerAt(menu),
                     // 📋 2026-09-07 恒：ItemListMenu(丢失的物品) + ShippingMenu(过夜结算) 明细
                     menuTitle,
                     listTotal, listPage, listPageSize,
@@ -16780,6 +16800,35 @@ public class ModEntry : Mod
         }
         catch { }
         return list;
+    }
+
+    /// <summary>📦 这个**开着的界面**属于哪一格容器 → `{x,y}`；不是容器 / 找不到 ⇒ `null`。
+    ///
+    /// 用途（2026-10-01 · P-menus 容器「存」侧）：单子要在"箱子开着"时也能给「存…」，
+    /// 而 `/store` **只认坐标**（`FindStorageChestAt(loc,x,y)`）—— 界面自己不带坐标。
+    ///
+    /// ⚠️⚠️ **不许读 `sourceItem.TileLocation`**：内置冰箱那个 Chest **不在 `loc.objects` 里**，
+    ///    它的 `TileLocation` **恒是 `(0,0)`**（上面 `CollectStorageChests` 那条 2026-09-30 的账
+    ///    就是照 `TileLocation` 印坐标栽的）⇒ 必须**回头问同一张表**（冰箱坐标靠 `fridgePosition`）。
+    ///    ⇒ 顺带白拿一件事：**"哪些容器算仓库"也归那张表管** —— 迷你出货箱/祝尼魔箱
+    ///      天然不在里面 ⇒ `/store` 也就天然不会往它们身上写（口径不会在这儿分叉）。
+    /// ⚠️ 判据是**对象身份**（`ReferenceEquals`），不是名字/坐标：`ItemGrabMenu` 把容器对象
+    ///    从 `Chest.ShowMenu()`（`Chest.cs:925` 等 5 处）/ `StorageFurniture.cs:71` 传进
+    ///    `sourceItem`（+ `context`）—— 送礼/加汤那些传的是**别的东西**，自然匹配不上（返回 null）。
+    /// </summary>
+    private static object? BuildContainerAt(IClickableMenu? menu)
+    {
+        try
+        {
+            if (menu is not ItemGrabMenu igm) return null;
+            var loc = Game1.currentLocation;
+            if (loc == null) return null;
+            foreach (var (chest, tile, _) in CollectStorageChests(loc))
+                if (ReferenceEquals(chest, igm.sourceItem) || ReferenceEquals(chest, igm.context))
+                    return new { x = (int)tile.X, y = (int)tile.Y };
+        }
+        catch { }
+        return null;
     }
 
     /// <summary>箱子染色 hex（#RRGGBB）。反射读 playerChoiceColor（NetColor），拿不到/透明给空串。</summary>
