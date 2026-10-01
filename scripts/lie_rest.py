@@ -63,7 +63,7 @@ def main() -> int:
         return round(v / m * 100)
 
     print(f"🛏 躺下了（{args.who or '自己'}的床）：体力 {s0}/{ms0}（{pct(s0, ms0)}%）"
-          f" · 血 {h0}/{mh0}（{pct(h0, mh0)}%）—— 回满我叫你。", flush=True)
+          f" · 血 {h0}/{mh0}（{pct(h0, mh0)}%）。", flush=True)
 
     deadline = t0 + args.safety_min * 60
     while True:
