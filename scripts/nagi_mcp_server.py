@@ -440,7 +440,10 @@ def _close_hint(menu: str) -> str:
     if "shopmenu" in m:
         return "menu read 看商品 → menu click(button=upperRightCloseButton) 关掉"
     if "letterviewer" in m or "dialogue" in m:
-        return "menu read 看内容 → menu advance 或 menu click(button=ok) 收掉"
+        # ⚠️ 2026-10-01（P-menus 第四刀）：**去掉了开头的「menu read 看内容」** ——
+        #    信件正文现在**就印在单子抬头**（`_im_head` 的 📧 那几行）⇒ 那句是白指一条路
+        #    （跟 `dialoguebox` 那次同一个理由）。
+        return "menu advance 或 menu click(button=ok) 收掉"
     return "menu read 看内容 → menu click(button=upperRightCloseButton) 关掉（认不出的菜单照这个试）"
 
 
@@ -2670,7 +2673,6 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
             #    否则状态条里一行塞一个字（2026-09-12 真机）
             opts = [f"[{i}]{_opt_text(t)}"
                     for i, t in enumerate(responses)]
-            lines.append(f"🗳️ 选项: {' | '.join(opts)}")
             # 🎪 2026-09-13 恒："怕 AI 实际不知道怎么选"。老文案在节日里会**点空**：
             #   C# `Game1.CurrentEvent != null && !real` 会把不带 real 的 option 走成
             #   `event.answerDialogueQuestion`，对 `createQuestionDialogue`（跳舞邀请/节日摊位问句）
@@ -2682,17 +2684,25 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
             #   而 `/state` **看不出是哪种** ⇒ 只能"先普通点、框不关再加 real=true"，
             #   **不断言**（真修法=C# 把 `afterQuestion` 是否为空报出来，别让消费侧猜）。
             # 判据看 C# 报的 `questionKind`（见 `BuildQuestionKind`），**别在消费侧猜**。
+            # ⚠️ 2026-10-01（184/恒问：「real=true 这些注意点现在是由我们的选项包办了」）：
+            #   **不能整块撤** —— 状态条是**每个工具**都会带的全局面（AI 敲 `check status` 时也看得到），
+            #   而单子只是其中一个面；裸 `menu click(option=N)` 仍是真路，`real` 那个坑对它照样成立。
+            #   但**原来同一件事说了三行**（`🗳️ 选项:` + `🗳️ 问句框…real=true` + `→ 用 menu click…real=true`）
+            #   ⇒ 收成**两行**：选项清单一行，**怎么选一行**（并**先指单子**：敲号最省事，
+            #      裸 menu 那条才需要知道 real）。
             _qk = active_menu.get("questionKind")
-            if _qk == "ask":
-                lines.append("→ 用 menu click(option=N, **real=true**) 选择")
-            elif _qk == "npc":
-                # ✅ 同 `_menu_advice`：**也要 real=true**（见那里的反编译 + 真机实证）
-                lines.append("→ 用 menu click(option=N, **real=true**) 选择")
-            elif active_event:
-                # 旧 DLL 不报 questionKind：如实说明 + 给补救动作（两种问句框在节日里并存）
-                lines.append("→ 用 menu click(option=N) 选择；**框不关就加 real=true 再点一次**（此 DLL 不报框种类）")
+            _real = _question_needs_real(active_menu)
+            if _real is True:
+                _how = "menu click(option=N, **real=true**)"
+            elif _real is None:
+                _how = ("menu click(option=N)；**框不关就加 real=true 再点一次**"
+                        "（这版报不出框种类）")
             else:
-                lines.append("→ 用 menu click(option=N) 选择")
+                _how = "menu click(option=N)"
+            lines.append(f"🗳️ 选项: {' | '.join(opts)}")
+            lines.append(f"→ **敲单子上的号最省事**（`intent show`）；要走裸 menu 就 {_how}")
+            # 📌 沿革（`ask` ⇒ real=true / `npc` ⇒ 也要 real=true / 旧 DLL ⇒ 普通点 + 补救）
+            #    已收进 `_question_needs_real`（**判据只有那一处**），原文留在 `_menu_advice`。
 
     if active_event:
         ev_msg = active_event.get("message")
@@ -21557,8 +21567,6 @@ def _im_menu_data(state: dict) -> dict:
     #       `[{index,key,text,bounds}]` **形状不同**（`ModEntry.cs:5323` vs `:12474`）；
     #       列表**位次就是选项号**（C# 点选项用的是 `responseCCs[option]`）⇒ 够用。
     if "dialoguebox" in mt.lower():
-        # ⚠️ `/state` 的 `responses` 是**字符串数组**（`responseText`），跟 `/menu` 那份
-        #    `[{index,key,text,bounds}]` **形状不同**（`ModEntry.cs:5323` vs `:12474`）。
         #    ⇒ 在这儿整成**同一档形状**（`[{index, text}]`），单子那边只管认 `index`/`text`；
         #      位次就是 C# 点选项用的号（`selectedResponse = option` → `responseCCs[option]`）。
         opts = [{"index": i, "text": t}
@@ -21575,6 +21583,15 @@ def _im_menu_data(state: dict) -> dict:
         raw = api._ai_get("/menu") or {}
     except Exception:
         return {}
+    # 📧 信件（2026-10-01 · P-menus 第四刀）：**只有 `/menu` 有**（`/state.activeMenu` 里
+    #    压根没有 letterTitle/letterBody —— 真机核过）⇒ 这一档必须多打一次。
+    if "letterviewer" in (raw.get("type") or mt).lower():
+        body = (raw.get("letterBody") or "").strip()
+        # ⚠️ 游戏自己的换行符是 **`^`**（`#` 是**翻页**）—— 照它渲染成真换行，
+        #    别原样丢给 AI（一屏里一串 `^` 谁也读不下去）。`#` 这一版**不处理**：
+        #    `/menu` 只给**当前这一页**（`LetterViewerMenu.mailMessage`），翻页是另一件事。
+        body = body.replace("^", "\n")
+        return {"letter": {"title": (raw.get("letterTitle") or "").strip(), "body": body}}
     if (raw.get("type") or "") != "ItemGrabMenu" or not _grab_is_take(raw):
         return {}
     # ⚠️ `items` 有**两种形状**，判据是 `field` 这个键：
@@ -21615,6 +21632,13 @@ def _im_head(ctx) -> str:
         #    ⇒ **如实标成「刚说的」**，不冒充"这就是问句"。
         #    ⚠️ 它是**内存里的**：MCP 重启过就没了 —— 那时这行不出现（**不编**）。
         head += f"\n💬 刚说的：{_story_buffer[-1]}"
+    # 📧 信件正文（2026-10-01 · P-menus 第四刀）——**正文进抬头**同一条底线：
+    #    不看内容就"关掉/领附件"= 瞎做。逐行缩进三格，跟 `🎯`/`💬` 那两行区分开。
+    lt = (ctx.menu_data or {}).get("letter") or {}
+    if lt.get("title") or lt.get("body"):
+        head += f"\n📧 {lt.get('title') or '（无标题）'} 的信："
+        for _ln in (lt.get("body") or "").splitlines():
+            head += f"\n   {_ln}"
     return head
 
 

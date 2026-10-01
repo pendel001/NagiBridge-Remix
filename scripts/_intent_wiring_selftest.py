@@ -778,6 +778,24 @@ def main():
                   "刚说的" in _sq and "赏心悦目" in _sq))
     M._story_buffer[:] = []
 
+    # ⑰ 📧 信件摊开（2026-10-01 · P-menus 第四刀）—— 恒有 18 封未读，真机拿 Linus 那封验的。
+    #    ⚠️ 这一档**必须打 `/menu`**：`/state.activeMenu` 里**压根没有** letterTitle/letterBody（真机核过）。
+    _stub(menu="LetterViewerMenu",
+          menu_raw={"type": "LetterViewerMenu", "letterTitle": "Linus",
+                    "letterBody": "你好，朋友。^最近我在山湖那里的收获不错。 ^——莱纳斯 ",
+                    "buttons": [{"name": "upperRightCloseButton", "x": 1268, "y": 16}]})
+    _lo = M.intent(ops="show", kw={"n": 20})
+    res.append(ok("📧 信件正文进抬头（标题 + 逐行缩进）",
+                  "📧 Linus 的信：" in _lo and "   你好，朋友。" in _lo and "——莱纳斯" in _lo))
+    res.append(ok("📧 游戏自己的换行符 `^` 渲染成真换行（不是一串 `^` 丢给 AI）",
+                  "^" not in _lo))
+    res.append(ok("📧 信件那一刻给「关掉界面」（`_menu_exit_of` 没排除它）", "关掉界面" in _lo))
+    # ⚠️ 内容既然进了抬头，提示行就不该再叫 AI 去 `menu read`（同 dialoguebox 那次的理由）
+    res.append(ok("📧 提示行不再指 `menu read 看内容`（内容就在抬头）",
+                  "menu read 看内容" not in _lo))
+    res.append(ok("📧 信件那一档**确实打了** `/menu`（`/state` 里没这些字段）",
+                  bool([c for c in CALLS if c[1] == "/menu"])))
+
     print(f"\n{sum(res)}/{len(res)} 过")
     return all(res)
 
