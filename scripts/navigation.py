@@ -1103,6 +1103,25 @@ def _wait_arrival(target_loc: str, target_x: int, target_y: int, timeout: int = 
     return False
 
 
+def _walk_log(loc: str, x: int, y: int, ax, ay, verdict: str):
+    """🧾 每次走位**无条件**打一行到 stdout（MCP 的 stdout 落到 `_mcp_out.log`）。
+
+    ⚠️ 为什么必须有（2026-10-01 恒：「**为什么你验完老是走回爷爷神龛**」）：
+      那天我和恒查了两轮都查不出来 —— **因为走位这件事当时一行日志都不留**：
+      `/walk_to` 是发射后不管的（挂了路线就返回），人还在走的时候工具早就"办完了"；
+      MCP 的工具日志只记"哪个工具被调了"，**记不到"这一步把人送到了哪"**。
+      最后是靠一层网络拦截才钉出真凶（自验里两条老用例在打真机）。
+      ⇒ 从这行起：**每一次走位都留痕**（请求坐标 → 游戏"就近改格"后的落点 → 到位/超时）。
+      排查顺序也定死：先看 `_mcp_out.log` 里的 `[walk]`，再谈别的。
+    ⚠️ 只打日志、**不改行为**（超时那条照样如实返回 False 给调用方 —— 要不要中止由调用方定）。
+    """
+    try:
+        print(f"[walk] {time.strftime('%H:%M:%S')} {loc} 请求({x},{y}) → 落点({ax},{ay}) {verdict}",
+              flush=True)
+    except Exception:
+        pass
+
+
 def _walk_and_wait(loc: str, x: int, y: int, timeout: int = 25):
     """`/walk_to` 到 (loc,x,y) 并等人**真的站定**。返回 `(是否到位, 说明)`。
 
@@ -1131,18 +1150,21 @@ def _walk_and_wait(loc: str, x: int, y: int, timeout: int = 25):
     try:
         r = api._post("/walk_to", {"location": loc, "x": x, "y": y})
     except Exception as e:
+        _walk_log(loc, x, y, x, y, "请求就炸了")      # 🧾 留痕（见 _walk_log）
         return False, f"walk_to 出错: {e}"
     if not r.get("ok"):
+        _walk_log(loc, x, y, x, y, "寻路失败")
         return False, f"寻路失败: {r.get('error', r)}"
     d = r.get("destination") or {}
     ax, ay = d.get("x", x), d.get("y", y)
     note = ""
     if (ax, ay) != (x, y):
         note = f"（⚠️ ({x},{y}) 站不住，游戏就近改到 ({ax},{ay})）"
-        print(f"[walk-adjust] {loc} 请求 ({x},{y}) → 实际 ({ax},{ay})", flush=True)
     if _wait_arrival(loc, ax, ay, timeout=timeout):
+        _walk_log(loc, x, y, ax, ay, "到位")
         return True, note
     # ⚠️ 超时原因里写**我们真正等的那个格**（ax,ay），不是请求的那个 —— 否则排查时被带偏
+    _walk_log(loc, x, y, ax, ay, "超时没到（人可能还在路上）")
     _to = f"走位超时没到（{loc} {ax},{ay}）"
     return False, (note + _to) if note else _to
 

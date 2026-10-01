@@ -2339,6 +2339,13 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
         else:
             lines.append("📺 今日无新节目：点电视看明日天气（scene at 点电视）")
         lines.append(morning)
+        # 🚪🐄 早晨那句门提醒（每天第一次；非雨天/非冬天/有畜牧建筑/12:00 前才给）
+        try:
+            _dh = _doors_morning_hint()
+            if _dh:
+                lines.append(_dh)
+        except Exception:
+            pass
     elif cal_text and loc_name == "Town" and _CAL_TOWN_KEY["last"] != (season, day, year):
         # 📅 2026-09-04 恒：常驻日历（生日/休店）只在每天第一次(TV) + 顶多进Town再弹一次，避免每条状态都刷
         _CAL_TOWN_KEY["last"] = (season, day, year)
@@ -2401,6 +2408,16 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
         _tc = _traveling_cart_hint(season, day, tod)
         if _tc:
             lines.append(_tc)
+    except Exception:
+        pass
+
+    # 🚪🐄 晚上关门提醒（一天一条：≥19:00 且人在 Farm；**雨夜照报**）
+    #    照 `_TRAVEL_CART_KEY` 那套去重；**不声称门现在是开是关**（没有只读口）——
+    #    只说"该关门了 + 敲哪个 op + 回执会报执行后的门态"。
+    try:
+        _ec = _doors_evening_hint(loc_name)
+        if _ec:
+            lines.append(_ec)
     except Exception:
         pass
 
@@ -6420,11 +6437,72 @@ def _has_tool(name: str) -> bool:
         return False
 
 
+def _animal_adjacent_spot(ax: int, ay: int) -> tuple:
+    """动物 (ax,ay) 四邻里**能站**的最近一格 → `(x, y)` / `None`。
+
+    抄 `pet_walk.py:pos_to_adjacent` 的判据（那是真机调出来的）：
+      · 先看人是不是**已经**卡迪纳尔相邻（interact 唯一够得着的站位关系）——是就别动；
+      · 候选只取四邻、用 **`/passable`** 过滤（`/position` 直接改坐标、不做校验，
+        四邻全是小桶时硬传 = "反复落到同一格 + 不停 warp"，2026-08-26 真机见过）；
+      · 按离当前位置的曼哈顿距离排序（就近落，少一次穿墙观感）。
+    """
+    try:
+        p = (api.state().get("player") or {})
+        px, py = int(p.get("x") or 0), int(p.get("y") or 0)
+    except Exception:
+        px = py = 0
+    if (px == ax and abs(py - ay) == 1) or (py == ay and abs(px - ax) == 1):
+        return (px, py)
+    cands = [(ax + 1, ay), (ax - 1, ay), (ax, ay + 1), (ax, ay - 1)]
+    ok = []
+    for c in cands:
+        try:
+            if (api._post("/passable", {"x": c[0], "y": c[1]}) or {}).get("passable"):
+                ok.append(c)
+        except Exception:
+            pass
+    if not ok:
+        return None
+    ok.sort(key=lambda c: abs(c[0] - px) + abs(c[1] - py))
+    return ok[0]
+
+
+def _walk_to_animal(ax: int, ay: int, timeout: int = 12) -> tuple:
+    """🐄 **走过去**站到动物旁边（拟人）→ `(到位?, 那一行说明)`。
+
+    ⚠️ 2026-10-01 恒（"跟 pet_animals 一样做"）：这里原来是**对每只都直接 `api.position()`
+       瞬移**到四邻之一 —— 正是审计出来的那类"隔着几十格改世界"，恒一眼看得出不是人。
+       现在照 `pet_walk.py` 的真机形状：**先走**（`/walk_to` 到动物格，动物格是障碍 ⇒ 游戏会
+       停在它旁边），走不到/动物中途挪窝**才** `/position` 兜底 —— 而且**那次兜底要点名**
+       （`⚠️ X 走不到 (x,y)，position 兜底`），不许悄悄瞬移。
+    """
+    try:
+        loc = (api.state().get("location") or {}).get("name") or "Farm"
+    except Exception:
+        loc = "Farm"
+    try:
+        ok, note = _walk_and_wait(loc, ax, ay, timeout=timeout)
+    except Exception as e:
+        ok, note = False, f"走位出错（{type(e).__name__}: {e}）"
+    if ok:
+        return True, ""
+    spot = _animal_adjacent_spot(ax, ay)
+    if not spot:
+        return False, f"⚠️ 走不到 ({ax},{ay})，四邻也没有能站的格 —— 这只跳过"
+    try:
+        api.position(spot[0], spot[1])
+        time.sleep(0.3)
+    except Exception as e:
+        return False, f"⚠️ 走不到 ({ax},{ay})，position 兜底也失败（{e}）—— 这只跳过"
+    return True, f"⚠️ 走不到 ({ax},{ay})，position 兜底（{spot[0]},{spot[1]}）"
+
+
 def _milk_shear_animals(skip_grabber: bool = False) -> str:
-    """挤牛奶+剪羊毛（2026-08-16）：对当前建筑内奶牛/绵羊选对应工具逐个交互。
+    """挤牛奶+剪羊毛（2026-08-16）：对当前建筑内奶牛/山羊/绵羊选对应工具逐个交互。
     游戏自动处理：有产物收集（进背包），没产物弹提示（"没有奶/没毛"，小牛小羊无产物）。
     不依赖 productReady 预判（自动采集器档 product 恒 None，仍可尝试交互）。
-    skip_grabber=True：当在 Farm 上处理室外放牧动物时跳过"自动采集器→不用挤奶剪毛"判断（室外无自动采集器，2026-08-24 恒）。"""
+    skip_grabber=True：当在 Farm 上处理室外放牧动物时跳过"自动采集器→不用挤奶剪毛"判断（室外无自动采集器，2026-08-24 恒）。
+    ⚠️ 2026-10-01：**站位改成走过去**（见 `_walk_to_animal`），瞬移只在"走不到/动物挪窝"时兜底**并点名**。"""
     try:
         # ⚠️ 恒 2026-08-16：畜棚/鸡舍有自动采集器 → 产物已自动收，不用挤奶/剪毛，只摸摸
         if not skip_grabber:
@@ -6472,51 +6550,91 @@ def _milk_shear_animals(skip_grabber: bool = False) -> str:
                     if not cur:
                         continue
                     ax, ay = cur.get("x", 0), cur.get("y", 0)
-                    for px, py, fd in [(ax, ay+1, 0), (ax+1, ay, 3), (ax-1, ay, 1), (ax, ay-1, 2)]:
-                        # 清残留菜单（防止 select 被卡）
-                        try:
-                            _mm = api.menu()
-                            if isinstance(_mm, dict) and _mm.get("open"):
-                                api._post("/menu_close")
-                                time.sleep(0.3)
-                        except Exception:
-                            pass
-                        # 选工具（中文名）+ **确认 currentTool 切换成功（重试）**——否则拿错工具对错动物
-                        api._post("/select", {"name": cn})
-                        tool_ok = False
-                        for _ in range(6):
-                            time.sleep(0.2)
-                            ct = (api.state().get("player") or {}).get("currentTool") or ""
-                            if eng in ct:
-                                tool_ok = True
-                                break
-                            api._post("/select", {"name": cn})   # 重试 select
-                        if not tool_ok:
-                            got.append(f"{a.get('name','?')}[工具没切换]")
-                            break
-                        api.position(px, py)
-                        time.sleep(0.1)
-                        api.face(fd)
-                        time.sleep(0.1)
-                        r = api.use_item()
-                        # ⚠️ 弹窗延迟出现：/use 后轮询等 DialogueBox（最多 ~2s），别读错/读早
-                        msg = None
-                        for _ in range(8):
-                            time.sleep(0.25)
-                            m = api.menu()
-                            if isinstance(m, dict) and m.get("open") and m.get("type") == "DialogueBox":
-                                msg = (m.get("dialogue") or "").strip()
-                                break
-                        if msg is not None:
-                            # ⚠️ 关弹窗用 /menu_close（可靠）——key confirm 可能关掉后又触发世界交互
+                    # 🚶 2026-10-01：**先走过去**（拟人）；走不到/动物中途挪窝才 position 兜底，
+                    #    而且那次兜底**点名进报告**（`_walk_to_animal` 回的 note）。
+                    _arrived, _walknote = _walk_to_animal(ax, ay)
+                    if not _arrived:
+                        got.append(f"{a.get('name', '?')}[{_walknote}]")
+                        continue
+                    if _walknote:
+                        got.append(f"{a.get('name', '?')}[{_walknote}]")
+                    # 再重查一次它现在在哪（走过去这段它可能又挪了）——面朝它才够得着
+                    try:
+                        _fresh2 = api.animals().get("animals", [])
+                        _c2 = next((x for x in _fresh2 if x.get("name") == a.get("name")), None)
+                        if _c2:
+                            ax, ay = _c2.get("x", ax), _c2.get("y", ay)
+                    except Exception:
+                        pass
+                    # 站位关系：卡迪纳尔相邻才能 interact 到（`_animal_adjacent_spot` 的判据同源）
+                    try:
+                        _p = (api.state().get("player") or {})
+                        px, py = int(_p.get("x") or 0), int(_p.get("y") or 0)
+                    except Exception:
+                        px, py = ax, ay - 1
+                    if px == ax and py == ay - 1:
+                        fd = 2          # 人在它上方 → 面朝下
+                    elif px == ax and py == ay + 1:
+                        fd = 0          # 人在它下方 → 面朝上
+                    elif py == ay and px == ax - 1:
+                        fd = 1          # 人在它左边 → 面朝右
+                    elif py == ay and px == ax + 1:
+                        fd = 3          # 人在它右边 → 面朝左
+                    else:
+                        # 走到手边却没站成卡迪纳尔（动物又跑了）⇒ 兜一次相邻格，**如实点名**
+                        _spot = _animal_adjacent_spot(ax, ay)
+                        if not _spot:
+                            got.append(f"{a.get('name', '?')}[⚠️ 站不到它旁边，跳过]")
+                            continue
+                        api.position(_spot[0], _spot[1])
+                        time.sleep(0.3)
+                        px, py = _spot
+                        got.append(f"{a.get('name', '?')}[⚠️ 站位不对，position 兜底"
+                                   f"（{px},{py}）]")
+                        fd = (2 if (px == ax and py == ay - 1) else
+                              0 if (px == ax and py == ay + 1) else
+                              1 if (py == ay and px == ax - 1) else 3)
+                    # 清残留菜单（防止 select 被卡）
+                    try:
+                        _mm = api.menu()
+                        if isinstance(_mm, dict) and _mm.get("open"):
                             api._post("/menu_close")
                             time.sleep(0.3)
-                            tag = "✅" if ("不产" not in msg and "没有" not in msg and "没毛" not in msg) else "⭕"
-                            got.append(f"{a.get('name','?')}{tag}{msg[:10]}")
-                        elif r.get("ok"):
-                            got.append(a.get("name", "?"))
-                        time.sleep(0.3)  # 每只后多歇一会，稳（恒 2026-08-16）
-                        break
+                    except Exception:
+                        pass
+                    # 选工具（中文名）+ **确认 currentTool 切换成功（重试）**——否则拿错工具对错动物
+                    api._post("/select", {"name": cn})
+                    tool_ok = False
+                    for _ in range(6):
+                        time.sleep(0.2)
+                        ct = (api.state().get("player") or {}).get("currentTool") or ""
+                        if eng in ct:
+                            tool_ok = True
+                            break
+                        api._post("/select", {"name": cn})   # 重试 select
+                    if not tool_ok:
+                        got.append(f"{a.get('name','?')}[工具没切换]")
+                        continue
+                    api.face(fd)
+                    time.sleep(0.1)
+                    r = api.use_item()
+                    # ⚠️ 弹窗延迟出现：/use 后轮询等 DialogueBox（最多 ~2s），别读错/读早
+                    msg = None
+                    for _ in range(8):
+                        time.sleep(0.25)
+                        m = api.menu()
+                        if isinstance(m, dict) and m.get("open") and m.get("type") == "DialogueBox":
+                            msg = (m.get("dialogue") or "").strip()
+                            break
+                    if msg is not None:
+                        # ⚠️ 关弹窗用 /menu_close（可靠）——key confirm 可能关掉后又触发世界交互
+                        api._post("/menu_close")
+                        time.sleep(0.3)
+                        tag = "✅" if ("不产" not in msg and "没有" not in msg and "没毛" not in msg) else "⭕"
+                        got.append(f"{a.get('name','?')}{tag}{msg[:10]}")
+                    elif r.get("ok"):
+                        got.append(a.get("name", "?"))
+                    time.sleep(0.3)  # 每只后多歇一会，稳（恒 2026-08-16）
                 except Exception:
                     continue
             return f"{emoji} {verb} {len(got)}/{len(animals)} 只（{'、'.join(got) if got else '无'}）"
@@ -6680,9 +6798,11 @@ def _grazing_care() -> str:
 
 @mcp.tool()
 def care_animals() -> str:
-    """🐄 摸牲畜 + 收产物（牛羊鸡鸭，不进不出，不动门）
+    """🐄 摸牲畜 + 收产物（牛羊鸡鸭，不进不出，**不动门**）
     进门摸所有牲畜 + 收取产物，然后出门；最后补一遍室外放牧牲畜（忘关门跑 Farm 上的）。
-    门由 AI 根据天气/季节决定是否开（open_doors/close_doors）。冬天、雨天不用开门放牧。
+    ⚠️ **它不开门也不关门**（"开门已包含在 care_animals 中"那句是假的，2026-10-01 撤掉）——
+       门走 `farm(ops="doors")`（别名 `放牧`/`开关门`）：**先走到棚门口再翻**，回执**逐栋报执行后的门态**。
+       （关着门也能摸：本工具自己会走进每一栋畜舍。）
     ⚠️ 宠物（猫狗）用 pet_pet；牲畜（牛羊鸡鸭）用本工具。
     """
     warp_log = _warp_home_if_needed("Farm")
@@ -6738,28 +6858,58 @@ def care_animals() -> str:
 
 @mcp.tool()
 def milk_shear() -> str:
-    """🐮🐑 挤牛奶 + 剪羊毛：进所有动物建筑，对奶牛/绵羊选对应工具逐个交互
-    游戏自动处理：有产物收集进背包，没产物弹提示（小牛小羊无奶/刚挤过）。
-    没带挤奶桶/剪刀会提示去玛妮牧场买。配合 farm animals（摸）一起用。
+    """🐮🐑 挤牛奶 + 剪羊毛（**拟人：走到动物旁边 → 面朝 → 动手**；棚内 + **室外放牧那批**）
+
+    对象：牛（`Cow`/`Brown Cow`）/山羊（`Goat`）→ **挤奶桶**；绵羊（`Sheep`）→ **剪刀**。
+    猪/鸡/鸭/兔/恐龙**不碰**。没带工具会提示去玛妮牧场买。配合 `farm(ops="animals")`（摸）一起用。
+    ⚠️ 2026-10-01：**补上"室外那半"**（恒：「没做的话就跟 pet_animals 一样做」）——
+       畜棚今天可能空着（动物全在外面放牧），原来只进棚 ⇒ 只会回一句「没有动物」、室外一只没碰。
+       现在：进完棚再按 `_grazing_care` 那套处理 `/animals` 报的室外那批；**人不在 Farm 就如实说**
+       （`/animals` 只报当前图，在那儿读会把"跑 Farm 放牧的牲畜"误判成"没有"），**不许装成没有动物**。
+    ⚠️ 站位改成**走过去**（照 `pet_walk` 的真机形状）；只有"走不到 / 动物中途挪窝"才 `/position` 兜底，
+       而且**那次兜底在报告里点名**（`⚠️ 走不到 (x,y)，position 兜底`）。
     """
     warp_log = _warp_home_if_needed("Farm")
     buildings = _find_animal_buildings()
+    report_parts = []
     if not buildings:
-        return _with_state(f"{warp_log}⚠️ 没找到动物建筑（鸡舍/畜棚）")
-    report_parts = [f"🔍 发现 {len(buildings)} 个动物建筑"]
-    for b in buildings:
-        dx, dy = b.get("doorX", b["x"]), b.get("doorY", b["y"])
-        ok, enter_log = _enter_building(b)
-        if not ok:
-            report_parts.append(f"  ❌ {b['type']} 进不去")
-            continue
-        ms = _milk_shear_animals()
-        report_parts.append(f"\n--- {b['type']} ---\n  {ms}")
-        try:
-            api.warp("Farm", dx, dy + 1)
-            time.sleep(0.5)
-        except Exception:
-            pass
+        # ⚠️ 不再 return：**棚里没有也要管室外那批**（动物全在外面时棚里本来就是空的）
+        report_parts.append("⚠️ 没找到动物建筑（鸡舍/畜棚）")
+    else:
+        report_parts.append(f"🔍 发现 {len(buildings)} 个动物建筑")
+        for b in buildings:
+            dx, dy = b.get("doorX", b["x"]), b.get("doorY", b["y"])
+            ok, enter_log = _enter_building(b)
+            if not ok:
+                report_parts.append(f"  ❌ {b['type']} 进不去")
+                continue
+            ms = _milk_shear_animals()
+            report_parts.append(f"\n--- {b['type']} ---\n  {ms}")
+            try:
+                api.warp("Farm", dx, dy + 1)
+                time.sleep(0.5)
+            except Exception:
+                pass
+
+    # 🌾 **室外放牧那批**（2026-10-01 恒）：结构照 `_grazing_care` ——
+    #    人真的在 Farm 上才读 `/animals`；不在就**明说没做**（读不着 ≠ 没有）。
+    try:
+        _cur = (api.state().get("location") or {}).get("name") or ""
+    except Exception:
+        _cur = ""
+    if not buildings and _cur != "Farm":
+        report_parts.append(f"⚠️ 室外放牧那批也没做：人还在「{_cur or '?'}」不在 Farm —— "
+                            f"`/animals` 只报**当前位置**这张图的动物，在这儿读会把"
+                            f"「跑 Farm 放牧的牲畜」误判成「没有」（要挤室外的："
+                            f"`map(ops=\"go\", kw={{\"destination\": \"Farm\"}})` 之后再 `farm(ops=\"milk\")`）")
+    elif _cur != "Farm":
+        report_parts.append(f"⚠️ 室外放牧那批没做：人还在「{_cur}」不在 Farm（`/animals` 只报当前图）"
+                            f"—— 要挤室外的：先 `map(ops=\"go\", kw={{\"destination\": \"Farm\"}})`")
+    else:
+        _out = _milk_shear_animals(skip_grabber=True)
+        # ⚠️ 人就在 Farm、读到的就是 0 ⇒ 确实没放牧牲畜 ⇒ 安静（别把"没有"说成"跳过"）
+        if _out and "没有动物" not in _out:
+            report_parts.append(f"\n--- 🌾 室外放牧那批 ---\n  {_out}")
     return _with_state(f"{warp_log}挤奶/剪毛：\n" + "\n".join(report_parts))
 
 
@@ -6783,33 +6933,237 @@ def _door_snapshot(r: dict) -> list:
     return out
 
 
-@mcp.tool()
-def close_doors() -> str:
-    """🚪 关闭所有动物建筑的门
-    晚上调用，防止野生动物袭击牲畜。
-    开门已包含在 care_animals 中。
+# 🚪 「开关门」= **一个翻转端点**（恒：「**开关不是同一个端点吗？做成同一个也没问题的，给 ai 附 result
+#    的时候附当前执行完后门的状态就行**」）。
+#
+# ⚠️ 为什么**只有一个** `doors()`、没有"保证开/保证关"的第二条实现：
+#    C# `/toggle_doors` **忽略 action**（`netBool.Value = !netBool.Value` 纯翻转，ModEntry.cs:17770-17802）
+#    ⇒ 任何"关门()"其实都只是"翻一下"；名字里带方向却翻成反面 = **谎报**
+#    （2026-09-16 真机栽过：`farm doors` 真把门翻了，Python 那边却报"没有动物建筑"）。
+#    ⇒ **方向是"意图"，只在单子那一层用**（早上「放牧（开棚门）」/ 晚上「关棚门」，见 intent_menu）；
+#      这一层只有 `doors()`：**走位 → 翻一次 → 回读 → 逐栋报执行后的状态**。
+#
+# ⚠️ 拟人：翻之前**先走到那栋棚的门口**（`/farm_buildings` 的 `doorX/doorY`，站在门下方那格 + 面朝门），
+#    走位那行**如实进回执**；没走到就明说"门是遥控翻的、人还在半路"，不许装成走到了。
+# ⏳ C# 待办（**这版不做** —— C# 要攒批次，不能为零一条让恒重启游戏）：
+#    · `/farm_buildings` 现在只给**人类门** `doorX/doorY`，**没有** `building.animalDoor` 的偏移
+#      ⇒ "走到动物小门前手动开门"这个更拟人的做法做不了（只能站人类门口翻）。
+#      补 `animalDoorX/Y` 之后把 `_walk_to_animal_door()` 换成小门那格即可。
+#    · **门态没有只读口**：`/toggle_doors` 是翻转端点，想读就等于翻一下 ⇒ 现在**谁都不敢说"门是开的"**
+#      （状态条那两句提醒、单子那两行都只写"该放牧了/该关门了"）。补一个只读 `animalDoorOpen` 端点，
+#      这两处才能说实话。
+_DOOR_WALK_TIMEOUT = 15
+# 「想反着来再敲一次」这句两句共用 —— **别顺手加"记得 farm animals 摸一遍"**：
+# 恒原话「**关着门也可以 animals 摸一遍**，我记得是自动跨建筑摸的。不建议加这一句」（`care_animals`
+# 自己会走进每一栋畜舍摸），所以门这条回执**只报门状态 + 反着来敲哪一下**。
+_DOORS_NEXT = ("下一步：想**反着来**就再敲一次 `farm(ops=\"doors\")`"
+               "（它是**翻转**端点：敲一次变一次，回执会再报一遍执行后的门态）")
+
+
+def _walk_to_animal_door() -> tuple:
+    """先走到**最近那栋**动物建筑的门口 → `(那栋的名字, 走位那行)`。
+
+    ⚠️ 走不到**不抛也不装**：回的那行会明说"门是遥控翻的，人还在半路"（回执如实带出去）。
+    ⚠️ 方向 0 = 面朝北（SDV：0上/1右/2下/3左）—— 站在门下方那格正对门，这是"人在门口"的样子。
+    """
+    try:
+        bs = _find_animal_buildings()
+    except Exception as e:
+        return "", f"⚠️ 读不到动物建筑（{type(e).__name__}: {e}）"
+    if not bs:
+        return "", "⚠️ 没读到动物建筑（`/farm_buildings` 空）"
+    try:
+        s = api.state()
+        px = int((s.get("player") or {}).get("x") or 0)
+        py = int((s.get("player") or {}).get("y") or 0)
+    except Exception:
+        px = py = 0
+    b = min(bs, key=lambda x: abs(int(x.get("doorX", x["x"])) - px)
+            + abs(int(x.get("doorY", x["y"])) - py))
+    name = b.get("type") or "?"
+    dx, dy = b.get("doorX", b["x"]), b.get("doorY", b["y"])
+    try:
+        ok, note = _walk_and_wait("Farm", dx, dy + 1, timeout=_DOOR_WALK_TIMEOUT)
+    except Exception as e:
+        return name, (f"⚠️ 走位出错（{type(e).__name__}: {e}）"
+                      f"—— 门是**遥控翻的**，人还在半路，别以为站到门口了")
+    if not ok:
+        return name, (f"⚠️ 没走到「{name}」门口（{note}）"
+                      f"—— 门是**遥控翻的**，人还在半路，别以为站到门口了")
+    try:
+        api.face(0)                      # 面朝北 = 正对那扇门
+    except Exception:
+        pass
+    return name, f"🚶 已走到「{name}」门口 ({dx},{dy + 1})，面朝门"
+
+
+def _doors_flip_once() -> dict:
+    """翻一次 `/toggle_doors` 并回读 → `{"ok","error","snap":[(名, True/False/None)],"doors":{名:态}}`。
+
+    ⚠️ `snap` 是**有序列表**（同名两栋也不许并成一条）；`doors` 那份字典只给"要按目标态判断"的
+       调用方（单子那两行的 exec）用。
     """
     try:
         r = api.close_doors()
-        if not r.get("ok"):
-            return _with_state(f"❌ {r.get('error', '关门失败')}")
-        state = _door_snapshot(r)
-        if not state:
-            return _with_state("⚠️ 没有动物建筑")
-        # ⚠️ C# `/toggle_doors` **忽略 action 参数**，实现是 `netBool.Value = !netBool.Value`
-        #    纯翻转 ⇒ 「关门」不是关门。这里翻完自检：还有开着的就再翻一次，收敛到全关。
-        #    （代价：一次调用最多两次 /toggle_doors；正常情况一次就收敛。）
-        if any(open_ is True for _, open_ in state):
-            state = _door_snapshot(api.close_doors())
-        closed = [n for n, o in state if o is False]
-        unknown = [n for n, o in state if o is None]
-        detail = "、".join(closed + unknown)
-        msg = f"🚪 已关闭 {len(closed)} 扇门" + (f"：{detail}" if detail else "")
-        if unknown:
-            msg += f"（{len(unknown)} 个未确认）"
-        return _with_state(msg)
     except Exception as e:
-        return _with_state(f"❌ {e}")
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    if not r.get("ok"):
+        return {"ok": False, "error": str(r.get("error") or "开关门失败")}
+    snap = _door_snapshot(r)
+    doors = {}
+    for n, o in snap:
+        doors[n] = o
+    return {"ok": True, "snap": snap, "doors": doors, "toggled": r.get("toggled")}
+
+
+def _doors_state_text(flip: dict) -> str:
+    """逐栋点名**执行后**的门态：`🚪 门现在是：Deluxe Coop 开 · Deluxe Barn 关（1 个未确认）`。
+
+    ⚠️ 读不到状态的那栋**如实标未确认**（`_door_snapshot` 给 `None`），**不许猜**。
+    """
+    snap = flip.get("snap") or []
+    if not snap:
+        return "⚠️ 没有动物建筑"
+    parts, unk = [], 0
+    for n, o in snap:
+        if o is True:
+            parts.append(f"{n} 开")
+        elif o is False:
+            parts.append(f"{n} 关")
+        else:
+            parts.append(f"{n} **未确认**")
+            unk += 1
+    txt = "🚪 门现在是：" + " · ".join(parts)
+    if unk:
+        txt += f"（{unk} 个未确认）"
+    return txt
+
+
+def _doors_text(flip: dict, walk: str = "") -> str:
+    """回执正文（走位那行在前、门态在后）—— `doors()` 与单子那条 op **共用这一份**。"""
+    return ((walk + "\n") if walk else "") + _doors_state_text(flip) + "\n" + _DOORS_NEXT
+
+
+@mcp.tool()
+def doors() -> str:
+    """🚪 开关畜棚/鸡舍的门（**一个翻转 op**：走位 → 翻一次 → 回读 → 逐栋报执行后的门态）
+
+    ⚠️ 它**不是**"开门"也不是"关门"：C# `/toggle_doors` 忽略 action、纯翻转 ⇒ 敲一次把每扇门
+       翻到反面。回执**逐栋点名执行后的状态**，要哪个方向自己看回执再决定敲不敲第二下。
+    ⚠️ 翻之前**先走到最近那栋棚的门口**（拟人；走位那行如实进回执，没走到会明说"遥控翻的，人还在半路"）。
+    ⏳ C# 待办：`/farm_buildings` 只有**人类门** `doorX/doorY`，没有 `building.animalDoor`
+       ⇒ 现在只能站人类门口翻；也没有**只读**门态端点（读了等于翻一下）。
+    💡 放牧（早上开）与关棚门（晚上）在**单子**上是**两行**（`intent`），各自带目标态与最多一次收敛；
+       状态条在早上/晚上也各有一句提醒（都**不声称门现在是开是关**）。
+    """
+    _n, walk = _walk_to_animal_door()
+    flip = _doors_flip_once()
+    if not flip.get("ok"):
+        return _with_state(f"{walk}\n❌ {flip.get('error')}" if walk
+                           else f"❌ {flip.get('error')}")
+    return _with_state(_doors_text(flip, walk))
+
+
+# ⚠️ **一份实现的别名**（恒：`close_doors` 还被别处引用就当同一个函数的别名）。
+#    它**不是**"保证关"那条路：名字里的方向在这儿只是历史包袱，行为就是 `doors()`。
+close_doors = doors
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 🚪🐄 门的**农场待办**两句（恒：「在非雨天的早晨且有畜牧建筑时，跟其他农场待办注入一样
+#    每天第一次播报，后续隐藏+放在待办单。19 点之后第一次进入农场或者正位于农场，注入提醒给动物关门」）
+# ═══════════════════════════════════════════════════════════════════════
+# ⚠️⚠️ 两句都**不许声称门现在是开还是关**：门态**没有只读口**（`/toggle_doors` 是翻转端点，
+#    "读一下"就等于翻一下）⇒ 只能写"该放牧了/该关门了 + 敲哪个 op"，并说明**回执会报执行后的门态**。
+#    想说实话得等 C# 补一个只读的 `animalDoorOpen`（记在 C# 批次待办里，这版不做）。
+#
+# 形状照抄现成两处（**别自创一套**）：
+#   · 早晨那句挂在 `_build_state_strip` 的 `if morning:`（= 每天第一次工具调用）⇒ 天然"报一次就隐藏"；
+#   · 晚上那句照 `_TRAVEL_CART_KEY` + `_traveling_cart_hint` 那套「**一天一条**」去重，
+#     放在状态条**每次都跑**的那一区（跟动物/机器那类待办并列）。
+_DOOR_MORNING_CLOSE_H = 12      # 早晨那句只在这个点之前给（午后就不是"早晨"了）
+_DOOR_EVENING_H = 19            # 晚上那句 ≥19:00 才给（恒："19 点之后…提醒给动物关门"）
+_DOOR_CLOSE_KEY = {"last": None}   # 🚪 晚上关门提醒去重（一天一条；空档日/雨天照报）
+
+
+def _farm_animal_building_count() -> int:
+    """本档**动物建筑个数**（`/farm_buildings` 里 `type` 含 `Coop`/`Barn` 的）。
+
+    ⚠️ 连"有没有"都读不到时回 **-1**（= 不知道）——调用方据此**闭嘴**：
+       宁可不提这一句，也别在"读不到"时劝 AI 去开一个可能不存在的棚门。
+    """
+    try:
+        fb = api._ai_get("/farm_buildings") or {}
+    except Exception:
+        return -1
+    bs = fb.get("buildings")
+    if not isinstance(bs, list):
+        return -1
+    return sum(1 for b in bs
+               if "Coop" in str((b or {}).get("type") or "")
+               or "Barn" in str((b or {}).get("type") or ""))
+
+
+def _door_weather_state() -> tuple:
+    """`(钟点 int 或 None, 是否雨天, 是否冬天)` —— 全从 `/state.time` 那份**字典**读。
+
+    ⚠️ 键名照状态条那一份（`weather_texts`/`season_icons` 读的就是 `weather`/`season`）；
+       读不到就当 `None/None/None`（调用方闭嘴，不拿默认值兜底）。
+    """
+    try:
+        t = (api._ai_get("/state") or {}).get("time") or {}
+        tod = int(t.get("timeOfDay"))
+    except Exception:
+        return None, None, None
+    if not isinstance(t, dict):
+        return None, None, None
+    season = str(t.get("season") or "").lower()
+    try:
+        w = int(t.get("weather"))
+    except (TypeError, ValueError):
+        return tod, None, None
+    # 雨(1)/雷暴(2)/绿雨(7) 都算"动物不出去吃草"的天（码表同状态条 `weather_texts`）
+    return tod, (w in (1, 2, 7)), (season == "winter" if season else None)
+
+
+def _doors_morning_hint() -> str:
+    """🌅 早晨那句（每天第一次）：非雨天 + 非冬天 + 有畜牧建筑 + 钟点 < 12:00。否则空串。"""
+    tod, rain, winter = _door_weather_state()
+    if tod is None or rain is None or winter is None:
+        return ""
+    if rain or winter or tod >= _DOOR_MORNING_CLOSE_H * 100:
+        return ""
+    n = _farm_animal_building_count()
+    if n <= 0:
+        return ""          # `0` = 没建筑；`-1` = 读不到 —— 两种都不提（宁可不给，不编）
+    return ("🐄 今天能放牧：**去把棚门开了**，动物才会出去吃草 —— `farm(ops=\"doors\")`"
+            "（站到棚门口翻一下；**回执会报执行后每栋的门态**）")
+
+
+def _doors_evening_hint(loc_name: str) -> str:
+    """🌙 晚上那句（一天一条）：≥19:00 且**人在 Farm**（进农场那一次也算）⇒ 提醒关门。
+
+    ⚠️ **雨夜照报**（雨天不开门 ≠ 不用关门）；没有动物建筑 / 读不到就**不提**。
+    ⚠️ 去重照 `_TRAVEL_CART_KEY`（一天一条，换天复位）；`loc_name != "Farm"` 时**不消费**这一天的名额
+       —— 否则"19 点人在矿里"会把当天那句白白吃掉，等他回农场就不提醒了。
+    """
+    if loc_name != "Farm":
+        return ""
+    tod, _rain, _winter = _door_weather_state()
+    if tod is None or tod < _DOOR_EVENING_H * 100:
+        return ""
+    if _farm_animal_building_count() <= 0:
+        return ""
+    try:
+        key = api.day_key()
+    except Exception:
+        key = None
+    if key is not None and _DOOR_CLOSE_KEY["last"] == key:
+        return ""
+    if key is not None:
+        _DOOR_CLOSE_KEY["last"] = key
+    return ("🌙 天黑了：**去把棚门关了**（防野生动物袭击牲畜）—— `farm(ops=\"doors\")`"
+            "（站到棚门口翻一下；**回执会报执行后每栋的门态**）")
 
 
 # ═══════════════════════════════════════════
@@ -10203,7 +10557,7 @@ def bundle_kb(query: str = "") -> str:
 
 @mcp.tool()
 def farm(ops: str = "", kw: dict | None = None) -> str:
-    """🌾 农活域（农场/温室/姜岛）。till 锄地 / plant 种(可带 layout 按洒水器布局) / water 浇地 / harvest 收 / fertilize 施化肥 / clear 清杂草石头树桩(**在哪就在哪清**，不必先回农场) / load 收放机器(拟人走过去逐台；`item` 留空=只收不放) / chop 砍树。动物：animals 摸+收 / 喂水 宠物碗 / milk 挤奶剪毛 / **买动物**(会先走到玛妮柜台再下单，柜台 9:00~18:00 才开)。全 ops → help(farm)。⚠️带尺寸 op(till/plant/clear/fertilize)：**x/y 必填**（不传直接报错，不再兜底成"玩家面向格"）；rows×length 缺省只做 1 格，要多大自己传。animal water 用 喂水，water=浇地。💡**多 op 一次调用共用一份 kw**（如 ops="till plant"），各自只吃自己认识的参数、属于别人的会**点名忽略**。⛔ 2026-10-01 退役两个：`collect`（一键瞬收、不走路）与 `building`（fruit_round 那套会提前收工）——**收放只剩 `load` 这一条**。"""
+    """🌾 农活域（农场/温室/姜岛）。till 锄地 / plant 种(可带 layout 按洒水器布局) / water 浇地 / harvest 收 / fertilize 施化肥 / clear 清杂草石头树桩(**在哪就在哪清**，不必先回农场) / load 收放机器(拟人走过去逐台；`item` 留空=只收不放) / chop 砍树。动物：animals 摸+收 / 喂水 宠物碗 / milk 挤奶剪毛 / **doors 开关畜棚鸡舍门**（别名 放牧/开关门/棚门；**翻转端点**——先走到棚门口再翻，回执**逐栋报执行后的门态**，要反着来再敲一次）/ **买动物**(会先走到玛妮柜台再下单，柜台 9:00~18:00 才开)。全 ops → help(farm)。⚠️带尺寸 op(till/plant/clear/fertilize)：**x/y 必填**（不传直接报错，不再兜底成"玩家面向格"）；rows×length 缺省只做 1 格，要多大自己传。animal water 用 喂水，water=浇地。💡**多 op 一次调用共用一份 kw**（如 ops="till plant"），各自只吃自己认识的参数、属于别人的会**点名忽略**。⛔ 2026-10-01 退役两个：`collect`（一键瞬收、不走路）与 `building`（fruit_round 那套会提前收工）——**收放只剩 `load` 这一条**。"""
     op_list = [o for o in re.split(r"[\s,，]+", (ops or "").strip()) if o]
     if not op_list:
         return _with_state("❌ ops 为空（如 farm(ops=\"till plant water\")）")
@@ -10270,8 +10624,14 @@ def farm(ops: str = "", kw: dict | None = None) -> str:
         "喂水": pet_water, "碗": pet_water, "宠物碗": pet_water,
         "milk": milk_shear, "挤奶": milk_shear, "剪毛": milk_shear, "shear": milk_shear,
         "buy": buy_animal, "买动物": buy_animal, "买": buy_animal,
-        "doors": close_doors, "关门": close_doors,
-        "petwalk": pet_walk, "遛": pet_walk, "放牧": pet_walk,
+        # 🚪 门（2026-10-01 恒：「开关不是同一个端点吗？做成同一个也没问题的」）：
+        #    **一个翻转 op**。`doors`/`放牧`/`开关门`/`棚门` 全指它。
+        #    ⚠️ **不再有** `开门`/`关门`/`开棚门`/`关棚门` 这种**带方向**的别名 ——
+        #       翻转端点不保证方向，名字叫「关门」却把门开了就是谎报（2026-09-16 真机栽过）。
+        #       方向是**意图**，只在单子那一层用（早上「放牧（开棚门）」/ 晚上「关棚门」）。
+        "doors": doors, "放牧": doors, "开关门": doors, "棚门": doors,
+        # 🐾 `petwalk`/`遛` 还是"拟人摸"（把 `放牧` 摘走之后，它只管摸）。
+        "petwalk": pet_walk, "遛": pet_walk,
         "hay": feed_hay, "干草": feed_hay, "加草": feed_hay,
         "statue": blessing_statue, "祈福": blessing_statue,
     }
@@ -15586,9 +15946,9 @@ _SETTINGS_DISPATCH = {
 
 # 📖 详细域指引（2026-08-22：docstring 精简后，深度/坑靠 help 查，不丢细节）
 _DOMAIN_GUIDES = {
-"intent": "🎯 意图选项单（**先看单子、再敲编号**）：`intent(ops=\"show\")` 看这一刻能做的事（一行一件，`←` 后面是理由）；`intent(ops=\"do\", kw={\"code\":\"1\"})` 敲第 1 行；`intent(ops=\"at\", kw={\"x\":12,\"y\":30})` 指哪打哪（逃生口，问「这一格能做什么」）。敲法：`1` 一行 · `1,4` **多选**（选哪些，顺序无所谓）· `1=2,4=7` **各多少**（号=数量，配对，顺序也无所谓）· `0` = 这些都不是（子层里 = 返回上一层）。⚠️**目录行句尾带 `…`**（点开还有下一层，顶层只报个数不发号）；**号是当场发的、不跨屏** —— 敲之前先 `show` 看一眼当前那一屏，别记着上一屏的号去敲。⚠️单子上**出现的那条，按了就成**；没出现 = 这一刻算不出来（不是「不行」）。覆盖：收机器 / 开箱子（取·存）/ **箱子里…**（容器界面**开着**时，箱内容**直接摊成一行行「取」**——那儿有格号，同名不同星的两摞也点得准；不用再 `menu read` 自己解析）/ **存…**（同一个界面里往这只箱子放东西：跟箱子**关着**时同一套「选哪几样 → 各多少」；放进去屏幕上是**当场看得见**的）/ 吃 / 看书（**背包里没拿手上的也算**）/ 捡 / 收作物 / 坐·**起身** / 搬家具 / 摸动物 / 摸猫狗 / **穿戴（穿·脱）** / **买·卖**（只在商店 menu 开着时才出现）/ **推进对话**（有对话框或剧情在播时）/ **确认结算**（过夜结算屏 ShippingMenu）/ **投出货箱**（站在农场 + 背包里有投得进去的）/ **关掉界面**（任何界面开着时的出口）。⚠️**要规划的那些农活不在单子上**（锄地/播种/施肥/清场/砍树）—— 它们得按矩形/布局算落点、还要挑蓄力站位，走 `farm` 域（`farm ops=till, kw={x1,y1,x2,y2,layout}` 这种），**单子上一格一格敲比它慢得多、还更费体力**。挖蚯蚓/远古斑点走 `scene ops=spot`（一次全挖）。⚠️**买**是两层（选哪几样 → 各多少）；**卖**只有一层（选哪几摞 → 敲了就卖，**整摞走**——游戏单击就是卖整摞，别试 `1=2` 那种写法，那一层不收数量）。",
+"intent": "🎯 意图选项单（**先看单子、再敲编号**）：`intent(ops=\"show\")` 看这一刻能做的事（一行一件，`←` 后面是理由）；`intent(ops=\"do\", kw={\"code\":\"1\"})` 敲第 1 行；`intent(ops=\"at\", kw={\"x\":12,\"y\":30})` 指哪打哪（逃生口，问「这一格能做什么」）。敲法：`1` 一行 · `1,4` **多选**（选哪些，顺序无所谓）· `1=2,4=7` **各多少**（号=数量，配对，顺序也无所谓）· `0` = 这些都不是（子层里 = 返回上一层）。⚠️**目录行句尾带 `…`**（点开还有下一层，顶层只报个数不发号）；**号是当场发的、不跨屏** —— 敲之前先 `show` 看一眼当前那一屏，别记着上一屏的号去敲。⚠️单子上**出现的那条，按了就成**；没出现 = 这一刻算不出来（不是「不行」）。覆盖：收机器 / 开箱子（取·存）/ **箱子里…**（容器界面**开着**时，箱内容**直接摊成一行行「取」**——那儿有格号，同名不同星的两摞也点得准；不用再 `menu read` 自己解析）/ **存…**（同一个界面里往这只箱子放东西：跟箱子**关着**时同一套「选哪几样 → 各多少」；放进去屏幕上是**当场看得见**的）/ 吃 / 看书（**背包里没拿手上的也算**）/ 捡 / 收作物 / 坐·**起身** / 搬家具 / 摸动物 / 摸猫狗 / **放牧（开棚门）**（早上 06:00–15:00 且不下雨/非冬天，站在农场上时）/ **关棚门**（≥17:00 或 <06:00，同条件） / **穿戴（穿·脱）** / **买·卖**（只在商店 menu 开着时才出现）/ **推进对话**（有对话框或剧情在播时）/ **确认结算**（过夜结算屏 ShippingMenu）/ **投出货箱**（站在农场 + 背包里有投得进去的）/ **关掉界面**（任何界面开着时的出口）。⚠️**要规划的那些农活不在单子上**（锄地/播种/施肥/清场/砍树）—— 它们得按矩形/布局算落点、还要挑蓄力站位，走 `farm` 域（`farm ops=till, kw={x1,y1,x2,y2,layout}` 这种），**单子上一格一格敲比它慢得多、还更费体力**。挖蚯蚓/远古斑点走 `scene ops=spot`（一次全挖）。⚠️**买**是两层（选哪几样 → 各多少）；**卖**只有一层（选哪几摞 → 敲了就卖，**整摞走**——游戏单击就是卖整摞，别试 `1=2` 那种写法，那一层不收数量）。",
 "check": "查询域，what=...：status(完整状态) backpack(逐格价值/星级) worn(穿戴) machines(全场机器清单) mine(下矿进度) silo(干草) mastery(精通) buildings(木匠建筑) quest(开任务日志) chests(当前图箱) storage(箱子网络) look(环视周围) profile(我的技能等级+职业分支,如是否 Luremaster 蟹笼免饵) role(端口↔角色确认:我是谁/恒是谁)。⚠️查概览用 status，查逐格用 backpack，别都调浪费 token。📌profile/role 一律走 check（不叫 profile()/which_role()）。📐这个域的参数叫 **what**，**不是 ops**。带参的只有两个: chests(chest=N 看第N个箱) / look(radius=10 环视半径)；其余(status/backpack/worn/machines/mine/silo/mastery/buildings/quest/storage/profile/role)**全无参**。⚠️查概览用 status、查逐格用 backpack，别都调一遍浪费 token。",
-"farm": "农活域(🌱必走，别手动挥工具组合，用域 ops)：till(锄地) plant(种,跳过已种;带 layout 就按洒水器布局种) water(浇,自动跳雨+水壶没水先装满) harvest(收) scythe(镰刀收蒜/花/茶) fertilize(化肥) clear(清杂草石树桩;坐标同 till，也可 `radius=N` 走**圆形**；**会自动往外多清 2 格**——田边的杂草会长进田里把作物顶掉，不用自己放大) plot(连通域规划) plan(方形规划,纯算格) chop(砍树)。⚠️**锄地/播种各只有一个实现**：锄地=`till`（`hoe`/`布局锄`/`tillfield`/`蓄力锄` 都是它的别名）、播种=`plant`（`sow`/`plantlayout`/`播种规划` 都是它的别名）；⛔ 没有 `till_plant`——要锄+种写 `ops=\"till plant\"`。 clearground(清单格) load(收放机器:**拟人走过去逐台**、收放一条过;`item` 留空=只收不放) break(拆/敲同scene,镐子敲可破物/翻已耕地) place(放置/播种同scene) pond/pond_add/pond_feed/pond_collect/pond_fish(鱼塘)。⚠️漏格DLL自动补；**缺的格会被点名「被什么挡着」**（🌿草/杂草/🪨石头/🪵树枝→**先 `clear` 清一遍再 till/plant**；🏗️洒水器/箱子等设施→⛔别清、那是规划该绕开的格）——草占着地格时锄头是锄不出 HoeDirt 的，别对着「缺失N格」发呆。只在 Farm/温室/姜岛。带参 op(plant 的 seed_name、till/clear 的 x/y/rows、fertilize 的 fertilizer_name、place 的 name、load 的 item/machine_type/here、pond_add 的 item)→ kw={'参数名':值}。🐄动物: animals(摸+收) 喂水/碗(宠物水,🌧️雨天自动跳过——雨会把碗填满) milk(挤奶剪毛) buy(买动物,豁免建议) doors(关门) hay(干草) pet(猫狗) petwalk(拟人摸) 畜舍/这间(这间屋动物) statue(祈福)——⚠️farm water=浇地,动物水用 喂水; farm load=机器收放,这屋动物用 畜舍。📐参数键名: till/clear/plant/fertilize 都是 x,y(**必填**),rows,length,direction（till/plant 也可用 x1,y1,x2,y2 直接给矩形两角）；plant 另有 seed_name,layout,direct,trellis；harvest/scythe=radius；plot=x,y,radius,all_plots；chop=area(**值写几个数**：4 个数=矩形两角 / 3 个数=圆心+半径，逗号空格都认)；collect=machine_type,location；load=item,machine_type,location,here；place=name,x,y；break=x,y,steps,radius；pond_add=item+x,y（pond_feed/collect/fish 只要 x,y）；buy=animal_type,name,building；petwalk=include_petted；hay=dry_run。⚠️direction 只认 horizontal(默认)/vertical 两个值,别写'横'/'竖'。💡大田洒水器布局(可选,纯自动化建议)：要按洒水器留格/留走道就 plan→till→plant 三件套——plan(x1,y1,x2,y2,layout=0,hoe_level=-1,trellis=False) **纯算格不动机器**先看要锄/种哪些; till(x1,y1,x2,y2,layout=0) 按布局锄; plant(x1,y1,x2,y2,seed_name,**layout**) 按布局种（layout=0 整块/1 初级十字/2 高级/3 铱；direct=True 瞬移快、默认走位拟人）。想一次说完就 `ops=\"till plant\"`（**一份 kw 共用**，锄地会自动点名忽略 seed_name）。**layout 四档**: 0=标准整块(不预留洒水器,锄法蛇形逐格走位,任何锄头等级都行) 1=初级(十字稀疏,每台覆盖上下左右4格;锄法=精确锄每台4格,**与锄头等级无关**) 2=高级(优质,田宽高先裁成**3的倍数**,每3×3中心1台覆盖8格,整块蓄力锄) 3=铱(裁成**5的倍数**,每5×5中心1台覆盖24格;⚠️爬架作物不适用)。hoe_level: 0→1格 1→3线 2→5线 3→3×3 4→6×3,-1=自动读手持。trellis=True=爬架作物(啤酒花/青豆/葡萄,不可通过格)⇒自动**种2留1**留走道让AI能进田浇收。只管种不摆洒水器就直接 plant,不用 plan 那套。⚠️已知限制: layout 0/2/3 碰上金/铱锄(hoe_level>=3)会报**0处锄地站位**并自打一行'落点未实测校准,暂不规划蓄力站位'——**那是刻意不猜不是出错**; layout 1 不吃蓄力站位不受影响。",
+"farm": "农活域(🌱必走，别手动挥工具组合，用域 ops)：till(锄地) plant(种,跳过已种;带 layout 就按洒水器布局种) water(浇,自动跳雨+水壶没水先装满) harvest(收) scythe(镰刀收蒜/花/茶) fertilize(化肥) clear(清杂草石树桩;坐标同 till，也可 `radius=N` 走**圆形**；**会自动往外多清 2 格**——田边的杂草会长进田里把作物顶掉，不用自己放大) plot(连通域规划) plan(方形规划,纯算格) chop(砍树)。⚠️**锄地/播种各只有一个实现**：锄地=`till`（`hoe`/`布局锄`/`tillfield`/`蓄力锄` 都是它的别名）、播种=`plant`（`sow`/`plantlayout`/`播种规划` 都是它的别名）；⛔ 没有 `till_plant`——要锄+种写 `ops=\"till plant\"`。 clearground(清单格) load(收放机器:**拟人走过去逐台**、收放一条过;`item` 留空=只收不放) break(拆/敲同scene,镐子敲可破物/翻已耕地) place(放置/播种同scene) pond/pond_add/pond_feed/pond_collect/pond_fish(鱼塘)。⚠️漏格DLL自动补；**缺的格会被点名「被什么挡着」**（🌿草/杂草/🪨石头/🪵树枝→**先 `clear` 清一遍再 till/plant**；🏗️洒水器/箱子等设施→⛔别清、那是规划该绕开的格）——草占着地格时锄头是锄不出 HoeDirt 的，别对着「缺失N格」发呆。只在 Farm/温室/姜岛。带参 op(plant 的 seed_name、till/clear 的 x/y/rows、fertilize 的 fertilizer_name、place 的 name、load 的 item/machine_type/here、pond_add 的 item)→ kw={'参数名':值}。🐄动物: animals(摸+收) 喂水/碗(宠物水,🌧️雨天自动跳过——雨会把碗填满) milk(挤奶剪毛) doors(开关畜棚鸡舍门,别名 放牧/开关门/棚门——**翻转端点**:先走到棚门口再翻,回执逐栋报执行后的门态,要反着来再敲一次) buy(买动物,豁免建议) hay(干草) pet(猫狗) petwalk(拟人摸) 畜舍/这间(这间屋动物) statue(祈福)——⚠️farm water=浇地,动物水用 喂水; farm load=机器收放,这屋动物用 畜舍。📐参数键名: till/clear/plant/fertilize 都是 x,y(**必填**),rows,length,direction（till/plant 也可用 x1,y1,x2,y2 直接给矩形两角）；plant 另有 seed_name,layout,direct,trellis；harvest/scythe=radius；plot=x,y,radius,all_plots；chop=area(**值写几个数**：4 个数=矩形两角 / 3 个数=圆心+半径，逗号空格都认)；collect=machine_type,location；load=item,machine_type,location,here；place=name,x,y；break=x,y,steps,radius；pond_add=item+x,y（pond_feed/collect/fish 只要 x,y）；buy=animal_type,name,building；petwalk=include_petted；hay=dry_run。⚠️direction 只认 horizontal(默认)/vertical 两个值,别写'横'/'竖'。💡大田洒水器布局(可选,纯自动化建议)：要按洒水器留格/留走道就 plan→till→plant 三件套——plan(x1,y1,x2,y2,layout=0,hoe_level=-1,trellis=False) **纯算格不动机器**先看要锄/种哪些; till(x1,y1,x2,y2,layout=0) 按布局锄; plant(x1,y1,x2,y2,seed_name,**layout**) 按布局种（layout=0 整块/1 初级十字/2 高级/3 铱；direct=True 瞬移快、默认走位拟人）。想一次说完就 `ops=\"till plant\"`（**一份 kw 共用**，锄地会自动点名忽略 seed_name）。**layout 四档**: 0=标准整块(不预留洒水器,锄法蛇形逐格走位,任何锄头等级都行) 1=初级(十字稀疏,每台覆盖上下左右4格;锄法=精确锄每台4格,**与锄头等级无关**) 2=高级(优质,田宽高先裁成**3的倍数**,每3×3中心1台覆盖8格,整块蓄力锄) 3=铱(裁成**5的倍数**,每5×5中心1台覆盖24格;⚠️爬架作物不适用)。hoe_level: 0→1格 1→3线 2→5线 3→3×3 4→6×3,-1=自动读手持。trellis=True=爬架作物(啤酒花/青豆/葡萄,不可通过格)⇒自动**种2留1**留走道让AI能进田浇收。只管种不摆洒水器就直接 plant,不用 plan 那套。⚠️已知限制: layout 0/2/3 碰上金/铱锄(hoe_level>=3)会报**0处锄地站位**并自打一行'落点未实测校准,暂不规划蓄力站位'——**那是刻意不猜不是出错**; layout 1 不吃蓄力站位不受影响。",
 "mine": "下矿域(⚒️ 矿井/头骨/火山)：go(去挖矿:mode=rush冲层/farm刷矿,start起始层,target目标层,ore,cycles圈数) progress(进度) bomb_status/bomb_plan/bomb_place/bomb_collect/bomb_ladder/bomb_retreat(单步炸,**都要 bomb_ 前缀**) bomb_mine(自动) bomb_volcano(火山) organize(整理背包)。🔁**刷矿=mode=go(mode=farm)**：定点刷指定矿→ore=Copper铜(21层)/Iron铁(41层)/Gold金(71层)；**煤靠 farm 铁层(41)顺手清尘埃精灵/蝙蝠掉**（不是 ore 选项，跑 auto 内部刷）。🏃下矿=mode=go(mode=rush,start可选≤电梯上限+5倍数,target默认120)。⚠️无镐/血低硬拦；梯子 /ladder+confirm。⚔️贴身(3×3)自卫=游戏自己每 tick 挥刀(go/bomb_mine/bomb_escort/bomb_volcano 四个脚本都自开自关,**只转向不移动**;手上是锤子且冷却好了会重砸6×6)；2格外的怪仍靠脚本扫描,别站桩。🍽️**自定义吃食**：go/bomb_mine/bomb_volcano 都可传 food_hp/food_sta=**逗号分隔、靠前的先吃**(如 food_hp=「奶酪,鱼肉卷」)。血低只看 food_hp、体力低只看 food_sta(**两张表分开别混**)。点名后就只在这几样里挑——**防止自动挑把你留着卖的吃了**(山羊奶酪最典型)；整串都没货会明确报一句再退回自动挑。⚠️bomb_mine 没炸弹+host在同矿井→自动转【内部】协同(跟随host+帮忙敲矿/打怪)不撤退出矿(bomb_escort 不对外暴露、AI 不主动启用)；bomb_retreat 结束协同+停脚本+脱离矿井回门口。⚠️接「深处的危险」重置电梯→起始层动态从1起(内置脚本自动读，不暴露工具)；刷矿目标层不可直达会上报，需先冲层带回或改浅层。📐带参速查: go(mode=rush冲层/farm刷矿, start起始层, target目标层, ore=Copper铜/Iron铁/Gold金, cycles圈数, hp_threshold, food_sta, food_hp, resume) bomb_plan(radius,min_covered,top) bomb_place(x,y **必填**) bomb_collect(max_items) bomb_mine(target,bomb,min_covered,follow_host,lead,autodrop,one_floor,food_hp,food_sta) bomb_volcano(bomb,min_covered,hp_threshold,max_minutes,poll,food_hp,food_sta) organize(disable,reset)。💣bomb 三个取值 'Cherry Bomb'樱桃/'Bomb'黑/'Mega Bomb'超级——**点名的包里没有就按 黑>超级>樱桃 自动换成有的**(不会误报没炸弹)；范围 樱桃=边长7十字 / 黑=11x11方块 / 超级=15x15方块，⚠️黑和超级**会炸伤自己**(实测黑掉3血)。⚠️bomb_volcano **要求 host 已在矿/火山里**才放行(火山瓦片没法程序化换层)。⚠️bomb_mine one_floor=True=逐层模式(同步,只跑一层出摘要,不撤退)；**默认冲层模式=异步后台跑,推荐**。💡出发前占位物：提前放1个可堆叠物(铱矿/铱锭/五彩碎片)在包，满包时同种战利品自动堆叠吸附、少触发满包停；别拿银河之魂这类带死亡会丢的稀有物当占位。",
 # 🏠 2026-10-01：`"cabin"` 这条**删掉了** —— 整个域撤出顶层（恒：能收就收）。
 #    它每个 op 的新家：cook→**daily**（做饭是吃的上游）· sleep→daily · statue→farm ·
@@ -15721,7 +16081,11 @@ _INTENT_INDEX = [
     ("挤奶,剪羊毛,剃毛", "farm", "milk", "手上要拿对工具"),
     ("买动物,买鸡,买牛", "farm", "buy", "会先走到玛妮柜台再下单，柜台 9:00~18:00 才开"),
     ("干草,喂草料,喂牲口", "farm", "hay", "料仓没干草会报"),
-    ("关牲口门,关棚门", "farm", "doors", "晚上关可防动物丢"),
+    ("放牧,开关门,开关棚门,开牲口门,把动物放出去", "farm", "放牧",
+     "**一个翻转 op**（`farm doors` 也是它）：先走到棚门口再翻，回执**逐栋报执行后的门态**；"
+     "非雨天早晨用（冬天/雨天动物不出去吃草）"),
+    ("关牲口门,棚门,畜棚门", "farm", "doors",
+     "同一个翻转 op；**要反着来就再敲一次**（敲一次变一次）"),
 
     # ⛏️ 矿
     ("下矿,挖矿,去矿洞,去矿井,冲层", "mine", "go",
@@ -21259,6 +21623,57 @@ def _im_shop(state):
             "page": m.get("shopPage")}
 
 
+# 🚪🐄 「放牧（开棚门）/ 关棚门」那两行的账（2026-10-01 恒：「放牧（开关畜棚鸡舍门）做进选项了吗？」
+#    —— 当时**没做进单子**，而且 `farm` 域把 `放牧` 错接到了 `pet_walk`（摸动物））。
+#
+# ⚠️ 判据**只有这一处**：本档有几个动物建筑 + 今天是不是雨天/冬天，算好塞进 `Ctx.doors`；
+#    单子那层是**纯函数**（`can()` 不许打 HTTP，也不自己认建筑名 —— 同 `mwork`/`reforge`/`shop`）。
+#
+# ⚠️ 建筑数**不手抄名单**：`/farm_buildings` 的 `type` 就是 `Data/Buildings` 的键
+#    （`Coop` / `Big Coop` / `Deluxe Coop` / `Barn` / `Big Barn` / `Deluxe Barn`），
+#    所以按 **`Coop`/`Barn` 子串**认。手抄名单这项目烂过（`locations.FARM_ANIMAL_BUILDINGS` 那份
+#    还得列全名：`Deluxe` 限定词在**前面**，`startswith("Barn")` 是 False —— 2026-09-16 的账）。
+def _im_doors(state: dict) -> dict:
+    """这一刻**能不能开门放牧** → `{"builds": N, "rain": bool, "winter": bool}` / `{}`。
+
+    三档（**不许折叠**）：
+      · **不在农场** / 天气·季节读不出来 / `/farm_buildings` 读不到 ⇒ `{}` = **算不出来**
+        （那两行不出现 —— 宁可不给，也不给一行按了白按的）；
+      · 在农场且读到 ⇒ 真字典，`builds` 可以是 **0** = **问清了：本档没有动物建筑**。
+
+    ⚠️ 天气/季节从 **`/state.time`** 那份**字典**取（`{"timeOfDay":1320,"season":"summer","weather":1}`）
+       —— 键名照状态条那一份（`_with_state` 里 `weather_texts` 读的就是 `weather`、
+       `season_icons` 读的就是 `season`）。**别改读 `/state` 顶层**：那儿没有这两个键，
+       读了恒假（同 `_clock_of` 那个坑：`/state.time` 是字典不是标量，读错**不报错**、只是永远不成立）。
+    ⚠️ `rain` = 雨(1)/雷暴(2)/绿雨(7) 三个码（码表就是状态条那张 `weather_texts`：0晴/1雨/2雷暴/3风/5雪/7绿雨）。
+       方向**故意偏保守**：认成雨天 ⇒ 那行**不出现**（少给一行好过给一行"开了动物也不出去"）。
+    ⚠️ **不上农场就一次都不多花**：单子那两行的 `can()` 本来就要求站在 Farm
+       ⇒ 不在农场直接回 `{}`，连 `/farm_buildings` 都不打（同 `_im_shop` 只在商店开着时才读 `/menu`）。
+    """
+    t = (state or {}).get("time")
+    if not isinstance(t, dict):
+        return {}
+    if ((state or {}).get("location") or {}).get("name") != "Farm":
+        return {}                       # 不在农场：那两行本来就不会出现，别白打一发
+    season = str(t.get("season") or "").lower()
+    try:
+        weather = int(t.get("weather"))
+    except (TypeError, ValueError):
+        return {}                       # 天气读不到 ⇒ "能不能放牧"算不出来 ⇒ 不给那一行
+    if not season:
+        return {}
+    try:
+        fb = api._ai_get("/farm_buildings") or {}
+    except Exception:
+        return {}
+    builds = [b for b in (fb.get("buildings") or [])
+              if "Coop" in str((b or {}).get("type") or "")
+              or "Barn" in str((b or {}).get("type") or "")]
+    return {"builds": len(builds),
+            "rain": weather in (1, 2, 7),
+            "winter": season == "winter"}
+
+
 def _im_ctx():
     """一次把单子要的世界快照凑齐。
 
@@ -21302,6 +21717,9 @@ def _im_ctx():
                                 # 🧺 收机器那行的账（2026-10-01 定形）：只报"好了几台/空着几台"，
                                 #    **不再探针**（"放料"整个撤出单子，走原路线 `farm load`）。
                                 mwork=_im_mwork(state, machines),
+                                # 🚪🐄 放牧/关棚门那两行的账（2026-10-01）：本档几个动物建筑 +
+                                #    今天雨不雨/冬不冬。⚠️ 只在**农场**上多打一发 `/farm_buildings`。
+                                doors=_im_doors(state),
                                 worn=worn)
 
 
@@ -21673,6 +22091,31 @@ def _count_item(name: str) -> int:
         return 0
 
 
+def _im_doors_op(args: dict) -> dict:
+    """🚪🐄 单子那两行 exec 打的 op（**同一个翻转**，但把门态一起递出去）。
+
+    ⚠️ 为什么回 dict 而不回一句话：单子那两行**方向是意图**（早上要开、晚上要关），而端点是
+       **翻转**的 ⇒ `intent_menu` 那边要拿"执行后每栋的门态"判断"到没到目标态"，没到就再翻一次。
+       判据必须落在**结构化数据**上，不能靠解析文案（解析文案 = 判据长在措辞上，改个字就坏）。
+    ⚠️ `walk=True`（默认）**先走到棚门口再翻**（拟人，见 `_walk_to_animal_door`）；
+       exec 收敛的**第二下**传 `walk=False` —— 人已经站在门口了，再走一次纯属白等 15 秒。
+    """
+    walk_line = ""
+    if bool((args or {}).get("walk", True)):
+        _n, walk_line = _walk_to_animal_door()
+    flip = _doors_flip_once()
+    if not flip.get("ok"):
+        return {"ok": False, "st": "no", "walk": walk_line,
+                "text": ((walk_line + "\n") if walk_line else "") + f"❌ {flip.get('error')}"}
+    return {"ok": True, "st": "yes", "text": _doors_text(flip, walk_line),
+            # ⚠️ 走位那行**也单独给一个字段**（不只混在文案里）：单子那两行会翻**第二下**
+            #    （`walk=False`，那一发的 text 天然没有走位行）⇒ exec 得把**第一次那行事实**
+            #    补回最终回执 —— 2026-10-01 真机就是这个洞：人真走到了门口（`[walk] … 到位`），
+            #    可 AI 看到的回执里一个字都没提（被收敛那发盖掉了，两头都是谎）。
+            "walk": walk_line,
+            "doors": flip.get("doors") or {}, "snap": flip.get("snap") or []}
+
+
 def _im_run(op, args):
     """单子敲下去**要执行的那一下**（合同：`(op 名, 参数字典) -> dict`）。
 
@@ -21754,6 +22197,13 @@ def _im_run(op, args):
                                        machine_type=str(args.get("machine_type") or ""),
                                        location=str(args.get("location") or ""),
                                        here=True),
+        # 🚪 开关门（2026-10-01 单子上那两行按下去走这里）。**一个 op**（翻转端点）：
+        #    ⚠️ 单子那两行的**方向是意图**，靠回执里的**结构化门态**在 `intent_menu` 里按目标态
+        #       最多再收敛一次（要开就最多再翻一下直到全开），这一层不做方向保证。
+        #    ⚠️ 回 **dict**（不是一句话）：要带 `doors` 那份逐栋门态出去 —— 见 `_im_run` 里
+        #       `isinstance(_res, dict)` 那条（helpers 那档为此多认一种形状）。
+        #    ⚠️ `walk=True` 先走到棚门口（拟人）；收敛的**第二下**传 `walk=False`（人已经在门口了）。
+        "doors": lambda: _im_doors_op(args),
     }
     # 🛒 买卖走**裸端点**（回 dict，回执要逐条报数字），只是外面多两道闸门。
     raw_ops = {
@@ -21781,9 +22231,16 @@ def _im_run(op, args):
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
     if op in helpers:
         try:
-            txt = str(helpers[op]())
+            _res = helpers[op]()
         except Exception as e:
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        # ⚠️ 2026-10-01（门那条）：helpers 这档**默认回一句话**（下面按开头判三档），
+        #    但有的 op 要**把结构化状态一起递出去** —— 门是**翻转**端点，单子那两行得拿
+        #    "执行后每栋的门态"决定要不要再翻一次；光给一句话就等于把判据写在文案上。
+        #    ⇒ 回 dict 的**原样递出去**（形状自己负责带 `ok`/`st`/`text`，同下面那三档的约定）。
+        if isinstance(_res, dict):
+            return _res
+        txt = str(_res)
         # ⚠️ 判"成没成"只看它自己那句**开头** —— **别在这儿替它下结论**。
         #    ⚠️⚠️ 但原来**只认 `❌`**，而工具的话其实有**三档**（2026-09-29 真机照出来的）：
         #      `❌` = 确定没成 · `⚠️` = **没成/存疑**（例：`⚠️ …没拿起来…**物品没动。**`）· 其余 = 成。

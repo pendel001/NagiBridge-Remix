@@ -7,6 +7,15 @@ import sys
 import socket
 import random
 
+# 🚫 2026-10-01：**跑在自验里就给出口上锁**（默认拒绝自验连游戏端口；MCP 服务器/AI 日常脚本
+#    的 argv[0] 不匹配 `*selftest*.py` ⇒ 一个字都不受影响）。案情与白名单见 `_net_guard.py` 的文件头。
+#    ⚠️ 位置必须在**最前**（比 `requests` 的使用早、也比任何模块去连游戏早）。
+try:
+    import _net_guard as _net_guard_mod
+    _net_guard_mod.maybe_arm()
+except Exception:
+    pass          # 闸坏了不许连累正主（自验自己会红，见 `_net_guard_selftest.py`）
+
 import os
 # ⚠️⚠️ 2026-09-23 血的教训：**这个默认值是 7842 = 房主(恒)**，不是 AI。
 #     走 MCP 永远没事 —— `nagi_mcp_server.py` 在 `import stardew_api` **之前**就
@@ -1952,8 +1961,12 @@ def carpenter():
 
 
 def close_doors():
-    """🚪 开关畜棚/鸡舍门 — 关所有动物建筑的门（晚上防狼用）
-    早上开门已包含在 care_animals 中。
+    """🚪 开关畜棚/鸡舍门 — **翻转**所有动物建筑的门（C# `/toggle_doors` 忽略 action，纯翻转）
+
+    ⚠️ 它**不是**"关门"、也不是"开门"：想收敛到某个方向由调用方按回读状态再翻一次
+    （`nagi_mcp_server.doors()` 就是干这个的：翻一次 → 回读 → 逐栋报执行后的门态）。
+    ⚠️ **别再说"早上开门已包含在 care_animals 中"**（那是句假话：`care_animals` 里没有任何开门动作）
+    —— 门走 `farm(ops="doors")`（别名 `放牧`/`开关门`/`棚门`），单子上是早上/晚上两行。
     直接调游戏内部接口开关，不走点击模拟。
     """
     return _post("/toggle_doors", {"action": "close"})

@@ -225,6 +225,16 @@ class Ctx:
     #    ⚠️ **由服务器算好递进来**（`/machines` 的 `status` + `/machine_reqs` 的 `canPlace`
     #       探针 = 游戏自己的 `PlaceInMachine(probe:true)`）：这一层是纯函数，不打 HTTP、不编。
     mwork: dict = field(default_factory=dict)
+    # 🚪🐄 **这一刻"能不能开门放牧"**（2026-10-01 · 恒：「放牧（开关畜棚鸡舍门）做进选项了吗？」）。
+    #    `{}` = **算不出来**（不在农场 / 天气·季节读不到 / `/farm_buildings` 读不到）⇒ 那两行不出现。
+    #    有值时形如 `{"builds": 2, "rain": False, "winter": False}`：
+    #      · `builds` = **本档动物建筑的个数**（`/farm_buildings` 里 `type` 含 `Coop`/`Barn` 的），
+    #        可以是 0 = **问清了：这个档没有动物建筑**（跟 `{}` 的"不知道"是两回事）；
+    #      · `rain` / `winter` = 今天能不能放牧（雨/雷暴/绿雨算雨）。
+    #    ⚠️ **由服务器算好递进来**（`_im_doors`：`/state.time` 的 `weather`/`season` + `/farm_buildings`）——
+    #       这一层是**纯函数**：`can()` 不许打 HTTP（同 `caps`/`shop`/`reforge`/`mwork`），
+    #       也不许自己手抄一份"哪些建筑算动物建筑"的名单（名单会烂，本项目的老病）。
+    doors: dict = field(default_factory=dict)
     # 🎬 **正在播的剧情/事件**（`/state` 的 `activeEvent`，没有就是 `None`）。
     #    ⚠️ 必须跟 `menu` 分开看：事件**不是菜单**（`activeMenu` 那时可能是 null），
     #       而且节日期间 `activeEvent` **恒在播** —— 那是"这一刻的事实"，不是"有个弹窗挡路"。
@@ -2628,6 +2638,165 @@ SELL_V = Verb("sell", "卖", 74, _sell_can, _sell_reason, lambda c, t: "卖", "w
               subs=_sell_subs, count=_sell_count, exec_multi=_exec_sell_multi, menu_ok=True)
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# 🚪🐄 放牧（开棚门）/ 关棚门 —— 2026-10-01 恒：「放牧（开关畜棚鸡舍门）做进选项了吗？」
+# ═══════════════════════════════════════════════════════════════════════
+# 当时**没做进单子**：只有 `farm doors`（关），而且 `farm` 域把 `放牧` 错接到了 `pet_walk`（摸动物）。
+#
+# ⚠️ **判据全在 `Ctx.doors`**（服务器 `_im_doors` 算好的：本档几个动物建筑 + 今天雨不雨/冬不冬）——
+#    这一层是**纯函数**：`can()` 不打 HTTP、也不自己认"哪些建筑算动物建筑"（同 `mwork`/`reforge`）。
+#
+# ⚠️ **一次只给一行，靠钟点分**（写进 `can()`，不是靠排序）：
+#    早上开门放牧、晚上关门防野生动物 —— 两件事**互斥**，同屏既有"开"又有"关"就是自己打自己。
+#    06:00–15:00 给「放牧」；≥17:00 或 <06:00 给「关棚门」；**16:00 那一小时两行都不给**
+#    （"算不准就不出现"，不兜底）。
+# ⚠️ 为什么"雨天/冬天不给开"要进 `can()` 而不是只调权重：单子第一条规矩是
+#    「**出现的那条，按了就成**」—— 雨天摆一行"去开门放牧"就是劝 AI 白跑一趟
+#    （雨/冬天动物本来也不出去吃草）。
+#
+# ⚠️ **两行打的是同一个 op**（`run("doors", …)`）：C# `/toggle_doors` **忽略 action、纯翻转**，
+#    端点就一个 ⇒ 方向只能是**这一行的意图**，由 exec **看回执里的门态按目标态最多再翻一次**
+#    （见 `_doors_exec`）；**不许**再长出"保证开/保证关"的第二条实现（名字带方向却翻成反面=谎报）。
+_DOORS_OPEN_H0, _DOORS_OPEN_H1 = 6, 15     # 放牧：06:00–15:00（含两端）
+_DOORS_CLOSE_H = 17                        # 关棚门：≥17:00 或 <06:00
+
+
+def _hour_of(ctx):
+    """钟点的小时数（`ctx.time` = `"13:20"`）；读不出来 → `None`（**不是 0**）。
+
+    ⚠️ 读不出来**当"算不出"**（那两行都不出现），别退成 0 —— 0 点会变成"夜里"，
+       于是早上那行永远不出现、晚上那行永远出现（静默错一整类，同 `_clock_of` 那个坑）。
+    """
+    try:
+        return int((ctx.time or "").split(":")[0])
+    except (TypeError, ValueError):
+        return None
+
+
+def _doors_ready(ctx):
+    """两条共同的闸门：**站在农场** + **本档确实有动物建筑**。→ (那份账, 过没过)"""
+    d = ctx.doors or {}
+    if ctx.loc != "Farm":
+        return d, False                  # 门在农场；在矿里/城里摆这两行 = 劝它跑一趟腿
+    if int(d.get("builds") or 0) <= 0:
+        return d, False                  # `builds=0` = 问清了没有；`{}` 也走这条（0 兜底=算不出）
+    return d, True
+
+
+def _doors_open_can(ctx, t):
+    """🐄 放牧：农场 + 有动物建筑 + **非雨天 + 非冬天** + 06:00–15:00。"""
+    d, ok = _doors_ready(ctx)
+    if not ok or d.get("rain") is True or d.get("winter") is True:
+        return CAN_NO
+    h = _hour_of(ctx)
+    if h is None:
+        return CAN_NO
+    return CAN_YES if _DOORS_OPEN_H0 <= h <= _DOORS_OPEN_H1 else CAN_NO
+
+
+def _doors_open_show(ctx, t):
+    return "放牧（开棚门）"
+
+
+def _doors_open_reason(ctx, t):
+    """理由栏：**为什么** + **下一步**（能直接照抄的 op+参数，见"警告必须带路"那条规矩）。
+
+    ⚠️ 别在这儿写"开完门记得 `farm animals` 摸一遍"（恒 2026-10-01：「**关着门也可以 animals 摸一遍**，
+       我记得是自动跨建筑摸的。不建议加这一句」）—— `care_animals` 自己会走进每一栋畜舍。
+    """
+    n = int((ctx.doors or {}).get("builds") or 0)
+    return (f"本档 {n} 栋动物建筑 · **开了门动物才会出去棚外吃草**（雨天/冬天不给这行）"
+            f" · 敲了先走到棚门口再翻；回执**逐栋报执行后的门态**，"
+            f"想反着来再敲一次 `farm(ops=\"doors\")`")
+
+
+def _doors_close_can(ctx, t):
+    """🚪 关棚门：农场 + 有动物建筑 + 钟点 ≥17:00（或 <06:00）。"""
+    d, ok = _doors_ready(ctx)
+    if not ok:
+        return CAN_NO
+    h = _hour_of(ctx)
+    if h is None:
+        return CAN_NO
+    return CAN_YES if (h >= _DOORS_CLOSE_H or h < _DOORS_OPEN_H0) else CAN_NO
+
+
+def _doors_close_show(ctx, t):
+    return "关棚门"
+
+
+def _doors_close_reason(ctx, t):
+    n = int((ctx.doors or {}).get("builds") or 0)
+    return (f"本档 {n} 栋动物建筑 · **天黑了：关门防野生动物袭击牲畜**"
+            f" · 敲了先走到棚门口再翻；回执**逐栋报执行后的门态**，"
+            f"想反着来再敲一次 `farm(ops=\"doors\")`")
+
+
+def _doors_at_target(doors: dict, want: bool) -> bool:
+    """这一份门态**到目标态了吗**（`want=True` 要全开）。
+
+    ⚠️ 有一条 `None`（未确认）或空表就**不算到了** —— 那两种都"不知道"，不能当成了。
+    """
+    if not doors:
+        return False
+    return all((v is True) if want else (v is False) for v in doors.values())
+
+
+def _doors_exec(ctx, targets, run, want: bool):
+    """🚪🐄 放牧/关棚门：**都只调同一个翻转 op**（`doors`），再按目标态**最多收敛一次**。
+
+    ⚠️ 方向是**这一行的意图**，不是端点的能力（`/toggle_doors` 忽略 action、纯翻转）⇒
+       第一下敲完**看回执里的门态**：没到目标态就**再翻一次**（翻转端点翻两次回原状，所以**最多一次**，
+       不来回抖）。
+    ⚠️ 人先**走到棚门口**再翻（`walk=True` 由 op 做，走位那行**如实**在回执里）；
+       第二下 `walk=False`（人已经在门口，再走一次是白等）。
+    ⚠️ 回执把话说全：**目标态 + 实际门态**（读不到就明说读不到），没到目标态时给下一步。
+    """
+    verm, tgt = ("开棚门", "全开") if want else ("关棚门", "全关")
+    r = run("doors", {"walk": True}) or {}
+    d = (r.get("doors") if isinstance(r, dict) else None) or {}
+    if d and not _doors_at_target(d, want):
+        r2 = run("doors", {"walk": False}) or {}
+        if isinstance(r2, dict) and r2.get("doors"):
+            # ⚠️ 收敛那一发是 `walk=False` ⇒ 它的 `text` 里**没有走位行**。把**第一次那行事实**
+            #    补回最终回执（`walk` 是结构化字段，不是从文案里抠）。
+            #    ⚠️ 2026-10-01 真机逮到的洞：人**真走到**了门口（`[walk] … 到位`），
+            #       可 AI 看到的回执里一个字都没提 —— 那两头都是谎（让 AI 以为没走 / 让人以为走了）。
+            _wl = str(r.get("walk") or "")
+            _tx = str(r2.get("text") or "")
+            if _wl and _wl not in _tx:
+                r2 = dict(r2, text=(_wl + "\n" + _tx))
+            r = r2
+            d = r2.get("doors") or {}
+    got = "、".join(
+        f"{k} " + ("开" if v is True else ("关" if v is False else "**未确认**"))
+        for k, v in d.items()) or "**没读到门态**"
+    head = _receipt_from_helper(verm, f"（目标 {tgt}）", r)
+    line = f"\n   🎯 目标={tgt} · 实际={got}"
+    if d and not _doors_at_target(d, want):
+        line += "—— 还没到就**再敲一次** `farm(ops=\"doors\")`（翻转端点，敲一次变一次）"
+    return head + line
+
+
+def _exec_open_doors(ctx, targets, run):
+    """🐄 放牧：收敛到**全开**。"""
+    return _doors_exec(ctx, targets, run, want=True)
+
+
+def _exec_close_doors(ctx, targets, run):
+    """🚪 关棚门：收敛到**全关**。"""
+    return _doors_exec(ctx, targets, run, want=False)
+
+
+OPEN_DOORS_V = Verb("opendoors", "放牧（开棚门）", 70, _doors_open_can,
+                    _doors_open_reason, _doors_open_show, "world", exec=_exec_open_doors)
+CLOSE_DOORS_V = Verb("doors", "关棚门", 70, _doors_close_can,
+                     _doors_close_reason, _doors_close_show, "world", exec=_exec_close_doors)
+# ⚠️ 两个 Verb 的 `key` 只是**单子这一层的稳定标识**（`key` 决定排序/去重，不是 op 名）；
+#    它们跑起来**打的是同一个 op**：`run("doors", …)`（见 `_doors_exec`）——
+#    C# 那边本来就只有 `/toggle_doors` 一个**翻转**端点，**没有**"保证开/保证关"两条路。
+
+
 VERBS: list = [
     # 📦 容器（箱子/冰箱）：**一行一个箱子**，点开是它的动作面（看/取/存）。
     #    判据在 `_chest_can`（"在 /scan_chests 名单里"），收容判据在文件上方那段反编译说明。
@@ -2753,6 +2922,10 @@ VERBS: list = [
     #    两条的判据都**问游戏**（`is_geode` / `/machine_reqs` 的只问不做探针）——
     #    老 DLL 没这些位 ⇒ **两行都不出现**（宁可不给，也不给一行按了不成的）。
     GEODE_V, REFORGE_V,
+    # 🚪🐄 2026-10-01（恒：「放牧（开关畜棚鸡舍门）做进选项了吗？」）：**放牧（开棚门）**与**关棚门**。
+    #    两条互斥（钟点分，见上面那段的账）：早上 06:00–15:00 给开、≥17:00/<06:00 给关，
+    #    16:00 那一小时两行都不给。判据全在 `Ctx.doors`（服务器递进来），这一层不打 HTTP。
+    OPEN_DOORS_V, CLOSE_DOORS_V,
 ]
 
 
@@ -3728,7 +3901,8 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
              caps: dict = None, seats: dict = None, furniture: dict = None,
              animals: dict = None, shop: dict = None, beds: list = None,
              menu_exit: str = "", menu_hint: str = "", worn: dict = None,
-             menu_data: dict = None, reforge: dict = None, mwork: dict = None) -> Ctx:
+             menu_data: dict = None, reforge: dict = None, mwork: dict = None,
+             doors: dict = None) -> Ctx:
     """把 `/state`(**full**) + `/surroundings`(+`/machines`/`/scan_chests`) 拼成 Ctx。
 
     ⚠️ 只搬运，**不补默认值**：缺什么就让它缺着（`can()` 遇到缺失自然回 假/？）。
@@ -3808,6 +3982,9 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
                reforge=reforge or {},
                # 🧺🔁 收放那行的账（同上：`/machines` + `/machine_reqs` 探针，服务器算好递进来）。
                mwork=mwork or {},
+               # 🚪🐄 放牧/关棚门那两行的账（同上：`/state.time` 的天气季节 + `/farm_buildings`，
+               #    服务器算好递进来 —— 这里**不猜**"哪些建筑算动物建筑"）。
+               doors=doors or {},
                sitting=bool(((seats or {}).get("me") or {}).get("sitting")),
                worn=(worn or {}),
                pets=pets,
