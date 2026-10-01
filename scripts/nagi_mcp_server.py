@@ -375,6 +375,47 @@ def _close_hint(menu: str) -> str:
     return "menu read 看内容 → menu click(button=upperRightCloseButton) 关掉（认不出的菜单照这个试）"
 
 
+# 🚪 单子上的「界面出口」（2026-10-01 恒：消灭"菜单态一屏空、还建议你用被闸门挡住的
+#    `scene at`"那条假门）。
+#
+# ⚠️ 判据**必须跟上面 `_close_hint` 同源** —— 那张链是"这个菜单该怎么处理"的唯一事实地图，
+#    这里只取它的**机器可读结论**：这一刻"关掉界面"是不是**正确的那一步**。
+#    三个族**不给出口行**（给了 = 劝 AI 去干错事，比不给还坏）：
+_NO_MENU_EXIT = (
+    # 🎭 捏人页：按 ok/关闭 = **不可逆定型**（`_close_hint` 里代价最大的那一种）。
+    #    它的正事是"就地在里面做完"（settings customize/appearance/confirm_look），
+    #    而 settings 是**整域放行**的 ⇒ 那一刻的路在 settings，不在这一行。
+    "charactercustomization",
+    # 🎣 钓鱼小游戏：**不是挡路的菜单**，是鱼机正在干的正事，几秒后自己结束。
+    "bobberbar",
+    # 💬 对话框：ESC 对它**无效**（`_close_hint` 让它走 menu advance / click(option=N)）。
+    #    给一行「关掉界面」= 按了不成 ⇒ 假承诺。
+    #    （纯对话框现在有「推进对话」那一行了，见 `intent_menu._advance_can`。）
+    "dialoguebox",
+    # 🧾 **过夜结算屏**：要点 `ok` 才算完，`cancel()` 那套（ESC + menu_close）关不掉它
+    #    （我那条"关不掉就如实说"的验收用例用的正是 `ShippingMenu`）。
+    #    它有自己的行：「确认结算」（`intent_menu._settle_can`）。
+    "shipping",
+)
+
+
+def _menu_exit_of(menu: str) -> str:
+    """这一刻「关掉界面」是不是正确的一步？→ **出口行的标题**，或 `""`（不给）。
+
+    ⚠️ 返回 `""` **不等于"没救了"**：`intent_menu` 会改用 `_close_hint(menu)` 的**原话**
+       把路指出来 —— 只是那条路**不是"敲个号"能干的**，不该冒充成一行动作。
+    ⚠️ 这是**纯判据**：执行那一下在 `_im_close_menu`（复用现成的 `cancel()`）。
+    """
+    m = (menu or "").lower()
+    if not m or any(k in m for k in _NO_MENU_EXIT):
+        return ""
+    # 🛏 就绪屏不响应 Escape、也不在普通菜单里 —— 但 `cancel()` **专门为它写了一条**
+    #    （强制关屏 + 撤 ready），所以这里照样给行，只是**标题说实话**。
+    if "readycheck" in m:
+        return "撤就绪 / 关屏"
+    return "关掉界面"
+
+
 def _menu_gate(name, kwargs, args=(), fn=None):
     """菜单开着时挡掉"会乱动"的工具。
 
@@ -15346,7 +15387,7 @@ _SETTINGS_DISPATCH = {
 
 # 📖 详细域指引（2026-08-22：docstring 精简后，深度/坑靠 help 查，不丢细节）
 _DOMAIN_GUIDES = {
-"intent": "🎯 意图选项单（**先看单子、再敲编号**）：`intent(ops=\"show\")` 看这一刻能做的事（一行一件，`←` 后面是理由）；`intent(ops=\"do\", kw={\"code\":\"1\"})` 敲第 1 行；`intent(ops=\"at\", kw={\"x\":12,\"y\":30})` 指哪打哪（逃生口，问「这一格能做什么」）。敲法：`1` 一行 · `1,4` **多选**（选哪些，顺序无所谓）· `1=2,4=7` **各多少**（号=数量，配对，顺序也无所谓）· `0` = 这些都不是（子层里 = 返回上一层）。⚠️**目录行句尾带 `…`**（点开还有下一层，顶层只报个数不发号）；**号是当场发的、不跨屏** —— 敲之前先 `show` 看一眼当前那一屏，别记着上一屏的号去敲。⚠️单子上**出现的那条，按了就成**；没出现 = 这一刻算不出来（不是「不行」）。覆盖：收机器 / 开箱子（取·存）/ 吃 / 看书 / 捡 / 收作物 / 坐 / 搬家具 / 摸动物 / 摸猫狗 / **买·卖**（只在商店 menu 开着时才出现）。⚠️**要规划的那些农活不在单子上**（锄地/播种/施肥/清场/砍树）—— 它们得按矩形/布局算落点、还要挑蓄力站位，走 `farm` 域（`farm ops=till, kw={x1,y1,x2,y2,layout}` 这种），**单子上一格一格敲比它慢得多、还更费体力**。挖蚯蚓/远古斑点走 `scene ops=spot`（一次全挖）。⚠️**买**是两层（选哪几样 → 各多少）；**卖**只有一层（选哪几摞 → 敲了就卖，**整摞走**——游戏单击就是卖整摞，别试 `1=2` 那种写法，那一层不收数量）。",
+"intent": "🎯 意图选项单（**先看单子、再敲编号**）：`intent(ops=\"show\")` 看这一刻能做的事（一行一件，`←` 后面是理由）；`intent(ops=\"do\", kw={\"code\":\"1\"})` 敲第 1 行；`intent(ops=\"at\", kw={\"x\":12,\"y\":30})` 指哪打哪（逃生口，问「这一格能做什么」）。敲法：`1` 一行 · `1,4` **多选**（选哪些，顺序无所谓）· `1=2,4=7` **各多少**（号=数量，配对，顺序也无所谓）· `0` = 这些都不是（子层里 = 返回上一层）。⚠️**目录行句尾带 `…`**（点开还有下一层，顶层只报个数不发号）；**号是当场发的、不跨屏** —— 敲之前先 `show` 看一眼当前那一屏，别记着上一屏的号去敲。⚠️单子上**出现的那条，按了就成**；没出现 = 这一刻算不出来（不是「不行」）。覆盖：收机器 / 开箱子（取·存）/ 吃 / 看书（**背包里没拿手上的也算**）/ 捡 / 收作物 / 坐·**起身** / 搬家具 / 摸动物 / 摸猫狗 / **穿戴（穿·脱）** / **买·卖**（只在商店 menu 开着时才出现）/ **推进对话**（有对话框或剧情在播时）/ **确认结算**（过夜结算屏 ShippingMenu）/ **投出货箱**（站在农场 + 背包里有投得进去的）/ **关掉界面**（任何界面开着时的出口）。⚠️**要规划的那些农活不在单子上**（锄地/播种/施肥/清场/砍树）—— 它们得按矩形/布局算落点、还要挑蓄力站位，走 `farm` 域（`farm ops=till, kw={x1,y1,x2,y2,layout}` 这种），**单子上一格一格敲比它慢得多、还更费体力**。挖蚯蚓/远古斑点走 `scene ops=spot`（一次全挖）。⚠️**买**是两层（选哪几样 → 各多少）；**卖**只有一层（选哪几摞 → 敲了就卖，**整摞走**——游戏单击就是卖整摞，别试 `1=2` 那种写法，那一层不收数量）。",
 "check": "查询域，what=...：status(完整状态) backpack(逐格价值/星级) worn(穿戴) machines(全场机器清单) mine(下矿进度) silo(干草) mastery(精通) buildings(木匠建筑) quest(开任务日志) chests(当前图箱) storage(箱子网络) look(环视周围) profile(我的技能等级+职业分支,如是否 Luremaster 蟹笼免饵) role(端口↔角色确认:我是谁/恒是谁)。⚠️查概览用 status，查逐格用 backpack，别都调浪费 token。📌profile/role 一律走 check（不叫 profile()/which_role()）。📐这个域的参数叫 **what**，**不是 ops**。带参的只有两个: chests(chest=N 看第N个箱) / look(radius=10 环视半径)；其余(status/backpack/worn/machines/mine/silo/mastery/buildings/quest/storage/profile/role)**全无参**。⚠️查概览用 status、查逐格用 backpack，别都调一遍浪费 token。",
 "farm": "农活域(🌱必走，别手动挥工具组合，用域 ops)：till(锄地) plant(种,跳过已种;带 layout 就按洒水器布局种) water(浇,自动跳雨+水壶没水先装满) harvest(收) scythe(镰刀收蒜/花/茶) fertilize(化肥) clear(清杂草石树桩;坐标同 till，也可 `radius=N` 走**圆形**；**会自动往外多清 2 格**——田边的杂草会长进田里把作物顶掉，不用自己放大) plot(连通域规划) plan(方形规划,纯算格) chop(砍树)。⚠️**锄地/播种各只有一个实现**：锄地=`till`（`hoe`/`布局锄`/`tillfield`/`蓄力锄` 都是它的别名）、播种=`plant`（`sow`/`plantlayout`/`播种规划` 都是它的别名）；⛔ 没有 `till_plant`——要锄+种写 `ops=\"till plant\"`。 clearground(清单格) collect(一键收机器:只收不放,全农场瞬收不走路) load(放原料) building(一屋收放:拟人走进去收+放料,item留空=只收不放) break(拆/敲同scene,镐子敲可破物/翻已耕地) place(放置/播种同scene) pond/pond_add/pond_feed/pond_collect/pond_fish(鱼塘)。⚠️漏格DLL自动补；**缺的格会被点名「被什么挡着」**（🌿草/杂草/🪨石头/🪵树枝→**先 `clear` 清一遍再 till/plant**；🏗️洒水器/箱子等设施→⛔别清、那是规划该绕开的格）——草占着地格时锄头是锄不出 HoeDirt 的，别对着「缺失N格」发呆。只在 Farm/温室/姜岛。带参 op(plant 的 seed_name、till/clear 的 x/y/rows、fertilize 的 fertilizer_name、place 的 name、building 的 location、collect 的 machine_type、pond_add 的 item)→ kw={'参数名':值}。🐄动物: animals(摸+收) 喂水/碗(宠物水,🌧️雨天自动跳过——雨会把碗填满) milk(挤奶剪毛) buy(买动物,豁免建议) doors(关门) hay(干草) pet(猫狗) petwalk(拟人摸) 畜舍/这间(这间屋动物) statue(祈福)——⚠️farm water=浇地,动物水用 喂水; farm building=机器收放,这屋动物用 畜舍。📐参数键名: till/clear/plant/fertilize 都是 x,y(**必填**),rows,length,direction（till/plant 也可用 x1,y1,x2,y2 直接给矩形两角）；plant 另有 seed_name,layout,direct,trellis；harvest/scythe=radius；plot=x,y,radius,all_plots；chop=area(**值写几个数**：4 个数=矩形两角 / 3 个数=圆心+半径，逗号空格都认)；collect=machine_type,location；load=item,machine_type,location；building=location,item,machine_type；place=name,x,y；break=x,y,steps,radius；pond_add=item+x,y（pond_feed/collect/fish 只要 x,y）；buy=animal_type,name,building；petwalk=include_petted；hay=dry_run。⚠️direction 只认 horizontal(默认)/vertical 两个值,别写'横'/'竖'。💡大田洒水器布局(可选,纯自动化建议)：要按洒水器留格/留走道就 plan→till→plant 三件套——plan(x1,y1,x2,y2,layout=0,hoe_level=-1,trellis=False) **纯算格不动机器**先看要锄/种哪些; till(x1,y1,x2,y2,layout=0) 按布局锄; plant(x1,y1,x2,y2,seed_name,**layout**) 按布局种（layout=0 整块/1 初级十字/2 高级/3 铱；direct=True 瞬移快、默认走位拟人）。想一次说完就 `ops=\"till plant\"`（**一份 kw 共用**，锄地会自动点名忽略 seed_name）。**layout 四档**: 0=标准整块(不预留洒水器,锄法蛇形逐格走位,任何锄头等级都行) 1=初级(十字稀疏,每台覆盖上下左右4格;锄法=精确锄每台4格,**与锄头等级无关**) 2=高级(优质,田宽高先裁成**3的倍数**,每3×3中心1台覆盖8格,整块蓄力锄) 3=铱(裁成**5的倍数**,每5×5中心1台覆盖24格;⚠️爬架作物不适用)。hoe_level: 0→1格 1→3线 2→5线 3→3×3 4→6×3,-1=自动读手持。trellis=True=爬架作物(啤酒花/青豆/葡萄,不可通过格)⇒自动**种2留1**留走道让AI能进田浇收。只管种不摆洒水器就直接 plant,不用 plan 那套。⚠️已知限制: layout 0/2/3 碰上金/铱锄(hoe_level>=3)会报**0处锄地站位**并自打一行'落点未实测校准,暂不规划蓄力站位'——**那是刻意不猜不是出错**; layout 1 不吃蓄力站位不受影响。",
 "mine": "下矿域(⚒️ 矿井/头骨/火山)：go(去挖矿:mode=rush冲层/farm刷矿,start起始层,target目标层,ore,cycles圈数) progress(进度) bomb_status/bomb_plan/bomb_place/bomb_collect/bomb_ladder/bomb_retreat(单步炸,**都要 bomb_ 前缀**) bomb_mine(自动) bomb_volcano(火山) organize(整理背包)。🔁**刷矿=mode=go(mode=farm)**：定点刷指定矿→ore=Copper铜(21层)/Iron铁(41层)/Gold金(71层)；**煤靠 farm 铁层(41)顺手清尘埃精灵/蝙蝠掉**（不是 ore 选项，跑 auto 内部刷）。🏃下矿=mode=go(mode=rush,start可选≤电梯上限+5倍数,target默认120)。⚠️无镐/血低硬拦；梯子 /ladder+confirm。⚔️贴身(3×3)自卫=游戏自己每 tick 挥刀(go/bomb_mine/bomb_escort/bomb_volcano 四个脚本都自开自关,**只转向不移动**;手上是锤子且冷却好了会重砸6×6)；2格外的怪仍靠脚本扫描,别站桩。🍽️**自定义吃食**：go/bomb_mine/bomb_volcano 都可传 food_hp/food_sta=**逗号分隔、靠前的先吃**(如 food_hp=「奶酪,鱼肉卷」)。血低只看 food_hp、体力低只看 food_sta(**两张表分开别混**)。点名后就只在这几样里挑——**防止自动挑把你留着卖的吃了**(山羊奶酪最典型)；整串都没货会明确报一句再退回自动挑。⚠️bomb_mine 没炸弹+host在同矿井→自动转【内部】协同(跟随host+帮忙敲矿/打怪)不撤退出矿(bomb_escort 不对外暴露、AI 不主动启用)；bomb_retreat 结束协同+停脚本+脱离矿井回门口。⚠️接「深处的危险」重置电梯→起始层动态从1起(内置脚本自动读，不暴露工具)；刷矿目标层不可直达会上报，需先冲层带回或改浅层。📐带参速查: go(mode=rush冲层/farm刷矿, start起始层, target目标层, ore=Copper铜/Iron铁/Gold金, cycles圈数, hp_threshold, food_sta, food_hp, resume) bomb_plan(radius,min_covered,top) bomb_place(x,y **必填**) bomb_collect(max_items) bomb_mine(target,bomb,min_covered,follow_host,lead,autodrop,one_floor,food_hp,food_sta) bomb_volcano(bomb,min_covered,hp_threshold,max_minutes,poll,food_hp,food_sta) organize(disable,reset)。💣bomb 三个取值 'Cherry Bomb'樱桃/'Bomb'黑/'Mega Bomb'超级——**点名的包里没有就按 黑>超级>樱桃 自动换成有的**(不会误报没炸弹)；范围 樱桃=边长7十字 / 黑=11x11方块 / 超级=15x15方块，⚠️黑和超级**会炸伤自己**(实测黑掉3血)。⚠️bomb_volcano **要求 host 已在矿/火山里**才放行(火山瓦片没法程序化换层)。⚠️bomb_mine one_floor=True=逐层模式(同步,只跑一层出摘要,不撤退)；**默认冲层模式=异步后台跑,推荐**。💡出发前占位物：提前放1个可堆叠物(铱矿/铱锭/五彩碎片)在包，满包时同种战利品自动堆叠吸附、少触发满包停；别拿银河之魂这类带死亡会丢的稀有物当占位。",
@@ -21040,9 +21081,20 @@ def _im_ctx():
     seats = safe(lambda: api._ai_get("/sittable", {"radius": 30}), {})
     furniture = safe(lambda: api._ai_get("/furniture"), {})
     animals = safe(lambda: api._ai_get("/animals"), {})
+    # 👕 **我自己**穿着什么（`/worn`）。⚠️ 必须走 `_ai_get`：穿戴物是"我的"，
+    #    打错端就会读到恒那身行头，然后单子会劝 AI 去"脱 恒的帽子"。
+    #    ⚠️ 读不到 ⇒ `{}` ⇒ "脱"那几行不出现（**不猜**，同 `next=missing ⇒ 不出现` 的规矩）。
+    worn = safe(lambda: (api._ai_get("/worn") or {}).get("worn") or {}, {})
+    # 🚪 界面出口：**判据在服务器算好再递进去**（`_menu_exit_of` / `_close_hint` 挨在一起，
+    #    只有那一处认菜单类型）。⚠️ 菜单没开时两个都是空串 ⇒ 单子层不给出口行、
+    #    也不印菜单提示（老行为一字不动）。
+    _mt = ((state or {}).get("activeMenu") or {}).get("type") or ""
     return intent_menu.ctx_from(state, surr, machines, chests, caps=_im_caps(),
                                 seats=seats, furniture=furniture, animals=animals,
-                                shop=_im_shop(state), beds=_im_beds(state))
+                                shop=_im_shop(state), beds=_im_beds(state),
+                                menu_exit=_menu_exit_of(_mt),
+                                menu_hint=(_close_hint(_mt) if _mt else ""),
+                                worn=worn)
 
 
 def _im_beds(state: dict) -> list:
@@ -21124,6 +21176,42 @@ def _im_sell(name):
     return api._ai_post("/sell_to_shop", {"name": name})
 
 
+def _im_close_menu() -> str:
+    """🚪 关掉当前界面 —— 走现成的 `cancel()`，**然后回读核实**。→ 一句话。
+
+    ⚠️ 为什么要回读：`cancel()` 自己那句「已按取消键/关掉弹窗」是**发射后不管**的
+       （它打完键就返回，不看结果），对 `ShippingMenu` 那类"要点 ok 才算完"的界面
+       可能压根没关上 —— 而单子第一条规矩是「**出现的那条，按了就成**」。
+       不回读 = 又造一处"嘴上说成功"（今晚已经抓过两处了）。
+    ⚠️ 关不掉时**不编原因**，照搬 `_close_hint` 的原话 —— 那张表是"这个菜单怎么处理"的
+       唯一出处，这儿再写一句就是第二份会漂的文案。
+    ⚠️ 复用 `cancel()` 而不是在单子层另写一套：`ReadyCheckDialog` 那条特殊分支
+       （强制关屏 + 撤 ready）只活在那里面。
+    ⚠️ 回**一句话**（不是 dict）：`_im_run` 的 `helpers` 那档吃的就是文本，由它判档位。
+    """
+    before = ""
+    try:
+        before = (((api._ai_get("/state") or {}).get("activeMenu") or {}).get("type") or "")
+    except Exception:
+        pass
+    try:
+        cancel()
+    except Exception as e:
+        return f"❌ 关界面出错：{type(e).__name__}: {e}"
+    after = None
+    try:
+        after = (((api._ai_get("/state") or {}).get("activeMenu") or {}).get("type") or "")
+    except Exception:
+        pass                       # 读不到 = **不知道** ⇒ 下面不许谎报成功
+    if after == "":
+        return f"界面已关（原 {before or '?'}）"
+    if after is None:
+        return (f"⚠️ 按了取消键，但**没读回状态**，关没关我不知道（原 {before or '?'}）"
+                f"—— 自己 `show` 一眼确认")
+    return (f"⚠️ **还开着**（{after}）—— 取消键对它不管用。这一刻该怎么走：\n"
+            f"   {_close_hint(after)}")
+
+
 def _im_chest_open(x, y):
     """👀 走到箱边**真开**（画面通道）。→ `{"ok", "error", "walk", ...}`。
 
@@ -21162,6 +21250,23 @@ def _im_run(op, args):
     args = dict(args or {})
     helpers = {
         "sit": lambda: sit(args.get("x"), args.get("y"), args.get("face")),
+        # 🪑 起身（2026-10-01）：单子上的「起身」按下去走这里。
+        #    ⚠️ 调现成的 `stand()`（它自己轮询确认），**不另写一套**。
+        #    ⚠️ 它外面裹着 `_with_state` —— 内嵌调用时那层会**自己闭嘴**（`_OPS_INNER["n"]`），
+        #       所以回执里不会嵌第二条状态条（同 `sit`，真机 10-02 亲眼确认）。
+        "stand": lambda: stand(),
+        # 👕 穿 / 脱（2026-10-01）：单子「穿戴…」点开那两行走这里。
+        #    ⚠️ `name` 是**内部名**（`Item.Name`，英文），`slot` 是 C# 那几个槽名
+        #       （`boots/leftRing/rightRing/trinket/hat/shirt/pants`）—— C# 那边就是这么匹配的。
+        "wear": lambda: wear(name=args.get("name"), slot=args.get("slot")),
+        # 🎬 推进对话（2026-10-01）：单子上的「推进对话」按下去走这里。
+        #    ⚠️ 调现成的 `advance_story()` —— 它自己会回读确认、分「卡住/出选项/结束」三种结局，
+        #       这一层**不另写一套**，也不替它下结论。
+        "advance": lambda: advance_story(),
+        # 🧾 确认过夜结算（2026-10-01）：结算屏（ShippingMenu）上「确认结算」按下去走这里。
+        "settle": lambda: confirm_settlement(),
+        # 🗑 投出货箱（2026-10-01）：单子「投出货箱…」点开那行走这里（`name` = 内部名）。
+        "bin": lambda: sell_to_bin(name=args.get("name") or ""),
         "furniture_pickup": lambda: furniture_pickup(args.get("x"), args.get("y")),
         "pet_animals": lambda: _pet_animals_in_building(),
         # ⚠️ 调**底层那个不带状态条**的（`pet_pet()` 外面裹了 `_with_state`）——
@@ -21181,6 +21286,10 @@ def _im_run(op, args):
         #    姜岛的 `who` 更是另一套语义（大通铺，= "挤到谁床上"）。
         #    ⇒ 过夜走原路线 `daily sleep who=…`，AI **自己带着意图**去调（想睡恒的床也点得到）。
         "lie_bed": lambda: _lie_rest_flow(args.get("who") or ""),
+        # 🚪 关掉界面（2026-10-01）：单子上那行「关掉界面」按下去走这里。
+        #    ⚠️ 归 `helpers`（回**一句话**）而不是 `raw_ops`（回 dict）——
+        #       它要做的是"回读核实再如实报"，不是把端点的原始 dict 摊出去。
+        "close_menu": lambda: _im_close_menu(),
     }
     # 🛒 买卖走**裸端点**（回 dict，回执要逐条报数字），只是外面多两道闸门。
     raw_ops = {
@@ -21285,7 +21394,9 @@ def intent(ops: str = "show", kw: dict | None = None) -> str:
 
 #   模块常量：domain_selftest.py 直接 import 校验 keep-set 完整性。
 _KEEP_TOOLS = {
-    # 11 域 dispatcher（09-02 quest→menu/care→farm；10-01 session→settings、cabin→scene/farm/daily/check）
+    # 12 域 dispatcher（09-02 quest→menu/care→farm；10-01 session→settings、cabin→scene/farm/daily/check）
+    #   ⚠️ 加上下面的 script 共 **13 个域入口**；再加 intent/screenshot/help 3 个独立 = 16。
+    #      这行曾写"11 域"，与下面实际列出的 12 个名字对不上（2026-10-01 修正）。
     "check", "farm", "mine", "social", "scene",
     "menu", "storage", "daily", "map", "festival", "fish", "settings",
     # 🎯 2026-09-29：意图选项单（`senses` 分支那套「动作空间恒定」）——**必须在这儿**，

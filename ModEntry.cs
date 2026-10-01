@@ -3141,6 +3141,15 @@ public class ModEntry : Mod
                 //       那个说"端点**收**不收 slot"，这个说"一览**给**不给格号"。
                 //       消费方要的是后者（拿不到号就没法指），并成一个键以后只改一头就会骗人。
                 ["scan_chests_item_slot"] = true,
+                // 🗑️ /state **背包物品层**带 `shippable`（游戏 `Item.canBeShipped()`）。
+                //    ⚠️ 2026-10-01 为什么单独立这一位：`sellable`（`IsSellable`）**不等于**能投出货箱 ——
+                //       前者只排除 工具/武器/靴/戒（-99/-98/-97/-96），而游戏那把尺子
+                //       （反编译 `Object.canBeShipped()` / `Item.canBeShipped()`）还排掉
+                //       **大型可制造物**（宝箱/熔炉/小桶…）和**所有非 Object 的件**
+                //       （帽子/衣服/戒指/饰品 —— 基类直接 `return false`）。
+                //       真机上「投出货箱」照 `sellable` 列了 14 件，其中 6 件根本进不去。
+                //    ⚠️ 这是**schema 陈述**（"会不会吐这个字段"），不是游戏规则陈述 ⇒ 符合上面那条规矩。
+                ["state_shippable"] = true,
             }
         };
     }
@@ -5219,6 +5228,11 @@ public class ModEntry : Mod
                         ["quality"] = (i as StardewValley.Object)?.Quality ?? 0,
                         ["value"] = SafeSellPrice(i),
                         ["sellable"] = IsSellable(i),   // 🔒 不可卖的工具/武器/戒指/靴子（标 0 + 不可卖，别让 AI 拿去卖）
+                        // 🗑️ 2026-10-01：**能不能投出货箱** —— 跟 `sellable` **不是同一把尺子**。
+                        //    `IsSellable` 只排 4 个分类；游戏那把（`Item.canBeShipped()`）还排掉
+                        //    大型可制造物和所有非 Object 的件（帽/衣/戒/饰品）。给 AI 的那张"投哪件"
+                        //    的单子**必须**用这一位，否则列出来的大半是"按了不成"（真机抓到过）。
+                        ["shippable"] = i.canBeShipped(),
                         ["stats"] = DescribeItemStats(i),
                         ["slotIndex"] = x.slotIdx   // 真实背包槽位（点坐标用这个，不是列表 index）
                     };

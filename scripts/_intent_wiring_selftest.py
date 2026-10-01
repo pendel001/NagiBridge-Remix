@@ -11,6 +11,7 @@
    跟"接线接对没有"无关，带着它跑只会让这个自验变脆。
 """
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -27,11 +28,12 @@ STATE = {
     "location": {"name": "FarmHouse"},
     "inventory": [
         {"slotIndex": 2, "name": "Book", "displayName": "古书", "itemId": "(O)Book",
-         "catNum": -102, "stack": 1, "quality": 0, "sellable": False},
+         "catNum": -102, "stack": 1, "quality": 0, "sellable": False, "shippable": False},
         {"slotIndex": 3, "name": "Strawberry", "displayName": "草莓", "itemId": "(O)400",
-         "catNum": -79, "stack": 5, "quality": 0, "edibleValue": 20, "healthRecovered": 0},
+         "catNum": -79, "stack": 5, "quality": 0, "edibleValue": 20, "healthRecovered": 0,
+         "sellable": True, "shippable": True},
         {"slotIndex": 4, "name": "Hoe", "displayName": "锄头", "itemId": "(T)Hoe",
-         "catNum": -99, "stack": 1, "quality": 0},
+         "catNum": -99, "stack": 1, "quality": 0, "sellable": False, "shippable": False},
     ],
     "activeMenu": None,
 }
@@ -63,6 +65,12 @@ SEATS = {"seats": [{"kind": "furniture", "name": "木椅", "x": 14, "y": 13,
 FURNITURE = {"furniture": [{"name": "红沙发", "x": 15, "y": 13, "width": 2, "height": 1}]}
 ANIMALS = {"animals": [{"name": "牛牛", "type": "White Cow", "x": 11, "y": 14,
                         "wasPetToday": False, "friendship": 120}]}
+# 👕 穿戴物（形照 `/worn` 的真回包）——⚠️ **两种形状并存**：
+#    `shirt`/`pants`/`hat`/`accessory` 回**字符串**，`boots`/`leftRing`/`rightRing`/`trinket`
+#    回**字典或 null**（`ModEntry.cs:6960-7030`）。少判一种，"脱"那几行就少一半。
+WORN = {"worn": {"shirt": "Blue Shirt", "pants": None, "hat": "Straw Hat",
+                 "accessory": None, "boots": {"name": "Old Boots"},
+                 "leftRing": None, "rightRing": None, "trinket": None}}
 
 
 # 🏪 商店那一份（`/menu` 的真回包形状）——货架 + 这家收什么
@@ -80,11 +88,14 @@ MENU_SHOP = {
 
 
 def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=False,
-          caps=None):
+          caps=None, menu=""):
     CALLS.clear()
     state = dict(STATE)
     if shop:
         state = dict(STATE, activeMenu={"type": "ShopMenu"})
+    elif menu:
+        # 🚪 2026-10-01：**菜单态**用例要能指定是哪种界面（出口行给不给看类型）。
+        state = dict(STATE, activeMenu={"type": menu})
 
     def g(ep, params=None):
         CALLS.append(("GET", ep, params))
@@ -103,6 +114,7 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
             "/sittable": SEATS,
             "/furniture": FURNITURE,
             "/animals": ANIMALS,
+            "/worn": WORN,
         }.get(ep, {})
 
     def p(ep, data=None):
@@ -346,6 +358,170 @@ def main():
                 and op.value not in M._IM_POST_OPS and op.value not in helpers):
             bad.append(f"{op.value}(L{node.lineno})")
     res.append(ok(f"带参裸端点一律 POST（没过的：{'、'.join(bad) if bad else '无'}）", not bad))
+
+    # ⑩ 🚪 界面出口（2026-10-01）—— 修的是当天真机抓到的那条**假门**：
+    #    开个界面（GameMenu/ItemGrabMenu）⇒ `_candidates` 只留 `menu_ok` ⇒ **一屏空**，
+    #    只剩 `0 做点别的…（at x,y 指哪打哪）`，而 `at` 指出来的世界动作**正是**
+    #    `do_row` 菜单态守卫要挡的。真机三步：show 空 → at 给「坐 木椅」→ do 被挡。
+    #
+    # ⚠️ 这一节同时是**防漂移闸门**：`_menu_exit_of`（给不给出口行）跟 `_close_hint`
+    #    （这个菜单该怎么处理）**必须同源** —— 后者是唯一的事实地图，两处各写一份早晚漂。
+    res.append(ok("🚪 普通界面 ⇒ 给出口行",
+                  M._menu_exit_of("GameMenu") == "关掉界面"
+                  and M._menu_exit_of("ItemGrabMenu") == "关掉界面"
+                  and M._menu_exit_of("ShopMenu") == "关掉界面"
+                  and M._menu_exit_of("LetterViewerMenu") == "关掉界面"))
+    res.append(ok("🚪 就绪屏 ⇒ 标题说实话（`cancel()` 为它单独写了一条分支）",
+                  M._menu_exit_of("ReadyCheckDialog") == "撤就绪 / 关屏"))
+    res.append(ok("🚪 没开界面 ⇒ 不给出口行",
+                  M._menu_exit_of("") == "" and M._menu_exit_of(None) == ""))
+    _drift = []
+    for _mt, _what in (("CharacterCustomization", "捏人页"), ("BobberBar", "钓鱼小游戏"),
+                       ("DialogueBox", "对话框")):
+        _h = M._close_hint(_mt)
+        # 同源判据：这一族的原话里必须**明确叫它别关/别动**、或给出**另一条路**
+        # （对话框就是"走 advance"）—— 出口行给不给，跟着这句话走。
+        _says_other = ("别关" in _h) or ("别去动" in _h) or ("advance" in _h)
+        if M._menu_exit_of(_mt) != "" or not _says_other:
+            _drift.append(f"{_what}(exit={M._menu_exit_of(_mt)!r})")
+    res.append(ok(f"🚪 三个**关不得**的族：不给出口行 **且** `_close_hint` 同源"
+                  f"（漂了的：{'、'.join(_drift) if _drift else '无'}）", not _drift))
+
+    # 接线：这两个字段**必须由服务器递进 Ctx**（单子层自己不认菜单名）
+    _stub(shop=True)
+    ctx = M._im_ctx()
+    res.append(ok("🚪 `_im_ctx` 把**出口标题**递进 ctx", ctx.menu_exit == "关掉界面"))
+    res.append(ok("🚪 `_im_ctx` 把 `_close_hint` 的**原话**递进 ctx",
+                  ctx.menu_hint == M._close_hint("ShopMenu")))
+    _so = M.intent(ops="show", kw={"n": 40})
+    res.append(ok("🚪 商店开着 ⇒ 「关掉界面」跟 买/卖 **同屏**",
+                  "关掉界面" in _so and "买…" in _so))
+    # 捏人页：**不给**出口行，改印原话（按 ok = 不可逆定型，劝它就关等于害它）
+    _stub(menu="CharacterCustomization")
+    ctx = M._im_ctx()
+    res.append(ok("🚪 捏人页 ⇒ 不给出口行", ctx.menu_exit == ""))
+    _cm = M.intent(ops="show", kw={"n": 40})
+    res.append(ok("🚪 捏人页 ⇒ 改印原话，且**不指** `at x,y`（假门拆了）",
+                  "别关它" in _cm and "指哪打哪" not in _cm))
+
+    # 关界面那一下：**必须回读核实** —— `cancel()` 自己那句是发射后不管的，
+    # 对 `ShippingMenu` 那类"要点 ok 才算完"的界面可能压根没关上。
+    # ⚠️ 只打桩网络层（`api.key` / `_menu_close` / `ensure_roles`），**真跑 `cancel()`**：
+    #    这一节要验的正是"cancel 之后有没有回读"，替身跑就测不到。
+    _stub()
+    api.key = lambda *a, **k: None
+    api.ensure_roles = lambda *a, **k: None
+    M._menu_close = lambda *a, **k: None
+    _seen = {"n": 0}
+
+    def _gclose(ep, params=None):
+        if ep == "/state":
+            _seen["n"] += 1
+            # 第 1 次（动手前）= ShopMenu；第 2 次（回读）= 已关
+            return dict(STATE, activeMenu=({"type": "ShopMenu"} if _seen["n"] == 1 else None))
+        return {}
+
+    api._ai_get = _gclose
+    _msg = M._im_close_menu()
+    res.append(ok("🚪 关成了 ⇒ 如实说「界面已关」并点名原界面",
+                  "界面已关" in _msg and "ShopMenu" in _msg))
+    res.append(ok("🚪 回读了 `/state`（动手前 + 动手后）",
+                  # ⚠️ 至少 2 次，**不写死 3**：`cancel()` 自己还会读一次
+                  #    （它要按菜单类型分流）—— 写死就等于把它的实现细节冻进测试。
+                  _seen["n"] >= 2, f"实际 {_seen['n']} 次"))
+    _r = M._im_run("close_menu", {})
+    res.append(ok("🚪 `_im_run` 认 `close_menu`（走 helpers 那一档、判成 ok）",
+                  _r.get("st") == "yes" and "界面已关" in (_r.get("text") or "")))
+
+    # 关不掉 ⇒ **不许谎报成功**，照搬 `_close_hint` 的原话（不另编一句）
+    def _gstuck(ep, params=None):
+        if ep == "/state":
+            return dict(STATE, activeMenu={"type": "ShippingMenu"})
+        return {}
+
+    api._ai_get = _gstuck
+    _msg2 = M._im_close_menu()
+    res.append(ok("🚪 关不掉 ⇒ 如实说「还开着」（**不谎报成功**）",
+                  "还开着" in _msg2 and "ShippingMenu" in _msg2))
+    res.append(ok("🚪 关不掉 ⇒ 照搬 `_close_hint` 的原话",
+                  M._close_hint("ShippingMenu") in _msg2))
+    _r2 = M._im_run("close_menu", {})
+    res.append(ok("🚪 关不掉 ⇒ `_im_run` 判成 ⚠️（不是 ✅）", _r2.get("st") == "maybe"))
+
+    # ⑪ 👕 穿戴（2026-10-01）—— 接线 + **对着 C# 源码核槽名表**。
+    #
+    # ⚠️ 槽名是**跨语言的契约**：Python 这边列 `hat`/`shirt`/…，C# 那边 `TryTakeOff`
+    #    按同一批字符串分派。两边各写一份 = 早晚漂（漂了的样子是"脱 帽子"按下去回
+    #    `未知槽位 'hat'`）。⇒ 这一条**去读 `ModEntry.cs` 的报错原话**当权威清单。
+    _slots_cs = set()
+    try:
+        _src = open(os.path.join(_here, "..", "ModEntry.cs"), encoding="utf-8").read()
+        _m = re.search(r"未知槽位[^（]*（([^）]+)）", _src)
+        if _m:
+            _slots_cs = {x.strip() for x in _m.group(1).split("/") if x.strip()}
+    except Exception as e:
+        print(f"     （读 ModEntry.cs 失败：{e}）")
+    _slots_py = {k for k, _cn in M.intent_menu._WORN_SLOTS}
+    res.append(ok(f"👕 「脱」的槽名跟 C# `TryTakeOff` 一致（C#={sorted(_slots_cs)}）",
+                  bool(_slots_cs) and _slots_py == _slots_cs,
+                  f"Python 多/少的：{sorted(_slots_py ^ _slots_cs)}"))
+
+    # 数据来源：`/worn` **必须打 AI 自己那端**（打错端 = 劝 AI 去脱恒的帽子）
+    _stub()
+    ctx = M._im_ctx()
+    _worn_calls = [c for c in CALLS if c[1] == "/worn"]
+    res.append(ok("👕 `_im_ctx` 会读 `/worn`", bool(_worn_calls)))
+    res.append(ok("👕 `/worn` 拼进 ctx（字符串槽和字典槽都在）",
+                  ctx.worn.get("hat") == "Straw Hat"
+                  and (ctx.worn.get("boots") or {}).get("name") == "Old Boots"))
+    # ⚠️ 只查"CALLS 里打过 /worn"**不够**：`_ai_get` 被桩掉了，看不出端口。
+    #    真判据在**源码**里（`api._ai_get("/worn")`）——同 `_IM_POST_OPS` 那条的守法。
+    _worn_src = open(os.path.join(_here, "nagi_mcp_server.py"), encoding="utf-8").read()
+    res.append(ok("👕 `/worn` 走的是 `_ai_get`（AI 自己那端），不是 `_get`",
+                  'api._ai_get("/worn")' in _worn_src))
+    # 单子上要真长出来（顶层一行目录 + 点开是"脱/穿"）
+    _stub()
+    _wt = M.intent(ops="show", kw={"n": 40})
+    res.append(ok("👕 顶层有「穿戴…」一行", "穿戴…" in _wt))
+    _wn = next((r.no for r in M.intent_menu._LAST_ROWS if (r.label or "") == "穿戴"), None)
+    _wl = M.intent(ops="do", kw={"code": str(_wn)})
+    res.append(ok("👕 点开 = 字符串槽 + 字典槽都列出",
+                  "脱 帽子（Straw Hat）" in _wl and "脱 靴子（Old Boots）" in _wl))
+    res.append(ok("👕 空槽不列（leftRing/pants 都是 None）",
+                  "左戒指" not in _wl and "裤子" not in _wl))
+    # ⚠️ `accessory`（面部饰品）**`/worn` 会吐、C# 的槽位表却不认** ⇒ 永远不许列出来
+    res.append(ok("👕 `accessory` **不列**（C# 槽位表不认它 → 列了就是按不成）",
+                  "面部" not in _wl and "accessory" not in _wl))
+
+    # ⑫ 🧾 过夜结算屏（2026-10-01）——**不给通用出口**，它有自己的行（「确认结算」）。
+    #    ⚠️ 判据：`cancel()` 那套是 ESC + menu_close，而结算屏要点 `ok` 才算完
+    #       —— 我那条"关不掉就如实说"的验收用例用的**正是** `ShippingMenu`。
+    res.append(ok("🧾 结算屏 ⇒ `_menu_exit_of` **不给**出口行", M._menu_exit_of("ShippingMenu") == ""))
+    _stub(menu="ShippingMenu")
+    _sc = M._im_ctx()
+    res.append(ok("🧾 结算屏 ⇒ 递进 ctx 的 `menu_hint` 仍指 `ok`（不是空话）",
+                  "ok" in (_sc.menu_hint or "")))
+    _so2 = M.intent(ops="show", kw={"n": 40})
+    res.append(ok("🧾 结算屏 ⇒ 单子给「确认结算」、**不给**「关掉界面」",
+                  "确认结算" in _so2 and "关掉界面" not in _so2))
+
+    # ⑬ 🎬 `activeEvent` 要拼进 ctx（事件**不是菜单** —— 那一刻 activeMenu 可能是 null）
+    _stub()
+    _ev_state = dict(STATE, activeEvent={"id": "ev1", "skippable": True})
+    _orig_g = api._ai_get
+
+    def _gev(ep, params=None):
+        if ep == "/state":
+            return _ev_state
+        return _orig_g(ep, params)
+
+    api._ai_get = _gev
+    _ec = M._im_ctx()
+    res.append(ok("🎬 `activeEvent` 拼进 ctx", (_ec.event or {}).get("id") == "ev1"))
+    _eo = M.intent(ops="show", kw={"n": 40})
+    res.append(ok("🎬 事件在播 ⇒ 单子给「推进对话」（那一刻没菜单也照样给）",
+                  "推进对话" in _eo))
+    api._ai_get = _orig_g
 
     print(f"\n{sum(res)}/{len(res)} 过")
     return all(res)

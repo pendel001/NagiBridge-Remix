@@ -85,10 +85,15 @@ def scan_backpack(state: dict) -> list:
             "quality": i.get("quality"),
             "value": i.get("value") or 0,
             "sellable": i.get("sellable", True),
-            # 下面三个**原样搬，不猜**：字段不在就是 None，跟着走 CAN_MAYBE
+            # 下面几个**原样搬，不猜**：字段不在就是 None，跟着走 CAN_MAYBE
             "cat_num": i.get("catNum"),
             "edible": i.get("edibleValue"),
             "health": i.get("healthRecovered"),
+            # 🗑️ **能不能投出货箱**（C# 的 `Item.canBeShipped()`）。
+            #    ⚠️ 跟 `sellable` **不是同一把尺子**（后者只排 工具/武器/靴/戒）——
+            #       真机上照 `sellable` 列「投哪件」，14 件里 6 件根本进不去出货箱。
+            #    ⚠️ 老 DLL 没这个键 ⇒ `None` ⇒ 那一行**不出现**（同三档，见 `_bin_can`）。
+            "shippable": i.get("shippable"),
             "raw": i,
         })
     return out
@@ -106,6 +111,46 @@ def is_book(slot: dict):
     if c is None:
         return CAN_MAYBE
     return c == BOOK_CAT
+
+
+# 👕 「这东西能穿」+「是哪一类」——**游戏自己的分类号**。
+#    逐个从反编译核过（`G:\wingheng\Claude\NagiBridge\decomp\full\StardewValley\Object.cs:243-259`）：
+#      · `hatCategory=-95` · `ringCategory=-96` · `bootsCategory=-97`
+#      · `clothingCategory=-100` · `trinketCategory=-101`
+#    ⚠️⚠️ **没有 `pantsCategory`** —— 我一度以为裤子是 `-101`，那是**饰品 Trinket**。
+#       裤子走 `Clothing`：`StardewValley.Objects/Clothing.cs:100/118/132` 三处构造函数
+#       **都写 `base.Category = -100`**，衬衫/裤子靠 `clothesType` 枚举分（`Clothing.cs:44`）。
+#    ⚠️ 为什么不"问 C# 要类型"：`TryEquip`（`ModEntry.cs:6255`）判的是 **CLR 类型**
+#       （`item is Clothing` / `is Hat` / …），Python 看不见类型 —— 而 `catNum` 就是
+#       `Item.Category`（`ModEntry.cs:5193` 原样吐出来），是**同一件事的可读投影**。
+#       ⇒ 这一条**不需要改 DLL**（改 DLL 要恒关游戏，本机活的那份在 F 盘且被锁着）。
+WEARABLE_CATS = {-95: "帽子", -96: "戒指", -97: "靴子", -100: "衣服", -101: "饰品"}
+
+# 👕 `/worn` 的槽位 → 中文。⚠️ **槽名必须跟 C# 一致**：权威清单就是 `TryTakeOff`
+#    报错里那句 `（boots/leftRing/rightRing/trinket/hat/shirt/pants）`（`ModEntry.cs:6366`）。
+#    ⚠️ **没有 `accessory`** —— `/worn` 会吐这个键（面部饰品），可 C# 的槽位表**不认它**，
+#       列出来就是"按了不成"的行。`_intent_wiring_selftest.py` 有一条会**读 C# 源码**
+#       核这张表（漂了就红，不靠人记）。
+_WORN_SLOTS = (("hat", "帽子"), ("shirt", "上衣"), ("pants", "裤子"), ("boots", "靴子"),
+               ("leftRing", "左戒指"), ("rightRing", "右戒指"), ("trinket", "饰品"))
+
+
+def _wear_cat(slot: dict):
+    """这件能穿吗、是哪个槽。→ 中文槽名 / `None`（不能穿，或分类号缺失⇒不猜）。"""
+    return WEARABLE_CATS.get((slot or {}).get("cat_num"))
+
+
+def _worn_name(worn: dict, slot: str) -> str:
+    """`/worn` 里某槽**现在戴着什么**。→ 名字 / `""`（空槽）。
+
+    ⚠️ 两种形状都得吃：`shirt`/`pants`/`hat`/`accessory` 回**字符串**，
+       `boots`/`leftRing`/`rightRing`/`trinket` 回**字典或 null**（`ModEntry.cs:6960-7030`）。
+       少判一种，"脱"那几行就会凭空少一半。
+    """
+    v = (worn or {}).get(slot)
+    if isinstance(v, dict):
+        return v.get("name") or ""
+    return v or ""
 
 
 # 🛠 「这是不是工具」——游戏自己的判据（`Tool.Category == -99`，反编译 + CHANGELOG 09-27 那条）。
@@ -143,9 +188,29 @@ class Ctx:
     inv: list = field(default_factory=list)          # scan_backpack 的结果
     tiles: dict = field(default_factory=dict)        # {(x,y): /surroundings 的 tile}
     menu: Optional[dict] = None
+    # 🚪 **界面出口**（2026-10-01）：菜单开着时，单子上那一行「关掉界面」的**标题**。
+    #    `""` = **这一刻不该给**（捏人页 / 钓鱼小游戏 / 对话框 —— 给了就是劝 AI 去干错事，
+    #    分类表在服务器 `_menu_exit_of`，挨着 `_close_hint`）。
+    #    ⚠️ **由服务器算好递进来，这一层不自己判菜单类型**：同一张判据放两处 = 早晚漂
+    #       （本项目的老病；`caps` / `shop` 都是这个形状）。
+    menu_exit: str = ""
+    # 📄 菜单开着却**没有出口行**时，空白屏上该印的那句指路（服务器 `_close_hint` 的**原话**）。
+    #    ⚠️ 它存在的唯一理由：**菜单态绝不能再印「at x,y 指过去」**——
+    #       `at` 指出来的世界动作，`do_row` 的菜单态守卫**全挡**。那是**假门**
+    #       （2026-10-01 真机三步走完：show 空 → at 给"坐椅子" → do 被挡）。
+    menu_hint: str = ""
+    # 🎬 **正在播的剧情/事件**（`/state` 的 `activeEvent`，没有就是 `None`）。
+    #    ⚠️ 必须跟 `menu` 分开看：事件**不是菜单**（`activeMenu` 那时可能是 null），
+    #       而且节日期间 `activeEvent` **恒在播** —— 那是"这一刻的事实"，不是"有个弹窗挡路"。
+    event: Optional[dict] = None
     # 🪑 我此刻是不是坐着（`/sittable` 的 `me.sitting`）。坐着时**不该再给"坐"的行**
     #    ——要先起身（`scene stand`）。这是**处境**，不是格子的属性。
     sitting: bool = False
+    # 👕 我现在**身上穿着什么**（`/worn` 的 `worn` 那份）。
+    #    ⚠️ 空字典 = "什么都没穿" **或** "读不到" —— 两者在这一层**都没行可出**，
+    #       所以这儿不分开（不同于 `shop` 那三态：那个折叠会让 AI 以为"这店不收东西"）。
+    #    ⚠️ 读的必须是 **AI 自己那端**（`_ai_get`）——穿戴物是"我的"，不是恒的。
+    worn: dict = field(default_factory=dict)
     # 🐾 本图的宠物（猫狗）——来自 `/surroundings` 的 `npcs` 里 `kind=="pet"` 的那几个。
     #    它们是**世界级**的（不属于某一格的动作），所以不进 tiles。
     pets: list = field(default_factory=list)
@@ -654,6 +719,37 @@ def _exec_sit(ctx, targets, run):
     return _receipt_from_helper("坐", s.get("name") or f"({s.get('x')},{s.get('y')})", r)
 
 
+# 🪑 「起身」（2026-10-01）—— **坐着时的唯一出路**。
+#
+# ⚠️ 缺口是这么来的：`_sit_can` 见 `ctx.sitting` 就回 `CAN_NO`（坐着不该再给「坐」，
+#    那一句本身是对的）—— 可**没有别的行接上**，于是：
+#      「坐 木椅」是单子**推荐**的动作 → 按下去坐下 → **单子上从此既没有「坐」也没有「起身」**
+#    ⇒ 单子把 AI 领进了一个**自己不给出口**的姿势。它想走动 / 搬东西 / 躺下，
+#      只能靠"记得住 scene 域里有个 stand"（这层的承诺是"看单子就够了"，不该要它背）。
+#    📌 同款病在**床上**还有一份（`isInBed`）：真机 2026-10-01 早上我自己踩到
+#      —— 轮回躺在床上时 `key cancel` **开不出界面**（按键被游戏吃掉），
+#      我花了十分钟才反应过来是"在床上"。**那一份不在这一批**（要动 Ctx + 一个新执行器）。
+#
+# ⚠️ `exec` 走现成的 `stand()`：它自己会轮询确认（`StopSitting` 的 lerp 要 0.3~0.5s 才收尾），
+#    成没成**由它说**，这一层不替它下结论。
+def _stand_can(ctx, t):
+    return CAN_YES if ctx.sitting else CAN_NO
+
+
+def _stand_show(ctx, t):
+    return "起身"
+
+
+def _stand_reason(ctx, t):
+    # ⚠️ 理由要说清"这一刻为什么有它" —— 否则 AI 会以为「起身」是随时能按的通用动作。
+    return "坐着 · 起来才能走动 / 搬东西"
+
+
+def _exec_stand(ctx, targets, run):
+    r = run("stand", {})
+    return _receipt_from_helper("起身", "", r)
+
+
 def _pickup_can(ctx, t):
     """🛋 拿得起家具吗。
 
@@ -1079,11 +1175,17 @@ def _exec_chest_open(ctx, targets, run):
 
 # 「看 / 取 / 存」三个动作——**只长在容器那一层里**，不进顶层动词表：
 # 顶层扫的是"图上的格子"，而它们的目标是"这个容器"，由 `_chest_subs` 现场算。
-OPEN_V = Verb("chest_open", "看（走过去开箱）", 0, None, None,
+#
+# ⚠️ 2026-10-01：这三个原来 `can=None`（"进不了顶层，不需要"）。加 `_recheck` 之后
+#    那句话不成立了 —— **执行前复验会调 `can()`**，`None` 一调就炸（自验当场抓到）。
+#    ⇒ 补上真判据（"这格还是个容器吗"）：它们由 `_chest_subs` 保证目标本来是容器，
+#      而复验要的正是"**现在还是不是**"（箱子可能被搬走 / 换图了）。
+_CAN_IS_CHEST = lambda c, t: CAN_YES if (t or {}).get("is_chest") else CAN_NO  # noqa: E731
+OPEN_V = Verb("chest_open", "看（走过去开箱）", 0, _CAN_IS_CHEST, None,
               lambda c, t: "看（走过去开箱）", "tile", exec=_exec_chest_open)
-TAKE_V = Verb("chest_take", "取", 0, None, None, lambda c, t: "取", "tile",
+TAKE_V = Verb("chest_take", "取", 0, _CAN_IS_CHEST, None, lambda c, t: "取", "tile",
               exec_multi=_exec_take_multi)
-STORE_V = Verb("chest_store", "存", 0, None, None, lambda c, t: "存", "tile",
+STORE_V = Verb("chest_store", "存", 0, _CAN_IS_CHEST, None, lambda c, t: "存", "tile",
                exec_multi=_exec_store_multi)
 
 
@@ -1670,6 +1772,279 @@ def _exec_sell_multi(ctx, pairs, run):
     return render_receipt("卖", f"{len(pairs)} 摞", ok_n > 0, note="\n".join(lines))
 
 
+# 🚪 「关掉界面」（2026-10-01）—— **菜单态的那扇真门**。
+#
+# 起因（恒 2026-10-01 真机抓到、10-02 三步复现的**假门**）：
+#   开一个界面（GameMenu / ItemGrabMenu）⇒ `_candidates` 只留 `menu_ok` 的动词，
+#   而当时**只有 买/卖** ⇒ **一屏空**，只剩 `0 做点别的…（at x,y 指哪打哪）`。
+#   可 `at` 指出来的世界动作**正是** `do_row` 菜单态守卫要挡的东西：
+#     ① show     → （这一刻没有可做的 · … —— at x,y 指过去）
+#     ② at 24 26 → `1 坐 胡桃木椅子`          ← **看着有路**
+#     ③ do 1     → 🚧 菜单开着（GameMenu）—— 1 号是菜单态做不了的动作
+#   ⇒ 单子**自己画了一条自己堵死的路**。留一行真能按的出口，这个环才闭合。
+#
+# ⚠️ `menu_ok=True` 是**必需**的：`_candidates` 在菜单态只放行 `menu_ok`，
+#    少了这个位它会被自己那条过滤规则滤掉（= 修了个寂寞）。
+# ⚠️ 权重 30（低于 吃50 / 看40 / 买72 / 卖74）：商店开着时正事是买卖，
+#    出口行该在、但不该抢头条；而一屏空时它是**唯一**一行，权重无所谓。
+def _close_can(ctx, t):
+    """🚪 该不该给这一行 —— **只看服务器递来的标题**（`ctx.menu_exit`）。
+
+    ⚠️ 菜单没开 ⇒ `menu_exit` 是空串 ⇒ 不给（这是**菜单态专属**的一行）。
+    ⚠️ 捏人页 / 钓鱼小游戏 / 对话框那三族由服务器 `_menu_exit_of` 挡在外面，
+       这一层**不自己认菜单名**（认两遍 = 早晚漂）。
+    """
+    return CAN_YES if (ctx.menu and ctx.menu_exit) else CAN_NO
+
+
+def _close_show(ctx, t):
+    return ctx.menu_exit or "关掉界面"
+
+
+def _close_reason(ctx, t):
+    m = (ctx.menu or {}).get("type") or "?"
+    return f"{m} 开着 · 菜单态**唯一**能按的世界动作"
+
+
+def _exec_close(ctx, targets, run):
+    m = (ctx.menu or {}).get("type") or "?"
+    r = run("close_menu", {})
+    # ⚠️ 回执走 `_receipt_from_helper`：**成没成看服务器回读的那句话**，
+    #    不在这儿替它下结论（`cancel()` 自己那句是发射后不管的，见 `_im_close_menu`）。
+    return _receipt_from_helper(ctx.menu_exit or "关掉界面", m, r)
+
+
+CLOSE_V = Verb("close_menu", "关掉界面", 30, _close_can, _close_reason, _close_show, "world",
+               exec=_exec_close, menu_ok=True)
+
+
+# 👕 「穿戴」（2026-10-01）—— **一行目录行包办 穿 / 脱**。
+#
+# 形状是**恒自己的规矩**推出来的，不是我省事：
+#   「菜单是多路口的强暗示：第一屏返回什么，AI 就倾向照着做」——
+#   背包里 5 件穿戴物 = 5 行「穿 X」，会把**收机器 / 箱子**这些一下能做完的挤成"还有 N 项"。
+#   ⇒ 顶层**只留一行**，点开才是"穿哪件 / 脱哪件"（同 `搬走…` / `箱子…` 那个形状）。
+# ⚠️ 穿和脱**合成一行**（恒：「能收就收」）：它俩是同一件事的两面（"管我身上这身行头"），
+#   拆两行 = 第一屏多占一格，而两行几乎从不同时有用（背包空时只有脱、身上空时只有穿）。
+def _wear_on_list(ctx):
+    """背包里**能穿的**（分类号问得出来才算，问不出来不猜）。"""
+    return [t for t in ctx.inv if _wear_cat(t)]
+
+
+def _wear_off_list(ctx):
+    """身上**还戴着东西**的槽 → `[(槽名, 中文, 名字)]`（空槽不出行）。"""
+    return [(k, cn, _worn_name(ctx.worn, k)) for k, cn in _WORN_SLOTS
+            if _worn_name(ctx.worn, k)]
+
+
+def _wear_can(ctx, t):
+    """顶层那一行：有得穿 **或** 有得脱才出现。"""
+    return CAN_YES if (_wear_on_list(ctx) or _wear_off_list(ctx)) else CAN_NO
+
+
+def _wear_reason(ctx, t):
+    """理由栏：**身上几件 + 背包能穿几件**（两样都是"这一刻的事实"，都要说）。
+
+    ⚠️ 走的是 `reason` 而**不是** `reason_many`：这一行 `target="world"`（`_row_for` 里
+       `world=True` 那条分支），`reason_many` 在这种情况下**压根不会被调到**
+       —— 我第一版把话写在 `reason_many` 里，真机屏上就只有半句（自验当场抓到）。
+    """
+    on, put = len(_wear_off_list(ctx)), len(_wear_on_list(ctx))
+    bits = []
+    if on:
+        bits.append(f"身上 {on} 件")
+    if put:
+        bits.append(f"背包能穿 {put} 件")
+    return " · ".join(bits)
+
+
+def _wear_show(ctx, t):
+    return "穿戴"
+
+
+def _wear_count(ctx, targets):
+    """目录行那截计数 —— **故意留空**。
+
+    ⚠️ 约定（见 `_render_level`）：`count_text == ""` = **这行的计数说不出来** ⇒ 一个字都不印。
+       不这么干的话它会退回 `len(level.rows)`（"点开有几条"），而理由栏已经报了
+       "身上 1 件 · 背包能穿 2 件" —— 同一屏两个数并排就是"拿错尺子"的温床
+       （`_chest_count` 那段的同一条规矩）。
+    """
+    return "" if (_wear_off_list(ctx) or _wear_on_list(ctx)) else None
+
+
+def _wear_subs(ctx, targets):
+    """点开之后：**先"脱"后"穿"**。
+
+    ⚠️ 顺序有理由（不是随手）：身上那几件是**这一刻的事实**（脱了立刻变），
+       背包那几件是**将来的可能**。单子先报事实，跟别处一致。
+    """
+    rows = []
+    for slot, cn, name in _wear_off_list(ctx):
+        # ⚠️ `where=""`：目标是个**槽**、不是世界里的坐标，印"手持"就是撒谎
+        #    （同货架商品那条规矩）。
+        rows.append(Row(WEAR_OFF_V, [{"slot": slot, "cn": cn, "name": name}],
+                        f"脱 {cn}（{name}）", "身上", 0, where=""))
+    for t in _wear_on_list(ctx):
+        rows.append(Row(WEAR_ONE_V, [t], f"穿 {t['name']}", _wear_cat(t) or "", 0))
+    if not rows:
+        return None
+    return Level(rows, title="👕 穿戴 —— 脱哪件 / 穿哪件？（敲了当场换）")
+
+
+def _exec_wear_on(ctx, targets, run):
+    t = targets[0]
+    # ⚠️ 传**内部名**（`raw.name`，英文）—— C# 是 `item.Name.Equals(name)`（`ModEntry.cs:6234`），
+    #    跟"卖"同一个口径。传中文显示名 = 背包里永远找不到（`❌ 背包没有 '草帽'`）。
+    r = run("wear", {"name": (t.get("raw") or {}).get("name") or t.get("name")})
+    return _receipt_from_helper("穿", t.get("name") or "", r)
+
+
+def _exec_wear_off(ctx, targets, run):
+    d = targets[0]
+    r = run("wear", {"slot": d.get("slot")})
+    return _receipt_from_helper("脱", f"{d.get('cn')}（{d.get('name')}）", r)
+
+
+# 子层两个动词（**只活在「穿戴…」点开那一层**，不单独上顶层——它们的 `can` 恒真，
+# 因为"这一件能不能穿"在造行时已经筛过了）。
+WEAR_ONE_V = Verb("wear_on", "穿", 0, lambda c, t: CAN_YES,
+                  lambda c, t: _wear_cat(t) or "", lambda c, t: f"穿 {t['name']}",
+                  "inv", exec=_exec_wear_on)
+WEAR_OFF_V = Verb("wear_off", "脱", 0, lambda c, t: CAN_YES,
+                  lambda c, t: "身上", lambda c, t: f"脱 {t['cn']}",
+                  "world", exec=_exec_wear_off)
+
+
+# 🎬 「推进对话」（2026-10-01）—— 剧情/对话框那一刻**唯一该按的**东西。
+#
+# ⚠️ 为什么它得进单子：对话/事件开着时，`_candidates` 在菜单态只留 `menu_ok` 的动词，
+#    而当时没有任何一个是"推进" ⇒ **又是一屏空**（同 `CLOSE_V` 那扇假门，只是换了个由头）。
+#    真机上这正是最常见的一屏：AI 走到 NPC 面前搭话，然后单子什么都不给。
+#
+# ⚠️ **有选项时不给这一行**：那一刻该按的是 `menu click(option=N)`（选项号游戏自己发）。
+#    给了「推进对话」，按下去只会原地读回同一屏选项 —— 那是"看得见、按了白按"。
+#    没这一行时空白屏会印 `_close_hint` 的原话，那里面就写着"有选项走 click(option=N)"。
+def _advance_can(ctx, t):
+    if (ctx.event or {}).get("id"):
+        return CAN_YES                      # 事件在播（节日期间恒真，那是事实不是挡路）
+    m = ctx.menu or {}
+    if m.get("type") == "DialogueBox":
+        return CAN_NO if m.get("responses") else CAN_YES
+    return CAN_NO
+
+
+def _advance_show(ctx, t):
+    return "推进对话"
+
+
+def _advance_reason(ctx, t):
+    if (ctx.event or {}).get("id"):
+        e = ctx.event or {}
+        return f"剧情在播（{e.get('id')}）" + ("· 可整段跳" if e.get("skippable") else "")
+    return "对话框开着，一句句推"
+
+
+def _exec_advance(ctx, targets, run):
+    # 回执走 helper 那条（它自己会回读确认 + 报"推了几次、收了几句"）——
+    # 这一层**不替它下结论**（`advance_story` 内部有 stuck/选项/结束三种结局）。
+    r = run("advance", {})
+    return _receipt_from_helper("推进对话", "", r)
+
+
+# 🧾 「确认结算」（2026-10-01）—— **过夜结算屏（ShippingMenu）上的正确那一下**。
+#
+# ⚠️ 为什么不能靠 P0-a 那个通用的「关掉界面」：`cancel()` 走的是「按 ESC + menu_close」，
+#    而结算屏是**要点 ok 才算完**的那一族（`_close_hint` 对 shipping 的原话就是
+#    "menu click(button=ok) 确认关掉（交付/结算类要点 ok 才算完）"）。
+#    我那条"关不掉就如实说"的验收用例，用的正是 `ShippingMenu` —— 也就是说：
+#    只给「关掉界面」，AI 按下去大概率得到一句"还开着"。
+#    ⇒ 这一族**不给出口行**（见服务器 `_menu_exit_of`），改给这一行。
+#
+# ⚠️ 它同时是**和恒的双人确认**：结算屏是两人一起进新一天的门。
+#    单子上出现它，AI 才知道"该等的人到齐了没有、要不要现在推"。
+def _settle_can(ctx, t):
+    return CAN_YES if (ctx.menu or {}).get("type") == "ShippingMenu" else CAN_NO
+
+
+def _settle_show(ctx, t):
+    return "确认结算"
+
+
+def _settle_reason(ctx, t):
+    return "过夜结算屏 · 点了两人一起进新一天"
+
+
+def _exec_settle(ctx, targets, run):
+    r = run("settle", {})
+    return _receipt_from_helper("确认结算", "", r)
+
+
+# 🗑 「投出货箱」（2026-10-01）—— **目录行**（一件一行，跟「卖」同形）。
+#
+# ⚠️ **为什么不给一行"全部投放"**：`sell_to_bin(sell_all=True)` 是把背包里**能卖的全投**，
+#    那是一把大锤（"我这批是要留着的"它也照投）。单子第一条规矩是"出现的那条按了就成"，
+#    所以摆上来的必须是**具体投哪件**，而不是"投一切"。要"全投"走 `menu ops=bin sell_all=True`
+#    ——那条路是 AI **自己带着意图**去调的（同「睡觉」撤出单子的道理）。
+#
+# ⚠️ **门禁 = 站在农场**：箱子在农场（`sell_to_bin` 自己会从 `map_data` 的
+#    `buildings[type=="Shipping Bin"]` 找出来 + 走过去）。在矿洞里摆一行"投出货箱"
+#    等于劝它跑一趟腿 —— 那是**规划**，不是这一刻的"最优解"（恒那条规矩）。
+#    ⚠️ 这里**不自己写"农场"以外的箱子名单**：岛上的箱子是另一回事，等真机碰到再说。
+#
+# ⚠️⚠️ **判据必须问游戏**（`Item.canBeShipped()`），**不能用 `sellable`**：
+#    2026-10-01 真机抓到 —— 照 `sellable`（`IsSellable`，只排 -99/-98/-97/-96）
+#    列出来 14 件，里面有 `水手帽`/`宝箱`/`熔炉`/`小桶`/`珍奇乌鸦`，而这些**一件都进不去**：
+#      · 反编译 `Object.canBeShipped()`：`bigCraftable` ⇒ **false**（宝箱/熔炉/小桶…）
+#      · 反编译 `Item.canBeShipped()`：**基类直接 `return false`** —— 帽/衣/靴/戒/饰品
+#        那些**根本不是 `Object`** ⇒ 全都投不了。
+#    ⇒ 这一位由 C# 的 `/state` 直接吐（`canBeShipped()`），并用 **caps 把住关**：
+#      **老 DLL 没有这一位 ⇒ 这一行整个不出现**（宁可不给，也不给一行"按了不成"的）。
+def _bin_items(ctx):
+    return [t for t in ctx.inv if t.get("shippable") is True]
+
+
+def _bin_can(ctx, t):
+    if ctx.cap("state_shippable") is None:
+        return CAN_NO          # 这版 DLL 不吐 `shippable` ⇒ 判不出来 ⇒ 不给（不猜）
+    return CAN_YES if (ctx.loc == "Farm" and _bin_items(ctx)) else CAN_NO
+
+
+def _bin_show(ctx, t):
+    return "投出货箱"
+
+
+def _bin_reason(ctx, t):
+    n = len(_bin_items(ctx))
+    return f"{n} 件可投 · 箱子在这张图" if n else ""
+
+
+def _bin_count(ctx, targets):
+    n = len(_bin_items(ctx))
+    return f"{n} 件" if n else None
+
+
+def _bin_subs(ctx, targets):
+    rows = [Row(BIN_V, [t], f"投 {_name_with_q(t)}", "可卖", 0)
+            for t in _bin_items(ctx)]
+    if not rows:
+        return None
+    return Level(rows, title="🗑 投哪几件进出货箱？（敲一件投一件 · 要全投走 `menu ops=bin`）")
+
+
+def _exec_bin(ctx, targets, run):
+    t = targets[0]
+    # ⚠️ 传**内部名**（`raw.name`）—— 跟「卖」同一个口径（C# 按 `item.Name` 找）。
+    nm = (t.get("raw") or {}).get("name") or t.get("name")
+    r = run("bin", {"name": nm})
+    return _receipt_from_helper("投出货箱", t.get("name") or "", r)
+
+
+BIN_V = Verb("bin_one", "投出货箱", 0, lambda c, t: CAN_YES,
+             lambda c, t: "可卖", lambda c, t: f"投 {_name_with_q(t)}",
+             "inv", exec=_exec_bin)
+
+
 # 「买 / 卖」两个动词 = **目录行**（顶层只报有几样，点开才发号）。
 # ⚠️ 它们**同一个对象**既是顶层那条（`subs`/`count`）又是子层的执行者（`exec_multi`）——
 #    容器那边分成了 `chest` / `chest_take` 两个对象，是因为顶层扫的是"图上的格子"（`tile`）
@@ -1714,6 +2089,12 @@ VERBS: list = [
     #    ⇒ 街上两张长椅时**不许印 `坐 现代长椅 ×2`**（那是"两张都要坐"）。
     Verb("sit",     "坐",     70, _sit_can,     _sit_reason,     _sit_show,     "tile",
          exec=_exec_sit, group="家具"),
+    # 🪑 起身：**坐着才出现**（见上面 `_stand_can` 那段）——它是「坐」的**出口**，
+    #    没有它，单子就把 AI 留在一个自己不给路的状态里。
+    # ⚠️ 权重贴着 `sit`(70) 下面一点：同一个"姿势"家族，坐/起 该挨着看。
+    #    压不过 收机器(88)/箱子(80) 是对的 —— 坐着不影响收机器（`_collect_can` 不看坐姿）。
+    Verb("stand",   "起身",   66, _stand_can,   _stand_reason,   _stand_show,   "world",
+         exec=_exec_stand),
     # 🛏 床（2026-09-29 恒：「床的重要性比其他家具大得多…当前场景有就该置顶」）。
     #    ⚠️ **两项分开，不是"床…"目录行**：
     #      ① 睡觉是这套系统里**唯一"不可逆 + 要房主配合"**的动作（日结束、存档、ReadyCheckDialog），
@@ -1756,12 +2137,33 @@ VERBS: list = [
     #     （书/食物都不是 Tool）⇒ **这两条结构性永不出现**。今晚一并修了（见 `ctx_from`）。
     Verb("eat",     "吃",     50, _eat_can,     _eat_reason,     _eat_show,     "inv",
          exec=_exec_eat, weight_fn=_eat_weight),
-    Verb("read",    "看",     40, _read_can,    _read_reason,    _read_show,    "held",
+    Verb("read",    "看",     40, _read_can,    _read_reason,    _read_show,    "inv",
          exec=_exec_read),
     # 🏪 买 / 卖（**只在商店开着时才有**，见上面那段商店说明）。两条都是**目录行**。
     # ⚠️ 权重压在 `collect`(88)/`chest`(80) 之下、`eat`(50) 之上：站在柜台前，买卖是正事；
     #    但商店**开着**的时候才会出现，所以它不会跟农场那批抢第一屏。
     SELL_V, BUY_V,
+    # 🚪 界面出口（**菜单态专属**，见上面 `CLOSE_V` 那段）。放最后只为读着顺——
+    #    排序走权重（30），跟它在列表里的位置无关。
+    CLOSE_V,
+    # 👕 穿戴（目录行，见上面那一段）。权重压在 读(40)/吃(50) 之下：
+    #    "换身行头"很少是这一刻的**最优解**（恒那条"只放最优解"的规矩），
+    #    但换了确实得有路 —— 所以它在，只是**不抢第一屏**。
+    Verb("wear", "穿戴", 38, _wear_can, _wear_reason, _wear_show, "world",
+         subs=_wear_subs, count=_wear_count),
+    # 🎬 推进对话（见上面那一段）。权重 76：**剧情在播时它就是正事**
+    #    （压过 收机器88？不 —— 收机器那行在菜单态根本不会出现，两者不会同屏争位；
+    #     76 只在"事件在播、单子照常全量"那种处境里起作用，那时它就该靠前）。
+    Verb("advance", "推进对话", 76, _advance_can, _advance_reason, _advance_show, "world",
+         exec=_exec_advance, menu_ok=True),
+    # 🧾 确认结算（**只长在 ShippingMenu 上**，见上面那一段）。权重 78：
+    #    结算屏那一刻它是**唯一**该按的（那一屏别的行全被菜单态过滤掉了）。
+    Verb("settle", "确认结算", 78, _settle_can, _settle_reason, _settle_show, "world",
+         exec=_exec_settle, menu_ok=True),
+    # 🗑 投出货箱（目录行，见上面那一段）。权重 36：**站在农场 + 背包有能卖的**才出现，
+    #    而且"投哪件"是个取舍 ⇒ 压在 穿戴(38) 之下，别抢第一屏。
+    Verb("bin", "投出货箱", 36, _bin_can, _bin_reason, _bin_show, "world",
+         subs=_bin_subs, count=_bin_count),
 ]
 
 
@@ -2099,8 +2501,12 @@ def _render_level(ctx: Ctx, lv: Level, n: int = 5) -> str:
         disp = r.label + (f" ×{n_t}" if (many and r.verb.batch) else "")
         if many and not r.verb.batch:
             loc = r.where if r.where is not None else _where(r.targets[0], ctx)
-            tail = " · ".join(x for x in (loc, f"附近另有 {n_t - 1} 格", r.reason,
-                                          "一次做一格") if x)
+            # ⚠️ 「附近另有 N 格」只对**世界里的格子**成立。`read` 2026-10-01 扩到背包
+            #    （`target="inv"`）之后，同一支会把背包里的两件印成"附近另有 1 格"
+            #    —— 那件东西压根不在世界里。措辞**跟目标档走**，别一句话管两种目标。
+            _more = (f"背包另有 {n_t - 1} 件" if r.verb.target == "inv"
+                     else f"附近另有 {n_t - 1} 格")
+            tail = " · ".join(x for x in (loc, _more, r.reason, "一次做一格") if x)
             lines.append(f" {r.no}  {disp}   ← {tail}")
             continue
         if n_t == 1:
@@ -2127,11 +2533,22 @@ def _render_level(ctx: Ctx, lv: Level, n: int = 5) -> str:
     if not shown:
         # ⚠️ 这里只报**事实计数**，**不做推荐排序**——排序必须带理由（`Verb.reason` 那段
         #    的审计面）。宁可先给计数 + 出口，也不给一个编出来的"建议"。
-        fact = _addressable_fact(ctx)
-        if fact:
-            lines.append(f"  （这一刻没有可做的 · 本图另有 {fact} —— at x,y 指过去）")
+        # 🚪⚠️ **菜单态是个例外，而且必须例外**：这一刻 `at x,y` 指出来的东西
+        #    **一条都按不动**（`do_row` 的菜单态守卫全挡）⇒ 原来那句
+        #    「—— at x,y 指过去」是**假门**（2026-10-01 真机三步走完的结论）。
+        #    没有出口行（捏人页/鱼机/对话框）时，就照抄服务器 `_close_hint` 的原话 ——
+        #    那句话本来就是"这个菜单该怎么处理"的唯一出处。
+        if ctx.menu:
+            _mt = (ctx.menu or {}).get("type") or "?"
+            lines.append(f"  （菜单开着「{_mt}」· 这一刻没有能敲的动作）")
+            if ctx.menu_hint:
+                lines.append(f"  📄 {ctx.menu_hint}")
         else:
-            lines.append("  （这一刻没有可做的动作——试试 at(x,y) 指一样东西）")
+            fact = _addressable_fact(ctx)
+            if fact:
+                lines.append(f"  （这一刻没有可做的 · 本图另有 {fact} —— at x,y 指过去）")
+            else:
+                lines.append("  （这一刻没有可做的动作——试试 at(x,y) 指一样东西）")
 
     hidden = len(lv.rows) - len(shown)
     if hidden > 0:
@@ -2144,10 +2561,23 @@ def _render_level(ctx: Ctx, lv: Level, n: int = 5) -> str:
 
     if len(_STACK) > 1:
         lines.append(" 0  这些都不是（返回上一层）")     # 与顶层 `0` 同义：这些都不是
+    elif ctx.menu:
+        # 🚪⚠️ 菜单态**不能**再写「at x,y 指哪打哪」—— 那正是那条假门的门牌
+        #    （`at` 指出来的世界动作这一刻全按不动，见 `CLOSE_V` 上方那段）。
+        #    这条 `0` 本身语义没变（"这些都不是"），只是**别再顺手指一条死路**。
+        lines.append(" 0  这些都不是")
     else:
         lines.append(" 0  做点别的…  （at x,y 指哪打哪）")
     # 提示优先取这一层自己的（`exec_on_pick` 那类形态跟默认不一样，得说清怎么敲）。
-    lines.append(lv.hint or _LEVEL_HINT.get(lv.mode, _LEVEL_HINT["act"]))
+    if lv.hint:
+        lines.append(lv.hint)
+    elif ctx.menu and lv.mode == "act":
+        # 🚪 菜单态**别再把 `at x,y` 写进提示行** —— 它是那条假门的门牌之一
+        #    （这一刻 `at` 指出来的动作全被 `do_row` 的守卫挡掉）。
+        #    一行都没有时（捏人页/鱼机/对话框）更不该叫人"敲编号"。
+        lines.append("> 敲编号" if shown else "> 先照上面那句把界面处理掉")
+    else:
+        lines.append(_LEVEL_HINT.get(lv.mode, _LEVEL_HINT["act"]))
     return "\n".join(lines)
 
 
@@ -2280,6 +2710,73 @@ def _do_qty(ctx: Ctx, lv: Level, sel, run) -> str:
     return out
 
 
+def _recheck(ctx: Ctx, row: "Row"):
+    """执行前**复验**：这一行的目标，在**现在的世界**里还成立吗？→ `None`(过) / 拒绝文案。
+
+    ⚠️ 为什么非有不可（`do_row` 那段老注释一直挂着这笔账）：
+       号**不跨屏**，可 `_LAST_ROWS` 是**上一次渲染**留下的 —— AI 看一眼单子、过几秒才敲，
+       中间世界会动（机器被收走 / 那本书被吃掉 / 椅子被人坐了 / 背包那格被挪了）。
+       不复验就会"以为在丢钻石、丢的却是翡翠"，而且**它会照做、不怀疑**。
+       ⇒ 这一条**必须先于** 丢东西 / 送礼 / 给东西 / 捐赠 这类"做错就不可逆"的动词落地。
+    ⚠️⚠️ 判据打的是**新 ctx 里的同一个目标**，不是拿渲染时那份旧字典再问一遍 ——
+       旧字典**自己就是当时的证据**，问它永远"还成立"，复验就成了走过场。
+       这跟"单子上的号打的是 `_LAST_ROWS` 而不是重算的第 n 条"**不矛盾**：
+       号仍指向它看过的那一行（不会替你改主意），这里只是**再确认那件事还做不做得了**。
+    ⚠️ 判据用 `is not True`：`CAN_MAYBE`（算不出来）**也要拦** ——
+       "不知道还能不能做"跟"不能做"在**动作**这一层的代价是一样的，
+       而单子第一条规矩是"**出现的那条，按了就成**"。（顶层候选那边 MAYBE 本来就不上行。）
+    """
+    v = row.verb
+    if v is None:
+        return None
+    if v.can is None:
+        # ⚠️ 没有 `can()` 的动词**验不了** ⇒ 放行，但这是**已知的洞**：
+        #    现在全仓只有容器子层那三个是这种（已补上真判据，见 `_CAN_IS_CHEST`）。
+        #    ⇒ **新加的动词一律要有 `can()`**，否则它永远绕过后验
+        #      （丢东西/送礼那类"做错不可逆"的更不能例外）。
+        return None
+    t0 = row.targets[0] if row.targets else None
+    which = ""
+    if v.target == "world" or t0 is None:
+        fresh = None
+        # ⚠️ 世界级动词**没有坐标可点名**（"这一刻的处境"），第一版让 `which` 空着，
+        #    真机屏上印出来是「（ 的情况变了」—— 一个空格（2026-10-01 真机照出来的）。
+        which = "这一刻的处境"
+    elif v.target in ("inv", "held"):
+        fresh = None
+        for it in (ctx.inv or []):
+            if t0.get("idx") is not None and it.get("idx") == t0.get("idx"):
+                fresh = it
+                break
+            if (t0.get("idx") is None and (it.get("raw") or {}).get("itemId")
+                    and (it.get("raw") or {}).get("itemId")
+                    == ((t0.get("raw") or {}).get("itemId"))):
+                fresh = it
+                break
+        which = "那件东西"
+        if fresh is None:
+            return (f"⏳ 「{row.label}」{which}**已经不在背包里了**"
+                    f"（你手上那张单子是**上一次**看的）。\n"
+                    f"   敲 `show` 重开一张 —— 号会当场重发，别按着旧号敲。")
+    else:
+        x, y = t0.get("x"), t0.get("y")
+        fresh = ctx.tile(x, y) if isinstance(x, int) and isinstance(y, int) else None
+        which = f"({x},{y}) 那个位置"
+        if fresh is None:
+            return (f"⏳ 「{row.label}」{which}**现在什么都没有了**"
+                    f"（你手上那张单子是**上一次**看的）。\n"
+                    f"   敲 `show` 重开一张 —— 号会当场重发。")
+    try:
+        ok_now = v.can(ctx, fresh) is True
+    except Exception as e:
+        return f"⏳ 「{row.label}」复验时出错（{type(e).__name__}: {e}）—— 不敢硬做，敲 `show` 重来"
+    if not ok_now:
+        return (f"⏳ 「{row.label}」**这一刻做不了了** —— {which}变了"
+                f"（你手上那张单子是**上一次**看的）。\n"
+                f"   敲 `show` 重开一张：它会按**现在的世界**重列，号也当场重发。")
+    return None
+
+
 def do_row(code, run: Callable, ctx: Ctx = None) -> str:
     """敲单子。`code` 可以是 `1` / `"1,4"` / `"1=1,4=4"` / `0`。
 
@@ -2303,6 +2800,14 @@ def do_row(code, run: Callable, ctx: Ctx = None) -> str:
         if len(_STACK) > 1:
             _STACK.pop()
             return _render_level(ctx, _STACK[-1], 5)
+        if ctx is not None and getattr(ctx, "menu", None):
+            # 🚪⚠️ 菜单态下「用 at x,y 指一样东西」是**假门**（指了也按不动）——
+            #    换成本刻真正的出口（`menu_hint` 是服务器 `_close_hint` 的原话）。
+            #    ⚠️ 连 `at x,y` 这几个字都别写出来：那正是假门的门牌
+            #       （自验里有一条就查这个 token —— 见 `_selftest` 的 🚪 用例）。
+            _mt = (ctx.menu or {}).get("type") or "?"
+            return (f"👌 好。⚠️ 界面还开着（{_mt}）—— 这一刻**指哪一格都按不动**，"
+                    f"先把界面处理掉：\n   {ctx.menu_hint or '走 menu 域处理它'}")
         return "👌 好，做点别的去 —— 想指哪一样东西，用 at x,y"
 
     if lv.mode == "qty":
@@ -2313,6 +2818,9 @@ def do_row(code, run: Callable, ctx: Ctx = None) -> str:
     #       **菜单开起来之前**那一屏留下来的 ⇒ AI 敲一个旧号，就会在菜单开着的时候
     #       跑一个世界动作（那正是 MCP 那道菜单闸门要挡的事）。
     #       根因已经收在 `_candidates`（菜单态只列 `menu_ok`），这里是**执行侧兜底**。
+    #    ⚠️⚠️ 2026-10-01：文案里的「菜单态能做的只有 买 / 卖」**过期了** ——
+    #       现在多了「关掉界面」（`CLOSE_V`）。**别再写死一份清单**：出口行在不在
+    #       取决于菜单类型（捏人页/鱼机/对话框压根没有），死清单会当场说错话。
     if getattr(ctx, "menu", None) and lv.mode == "act":
         _bad = []
         for _no, _c in sel:
@@ -2321,9 +2829,12 @@ def do_row(code, run: Callable, ctx: Ctx = None) -> str:
                 _bad.append(str(_no))
         if _bad:
             _m = (ctx.menu or {}).get("type") or "?"
+            _can = "关掉界面" if ctx.menu_exit else "（这个界面没有「敲一下就好」的出口）"
             return (f"🚧 菜单开着（{_m}）—— {'、'.join(_bad)} 号是**菜单态做不了**的动作，先别敲。\n"
-                    f"   菜单态能做的只有 **买 / 卖**；`show` 看一眼当前这屏（它会只列能做的）。\n"
-                    f"   不想逛了就 `menu` 域把它关掉，再回来敲这一屏。")
+                    f"   这一刻能按的：{_can}"
+                    + ("、买 / 卖" if ctx.shop is not None else "") + "。\n"
+                    f"   敲 `show` 重开一张单子（它会**只列能按的**，号也当场重发）"
+                    + (f"\n   📄 {ctx.menu_hint}" if ctx.menu_hint else ""))
 
     if any(c is not None for _, c in sel):
         return ("❌ 这一层没有数量要填 —— 直接写号就行（`1` 或 `1,4`）。\n"
@@ -2347,6 +2858,11 @@ def do_row(code, run: Callable, ctx: Ctx = None) -> str:
                     return (f"❌ 这一层只有 {_nos(lv)} 号 —— 没有 {no} 号。\n"
                             f"   想指别的东西，用 at x,y")
                 rows.append((r, None))
+            # 🔍 复验（同 act 那条；`exec_on_pick` 是"选完直接做"，一样会碰到世界变了的号）
+            for _r, _c in rows:
+                _stale = _recheck(ctx, _r)
+                if _stale:
+                    return _stale
             out = lv.verb.exec_multi(ctx, rows, run)
             _STACK[:] = _STACK[:1]          # 做完了 ⇒ 收回顶层
             return out
@@ -2368,6 +2884,10 @@ def do_row(code, run: Callable, ctx: Ctx = None) -> str:
 
     if row.verb.exec is None:
         return f"❌ 「{row.label}」还没接执行"
+    # 🔍 **执行前复验**（见 `_recheck`）—— 单子可能是上一次看的，世界会动。
+    _stale = _recheck(ctx, row)
+    if _stale:
+        return _stale
     out = row.verb.exec(ctx, row.targets, run)
     _STACK[:] = _STACK[:1]          # 做完了 ⇒ 收回顶层
     return out
@@ -2410,6 +2930,15 @@ def render_at(ctx: Ctx, x: int, y: int) -> str:
     title = head
     if not ready:
         title += "\n  （这里没有它能做的动作）"
+    # 🚪 **菜单态**：下面列的世界动作**这一刻全按不动**（`do_row` 的菜单态守卫会挡）。
+    #    ⚠️ 所以必须**把话说在前面 + 把真门摆在第一行** —— 否则 `at` 就是那条假门：
+    #       它给出一屏"坐/搬走"，AI 敲了却碰壁（2026-10-01 真机复现的三步）。
+    #    ⚠️ `menu_hint` 那一行照抄服务器 `_close_hint` 的原话（**不许这儿另编一句**）。
+    if ctx.menu:
+        _mt = (ctx.menu or {}).get("type") or "?"
+        title += f"\n  🚧 菜单开着（{_mt}）—— 下面这些**这一刻按不动**"
+        if not ctx.menu_exit:
+            title += f"\n  📄 {ctx.menu_hint}" if ctx.menu_hint else ""
     if pending:
         # ⏳ 这行仍是**缺口探测器**：AI 老指着某类东西而我们接不上 = 动词表欠的账。
         title += "\n  ⏳ 还没接执行：" + "、".join(v.label for v in pending)
@@ -2420,6 +2949,9 @@ def render_at(ctx: Ctx, x: int, y: int) -> str:
     #    **屏幕上有号、号指向别处** —— 正是 166③ 花大力气删掉的那类静默错误动作。
     #    ⇒ 走**和单子同一条造行路径**（`_row_for`），保证两屏的号是同一种东西。
     lv = Level([_row_for(ctx, v, [t]) for v in ready], title=title)
+    # 🚪 菜单态：把真门**插到第一行**（`ready` 里那些按不动，谁在前都无所谓）。
+    if ctx.menu and ctx.menu_exit:
+        lv.rows = [_row_for(ctx, CLOSE_V, [None])] + lv.rows
     _push_level(lv, ctx)
     return _render_level(ctx, lv, max(9, len(lv.rows)))
 
@@ -2531,13 +3063,16 @@ def scan_world(surr: dict, machines: list = None, chests: list = None,
 
 def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None,
              caps: dict = None, seats: dict = None, furniture: dict = None,
-             animals: dict = None, shop: dict = None, beds: list = None) -> Ctx:
+             animals: dict = None, shop: dict = None, beds: list = None,
+             menu_exit: str = "", menu_hint: str = "", worn: dict = None) -> Ctx:
     """把 `/state`(**full**) + `/surroundings`(+`/machines`/`/scan_chests`) 拼成 Ctx。
 
     ⚠️ 只搬运，**不补默认值**：缺什么就让它缺着（`can()` 遇到缺失自然回 假/？）。
     ⚠️ `caps` **必须调用方给**（见 `Ctx.caps` 那段），这里不猜。
     ⚠️ `shop` 同理：**没开商店传 `None`**，开了但读不出来传一个空字典
        （两种"判不出来"在 `_buy_can`/`_sell_can` 里要分开，见 `Ctx.shop` 那段）。
+    ⚠️ `menu_exit`/`menu_hint` 也一样**必须调用方给**（判菜单类型的表在服务器
+       `_close_hint`/`_menu_exit_of` 那儿，只有一处）——这里**不照着菜单类型自己推**。
     """
     p = (state or {}).get("player") or {}
     inv = scan_backpack(state)
@@ -2600,7 +3135,11 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
                loc=((state or {}).get("location") or {}).get("name") or "",
                held=held, inv=inv, tiles=tiles,
                menu=(state or {}).get("activeMenu"),
+               event=(state or {}).get("activeEvent"),
+               # 🚪 界面出口（服务器算好的；`""` = 这一刻不该给这一行）。
+               menu_exit=menu_exit or "", menu_hint=menu_hint or "",
                sitting=bool(((seats or {}).get("me") or {}).get("sitting")),
+               worn=(worn or {}),
                pets=pets,
                # 🆕 2026-09-30：棚里还没摸的（`/animals` 的 `inBuildings` 汇总）——
                #    老 DLL 没这个键 ⇒ `{}` ⇒ 行为跟以前一模一样（不留新默认值）。
@@ -2636,10 +3175,13 @@ def _clock_of(state) -> str:
 # ⚠️ 这是形，不是真值——别拿它当"验过了"。真值要等开游戏灌进去。
 
 def _fixture():
-    def item(idx, name, stack=1, cat=None, edible=None, sellable=True, val=0):
+    def item(idx, name, stack=1, cat=None, edible=None, sellable=True, val=0, shippable=True):
+        # 🗑️ `shippable`（2026-10-01）：形照新 DLL 的 `/state`（`Item.canBeShipped()`）。
+        #    ⚠️ 跟 `sellable` **不是一回事**：`sellable` 只排 工具/武器/靴/戒，
+        #       而大型可制造物 / 帽子 / 衣服那些 `shippable=False`。
         return {"slotIndex": idx, "displayName": name, "stack": stack,
                 "catNum": cat, "edibleValue": edible, "sellable": sellable,
-                "value": val, "quality": 0}
+                "shippable": shippable, "value": val, "quality": 0}
 
     state = {"inventory": [
         item(2, "古书", cat=BOOK_CAT),        # ① 是书（catNum 问出来的）
@@ -3081,6 +3623,76 @@ def _selftest():
     # (e) 吃那一行**不重复印「手持」**（`_where()` 已经印过一次）
     ok.append(("吃 的理由栏不重复印「手持」", "手持 手持" not in render_menu(eatctx, n=40)))
 
+    # 👕 穿戴（2026-10-01）—— **一行目录行包办 穿/脱**（理由见 VERBS 里那段：
+    #    背包里 5 件穿戴物 = 5 行会把第一屏挤爆，正是恒那条"菜单是强路口"要挡的）。
+    #
+    # ⚠️ 判据是**游戏分类号**（反编译 `Object.cs:243-259` 核过），不是"名字像衣服"：
+    #    -95 帽 / -96 戒指 / -97 靴 / -100 衣服（衬衫+裤子共用）/ -101 饰品；
+    #    **裤子的 -101 是饰品不是裤子**（没有 `pantsCategory`）—— 这条当年差点编错。
+    def _wearctx(worn=None, inv=None):
+        c = _fixture()
+        c.inv = scan_backpack({"inventory": (inv if inv is not None else [
+            {"slotIndex": 2, "name": "Straw Hat", "displayName": "草帽", "catNum": -95, "stack": 1},
+            {"slotIndex": 3, "name": "Cowboy Boots", "displayName": "牛仔靴", "catNum": -97, "stack": 1},
+            {"slotIndex": 4, "name": "Hoe", "displayName": "锄头", "catNum": -99, "stack": 1},
+            # ⚠️ 分类号**缺失**的那件也留着：问不出来就不列（同三档，不猜）
+            {"slotIndex": 5, "name": "Mystery", "displayName": "来路不明的东西", "stack": 1},
+        ])})
+        c.held = None
+        c.worn = worn if worn is not None else {}
+        return c
+
+    _wc = _wearctx(worn={"hat": "草帽"})
+    reset_menu()
+    _wt = render_menu(_wc, n=40)
+    ok.append(("👕 穿戴是**一行目录行**（句尾 `…`），不是一件一行", "穿戴…" in _wt))
+    ok.append(("👕 顶层**不**直接铺「穿 X」", "穿 草帽" not in _wt))
+    ok.append(("👕 理由栏报「身上几件 + 背包能穿几件」",
+               "身上 1 件" in _wt and "背包能穿 2 件" in _wt))
+    # 点开：脱在前、穿在后（身上=事实，背包=可能）
+    _wl = do_row(next(r.no for r in _LAST_ROWS if (r.label or "") == "穿戴"), fake_run, _wc)
+    ok.append(("👕 下一层：脱在前", "脱 帽子（草帽）" in _wl))
+    ok.append(("👕 下一层：穿在后（分类号认得出来的才列）",
+               "穿 草帽" in _wl and "穿 牛仔靴" in _wl))
+    ok.append(("👕 **锄头(-99) 不列**（工具不是穿戴物）", "穿 锄头" not in _wl))
+    ok.append(("👕 **分类号缺失的不列**（问不出来就不猜）", "来路不明" not in _wl))
+    # 执行：穿走**内部名**（C# `item.Name.Equals`），脱走**槽名**
+    _wcalls = []
+
+    def _wrun(ep, payload):
+        _wcalls.append((ep, payload))
+        return {"ok": True, "st": "yes", "text": "🧥 已穿上 草帽 → hat"}
+
+    reset_menu()
+    render_menu(_wc, n=40)
+    do_row(next(r.no for r in _LAST_ROWS if (r.label or "") == "穿戴"), _wrun, _wc)
+    do_row(next(r.no for r in _LAST_ROWS if (r.label or "").startswith("穿 草帽")), _wrun, _wc)
+    ok.append(("👕 穿 传的是**内部名**（C# 按 `item.Name` 匹配）",
+               _wcalls and _wcalls[-1] == ("wear", {"name": "Straw Hat"})))
+    reset_menu()
+    render_menu(_wc, n=40)
+    do_row(next(r.no for r in _LAST_ROWS if (r.label or "") == "穿戴"), _wrun, _wc)
+    do_row(next(r.no for r in _LAST_ROWS if (r.label or "").startswith("脱 帽子")), _wrun, _wc)
+    ok.append(("👕 脱 传的是**槽名**（`hat`）", _wcalls[-1] == ("wear", {"slot": "hat"})))
+    # ⚠️ 三态：**穿得出来 / 脱得下来** 任一条成立才给这一行；两样都没有 ⇒ **整行不出现**
+    #    （免得给一行"点开是空的"）
+    reset_menu()
+    ok.append(("👕 没得穿也没得脱 ⇒ 整行不出现",
+               "穿戴" not in render_menu(_wearctx(worn={}, inv=[]), n=40)))
+    # `/worn` 两种形状都要吃得下（字符串 vs 字典）—— 少判一种，"脱"那几行少一半
+    reset_menu()
+    _wb = render_menu(_wearctx(worn={"shirt": "蓝衬衫", "boots": {"name": "旧靴子"},
+                                     "leftRing": None}), n=40)
+    reset_menu()
+    render_menu(_wearctx(worn={"shirt": "蓝衬衫", "boots": {"name": "旧靴子"},
+                               "leftRing": None}), n=40)
+    _wbl = do_row(next(r.no for r in _LAST_ROWS if (r.label or "") == "穿戴"), fake_run,
+                  _wearctx(worn={"shirt": "蓝衬衫", "boots": {"name": "旧靴子"},
+                                 "leftRing": None}))
+    ok.append(("👕 `/worn` 的**字符串槽**（shirt）和**字典槽**（boots）都吃得下",
+               "脱 上衣（蓝衬衫）" in _wbl and "脱 靴子（旧靴子）" in _wbl))
+    ok.append(("👕 空槽（leftRing=None）**不出行**", "左戒指" not in _wbl))
+
     # (f) 同名两摞：**端点只按名字认** ⇒ 认不出的不列，且如实说（铁律 2）
     dupctx = _fixture()
     dupctx.tiles[(13, 13)]["chest"]["items"].append(
@@ -3405,6 +4017,27 @@ def _selftest():
     sitctx.sitting = True
     reset_menu()
     ok.append(("坐着时不给「坐」的行", "坐 木椅" not in render_menu(sitctx, n=40)))
+    # 🪑 但**必须给「起身」**（2026-10-01）—— 否则单子把 AI 领进一个自己不给出口的姿势：
+    #    「坐 木椅」是单子推荐的动作，按下去坐下之后，「坐」消失了而**没有任何行接上**。
+    reset_menu()
+    _sm = render_menu(sitctx, n=40)
+    ok.append(("坐着时**给「起身」**（「坐」的出口）", "起身" in _sm))
+    ok.append(("理由栏说清「为什么这一刻有它」", "坐着" in _sm))
+    # 没坐着 ⇒ **不给**（按了只会得到"没在坐着，无需起身" —— 那就是"看得见按不成"）
+    reset_menu()
+    ok.append(("没坐着 ⇒ 不给「起身」", "起身" not in render_menu(_fixture(), n=40)))
+    # 敲下去：必须真走 `stand`（现成那个自带轮询复核的）
+    _scalls = []
+
+    def _srun(ep, payload):
+        _scalls.append((ep, payload))
+        return {"ok": True, "st": "yes", "text": "🪑 站起来了（现在 (12,12)）"}
+
+    reset_menu()
+    render_menu(sitctx, n=40)
+    _sout = do_row(next(r.no for r in _LAST_ROWS if (r.label or "") == "起身"), _srun, sitctx)
+    ok.append(("敲「起身」⇒ 真走 `stand`", bool(_scalls) and _scalls[0][0] == "stand"))
+    ok.append(("起身回执照抄它自己的话（站没站起来由它说）", "站起来了" in _sout))
     # ⚠️ 养着宠物才给「摸猫狗」那行
     nopet = _fixture()
     nopet.pets = []
@@ -3516,6 +4149,322 @@ def _selftest():
                  if r.verb is not None and not getattr(r.verb, "menu_ok", False)), None)
     ok.append(("🚧 菜单态敲**旧屏**的世界动作 ⇒ 挡住（不真跑）",
                _hit is not None and "菜单开着" in do_row(_hit, fake_run, _stale)))
+
+    # 🚪 守卫文案（2026-10-01 改）：**不许再写死「菜单态能做的只有 买 / 卖」** ——
+    #    出口行加进来之后那句话就错了，而且它会把 AI 支去 `menu` 域绕一圈
+    #    （出口**本来就在单子上**）。判据：点出「关掉界面」+ 叫它 `show` 重开单子。
+    # ⚠️ 这几条**必须紧挨着上面那条**：`_hit` 是照着上一个用例那一屏算出来的号，
+    #    中间插几发 `render_*` 就会把 `_STACK`/`_LAST_ROWS` 换掉 ⇒ 打到的不是这一屏
+    #    （第一版就是这么假绿的：号落到了出口行上，反而"成功"执行了一次关界面）。
+    _stale.menu_exit = "关掉界面"        # 服务器这会儿会给出口行
+    _stale.menu_hint = "menu read 看商品 → menu click(button=upperRightCloseButton) 关掉"
+    _guard = do_row(_hit, fake_run, _stale)
+    ok.append(("🚧 守卫文案点了「关掉界面」", "关掉界面" in _guard))
+    ok.append(("🚧 守卫文案叫它 `show` 重开单子（别支去 menu 域绕远）", "show" in _guard))
+    # 同一处境、但**没有出口行**（捏人页/鱼机/对话框那三族）：不许谎称"有这一行"
+    _stale.menu_exit = ""
+    ok.append(("🚧 没有出口行时，守卫文案**不谎称**有",
+               "关掉界面" not in do_row(_hit, fake_run, _stale)))
+    _stale.menu_exit = "关掉界面"        # 复原，别把状态漏给后面的用例
+
+    # ⑫b 🚪 **界面出口**（2026-10-01）—— 修的是当天真机抓到的**假门**：
+    #     开个界面（GameMenu / ItemGrabMenu）⇒ `_candidates` 只留 `menu_ok` 的动词，
+    #     而当时只有 买/卖 ⇒ **一屏空**，只剩 `0 做点别的…（at x,y 指哪打哪）`；
+    #     可 `at` 指出来的世界动作**正是**上面那条守卫要挡的东西。真机三步走完：
+    #       ① show 空 → ② `at 24 26` 给「坐 胡桃木椅子」（**看着有路**）→ ③ `do 1` 被挡。
+    #     ⇒ 判据两条：**给一行真能按的出口** + **`at x,y` 那类门牌一句都不许再出现**。
+    _gexit = "menu read 看内容 → menu click(button=upperRightCloseButton) 关掉"
+    _closectx = _fixture()
+    _closectx.menu = {"type": "ItemGrabMenu"}
+    _closectx.menu_exit = "关掉界面"
+    _closectx.menu_hint = _gexit
+    reset_menu()
+    _cm = render_menu(_closectx, n=40)
+    ok.append(("🚪 菜单态 ⇒ 给「关掉界面」那一行", "关掉界面" in _cm))
+    ok.append(("🚪 菜单态 ⇒ **不再**指 `at x,y`（假门拆了）",
+               "指哪打哪" not in _cm and "at x,y" not in _cm))
+    ok.append(("🚪 菜单态 ⇒ 提示行也不提 `at x,y`", "> 敲编号" in _cm))
+    # 出口行**必须**带 `menu_ok`，否则 `_candidates` 在菜单态会把它自己滤掉（= 修了个寂寞）
+    _closev = _VERB_BY_KEY.get("close_menu")
+    ok.append(("🚪 出口行自带 `menu_ok`（否则会被菜单态过滤掉）",
+               bool(_closev and _closev.menu_ok)))
+    # 按下去：必须真的走 `close_menu` 这道口，回执**用它自己的话**（别在这儿替它下结论）
+    _ccalls = []
+
+    def _crun(ep, payload):
+        _ccalls.append((ep, payload))
+        return {"ok": True, "st": "yes", "text": "界面已关（原 ItemGrabMenu）"}
+
+    reset_menu()
+    render_menu(_closectx, n=40)
+    _cout = do_row("1", _crun, _closectx)
+    ok.append(("🚪 敲出口 ⇒ 真的调 `close_menu`",
+               bool(_ccalls) and _ccalls[0][0] == "close_menu"))
+    ok.append(("🚪 出口回执照抄服务器那句话", "界面已关" in _cout))
+    # ⚠️ 出口行的**标题**来自服务器（`ctx.menu_exit`）——换了标题，屏上就得跟着换
+    #    （这是"判据只留一处"的落点：这一层不认菜单名）。
+    _rctx = _fixture()
+    _rctx.menu = {"type": "ReadyCheckDialog"}
+    _rctx.menu_exit = "撤就绪 / 关屏"
+    _rctx.menu_hint = "撤就绪"
+    reset_menu()
+    ok.append(("🚪 标题照抄服务器（就绪屏 ⇒ 「撤就绪 / 关屏」）",
+               "撤就绪 / 关屏" in render_menu(_rctx, n=40)))
+
+    # ⚠️ 三个"**关不得**"的族（捏人页 / 钓鱼小游戏 / 对话框）**不给出口行** ——
+    #    给了就是劝 AI 去干错事（捏人页按 ok = 不可逆定型；鱼机是正在干的正事；
+    #    ESC 对对话框无效）。这一刻该印的是服务器 `_close_hint` 的**原话**：
+    #    那条路确实存在，只是**不在这层**，别冒充成一行动作。
+    for _mt, _hint, _what in (
+            ("CharacterCustomization", "🎭 别关它、别乱按", "捏人页"),
+            ("BobberBar", "🎣 别去动它", "钓鱼小游戏")):
+        _nc = _fixture()
+        _nc.menu = {"type": _mt}
+        _nc.menu_exit = ""            # ← 服务器 `_menu_exit_of` 对这三族返回 ""
+        _nc.menu_hint = _hint
+        reset_menu()
+        _nm = render_menu(_nc, n=40)
+        ok.append((f"🚫 {_what} ⇒ **不给**出口行（给了就是劝 AI 干错事）",
+                   "关掉界面" not in _nm))
+        ok.append((f"📄 {_what} ⇒ 改印 `_close_hint` 的原话（指真路）", _hint in _nm))
+        ok.append((f"🚫 {_what} ⇒ 也不指 `at x,y`", "指哪打哪" not in _nm))
+
+    # 💬 对话框**从这一批起有行了**（「推进对话」，见 VERBS 里 `_advance_can` 那段）
+    #    ⇒ 它不再走"空白屏印原话"那条路。两种处境要分开判：
+    _dlg = _fixture()
+    _dlg.menu = {"type": "DialogueBox"}
+    _dlg.menu_exit = ""
+    _dlg.menu_hint = "menu read 看内容 → 纯对话用 menu advance 推掉"
+    reset_menu()
+    _dm = render_menu(_dlg, n=40)
+    ok.append(("💬 纯对话框 ⇒ 给「推进对话」（不再是空白屏）", "推进对话" in _dm))
+    ok.append(("💬 纯对话框 ⇒ 照旧**不给**出口行（ESC 对它无效）", "关掉界面" not in _dm))
+    # ⚠️ **有选项**时不给这一行：那一刻该按的是 `menu click(option=N)`（选项号游戏自己发），
+    #    给「推进对话」按下去只会原地读回同一屏选项 = "看得见、按了白按"。
+    _dlg2 = _fixture()
+    _dlg2.menu = {"type": "DialogueBox", "responses": [{"index": 0, "key": "a"}]}
+    _dlg2.menu_exit = ""
+    _dlg2.menu_hint = "menu read 看内容 → 有选项走 menu click(option=N) 选"
+    reset_menu()
+    _dm2 = render_menu(_dlg2, n=40)
+    ok.append(("💬 **有选项** ⇒ 不给「推进对话」（按了只原地读回选项）",
+               "推进对话" not in _dm2))
+    ok.append(("💬 有选项 ⇒ 空白屏印 `_close_hint` 原话（指 click(option=N)）",
+               "click(option=N)" in _dm2))
+
+    # 🎬 事件（不是菜单）：`activeEvent` 在播时**照样**给「推进对话」
+    #    ⚠️ 这是**独立的一条路**：那时 `activeMenu` 可能是 null（不在菜单态里），
+    #       所以 `menu_ok` 那套过滤管不着它 —— 它得靠自己的 `can()` 说话。
+    _ev = _fixture()
+    _ev.event = {"id": "festival_spring13", "skippable": False}
+    reset_menu()
+    _em = render_menu(_ev, n=40)
+    ok.append(("🎬 事件在播 ⇒ 给「推进对话」", "推进对话" in _em))
+    ok.append(("🎬 理由栏点名是哪个事件", "festival_spring13" in _em))
+    _ev2 = _fixture()
+    _ev2.event = {"id": "x", "skippable": True}
+    reset_menu()
+    ok.append(("🎬 可整段跳的事件 ⇒ 理由栏说出来", "可整段跳" in render_menu(_ev2, n=40)))
+    reset_menu()
+    ok.append(("🎬 没有事件也没有对话 ⇒ **不给**这一行",
+               "推进对话" not in render_menu(_fixture(), n=40)))
+    # 敲下去：走 `advance`，回执照抄 helper 的话
+    _acalls = []
+
+    def _arun(ep, payload):
+        _acalls.append((ep, payload))
+        return {"ok": True, "st": "yes", "text": "🎬 已推进（推了 3 次、收了 3 句新台词）"}
+
+    reset_menu()
+    render_menu(_ev, n=40)
+    _aout = do_row(next(r.no for r in _LAST_ROWS if (r.label or "") == "推进对话"),
+                   _arun, _ev)
+    ok.append(("🎬 敲「推进对话」⇒ 真走 `advance`", bool(_acalls) and _acalls[0][0] == "advance"))
+    ok.append(("🎬 回执照抄它自己的话（推了几次由它说）", "推了 3 次" in _aout))
+
+    # 📖 「看」扩到**背包**（2026-10-01 恒：「read 扩到背包」）。
+    #    ⚠️ 原来 `target="held"` ⇒ **书揣在包里就读不了**（单子只认手持那件）。
+    #       而 `_exec_read` 走的 `_exec_select_then` **本来就会先 `/select` 锁到那一件**
+    #       —— 判据比执行器窄，正是这类"整条能力看得见却够不着"的老毛病。
+    _bk = _fixture()
+    _bk.held = None                       # 手上什么都不拿
+    reset_menu()
+    _bm = render_menu(_bk, n=40)
+    ok.append(("📖 书在背包里（没拿手上）也出「看 古书」", "看 古书" in _bm))
+    # 敲下去：必须先 `select` 再 `use`（不然读的是手上别的）
+    _rcalls = []
+
+    def _rrun(ep, payload):
+        _rcalls.append((ep, payload))
+        if ep == "select":
+            return {"ok": True}
+        return {"ok": True}
+
+    reset_menu()
+    render_menu(_bk, n=40)
+    do_row(next(r.no for r in _LAST_ROWS if (r.label or "") == "看 古书"), _rrun, _bk)
+    ok.append(("📖 敲「看」⇒ 先 `select` 再 `use`（锁到那一本，不读手上别的）",
+               [c[0] for c in _rcalls] == ["select", "use"]))
+    ok.append(("📖 `use` 带 `mode=read`", _rcalls[-1][1].get("mode") == "read"))
+
+    # 🔍 执行前**复验**（2026-10-01，P0-g）—— `do_row` 的老注释一直挂着这笔账：
+    #    "将来接了会做错事的动词（丢东西/送礼），这里必须先补验"。
+    #    号不跨屏，可 `_LAST_ROWS` 是**上一次渲染**的 ⇒ 中间世界会动。
+    #    ⚠️ 这几条是**闸门自己的可信度**：闸门不可信，后面所有"做错不可逆"的动词都别落地。
+    _rk_calls = []
+
+    def _rk_run(ep, payload):
+        _rk_calls.append(ep)
+        return {"ok": True, "collected": 1}
+
+    _rk = _fixture()
+    reset_menu()
+    render_menu(_rk, n=40)
+    _rk_no = _no_of("捡 地上的东西")
+    _rk_row = next(r for r in _LAST_ROWS if (r.label or "") == "捡 地上的东西")
+    # (a) 世界没变 ⇒ 照常执行（复验**不许**把正常的活儿也拦了）
+    _rk_calls.clear()
+    do_row(_rk_no, _rk_run, _rk)
+    ok.append(("🔍 世界没变 ⇒ 照常执行（复验不误伤）", _rk_calls == ["pickup_scene"]))
+    # (b) 那几格**不可捡了** ⇒ 拒绝，且**一个字节都不执行**
+    _rk_calls.clear()
+    _gone = _fixture()
+    for _t in _gone.tiles.values():
+        _t.pop("forage", None)
+    _g = do_row(_rk_no, _rk_run, _gone)
+    ok.append(("🔍 世界变了（格子不可捡了）⇒ 拒绝", "做不了" in _g))
+    ok.append(("🔍 拒绝时**不执行**（这是复验存在的全部意义）", _rk_calls == []))
+    # (c) 目标格整个没了 ⇒ 说"什么都没有了"，不说"做不了"（两句是两件事）
+    _rk_calls.clear()
+    _vanish = _fixture()
+    _vanish.tiles = {}
+    ok.append(("🔍 目标格消失了 ⇒ 说「什么都没有了」",
+               "什么都没有了" in do_row(_rk_no, _rk_run, _vanish)))
+    ok.append(("🔍 消失时也不执行", _rk_calls == []))
+    # (d) `CAN_MAYBE` 也拦 —— "不知道还能不能做"跟"不能做"在**动作**这层代价一样
+    _may = _fixture()
+    _may.caps = {}                      # 能力位问不出来 ⇒ `_pick_can` 回 MAYBE
+    ok.append(("🔍 `CAN_MAYBE` 也拦（不知道 ≠ 能做）", _recheck(_may, _rk_row) is not None))
+    # (e) 背包那件没了 ⇒ 拦（`read` 扩到 inv 之后，这条是真会发生的）
+    _bk2 = _fixture()
+    _bk2.held = None
+    reset_menu()
+    render_menu(_bk2, n=40)
+    _bk_row = next(r for r in _LAST_ROWS if (r.label or "") == "看 古书")
+    _no_book = _fixture()
+    # ⚠️ 按 **`idx`（背包位次）** 删，别按 `itemId` —— `_fixture()` 那三件**没有 itemId**
+    #    （它们的 `item()` 助手只填 displayName/catNum…），按 id 过滤等于没过滤
+    #    ⇒ 测试会假红成"复验没拦住"（第一版就是这么错的）。
+    _no_book.inv = [i for i in _fixture().inv if i.get("idx") != 3]
+    ok.append(("🔍 背包那件没了 ⇒ 说「已经不在背包里了」",
+               "不在背包" in _recheck(_no_book, _bk_row)))
+    # (f) 目录行**不触发复验**（它本来就不执行东西，只推一层）
+    reset_menu()
+    render_menu(_fixture(), n=40)
+    ok.append(("🔍 目录行点开照旧（复验只长在**执行**那一步）",
+               "箱子一览" in do_row(_no_of("箱子"), _rk_run, _fixture())))
+
+    # 🧾 确认结算（2026-10-01）—— **ShippingMenu 上的正确那一下**，不是「关掉界面」。
+    #    `cancel()` 走 ESC + menu_close，而结算屏要点 `ok` 才算完 ⇒ 只给通用出口，
+    #    AI 按下去大概率得到一句"还开着"（我那条诚实验收用例用的正是 ShippingMenu）。
+    _st = _fixture()
+    _st.menu = {"type": "ShippingMenu"}
+    _st.menu_exit = ""                      # 服务器 `_menu_exit_of` 对它返回 ""
+    _st.menu_hint = "menu read 看内容 → menu click(button=ok) 确认关掉"
+    reset_menu()
+    _stm = render_menu(_st, n=40)
+    ok.append(("🧾 结算屏 ⇒ 给「确认结算」", "确认结算" in _stm))
+    ok.append(("🧾 结算屏 ⇒ **不给**「关掉界面」（`cancel()` 对它不管用）",
+               "关掉界面" not in _stm))
+    reset_menu()
+    ok.append(("🧾 不是结算屏 ⇒ 不给「确认结算」",
+               "确认结算" not in render_menu(_fixture(), n=40)))
+    _stcalls = []
+
+    def _strun(ep, payload):
+        _stcalls.append(ep)
+        return {"ok": True, "st": "yes", "text": "🧾 已确认过夜结算，和恒一起进入新的一天！"}
+
+    reset_menu()
+    render_menu(_st, n=40)
+    _sto = do_row(next(r.no for r in _LAST_ROWS if (r.label or "") == "确认结算"), _strun, _st)
+    ok.append(("🧾 敲「确认结算」⇒ 真走 `settle`", _stcalls == ["settle"]))
+    ok.append(("🧾 回执照抄它自己的话", "进入新的一天" in _sto))
+
+    # 🗑 投出货箱（目录行）——**门禁 = 站在农场**（箱子在那儿），且**一件一行**。
+    #    ⚠️ 故意**不做**"全部投放"那一行：`sell_all=True` 是大锤（要留着的也照投），
+    #       而单子第一条规矩是"出现的那条按了就成" ⇒ 摆上来的必须是**具体哪件**。
+    _bfarm = _fixture()
+    _bfarm.loc = "Farm"
+    _bfarm.caps = dict(_bfarm.caps, state_shippable=True)
+    # ⚠️ 加一件**可卖但投不了**的（大型可制造物：宝箱/熔炉那类）—— 真机上正是这批
+    #    让「投出货箱」列表变成假承诺（`sellable=True` 而 `shippable=False`）。
+    _bfarm.inv = _bfarm.inv + scan_backpack({"inventory": [
+        {"slotIndex": 9, "name": "Keg", "displayName": "小桶", "catNum": -9,
+         "stack": 1, "sellable": True, "shippable": False}]})
+    reset_menu()
+    _bm2 = render_menu(_bfarm, n=40)
+    ok.append(("🗑 站在农场 ⇒ 给「投出货箱…」目录行", "投出货箱…" in _bm2))
+    ok.append(("🗑 顶层**不**直接铺「投 X」", "投 古书" not in _bm2))
+    # ⚠️ 老 DLL 没有 `state_shippable` 这一位 ⇒ **整行不出现**（宁可不给，也别列一堆按不成的）
+    _nocap = _fixture()
+    _nocap.loc = "Farm"
+    reset_menu()
+    ok.append(("🗑 老 DLL（没有 `state_shippable`）⇒ **不给**这一行（不猜）",
+               "投出货箱" not in render_menu(_nocap, n=40)))
+    _bfarm.loc = "FarmHouse"
+    reset_menu()
+    ok.append(("🗑 不在农场 ⇒ **不给**这一行（箱子在农场，别劝它跑腿）",
+               "投出货箱" not in render_menu(_bfarm, n=40)))
+    _bfarm.loc = "Farm"
+    _bfarm.inv = []                          # 无可投的
+    reset_menu()
+    ok.append(("🗑 背包没可投的 ⇒ **不给**这一行",
+               "投出货箱" not in render_menu(_bfarm, n=40)))
+    _bfarm = _fixture()
+    _bfarm.loc = "Farm"
+    _bfarm.caps = dict(_bfarm.caps, state_shippable=True)
+    _bfarm.inv = _bfarm.inv + scan_backpack({"inventory": [
+        {"slotIndex": 9, "name": "Keg", "displayName": "小桶", "catNum": -9,
+         "stack": 1, "sellable": True, "shippable": False}]})
+    reset_menu()
+    render_menu(_bfarm, n=40)
+    _bl = do_row(next(r.no for r in _LAST_ROWS if (r.label or "") == "投出货箱"), fake_run, _bfarm)
+    ok.append(("🗑 点开 = 一件一行（跟「卖」同形）", "投 古书" in _bl and "投 草莓" in _bl))
+    ok.append(("🗑 **可卖但投不了的**（小桶 catNum=-9）**不列** —— "
+               "真机上正是这批让列表变成假承诺", "投 小桶" not in _bl))
+    _bcalls = []
+
+    def _brun(ep, payload):
+        _bcalls.append((ep, payload))
+        return {"ok": True, "st": "yes", "text": "📦 已投放 1 种物品到出货箱"}
+
+    reset_menu()
+    render_menu(_bfarm, n=40)
+    do_row(next(r.no for r in _LAST_ROWS if (r.label or "") == "投出货箱"), _brun, _bfarm)
+    do_row(next(r.no for r in _LAST_ROWS if (r.label or "") == "投 草莓"), _brun, _bfarm)
+    ok.append(("🗑 敲「投 X」⇒ 走 `bin`（带名字）", _bcalls and _bcalls[0][0] == "bin"))
+
+    # 🚪 `at x,y` 那一屏同样要防假门：菜单态下**先把话说清、把真门摆第一行**
+    #    （否则又是一屏"看着能按"的世界动作）。真机 ③ 就是在这条路上碰的壁。
+    _atctx = _fixture()
+    _atctx.menu = {"type": "GameMenu"}
+    _atctx.menu_exit = "关掉界面"
+    _atctx.menu_hint = _gexit
+    reset_menu()
+    _at = render_at(_atctx, 14, 13)         # (14,13) = fixture 里那把「木椅」
+    ok.append(("📍 菜单态 `at` ⇒ 明说下面**按不动**", "按不动" in _at))
+    ok.append(("📍 菜单态 `at` ⇒ 出口摆在**第一行**",
+               bool(_LAST_ROWS) and _LAST_ROWS[0].verb is not None
+               and _LAST_ROWS[0].verb.key == "close_menu"))
+
+    # 🚪 `0`（这些都不是）在菜单态**不许再顺手指 `at x,y`**（那也是假门的门牌）。
+    #    ⚠️ 这里**重新摆一屏**再敲：上面那串用例已经把栈挪过好几处了。
+    reset_menu()
+    render_menu(_closectx, n=40)
+    _z = do_row(0, _crun, _closectx)
+    ok.append(("🚪 菜单态敲 `0` ⇒ 不指 `at x,y`（改指真出口）",
+               "at x,y" not in _z and _gexit in _z))
 
     # ⚠️⚠️ 三态不许折叠：没开商店 / 开着读不出来 —— **两种情况都不许出现「买」**，
     #    但原因不一样（一个是"没有"，一个是"不知道"）。混成一个就是静默。
