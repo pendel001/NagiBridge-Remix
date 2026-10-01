@@ -580,6 +580,8 @@ def main():
                   "箱内 ×150" in _bl and "啤酒花 ×150" not in _bl))
     res.append(ok("📋 点开 ⇒ 带 `field` 那条**不列**（点它不知道点的是哪一侧）",
                   "木材" not in _bl))
+    # 🚪 子层的 `0` 是**返回上一层**（真动作）——跟顶层那个"这些都不是"不是一回事
+    res.append(ok("📋 子层的 `0` = 返回上一层（**真动作，留着**）", "返回上一层" in _bl))
     # 敲下去：真打到 `/menu/click` 的**领取侧**，且用的是**格号**（不是名字）
     _dn = next((r.no for r in M.intent_menu._LAST_ROWS if (r.label or "") == "取 钻石"), None)
     _do = M.intent(ops="do", kw={"code": str(_dn)})
@@ -636,6 +638,13 @@ def main():
     res.append(ok("🎬 就是恒要的那个形状：**1=推进、2=跳过**",
                   _adv == 1 and _skp == 2, f"advance={_adv} skip={_skp}"))
     res.append(ok("🎬 「跳过」的理由写清**代价**（剧情就不播了）", "剧情就不播了" in _dl))
+    # 🚪 恒当场问的：「选 0 的话，其后有什么？自由操作吗？但是菜单又有门禁。理论上确实只能做 1、2。」
+    #    ⇒ 菜单态顶层**不发 `0`**（它只通向"先把界面处理掉"= 就是上面第 1 行，白烧一次调用）；
+    #      那句"其后有什么"改成**直接印在眼前**。
+    res.append(ok("🚪 菜单态顶层**不发 `0`**（它不通向任何新动作）",
+                  "\n 0  这些都不是" not in _dl and "\n 0 " not in _dl))
+    res.append(ok("🚪 菜单态把那句**界面怎么处理**直接印出来（不必再敲一下才知道）",
+                  "📄" in _dl and "menu advance" in _dl))
     # ⚠️ 跳不动就不给那一行（`skipEvent()` 没这个位会退化成"按 ESC 关菜单"= 另一件事）
     _stub(menu="DialogueBox", event={"id": "9", "skippable": False},
           menu_extra={"dialogue": "嗯。", "speaker": "罗宾"})

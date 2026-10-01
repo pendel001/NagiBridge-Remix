@@ -411,8 +411,12 @@ def _close_hint(menu: str) -> str:
         return ("🎣 这是**钓鱼小游戏**（鱼机正在自动玩，不是挡路的菜单）—— **别去动它**，"
                 "几秒后它自己就结束了；要做的事**等这一竿收完**再敲（想立刻停整趟就 `script stop`）")
     if "dialoguebox" in m:
-        return ("menu read 看内容 → 有选项走 menu click(option=N) 选；"
-                "纯对话用 menu advance 推掉（DialogueBox 没有右上角关闭键）")
+        # ⚠️ 2026-10-01（P-menus 第二刀）：**去掉了开头的「menu read 看内容」** ——
+        #    对话正文现在**就印在单子抬头**（`_im_head` 的 💬 行），而 `/menu` 对
+        #    `DialogueBox` 给的也正是同一页（`getCurrentString()`）⇒ 那句是**白指一条路**
+        #    （恒那句「其后有什么」的答案要摆在眼前，见 `intent_menu._render_level` 那一段）。
+        return ("有选项走 menu click(option=N) 选；纯对话用 menu advance 推掉"
+                "（DialogueBox 没有右上角关闭键）")
     if "itemgrabmenu" in m or "questcontainer" in m or "shipping" in m:
         return "menu read 看内容 → menu click(button=ok) 确认关掉（交付/结算类要点 ok 才算完）"
     if "shopmenu" in m:
