@@ -497,6 +497,10 @@ public class ModEntry : Mod
     ///   ⚠️ **为什么不用"读自己 DLL 的 mtime"**：mtime 随文件走，C 盘/F 盘两次拷贝会得到两个值，
     ///   而这里报的是**烤进 DLL 内部**的常量 ⇒ 同一个二进制到哪都报同一个值，才是"防倒退"该有的样子。
     ///   取不到 = 不是 MSBuild 编的 ⇒ 如实报出来，**不假装**（宁报错别兜底）。</summary>
+    // 🪨 2026-10-01(194)：砸晶球单价 —— **只这一处**（下面两个 handler 用它，`/status` 也报给 Python）。
+    //    起因：Python 侧写死 `GEODE_COST = 25`，C# 侧又写死两遍 ⇒ 三个 25 各说各话（188 的账）。
+    private const int GeodeCost = 25;
+
     public static readonly string BuildStamp = FormatBuildStamp(
         typeof(ModEntry).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion);
 
@@ -3117,6 +3121,7 @@ public class ModEntry : Mod
             server = "NagiBridge",
             version = "1.0.13",
             build = BuildStamp,   // 防倒退：/status 报构建标记，旧 DLL/原作者版会显示不同/无此字段
+            geodeCost = GeodeCost,   // 🪨 砸晶球单价（Python 侧别写死 25，来这儿读；缺键=老 DLL ⇒ 消费侧显式报错）
             port = _port,
             worldReady = Context.IsWorldReady,
             isMultiplayer = Context.IsMultiplayer,
@@ -5717,6 +5722,35 @@ public class ModEntry : Mod
                 }
                 if (b.indoors?.Value is GameLocation il)
                     entry["indoorsName"] = il.Name;  // 室内真实 location 名（此前误读成翻译串 "Building: indoors"）
+                // 🚪 2026-10-01(194)：**动物门只读**（恒：「门已经开着就沉底 / 关好之后也沉底」——
+                //    而 `/toggle_doors` 是**翻转**端点，读一次等于翻一下 ⇒ 必须有只读口）。
+                // ⚠️ 一律**反射**读、并逐个 `is`/属性探测：**不许猜字段类型**（猜错就是编译不过/运行时空），
+                //    读不到就**不给这两个键** ⇒ 消费侧按"缺键＝不知道"处理（宁缺勿编）。
+                try
+                {
+                    var rt = b.GetType();
+                    var fOpen = rt.GetField("animalDoorOpen",
+                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                    if (fOpen != null && fOpen.GetValue(b) is Netcode.NetBool nb)
+                        entry["animalDoorOpen"] = nb.Value;
+                    var fDoor = rt.GetField("animalDoor",
+                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                        ?? typeof(Building).GetField("animalDoor",
+                            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                    var dv = fDoor?.GetValue(b);
+                    if (dv != null)
+                    {
+                        var vt = dv.GetType();
+                        var xv = (object?)vt.GetProperty("X")?.GetValue(dv) ?? vt.GetField("X")?.GetValue(dv);
+                        var yv = (object?)vt.GetProperty("Y")?.GetValue(dv) ?? vt.GetField("Y")?.GetValue(dv);
+                        if (xv != null && yv != null)
+                        {
+                            entry["animalDoorX"] = b.tileX.Value + Convert.ToInt32(xv);
+                            entry["animalDoorY"] = b.tileY.Value + Convert.ToInt32(yv);
+                        }
+                    }
+                }
+                catch { }
                 buildings.Add(entry);
             }
         }
@@ -16346,7 +16380,7 @@ public class ModEntry : Mod
                                 || obj.ParentSheetIndex.ToString() == type;
                             if (!hit) continue;
                         }
-                        int COST = 25;
+                        int COST = GeodeCost;      // 🪨 见字段定义处（唯一来源）
                         if (farmer.Money < COST)
                         {
                             tcs.SetResult(new { ok = false, error = $"Need {COST}g, have {farmer.Money}g" });
@@ -16399,7 +16433,7 @@ public class ModEntry : Mod
             {
                 var farmer = Game1.player;
                 // 🆕 2026-10-01：同 `/process_geode` —— 手抄 id 名单换成游戏自己的 `Utility.IsGeode()`。
-                const int COST = 25;
+                const int COST = GeodeCost;        // 🪨 见字段定义处（唯一来源）
 
                 // 先统计可用晶球数量
                 var geodeSlots = new List<(int idx, int geodeId, int stack)>();
