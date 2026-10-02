@@ -1519,13 +1519,16 @@ def main():
                         {"name": "空牛", "type": "White Cow", "x": 15, "y": 14, "productReady": False}]}
 
     def _chores(chore_tiles=None, crab_ready=0, ore_pan=None, animals=None, weather=0,
-                hoe=True):
+                hoe=True, season="spring", day=16):
+        # ⚠️ 日期默认 **春 16**（浆果窗口内）—— 浆果那笔账现在**只在浆果季**才给
+        #    （见下面 `_BERRY_WINDOWS` 那两条用例：2026-10-02 恒「现在是夏天，不会有的」）。
         # ⚠️ 走**真路径** `_im_ctx()`（不是手搓 state/surr 递给 `_im_chores`）——
         #    第一版手搓，`api.has_item`/`api._ai_get("/crab_pots")` 两个口子**没桩到**
         #    ⇒ "没带锄头"那条假红、蟹笼那笔账也拿不到（自验当场逮到）。
         _stub(chore_tiles=chore_tiles, crab_ready=crab_ready, ore_pan=ore_pan,
               chore_animals=(animals if animals is not None else []),
-              time_dict={"timeOfDay": 900, "season": "summer", "weather": weather})
+              time_dict={"timeOfDay": 900, "season": season, "dayOfMonth": day,
+                         "weather": weather})
         M.api.has_item = lambda n: bool(hoe) and ("Hoe" in str(n))
         return M._im_ctx().chores
 
@@ -1537,11 +1540,27 @@ def main():
                   _ch.get("berry") == 1, _ch))
     res.append(ok("🌿 斑点按 **objId**（`(O)590`）认，**不是 `diggable`**（地图属性当判据 = 满地噪音）",
                   _ch.get("spot") == 1, _ch))
-    res.append(ok("🌿 苔藓：**非绿雨天 + 没开 expose_all_days ⇒ 不给**（跟 `moss_run` 同一道闸）",
-                  "moss" not in _ch, _ch))
+    # 🍓🍓 2026-10-02 恒真机：「**不对啊，现在是夏天，不会有的**」—— 那天农场报了「🍓浆果灌木×2」，
+    #      而 `bushBloom` 只是游戏那个 `Bush.tileSheetOffset==1`（茶树丛/核桃丛的"有货"也是这一帧）
+    #      ⇒ 判据收紧成"**只有浆果季才算浆果**"。这两条就是那天的回归。
+    _ch_sum = _chores([_T_BUSH, _T_SPOT], weather=0, hoe=True,
+                      season="summer", day=17)
+    res.append(ok("🍓 **夏天（17 日）+ 灌木贴图是有货那帧 ⇒ 一个字都不许说浆果**"
+                  "（恒：「现在是夏天，不会有的」——那天我报了 2 棵）",
+                  "berry" not in _ch_sum, _ch_sum))
+    _ch_fall = _chores([_T_BUSH], weather=0, hoe=True, season="fall", day=10)
+    res.append(ok("🍓 秋天 10 日（黑莓窗口 8~11）⇒ 说浆果（不是一刀切掉这个功能）",
+                  _ch_fall.get("berry") == 1, _ch_fall))
+    res.append(ok("🌿 苔藓：**真扫到了苔藓目标就给**（非绿雨天、没开设置也行 —— "
+                  "恒 2026-10-02「农场有些树可以刮苔藓」，那天农场躺着 50 棵，老规矩一个字都不报）",
+                  _ch.get("moss") == 1, _ch))
+    _ch2 = _chores([_T_BUSH, _T_SPOT], weather=0, hoe=True)
+    res.append(ok("🌿 但**一个苔藓目标都没有 + 非绿雨天 ⇒ 不给**（那行=待办，没活不出现）",
+                  "moss" not in _ch2, _ch2))
     M._moss_cfg["expose_all_days"] = True
-    _ch2 = _chores([_T_BUSH, _T_SPOT, _T_MOSS], weather=0, hoe=True)
-    res.append(ok("🌿 开了 `settings moss on` ⇒ 苔藓那笔账才给", _ch2.get("moss") == 1, _ch2))
+    res.append(ok("🌿 `settings moss on` 仍然有效：**扫不到也只是不显示这行**，"
+                  "它的作用是让 `moss_run` 肯去跑一趟（扫描半径没覆盖到时的人工兜底）",
+                  M._moss_visible({}, False) is True))
     M._moss_cfg["expose_all_days"] = False
     _ch3 = _chores([_T_BUSH, _T_SPOT, _T_MOSS], weather=7, hoe=True)
     res.append(ok("🌿 绿雨天（weather=7）⇒ 苔藓给", _ch3.get("moss") == 1, _ch3))
@@ -1564,9 +1583,14 @@ def main():
         _out = M.intent(ops="show", kw={"n": 40})
         return [(r.label or "") for r in M.intent_menu._LAST_ROWS], _out
 
+    # ⚠️ 2026-10-02：原来这个夹具写的是 `season="summer", weather=7` —— 那是**不可能的一格**：
+    #    「摇 浆果丛」只在浆果季（春15~18/秋8~11）给、而绿雨天只在夏天 ⇒ 这两行**真机上永远不会
+    #    同时出现**。拿"不可能的状态"喂自验正是本项目的老病（假数据一路绿灯）⇒ 改成
+    #    **春 16 的晴天 + 图上有苔藓树**（新规矩下"真扫到苔藓"就给这行，完全真实）。
     _L, _Ltxt = _labels2(chore_tiles=[_T_BUSH, _T_SPOT, _T_MOSS], crab_ready=4, ore_pan=_PAN,
                          chore_animals=_MOO["animals"], inv=_HOE,
-                         time_dict={"timeOfDay": 900, "season": "summer", "weather": 7})
+                         time_dict={"timeOfDay": 900, "season": "spring", "dayOfMonth": 16,
+                                    "weather": 0})
     for _lab in ("摇 浆果丛", "挖 远古斑点", "刮 苔藓", "收 蟹笼", "淘 金", "挤奶 / 剪毛"):
         res.append(ok(f"🌿 单子上出现「{_lab}」", _lab in _L, (_L, _Ltxt[:200])))
     _L0, _ = _labels2(inv=_HOE, time_dict={"timeOfDay": 900, "season": "summer", "weather": 0})

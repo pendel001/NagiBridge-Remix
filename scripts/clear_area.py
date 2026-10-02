@@ -131,6 +131,19 @@ _SKIPPED_PASS = {}
 _SKIPPED_SEEN = {}
 
 
+# 🌲 当前地图名（`_scan()` 每扫一次钉一次）—— `is_choppable` 的"**农场外不保护苔雨树**"
+#    （恒 2026-10-02）判据要用它。判据本身在 `tree_types.is_choppable`，这里只负责**告诉它我在哪**。
+_LOC = ""
+
+
+def _scan(radius):
+    """一次 `/surroundings`，顺手把"我在哪张图"钉进 `_LOC`（只此一处赋值，别在别处再读 location）。"""
+    global _LOC
+    data = api.surroundings(radius)
+    _LOC = data.get("location") or ""
+    return data
+
+
 def tile_target_name(tile):
     obj = tile.get("object", "")
     terrain = tile.get("terrain", "")
@@ -142,8 +155,10 @@ def tile_target_name(tile):
         return resource
     if terrain and terrain.startswith("Tree:"):
         # 🪓 2026-09-12 恒拍板：特殊树种（蘑菇树/桃花心木/苔雨树/神秘树…）默认不动
+        # 🌲 2026-10-02 恒：「不要保护**农场之外**的绿雨树，免得绿雨天收集不了苔藓了」
+        #    ⇒ 传 `_LOC`（`is_choppable` 认农场外苔雨树=可砍）
         ttype = tt.tree_type_of(terrain)
-        if not tt.is_choppable(ttype, _ALLOW):
+        if not tt.is_choppable(ttype, _ALLOW, _LOC):
             _SKIPPED_PASS[ttype] = _SKIPPED_PASS.get(ttype, 0) + 1
             return None
         return "Tree"
@@ -189,7 +204,7 @@ def scan_area():
     #    ⇒ 改成**就地**：一律在**当前地图**里挪到区域中心去扫描。
     api._post("/position", {"x": cx, "y": cy})
     time.sleep(0.6)
-    data = api.surroundings(min(radius, 30))
+    data = _scan(min(radius, 30))
 
     targets = []
     _SKIPPED_PASS.clear()
@@ -248,7 +263,7 @@ def snake_sort(items):
 
 
 def target_still_present(x, y, expected_name):
-    data = api.surroundings(2)
+    data = _scan(2)
     for t in data.get("tiles", []):
         if t.get("x") == x and t.get("y") == y:
             return tile_target_name(t) == expected_name
@@ -283,7 +298,7 @@ def _sweep_alive(radius=_SWEEP_R):
     扫描失败返回 `None` —— 调用方**别剪**待办（宁可多走一格，也别把没清的格子误划掉）。
     """
     try:
-        data = api.surroundings(radius)
+        data = _scan(radius)
     except Exception:
         return None
     out = {}

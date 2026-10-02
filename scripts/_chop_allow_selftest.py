@@ -84,6 +84,26 @@ def case_b():
     _check("'all' 全开（含未知 99）", tt.is_choppable("99", ["all"]) is True)
 
 
+def case_b2():
+    """🌲 2026-10-02 恒：「**不要保护农场之外的绿雨树，免得绿雨天收集不了苔藓了**」。
+    ⇒ 苔雨树(10~12)的保护**只在 Farm**；别的图上它们是可砍目标（斧头砍正是收苔藓的手势）。"""
+    print("B2) 苔雨树只在「Farm」受保护；**农场外一律可砍**")
+    for loc in ("Forest", "Backwoods", "Mountain", "Town", "Railroad", "IslandWest"):
+        _check(f"{loc} 上苔雨树**可砍**（不保护）",
+               all(tt.is_choppable(i, [], loc) is True for i in ("10", "11", "12")))
+    _check("Farm 上照旧**保护**（留着长苔藓）",
+           all(tt.is_choppable(i, [], "Farm") is False for i in ("10", "11", "12")))
+    _check("⚠️ **不知道自己在哪**（loc 空/没传）⇒ 按老规矩保护（宁少砍，别猜）",
+           tt.is_choppable("10", [], "") is False and tt.is_choppable("10", []) is False)
+    _check("别的特殊树**不被这条影响**：森林里蘑菇树/桃花心木照样保护",
+           tt.is_choppable("7", [], "Forest") is False
+           and tt.is_choppable("8", [], "Forest") is False
+           and tt.is_choppable("13", [], "Forest") is False)
+    _check("显式放行仍然优先（农场里也放得开）", tt.is_choppable("10", ["10"], "Farm") is True)
+    _check("`scope_note()` 说得清适用范围", "Farm" in tt.scope_note()
+           and "农场外" in tt.scope_note())
+
+
 def case_c():
     print("C) chop_trees.find_trees：默认不返回特殊树，但 skipped 数得出来")
     ct = _load("chop_trees", "")
@@ -129,6 +149,7 @@ if __name__ == "__main__":
     sys.path.insert(0, os.getcwd())
     case_a()
     case_b()
+    case_b2()
     case_c()
     case_d()
     print()

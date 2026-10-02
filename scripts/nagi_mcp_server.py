@@ -2594,7 +2594,7 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
     # ── 🌿 当前地图可采集物（有才显示，60s 冷却；采集走 pickup_scene 自动捡） ──
     #    🪑 坐着时不报（要走去捡的东西，坐着够不着；且 _forage_summary 有"切图才扫"的副作用，
     #    坐着跳过正好不动它的缓存状态）
-    forage = "" if _sitting_now else _forage_summary(is_green_rain=(w == 7))
+    forage = "" if _sitting_now else _forage_summary(is_green_rain=(w == 7), time_dict=t)
     if forage:
         lines.append(forage)
 
@@ -3593,7 +3593,49 @@ _SPOT_IDS = ("(O)590", "590", "(O)SeedSpot", "SeedSpot")
 _SPOT_RADIUS = 8
 
 
-def _forage_counts(tiles: list, show_moss: bool, has_hoe: bool) -> dict:
+# 🍓 浆果窗口（**游戏事实**，不是我们的规矩）：salmonberry = 春 15~18；blackberry = 秋 8~11。
+#    ⚠️ 为什么非要有它（2026-10-02 恒一眼看穿）：「**不对啊，现在是夏天，不会有的**」——
+#       那天我在农场报了「🍓浆果灌木×2」，可农场上根本没有莓果。
+#       根因：C# 的 `bushBloom` 就是 `Bush.tileSheetOffset == 1`，那个 NetInt 的意思是
+#       "**贴图切到第 1 帧**"——浆果丛的"有莓果"是这一帧，**但茶树丛(size3)的"茶叶好了"、
+#       核桃丛(size4)的"还挂着核桃"也是这一帧**（同一个字段，在 `ModEntry.cs` 的 `/nuts` 那段
+#       就见得到 `size==4` 核桃丛的用法）。⇒ 那两格多半是**茶叶还挂着的茶树丛**，被我读成了浆果。
+#    ⇒ 判据收紧：**只有浆果季才把 `bushBloom` 当浆果**；非浆果季不算浆果（宁缺勿编）。
+#      根治要 C# 多报一个 `Bush.size`（进批）——到那天才能把茶树丛/核桃丛**如实点名**，
+#      而不是像现在这样"季节不对就不说"。
+_BERRY_WINDOWS = {"spring": (15, 18), "fall": (8, 11)}
+
+
+def _in_berry_season(time_dict: dict) -> bool:
+    """今天在不在**浆果窗口**里（salmonberry 春 15~18 / blackberry 秋 8~11）。读不到就说 `False`。"""
+    try:
+        s = str((time_dict or {}).get("season") or "").strip().lower()
+        d = int((time_dict or {}).get("dayOfMonth") or 0)
+    except Exception:
+        return False
+    lo, hi = _BERRY_WINDOWS.get(s, (0, 0))
+    return lo <= d <= hi
+
+
+def _moss_visible(c: dict, is_green_rain: bool) -> bool:
+    """🌿 **今天该不该报苔藓** —— 判据只此一处（状态条 + 单子那行 + `moss_run` 三道口共用）。
+
+    三条里中一条就报：
+      ① 绿雨天（`weather==7`，苔藓大爆发）；
+      ② `settings moss on`（`expose_all_days`，**人工强制暴露** —— 扫描半径万一没扫到时的
+         "我确定有，你去找"的旋钮，所以它**不是**死旋钮：③ 只认这一发 `/surroundings`）；
+      ③ **这一发真的扫到了苔藓目标**（长苔藓树 / 苔雨树 / 苔藓杂草块）。
+    ⚠️ 为什么加 ③（2026-10-02 恒：「**农场有些树可以刮苔藓**」）：原来只看天气，于是**不是绿雨天
+       就一个字都不报**，可农场里当时正躺着 **50 棵长苔藓的树**（`moss:true`，镰刀一刮就掉 Moss）
+       —— 有活却看不见 = 假门的反面（"缺门"）。**"有没有"是游戏说的，不是日历说的。**
+    """
+    if is_green_rain or _moss_cfg.get("expose_all_days", False):
+        return True
+    return bool(int(c.get("moss_tree") or 0) + int(c.get("greenrain_tree") or 0)
+                + int(c.get("moss_big") or 0) + int(c.get("moss_small") or 0))
+
+
+def _forage_counts(tiles: list, has_hoe: bool, berry_season: bool) -> dict:
     """把 `/surroundings` 的 tiles 分成"能采/能挖的几类" → 计数字典（**分类只此一处**）。
 
     返回 `{"bush","spot","ginger","onion","truffle","moss_tree","greenrain_tree",
@@ -3601,8 +3643,11 @@ def _forage_counts(tiles: list, show_moss: bool, has_hoe: bool) -> dict:
 
     ⚠️ 判据就是状态条「🌿 可采集」那一套 —— 现在**状态条和 `intent` 的三行共用这一份**
        （「摇 浆果丛 / 挖 远古斑点 / 刮 苔藓」）；各写一遍必漂（本项目的老病）。
-    ⚠️ `show_moss`（苔藓门控：绿雨天或 `settings moss on`）与 `has_hoe`（没锄头挖不了斑点/姜）
-       由**调用方**传进来 —— 判据的门槛只有一处，别在两个调用方各判一次。
+    ⚠️ 门槛由**调用方**传进来（判据的门槛只有一处，别在两个调用方各判一次）：
+       `has_hoe`（没锄头挖不了斑点/姜）、`berry_season`（**不在浆果季就不许把灌木算成浆果**，
+       见 `_BERRY_WINDOWS` 那段 —— 2026-10-02 恒真机逮到的假报）。
+    ⚠️ **苔藓那几类一律照数**（不再由 `show_moss` 在这里挡）—— 因为"今天该不该报苔藓"现在
+       取决于**扫没扫到苔藓**，而那要数完才知道 ⇒ 计数在这儿、**显不显示由调用方按 `_moss_visible()` 定**。
     """
     c = {"bush": 0, "spot": 0, "ginger": 0, "onion": 0, "truffle": 0,
          "moss_tree": 0, "greenrain_tree": 0, "moss_big": 0, "moss_small": 0,
@@ -3610,8 +3655,11 @@ def _forage_counts(tiles: list, show_moss: bool, has_hoe: bool) -> dict:
     moss_big_tiles = set()
     counts = c["forage"]
     for t in tiles or []:
-        if t.get("terrain") == "Bush" and t.get("bushBloom"):
-            c["bush"] += 1
+        if t.get("terrain") == "Bush":
+            # 🍓 只有**浆果季**才把 `bushBloom` 当"有莓果"（`bushBloom` = 游戏那个
+            #    `Bush.tileSheetOffset==1`，茶树丛/核桃丛的"有货"也是这一帧 —— 见 `_BERRY_WINDOWS`）
+            if t.get("bushBloom") and berry_season:
+                c["bush"] += 1
             continue
         if has_hoe and t.get("forageCrop") == "2":
             c["ginger"] += 1
@@ -3622,19 +3670,18 @@ def _forage_counts(tiles: list, show_moss: bool, has_hoe: bool) -> dict:
             continue
         terr = t.get("terrain") or ""
         # 🌿 树苔藓（2026-08-21）：长苔藓树 moss:True（镰刀打）+ 苔雨树 greenRainTree:True（斧头砍）；
-        #    单棵树可同时 moss:True+greenRainTree:True（两方都计）。仅 show_moss 时计入。
+        #    单棵树可同时 moss:True+greenRainTree:True（两方都计）。
         if terr.startswith("Tree:"):
-            if show_moss:
-                if t.get("moss"):
-                    c["moss_tree"] += 1
-                if t.get("greenRainTree"):
-                    c["greenrain_tree"] += 1
+            if t.get("moss"):
+                c["moss_tree"] += 1
+            if t.get("greenRainTree"):
+                c["greenrain_tree"] += 1
             continue
         # 🌿 苔藓杂草块（大块=Clump:46 resource(2×2跨4格) / 小块=GreenRainWeeds* 对象(单格)）
-        if show_moss and t.get("resource") == "Clump:46":
+        if t.get("resource") == "Clump:46":
             moss_big_tiles.add((t.get("x"), t.get("y")))
             continue
-        if show_moss and (t.get("object") or "").startswith("GreenRainWeeds"):
+        if (t.get("object") or "").startswith("GreenRainWeeds"):
             c["moss_small"] += 1
             continue
         if has_hoe and t.get("objId") in _SPOT_IDS:
@@ -3665,11 +3712,14 @@ def _forage_counts(tiles: list, show_moss: bool, has_hoe: bool) -> dict:
     return c
 
 
-def _forage_summary(is_green_rain: bool = None) -> str:
+def _forage_summary(is_green_rain: bool = None, time_dict: dict = None) -> str:
     """🌿 当前地图可采集物汇总（有什么、几颗）。**切图时扫一次** + 室内跳过。
     只报告数量不报位置——决定采集后走 pickup_scene 自动走过去捡。
-    is_green_rain: 是否绿雨天（None=自动查 weather==7）。苔藓类只在绿雨当天暴露，
-    除非设置 moss expose_all_days=on（2026-08-21 恒）。"""
+    is_green_rain: 是否绿雨天（None=自动查 weather==7）。苔藓**报不报**由 `_moss_visible()` 定
+    （绿雨天 / `settings moss on` / **这一发真扫到了苔藓目标** —— 2026-10-02 恒：「农场有些树可以刮苔藓」）。
+    time_dict: `/state` 的 `time`（**调用方已经拉了就递进来**）—— 浆果那笔账要看季节/日期
+    （`_in_berry_season`），别为了它多打一发 `/state`。
+    """
     global _last_forage_loc
     # ⚠️ 2026-09-12 真机复现（同 _sit_hint 那个坑，这是漏网的一条）：域 op 的内嵌状态条会被
     #    `_ops_run` 整条砍掉（见 `_OPS_INNER`），可这层**照样把缓存消费掉了**——
@@ -3688,17 +3738,19 @@ def _forage_summary(is_green_rain: bool = None) -> str:
         _last_forage_loc = loc
         if any(k in loc for k in _FORAGE_INDOOR_KEYWORDS):
             return ""          # 室内跳过
-        # 🌿 苔藓暴露门控（2026-08-21 恒）：只在绿雨当天报，除非设置 moss expose_all_days=on
-        if is_green_rain is None:
+        if not isinstance(time_dict, dict) or not time_dict:
             try:
-                is_green_rain = (api.state().get("time", {}).get("weather") == 7)
+                time_dict = (api.state().get("time") or {})
             except Exception:
-                is_green_rain = False
-        show_moss = is_green_rain or _moss_cfg.get("expose_all_days", False)
+                time_dict = {}
+        if is_green_rain is None:
+            is_green_rain = (time_dict.get("weather") == 7)
         # 采集/挖掘分类统计（2026-08-17 恒：浆果灌木/斑点/姜/大葱/苔藓树全接入）
         # ⚠️ 2026-10-01：分类**抽成 `_forage_counts()` 了**（`intent` 的三行要和这儿共用一份判据）——
         #    这里只拿结果回来排版，别再往回写一遍分类。
-        _c = _forage_counts(r.get("tiles", []), show_moss, api.has_item("Hoe"))
+        _c = _forage_counts(r.get("tiles", []), api.has_item("Hoe"),
+                            _in_berry_season(time_dict))
+        show_moss = _moss_visible(_c, bool(is_green_rain))
         berry_bushes = _c["bush"]
         spot_count = _c["spot"]
         ginger_count = _c["ginger"]
@@ -8521,10 +8573,13 @@ def walnut_run(radius: int = 0, max_count: int = 1, dry_run: bool = False) -> st
 
 @mcp.tool()
 def moss_run(radius: int = 25, target_max: int = 80, rounds: int = 5, dry_run: bool = False) -> str:
-    """🌿 搜刮当前地图苔藓（绿雨天专用，2026-08-21 恒）
+    """🌿 搜刮当前地图苔藓（2026-08-21 恒；2026-10-02 起**不再只在绿雨天**）
     自动：自然走(/walk_to，失败自动 /position 精确定位兜底)到苔藓目标 → 按类型采集——
     苔雨树斧头砍、长苔藓树镰刀/剑刮一下(必掉 Moss)、苔藓杂草块(大块 Clump:46 挥3下 / 小块挥2下)直到面前格没了。
     镰刀/剑是范围攻击会打周边 → 每处理完一个目标自动重扫 /surroundings。先刮草后砍树。
+    ⚠️ 门槛（`_moss_visible()`，和状态条/单子那行**共用一处**）：绿雨天 / `settings moss on` /
+       **这一发真扫到了苔藓目标**。恒 2026-10-02：「**农场有些树可以刮苔藓**」——
+       农场当时躺着 50 棵 `moss:true`，可按"只看天气"的老规矩一个字都不报 ⇒ 已改成看游戏。
 
     Args:
         radius: 扫描半径（默认25，小图覆盖整图）
@@ -8533,16 +8588,26 @@ def moss_run(radius: int = 25, target_max: int = 80, rounds: int = 5, dry_run: b
         dry_run: 只扫不采集（报有多少苔藓目标）
     """
     try:
-        _w = api.state().get("time", {}).get("weather")
+        _st = api.state()
+        _td = _st.get("time") or {}
+        _w = _td.get("weather")
+        _c = _forage_counts(((api._ai_get("/surroundings", {"radius": radius}) or {}).get("tiles") or []),
+                            bool(api.has_item("Hoe")), _in_berry_season(_td))
     except Exception:
-        _w = None
-    if _w != 7 and not _moss_cfg.get("expose_all_days", False):
-        return _with_state("🌿 今天不是绿雨天，且未开「平时也暴露苔藓」(settings moss on)——不搜刮。需要时 settings moss on")
+        _w, _c = None, {}
+    if not _moss_visible(_c, _w == 7):
+        return _with_state("🌿 这一带**没扫到苔藓目标**（长苔藓树/苔雨树/苔藓杂草块），今天也不是绿雨天 —— "
+                           "不搜刮。要是你确定有，`settings moss on` 可以强制去找（扫描半径万一没扫到时就靠它）")
     args_list = ["--radius", str(radius), "--max", str(target_max), "--rounds", str(rounds)]
     if dry_run:
         args_list.append("--dry-run")
     out = _run_script("moss_run", args_list, timeout=600)
-    return _with_state(f"🌿 苔藓搜刮报告：\n{out[:800]}")
+    # ⚠️ 2026-10-02：原来 `out[:800]` 只截**头** —— 而每棵苔藓树就是一行
+    #    （真机 30 棵 ⇒ 头 800 字全是「🌿 长苔藓树 (x,y) 刮1下」），
+    #    **真正要读的收尾汇总（处理了几个 / 还剩没剩）被切掉了**。
+    #    这是 `spot_run` 早修过的同款洞（「留头也留尾」）—— 这里照做。
+    txt = out if len(out) <= 1200 else out[:500] + "\n…（中间略）…\n" + out[-700:]
+    return _with_state(f"🌿 苔藓搜刮报告：\n{txt}")
 
 
 def trash_run(loc: str = "", pos: str = "", wait: float = 1.0, dry_run: bool = False) -> str:
@@ -9329,7 +9394,7 @@ def settings_status() -> str:
     lines.append(f"  🌙 兜底睡觉: {'开' if _s else '关'}（{_st} 自动 go_sleep）")
     lines.append(f"  🌿 苔藓暴露: {'平时也暴露' if _moss_cfg.get('expose_all_days', False) else '只绿雨当天'}（settings moss on/off）")
     lines.append(f"  🪓 砍树放行: {tt.allow_label(_chop_cfg.get('allow'))}"
-                 f"（特殊树种默认保护；settings chop 蘑菇树,桃花心木 / none / all）")
+                 f"（{tt.scope_note()}；settings chop 蘑菇树,桃花心木 / none / all）")
     lines.append(f"  ⏱️ 心跳间隔: {player_activity.get_interval()} 分钟（0=每次工具返回都显示）")
     lines.append(f"  ⏰ 异步唤醒: {'开' if _bg_cfg.get('enabled', True) else '关'} / 间隔 {_bg_cfg.get('wake_interval', 30)}s"
                  f" / 长脚本自动异步 {'开' if _bg_cfg.get('auto_async', True) else '关'}(settings async_tools)")
@@ -22138,11 +22203,13 @@ def _im_chores(state: dict, surr: dict, animals: dict) -> dict:
       `{"berry": 1, "spot": 2, "moss": 5, "crab": 4, "pan": {"x": 33, "y": 36}, "milk": 2, "shear": 1}`
 
     判据**全问游戏**，一个名单都不编：
-      · `berry` = `/surroundings` 里**结果的灌木**（`terrain=="Bush"` + `bushBloom`）
+      · `berry` = `/surroundings` 里**结果的灌木**（`terrain=="Bush"` + `bushBloom`）——
+        ⚠️ **只在浆果季算**（春 15~18 / 秋 8~11，见 `_BERRY_WINDOWS` 那段：`bushBloom` 那一帧
+        茶树丛/核桃丛也占，2026-10-02 恒真机逮到过夏天报"浆果"）
       · `spot`  = 斑点 `objId∈_SPOT_IDS` + 姜点 `forageCrop=="2"` —— **都要带锄头**
         ⚠️ **不是 `diggable`**：那是地图属性（真机 Farm 194 格 true、斑点 0 个，见 `_SPOT_IDS` 那段）
-      · `moss`  = 长苔藓树 + 苔藓杂草块 —— **跟 `moss_run` 同一道闸**（绿雨天或 `settings moss on`），
-                  否则行出现、按下去只吃一句"今天不是绿雨天…"
+      · `moss`  = 长苔藓树 + 苔藓杂草块 —— **报不报看 `_moss_visible()`**（绿雨天 / `settings moss on` /
+        **这一发真扫到了**）；那个门槛**和 `moss_run` 共用**，别再各判一次
       · `crab`  = `/crab_pots` 里 `readyForHarvest` 的个数（真机回包字段）
       · `pan`   = `/state.player.orePan`（`hasGlint`+`hasPan`；**已经拉过 `/state`，不用多打一发**）
       · `milk`/`shear` = **本图** `/animals` 里 `productReady` 的 牛·山羊 / 绵羊
@@ -22153,17 +22220,16 @@ def _im_chores(state: dict, surr: dict, animals: dict) -> dict:
     """
     out = {}
     # ── 🌿 采集三行（浆果 / 斑点+姜 / 苔藓）──
-    try:
-        _w = ((state or {}).get("time") or {}).get("weather")
-    except Exception:
-        _w = None
-    _show_moss = (_w == 7) or bool(_moss_cfg.get("expose_all_days", False))
+    _td = (state or {}).get("time") or {}
+    if not isinstance(_td, dict):      # ⚠️ `/state.time` 在自验夹具里出现过字符串 ⇒ 读不到就当空（不抛）
+        _td = {}
+    _w = _td.get("weather")
     try:
         _hoe = bool(api.has_item("Hoe"))
     except Exception:
         _hoe = False
     try:
-        _c = _forage_counts((surr or {}).get("tiles") or [], _show_moss, _hoe)
+        _c = _forage_counts((surr or {}).get("tiles") or [], _hoe, _in_berry_season(_td))
     except Exception:
         _c = {}
     if _c.get("bush"):
@@ -22183,8 +22249,9 @@ def _im_chores(state: dict, surr: dict, animals: dict) -> dict:
         # ⚠️ 半径也递下去（单子那行的理由栏要写出来：`附近 8 格内 N 处`）——
         #    常量只有 `_SPOT_RADIUS` 一处，`intent_menu` 那边不import服务器（会成环）。
         out["spot_r"] = int(_SPOT_RADIUS)
-    _moss = int(_c.get("moss_tree") or 0) + int(_c.get("moss_big") or 0) + int(_c.get("moss_small") or 0)
-    if _show_moss and _moss:
+    _moss = (int(_c.get("moss_tree") or 0) + int(_c.get("greenrain_tree") or 0)
+             + int(_c.get("moss_big") or 0) + int(_c.get("moss_small") or 0))
+    if _moss and _moss_visible(_c, _w == 7):
         out["moss"] = _moss
     # ── 🦀 蟹笼有货 ──
     try:

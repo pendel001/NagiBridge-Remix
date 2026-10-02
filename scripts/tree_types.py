@@ -29,6 +29,10 @@ TREE_NAMES = {
 # 永远可砍的普通树
 BASE_CHOPPABLE = ("1", "2", "3")
 
+# 🌲 苔雨树（10~12）——**只在农场里受保护**（恒 2026-10-02，见 `is_choppable` 那段）
+GREEN_RAIN_TYPES = ("10", "11", "12")
+FARM_MAPS = {"Farm"}
+
 # 说人话的输入别名 → id 列表（中文/英文/简称都能写）
 NAME2IDS = {
     "橡树": ["1"], "橡": ["1"], "oak": ["1"],
@@ -86,13 +90,30 @@ def parse_allow(text: str):
     return sorted(set(out), key=lambda s: (0, int(s)) if s.isdigit() else (1, s)), None
 
 
-def is_choppable(tree_type: str, allow) -> bool:
-    """这个树种现在准不准砍。`allow` = `parse_allow()` 的产物。"""
+def is_choppable(tree_type: str, allow, loc: str = None) -> bool:
+    """这个树种现在准不准砍。`allow` = `parse_allow()` 的产物；`loc` = 当前地图名。
+
+    ⚠️ **农场之外不保护苔雨树**（恒 2026-10-02：「**不要保护农场之外的绿雨树，免得绿雨天收集不了
+       苔藓了**」）。为什么：苔雨树的保护本意是"留着长苔藓"（农场里当苔藓来源）；可**绿雨天全谷
+       都会长苔雨树**，在森林/后山那种地方还挡着 = 那天**收不了苔藓**（斧头砍正是收苔藓的手势，
+       见 `moss_run.py`：`greenRainTree` → `axe`）。
+    ⚠️ `loc` **不传 / 传空 ⇒ 按老规矩保护**（不知道自己在哪就别乱砍 —— 宁少砍，别猜）。
+    """
     if tree_type in BASE_CHOPPABLE:
         return True
     if "all" in (allow or ()):
         return True
-    return tree_type in (allow or ())
+    if tree_type in (allow or ()):
+        return True
+    if loc and tree_type in GREEN_RAIN_TYPES and loc not in FARM_MAPS:
+        return True
+    return False
+
+
+def scope_note() -> str:
+    """一行说清"保护/放行"的**适用范围**（设置页/报表用 —— 判据只此一处，别处别抄一遍）。"""
+    return ("苔雨树(10~12)只在「Farm」受保护；**农场外一律可砍**"
+            "（绿雨天那些树上挂着苔藓，砍下来才收得到）")
 
 
 def allow_label(allow) -> str:

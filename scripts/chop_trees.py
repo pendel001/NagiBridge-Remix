@@ -71,6 +71,7 @@ def find_trees(radius=20):
     """
     data = api.surroundings(radius)
     px, py = data["center"]["x"], data["center"]["y"]
+    _loc = data.get("location") or ""       # 🌲 农场外不保护苔雨树（见 tree_types.is_choppable）
     targets = []
     skipped = {}
     for t in data.get("tiles", []):
@@ -85,7 +86,7 @@ def find_trees(radius=20):
 
         if terrain.startswith("Tree:"):
             ttype = tt.tree_type_of(terrain)
-            if tt.is_choppable(ttype, _ALLOW):
+            if tt.is_choppable(ttype, _ALLOW, _loc):
                 targets.append((t["x"], t["y"], terrain, dist))
             else:
                 skipped[ttype] = skipped.get(ttype, 0) + 1
