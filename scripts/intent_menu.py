@@ -3314,12 +3314,30 @@ _GROUPS = ("设备", "家具")
 
 
 def _apply_groups(ctx: Ctx, lv: Level) -> bool:
-    """把一屏里的行按 `设备` / `家具` 拢成两块。**返回这一屏到底分没分组。**
+    """把一屏里的行按 `设备` / `家具` 拢成**块**。**返回这一屏到底分没分组。**
 
     ⚠️ 只在**两块都非空**时才动 —— 农场那种清一色的图（只有农活、或只有家具）
        原样不动：排序是照权重精心排的，没必要的分组只会把"最近的要先做"这条理由搅浑。
-    ⚠️ 组间先后按**组内最高权重**，不是写死"设备在前" —— 权重表才是"急不急"的正主。
     ⚠️ 只在 `act` 层分：选/填那一层是**刚点开的一小撮**，别在里面再分家。
+
+    ## 口径 = **B：组＝块，块按「组内最高权重」参与全局排序**（恒 2026-10-02 拍板改的口径）
+    旧口径（171 那版）是 `[比组最高还重的未分组行] + [组整块…] + [其余未分组]` ——
+    那等于**让组无条件插到"比它轻的所有未分组行"前面**：真机照出 `坐`(26) 印在
+    `摸 猫狗`(87) / `收 成熟作物`(88) **上面**（恒当场看出来"不是全局按权重排"）。
+    ⇒ 现在：**块拿"组内最高权重"当自己的权重，跟未分组行一起全局排序**。
+      · **为什么还要分块**（恒 2026-09-29：「移动家具做单行。甚至嵌套还要分一下设备和家具。」）：
+        目的是让同类行**挨着**（AI 一眼看清"这坨是设备、那坨是家具"），**不是**让它们插队；
+      · **块内**：照旧按权重排（`lv.rows` 进来时就是权重序，这里只搬块，不再打散）；
+      · `设备`（最高 88）⇒ 落在 `摸猫狗 87` 之前；`家具`（最高 26，只有「坐」）⇒ 落到
+        `投出货箱 36` / `看 古书 40` **之后** —— 恒 2026-10-02「**坐可以放在不靠上的位置**」
+        要的正是这个效果（顶层 `n=5` 时它看不见也没关系）。
+    ⚠️ **"比组最高还重的未分组行可以越过去"这条规则保留**（2026-09-29 加「睡觉」时补的）：
+       它现在**不是特例**，而是"按权重比较"的自然结果 —— `睡觉 92 > 设备块 88` ⇒ 排在块前面。
+    ⚠️ **权重相等时块在前**（跟旧口径一致：旧代码里 `== cut` 的未分组行是垫在组后面的）。
+    ⚠️ **组头只在"相邻同组"时印**（`_render_level` 那句 `r.group != group_now`）——
+       块是连续的 ⇒ 组头一块只印一次，且它后面那段**确实都是这一组的行**。
+       （这也是**不选"全局权重序 + 组头"那个口径**的唯一理由：那种排法会把组打散，
+         组头后面跟着别的组/未分组的行 ⇒ 组头本身变成**新的假门**。）
     """
     if lv.mode != "act":
         return False
@@ -3327,16 +3345,12 @@ def _apply_groups(ctx: Ctx, lv: Level) -> bool:
     if not all(parts.values()):
         return False
     rest = [r for r in lv.rows if r.group not in _GROUPS]
-    order = sorted(_GROUPS, key=lambda g: -max(_weight_of(r.verb, ctx) for r in parts[g]))
-    # ⚠️ **不进任何组的行，权重要是真够大就许它越过组**（2026-09-29 加「睡觉」时补的）。
-    #    原来是 `[组…] + rest`，`rest` **一律垫底** ⇒ 恒要的「床…当前场景有就该置顶」
-    #    根本到不了顶（屋里同时有 设备/家具 两组时，`睡觉` 会被压到 `搬走` 后面）。
-    #    判据只看一件事：**它比"组里最重的那条"还重吗**——
-    #    是 ⇒ 排到所有组前面；不是 ⇒ 照旧垫底（171 的分组语义原样不动）。
-    cut = max((_weight_of(r.verb, ctx) for g in order for r in parts[g]), default=-1)
-    hi = [r for r in rest if _weight_of(r.verb, ctx) > cut]
-    lo = [r for r in rest if _weight_of(r.verb, ctx) <= cut]
-    lv.rows = hi + [r for g in order for r in parts[g]] + lo
+    # （权重, 是不是块, 行们）—— 块用"组内最高权重"去比；同权重时块在前（见上面那条）
+    items = [(max(_weight_of(r.verb, ctx) for r in rows), True, rows)
+             for rows in (parts[g] for g in _GROUPS)]
+    items += [(_weight_of(r.verb, ctx), False, [r]) for r in rest]
+    items.sort(key=lambda it: (-it[0], not it[1]))
+    lv.rows = [r for _w, _blk, rows in items for r in rows]
     return True
 
 
@@ -4618,6 +4632,26 @@ def _selftest():
     _busy.tiles[(14, 13)]["seat"] = dict(_busy.tiles[(14, 13)]["seat"], free=0)
     reset_menu()
     ok.append(("🪑 195c：座位**被占**（free=0）⇒ 也不出现", "坐 " not in render_menu(_busy, n=40)))
+
+    # 🗂 197（2026-10-02）：**跨组排序** —— 口径已按恒的拍板改成 **B：组＝块，块按"组内最高权重"
+    #    参与全局排序**（恒原话「**坐可以放在不靠上的位置**」；不选"全局权重序"是因为那样会把组打散、
+    #    组头就骗人了）。这几条**钉 B**：`坐`(26) 沉到块的位置（`看 古书` 40 之后）。
+    #    ⚠️ 这几条会**第一个红**地拦下"再动排序口径"的人 —— 改它们＝改口径，得先问恒。
+    _grp = _fixture()          # 设备 = mwork 88 / chest 80 · 家具 = sit 26 · 未分组 = pick 90 / harvest 88 / pet_pets 87 / pet 84 / read 40
+    reset_menu()
+    render_menu(_grp, n=40)
+    _gkeys = [r.verb.key for r in _LAST_ROWS]
+    _gw = [_weight_of(r.verb, _grp) for r in _LAST_ROWS]
+    ok.append(("🗂 197B：**比块最高还重的未分组行**排最前（pick 90 > 设备块 88）",
+               _gkeys[:1] == ["pick"]))
+    ok.append(("🗂 197B：接着是**设备块整块**（组内 88→80）",
+               _gkeys[1:3] == ["mwork", "chest"]))
+    ok.append(("🗂 197B：然后按权重轮到未分组行（harvest 88 → pet_pets 87 → pet 84 → read 40）",
+               _gkeys[3:7] == ["harvest", "pet_pets", "pet", "read"]))
+    ok.append(("🗂 197B：**家具块（坐 26）沉到它自己该在的位置**（`看 古书` 40 之后，全屏最后）",
+               _gkeys[-1] == "sit" and _gw[-1] == 26))
+    ok.append(("🗂 197B：口径 B 下**组是连续的**（设备那两条挨着 ⇒ 组头一块只印一次、不骗人）",
+               _gkeys[1:3] == ["mwork", "chest"]))
 
     # 👕 2026-10-02 **「穿戴」已撤出单子**（恒拍板：权重最低 ⇒ 空场景里常驻）——
     #    这一段原来有 9 条"目录行/子层/穿传内部名/脱传槽名/两种 `/worn` 形状"的用例，

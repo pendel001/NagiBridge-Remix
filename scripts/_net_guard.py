@@ -161,9 +161,18 @@ def maybe_arm():
 
     ⚠️ 判据是 `sys.argv[0]` 的文件名（`*selftest*.py`）——**不是**"谁 import 了 stardew_api"：
        MCP 服务器、AI 日常脚本都会 import 它，那些**一次都不许被挡**。
+    🔒 2026-10-02 恒拍板：再加一道 **`NAGI_NET_GUARD_FORCE=1`** —— **无论文件名一律上闸**。
+       为什么需要它：**安全不变量必须能证伪**。全量 runner 会跑两类"名字里没有 selftest"的
+       脚本（`EXTRA`：`intent_menu.py` / `domain_selftest.py` / `_guide_orphan_check.py` /
+       `_kw_doc_check.py` / `_cn_quote_check.py`）—— 按文件名判，它们**根本不上闸**，
+       哪天它们里有人手滑打了 7842/7843，谁都不会知道。
+       ⇒ runner（`_run_all_selftests.py --no-net`）给**每个子进程**都设这个变量。
+       （`NAGI_NET_GUARD=0` 仍然是"整条关掉"的总闸，优先于本项 —— 那是给排查用的。）
     """
     if os.environ.get("NAGI_NET_GUARD", "1") == "0":
         return False
+    if os.environ.get("NAGI_NET_GUARD_FORCE") == "1":
+        return arm()
     who = os.path.basename(sys.argv[0] or "")
     if not who.endswith(".py") or "selftest" not in who.lower():
         return False

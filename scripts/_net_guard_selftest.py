@@ -110,6 +110,43 @@ def main():
     print(f"  · 白名单放行 {len(G.allowed_hits())} 发 · 拒绝 {len(G.violations())} 发"
           f"（含上面那发故意的桩）")
 
+    # ④ 🔒 `NAGI_NET_GUARD_FORCE=1`：**无论文件名一律上闸**（恒 2026-10-02 拍板加的那道）
+    #    为什么必须钉住：全量 runner 里那批 EXTRA（`intent_menu.py` 等，名字里没有 selftest）
+    #    **按老判据根本不上闸** —— "安全不变量必须能证伪"，这条就是它的判据。
+    import importlib as _il
+    _keep_argv0 = sys.argv[0]
+    _old_force = os.environ.get("NAGI_NET_GUARD_FORCE")
+    _old_armed = G.ARMED
+    try:
+        # 先把闸"拆掉"（还原 socket）再看 FORCE 能不能重新上闸 —— 否则 ARMED 已经是 True，
+        # `arm()` 幂等返回 True，这条就变成"永远绿的假闸"。
+        socket.socket.connect = G._ORIG["connect"]
+        socket.socket.connect_ex = G._ORIG["connect_ex"]
+        socket.create_connection = G._ORIG["create_connection"]
+        G.ARMED = False
+        os.environ["NAGI_NET_GUARD_FORCE"] = "1"
+        sys.argv[0] = "/tmp/nagi_mcp_server.py"          # ⚠️ 名字里**没有** selftest
+        _forced = G.maybe_arm()
+        ck("🔒 `NAGI_NET_GUARD_FORCE=1` ⇒ **名字里没有 selftest 也上闸**", _forced is True)
+        # 反面：不设 FORCE 时，同样的文件名**不许**上闸（别把 MCP/日常脚本挡死）
+        socket.socket.connect = G._ORIG["connect"]
+        socket.socket.connect_ex = G._ORIG["connect_ex"]
+        socket.create_connection = G._ORIG["create_connection"]
+        G.ARMED = False
+        del os.environ["NAGI_NET_GUARD_FORCE"]
+        _noforce = G.maybe_arm()
+        ck("🔒 不设 FORCE ⇒ 文件名不匹配**照旧不上闸**（MCP/日常脚本不受影响）",
+           _noforce is False)
+    finally:
+        if _old_force is not None:
+            os.environ["NAGI_NET_GUARD_FORCE"] = _old_force
+        sys.argv[0] = _keep_argv0
+        socket.socket.connect = G._ORIG["connect"]
+        socket.socket.connect_ex = G._ORIG["connect_ex"]
+        socket.create_connection = G._ORIG["create_connection"]
+        G.ARMED = False
+        G.arm()                                           # 本文件后面还要靠它咬人 ⇒ 恢复上闸
+
     print(f"\n{'✅ 全过' if not FAILS else '❌ 红的: ' + '、'.join(FAILS)}")
     return 1 if FAILS else 0
 

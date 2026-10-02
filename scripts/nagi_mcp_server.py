@@ -3181,10 +3181,24 @@ def _barn_empty_hint(loc_name: str) -> str:
         import pickup_scene as _ps
         _tiles = (api.surroundings(25) or {}).get("tiles") or []
         if not _ps.scan_pickables(_tiles):
-            txt = ("🥚 这间地上现在**没有可捡的**（正常状态，不是出错）：可能是**自动采集器已经收走了**"
-                   "——这间要是装了采集器，蛋/毛就天天是这个结果；也可能是**今天还没下蛋 / 动物没吃上草**"
-                   "（没吃草就不出产物）。这两种从外面分不出来：想确认就 `check(what=\"animals\")` "
-                   "看有没有 `productReady` 的。")
+            # 🤖 2026-10-02：**能读到"这间装没装采集器"**（`/machines` 里那台）就把它说成**事实**，
+            #    让两种可能更具体；读不到就照旧只说两种可能（**别硬编**）。
+            _has_grabber = False
+            try:
+                _ms = api.machines() or {}
+                _has_grabber = any(_is_container_obj(m)
+                                   for m in (_ms.get("machines") or [])
+                                   if str(m.get("location") or "") == loc_name
+                                   or not m.get("location"))
+            except Exception:
+                _has_grabber = False
+            _head = ("这间**装了自动采集器**⇒ 蛋/毛大概率是**它收走了**（天天如此）"
+                     if _has_grabber else "可能是**自动采集器已经收走了**——这间要是装了采集器，"
+                                          "蛋/毛就天天是这个结果")
+            txt = (f"🥚 这间地上现在**没有可捡的**（正常状态，不是出错）：{_head}；"
+                   f"也可能是**今天还没下蛋 / 动物没吃上草**（没吃草就不出产物）。"
+                   f"这两种从外面分不出来：想确认就 `check(what=\"animals\")` "
+                   f"看有没有 `productReady` 的。")
     except Exception:
         txt = ""                        # 扫不到就不说（宁缺勿编）
     _BARN_EMPTY_KEY["txt"] = txt
@@ -7516,7 +7530,14 @@ def machine_report() -> str:
         if not ml and not pond_s:
             return _with_state("⚙️ 农场里没有机器/鱼塘产出")
         agg = {}
+        _containers = {}
         for m in ml:
+            if _is_container_obj(m):
+                # 🤖 采集器/抚摸机 = **容器**（恒 2026-10-02）⇒ 单独一档，**不混进机器账**
+                #    （它们的 `heldItemDisplay` 是「错误物品 (-1)」那族假名字，永远不许显示）
+                loc = m.get("location", "?")
+                _containers[loc] = _containers.get(loc, 0) + 1
+                continue
             t = agg.setdefault(m.get("type") or "?", {"total": 0, "idle": 0, "processing": 0, "ready": 0, "byLoc": {}})
             t["total"] += 1
             status = m.get("status")
@@ -7524,12 +7545,15 @@ def machine_report() -> str:
             t[key] += 1
             loc = m.get("location", "?")
             t["byLoc"][loc] = t["byLoc"].get(loc, 0) + 1
-        lines = [f"⚙️ 全农场机器 ({len(ml)} 台):"]
+        lines = [f"⚙️ 全农场机器 ({sum(s['total'] for s in agg.values())} 台):"]
         for name, s in sorted(agg.items()):
             cn = MACHINE_CN.get(name, name)
             locs = ", ".join(f"{k}x{v}" for k, v in s["byLoc"].items())
             lines.append(f"  • {cn}: 共{s['total']}台 闲置{s['idle']} 加工{s['processing']} 完成{s['ready']}  ({locs})")
-        ready = [m for m in ml if m.get("status") == "ready"]
+        if _containers:
+            _cl = ", ".join(f"{k}x{v}" for k, v in _containers.items())
+            lines.append(f"  🤖 自动采集器/抚摸机 {sum(_containers.values())} 台（**按容器读，不算机器**）: {_cl}")
+        ready = [m for m in ml if m.get("status") == "ready" and not _is_container_obj(m)]
         if ready:
             # 📥 就绪清单：按建筑/场景分组只报数量——1450台机器逐台报坐标会爆 token（2026-08-28 恒）。
             #    具体坐标留给「收 已好的机器」（`load_machines`，拟人逐台）内部扫，AI 只需知道"哪、几台、啥"来决策收不收。
@@ -22332,6 +22356,53 @@ def _im_chest_open(x, y):
 #     接的是 **09-27 之前的快捷路**（`/machine_collect` 原子瞬收、不走路）——**没人回头换**。
 # ⇒ (b) = 单子那条改成 **「收放…」**：先挑**放什么料**，然后走 `machine_loader --here`
 #   拟人逐台收放（三种状况交给游戏/脚本，不在这一层分情况）。
+# ═══════════════════════════════════════════════════════════════════════
+# 🤖 自动采集器 = **容器**，不是机器（恒 2026-10-02：「我们之前认过自动采集器的交互菜单的，
+#    它就像一个箱子一样」）
+# ═══════════════════════════════════════════════════════════════════════
+# 对账（谁在哪认的）：
+#   · **认过的那处** = 菜单侧：`ModEntry.cs:5398-5403`（`/state.activeMenu`）与 `:13504`
+#     （`/menu`）都调 `BuildContainerAt(menu)`；**判据在 `:16890-16903`**：拿 `ItemGrabMenu` 的
+#     `sourceItem`/`context` 去 `CollectStorageChests(loc)` 里**按对象身份**认。
+#     ⇒ 采集器的菜单**过不了这一条**：采集器本体是 `Object(BC)165`，**不在** `CollectStorageChests`
+#       （那张表只收 `loc.objects` 里的 `Chest`）⇒ `containerAt = null`
+#       ⇒ 单子那边「箱子里…/存…」**整行不出现**（`intent_menu._menu_box_at` 要 `menu_data["at"]`）。
+#       ⚠️ 而且 `IsStorageChest`（`:16782-16815`）**还专门排掉 `itemId == "-1"` 的箱子**（`:16811`，
+#          2026-09-24 那批"裸箱子"收的紧）—— 采集器**里面那个 Chest** 恰好就是这个形状
+#          （真机：`heldItemDisplay = 错误物品 (-1)`）⇒ 就算想按身份去认它，也会被这条排除。
+#   · **现在又把它当机器的那处** = `/machines`：`ScanLocationMachines`（`:18800` 附近）只筛
+#     `bigCraftable`，采集器是 `(BC)165` **被算成机器**；然后 `:18840`
+#     `entry["heldItemDisplay"] = obj.heldObject.Value.DisplayName` —— 它那个 `heldObject` 是
+#     **代码造的裸 Chest**（`itemId=-1`）⇒ DisplayName 就是 **「错误物品 (-1)」**
+#     （同 `ModEntry.cs:10517/16803` 记的那族形状）。⇒ 恒真机看到的
+#     `status=processing · heldItemDisplay=错误物品 (-1)` 就是这么来的。
+#
+# 🐍 Python 侧这一批能做的（**不动 C#**）：
+#   ① **不再把采集器当机器**：机器表的计数/就绪清单里不算它；
+#   ② **不再打印那个假名字**：`错误物品`/空 id 一律不显示（宁缺勿编）；
+#   ③ 把它**如实标成容器**，并给"怎么读"的路（菜单开着时 `/menu.items` 里就是它的东西）。
+_GRABBER_TYPES = ("Auto-Grabber", "Auto-Petter")     # 这两个都是 (BC) 物件、不是机器
+_BOGUS_NAME_MARKS = ("错误物品", "Error Item", "???")
+
+
+def _is_container_obj(m: dict) -> bool:
+    """🤖 这台"机器"其实是**容器类物件**（自动采集器/自动抚摸机）吗。判据只有这一处。"""
+    t = str((m or {}).get("type") or "")
+    return any(g in t for g in _GRABBER_TYPES)
+
+
+def _bogus_held_name(name) -> bool:
+    """🏷️ 这个"产物名"是不是**造出来的假名字**（`错误物品 (-1)` 那族）→ True = 不许显示。
+
+    ⚠️ 依据：`new Object/-1` 那种**代码直造**的物件 `DisplayName` 就是「错误物品 (-1)」
+       （`ModEntry.cs:6748/7553/10517` 三处记过同一族坑）。
+    """
+    s = str(name or "")
+    if not s:
+        return True
+    return any(k in s for k in _BOGUS_NAME_MARKS) or s.endswith("(-1)")
+
+
 def _im_mwork(state: dict, machines: list) -> dict:
     """「收 已好的机器」那行的账 → `{"ready","empty","products"}` / `{}`（没可收的）。
 
@@ -22346,6 +22417,10 @@ def _im_mwork(state: dict, machines: list) -> dict:
          **不再多发请求**（`_MWORK_CACHE` 那套也跟着删了，别再挂回来）。
     """
     ms = machines or []
+    # 🤖 2026-10-02：把**自动采集器/自动抚摸机**从"机器"里剔掉 —— 它们是**容器类物件**
+    #    （恒：「它就像一个箱子一样」），真机它们会以 `status=processing` +
+    #    `heldItemDisplay=错误物品 (-1)` 混进来（对账见上面那段）。
+    ms = [m for m in ms if not _is_container_obj(m)]
     ready = [m for m in ms if (m.get("status") or "") == "ready"]
     empty = [m for m in ms if (m.get("status") or "") == "empty"]
     if not ready and not empty:
@@ -22353,6 +22428,8 @@ def _im_mwork(state: dict, machines: list) -> dict:
     out = {"ready": len(ready), "empty": len(empty), "products": {}}
     for m in ready:
         nm = m.get("heldItemDisplay") or m.get("item") or "?"
+        if _bogus_held_name(nm):
+            continue                    # 🏷️ 假名字（错误物品 (-1) 那族）**不计进产物表**
         out["products"][nm] = out["products"].get(nm, 0) + 1
     return out
 

@@ -426,7 +426,9 @@ def main():
     # ⑥ 高阶层动作走的是**拟人那条**（不是裸端点）
     _stub()
     M.intent_menu.reset_menu()
-    M.intent(ops="show")
+    # ⚠️ 197 口径 B（2026-10-02）之后 `坐`(26) **沉到第一屏之外**了 ⇒ 这里要 `n=40` 才拿得到它
+    #    （`_LAST_ROWS` 只存**这一屏印出来的那 n 条** —— 原来写死默认 n=5，B 一落地就 StopIteration）。
+    M.intent(ops="show", kw={"n": 40})
     sit_no = next(r.no for r in M.intent_menu._LAST_ROWS if "坐 木椅" in (r.label or ""))
     M.intent(ops="do", kw={"code": str(sit_no)})
     res.append(ok("坐 走的是 Python 那个高阶层 `sit`（真走过去+读回验证），不是裸端点",
@@ -2021,6 +2023,59 @@ def main():
     _pu_src = _insp7.getsource(_PS.main)
     res.append(ok("🎯 195d：**走不通才换下一个**（循环里够到就 `break`）",
                   "for nx, ny in approach_tiles(" in _pu_src and "break" in _pu_src))
+
+    # ㉑ 197 追补：**自动采集器 = 容器，不是机器**（恒 2026-10-02：「它就像一个箱子一样」）
+    _grab_m = {"type": "Auto-Grabber", "location": "Deluxe Coop", "x": 5, "y": 5,
+               "status": "processing", "heldItem": "Error Item",
+               "heldItemDisplay": "错误物品 (-1)", "heldItemId": "(O)-1"}
+    res.append(ok("🤖 197：`_is_container_obj` 认得出采集器/抚摸机（按**类型**，不按名字猜）",
+                  M._is_container_obj(_grab_m) and M._is_container_obj({"type": "Auto-Petter"})
+                  and not M._is_container_obj({"type": "Keg"})))
+    res.append(ok("🏷️ 197：`_bogus_held_name` 认得出「错误物品 (-1)」那族假名字",
+                  M._bogus_held_name("错误物品 (-1)") and M._bogus_held_name("")
+                  and not M._bogus_held_name("钻石")))
+    _mw = M._im_mwork(None, [_grab_m, {"type": "Keg", "status": "ready",
+                                       "heldItemDisplay": "钻石"}])
+    res.append(ok("🤖 197：`_im_mwork` **不把采集器算进机器账**（ready/empty 都不含它）",
+                  _mw.get("ready") == 1 and _mw.get("empty") == 0
+                  and _mw.get("products") == {"钻石": 1}, _mw))
+    _mw2 = M._im_mwork(None, [{"type": "Keg", "status": "ready",
+                               "heldItemDisplay": "错误物品 (-1)"}])
+    res.append(ok("🤖 197：产物名是**假名字** ⇒ 不进产物表（宁缺勿编）",
+                  _mw2.get("products") == {} and _mw2.get("ready") == 1, _mw2))
+    # ⚠️ `machine_report` 的数据源是 `api.farm_report()`（不是 `_ai_get`）—— 第一版桩错了口子，
+    #    自验当场红（"❌ 获取失败"）。
+    _old_fr = M.api.farm_report
+    # ⚠️ 真回包是**两层**：`{"ok":True, "machines":{"machines":[…]}}`（第一版写平了 ⇒ "获取失败"）
+    M.api.farm_report = lambda *a, **k: {
+        "ok": True,
+        "machines": {"machines": [_grab_m, {"type": "Keg", "location": "Farm",
+                                            "status": "ready",
+                                            "heldItemDisplay": "钻石"}]}}
+    try:
+        _mr = M.machine_report()
+    finally:
+        M.api.farm_report = _old_fr
+    res.append(ok("🤖 197：机器表把采集器**单列**（「按容器读，不算机器」）且不印假名字",
+                  "自动采集器" in _mr and "按容器读，不算机器" in _mr
+                  and "错误物品" not in _mr, _mr[:220]))
+    res.append(ok("🤖 197：机器台数**不含**采集器（那一屏只该有 Keg 一台）",
+                  "全农场机器 (1 台)" in _mr, _mr[:120]))
+    _stub(loc="Deluxe Coop", surr_tiles=[])
+    M._BARN_EMPTY_KEY.update(loc=None, txt="")
+    _old_am = M.api.machines
+    M.api.machines = lambda *a, **k: {"machines": [_grab_m]}
+    try:
+        _bn2 = M._barn_empty_hint("Deluxe Coop")
+    finally:
+        M.api.machines = _old_am
+    res.append(ok("🥚 197：读得到「这间装了采集器」⇒ 写成**事实**（两种可能更具体）",
+                  "装了自动采集器" in _bn2 and "也可能" in _bn2, _bn2[:200]))
+    M._BARN_EMPTY_KEY.update(loc=None, txt="")
+    _stub(loc="Deluxe Coop", surr_tiles=[])
+    _bn3 = M._barn_empty_hint("Deluxe Coop")       # 夹具默认 `/machines` 是空表
+    res.append(ok("🥚 197：读不到采集器 ⇒ 退回「两种可能并列」（不硬编）",
+                  "装了自动采集器" not in _bn3 and "也可能是" in _bn3, _bn3[:200]))
 
     print(f"\n{sum(res)}/{len(res)} 过")
     return all(res)
