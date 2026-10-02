@@ -5217,9 +5217,21 @@ public class ModEntry : Mod
         // ⚠️ 2026-09-03 恒：loc.characters 含宠物/马/怪物/祝尼魔，全收进 npcs 会把猫狗当 NPC 注入给 AI
         //     （AI 会去跟猫聊天/送礼，幽默但不该）。只留村民（NPC 且非怪物/宠物/马/祝尼魔/小孩），
         //     宠物单独放 `pets` 字段（喂水/摸猫狗仍可用，见 /surroundings kind=pet）。
+        // ⚠️⚠️ 2026-10-02 真机补（状态条新加「👥 本图 NPC」那行后**当场照出来**的假门）：
+        //     **浣熊也漏进来了** —— Forest (55,8)/(57,8) 的 `Raccoon`/`MrsRaccoon` 被当村民报，
+        //     于是那行变成「本图 NPC：Raccoon、MrsRaccoon → 搭话 chat / 送礼 gift」，把 AI 指去干
+        //     **干不成的事**（我是走进森林读到 `/state.npcs` 才看见的，光看代码看不出来）。
+        //     判据（反编译 `decomp/c1615/full/StardewValley.Characters/Raccoon.cs`）：
+        //       `Raccoon.checkAction` = 播个声 + `activate()` 开**浣熊献祭菜单**，
+        //       既没对话也没 `receiveGift` ⇒ **不是 chat/gift 的对象**（要给它东西走它自己那套菜单）。
+        //     同族一并排掉：`TrashBear`（垃圾熊：喂它指定的东西，不是聊天）、
+        //       `JunimoHarvester`（⚠️ 继承的是 **NPC 而不是 Junimo** ⇒ 上面那条 `!(n is Junimo)` 拦不住它）。
+        //     ⚠️ 判据放这里（不在 Python 侧按名字拉黑）：这条 `/state.npcs` 的口径就是"能 chat/gift 的村民"，
+        //       名字表在 Python 那边必漂（同 `_NPC_HINT_SEEN` 那族的教训）。
         var npcs = loc.characters
             .Where(n => n is NPC && !(n is StardewValley.Monsters.Monster)
-                        && !(n is Pet) && !(n is Horse) && !(n is Junimo) && !(n is Child))
+                        && !(n is Pet) && !(n is Horse) && !(n is Junimo) && !(n is Child)
+                        && !(n is Raccoon) && !(n is TrashBear) && !(n is JunimoHarvester))
             .Select(n => new
             {
                 name = n.Name,                    // 内部英文名（Krobus）——用于 /find_npc 之类的内部查询

@@ -58,6 +58,12 @@ STATE = {
          "catNum": -99, "stack": 1, "quality": 0, "sellable": False, "shippable": False},
     ],
     "activeMenu": None,
+    # 👥 `/state.npcs` —— 真机形状：**只有村民**（ModEntry 5217 把宠物/马/怪物/祝尼魔滤掉了，
+    #    猫狗走另一个 `pets` 字段），字段只有 name/displayName/x/y（**没有 `kind`**）。
+    #    ⚠️ 原来这里**没有这一项**（"喵喵"那只猫只活在 `SURR` 里）—— 夹具比真机更空，
+    #    于是"👥 本图 NPC"那行**整天印不出来**都没被自验抓到（详见下面 ㉒ 那条用例）。
+    #    坐标故意放远（人站在 (12,12)）：`nearby_npcs` 只收 2 格内，别影响别的用例。
+    "npcs": [{"name": "Gus", "displayName": "格斯", "x": 25, "y": 24}],
 }
 SURR = {
     # ⚠️ 2026-10-01：`objId` 是**真回包本来就有的**字段（`(O)` 开头 = 普通物件）；
@@ -146,7 +152,7 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
           farm_buildings=(), time_dict=None, doors_open=False, walk_ok=True,
           chore_tiles=None, crab_ready=0, ore_pan=None, chore_animals=None, money=None,
           silo=None, troughs=None, trough_filled=0, trough_raise=False,
-          surr_tiles=None, trash_cans=None, cola=None):
+          surr_tiles=None, trash_cans=None, cola=None, npcs=None):
     CALLS.clear()
     WALK_CALLS.clear()
     state = dict(STATE)
@@ -174,6 +180,13 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
     if loc is not None:
         # 🗺 换图（用例：砸晶球只在铁匠铺给那一行）
         state = dict(state, location={"name": loc, "uniqueName": loc})
+    if npcs is not None:
+        # 👥 `/state.npcs` 的真形状：**只有村民**（C# 侧已经滤掉宠物/马/怪物/祝尼魔，见 ModEntry
+        #    5217），字段就 name/displayName/x/y —— **没有 `kind`**（宠物走另一个 `pets` 字段）。
+        #    ⚠️ 2026-10-02：这条参数是补"那一行从来印不出来"的用例时才加的 —— 在此之前夹具的
+        #    `/state` **连 `npcs` 键都没有**（只有 `SURR` 里有），而真机 `/state` 一直是有人的
+        #    ⇒ 夹具比现实更空，把"字段压根没透传"这个病**完美地遮住了**（自验全绿、真机全瞎）。
+        state = dict(state, npcs=npcs)
     # 🌿 六件"顺手活"（P1 那批）的料：`/state.player.orePan` + 追加的采集格
     if ore_pan is not None:
         state = dict(state, player=dict(state.get("player") or {}, orePan=ore_pan))
@@ -2328,6 +2341,97 @@ def main():
     _bn3 = M._barn_empty_hint("Deluxe Coop")       # 夹具默认 `/machines` 是空表
     res.append(ok("🥚 197：读不到采集器 ⇒ 退回「两种可能并列」（不硬编）",
                   "装了自动采集器" not in _bn3 and "也可能是" in _bn3, _bn3[:200]))
+
+    # ㉒ 203c 🎓👥 **"写了但看不见"** 那两笔（恒 2026-10-02：「补一下缺门」 + 「👥 那行一次都没见过」）
+    #    ① 🎓 菜单里**能领却没那行**：抬头喊"可以领"，单子上只有「关掉界面」⇒ AI 只看单子就把正事错过。
+    #    ② 👥 状态条那行**整整一天印不出来**：`_npcs_hint` 写对了，可 `_gather_state()` 漏透传
+    #       `/state.npcs` ⇒ `data["npcs"]` 恒空 ⇒ 每次都"本图没人"。
+    #    ⚠️ ② 的病根值得单独记一笔：我当时的"验证"是**手搓一份带 npcs 的 dict** 喂进去 ⇒ 假绿灯
+    #       （夹具比真机更空：`/state` 连 `npcs` 键都没有）。所以下面那条**必须真跑 `_gather_state()`**。
+    _MK = {"skill": "Foraging", "title": "采集精通", "canClaim": True, "claimed": False,
+           "isOverview": False, "rewards": [{"name": "神秘树种"}, {"name": "宝藏图腾"}]}
+    _Lmk, _ = _labels2(menu="MasteryTrackerMenu", menu_extra={"mastery": _MK})
+    res.append(ok("🎓 能领 ⇒ 单子上出现「领 采集精通碑的奖励（神秘树种、宝藏图腾）」",
+                  any(x.startswith("领 采集精通碑") and "神秘树种" in x for x in _Lmk), _Lmk))
+    _i_cl = next((i for i, x in enumerate(_Lmk) if x.startswith("领 采集精通碑")), None)
+    _i_ex = next((i for i, x in enumerate(_Lmk) if "关掉界面" in x), None)
+    res.append(ok("🎓 而且它排在「关掉界面」**前面**（那一刻的正事在前，别让 AI 顺手把界面关了）",
+                  _i_cl is not None and _i_ex is not None and _i_cl < _i_ex, (_i_cl, _i_ex, _Lmk)))
+    for _bad, _why in ((dict(_MK, canClaim=False), "没名额"), (dict(_MK, claimed=True), "已经领过"),
+                       (dict(_MK, isOverview=True), "总览屏")):
+        _Lb, _ = _labels2(menu="MasteryTrackerMenu", menu_extra={"mastery": _bad})
+        res.append(ok(f"🎓 {_why} ⇒ **整行不出现**（宁缺勿编）",
+                      not any("碑的奖励" in x for x in _Lb), _Lb))
+    _Lno, _ = _labels2(menu="MasteryTrackerMenu", menu_extra={})
+    res.append(ok("🎓 连 `mastery` 段都没有（老 DLL / 别的菜单）⇒ 不出现、也不炸",
+                  not any("碑的奖励" in x for x in _Lno), _Lno))
+    _mc_orig = M._menu_claim_now
+    M._menu_claim_now = lambda *a, **k: "🎓（桩：_menu_claim_now 跑了）"
+    try:
+        _rmc = M._im_run("menu_claim", {})
+    finally:
+        M._menu_claim_now = _mc_orig
+    res.append(ok("🎓 `_im_run` 认 `menu_claim`，走的是 `_menu_claim_now()`（不自己打端点）",
+                  isinstance(_rmc, dict) and "_menu_claim_now 跑了" in str(_rmc.get("text")), _rmc))
+
+    # ── 👥 本图 NPC 那一行（**穿 `_gather_state` 全链**，不是手搓 dict）──
+    # 🚫 真机出口闸：`host_sittable`/`host_pool`/`host_state` 走**裸 requests**（不经 `api._get`），
+    #    文件头那四个桩拦不住 ⇒ 不闸住的话这条用例会**真打 7842**（直连端口不进 MCP 日志，出事查不到）。
+    _old_hs, _old_hp, _old_hst = M.api.host_sittable, M.api.host_pool, M.api.host_state
+    _old_req = M.api.requests
+    _NET_TRIES = []
+
+    class _Resp:
+        def json(self):
+            return {"ok": False}
+
+    class _NoNet:
+        def get(self, url, *a, **k):
+            _NET_TRIES.append(("GET", url)); return _Resp()
+
+        def post(self, url, *a, **k):
+            _NET_TRIES.append(("POST", url)); return _Resp()
+
+    M.api.requests = _NoNet()
+    M.api.host_sittable = lambda *a, **k: {}
+    M.api.host_pool = lambda *a, **k: {}
+    M.api.host_state = lambda *a, **k: {}
+    try:
+        _stub()
+        _d = M._gather_state()
+        _d_npcs = _d.get("npcs")
+        _d_strip = M._build_state_strip(_d, full=False)
+        _stub(npcs=[{"name": "喵喵", "kind": "pet", "x": 12, "y": 13}])
+        _strip_pet = M._build_state_strip(M._gather_state(), full=False)
+        _stub(npcs=[])
+        _strip_none = M._build_state_strip(M._gather_state(), full=False)
+    finally:
+        M.api.requests = _old_req
+        M.api.host_sittable, M.api.host_pool, M.api.host_state = _old_hs, _old_hp, _old_hst
+    res.append(ok("👥 `/state.npcs` **真透传**进 `data`（2026-10-02 漏掉的就是这根线）",
+                  _d_npcs == STATE["npcs"], _d_npcs))
+    res.append(ok("👥 **精简版**状态条（`full=False`，check/intent 那种回包）里真印出那一行",
+                  "👥 本图 NPC：格斯" in _d_strip,
+                  [x for x in _d_strip.splitlines() if "👥" in x]))
+    res.append(ok("👥 而且把 chat/gift 两条路的**完整写法** + 送礼次数写全",
+                  'social(ops="chat"' in _d_strip and 'social(ops="gift"' in _d_strip
+                  and "每周最多 2 次" in _d_strip, _d_strip[-400:]))
+    res.append(ok("👥 只有猫狗（第二道保险：C# 那边万一放宽口径）⇒ 那行不出现（别劝 AI 去跟猫聊天）",
+                  "👥" not in _strip_pet, [x for x in _strip_pet.splitlines() if "👥" in x]))
+    res.append(ok("👥 本图没人 ⇒ 不出现（不硬编一句空话）", "👥" not in _strip_none))
+    res.append(ok("🚫 这条用例**零 raw 网络**（状态条这条路不许绕过 `api._get` 打真机）",
+                  _NET_TRIES == [], _NET_TRIES))
+
+    # ㉓ 203d 🐮 挤奶/剪毛**一只都没成**时点名原因（恒 2026-10-02：「报错排除自动采集器后基本就是
+    #    这个原因」）—— 判据必须**问游戏**（数格子），真满才说满，没满就明说"不是满包挡的"。
+    _stub(inv=[{"name": f"物{i}", "stack": 1, "slotIndex": i} for i in range(36)])
+    _mn_full = M._milk_empty_note()
+    res.append(ok("🐮 背包真满（36/36）⇒ 点名「背包满了」+ 给下一步（腾格子再回来）",
+                  "背包满了" in _mn_full and "storage" in _mn_full, _mn_full))
+    _stub()
+    _mn_ok = M._milk_empty_note()
+    res.append(ok("🐮 包里还有空位 ⇒ **明说不是满包挡的**（不许把猜的说成原因）",
+                  "不是满包" in _mn_ok and "背包满了" not in _mn_ok, _mn_ok))
 
     print(f"\n{sum(res)}/{len(res)} 过")
     return all(res)

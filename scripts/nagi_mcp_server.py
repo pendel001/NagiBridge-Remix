@@ -1165,6 +1165,15 @@ def _gather_state() -> dict:
         data["activeMenu"] = s.get("activeMenu")
         data["activeEvent"] = s.get("activeEvent")
         data["otherPlayers"] = s.get("otherPlayers", [])
+        # 👥 本图 NPC（`/state.npcs` 全量：name/displayName/x/y/kind）——**2026-10-02 补的缺门**：
+        #    状态条那行「👥 本图 NPC：…」写了、`_npcs_hint` 也写了，可**这份透传漏了 `npcs`**
+        #    ⇒ `data["npcs"]` 恒为空 ⇒ 那一行**永远印不出来**（真机一次都没见过，我却在自验里
+        #    手搓了一份带 npcs 的 dict 把它当"验证过"）。
+        #    ⚠️ 病根同 `_npcs_hint` docstring 里那条通式：**"实现了但看不见"= 最坏的那种** ——
+        #      这次不是"账被中间层消费掉"，而是**字段压根没接上**（比那还早一步，HTTP 都不用丢）。
+        #    📌 `_intent_wiring_selftest` 里那条用例**真跑 `_gather_state()`**（不是手搓 dict），
+        #       就是钉这一根线：以后谁把这行删了，自验当场红。
+        data["npcs"] = s.get("npcs", [])
         # 📬 邮箱坐标（2026-09-24 恒）：C# 的 `TryGetMailbox` = `Game1.player.getMailboxPosition()`，
         #    跟着自己那间小屋/农舍走（动态）。**以前这个字段一路没人读**——AI 只收到
         #    "📬 有未读信（去邮箱交互读信）"这种**不带地点**的提醒，在小屋里只能瞎猜格子。
@@ -2630,6 +2639,10 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
         pass
 
     # ── 👥 本图 NPC（恒 2026-10-02：只报名字 + "可以 chat/gift"，数据就在手上）──
+    #    ⚠️ **必须常驻**（跟 📍 行同档，不走 `full` 闸门）：`check`/`intent` 的回包走**精简版**，
+    #       而这行正是"AI 要自己取舍"的那种信息 ⇒ 一天只报一次的 full 版对它等于没报。
+    #    ⚠️ 数据源 = `_gather_state` 透传的 `data["npcs"]`（**2026-10-02 那根漏接的线**，
+    #       见 `_npcs_hint` docstring：漏接时这行会**静默消失**，看着像"本图没人"）。
     try:
         _nh = _npcs_hint(data, loc_name)
         if _nh:
@@ -3181,7 +3194,15 @@ def _menu_claim_label_placeholder():
 
 
 def _npcs_hint(state: dict, loc_name: str = "") -> str:
-    """👥 本图 NPC 名字 + 「可以 chat / gift」—— 进图一次，零额外请求。
+    """👥 本图 NPC 名字 + 「可以 chat / gift」—— 常驻一行，零额外请求。
+
+    ⚠️⚠️ **2026-10-02 真机第二次踩的坑：这行整整一天印不出来，病根不在本函数** ——
+        `_gather_state()` 把 `/state` 的 player/location/time/… 一样样透传，**唯独漏了 `npcs`**，
+        于是 `state["npcs"]` 恒空 ⇒ 本函数每次都老老实实返回 `""`（看着像"本图没人"）。
+        而我当时的"验证"是**手搓一份带 npcs 的 dict** 喂进来 ⇒ 假绿灯（本项目最老的病）。
+        📌 通式升级：**"实现了但看不见"有两层** —— ①账被中间层消费掉（下面那两段）；
+          ②**字段压根没接上**（更早一步，HTTP 都还没丢）。判"字段有没有接上"只能靠
+          **真跑 `_gather_state()` 的自验**（见 `_intent_wiring_selftest` 那条用例），手搓 dict 作废。
 
     ⚠️ 为什么**不能只靠"进图报一次"的缓存**（2026-10-02 真机踩到）：`map go` 那一串导航
        自己会在**中间步骤**建状态条（那些回包不露给 AI）⇒ 缓存被中间步骤吃掉，
@@ -6916,6 +6937,28 @@ def _walk_to_animal(ax: int, ay: int, tries: int = 2, timeout: int = 12) -> tupl
     return False, f"⚠️ 没站到正旁边（停在 ({px},{py}){_why}），就地交互了{_tail}"
 
 
+def _milk_empty_note() -> str:
+    """🐮🐑 挤奶/剪毛**一只都没成**时，点名最可能的原因 —— 恒 2026-10-02：「报错排除自动采集器后
+    基本就是这个原因」（**背包满了**：产物进不了包，游戏只会弹「没有奶/没毛」那类话）。
+
+    ⚠️ **只在真满时**才说满（宁缺勿编）：读 `/state` 数格子，有空位就明说"不是满包挡的"，
+       别把一句猜的话说成原因（真满 / 没产物 从对白上分不出来，能分的只有**包**这一项）。
+    ⚠️ 判据只有这一处（`_milk_shear_animals` 里"一只都没成"那支调它），别在别处再写一份。
+    """
+    try:
+        st = api.state(light=True)
+        p = st.get("player") or {}
+        total = int(p.get("maxItems") or 36)
+        used = len([i for i in (st.get("inventory") or []) if i.get("name")])
+        if used >= total:
+            return (f"🎒 背包满了（{used}/{total}）——**产物进不了包**，所以只会弹"
+                    "「没有奶/没毛」这类话：先腾格子（`storage` 塞箱子 / `daily bin` 投出货箱）"
+                    "再回来挤一遍")
+        return f"背包还有空位（{used}/{total}）⇒ **不是满包挡的**（多半是今天没产物，或刚挤过）"
+    except Exception as e:
+        return f"（背包格数读不到：{type(e).__name__}）"
+
+
 def _milk_shear_animals(skip_grabber: bool = False) -> str:
     """挤牛奶+剪羊毛（2026-08-16）：对当前建筑内奶牛/山羊/绵羊选对应工具逐个交互。
     游戏自动处理：有产物收集（进背包），没产物弹提示（"没有奶/没毛"，小牛小羊无产物）。
@@ -7047,6 +7090,10 @@ def _milk_shear_animals(skip_grabber: bool = False) -> str:
                     continue
             out = (f"{emoji} {verb} {len(got)}/{len(animals)} 只"
                    f"（{'、'.join(got) if got else '无'}）")
+            # ⚠️ 一只都没成 ⇒ **点名最可能的原因**（恒 2026-10-02：排除自动采集器后基本就是满包）。
+            #    判据与文案都在 `_milk_empty_note`（只有那一处），这里只负责"什么时候问"。
+            if not got:
+                out += " · " + _milk_empty_note()
             # 兜底那几行挂在后面（**不占分子**）——`挤奶 15/8 只` 那个假数就是这么来的
             if notes:
                 out += " · 走位兜底：" + "；".join(notes)
