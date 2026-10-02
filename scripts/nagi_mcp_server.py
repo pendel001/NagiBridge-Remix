@@ -2629,6 +2629,14 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
     except Exception:
         pass
 
+    # ── 👥 本图 NPC（恒 2026-10-02：只报名字 + "可以 chat/gift"，数据就在手上）──
+    try:
+        _nh = _npcs_hint(data, loc_name)
+        if _nh:
+            lines.append(_nh)
+    except Exception:
+        pass
+
     # ── 🥤 本图趣味交互点（2026-10-02 恒：「不用了，不要加状态条了，上单吧」）──
     #    可乐机改走单子（`intent_menu.COLA_V`）⇒ 这里**一个字都不印**（同一个东西别两头说）。
 
@@ -3110,6 +3118,53 @@ def _mastery_cave_hint(loc_name: str = "") -> str:
 #    可乐机**上单子**（`intent_menu.COLA_V`），理由是他给的「酒吧的交互项本来也不多」。
 #    📌 通式：同一个东西**别两头都有**（状态条提示 + 单子行）——两处一漂，AI 就得分清哪句还算数。
 #    以后再加趣味点：先问一句"这是不是单子上该有一行"，是就别在状态条上重说一遍。
+
+# 👥 本图 NPC（恒 2026-10-02：「注入就只用注入**地图当前 npc 名字**，告诉 AI 可以 chat 或 gift
+#    以交互就够了，**跟原来差不多**」）
+#    ⚠️ 刻意**只报名字**：好感 / 本周送了几次 / 今天生日那些**都不进状态条** ——
+#      那是"要 AI 自己取舍"的细节（送礼选谁、送什么，它自己问 `social(ops="friendship")`）。
+#      这一行只干一件事：**告诉它"这儿有人，社交那两条路开着"**（原来 AI 根本不知道有这回事）。
+#    ⚠️ 数据来自**已经拉到的** `/state.npcs` ⇒ **零额外请求**；进图报一次（NPC 名单变了会再报）。
+_NPC_HINT_SEEN = {"loc": None, "names": None, "ts": 0.0}
+_NPC_HINT_GAP = 300.0      # 秒：同一批 NPC 最多 5 分钟重播一次（够 AI 看见，又不至于每发都刷）
+
+
+def _npcs_hint(state: dict, loc_name: str = "") -> str:
+    """👥 本图 NPC 名字 + 「可以 chat / gift」—— 进图一次，零额外请求。
+
+    ⚠️ 为什么**不能只靠"进图报一次"的缓存**（2026-10-02 真机踩到）：`map go` 那一串导航
+       自己会在**中间步骤**建状态条（那些回包不露给 AI）⇒ 缓存被中间步骤吃掉，
+       AI 在"到达那张图"的回包上**反而看不见这一行**（`_scene_kit_hint` 靠 `_OPS_INNER`
+       躲过这一劫，可导航中间步骤不是 `_OPS_INNER`）。
+    ⇒ 改成**按时间节流**（同批 NPC 5 分钟重播一次）：丢不掉，也不会每发都刷。
+    ⚠️ 为什么**最后没上"进图一次/时间节流"**（2026-10-02 真机连踩两次）：
+       ① `map go` 那一串导航会在**中间步骤**建状态条（那些回包不露给 AI）⇒ 缓存被中间步骤吃掉；
+       ② 加时间节流后，**服务端自己的后台循环**（心跳/兜底）也会建状态条 ⇒ 每次都替 AI 消费掉，
+          结果 AI 一次都看不见（"实现了但看不见"= 最坏的那种）。
+       ⇒ 干脆**不做"只报一次"**：只要本图有人就报（一行、短），跟「🧑 恒 (x,y)」那行同一个待遇。
+       📌 通式：**"只报一次"的账，只有在"消费它的那一发一定是给 AI 看的那一发"时才成立** ——
+          这个项目里中间层太多（导航/域 op/后台循环），所以这类账最容易变成"谁也看不见"。
+    """
+    if _OPS_INNER["n"] > 0 or not loc_name:
+        return ""
+    names = []
+    for n in ((state or {}).get("npcs") or []):
+        if (n.get("kind") or "") == "pet":
+            continue                      # 猫狗是「摸」那条路，不是 chat/gift
+        nm = n.get("displayName") or n.get("name")
+        if nm:
+            names.append(nm)
+    if not names:
+        _NPC_HINT_SEEN.update(loc=loc_name, names=None, ts=0.0)
+        return ""
+    _now = time.time()
+    _ = _now          # （节流去掉了：见下面那段"为什么最后没上节流"）
+    _NPC_HINT_SEEN.update(loc=loc_name, names=list(names), ts=_now)
+    return (f"👥 本图 NPC：{'、'.join(names[:6])}" + ("…" if len(names) > 6 else "")
+            + "　→ 搭话 `social(ops=\"chat\", kw={\"name\":\"…\"})` / 送礼 "
+              "`social(ops=\"gift\", kw={\"name\":\"…\",\"item\":\"…\"})`"
+              "（送礼每 NPC **每周最多 2 次、每天 1 次**）")
+
 
 def _shipbin_hint(loc_name: str = "") -> str:
     """📦 本图的迷你出货箱 —— **切图才扫一次**（同 `_forage_summary` 那套节流，别每调都刷 /surroundings）。
