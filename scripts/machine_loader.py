@@ -113,7 +113,8 @@ def enter_building(loc, b):
     ⚠️ 2026-09-16 恒："中间还是传送出来重新出发了" —— 和 `fruit_round.enter_building` 同病：
        下面那句 `walk_to {location:"Farm"}` 无条件发，人在**屋里**时会走**跨图分支**
        （先 warp 到 Farm=屋外，再走回门口再进门）⇒ 肉眼看就是"被传到屋外又跑回来"。
-       ⚠️ **注意这函数在 fruit_round / machine_loader / building_round 里各有一份**，
+       ⚠️ **注意这函数在 fruit_round / machine_loader 里各有一份**（原来还有 `building_round.py`，
+       那份 2026-10-03 随"收放兼容之外的口全删"一起删了），
        改一处不够（我第一轮就只改了 fruit_round，恒这次看到的正是漏掉的这份）。
        ⇒ 开头先确认是不是已经在里面，是就直接返回。
     """

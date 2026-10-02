@@ -842,13 +842,10 @@ def machines():
     return _get("/machines")
 
 
-def machine_collect(location="", type="", limit=0):
-    """⛔ **已退役、不删**（恒 2026-10-02：「退役的也许不删吧，只是不用而且做好标记」）。
-    这是**原子瞬收**（不要求人在机器旁边）⇒ 收放现在只走 `machine_loader.py --here`（拟人）。
-    ⚠️ 仍在用的地方只剩旧脚本（`building_round.py`）；**别再挂回 AI 的门牌/单子行**。
-    POST /machine_collect — 批量收机器产物（全农场/指定地点/指定类型），打 AI 进程 7843。
-    产物进 AI(轮回)背包（恒批注 2026-08-13：别打到 host 恒的号，会塞满恒背包）。"""
-    return _ai_post("/machine_collect", {"location": location, "type": type, "limit": limit})
+# ⛔ `machine_collect()`（POST /machine_collect，原子瞬收）**2026-10-03 删除** ——
+#    口径：「**要么删掉收放兼容之外的所有口，要么你想留就留一个一键快捷收在单子上**」（收官选前者）。
+#    收放只剩 `machine_loader.py --here`（拟人；`machine_load()` 仍在，它俩不是一回事）。
+#    ⚠️ C# 那侧的 `/machine_collect` 路由也同日删了；实现见 git 历史，**恢复先问恒**。
 
 
 def machine_load(item_id, location="", type="", count=0):

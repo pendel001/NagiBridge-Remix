@@ -64,7 +64,7 @@ FILE_STRUCTURE = {
     "scripts/mine_run.py": "矿洞/头骨矿冲层脚本（逐层+整理背包）——08-29 _rock_name 三级(object名>ORE_NODE_IDS>dump_tile真名)认隐藏名宝石/放射矿,ore_score 关键词(放射>宝石),mine_rock 校验改目标格有object",
     "scripts/rock_run.py / rock_scan.py": "室外镐击：采石场/挖掘场/蚌矿场 敲可破物(骨/黏土/蚌/矿点/宝石/煤/放射矿)，只跳普通石。默认只扫不敲(--dig 才敲)，目标按 objId+dump_tile 真名认(1.6 节点 Name 全报 'Stone' 只 objId 可信)；MCP scene ops=rock",
     "scripts/fish_run.py": "钓鱼自动化（walk_to 到钓点→拿竿→抛竿，--max-casts 收手）+ 拿竿后自动补饵/钓具",
-    "scripts/farm_row.py / fruit_round.py / building_round.py / harvest.py / scythe_crops.py / keg_manager.py / furnace_manager.py": "农活：行田/果树圈收/建筑一轮/收获/作物收获(拟人逐个走位,镰刀 or 手摘)/酒桶管理/熔炉",
+    "scripts/farm_row.py / fruit_round.py / harvest.py / scythe_crops.py / keg_manager.py / furnace_manager.py": "农活：行田/果树圈收/收获/作物收获(拟人逐个走位,镰刀 or 手摘)/酒桶管理/熔炉（`building_round.py` 2026-10-03 随'收放兼容之外的口全删'删除）",
     "scripts/pet_animals.py / feed_hay.py / pet_walk.py": "养动物：摸宠/喂干草/遛宠",
     "scripts/pickup_scene.py / scan_entries.py": "场景拾取/扫描",
     "scripts/berry_run.py / blessing_statue.py / chop_trees.py / clear_area.py / machine_loader.py / check_design.py": "其他自动化：浆果/祝福像/砍树/清地/装机器(装载失败列机器需求给AI自查,机器type→输入种类表_MACHINE_NEED)/设计检查",

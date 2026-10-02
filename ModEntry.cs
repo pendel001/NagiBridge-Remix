@@ -3049,14 +3049,14 @@ public class ModEntry : Mod
                 "/drop_item" => HandleDropItem(ctx),
                 "/machines" => HandleMachines(),
                 "/farm_report" => HandleFarmReport(),
-                // ⛔ **已退役、不删**（恒 2026-10-02 拍板：「**退役的也许不删吧，只是不用而且做好标记**」）：
-                //    `/machine_collect` = 原子瞬收（`farmer.addItemToInventory(held)`，**不要求人在机器旁边**）
-                //    ⇒ 恒真机一眼看出"不是人在干活"（「不是撤掉非拟人了吗！还是一键收了hhh」）。
-                //    现在的收放**只有一条路**：`machine_loader.py --here`（拟人走过去逐台真交互，走 `farm load`）。
-                //    ⚠️ **路由留着**（还有 3 个旧调用点：`collect_machines()`（已退役不再暴露）·
-                //       `scripts/building_round.py` · `stardew_api.machine_collect`）——
-                //       **别再挂回任何 AI 能碰到的门牌/单子行**。要动它先跟恒确认（见 CHANGELOG 203i）。
-                "/machine_collect" => HandleMachineCollect(ctx),
+                // 🗑️ **`/machine_collect` 已于 2026-10-03 删除**（恒当天把口径收成一个二选一：
+                //    「**要么删掉收放兼容之外的所有口，要么你想留就留一个一键快捷收在单子上**」——
+                //     收官选择的是**前者**：收放只留拟人那一条，不留一键快捷收）。
+                //    ⚠️ 它俩月前（08-31）是「保留不删、日后加作弊模式挂回」，10-02 还只打了退役标；
+                //       10-03 才真正删掉 —— 因为"留着的口"和"已定的口径"混着放，本身就会让人（和我）
+                //       反复把同一件事再讨论一遍。**要恢复请先问恒**（git 历史里有整个实现）。
+                //    现在的收放**只有一条路**：`machine_loader.py --here`（拟人走过去逐台真交互，
+                //    走 `farm(ops="load")`；`item` 留空 = 只收不放）。
                 "/machine_load" => HandleMachineLoad(ctx),
                 "/machine_reqs" => HandleMachineReqs(ctx),
                 "/animals" => HandleAnimals(),
@@ -19215,94 +19215,9 @@ public class ModEntry : Mod
         return tcs.Task.GetAwaiter().GetResult();
     }
 
-    /// <summary>
-    /// ⛔ **已退役、不删**（恒 2026-10-02：「退役的也许不删吧，只是不用而且做好标记」）。
-    /// 退役理由：「不是撤掉非拟人了吗！还是一键收了hhh」—— 它**不要求人在机器旁边**，
-    /// 能隔着半个屋子把 20 台机器一次收干净，一眼看得出不是人在干活。
-    /// ⇒ 收放只剩 `machine_loader.py --here`（拟人逐台真交互）。**别再挂回 AI 的门牌/单子行**。
-    /// POST /machine_collect  { location?, type?, limit? }
-    /// 批量收机器产物（全农场或指定地点）：直接 addItemToInventory + 双清
-    /// （heldObject + readyForHarvest 一起清，避免"鬼机器"）。
-    /// 背包满即停手不丢物，跳过剩余待收只计数。返回每件产物的名字/ID/当前品质。
-    /// </summary>
-    private object HandleMachineCollect(HttpListenerContext ctx)
-    {
-        var p = ReadJson(ctx);
-        var location = GetParamOr(p, "location", "");
-        var type = GetParamOr(p, "type", "");
-        var limit = GetParamOr(p, "limit", 0);   // 0 = 不限
-
-        if (!Context.IsWorldReady)
-            throw new InvalidOperationException("World not ready");
-
-        var tcs = new TaskCompletionSource<object>();
-        EnqueueMainThread(() =>
-        {
-            try
-            {
-                var farmer = Game1.player;
-                var locs = ResolveLocations(location);
-
-                int collected = 0, skippedFull = 0;
-                var byType = new Dictionary<string, int>();
-                var products = new List<object>();
-                bool invFull = false;
-
-                foreach (var (loc, tile, obj) in EnumerateMachines(locs, type))
-                {
-                    if (limit > 0 && collected >= limit)
-                        break;
-                    if (!obj.readyForHarvest.Value || obj.heldObject.Value == null)
-                        continue;
-
-                    if (invFull)      // 背包已满：剩下的待收只计数，不收
-                    {
-                        skippedFull++;
-                        continue;
-                    }
-
-                    var held = obj.heldObject.Value;
-                    var leftover = farmer.addItemToInventory(held);
-                    if (leftover != null && leftover.Stack > 0)
-                    {
-                        invFull = true;
-                        skippedFull++;
-                        continue;   // 没塞进去，机器保持原样
-                    }
-
-                    obj.heldObject.Value = null;
-                    obj.readyForHarvest.Value = false;
-                    collected++;
-
-                    byType[obj.Name] = byType.TryGetValue(obj.Name, out var c) ? c + 1 : 1;
-                    products.Add(new
-                    {
-                        name = held.Name,
-                        id = held.QualifiedItemId,
-                        quality = (held as StardewValley.Object)?.Quality ?? 0,
-                        location = loc.Name,
-                        x = (int)tile.X,
-                        y = (int)tile.Y
-                    });
-                }
-
-                tcs.SetResult(new
-                {
-                    ok = true,
-                    collected,
-                    skippedFull,
-                    byType,
-                    products,
-                    invFull
-                });
-            }
-            catch (Exception ex)
-            {
-                tcs.SetResult(new { ok = false, error = ex.Message });
-            }
-        });
-        return tcs.Task.GetAwaiter().GetResult();
-    }
+    //  (原 HandleMachineCollect（POST /machine_collect，原子瞬收）**2026-10-03 删除** ——
+    //   恒口径：「要么删掉收放兼容之外的所有口，要么…留一个一键快捷收在单子上」；收官选前者。
+    //   实现留在 git 历史里（git log -S HandleMachineCollect）；要恢复**先问恒**。)
 
     /// <summary>
     /// POST /machine_load  { itemId, location?, type?, count? }

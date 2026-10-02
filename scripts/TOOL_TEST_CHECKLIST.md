@@ -135,7 +135,7 @@
 | `放鱼` ≡`pond_add` | T2 摆场 |  | ✅ | ← 同 `farm:pond_add`〔_pond_add〕 |
 | `敲` ≡`break` ⇄`cabin:break` | T3 副作用 |  | ✅ | ← 同 `cabin:break`〔break_tile〕 |
 | `方形规划` ≡`plan` | T2 摆场 |  | ✅ | ← 同 `farm:plan`〔plan_farm_layout_tool〕 |
-| `机器` ≡`collect` | T2 摆场 |  | ✅ | ← 同 `farm:collect`〔collect_machines〕 |
+| ~~`机器` ≡`collect`~~ | — |  | ⛔ | **2026-10-03 删除**：`farm:collect`〔`collect_machines`〕与 C# `/machine_collect` 一起删了（收放只留拟人那条：`farm:load` → `machine_loader --here`） |
 | `浇` ≡`water` | T2 摆场 |  | ✅ | ← 同 `farm:water`〔water_crops〕 |
 | `清` ≡`clear` | T2 摆场 |  | ✅ | ← 同 `farm:clear`〔_farm_clear〕 |
 | `清格` ≡`clearground` | T2 摆场 |  | ✅ | ← 同 `farm:clearground`〔clear_ground〕 |

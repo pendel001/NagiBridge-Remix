@@ -45,7 +45,10 @@ _KNOWN_SUBSUMED = {
                             #    ⇒ 此函数**已无调用者**，是死包装，**留着只为兼容、可删**
     "storage_default_clear",# ⚠️ 同上：清默认箱的能力现由 `storage_default(clear=True)` 给 ⇒ **死包装，可删**
     # ⛔ 2026-10-01 恒：「**做完给其他收放路打一下退役标吧**」——两条旧收放路都撤下顶层，功能并进 `load`：
-    "collect_machines",     # → farm ops="load"（`load_machines`）：**同一件事的拟人版**。
+    #    ⚠️ 2026-10-03 更新：恒口径收成「**要么删掉收放兼容之外的所有口，要么…留一个一键快捷收在单子上**」
+    #       ⇒ 收官选前者，`collect_machines()` 与 C# `/machine_collect` 已**真删**（不是只退役）。
+    #       留在本表里只是记账（它已不存在 ⇒ 这条黑名单项现在是惰性的）。
+    "collect_machines",     # → farm ops="load"（`load_machines`）：**同一件事的拟人版**；**2026-10-03 已删除**
                             #   旧的是 C# `/machine_collect` 原子瞬收、**不要求人在机器旁边**
                             #   （恒真机：「不是撤掉非拟人了吗！还是一键收了hhh」）。
     "work_building",        # → farm ops="load"（同上）：旧的跑 `fruit_round.py`，**料尽/机器不收会提前收工**，

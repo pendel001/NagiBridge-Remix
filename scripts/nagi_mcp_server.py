@@ -1191,7 +1191,7 @@ def _gather_state() -> dict:
         data["alerts"] = []
 
     # ⚠️ 动物/机器不再每次拉取——农场待办只在晨报(每天第一次)里简述，
-    #    想实时看用 collect_machines/check 工具。省 2 个 HTTP/调用。
+    #    想实时看用 `check what=machines` / farm 域的 `load`（收放）。省 2 个 HTTP/调用。
 
     # 掉落物（全地图扫——含矿井/火山等；15s 冷却防每调用都刷 /debris。恒批注 2026-08-13）
     try:
@@ -7858,43 +7858,11 @@ def harvest_crops(radius: int = 15) -> str:
     if result.startswith("🚀"):
         return _with_state(result)       # 长脚本自动异步：立即返回 job_id
     return _with_state(f"🌾 收菜完成\n{result[:600]}")
-
-
-@mcp.tool()
-def collect_machines(machine_type: str = "", location: str = "") -> str:
-    """⛔ **已退役（2026-10-01）** —— 别再往这儿加东西，AI 已经够不着它了。
-
-    退役理由（恒真机，一句话）：**「不是撤掉非拟人了吗！还是一键收了hhh」** ——
-    它是 `farmer.addItemToInventory(held)`（C# `/machine_collect`），**不要求角色在机器旁边**，
-    所以 AI 会"隔着半个屋子把 20 台机器一次收干净"，一眼就看得出不是人在干活。
-    ⇒ 收放**只剩一条**：`load_machines`（`machine_loader.py --here`，拟人走过去逐台真交互）；
-       单子上那行「收 已好的机器」也走它。`farm` 域的 `collect` op 已摘（见那段的 ⛔ 记账）。
-    ⚠️ 函数**留着不删**（`_cabin_collect` 等旧别名还指着它，而且日后要做"作弊模式"可能还要用），
-       但**不再对 AI 暴露**。
-
-    原 docstring：⚙️ 一键收机器产物（=只收不放，全农场一遍瞬收，不走路）
-    遍历所有机器，把已完成的产品直接收进背包（返回带当前品质，Cask 用）。
-    只收 readyForHarvest 的机器，陈化中的 Cask 不取。
-
-    Args:
-        machine_type: 机器类型（Keg / Cask / Preserves Jar…，留空全收）
-        location: 限定地点（Cellar / Big Shed…，留空=全农场）
-    """
-    r = api.machine_collect(location=location, type=machine_type)
-    if not r.get("ok"):
-        return _with_state(f"❌ 收集失败: {r.get('error', '')}")
-    collected = r.get("collected", 0)
-    skipped = r.get("skippedFull", 0)
-    by_type = r.get("byType") or {}
-    lines = [f"⚙️ 机器收集: 收了 {collected} 件"]
-    for name, c in sorted(by_type.items()):
-        cn = MACHINE_CN.get(name, name)
-        lines.append(f"  • {cn} x{c}")
-    if skipped:
-        lines.append(f"⚠️ 背包满了，跳过 {skipped} 件（先清理背包再收）")
-    if not collected and not skipped:
-        lines.append("没有待收的机器")
-    return _with_state("\n".join(lines))
+# ⛔ **`collect_machines()`（一键瞬收）2026-10-03 删除** —— 恒口径：「**要么删掉收放兼容之外的
+#   所有口，要么你想留就留一个一键快捷收在单子上**」；收官选的是**前者**。
+#   收放只剩 `load_machines`（拟人：`machine_loader.py --here`），单子那行「收 已好的机器」也是它。
+#   ⚠️ 它 08-31 定的是"保留不删"、10-02 只打了退役标 —— 结果**"留着的口"和"已定的口径"混着看**，
+#      10-03 才真正删掉（"反复"的一半原因就是这个）。实现见 git 历史；**要恢复先问恒**。
 
 
 @mcp.tool()
@@ -7966,7 +7934,8 @@ def work_building(location: str, item: str = "", machine_type: str = "") -> str:
         location: 屋子/地点名（Big Shed / Cabin / Cellar / Farm…）
         item: 要放的原料英文名（如 Starfruit；留空=只收不放，见上面的⚠️）
         machine_type: 放原料的机器类型（Keg / Cask…，留空=该屋所有空机器）
-    ⚠️ 2026-08-31 恒：作弊直加版 building_round 保留但不再走此路径（后续加作弊模式时再挂回）。
+    ⚠️ 收放**只有这一条路**（2026-10-03：`/machine_collect` 与 `collect_machines()` 已删 ——
+       恒口径「要么删掉收放兼容之外的所有口，要么…留一个一键快捷收在单子上」，收官选前者）。
     """
     args_list = ["--location", location]
     if item:
@@ -11392,7 +11361,9 @@ def farm(ops: str = "", kw: dict | None = None) -> str:
         "plan": plan_farm_layout_tool, "方形规划": plan_farm_layout_tool,
         "chop": chop_trees, "砍树": chop_trees,
         "clearground": clear_ground, "清格": clear_ground,
-        # ⛔ 2026-10-01 **退役**（恒：「做完给其他收放路打一下退役标吧」）：
+        # ⛔ 2026-10-01 **退役**、**2026-10-03 删除**（恒口径：「要么删掉收放兼容之外的所有口，
+        #   要么…留一个一键快捷收在单子上」⇒ 收官选前者；`collect_machines()`/`/machine_collect`
+        #   与旧脚本 `building_round.py` 都同日删掉了）：
         #    · `collect`（`collect_machines` → C# `/machine_collect`）：**原子瞬收、不走路**
         #      —— 恒真机一眼看出「不是撤掉非拟人了吗！还是一键收了hhh」。
         #    · `building`（`work_building` → `fruit_round.py`）：**另一条拟人收放**，
@@ -11472,7 +11443,7 @@ def _cabin_collect() -> str:
 
     ⚠️ 2026-10-01：跟着「一键瞬收」一起**改走拟人那条**（`load_machines(here=True)`
        → `machine_loader.py`，`here` 用 `/machines` 就是"脚下这间"）。
-       旧实现调的是 `collect_machines`（原子瞬收、不走路）—— 恒真机一眼看出「一键收了」。
+       旧实现调的是 `collect_machines`（原子瞬收、不走路；**2026-10-03 已删**）—— 恒真机一眼看出「一键收了」。
     ⚠️ 传**唯一名**而不是显示名——理由见 `_cur_loc_unique`。C# `FindLocationByName` 也相应改成
     「先认玩家当前所在 → 再认唯一名 → 最后才退回按名字扫」（对齐游戏自己的 getLocationFromName）。"""
     cur = _cur_loc_unique()
@@ -22911,12 +22882,11 @@ def _im_beds(state: dict) -> list:
 #   C# 的 `ReadJson()` **只读 HTTP body**（`ModEntry.cs:3065`，`GetParamOr` 也只从那个 dict 取），
 #   而路由表**只认路径不看方法** ⇒ GET 敲同一个端点**照样执行**，只是 `x/y/location/count`
 #   全落在 query string 上**没人读** ⇒ C# 拿到默认值**照默认值干**。
-#   实证：`machine_collect` 少列在这儿 ⇒ `location` 变 `""`
+#   实证：`machine_collect`（**那个 op 2026-10-03 已删**，这里只留教训）少列在这儿 ⇒ `location` 变 `""`
 #   ⇒ `ResolveLocations("")` 从"脚下这张图"变成**农场+所有建筑室内+地窖**——
 #   单子上写 `×20`，按下去收了 **678 台**，背包当场爆掉、377 件留在原地。
 #   ⇒ 判据：**只要 C# 是从 body 读参数的，就必须 POST**。新接裸端点时先看 `ReadJson`。
 _IM_POST_OPS = {"select", "store", "chest_take", "eat", "use", "walk_to", "drop",
-                "machine_collect",
                 # ⚠️ `chest_open` 这版 C# 还没有（在批次里，`caps` 把着关 ⇒ 那行现在不出现）。
                 #    提前列在这儿：它接的是 x/y，**C# 那边必然是 ReadJson** ⇒ 天然要 POST。
                 "chest_open"}
@@ -23047,7 +23017,8 @@ def _im_chest_open(x, y):
 #   （料不够但继续收完全屋 / 料够边放边收 / 只收）…就是这条分支时候才做的啊」
 #   ⇒ 他说得对：那三种状况 = `machine_loader.py` 2026-09-27 的「收放一条过」
 #     （165 这条分支上验的「拟人收放 100 台小桶一条过」）。而单子上那条「收 已好的机器」
-#     接的是 **09-27 之前的快捷路**（`/machine_collect` 原子瞬收、不走路）——**没人回头换**。
+#     接的是 **09-27 之前的快捷路**（`/machine_collect` 原子瞬收、不走路；**那个端点 2026-10-03 已删**）
+#     ——**没人回头换**。
 # ⇒ (b) = 单子那条改成 **「收放…」**：先挑**放什么料**，然后走 `machine_loader --here`
 #   拟人逐台收放（三种状况交给游戏/脚本，不在这一层分情况）。
 # ═══════════════════════════════════════════════════════════════════════
