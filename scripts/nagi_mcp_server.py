@@ -11520,6 +11520,29 @@ def _crab_collect() -> str:
             log.append(f"  ✗ ({wx},{wy}) {e}")
         time.sleep(0.4)
     log.append(f"📦 本轮交互 {got}/{len(pots)} 个（产出进背包；空笼要重新放饵）")
+    # 🦀 2026-10-01 恒：「**收没收完我也不知道**」。真机实况：单子说「本图 4 个蟹笼有货」→
+    #    敲完它报「本轮交互 3/3 个」→ 一查 `/crab_pots`：**(42,1) 仍然 `readyForHarvest=true`**。
+    #    ⇒ 收完**回读真值**（`/crab_pots` 的 `readyForHarvest`，**不是**我们自己数的交互次数）：
+    #      还剩几个 + 坐标；全收干净就说全收干净；读不到就**如实说读不到**。
+    #    ⚠️ 只修**报数**：走位/瞬移一个字不动（恒：「蟹笼和淘金动作我没感觉到什么问题」）。
+    _left = None
+    try:
+        _now = _crab_pots_scan()
+        if isinstance(_now, list):
+            _left = [(p.get("x"), p.get("y")) for p in _now if p.get("readyForHarvest")]
+    except Exception:
+        _left = None
+    if _left is None:
+        log.append("⚠️ 收完**没能回读**蟹笼状态（`/crab_pots` 读不到）—— 到底收没收干净我不知道："
+                   "自己看一眼，或再 `fish(ops=\"crab_collect\")` 一次")
+    elif _left:
+        _coords = "、".join(f"({x},{y})" for x, y in _left[:8])
+        log.append(f"⚠️ **还剩 {len(_left)} 个没收到**：{_coords}"
+                   + (f" …另 {len(_left) - 8} 个" if len(_left) > 8 else "")
+                   + "（回读 `/crab_pots` 它们**里面还有货**）—— 再 `fish(ops=\"crab_collect\")` "
+                     "接着收；收到的是空笼的话记得 `fish(ops=\"crab_bait\")` 放饵")
+    else:
+        log.append("✅ **全收干净了**（回读 `/crab_pots`：已经没有被标记 readyForHarvest 的）")
     return "\n".join(log)
 
 
@@ -21844,6 +21867,35 @@ def _im_hay(state: dict) -> dict:
             "bench_total": int(st.get("bench_total") or 0)}
 
 
+def _im_pick(state: dict, surr: dict) -> dict:
+    """🌿 「捡 地上的东西」那行的账 → `{"n": N, "keys": [[x,y],…], "near": 曼哈顿最近}` / `{}`。
+
+    ⚠️ 判据**复用 `pickup_scene.scan_pickables()`**（名单 + 放宽后的"`(O)` 开头/non-passable"
+       规则**都在那一个脚本里**，别在这儿抄第二份）；tiles 用 ctx **已经拉到的** `/surroundings`
+       （`surr`）⇒ **一次都不多打**，也**不起子进程**。
+    ⚠️ 恒 2026-10-01：「复用原来的捡蛋工具」+「有东西才出现，没有就不出现（等于待办）」
+       ⇒ 扫出来是空的就回 `{}`（那行不出现）。
+    """
+    try:
+        import pickup_scene as _ps
+        pk = _ps.scan_pickables((surr or {}).get("tiles") or [])
+    except Exception:
+        return {}
+    if not pk:
+        return {}
+    try:
+        p = ((state or {}).get("player") or {})
+        px, py = int(p.get("x") or 0), int(p.get("y") or 0)
+    except Exception:
+        px = py = 0
+    try:
+        near = min(abs(int(x) - px) + abs(int(y) - py) for x, y, _o in pk)
+    except Exception:
+        near = 0
+    return {"n": len(pk), "near": near,
+            "keys": [[int(x), int(y)] for x, y, _o in pk]}
+
+
 def _im_chores(state: dict, surr: dict, animals: dict) -> dict:
     """🌿 六件"顺手就做"的活 —— **单子那 6 行的账**（判据全在这一处算好递进 `Ctx.chores`）。
 
@@ -21984,6 +22036,9 @@ def _im_ctx():
                                 # 🌾 「铺 干草」那行的账（只在**动物建筑内**读；判据复用 `feed_hay`
                                 #    的 `read_hay_status()`，见那儿）。
                                 hay=_im_hay(state),
+                                # 🌿 「捡 地上的东西」那行的账（判据 = `pickup_scene.scan_pickables()`，
+                                #    恒 2026-10-01：「复用原来的捡蛋工具」）。
+                                pick=_im_pick(state, surr),
                                 worn=worn)
 
 

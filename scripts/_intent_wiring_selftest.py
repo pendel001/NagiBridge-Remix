@@ -60,7 +60,11 @@ STATE = {
     "activeMenu": None,
 }
 SURR = {
-    "tiles": [{"x": 13, "y": 12, "passable": True, "forage": True, "object": "野莓"}],
+    # ⚠️ 2026-10-01：`objId` 是**真回包本来就有的**字段（`(O)` 开头 = 普通物件）；
+    #    「捡」那行的新判据（`pickup_scene.scan_pickables()`）就是看它 ⇒ 夹具补上，
+    #    否则这条野莓在夹具里"不可捡"、后面那些「捡」的用例会假红。
+    "tiles": [{"x": 13, "y": 12, "passable": True, "forage": True, "object": "野莓",
+               "objId": "(O)296"}],
     "npcs": [{"name": "喵喵", "kind": "pet", "x": 15, "y": 12}],
 }
 CHESTS = [
@@ -141,7 +145,8 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
           chests=None, inv=None, machines=None, mastery=None, loc=None,
           farm_buildings=(), time_dict=None, doors_open=False, walk_ok=True,
           chore_tiles=None, crab_ready=0, ore_pan=None, chore_animals=None, money=None,
-          silo=None, troughs=None, trough_filled=0, trough_raise=False):
+          silo=None, troughs=None, trough_filled=0, trough_raise=False,
+          surr_tiles=None):
     CALLS.clear()
     WALK_CALLS.clear()
     state = dict(STATE)
@@ -183,7 +188,9 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
         _animals_fixture = {"animals": chore_animals}
     else:
         _animals_fixture = chore_animals
-    _tiles_fixture = list(SURR.get("tiles") or []) + list(chore_tiles or [])
+    # ⚠️ `surr_tiles=[]` = "这一带**一件可捡的都没有**"（验「捡」那行不出现）
+    _tiles_fixture = ((list(SURR.get("tiles") or []) if surr_tiles is None else list(surr_tiles))
+                      + list(chore_tiles or []))
 
     def g(ep, params=None):
         CALLS.append(("GET", ep, params))
@@ -1753,6 +1760,92 @@ def main():
     M.feed_hay = _fh0
     res.append(ok("🔌 `_im_run` 认 `hay`（回一句话，且走的是现成的 `feed_hay()`）",
                   isinstance(_rh, dict) and "feed_hay 跑了" in str(_rh.get("text")), _rh))
+
+    # ⑯ 194 批：A「捡」复用 `pickup_scene` 的判据（含放宽到蛋/毛）· B「收 蟹笼」如实报剩几个
+    # ── A. 判据本身（`pickup_scene.scan_pickables` —— **只此一处**）──
+    import pickup_scene as _PS
+    _egg = {"x": 20, "y": 20, "passable": False, "object": "Egg", "objId": "(O)176"}
+    _wool = {"x": 21, "y": 20, "passable": False, "object": "Wool", "objId": "(O)440"}
+    _grab = {"x": 22, "y": 20, "passable": True, "object": "Auto-Grabber", "objId": "(BC)99"}
+    _incu = {"x": 23, "y": 20, "passable": True, "object": "Incubator", "objId": "(BC)101"}
+    _hay = {"x": 24, "y": 20, "passable": False, "object": "Hay", "objId": "(O)178"}
+    _furn = {"x": 25, "y": 20, "passable": False, "object": "红沙发", "objId": "(F)1234"}
+    _tool = {"x": 26, "y": 20, "passable": False, "object": "Hoe", "objId": "(T)Hoe"}
+    _spot = {"x": 27, "y": 20, "passable": False, "object": "远古斑点", "objId": "(O)590"}
+    _onion = {"x": 28, "y": 20, "passable": True, "forageCrop": "1"}
+    _pk = _PS.scan_pickables([_egg, _wool, _grab, _incu, _hay, _furn, _tool, _spot, _onion,
+                              dict(_egg)], (20, 20))
+    _names = [o for _x, _y, o in _pk]
+    res.append(ok("🎁 A：棚里 `passable=False` 的**蛋/毛**现在算「能捡」（老判据把它们全排除了）",
+                  "Egg" in _names and "Wool" in _names, _pk))
+    _coords = [(x, y) for x, y, _o in _pk]
+    res.append(ok("🎁 A：同名多格**去重**（同一格只出现一次）", len(_coords) == len(set(_coords)), _pk))
+    res.append(ok("🎁 A：离中心近的排前面（20,20 那格在最前）", _coords[0] == (20, 20), _pk))
+    res.append(ok("🎁 A：那份 `BLACKLIST` 照旧管用（自动采集器/孵化器/Hay/家具/工具**都不捡**）",
+                  not ({"Auto-Grabber", "Incubator", "Hay", "红沙发", "Hoe"} & set(_names)), _names))
+    res.append(ok("🎁 A：**远古斑点不归「捡」**（要锄头，归「挖 远古斑点」那行）",
+                  "远古斑点" not in _names, _names))
+    res.append(ok("🎁 A：成熟大葱那条照旧（没 `object` + `forageCrop==\"1\"`）",
+                  "成熟大葱" in _names, _names))
+
+    # ── A. 服务器推的账 + 单子那行（有东西才出现 / 没有就不出现）──
+    def _pick_info(extra_tiles=None, **kw):
+        _stub(chore_tiles=extra_tiles or [], **kw)
+        _ctxp = M._im_ctx()
+        _out = M.intent(ops="show", kw={"n": 40})
+        return _ctxp.pick, ("捡 地上的东西" in _out or "捡 Egg" in _out), _out
+
+    _pi, _has, _ = _pick_info()
+    res.append(ok("🎁 A：`Ctx.pick` 带着 n/最近距离/坐标清单（服务器用 `scan_pickables` 算）",
+                  _pi.get("n") == 1 and _pi.get("near") == 1 and _pi.get("keys") == [[13, 12]], _pi))
+    res.append(ok("🎁 A：有东西 ⇒ 「捡 地上的东西」在单子上", _has))
+    _pi2, _has2, _ = _pick_info(extra_tiles=[_grab, _incu, _hay, _furn, _spot])
+    res.append(ok("🎁 A：只有黑名单/斑点类的格子 ⇒ 清单**不含**它们（n 还是 1）",
+                  _pi2.get("n") == 1, _pi2))
+    _pi3, _has3, _ = _pick_info(surr_tiles=[])
+    res.append(ok("🎁 A：**一件都没有 ⇒ 那行不出现**（恒要的「等于待办」）",
+                  _pi3 == {} and not _has3, (_pi3, _has3)))
+    res.append(ok("🎁 A：走的是**现成的那条 op**（`_im_run` 认 `pickup_scene`，不由这层写 HTTP）",
+                  isinstance(M._im_run("pickup_scene", {}), dict)))
+
+    # ── B. 「收 蟹笼」收完**回读真值**、如实报剩几个 ──
+    def _crab_after(ready_left, scan_raises=False):
+        """跑一次 `_crab_collect`：收完回读 `/crab_pots` 的 `readyForHarvest`。全打桩。"""
+        _old = (M._crab_scan_placed, M._crab_stand_for, M._crab_pots_scan, M.api._post,
+                M._wait_arrival, M.time.sleep)
+        M._crab_scan_placed = lambda: [(42, 1), (43, 1), (44, 1)]
+        M._crab_stand_for = lambda x, y: (x, y + 1, 0)
+        M._wait_arrival = lambda *a, **k: True
+        M.api._post = lambda ep, data=None: {"ok": True}
+        M.time.sleep = lambda *a, **k: None
+        if scan_raises:
+            def _boom(*a, **k):
+                raise RuntimeError("模拟：/crab_pots 读不到")
+            M._crab_pots_scan = _boom
+        else:
+            M._crab_pots_scan = lambda *a, **k: (
+                [{"x": 42, "y": 1, "readyForHarvest": True},
+                 {"x": 43, "y": 1, "readyForHarvest": False},
+                 {"x": 44, "y": 1, "readyForHarvest": False}] if ready_left == 1 else
+                [{"x": 42, "y": 1, "readyForHarvest": bool(ready_left)},
+                 {"x": 43, "y": 1, "readyForHarvest": False},
+                 {"x": 44, "y": 1, "readyForHarvest": False}])
+        try:
+            return M._crab_collect()
+        finally:
+            (M._crab_scan_placed, M._crab_stand_for, M._crab_pots_scan, M.api._post,
+             M._wait_arrival, M.time.sleep) = _old
+
+    _rb = _crab_after(ready_left=1)
+    res.append(ok("🦀 B：收完**还剩 1 个** ⇒ 如实报出来 + 点名坐标（真机那个 (42,1) 的洞）",
+                  "还剩 1 个没收到" in _rb and "(42,1)" in _rb, _rb.splitlines()[-3:]))
+    res.append(ok("🦀 B：而且给下一步（再收一次 / 记得放饵）",
+                  "crab_collect" in _rb and "crab_bait" in _rb, _rb.splitlines()[-2:]))
+    _rb0 = _crab_after(ready_left=0)
+    res.append(ok("🦀 B：真收干净了 ⇒ 明说**全收干净了**", "全收干净了" in _rb0, _rb0.splitlines()[-1:]))
+    _rbe = _crab_after(ready_left=1, scan_raises=True)
+    res.append(ok("🦀 B：**读不到** ⇒ 如实说「到底收没收干净我不知道」（不编）",
+                  "不知道" in _rbe and "回读" in _rbe, _rbe.splitlines()[-1:]))
 
     print(f"\n{sum(res)}/{len(res)} 过")
     return all(res)

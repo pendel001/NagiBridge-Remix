@@ -267,6 +267,14 @@ class Ctx:
     #    ⚠️ **由服务器算好递进来**（`_im_hay` → `feed_hay.read_hay_status()`，**脚本铺草前读的
     #       同一份判据**；只在**动物建筑内**才推）⇒ 这一层不打 HTTP、也不自己扫 Trough。
     hay: dict = field(default_factory=dict)
+    # 🎁 **这一刻地上有什么能捡的**（恒 2026-10-01：「复用原来的捡蛋工具」）。
+    #    `{}` = 一件都没有（**「捡」那行不出现** = 待办语义）；有值形如
+    #    `{"n": 17, "near": 3, "keys": [[11, 14], …]}`。
+    #    ⚠️ **判据在 `pickup_scene.scan_pickables()`（脚本那一处）**：`(O)` 开头的普通物件
+    #       + 不在它那份 `BLACKLIST` 里 + **允许目标格站不住**（棚里的蛋/毛挡路，
+    #       走不过去就"站旁边 face+interact"，工具里本来就有这条路）⇒ 服务器只搬结果过来，
+    #       这一层做**成员判断**，不打 HTTP、不抄名单。
+    pick: dict = field(default_factory=dict)
     # 🐾 本图的宠物（猫狗）——来自 `/surroundings` 的 `npcs` 里 `kind=="pet"` 的那几个。
     #    它们是**世界级**的（不属于某一格的动作），所以不进 tiles。
     pets: list = field(default_factory=list)
@@ -394,28 +402,24 @@ class Verb:
 # ── 以下每个 can() 都只用**端点已经吐出来的**字段，一个都不用猜 ──────────
 
 def _pick_can(ctx, t):
-    """🌿 捡：问游戏 `Object.isForage()`（`/surroundings` 的 `forage` 字段）。
+    """🎁 捡：判据 = **服务器递进来的那份可捡清单**（`Ctx.pick`）。
 
-    ⚠️ 这个键**只在为真时才写**（C# `if (objForage) tile["forage"] = true;`）
-    ⇒ 键不在 = **这格不可捡**（不是"不知道"）。"不知道"只可能是整版 DLL 老，
-    那是**连接级**的事 → 查 `ctx.cap`，别在图里找。
-
-    ⚠️ **蛋 / 毛 / 兔脚套不上这一行**（恒 2026-10-01 问「放宽到鸡蛋/鸭毛/兔脚能不能套用」）：
-      **能套用同一行的形状，缺的是判据** —— `Object.isForage()` 对**动物产物**返回 false
-      （`isForage` 只认"地图上可手捡的采集物/掉落物"那一族），所以 `/surroundings` 的 `forage`
-      键**根本不会给蛋/毛点亮** ⇒ 现在这行"看不见脚边的蛋"。
-      ⇒ 这不是 Python 侧能修的（读不到"这格物件可捡"这个事实），**记 C# 批次待办**：
-        给 `/surroundings` 每格补一个 **"这格物件能不能捡"** 的字段
-        （照抄游戏那条判定：`Object.performToolAction`/`isPlaceable` 之外的"走过去就能捡"，
-         或干脆 `farmer.CanGrabItem(obj)` 那一族），补上之后这一行**一个字都不用改**就会亮。
-      📌 **本档没有样本**：恒这档两个棚都装了**自动采集器** ⇒ 蛋/毛被自动收走、**不落地**
-        ⇒ "棚内捡蛋"在这档**真机验不了**（别写成"验过了"）。
+    ⚠️ 那份清单是 **`pickup_scene.scan_pickables()`** 算的 —— 名单（`BLACKLIST`）和规则
+       **只在那个脚本里**，这一层**只做成员判断**（这一格在不在清单里），不打 HTTP。
+    ⚠️ 2026-10-01 恒：「**复用原来的捡蛋工具**」⇒ 判据放宽成「**`objId` 以 `(O)` 开头
+       （普通物件）+ 不在那份 `BLACKLIST`**」，而且**允许目标格站不住**：棚里的蛋/毛所在格
+       是 `passable=False`（物件挡路），老判据 `（passable 或 forage）` 把它们全排除了
+       （恒真机：鸡舍地上 17 件，`/surroundings` 给 `passable=False` 且没有 `forage` 键）。
+       站不住的目标由执行侧「**站旁边 face+interact**」兜（工具里本来就有，野梅真机验过）。
+    ⚠️ 远古斑点（要锄头）在那份判据里**排除**了 —— 它归「挖 远古斑点」那一行。
+    ⚠️ 清单为空 ⇒ 这行不出现（恒要的"**有东西才出现，没有就不出现**，等于待办"）。
     """
     if not t:
         return CAN_NO
-    if ctx.cap("forage") is None:
-        return CAN_MAYBE
-    return CAN_YES if t.get("forage") is True else CAN_NO
+    keys = {tuple(k) for k in ((ctx.pick or {}).get("keys") or [])}
+    if not keys:
+        return CAN_NO
+    return CAN_YES if (t.get("x"), t.get("y")) in keys else CAN_NO
 
 
 def _pick_reason(ctx, t):
@@ -4086,7 +4090,7 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
              menu_exit: str = "", menu_hint: str = "", worn: dict = None,
              menu_data: dict = None, reforge: dict = None, mwork: dict = None,
              doors: dict = None, chores: dict = None, clint_open: bool = False,
-             hay: dict = None) -> Ctx:
+             hay: dict = None, pick: dict = None) -> Ctx:
     """把 `/state`(**full**) + `/surroundings`(+`/machines`/`/scan_chests`) 拼成 Ctx。
 
     ⚠️ 只搬运，**不补默认值**：缺什么就让它缺着（`can()` 遇到缺失自然回 假/？）。
@@ -4176,6 +4180,8 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
                clint_open=bool(clint_open),
                # 🌾 铺干草那行的账（同上：`feed_hay.read_hay_status()` 那份，服务器递进来）。
                hay=hay or {},
+               # 🎁 地上可捡清单（同上：`pickup_scene.scan_pickables()` 那份）。
+               pick=pick or {},
                sitting=bool(((seats or {}).get("me") or {}).get("sitting")),
                worn=(worn or {}),
                pets=pets,
@@ -4230,9 +4236,12 @@ def _fixture():
     tiles = {
         # 手推的形：字段名照抄 /surroundings 的真实输出，值全是占位的
         (12, 9): {"x": 12, "y": 9, "passable": False, "object": "木椅"},
-        (13, 12): {"x": 13, "y": 12, "passable": True, "forage": True, "object": "野莓"},
-        (11, 11): {"x": 11, "y": 11, "passable": True, "forage": True, "object": "野莓B"},
-        (13, 11): {"x": 13, "y": 11, "passable": True, "forage": True, "object": "野莓C"},
+        (13, 12): {"x": 13, "y": 12, "passable": True, "forage": True, "object": "野莓",
+                   "objId": "(O)296"},
+        (11, 11): {"x": 11, "y": 11, "passable": True, "forage": True, "object": "野莓B",
+                   "objId": "(O)296"},
+        (13, 11): {"x": 13, "y": 11, "passable": True, "forage": True, "object": "野莓C",
+                   "objId": "(O)296"},
         (11, 12): {"x": 11, "y": 12, "passable": True, "diggable": True},
         (12, 13): {"x": 12, "y": 13, "passable": True, "harvestable": True,
                    "cropName": "萝卜", "crop": "24", "cropScythe": False},
@@ -4265,6 +4274,10 @@ def _fixture():
                tiles=tiles, stamina=268, max_items=36,
                pets=[{"name": "喵喵", "kind": "pet"}],
                caps={"forage": True, "diggable": True, "harvestable": True},
+               # 🎁 「捡」那行的账（2026-10-01 恒：复用 `pickup_scene` 的捡蛋判据）——
+               #    形照服务器 `_im_pick` 的产物：那份清单**只在 `pickup_scene.scan_pickables()`
+               #    里算**，夹具只搬结果（三处野莓 = 老判据下那三格）。
+               pick={"n": 3, "near": 1, "keys": [[11, 11], [13, 11], [13, 12]]},
                # 🧺🔁 收放那行的账（2026-10-01 (b)）：形照**服务器** `_im_mwork` 的产物
                #    （`/machines` 的 status + `/machine_reqs` 的 canPlace 探针）。
                #    ⚠️ 这一层**自己不算**这个字典 —— 夹具手写 = 跟真机那一处**必然漂**
@@ -4309,12 +4322,14 @@ def _selftest():
 
     # ① 三档：真 / 假 / 连接级未知
     empty_tile = {"x": 12, "y": 11, "passable": True}
-    ok.append(("空地（键不在）→ CAN_NO", _pick_can(ctx, empty_tile) is CAN_NO))
+    ok.append(("空地（清单里没有它）→ CAN_NO", _pick_can(ctx, empty_tile) is CAN_NO))
     ok.append(("野莓 → CAN_YES", _pick_can(ctx, ctx.tiles[(13, 12)]) is CAN_YES))
-    # ⚠️ 老 DLL：**连接级**不知道，不是逐格猜——这是那次修复的核心
+    # ⚠️ 2026-10-01：判据搬到 `pickup_scene.scan_pickables()`（恒「复用原来的捡蛋工具」），
+    #    **这行不再看 `caps`**（老 `forage` 那一套的"连接级 MAYBE"随之退役）——
+    #    清单为空（读不到/没东西）就是 **CAN_NO**，那行不出现（宁缺勿编，方向跟老规矩一致）。
     old = Ctx(px=12, py=12, tiles={}, caps={})
-    ok.append(("老 DLL（caps 空）→ CAN_MAYBE，不进单子",
-               _pick_can(old, ctx.tiles[(13, 12)]) is CAN_MAYBE))
+    ok.append(("清单为空（老 DLL / 读不到）→ CAN_NO，不进单子",
+               _pick_can(old, ctx.tiles[(13, 12)]) is CAN_NO))
 
     # ② 识别层：catNum 有/无
     ok.append(("catNum=-102 → 是书", is_book(ctx.inv[0]) is True))
@@ -5434,13 +5449,14 @@ def _selftest():
     _rk_calls.clear()
     do_row(_rk_no, _rk_run, _rk)
     ok.append(("🔍 世界没变 ⇒ 照常执行（复验不误伤）", _rk_calls == ["pickup_scene"]))
-    # (b) 那几格**不可捡了** ⇒ 拒绝，且**一个字节都不执行**
+    # (b) 那些东西**已经被捡走了** ⇒ 服务器推的清单里没有它们了 ⇒ 拒绝，且**一个字节都不执行**
+    #     ⚠️ 2026-10-01：这里原来是把格子上的 `forage` 抹掉 —— 判据搬去 `pickup_scene` 之后
+    #        "世界变了"在这一层的形状就是**清单变了**（`Ctx.pick`），所以改成清清单。
     _rk_calls.clear()
     _gone = _fixture()
-    for _t in _gone.tiles.values():
-        _t.pop("forage", None)
+    _gone.pick = {}
     _g = do_row(_rk_no, _rk_run, _gone)
-    ok.append(("🔍 世界变了（格子不可捡了）⇒ 拒绝", "做不了" in _g))
+    ok.append(("🔍 世界变了（东西没了、清单里没有它们了）⇒ 拒绝", "做不了" in _g))
     ok.append(("🔍 拒绝时**不执行**（这是复验存在的全部意义）", _rk_calls == []))
     # (c) 目标格整个没了 ⇒ 说"什么都没有了"，不说"做不了"（两句是两件事）
     _rk_calls.clear()
@@ -5450,9 +5466,15 @@ def _selftest():
                "什么都没有了" in do_row(_rk_no, _rk_run, _vanish)))
     ok.append(("🔍 消失时也不执行", _rk_calls == []))
     # (d) `CAN_MAYBE` 也拦 —— "不知道还能不能做"跟"不能做"在**动作**这层代价一样
+    #     ⚠️ 2026-10-01：`捡` 那行已经没有 MAYBE 这条路了（判据搬去脚本、清单为空就是 NO）
+    #        ⇒ 拿**现存的**一条 MAYBE 来验：座位容量读不出来（`_sit_can` 的 `free is None`）。
+    #        ⚠️ MAYBE 的行**本来就上不了单子**（`_candidates` 只收 `can(...) is True`）
+    #        ⇒ 这里直接**手搭那一行**来验复验那层（渲染拿不到它）。
     _may = _fixture()
-    _may.caps = {}                      # 能力位问不出来 ⇒ `_pick_can` 回 MAYBE
-    ok.append(("🔍 `CAN_MAYBE` 也拦（不知道 ≠ 能做）", _recheck(_may, _rk_row) is not None))
+    _may.tiles[(14, 13)]["seat"]["free"] = None
+    _sitrow = Row(_VERB_BY_KEY["sit"], [_may.tiles[(14, 13)]], "坐 木椅", "", 1)
+    ok.append(("🔍 `CAN_MAYBE` 也拦（不知道 ≠ 能做；用「座位满没满读不到」验）",
+               _recheck(_may, _sitrow) is not None))
     # (e) 背包那件没了 ⇒ 拦（`read` 扩到 inv 之后，这条是真会发生的）
     _bk2 = _fixture()
     _bk2.held = None

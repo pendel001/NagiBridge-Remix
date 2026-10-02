@@ -25,25 +25,43 @@ import sys
 import time
 import argparse
 
-parser = argparse.ArgumentParser(description="[pickup] 捡当前场景地面可拾取物品")
-parser.add_argument("--port", type=int, default=None, help="NagiBridge 端口（默认 7843）")
-parser.add_argument("--radius", type=int, default=30,
-                    help="扫描半径（默认30，上限30；**方形** ±r 格，不是圆——见文件头）")
-parser.add_argument("--max", type=int, default=30, help="一次最多捡几个（默认30）")
-parser.add_argument("--dry-run", action="store_true", help="只扫不捡")
-parser.add_argument("--host-port", type=int, default=None, help="host端口（默认7842，仅读状态用）")
-args = parser.parse_args()
 
+def _cli_args():
+    p = argparse.ArgumentParser(description="[pickup] 捡当前场景地面可拾取物品")
+    p.add_argument("--port", type=int, default=None, help="NagiBridge 端口（默认 7843）")
+    p.add_argument("--radius", type=int, default=30,
+                   help="扫描半径（默认30，上限30；**方形** ±r 格，不是圆——见文件头）")
+    p.add_argument("--max", type=int, default=30, help="一次最多捡几个（默认30）")
+    p.add_argument("--dry-run", action="store_true", help="只扫不捡")
+    p.add_argument("--host-port", type=int, default=None, help="host端口（默认7842，仅读状态用）")
+    return p.parse_args()
+
+
+# ⚠️⚠️ 2026-10-01：argparse **挪进 `__main__`**（原来在模块级 `args = parser.parse_args()`）——
+#    服务器要 `import pickup_scene` 复用 `scan_pickables()`（判据只一处，见那个函数），
+#    带着服务器自己的 argv 去 import 会**当场 SystemExit(2)**（`feed_hay.py` 同款改动）。
+#    ⚠️ **不在 import 期写 `NAGI_URL`**（feed_hay 那次踩过：import 期 setdefault 会让 CLI 的
+#       `--port` 永远不生效 ⇒ 冒烟打到真机）。CLI 行为一字未变：`--port/--radius/--max/--dry-run` 照旧。
 if hasattr(sys.stdout, 'reconfigure'):
     try:
         sys.stdout.reconfigure(encoding='utf-8')
     except Exception:
         pass
 
-os.environ.setdefault("NAGI_URL", f"http://localhost:{args.port or 7843}")
 import requests
 
-NAGI = os.environ["NAGI_URL"]
+# ⚠️ 这里**故意不写 env**（见上面那段）：`NAGI` 只是**脚本自带 requests 调用**的默认地址；
+#    服务器那一路（`_im_pick` → `scan_pickables(tiles=…)`）**根本不看它**。
+NAGI = os.environ.get("NAGI_URL") or "http://localhost:7843"
+
+
+def _apply_port(port):
+    """CLI 的 `--port` → `NAGI_URL`（**显式给的 env 仍然优先**，同老行为）。"""
+    global NAGI
+    if port and not os.environ.get("NAGI_URL"):
+        os.environ["NAGI_URL"] = f"http://localhost:{port}"
+    NAGI = os.environ.get("NAGI_URL") or "http://localhost:7843"
+    return NAGI
 
 
 def log(msg):
@@ -105,6 +123,57 @@ BLACKLIST |= {"Weeds", "Stone", "Rock", "Glass Shards", "Rotten Plant",
 _FORAGE_DLL_MIN = "2026-09-12"   # 带 forage 字段的最早构建日（BuildStamp 是 MSBuild 自动烤进 DLL 的）
 
 
+# 🪱 远古斑点：**不是手捡的**（要锄头）—— 单子那边有独立的「挖 远古斑点」那一行管它。
+#    它们也是 `(O)` 开头的物件（`(O)590` / `(O)SeedSpot`），放宽判据后会被当成"地上能捡的"，
+#    按了只会空手一下 ⇒ 在这儿排除（**跟 `spot_run.py` 的 `SPOT_IDS` 同源**，别处不再抄一份）。
+_SPOT_LIKE = ("(O)590", "590", "(O)SeedSpot", "SeedSpot")
+
+
+def scan_pickables(tiles, center=None):
+    """🎁 「这一带地上有什么能捡的」→ `[(x, y, 物件名), …]`（按离中心由近到远）。
+
+    ⚠️ **判据只此一处**：脚本自己的 `main()` 与 **MCP 单子那行「捡 地上的东西」**共用它
+       （服务器把 ctx 已经拉到的 `/surroundings` tiles 递进来 —— **不再多打一发**）。
+
+    判据（2026-10-01 恒：「**复用原来的捡蛋工具**」之后放宽的形状）：
+      · 有 `object`（没物体的格只剩"成熟大葱"那条：`forageCrop=="1"` 且 harvestable）；
+      · **不在 `BLACKLIST`**（箱子/洒水器/火把/孵化器/加热器/饲料斗/自动采集器/自动抚摸机/
+        蟹笼/工具/杂草石头… —— 那份名单就在本文件，**别处不许再抄**）；
+      · **`objId` 以 `(O)` 开头** = 普通物件（蛋/毛/兔脚/掉落物/采集物）；
+        `(BC)` 大型可制造物 / `(F)` 家具 / `(T)` 工具 / `(W)` 武器 **一律不要**；
+      · **不再要求 `passable`/`forage`**：棚里的蛋/毛**站不上去**（物件挡路），老判据
+        `（passable 或 forage）` 把它们全排除了（恒真机：鸡舍地上 17 件、`/surroundings`
+        给 `passable=False` 且没有 `forage` 键）⇒ 现在放宽；站不住的目标由执行侧
+        「**站旁边 face+interact**」那条路兜（工具里本来就有，野梅真机验过）；
+      · 远古斑点（`_SPOT_LIKE`）**排除**（要锄头，归「挖 远古斑点」那行）。
+    """
+    cx, cy = (center or (0, 0))
+    targets = []
+    for t in tiles or []:
+        obj = t.get("object") or ""
+        if not obj:
+            # 没物体的格只剩"成熟大葱"那条（长在 HoeDirt 上，crop.indexOfHarvest 为空但 forageCrop=1）
+            if t.get("forageCrop") == "1" and t.get("harvestable") is not False:
+                targets.append((t.get("x"), t.get("y"), "成熟大葱"))
+            continue
+        if any(blk in obj for blk in BLACKLIST):
+            continue
+        if str(t.get("objId") or "") in _SPOT_LIKE:
+            continue                      # 远古斑点：要锄头，不归「捡」
+        if not str(t.get("objId") or "").startswith("(O)"):
+            continue                      # 只认普通物件（蛋/毛/掉落/采集物）
+        targets.append((t.get("x"), t.get("y"), obj))
+    # 去重（多格可能重复报）+ 按离中心距离排序
+    seen, uniq = set(), []
+    for x, y, obj in targets:
+        if (x, y) in seen:
+            continue
+        seen.add((x, y))
+        uniq.append((x, y, obj))
+    uniq.sort(key=lambda t: (abs(t[0] - cx) + abs(t[1] - cy)))
+    return uniq
+
+
 def _dll_has_forage(base):
     """当前 DLL 带不带 `forage` 字段。True/False/读不到=None（不猜）。"""
     try:
@@ -117,21 +186,21 @@ def _dll_has_forage(base):
     return head >= _FORAGE_DLL_MIN
 
 
-def main():
+def main(radius=30, max_n=30, dry_run=False):
     base = NAGI
     # ⚠️ 2026-09-12 真机踩到（就在验 forage 那次）：`/surroundings` 的 radius **超过 30 会静默退回 10**
     #    （`ModEntry.cs` 的 clamp 分支，退回的不是 30 而是**默认 10**，比 30 还小）——我拿 `--radius 40`
     #    扫海滩，回"找到 0 个"，差点误判成 forage 没生效。这里收回上限并**明说**，别让尺子骗人。
-    if args.radius > 30:
-        log(f"⚠️ --radius {args.radius} 超出 /surroundings 上限 30"
+    if radius > 30:
+        log(f"⚠️ --radius {radius} 超出 /surroundings 上限 30"
             f"（再大它会**静默退回 10**，比 30 还小）——已按 30 跑")
-        args.radius = 30
+        radius = 30
     # 📐 半径语义（恒 2026-09-23「采集物的探测范围得说清楚」）：C# 是
     #    `Math.Abs(ex-cx) <= r && Math.Abs(ey-cy) <= r` ⇒ **方形**（切比雪夫），
     #    以你为中心 (2r+1)×(2r+1) —— **不是**圆。报告里把范围写出来，别让 AI 拿
     #    "找到 0 个"当"这张图没有"，它可能只是站在离东西 31 格的地方。
-    _span = 2 * args.radius + 1
-    _scope = f"附近 {args.radius} 格内（以你为中心的方形 {_span}×{_span}）"
+    _span = 2 * radius + 1
+    _scope = f"附近 {radius} 格内（以你为中心的方形 {_span}×{_span}）"
     try:
         st = requests.get(f"{base}/status", timeout=5).json()
     except Exception as e:
@@ -147,42 +216,18 @@ def main():
             f"水果/贝壳/松露这类「不可站但可手捡」的东西会被漏掉。"
             f"请重编并部署 NagiBridge.dll（≥ {_FORAGE_DLL_MIN}）后重启游戏。")
 
-    data = requests.get(f"{base}/surroundings", params={"radius": args.radius}, timeout=10).json()
+    data = requests.get(f"{base}/surroundings", params={"radius": radius}, timeout=10).json()
     loc = data.get("location", "?")
     cx, cy = data.get("center", {}).get("x", 0), data.get("center", {}).get("y", 0)
 
-    # 可拾取 = （可走 或 forage）+ 有 object + 不在黑名单；🌱 成熟大葱（forageCrop=1 + harvestable）也摘
-    # 🌿 2026-09-12：判据见文件头 —— `forage` 由 C# 照抄游戏 `Object.isForage()`，不再按名猜。
-    targets = []
-    for t in data.get("tiles", []):
-        obj = t.get("object") or ""
-        if not obj:
-            # 没物体的格只剩"成熟大葱"那条（长在 HoeDirt 上，crop.indexOfHarvest 为空但 forageCrop=1）
-            if t.get("forageCrop") == "1" and t.get("harvestable") is not False:
-                targets.append((t["x"], t["y"], "成熟大葱"))   # interact 摘 crop（不用锄头）
-            continue
-        if any(blk in obj for blk in BLACKLIST):
-            continue
-        # 不可站 且 游戏没说它能手捡 ⇒ 当障碍跳过（机器/箱子/家具都走这条）
-        if not t.get("passable", True) and not t.get("forage"):
-            continue
-        targets.append((t["x"], t["y"], obj))
-
-    # 去重（多格可能重复报）
-    seen = set()
-    uniq = []
-    for x, y, obj in targets:
-        if (x, y) in seen:
-            continue
-        seen.add((x, y))
-        uniq.append((x, y, obj))
-    uniq.sort(key=lambda t: (abs(t[0] - cx) + abs(t[1] - cy)))
+    # 可拾取 = **共用 `scan_pickables()`**（判据/名单都在那一处；单子那行读的也是它）
+    uniq = scan_pickables(data.get("tiles", []), (cx, cy))
 
     log(f"📍 {loc} | {_scope} 找到 {len(uniq)} 个可拾取物品")
     for x, y, obj in uniq[:15]:
         log(f"  · {obj} ({x},{y})")
 
-    if args.dry_run:
+    if dry_run:
         log("--dry-run：不捡")
         return
 
@@ -275,7 +320,7 @@ def main():
         return
 
     picked = 0
-    for x, y, obj in uniq[:args.max]:
+    for x, y, obj in uniq[:max_n]:
         if pick_up_object(x, y):
             picked += 1
             time.sleep(0.1)
@@ -288,7 +333,7 @@ def main():
     try:
         d = requests.get(f"{base}/debris", timeout=10).json()
         for it in d.get("debris", [])[:8]:
-            if picked >= args.max:
+            if picked >= max_n:
                 break
             x, y = it.get("x", 0), it.get("y", 0)
             if walk_near(x, y):
@@ -301,4 +346,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # ⚠️ argparse 在这儿解析（见文件上方那段：import 期解析会吃服务器 argv、当场 SystemExit）
+    _args = _cli_args()
+    _apply_port(_args.port)
+    main(radius=_args.radius, max_n=_args.max, dry_run=_args.dry_run)
