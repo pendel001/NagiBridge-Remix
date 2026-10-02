@@ -1805,47 +1805,138 @@ def main():
     _pi3, _has3, _ = _pick_info(surr_tiles=[])
     res.append(ok("🎁 A：**一件都没有 ⇒ 那行不出现**（恒要的「等于待办」）",
                   _pi3 == {} and not _has3, (_pi3, _has3)))
-    res.append(ok("🎁 A：走的是**现成的那条 op**（`_im_run` 认 `pickup_scene`，不由这层写 HTTP）",
-                  isinstance(M._im_run("pickup_scene", {}), dict)))
+    # ⚠️⚠️ 2026-10-02 **恒真机逮到的假自验**：这一格原来写的是
+    #     `isinstance(M._im_run("pickup_scene", {}), dict)` —— **真执行**！
+    #     它 →`pickup_scene()`→`_run_script`→**起真子进程 `pickup_scene.py`**→直连 7843
+    #     **把农场地上那 7 个松露全捡了**（10:34 / 10:35 跑两遍各捡一批，共 18 发交互）。
+    #     为什么以前没发现：① `pickup_scene.py` **不 import `stardew_api`** ⇒ 那道网闸压根没上；
+    #     ② 它用**裸 `requests`** ⇒ `_game_calls.log` 一条不记；③ 不是 MCP 工具调用 ⇒ 会话日志也没有。
+    #     ⇒ 症状正是恒那句「**它怎么自己又跑起来了**」。
+    #     ⇒ 现在**打桩**（只验"接线接对了"，一个字节都不出网），并且名字里点明不许真跑。
+    _pick_seen = []
+    _ps_orig = M.pickup_scene
+    M.pickup_scene = lambda *a, **k: (_pick_seen.append((a, k)), "🎁（自验桩：没捡）")[1]
+    try:
+        _rp = M._im_run("pickup_scene", {})
+    finally:
+        M.pickup_scene = _ps_orig
+    res.append(ok("🎁 A：走的是**现成的那条 op**（`_im_run` 认 `pickup_scene`，且**打桩后一个字节都不出网**）",
+                  isinstance(_rp, dict) and len(_pick_seen) == 1
+                  and "自验桩" in str(_rp.get("text")), (_rp, _pick_seen)))
+
+    # 🚫🚫 同一件事的**机械**堵法（别再靠"记得打桩"）：自验进程里 `_run_script` **拒绝起真脚本**。
+    #     为什么必须堵在这一层：子进程 `pickup_scene.py` / `feed_hay.py` 这类**不 import
+    #     `stardew_api`** ⇒ `_net_guard` 按"谁 import 我"上闸，**它们自己永远不上闸**；
+    #     而它们又用**裸 `requests`** ⇒ Python 侧请求日志也一条不记。三张网全漏。
+    #     ⇒ 唯一的 choke point 是父进程的 spawn 出口。
+    import subprocess as _sp
+    _spawned = []
+    _sr_orig = _sp.run
+    _sp.run = lambda cmd, *a, **k: (_spawned.append(list(cmd)), None)[1]
+    try:
+        _ref = M._run_script("pickup_scene", ["--max", "1"], timeout=5)
+    finally:
+        _sp.run = _sr_orig
+    res.append(ok("🚫 自验里 `_run_script` **拒绝起真脚本**（一个子进程都不许 spawn —— "
+                  "子进程不 import stardew_api ⇒ 它自己不上闸，这是唯一堵得住的出口）",
+                  "自验不许出网" in _ref and not _spawned, (_ref, _spawned)))
 
     # ── B. 「收 蟹笼」收完**回读真值**、如实报剩几个 ──
     def _crab_after(ready_left, scan_raises=False):
-        """跑一次 `_crab_collect`：收完回读 `/crab_pots` 的 `readyForHarvest`。全打桩。"""
+        """跑一次 `_crab_collect`：开工问一次 `/crab_pots`、收完回读一次。全打桩。
+
+        ⚠️ 2026-10-02：`_crab_collect` 现在**开工先问 `/crab_pots`（整图）**拿"哪些笼有货"，
+          收完**再问一次**回读真值 ⇒ 打桩必须**按调用次序给两次不同答案**：
+            第 1 次（开工）＝只有 (42,1) 有货；第 2 次（回读）＝由 `ready_left` 决定还剩几个。
+          `_crab_scan_placed`（脚边 20 格）故意给**另外 3 个**坐标：这样"到底问了哪张单子"
+          用 `/interact` 打到哪几格就能一眼证死（走脚边 ⇒ 会打 3 格，走整图 ⇒ 只打 1 格）。
+        返回 `(输出, 被打过 interact 的坐标列表)`。"""
         _old = (M._crab_scan_placed, M._crab_stand_for, M._crab_pots_scan, M.api._post,
                 M._wait_arrival, M.time.sleep)
-        M._crab_scan_placed = lambda: [(42, 1), (43, 1), (44, 1)]
+        M._crab_scan_placed = lambda *a, **k: [(90, 90), (91, 90), (92, 90)]
         M._crab_stand_for = lambda x, y: (x, y + 1, 0)
         M._wait_arrival = lambda *a, **k: True
-        M.api._post = lambda ep, data=None: {"ok": True}
+        _hits = []
+
+        def _stub_post(ep, data=None):
+            if ep == "/interact" and data:
+                _hits.append((data.get("x"), data.get("y")))
+            return {"ok": True}
+        M.api._post = _stub_post
         M.time.sleep = lambda *a, **k: None
         if scan_raises:
             def _boom(*a, **k):
                 raise RuntimeError("模拟：/crab_pots 读不到")
             M._crab_pots_scan = _boom
         else:
-            M._crab_pots_scan = lambda *a, **k: (
-                [{"x": 42, "y": 1, "readyForHarvest": True},
-                 {"x": 43, "y": 1, "readyForHarvest": False},
-                 {"x": 44, "y": 1, "readyForHarvest": False}] if ready_left == 1 else
-                [{"x": 42, "y": 1, "readyForHarvest": bool(ready_left)},
-                 {"x": 43, "y": 1, "readyForHarvest": False},
-                 {"x": 44, "y": 1, "readyForHarvest": False}])
+            _calls = {"n": 0}
+
+            def _scan(*a, **k):
+                _calls["n"] += 1
+                if _calls["n"] == 1:      # 开工：只有 (42,1) 有货
+                    return [{"x": 42, "y": 1, "readyForHarvest": True},
+                            {"x": 43, "y": 1, "readyForHarvest": False},
+                            {"x": 44, "y": 1, "readyForHarvest": False}]
+                return [{"x": 42, "y": 1, "readyForHarvest": bool(ready_left)},   # 回读
+                        {"x": 43, "y": 1, "readyForHarvest": False},
+                        {"x": 44, "y": 1, "readyForHarvest": False}]
+            M._crab_pots_scan = _scan
         try:
-            return M._crab_collect()
+            return M._crab_collect(), _hits
         finally:
             (M._crab_scan_placed, M._crab_stand_for, M._crab_pots_scan, M.api._post,
              M._wait_arrival, M.time.sleep) = _old
 
-    _rb = _crab_after(ready_left=1)
+    _rb, _rb_hits = _crab_after(ready_left=1)
+    res.append(ok("🦀 B：收笼清单问的是 `/crab_pots`（**整图**）—— 不是脚边 20 格"
+                  "（真机那个「单子说本图 4 个有货、敲下去却说**附近**没找到」的假门）",
+                  _rb_hits == [(42, 1)], _rb_hits))
     res.append(ok("🦀 B：收完**还剩 1 个** ⇒ 如实报出来 + 点名坐标（真机那个 (42,1) 的洞）",
                   "还剩 1 个没收到" in _rb and "(42,1)" in _rb, _rb.splitlines()[-3:]))
     res.append(ok("🦀 B：而且给下一步（再收一次 / 记得放饵）",
                   "crab_collect" in _rb and "crab_bait" in _rb, _rb.splitlines()[-2:]))
-    _rb0 = _crab_after(ready_left=0)
+    res.append(ok("🦀 B：「本轮 N/N 次交互」**不冒充收干净**（明说只是次数、真值看回读）",
+                  "不代表收干净" in _rb, _rb.splitlines()[-4:-3]))
+    _rb0, _ = _crab_after(ready_left=0)
     res.append(ok("🦀 B：真收干净了 ⇒ 明说**全收干净了**", "全收干净了" in _rb0, _rb0.splitlines()[-1:]))
-    _rbe = _crab_after(ready_left=1, scan_raises=True)
+    _rbe, _ = _crab_after(ready_left=1, scan_raises=True)
     res.append(ok("🦀 B：**读不到** ⇒ 如实说「到底收没收干净我不知道」（不编）",
                   "不知道" in _rbe and "回读" in _rbe, _rbe.splitlines()[-1:]))
+
+    # ── B2. 「放饵」也只挂**真缺饵的**笼（已挂过/已出货的不白走一趟）+ 同样问整图 ──
+    def _bait_hits():
+        """跑一次 `_crab_bait`：3 个笼（已挂饵 / 已出货 / 空着）⇒ 只该动"空着"那个。"""
+        _old = (M._crab_scan_placed, M._crab_stand_for, M._crab_pots_scan, M.api._post,
+                M._wait_arrival, M.time.sleep, M.api.has_item, M.api.select)
+        _hits = []
+        M._crab_scan_placed = lambda *a, **k: [(90, 90), (91, 90), (92, 90)]
+        M._crab_stand_for = lambda x, y: (x, y + 1, 0)
+        M._wait_arrival = lambda *a, **k: True
+        M.api.has_item = lambda *a, **k: True
+        M.api.select = lambda *a, **k: True
+
+        def _stub_post(ep, data=None):
+            if ep == "/interact" and data:
+                _hits.append((data.get("x"), data.get("y")))
+            return {"ok": True, "actionTriggered": True}
+        M.api._post = _stub_post
+        M.time.sleep = lambda *a, **k: None
+        M._crab_pots_scan = lambda *a, **k: [
+            {"x": 42, "y": 1, "bait": "Bait", "readyForHarvest": False},   # 已挂饵 → 别动
+            {"x": 43, "y": 1, "bait": None, "readyForHarvest": True},      # 已出货 → 该收不该挂
+            {"x": 44, "y": 1, "bait": None, "readyForHarvest": False},     # 空着 → 就它
+        ]
+        try:
+            return M._crab_bait(), _hits
+        finally:
+            (M._crab_scan_placed, M._crab_stand_for, M._crab_pots_scan, M.api._post,
+             M._wait_arrival, M.time.sleep, M.api.has_item, M.api.select) = _old
+
+    _bb, _bb_hits = _bait_hits()
+    res.append(ok("🦀 B2：`crab_bait` 只挂**真缺饵的**（已挂饵/已出货的笼不白走一趟）",
+                  _bb_hits == [(44, 1)], _bb_hits))
+    res.append(ok("🦀 B2：而且报的是「本图共 N 个」中**缺饵的**几个（不把不动的算进去）",
+                  "缺饵的" in _bb and "本图共 3 个" in _bb, _bb.splitlines()[:2]))
 
     # ⑰ 195 批：门态**现在能只读**了（`animalDoorOpen` + `animalDoorX/Y`）
     #     ⇒ 两行按"当前门态 vs 本行目标态"沉底；走位目标改**动物小门**。

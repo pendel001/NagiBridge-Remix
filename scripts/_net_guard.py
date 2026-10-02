@@ -74,6 +74,15 @@ LEDGER = [
     #     （读真 `/state` + 真走位 + 兜底 `POST /position` 瞬移），把角色搬去 Farm(11,12)。
     #     2026-10-01 已在 `_stub()` 里把 `_get`/`_post`/`_walk_to_chest`/`_walk_and_wait`/`api.position`
     #     全部接上桩 ⇒ 现在**零命中**（闸会盯着它）。
+    # ⛔⛔ 2026-10-02 **这个闸自己漏了第二种形状**（恒真机又逮到一次「它怎么自己又跑起来了」）：
+    #     同一份自验里 `M._im_run("pickup_scene", {})` 是**真执行** ⇒ `_run_script` 起了**真子进程**
+    #     `pickup_scene.py` ⇒ 直连 7843 把农场地上 7 个松露全捡了（跑两遍共 18 发 walk/face/interact）。
+    #     ⚠️ **为什么闸没拦住**：闸是"谁 import 我、谁上闸"，而 `pickup_scene.py`/`feed_hay.py`
+    #     这类脚本**根本不 import `stardew_api`** ⇒ `maybe_arm()` 一次没跑；它们还用**裸 `requests`**
+    #     ⇒ `_game_calls.log` 也一条不记；也不是 MCP 工具调用 ⇒ 会话日志只剩"某条断言过了"。
+    #     ⇒ 补的堵法在 **spawn 出口**：`nagi_mcp_server._net_guard_refuse_spawn()` ——
+    #     本进程已被闸罩住时，`_run_script`/`_bg_start` **一律拒绝起真脚本**（会说清该打哪个桩）。
+    #     ⇒ **教训**：闸只罩"直接连接"是不够的，**凡是能把世界交给另一个进程的路，都得单独罩**。
 ]
 
 HITS = []          # 被拒/被放行的连接（每条带仓库内调用栈）

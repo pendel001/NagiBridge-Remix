@@ -4405,6 +4405,34 @@ def async_config(show: bool = False, add: str = "", remove: str = "", enable: st
 _SUBPROC_FLAGS = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
 
+def _net_guard_refuse_spawn(name: str) -> str:
+    """🚫🚫 **自验不许出网 —— 这道闸也得罩住"起脚本"这条路**（2026-10-02 立，恒真机逮到）。
+
+    ## 案情（症状就是恒那句「**它怎么自己又跑起来了**」）
+    `_intent_wiring_selftest.py` 里那句 `M._im_run("pickup_scene", {})` 是**真执行**：
+    它 →`pickup_scene()`→`_run_script("pickup_scene")`→**起真子进程**→直连 7843
+    **把农场地上那 7 个松露全捡了**（真机 10-02 10:34 / 10:35 两次跑自验各捡一批，共 18 发
+    `/walk_to`+`/face`+`/interact`）。为什么两道现成的网都没兜住：
+
+      ① 子进程 `pickup_scene.py` **不 import `stardew_api`** ⇒ `_net_guard.maybe_arm()` 一次都没跑，
+         **闸压根没上**（`_net_guard` 是按"谁 import 我"上闸的，这个洞一直都在）；
+      ② 它用**裸 `requests`**（不走 `stardew_api._post`）⇒ `_game_calls.log` 也一条不记；
+      ③ 它也不是 MCP 工具调用 ⇒ 会话日志里只有"某条断言过了"，看不出动过世界。
+
+    ⇒ 三张网全漏。唯一**机械**的堵法：在**唯一的 spawn 出口**上问一句"本进程是不是自验"。
+       父进程已被 `_net_guard` 罩住（跑 `*selftest*.py` 或 `NAGI_NET_GUARD_FORCE=1`）⇒ 一律不许起真脚本，
+       并把话**说清楚**（哪个脚本、该打哪个桩）。返回 `""` = 放行。
+    """
+    try:
+        import _net_guard as _ng
+        if getattr(_ng, "ARMED", False):
+            return (f"🚫 自验不许出网：这次要起**真脚本** `{name}.py`（它会直连游戏端口动世界）—— "
+                    f"自验里请把它打桩，例：`M.{name} = lambda *a, **k: \"（桩：没跑）\"`。")
+    except Exception:
+        pass
+    return ""
+
+
 def _run_script(name: str, args_list: Optional[list] = None, timeout: int = 60,
                 tail: int = 1000, async_ok: bool = False) -> str:
     """运行 scripts/ 下的 Python 脚本，返回输出摘要。tail=取输出末尾多少字（逐层摘要要大些）。
@@ -4416,6 +4444,9 @@ def _run_script(name: str, args_list: Optional[list] = None, timeout: int = 60,
     script_path = os.path.join(SCRIPT_DIR, f"{name}.py")
     if not os.path.exists(script_path):
         return f"❌ 脚本不存在: {name}.py"
+    _refuse = _net_guard_refuse_spawn(name)     # 🚫 自验进程里一律不许起真脚本（见那个函数的案情）
+    if _refuse:
+        return _refuse
     # 🚀 长脚本自动异步（2026-08-16 恒拍板：被动异步，AI 不用手动后台）
     if async_ok and name in _ASYNC_SCRIPTS and _bg_cfg.get("enabled", True):
         try:
@@ -11503,6 +11534,35 @@ def _crab_scan_placed() -> list:
         return []
 
 
+def _crab_pots_targets(keep=None):
+    """🎯 本图要处理的蟹笼清单 —— **与意图单同口径：问 `/crab_pots`（整图）**。
+
+    返回 `(pots, warn, total)`：
+      · `pots` = `[(x,y), …]`（`keep(pot)` 为真才留；`keep=None` = 全留）
+      · `warn` = 要如实告知的话（`/crab_pots` 读不到 ⇒ 退回脚边 20 格），没有则 `None`
+      · `total` = 本图扫到的笼总数（`keep` 过滤**前**；读不到时 = `len(pots)`）
+
+    ⚠️ 2026-10-02 恒真机：单子（`_im_chores` 问 `/crab_pots` 整图）说「本图 4 个蟹笼**有货**」，
+      敲下去 `_crab_collect` 却回「❌ **附近**没找到已放的蟹笼」—— 因为收笼的清单来自
+      `/surroundings` **半径 20 那一圈**：轮回站 (64,15)，笼在 (42,1)/(22,23)/(20,20)/(20,21)
+      ⇒ **一个都不在圈里**。**单子和 op 看的是两张图** = 又一个假门。
+      ⇒ 收/放饵/概览统一改问 `/crab_pots`；真读不到才退回脚边扫描，并**明说**这轮只覆盖身边
+      （不装成"整图都过了一遍"）。
+    """
+    pots_all = None
+    try:
+        pots_all = _crab_pots_scan()
+    except Exception:
+        pots_all = None   # 读数坏不能把"收笼/挂饵"弄坏（下面退回脚边扫描并如实说明）
+    if pots_all is not None:
+        items = [p for p in pots_all if (keep(p) if keep else True)]
+        return [(p.get("x"), p.get("y")) for p in items], None, len(pots_all)
+    near = _crab_scan_placed()
+    warn = ("⚠️ `/crab_pots` 读不到真值 ⇒ 这轮**只处理脚边 20 格**扫到的笼"
+            "（远处有没有笼我不知道）")
+    return near, warn, len(near)
+
+
 def _crab_stand_for(wx: int, wy: int):
     """🐟 找蟹笼 (wx,wy) 旁**纯陆地可站格**——任意朝向的岸都能站，不再写死"笼南边+朝北"。
     _CRAB_FACE=上/下/右/左，站格非水(/passable 不 allowWater 排掉水格)、面朝笼。找不到返回 None。"""
@@ -11534,11 +11594,17 @@ def _crab_bait(bait: str = "Bait") -> str:
     ⚠️ 2026-08-16 实测：走位可能重置选中 → 每笼前重新 select bait。
     ⚠️ 2026-08-30 修：不再写死 (wx,wy+1)+朝北，用 _crab_stand_for 找真实岸格(任意朝向)。
     走位超时也继续发 interact——/interact 是坐标定位(距离无关)，不必完美站格。
-    bait= 选鱼饵(默认普通鱼饵"Bait")；蟹笼只能用 Category -21 的饵(鱼饵/野钓饵/豪华鱼饵)。"""
+    bait= 选鱼饵(默认普通鱼饵"Bait")；蟹笼只能用 Category -21 的饵(鱼饵/野钓饵/豪华鱼饵)。
+    ⚠️ 2026-10-02 修：清单改问 `/crab_pots`（整图，同 `_im_chores` 口径，见 `_crab_pots_targets`），
+       且**只挂真需要饵的**（`bait` 为空且未出货）—— 已挂过饵/已出货的笼不再白走一趟。"""
     loc = _crab_cur_loc()
-    pots = _crab_scan_placed()
+    _need = lambda p: (not p.get("bait")) and (not p.get("readyForHarvest"))
+    pots, warn, total = _crab_pots_targets(keep=_need)
     if not pots:
-        return "❌ 附近没找到已放的蟹笼"
+        if total == 0:
+            return "❌ 本图（`/crab_pots`）没扫到蟹笼 —— 没笼可挂饵"
+        return (f"🦀 {loc} 的 {total} 个蟹笼**都不用挂饵**"
+                f"（要么已经挂着饵、要么已经出货等着收）—— `fish(ops=\"crab_collect\")` 去收")
     # ⚠️ 2026-09-12 真机踩到：**没有饵时本 op 会逐个空跑** —— `api.select(bait)` 静默失败，
     #    后面 `/interact` 自然什么都不发生，于是 22 个笼全报 ✗、**连原因都是空的**，
     #    还白占掉一次总预算（那天 47s 全在服务里堵着）。`_crab_place` 早有同类前置检查
@@ -11550,7 +11616,11 @@ def _crab_bait(bait: str = "Bait") -> str:
     baited = 0
     done = 0
     deadline = time.time() + _CRAB_OP_BUDGET
-    log = [f"🦀 给 {len(pots)} 个蟹笼放饵（单次上限 {_CRAB_OP_BUDGET}s，到点会停并告诉你剩几个）:"]
+    log = []
+    if warn:
+        log.append(warn)
+    log.append(f"🦀 给 {len(pots)} 个**缺饵的**蟹笼放饵（本图共 {total} 个；"
+               f"单次上限 {_CRAB_OP_BUDGET}s，到点会停并告诉你剩几个）:")
     for wx, wy in pots:
         if time.time() > deadline:
             log.append(f"⏱ 到 {_CRAB_OP_BUDGET}s 上限，还有 {len(pots) - done} 个没轮到 —— "
@@ -11589,15 +11659,27 @@ def _crab_bait(bait: str = "Bait") -> str:
 
 def _crab_collect() -> str:
     """收蟹笼产出（空手逐个交互；收了会出空笼，需要再放饵）。
-    ⚠️ 2026-08-30 修：不再写死 (wx,wy+1)+朝北，用 _crab_stand_for 找真实岸格。"""
+    ⚠️ 2026-08-30 修：不再写死 (wx,wy+1)+朝北，用 _crab_stand_for 找真实岸格。
+    ⚠️ 2026-10-02 修：笼子清单改问 `/crab_pots`（**整图**，同 `_im_chores` 口径，见 `_crab_pots_targets`），
+       且**只收真的有货的**（`readyForHarvest`）—— 原来按"脚边扫到的"逐个交互，
+       既够不着远处的笼，也会对着还没出货的空笼白发交互、把次数报成"收好了"。"""
     loc = _crab_cur_loc()
-    pots = _crab_scan_placed()
+    pots, warn, total = _crab_pots_targets(keep=lambda p: p.get("readyForHarvest"))
     if not pots:
-        return "❌ 附近没找到已放的蟹笼"
+        if total == 0:
+            return ("❌ 本图（`/crab_pots`）没扫到蟹笼 —— 没笼可收；"
+                    "想放笼走 `fish(ops=\"crab_place\")`")
+        return (f"🦀 {loc} 的 {total} 个蟹笼**现在都没货**（`/crab_pots` 里没有一个 "
+                f"readyForHarvest）—— 没什么可收的。"
+                f"空笼记得放饵（`fish(ops=\"crab_bait\")`），过夜才出货")
     got = 0
     done = 0
     deadline = time.time() + _CRAB_OP_BUDGET
-    log = [f"🦀 收 {len(pots)} 个蟹笼（单次上限 {_CRAB_OP_BUDGET}s，到点会停并告诉你剩几个）:"]
+    log = []
+    if warn:
+        log.append(warn)
+    log.append(f"🦀 收 {len(pots)} 个**有货的**蟹笼（本图共 {total} 个；"
+               f"单次上限 {_CRAB_OP_BUDGET}s，到点会停并告诉你剩几个）:")
     for wx, wy in pots:
         if time.time() > deadline:
             log.append(f"⏱ 到 {_CRAB_OP_BUDGET}s 上限，还有 {len(pots) - done} 个没轮到 —— "
@@ -11623,7 +11705,8 @@ def _crab_collect() -> str:
         except Exception as e:
             log.append(f"  ✗ ({wx},{wy}) {e}")
         time.sleep(0.4)
-    log.append(f"📦 本轮交互 {got}/{len(pots)} 个（产出进背包；空笼要重新放饵）")
+    log.append(f"📦 本轮发了 {got}/{len(pots)} 次交互（**这只是次数，不代表收干净了** —— "
+               f"到底还剩几个看下面回读 `/crab_pots`）")
     # 🦀 2026-10-01 恒：「**收没收完我也不知道**」。真机实况：单子说「本图 4 个蟹笼有货」→
     #    敲完它报「本轮交互 3/3 个」→ 一查 `/crab_pots`：**(42,1) 仍然 `readyForHarvest=true`**。
     #    ⇒ 收完**回读真值**（`/crab_pots` 的 `readyForHarvest`，**不是**我们自己数的交互次数）：
@@ -11652,14 +11735,26 @@ def _crab_collect() -> str:
 
 @mcp.tool()
 def _crab_status() -> str:
-    """🦀 蟹笼概览：已放笼子 + 背包蟹笼/饵数量。"""
+    """🦀 蟹笼概览：已放笼子 + 背包蟹笼/饵数量。
+    ⚠️ 2026-10-02：笼子数也改问 `/crab_pots`（整图）—— 原来用脚边 20 格扫，站远了会说
+       「🦀 还没有放蟹笼」，而单子同一时刻正列着「本图 4 个蟹笼有货」。"""
     try:
-        pots = _crab_scan_placed()
+        pots_all = _crab_pots_scan()
         st = api.state()
         inv = st.get("inventory") or []
         cp = sum(i["stack"] for i in inv if "Crab Pot" in (i.get("name") or ""))
         bt = sum(i["stack"] for i in inv if "Bait" in (i.get("name") or ""))
-        lines = [f"🦀 已放蟹笼 {len(pots)} 个: {pots[:8]}{'…' if len(pots) > 8 else ''}" if pots else "🦀 还没有放蟹笼"]
+        if pots_all is None:
+            near = _crab_scan_placed()
+            lines = [f"⚠️ `/crab_pots` 读不到真值 —— 只能说**脚边 20 格**里有 {len(near)} 个笼: "
+                     f"{near[:8]}{'…' if len(near) > 8 else ''}"]
+        elif not pots_all:
+            lines = ["🦀 本图（`/crab_pots`）还没有放蟹笼"]
+        else:
+            ready = [(p.get("x"), p.get("y")) for p in pots_all if p.get("readyForHarvest")]
+            coords = [(p.get("x"), p.get("y")) for p in pots_all]
+            lines = [f"🦀 本图已放蟹笼 {len(pots_all)} 个: {coords[:8]}{'…' if len(coords) > 8 else ''}"]
+            lines.append(f"   其中**有货 {len(ready)} 个**" + (f": {ready[:8]}" if ready else "（都还没出货）"))
         lines.append(f"🎒 背包: 蟹笼×{cp} 饵×{bt}")
         lines.append("放→fish(放笼) / 挂饵→fish(放饵) / 收→fish(收笼)")
         return "\n".join(lines)
@@ -20576,6 +20671,9 @@ def _bg_start(name: str, args_list: list):
         script_path = os.path.join(SCRIPT_DIR, f"{name}.py")
         if not os.path.exists(script_path):
             return None, f"❌ 脚本不存在: {name}.py"
+        _refuse = _net_guard_refuse_spawn(name)   # 🚫 自验进程里一律不许起真脚本（同 `_run_script`）
+        if _refuse:
+            return None, _refuse
         try:
             proc = subprocess.Popen(
                 [sys.executable, script_path] + args_list,
