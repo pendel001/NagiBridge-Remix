@@ -153,7 +153,7 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
           chore_tiles=None, crab_ready=0, ore_pan=None, chore_animals=None, money=None,
           silo=None, troughs=None, trough_filled=0, trough_raise=False,
           surr_tiles=None, trash_cans=None, cola=None, npcs=None, nuts=None,
-          trash_checked=None, pet_bowls=None):
+          trash_checked=None, pet_bowls=None, passable_ret=None):
     CALLS.clear()
     WALK_CALLS.clear()
     state = dict(STATE)
@@ -286,6 +286,11 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
         }.get(ep, {})
     def p(ep, data=None):
         CALLS.append(("POST", ep, data))
+        if ep == "/passable":
+            # 🚶🐄 `/passable` 真回包：`{ok, passable, x, y, location, blocker}` ——
+            #    `passable_ret=None` ⇒ 走通用兜底（**没有 `passable` 键** = 老 DLL 的形状）
+            if passable_ret is not None:
+                return dict(passable_ret)
         if ep == "/menu/click":            # 买：C# 回那一坨
             return {"ok": True, "clicked": "shop_item",
                     "item": (data or {}).get("item"),
@@ -1712,6 +1717,33 @@ def main():
                   _tools == 1 and _tools_old == 2, (_tools, _tools_old)))
     res.append(ok("🍽️ 老 DLL（没 `bowls` 键）⇒ **照旧两个都浇**（读不到 ≠ 都没满）",
                   "已经是满的" not in _rep_old, _rep_old))
+
+    # ㉖ 203i 🚶🐄 `/passable` 现在**把挡路的那只点出来**（恒：「passable 原本不报动物吗？」+
+    #    「我查过**牛羊两格、鸡鸭一格**」）—— 判据是 `Character.GetBoundingBox()` 与该格相交（游戏那套），
+    #    **连占几格都算进去了**；旧口径只拿 `/animals` 的格坐标对 ⇒ 牛羊的第二格会被误判成硬阻挡。
+    _old_an_at = api.animals_at
+    try:
+        api.animals_at = lambda *a, **k: {}          # 名单里"没有动物站在这一格"
+        _stub(passable_ret={"ok": True, "passable": False, "x": 10, "y": 11,
+                            "blocker": {"kind": "animal", "name": "牛牛", "x": 10, "y": 10}})
+        _sp1 = api.soft_passable(10, 11)
+        api.animals_at = lambda *a, **k: {(10, 11): "牛牛"}
+        _stub(passable_ret={"ok": True, "passable": False, "x": 10, "y": 11})   # 老 DLL：没 blocker 键
+        _sp2 = api.soft_passable(10, 11)
+        _stub(passable_ret={"ok": True, "passable": False, "x": 10, "y": 11, "blocker": None})
+        _sp3 = api.soft_passable(10, 11)             # 新 DLL 明说没人挡 ⇒ 硬阻挡
+        _stub(passable_ret={"ok": True, "passable": True, "x": 10, "y": 11,
+                            "blocker": {"kind": "animal", "name": "牛牛", "x": 10, "y": 10}})
+        _sp4 = api.soft_passable(10, 11)
+    finally:
+        api.animals_at = _old_an_at
+    res.append(ok("🐄 新 DLL：牛站在 (10,10) 挡住 (10,11) ⇒ **游戏点名的那只**直接算软阻挡（占两格也对得上）",
+                  _sp1 == (True, "路上有只动物（牛牛）挡了道，挤开了"), _sp1))
+    res.append(ok("🐄 老 DLL（没 `blocker` 键）⇒ 退回问 `/animals` 名单（行为不变）",
+                  _sp2 == (True, "路上有只动物（牛牛）挡了道，挤开了"), _sp2))
+    res.append(ok("🧱 新 DLL 说 `blocker=null`（没人挡）⇒ **就是硬阻挡**，不再多问一发名单",
+                  _sp3 == (False, ""), _sp3))
+    res.append(ok("🚶 能走就直接过（`blocker` 有值也不管）", _sp4 == (True, ""), _sp4))
     # ⚠️ **认不出的季节必须直接不算** —— 早先 `get(s, (0,0))` 会让 `(None,None)` 落进
     #    `0<=0<=0` ⇒ **返回 True**（"不知道 ⇒ 当在季"），正好反了（自验当场逮到）。
     import calendar_data as _cd

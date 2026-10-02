@@ -188,17 +188,24 @@ def soft_passable(x, y, **passable_params):
     """🚶 这一格**能不能走** → `(能不能, 说明)`。
 
     判据（**只此一处**）：
-      ① 先问游戏 `/passable`；**能走就直接过**（不查活物，省一发）；
-      ② 说不能走时：查活物名单（`soft_blocker_at()`）——**那格真站着一只牲畜/宠物** ⇒ 当**能走**
-         （玩家就是顶着它们过去的），说明是**文游播报**：「路上有只动物（松子）挡了道，挤开了」；
-      ③ 活物名单**读不到** ⇒ **不软化**（照旧不能走）；那格没活物（= **硬阻挡**）⇒ 也不能走，
-         说明留空（调用方照旧说"走不到 / 被墙圈隔开"）。
-    ⚠️ 说明**不带 ⚠️、不带下一步**（软阻挡我们自己处理了，报成问题只是噪声）。
+      ① 先问游戏 `/passable`；**能走就直接过**；
+      ② 说不能走时：**先看游戏自己点名的那只**（`/passable` 的 `blocker`，2026-10-02 新 DLL 才有）——
+         那是 `Character.GetBoundingBox()` 与该格相交的判定，**连动物占几格都算进去了**
+         （恒查过：牛羊两格、鸡鸭一格 ⇒ 光拿 `/animals` 的**格坐标**对会对不上，
+          以前那种格会被误判成"硬阻挡"）；
+      ③ 老 DLL（没 `blocker`）⇒ 退回问名单（`soft_blocker_at()`：`/animals` + `/surroundings` 的宠物）。
+     ⚠️ **只有牲畜/宠物能顶**：NPC/马/怪/浣熊**不软化**（读不到就**不软化**，绝不用"猜"去顶一格墙）。
+     ⚠️ 说明**不带 ⚠️、不带下一步**（软阻挡我们自己处理了，报成问题只是噪声）。
     """
     try:
         _p = _post("/passable", dict({"x": x, "y": y}, **(passable_params or {}))) or {}
         if _p.get("passable"):
             return True, ""
+        _bl = _p.get("blocker") or {}
+        if _bl and str(_bl.get("kind") or "") in ("animal", "pet"):
+            return True, f"路上有只动物（{_bl.get('name') or '动物'}）挡了道，挤开了"
+        if "blocker" in _p:
+            return False, ""          # 新 DLL 明确说了"没人挡着" ⇒ 就是硬阻挡，别再问名单
     except Exception:
         return False, ""
     who = soft_blocker_at(x, y)
@@ -836,7 +843,10 @@ def machines():
 
 
 def machine_collect(location="", type="", limit=0):
-    """POST /machine_collect — 批量收机器产物（全农场/指定地点/指定类型），打 AI 进程 7843。
+    """⛔ **已退役、不删**（恒 2026-10-02：「退役的也许不删吧，只是不用而且做好标记」）。
+    这是**原子瞬收**（不要求人在机器旁边）⇒ 收放现在只走 `machine_loader.py --here`（拟人）。
+    ⚠️ 仍在用的地方只剩旧脚本（`building_round.py`）；**别再挂回 AI 的门牌/单子行**。
+    POST /machine_collect — 批量收机器产物（全农场/指定地点/指定类型），打 AI 进程 7843。
     产物进 AI(轮回)背包（恒批注 2026-08-13：别打到 host 恒的号，会塞满恒背包）。"""
     return _ai_post("/machine_collect", {"location": location, "type": type, "limit": limit})
 

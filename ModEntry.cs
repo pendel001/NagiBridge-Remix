@@ -3049,6 +3049,13 @@ public class ModEntry : Mod
                 "/drop_item" => HandleDropItem(ctx),
                 "/machines" => HandleMachines(),
                 "/farm_report" => HandleFarmReport(),
+                // ⛔ **已退役、不删**（恒 2026-10-02 拍板：「**退役的也许不删吧，只是不用而且做好标记**」）：
+                //    `/machine_collect` = 原子瞬收（`farmer.addItemToInventory(held)`，**不要求人在机器旁边**）
+                //    ⇒ 恒真机一眼看出"不是人在干活"（「不是撤掉非拟人了吗！还是一键收了hhh」）。
+                //    现在的收放**只有一条路**：`machine_loader.py --here`（拟人走过去逐台真交互，走 `farm load`）。
+                //    ⚠️ **路由留着**（还有 3 个旧调用点：`collect_machines()`（已退役不再暴露）·
+                //       `scripts/building_round.py` · `stardew_api.machine_collect`）——
+                //       **别再挂回任何 AI 能碰到的门牌/单子行**。要动它先跟恒确认（见 CHANGELOG 203i）。
                 "/machine_collect" => HandleMachineCollect(ctx),
                 "/machine_load" => HandleMachineLoad(ctx),
                 "/machine_reqs" => HandleMachineReqs(ctx),
@@ -4290,7 +4297,55 @@ public class ModEntry : Mod
                 }
                 // 🪙 2026-08-29：allowWater=true 时水格也报可走(淘金/蟹笼立项逻辑走位时放行近水格)
                 bool passable = IsTilePassable(loc, new Point(x, y), allowWater);
-                tcs.SetResult(new { ok = true, passable, x, y, location = loc.Name });
+                // 🚶🐄 2026-10-02 恒问「**passable 原本不报动物吗**？」—— 原本确实不报（只回 true/false），
+                //    于是消费侧只能拿 `/animals` 的**格坐标**去对；而动物占的格数**不止一格**
+                //    （恒查过：**牛羊两格、鸡鸭一格**）⇒ 对不上就被当成"硬阻挡"，
+                //    "顶着牛过去"退化成"走不到 / 被墙圈隔开"。
+                //    ⇒ 现在**把挡路的那只点出来**（`blocker`），判据**问游戏**：
+                //      `Character.GetBoundingBox()` 与该格 64×64 矩形相交 = 就是它挡着
+                //      （游戏自己的 `GameLocation.isCharacterAtTile` 就是这套写法，见反编译 `:5318`）。
+                //    ⚠️ **两边都要查**：`isCharacterAtTile` 只扫 `loc.characters`（NPC/宠物/马/怪），
+                //       而**牲畜在 `farm.animals` / `animalHouse.animals` 字典里**（不在 characters）。
+                object? blocker = null;
+                if (!passable)
+                {
+                    var tileRect = new Microsoft.Xna.Framework.Rectangle(x * 64, y * 64, 64, 64);
+                    try
+                    {
+                        foreach (var c in loc.characters)
+                        {
+                            if (c == null || !c.GetBoundingBox().Intersects(tileRect)) continue;
+                            blocker = new
+                            {
+                                kind = c is Pet ? "pet"
+                                     : c is Horse ? "horse"
+                                     : c is StardewValley.Monsters.Monster ? "monster"
+                                     : c is StardewValley.Characters.Raccoon ? "raccoon" : "npc",
+                                name = c.Name,
+                                x = c.TilePoint.X,
+                                y = c.TilePoint.Y
+                            };
+                            break;
+                        }
+                        if (blocker == null)
+                        {
+                            IEnumerable<FarmAnimal>? alist = loc is Farm farmLoc2 ? farmLoc2.animals.Values
+                                : loc is AnimalHouse ahLoc2 ? ahLoc2.animals.Values : null;
+                            if (alist != null)
+                            {
+                                foreach (var an in alist)
+                                {
+                                    if (an == null || !an.GetBoundingBox().Intersects(tileRect)) continue;
+                                    blocker = new { kind = "animal", name = an.Name,
+                                                    x = an.TilePoint.X, y = an.TilePoint.Y };
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+                }
+                tcs.SetResult(new { ok = true, passable, x, y, location = loc.Name, blocker });
             }
             catch (Exception ex)
             {
@@ -6930,9 +6985,18 @@ public class ModEntry : Mod
                     if (objForage) tile["forage"] = true;   // 🌿 游戏判的"可手捡"（见上面 objForage 注释）
                     if (tileTerrain != null) tile["terrain"] = tileTerrain;
                     // 🍓 灌木三件（消费侧优先用前两件，`bushBloom` 是**旧字段**，含义只是"贴图切到第 1 帧"）：
-                    if (bushSize >= 0) tile["bushSize"] = bushSize;
-                    if (bushInSeason) tile["bushInSeason"] = true;
-                    if (bushShakeable) tile["bushShakeable"] = true;   // 🎯 摇得出东西（游戏原判据）
+                    if (bushSize >= 0)
+                    {
+                        // 🍓 三件**都要显式报**（真假都报）——⚠️ 2026-10-02 真机当场逮到的坑：
+                        //    原写法是 `if (bushShakeable) tile["bushShakeable"] = true;`（**只在为真时才写键**），
+                        //    于是消费侧的"有这个键 = 听游戏的"判据**永远不成立**，一路退回 tier②
+                        //    （`bushBloom && bushInSeason`）—— 而 Town 装饰丛**恰好是"帧亮+在季+摇不出"**，
+                        //    那正是 `bushShakeable` 存在的唯一理由（`!townBush` 只有游戏知道）。
+                        //    真机看到的就是：农场 14 丛灌木 `bushSize` 有、`bushShakeable` **一个键都没有**。
+                        tile["bushSize"] = bushSize;
+                        tile["bushInSeason"] = bushInSeason;
+                        tile["bushShakeable"] = bushShakeable;   // 🎯 摇得出东西（游戏原判据，真/假都报）
+                    }
                     if (bushInBloom) tile["bushBloom"] = true;   // 🍓 灌木在花期=可摇树莓/黑莓
                     if (largeTerrainName != null && largeTerrainName != "Bush")
                         tile["largeTerrain"] = largeTerrainName;
@@ -19152,6 +19216,10 @@ public class ModEntry : Mod
     }
 
     /// <summary>
+    /// ⛔ **已退役、不删**（恒 2026-10-02：「退役的也许不删吧，只是不用而且做好标记」）。
+    /// 退役理由：「不是撤掉非拟人了吗！还是一键收了hhh」—— 它**不要求人在机器旁边**，
+    /// 能隔着半个屋子把 20 台机器一次收干净，一眼看得出不是人在干活。
+    /// ⇒ 收放只剩 `machine_loader.py --here`（拟人逐台真交互）。**别再挂回 AI 的门牌/单子行**。
     /// POST /machine_collect  { location?, type?, limit? }
     /// 批量收机器产物（全农场或指定地点）：直接 addItemToInventory + 双清
     /// （heldObject + readyForHarvest 一起清，避免"鬼机器"）。
