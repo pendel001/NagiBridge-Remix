@@ -6726,10 +6726,10 @@ def _water_pet_bowls() -> list:
     🌧️ 2026-09-12 恒真机："下雨水碗会满，可以做个跳过" ⇒ **雨天直接不浇**。
     证据：秋9 雨天 `/petbowl` 读到 `bowlWatered=true`（谁都没浇，是雨填的），而工具照样让 AI 走了
     4 个碗挥了 4 次壶——纯白跑一趟（真机实测）。
-    ⚠️ 判据取**天气**（`/state.time.isRaining`）**而不是逐个碗的状态**：1.6 的碗是 PetBowl
-    **建筑**、`watered` 挂在建筑上，而 `/petbowl` 只报**第一个**碗（本档有 4 个碗，另 3 个读不到）
-    ⇒ 想做到"哪碗满跳哪碗"得先给 C# `/petbowl` 加个全部碗列表（下次重编 DLL 顺手做）。
-    在那之前：雨天全跳（雨对每个碗一视同仁），非雨天照旧全浇。
+    ⚠️ 雨天那条判据取**天气**（`/state.time.isRaining`）—— 因为当时 `/petbowl` 只报**第一个**碗。
+    🍽️ **2026-10-02 补全**：C# 的 `/petbowl` 现在把**所有碗 + 各自的 `watered`** 一起报出来
+    （`bowls:[{x,y,watered,…}]`）⇒ **"哪碗满了跳过哪碗"终于做得到**（本档 4 个碗：农舍旁 1 + 小屋旁 3）。
+    老 DLL 没这个键 ⇒ 照旧全浇（**读不到就别说"满了"**）。
     """
     report_parts = []
     # 🌧️ 雨天跳过（恒 2026-09-12）——放**最前**：雨天连"没带水壶"都没必要报（今天轮不到浇）
@@ -6773,12 +6773,27 @@ def _water_pet_bowls() -> list:
                 return ["⚠️ 没找到宠物碗（Pet Bowl）"]
 
         report_parts.append(f"🔍 发现 {len(bowls)} 个宠物碗")
+        # 🍽️ 哪几个碗**已经是满的**（新 DLL：`/petbowl.bowls[].watered`）——满了就别白挥一趟。
+        #    ⚠️ 老 DLL 没这个键 ⇒ `_watered` 为空 ⇒ 照旧全浇（"读不到" ≠ "都没满"）。
+        _watered = set()
+        try:
+            _pb2 = api._get("/petbowl") or {}
+            for _b in (_pb2.get("bowls") or []):
+                if _b.get("watered"):
+                    _watered.add((int(_b.get("x")), int(_b.get("y"))))
+        except Exception:
+            pass
+        if _watered:
+            report_parts.append(f"  （其中 {len(_watered)} 个**已经是满的**，会跳过）")
         s = api.state()
         if s.get("location", {}).get("name") != "Farm":
             api.walk_to_coord("Farm", 64, 15)
 
         for i, bowl in enumerate(bowls):
             bx, by = bowl["x"], bowl["y"]
+            if (int(bx), int(by)) in _watered:
+                report_parts.append(f"  ⏭️ 碗{i+1} @ ({bx},{by}) 已经是满的，跳过（不用挥壶）")
+                continue
             try:
                 # ⚠️ 站碗建筑位 + 朝右 + /tool 浇 (bx+1, by) 碗格（恒实测：door_y+1 站远浇不到；别 walk_to）
                 # 🐾 2026-09-05 恒：自然走位到碗旁（walk_to 拟人，别硬瞬移）；够不着 position 兜底（同摸宠物）。
@@ -12595,7 +12610,7 @@ def _maze_seg_view(gx=None, gy=None, radius=15) -> str:
 
 @mcp.tool()
 def scene(ops: str = "", kw: dict | None = None) -> str:
-    """🖱️ 场景交互域：at(点格) / interact(点面前) / sit(坐椅子,可选face=朝向) / stand(起身) / seats(扫可坐物) / use(挥工具) / pickup_scene(捡采集物) / berry(摇浆果) / spot(挖蚯蚓) / moss(苔藓) / place(放置播种) / break(拆敲) / maze。全 ops+坑 → help(scene)。
+    """🖱️ 场景交互域：at(点格) / interact(点面前) / sit(坐椅子,可选face=朝向) / stand(起身) / seats(扫可坐物) / use(挥工具) / pickup_scene(捡采集物) / berry(摇/摘 灌木与果树：浆果·茶叶·果子) / spot(挖蚯蚓) / moss(苔藓) / place(放置播种) / break(拆敲) / maze。全 ops+坑 → help(scene)。
 
     """
     dispatch = {
@@ -16834,7 +16849,7 @@ _DOMAIN_GUIDES = {
 #    ⚠️ 同 session：**别在这儿留空壳条目** —— `_dispatch_keys()` 会照它把 help 反查成
 #       一个 AI 够不着的域名。逐 op 的替代路由 `domain_selftest._SUBSUMED_DOMAINS` 审。
 "social": "社交域：chat(搭话,name=NPC名) gift(送礼,npc_name/item_name) give(送玩家物品,手持右键正式赠予,一次要等同意) hand(递给玩家,走过去丢他脚边,磁吸自动收,可整叠) send(发消息,message,**恒窗口必见——回恒就用它,别只在自己的前端回**) emote(表情,name) friendship(查好感,npc_name) movie(影院,npc)。📐参数键名: chat=name / gift=npc_name+item_name / give=player_name+item_name / hand=player_name+item_name+count(0=整叠) / send=message / emote=name(默认爱心) / friendship=name / movie=npc。⚠️**give vs hand**：give=面对面正式赠予(手持右键,一次一个)——**它发的是「赠送提议」,对方点同意东西才过去**(没点会退回;回报会明说「等他点同意」,看到这句别当成已经送到)；hand=走过去丢他脚边(磁吸自动收,**可整叠**,不用对方操作)——想整叠给/对方不在手边就用 hand。kw={'参数名':值}。",
-"scene": "场景交互域(点东西/工具/转身/捡/坐)：at(tile_x,tile_y)(点指定格/柜台) interact(点面前) use(挥工具) face(转向0上1右2下3左) select(拿手上) sit(x,y[,face])(**坐椅子**:自动走到座位旁再坐,上不了会明确报错;状态条「🪑 可交互：sit(x,y)」给坐标;可选 face=坐下朝向0上1右2下3左,**只对「朝向来自坐下那刻面朝方向」的座位生效**(反编译:stool 类/opposite 长椅/名字带Stool的家具),其它写死——吃不吃由端点回的 face 字段说了算,不生效会在回报里点名) stand(**起身**:坐着时用,没坐着明确报错,带动画+轮询确认) seats(radius=12)(扫附近能坐的椅子/长凳/沙发,✋=可改朝向) pickup(拿起家具) pickup_scene(捡当前场景物,**只扫你周围方形±30格**) berry(摇浆果) spot(挖蚯蚓点) moss(绿雨搜苔藓) rock(室外镐击:敲当前图可破物,采石场/挖掘场/蚌矿场跳普通石,dig/dry,battle-free) garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物:一种 name+count / 多种 items=逗号分隔) decor(🪵地板/墙纸真值表:这间屋哪些格能铺+现在铺的什么,**铺前先查这**) furniture(扫家具) place(放置/播种:name=物品名,x/y=目标格→箱子/树种/蟹笼落地或种下,只放可放置物;🪵**地板/墙纸是特例**——只能点在**地板格**(地板)/**靠墙那圈墙格**(墙纸)上,点错游戏**静默不理**;点错时回报会直接告诉你「这格其实是墙不是地板」并给出能铺的格) break(拆/敲:x,y=目标格,steps=挥击次,radius=方圆→镐子敲石头/翻已耕地,跳过箱子/容器格) maze(迷宫视图r半径,gx/gy目标格→ASCII棋盘#墙.可走P自己G目标) maze_seg(走法链gx,gy目标→拆直走廊列表+拼「左/右上/下走到(x,y)」多段链,AI按段walk_to) maze_walk(走迷宫 waypoints=「x,y x,y…」依次walk_to;⚠️**它其实是通用多段走位,主门牌已挪到 `map walk_multi/闲逛`**(闲逛遛弯/绕人转圈/泳池绕圈游),此处保留旧名为兼容) pan(淘金/淘盘:本图水下闪光点→岸边走位面水→铜锅淘金收掉落) front/rummage(分别是interact/garbage的别名)。📌**坐着想起来：scene stand**（别拿 at 猜一个够得着的格子——那条路会静静失败）。📐带参速查(键名必须=下面这些,**写错会被静默丢掉、不报错**): at(tile_x,tile_y) **⚠️是 tile_x/tile_y 不是 x/y** / pickup(tile_x,tile_y **同 at 用 tile_**) / use(name) / face(direction 0上1右2下3左) / select(name) / sit(x,y,face) / seats(radius=12) / pickup_scene(max_items=30) / moss(radius,target_max,rounds,dry_run) / rock(dig,radius,max_break,break_stone) / garbage(loc,pos,wait,dry_run) / pan(dry_run,radius,timeout) / drop(name,count,items=多种一起丢) / place(name,x,y) / decor(无参) / break(x,y,steps,radius) / maze(radius,gx,gy) / maze_seg(gx,gy,radius) / maze_walk(waypoints,location,max_wait,max_seg)。kw={'参数名':值}。",
+"scene": "场景交互域(点东西/工具/转身/捡/坐)：at(tile_x,tile_y)(点指定格/柜台) interact(点面前) use(挥工具) face(转向0上1右2下3左) select(拿手上) sit(x,y[,face])(**坐椅子**:自动走到座位旁再坐,上不了会明确报错;状态条「🪑 可交互：sit(x,y)」给坐标;可选 face=坐下朝向0上1右2下3左,**只对「朝向来自坐下那刻面朝方向」的座位生效**(反编译:stool 类/opposite 长椅/名字带Stool的家具),其它写死——吃不吃由端点回的 face 字段说了算,不生效会在回报里点名) stand(**起身**:坐着时用,没坐着明确报错,带动画+轮询确认) seats(radius=12)(扫附近能坐的椅子/长凳/沙发,✋=可改朝向) pickup(拿起家具) pickup_scene(捡当前场景物,**只扫你周围方形±30格**) berry(摇/摘 灌木与果树：浆果·茶叶·果子——果树摇完果子**掉地上**要再走上去捡) spot(挖蚯蚓点) moss(绿雨搜苔藓) rock(室外镐击:敲当前图可破物,采石场/挖掘场/蚌矿场跳普通石,dig/dry,battle-free) garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物:一种 name+count / 多种 items=逗号分隔) decor(🪵地板/墙纸真值表:这间屋哪些格能铺+现在铺的什么,**铺前先查这**) furniture(扫家具) place(放置/播种:name=物品名,x/y=目标格→箱子/树种/蟹笼落地或种下,只放可放置物;🪵**地板/墙纸是特例**——只能点在**地板格**(地板)/**靠墙那圈墙格**(墙纸)上,点错游戏**静默不理**;点错时回报会直接告诉你「这格其实是墙不是地板」并给出能铺的格) break(拆/敲:x,y=目标格,steps=挥击次,radius=方圆→镐子敲石头/翻已耕地,跳过箱子/容器格) maze(迷宫视图r半径,gx/gy目标格→ASCII棋盘#墙.可走P自己G目标) maze_seg(走法链gx,gy目标→拆直走廊列表+拼「左/右上/下走到(x,y)」多段链,AI按段walk_to) maze_walk(走迷宫 waypoints=「x,y x,y…」依次walk_to;⚠️**它其实是通用多段走位,主门牌已挪到 `map walk_multi/闲逛`**(闲逛遛弯/绕人转圈/泳池绕圈游),此处保留旧名为兼容) pan(淘金/淘盘:本图水下闪光点→岸边走位面水→铜锅淘金收掉落) front/rummage(分别是interact/garbage的别名)。📌**坐着想起来：scene stand**（别拿 at 猜一个够得着的格子——那条路会静静失败）。📐带参速查(键名必须=下面这些,**写错会被静默丢掉、不报错**): at(tile_x,tile_y) **⚠️是 tile_x/tile_y 不是 x/y** / pickup(tile_x,tile_y **同 at 用 tile_**) / use(name) / face(direction 0上1右2下3左) / select(name) / sit(x,y,face) / seats(radius=12) / pickup_scene(max_items=30) / moss(radius,target_max,rounds,dry_run) / rock(dig,radius,max_break,break_stone) / garbage(loc,pos,wait,dry_run) / pan(dry_run,radius,timeout) / drop(name,count,items=多种一起丢) / place(name,x,y) / decor(无参) / break(x,y,steps,radius) / maze(radius,gx,gy) / maze_seg(gx,gy,radius) / maze_walk(waypoints,location,max_wait,max_seg)。kw={'参数名':值}。",
 "menu": "菜单/界面域(开→看→点)：read(看菜单) advance(推进剧情/对话,一句句) **skip(整段跳过剧情/事件,事件 skippable=true 才跳得动)** click(option/item/button/xy 点;action=claim领/action=discard丢桶腾格;slot=序号领指定格) key(ok/esc/数字按键) cancel(关弹窗/撤就绪) shop(逛店) sell(卖商店) bin(投出货箱) craft(合成) recipes(菜谱) craftables(配方) forge(锻造) geode/geodes(砸晶球) customize(捏人) bundle(献祭缺口·**只读存档不走路**) bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读消耗品:书/秘密纸条/日记残页,统一走右键读 name=物品名) levelup_choose(技能升级职业选择 5/10级:不带参读左右选项,side=left/right 或 profession=职业id 定分支;普通升级自会确认OK) number(数量输入:展览会兑换台/转盘押注 NumberSelectionMenu) minigame(赌场小游戏点按钮 action=hit/stand/bet10/…) minigame_state(读牌面/转盘) display_fill(农展台放满 items='钻石,山羊奶酪') display_takeback(收好) journal(开任务日志→menu read 读卡,翻页=click(button=forward/back),领奖励=click(button=rewardBox)) know(查特别订单详情/知识库SPECIAL_ORDERS,如menu know 岛屿食材)。📐参数键名: click=option,button,x,y,item,right,quantity,action,real,slot,category(**action=claim领 / discard丢桶腾格**;button 用按钮名 ok/upperRightCloseButton/forward/back/rewardBox/mainButton) / key=key,count,hold / number=value,confirm / shop=place,want / sell=name(**多选隔逗号/分号,中英文都行;别用空格**),count(-1=全卖;**sell_all=True 一次卖完这家店收的,不收的一根不动**) / bin=name,sell_all / craft=item_name,count / forge=item1,item2,mode,target / geodes=count / customize=name,farmname,favorite / bundle=area / bundle_kb=query / read_book=name / levelup_choose=side,profession(**不带参=只读当前左右选项**,供配 check(what=profile) 分析后再决定) / minigame=action,x,y / display_fill=items。⚠️cook(做饭)**不在 menu 在 cabin**。🚫满包接鱼/领箱:**click action=discard 丢桶腾格(回收返金)+action=claim 领取(或用 slot 领指定格;不想要直接 button=ok 关掉)**。🧾关闭菜单一律 click(button=upperRightCloseButton)（ItemGrabMenu/交付容器用 button=ok 确认才关）；订单交付容器(QuestContainerMenu)=点背包对应物品格(见slots的坐标)→放进→点 button=ok 结算；任务日志领钱=点击已完成的有钱任务卡后 click(button=rewardBox)；兑奖机兑换=click(button=mainButton)；特别订单领奖链=日志领钱(上面)→社区板旁领奖箱(60,93)拿兑奖券→刘易斯家兑奖机(mainButton)兑换。",
 "storage": "箱子域：view(看箱,box=N看单箱全清单) store(存:what/items限定存哪些,名可带xN数量只存那N份,留空=归位只存已有同类堆,target指定箱/**全存腾空间=all=True——`all` 是参数不是物品名,别写 items=\"all\"**/**工具(镐斧锄壶镰竿)不能丢不能卖,但点名就能存进箱子借人: items=\"十字镐\"**) take(取:x,y+name单箱 或 items批量) find(模糊查哪箱有某物) default(设/清默认箱 clear=清) tag(改名,可带color改色)。📐参数键名(view=box / store=what,items,target,keepTools默认True,all / take=items 或 x+y+name+count默认999 / find=name / default=x,y,clear / tag=tag,target**必填**,color)。🤖存取统一走位：store/take都会先走到相关箱旁(批量只走到第一个),不区分拟人/原子,别靠编号逐箱翻。⭐每个箱子前自动带【类目标签】(内容过半归类):矿/古物/鱼/种子/作物/农产/建材/料理/装备——AI按标签定位箱,找东西用find。⚠️改色别染纯#000000(=默认木纹,识别成未染色);要黑箱用暗灰#303030。",
 "daily": "过日子域：sleep(睡觉) eat(吃食物回血体力,name/item_name) **cook(做饭 — 2026-10-01 从 cabin 收编进来；会先走到厨房，走不过去就明确报错)** wear(穿/脱衣物,name/slot/hand) lie_bed(躺床不过夜) settle(确认过夜结算) heartbeat(心跳间隔,minutes) pause(后台不暂停,out_of_focus) peek(看恒干嘛) whiteboard(写白板,content) wb_read/wb_pin/wb_clear。📐参数键名: sleep/lie_bed=who eat=name,item_name **cook=recipe_name(必填;食谱用英文原名),count(默认1)** wear=name,slot,hand(**hand 仅戒指**:1/left 或 2/right,或传「要换掉的那枚戒指名」自动找手) heartbeat=minutes pause=out_of_focus whiteboard/wb_pin=content appearance=hair,hair_color,skin,shirt,pants,hat,acc,eye_color,pants_color；settle/peek/wb_read/wb_clear 无参。kw={'参数名':值}。📌sleep/lie_bed 的 who **必填**（名字随存档变，现读现传）：传自己名字=睡自己床；传别人名字=睡那个人的床(一起睡+🌹彩蛋)。⚠️名字写错会报错并列出可选名(不会默默睡成别人的床)。**传对名字就不用先回家**——不在那栋屋会自动走过去(map_go跨图→门口→推门→床边，全程走)。lie_bed 只躺不睡，想离开随时 walk_to 走离床格即可。🏝️**在姜岛是另一套**：岛上共用一间小屋(大通铺)，没有「谁的床」——who 传**正躺在床上的别人**=挤他那张(姜岛版爬床彩蛋)；否则(传自己/那人还没躺)=随便挑一张空床安静睡。⚠️睡别人床/协作前先 check(what=\"role\") 确认端口↔角色（端口按启动顺序分配，重启可能翻转，认错角色=挪了恒的人）。",
@@ -16987,7 +17002,8 @@ _INTENT_INDEX = [
     ("坐椅子,坐下,想坐着", "scene", "sit", "自动走到座位旁再坐；坐不起来会明确报错"),
     ("站起来,起身,想起来", "scene", "stand", "坐着时用；别拿 at 猜格子"),
     ("捡东西,捡地上的,捡采集物", "scene", "pickup_scene", "只扫你周围 ±30 格"),
-    ("摇浆果,浆果,摇树", "scene", "berry", "路过浆果丛顺手摇一把"),
+    ("摇浆果,浆果,摇树,摘茶叶,茶叶,摇果树,摘果子,果树", "scene", "berry",
+     "路过浆果丛/茶树丛/果树顺手摇一把（果子会掉地上，要再走上去捡）"),
     ("挖蚯蚓,蚯蚓,斑点,远古斑点", "scene", "spot", "**要带锄头**；蚯蚓点出古物/矿物/种子"),
     ("金核桃,核桃,姜岛核桃", "scene", "walnut",
      "只在姜岛；**默认只拿脚边最近那一个**，想清图给 max_count；弹弓那只拿不了"),

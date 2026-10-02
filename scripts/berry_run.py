@@ -1,18 +1,25 @@
 """
-🍓 berry_run.py — 摇当前场景所有结果的浆果灌木（树莓/黑莓）
+🍓 berry_run.py — 摇/摘当前场景的灌木与果树（拟人：走过去摇，不是隔空）
 
-原理（2026-08-17 恒+克劳德实测）：
+原理（2026-08-17 恒+克劳德实测，2026-10-02 补全）：
 - 灌木 Bush 在 GameLocation.largeTerrainFeatures（不在 terrainFeatures），surroundings 报 terrain="Bush"
-- 真正结果（有莓果可摇）看 tileSheetOffset==1 → surroundings 的 bushBloom=True
-- 摇 = checkAction（interact）→ tileSheetOffset 1→0（无果）+ 莓果掉落吸附进包
-- 场景里只有季节结果的那几棵能摇（如 Backwoods 11 棵灌木里 3 棵结果）
+- 摇出来什么由**游戏的 `Bush.GetShakeOffItem()`** 定（反编译 `Bush.cs:460`）：
+    size 0/1/2 → 春树莓 `(O)296` / 秋黑莓 `(O)410` / **其它季节 null（摇不出）**
+    size 3     → **茶叶 `(O)815`**   ← 恒 2026-10-02：「茶树也值得摇」
+    size 4     → **金核桃 `(O)73`**（存档计数，不进背包）
+- 🎯 "现在摇得出吗" = 游戏 `Bush.shake()` 的原条件 `!townBush && readyForHarvest() && inBloom()`
+  ⇒ C# 直接把这个答案报成 `bushShakeable`（老 DLL 才退回 `bushBloom`+`bushInSeason`/日历窗口）
+- 🍎 **果树**（`FruitTree`，另一类地形）也是摇，但 `FruitTree.shake()` 把果子变成**地上 Debris**
+  （`FruitTree.cs:361-425`）⇒ **摇完得再走上去捡**（本脚本摇完补了那一段）。
+  真机 2026-10-02（温室）：`scene at 12 7` → 地上 3×Banana → 走到 (12,8) → 背包 Banana×3
+- 摇 = checkAction（interact）；拟人 = 先走到相邻格再面朝它
 
-流程：扫 surroundings 找 bushBloom=True 的灌木 → 逐棵站相邻格+面朝+interact → 重扫直到没有可摇灌木。
+流程：扫 `surroundings` 挑出该摇的 → 逐个走过去+面朝+interact → 重扫直到没有 → 把掉地上的走上去捡。
 
 用法:
-  python berry_run.py                    # 摇当前场景全部结果灌木
+  python berry_run.py                    # 摇当前场景该摇的全部
   python berry_run.py --port 7842        # 指定端口（solo 恒在 7842）
-  python berry_run.py --dry-run          # 只报有几棵可摇，不摇
+  python berry_run.py --dry-run          # 只报有几处该摇，不摇
 """
 
 import os

@@ -153,7 +153,7 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
           chore_tiles=None, crab_ready=0, ore_pan=None, chore_animals=None, money=None,
           silo=None, troughs=None, trough_filled=0, trough_raise=False,
           surr_tiles=None, trash_cans=None, cola=None, npcs=None, nuts=None,
-          trash_checked=None):
+          trash_checked=None, pet_bowls=None):
     CALLS.clear()
     WALK_CALLS.clear()
     state = dict(STATE)
@@ -227,6 +227,15 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
         if ep == "/nuts":
             # 🌰 金核桃真回包形状：`{ok, nuts:[{kind, taken, …}]}` —— 姜岛"核桃丛"那条例外读它
             return {"ok": True, "nuts": list(nuts or [])}
+        if ep == "/petbowl":
+            # 🍽️ 宠物碗真回包形状：`{ok, bowl:{x,y}, bowlWatered, bowls:[{x,y,watered,doorX,doorY}]}`
+            #    ⚠️ `pet_bowls=None` ⇒ **不吐 `bowls` 键** = 老 DLL 形状（消费侧必须退回"全浇"）
+            _bl = list(pet_bowls or [])
+            _r = {"ok": True, "bowl": {"x": 53, "y": 7},
+                  "bowlWatered": any(b.get("watered") for b in _bl)}
+            if pet_bowls is not None:
+                _r["bowls"] = _bl
+            return _r
         if ep == "/crab_pots":
             # 🦀 真回包形状：`{ok, count, location, pots:[{...readyForHarvest...}]}`
             return {"ok": True, "count": crab_ready, "location": "Farm",
@@ -1675,6 +1684,34 @@ def main():
     _c_shk = M._forage_counts([_SHK], True, False)
     res.append(ok("🎯 有 `bushShakeable=true` ⇒ **就算 `bushInSeason` 是假也摇**（tier ① 优先，问游戏最准）",
                   _c_shk.get("bush") == 1, _c_shk))
+
+    # ㉕ 203h 🍽️ 宠物碗：新 DLL 报得出"哪碗已经满了"（`/petbowl.bowls[].watered`）
+    #    ⇒ **满了别白挥壶**（旧版只报第一个碗，只能靠天气一刀切，见 `_water_pet_bowls` 的 docstring）。
+    _WC = [{"slotIndex": 1, "name": "Iridium Watering Can", "displayName": "铱水壶",
+            "itemId": "(T)WateringCan", "stack": 1, "waterLeft": 40, "waterMax": 40}]
+    _BOWLS = [{"type": "Pet Bowl", "x": 53, "y": 7, "doorX": 52, "doorY": 6},
+              {"type": "Pet Bowl", "x": 34, "y": 26, "doorX": 33, "doorY": 25}]
+    _old_wtc, _old_pos = M.api.walk_to_coord, M.api.position
+    M.api.walk_to_coord = lambda *a, **k: None
+    M.api.position = lambda *a, **k: {"ok": True}
+    try:
+        _stub(inv=_WC, farm_buildings=_BOWLS,
+              pet_bowls=[{"x": 53, "y": 7, "watered": True}, {"x": 34, "y": 26, "watered": False}],
+              time_dict={"timeOfDay": 900, "season": "summer", "dayOfMonth": 17, "weather": 0})
+        _rep = M._water_pet_bowls()
+        _rep_s = "\n".join(_rep)
+        _tools = len([c for c in CALLS if c[1] == "/tool"])
+        _stub(inv=_WC, farm_buildings=_BOWLS, pet_bowls=None,
+              time_dict={"timeOfDay": 900, "season": "summer", "dayOfMonth": 17, "weather": 0})
+        _rep_old = "\n".join(M._water_pet_bowls())
+        _tools_old = len([c for c in CALLS if c[1] == "/tool"])
+    finally:
+        M.api.walk_to_coord, M.api.position = _old_wtc, _old_pos
+    res.append(ok("🍽️ 新 DLL：**满的那个碗跳过**（报「已经是满的」）", "已经是满的" in _rep_s, _rep))
+    res.append(ok("🍽️ 只给没满的那 1 个碗挥壶（4 个碗的时代是挥 4 次 ⇒ 现在 2 个碗挥 1 次）",
+                  _tools == 1 and _tools_old == 2, (_tools, _tools_old)))
+    res.append(ok("🍽️ 老 DLL（没 `bowls` 键）⇒ **照旧两个都浇**（读不到 ≠ 都没满）",
+                  "已经是满的" not in _rep_old, _rep_old))
     # ⚠️ **认不出的季节必须直接不算** —— 早先 `get(s, (0,0))` 会让 `(None,None)` 落进
     #    `0<=0<=0` ⇒ **返回 True**（"不知道 ⇒ 当在季"），正好反了（自验当场逮到）。
     import calendar_data as _cd

@@ -19891,6 +19891,31 @@ public class ModEntry : Mod
                         catch { }
                     }
 
+                    // 🍽️ 2026-10-02：**把所有碗都列出来**（恒拍板口径：一个档可能有好几个碗 ——
+                    //    本档 4 个：农舍旁 (53,7) + 三间小屋旁 (34,26)(36,26)(38,26)）。
+                    //    旧版只报"扫到的第一个" ⇒ 消费侧想说"哪碗满了跳过哪碗"就无从说起
+                    //    （`_water_pet_bowls` 里那段注释记着这笔账）。
+                    //    ⚠️ 1.6 里碗是 `PetBowl` 建筑（`watered` 挂在建筑上）；这里逐个读它的 watered。
+                    var allBowls = new List<object>();
+                    try
+                    {
+                        foreach (var b in farm.buildings)
+                        {
+                            if (b is StardewValley.Buildings.PetBowl pb2)
+                            {
+                                bool w = false;
+                                try { w = pb2.watered.Value; } catch { }
+                                allBowls.Add(new
+                                {
+                                    x = pb2.tileX.Value, y = pb2.tileY.Value, watered = w,
+                                    doorX = pb2.tileX.Value + pb2.humanDoor.X,
+                                    doorY = pb2.tileY.Value + pb2.humanDoor.Y
+                                });
+                            }
+                        }
+                    }
+                    catch { }
+
                     tcs.SetResult(new
                     {
                         ok = true,
@@ -19901,6 +19926,9 @@ public class ModEntry : Mod
                                     y = bowlBuilding.tileY.Value + bowlBuilding.humanDoor.Y }
                             : (object)new { x = bowlPos.Value.X, y = bowlPos.Value.Y },
                         bowlWatered,
+                        // 🍽️ 全部碗（含 `watered`）——老消费侧读上面的单个字段，照样能用
+                        bowls = allBowls,
+                        bowlsTotal = allBowls.Count,
                         method,
                         pet = pet != null ? new { name = pet.Name, x = (int)pet.TilePoint.X, y = (int)pet.TilePoint.Y } : null
                     });
