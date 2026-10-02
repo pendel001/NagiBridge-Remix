@@ -41,8 +41,11 @@ try:
     M._with_state = lambda s: s
     M._ensure_background = lambda: None
 
-    # ── ① 🗑️ 垃圾桶 ───────────────────────────────────────────────
-    print("\n① 🗑️ 垃圾桶：走到桶 5 格内提一句（每天一次）")
+    # ── ① 🗑️ 垃圾桶：**2026-10-02 恒要求退休**（提示语撤掉、改单子选项包办）────────
+    #    恒原话：「翻垃圾桶上单，把原来进镇没翻过垃圾的提示语「看看垃圾桶有什么好东西」撤掉
+    #    做成选项包办执行」。⇒ 这里**不再验"会不会提"**（它恒返回空串），改为钉住"它退休了"，
+    #    并把**新的家**指出来（单子那行由 `_intent_wiring_selftest` 的 🗑️ 用例守着）。
+    print("\n① 🗑️ 垃圾桶提示：**已退休**（恒 2026-10-02：撤掉提示语，改单子选项包办执行）")
 
     class TrashApi:
         def __init__(self, cans=((52, 63),)):
@@ -58,38 +61,19 @@ try:
     M.api = TrashApi()
     M._bg_any_running = lambda: False
     M._OPS_INNER["n"] = 0
-
-    def trash(px, py, loc="Town", day="spring|4|1"):
-        M._TRASH_CANS.update(key=None, cans=[])
-        return M._trash_hint(loc, px, py, daykey=day)
-
     fresh_hint(M._TRASH_HINT_KEY)
-    out = trash(50, 63)                                   # 曼哈顿 2 格
-    ck("桶在 5 格内 → 出提示", "垃圾桶" in out, out)
-    ck("…报了桶的坐标", "(52,63)" in out, out)
-    ck("…给**能直接调用的下一步**（op + 参数名都在）",
-       'scene(ops="garbage"' in out and '"loc"' in out, out)
-    ck("…第二次经过同一个桶 → 不再提",
-       trash(50, 63) == "", trash(50, 63))
-    ck("…换一天 → 又可以提一次", "垃圾桶" in trash(50, 63, day="spring|5|1"))
-    fresh_hint(M._TRASH_HINT_KEY)
-    ck("…离得远（>5 格）→ 不提", trash(20, 90) == "")
-    fresh_hint(M._TRASH_HINT_KEY)
-    M.api = TrashApi(cans=())
-    ck("…本图没有桶 → 不提", trash(50, 63) == "", trash(50, 63))
-    M.api = TrashApi()
+    ck("① 提示语退休：桶就在 5 格内也**一个字都不提**（改由单子那行说话了）",
+       M._trash_hint("Town", 50, 63, daykey="spring|4|1") == "")
+    ck("① 内层/后台那套老规矩跟着一起退休（不再消费任何记账）",
+       M._TRASH_HINT_KEY["shown"] is False)
+    # ⚠️ 但**桶的判据还活着**（单子那行要用它）：`_trash_cans_here` 仍从 `/scan` 认出桶。
+    M._SCAN_ACTIONS.update(key=None, actions=[])
+    ck("① 桶的判据仍可用（单子那行的账就靠它）",
+       M._trash_cans_here("Town") == [(52, 63)], M._trash_cans_here("Town"))
 
     print("\n①b 三条提示共同的规矩：内层闭嘴 / 脚本跑着不提（且**不消费**这次机会）")
-    fresh_hint(M._TRASH_HINT_KEY)
-    M._OPS_INNER["n"] = 1
-    ck("域 op 内层 → 闭嘴", trash(50, 63) == "")
-    ck("…而且没消费掉（外层还有机会提）", M._TRASH_HINT_KEY["shown"] is False)
-    M._OPS_INNER["n"] = 0
-    M._bg_any_running = lambda: True
-    ck("后台脚本在跑 → 不提（叫 AI 走位是自相矛盾的引导）", trash(50, 63) == "")
-    ck("…同样没消费掉", M._TRASH_HINT_KEY["shown"] is False)
-    M._bg_any_running = lambda: False
-    ck("…脚本停了 → 照常提", "垃圾桶" in trash(50, 63))
+    # ⚠️ 垃圾桶那条已退休 ⇒ 那三条规矩改由**下面各自的用例**守（② 稻苗 / ③ … 每条自己验一遍）。
+
 
     # ── ② 🌾 稻苗 ────────────────────────────────────────────────
     print("\n② 🌾 稻苗：包里带着 + 手上正拿农具 → 提「种水边不用浇水」（每天一次）")

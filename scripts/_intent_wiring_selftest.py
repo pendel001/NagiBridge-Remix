@@ -146,7 +146,7 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
           farm_buildings=(), time_dict=None, doors_open=False, walk_ok=True,
           chore_tiles=None, crab_ready=0, ore_pan=None, chore_animals=None, money=None,
           silo=None, troughs=None, trough_filled=0, trough_raise=False,
-          surr_tiles=None, trash_cans=None):
+          surr_tiles=None, trash_cans=None, cola=None):
     CALLS.clear()
     WALK_CALLS.clear()
     state = dict(STATE)
@@ -195,11 +195,13 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
     def g(ep, params=None):
         CALLS.append(("GET", ep, params))
         if ep == "/scan":
-            # 🗑️ 垃圾桶**不在 `loc.objects`**，只能从 `/scan` 的 Action 瓦片里认
-            #    （`Garbage <id>`）—— 判据在 `_trash_cans_here()`，这里照真回包形状给。
-            return {"ok": True,
-                    "actions": [{"action": f"Garbage C{i}", "x": x, "y": y}
-                                for i, (x, y) in enumerate(trash_cans or [])]}
+            # 🗑️🥤 垃圾桶/可乐机**都不在 `loc.objects`**，只能从 `/scan` 的 Action 瓦片里认
+            #    （`Garbage <id>` / `ColaMachine`）—— 判据在 `_scan_actions_here()`，
+            #    这里照真回包形状给（真机 Saloon 的机器是 (37,17)+(38,17) 两格）。
+            acts = [{"action": f"Garbage C{i}", "x": x, "y": y}
+                    for i, (x, y) in enumerate(trash_cans or [])]
+            acts += [{"action": "ColaMachine", "x": x, "y": y} for x, y in (cola or [])]
+            return {"ok": True, "actions": acts}
         if ep == "/menu":
             if menu_get_raises:
                 raise RuntimeError("模拟：商店开着但 /menu 读不出来")
@@ -321,10 +323,10 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
     #    —— 真机不会（世界一直变），桩会 ⇒ **每个用例从头开始**（2026-10-01 自验现场逮到）。
     M._MASTERY_CACHE.update(ts=0.0, claimed=None)
     M._MACHINE_REQS_CACHE.update(ok=None, ts=0.0)
-    # 🗑️ 垃圾桶清单按**图名**缓存（`_trash_cans_here`）⇒ 用例之间必须清，
-    #    否则第一个用例把 `[]` 缓存住，后面所有"本图有桶"的用例都会假红。
+    # 🗑️🥤 Action 瓦片清单（垃圾桶/可乐机）按**图名**缓存（`_scan_actions_here`）⇒ 用例之间必须清，
+    #    否则第一个用例把 `[]` 缓存住，后面所有"本图有桶/有可乐机"的用例都会假红。
+    M._SCAN_ACTIONS.update(key=None, actions=[])
     M._TRASH_CANS.update(key=None, cans=[])
-    M._FUN_SPOT_SEEN.update(loc=None)          # 🥤 趣味点提示也是"进图一次"，用例间要清
     # 这两道闸门跟"接线"无关（它们要真游戏在场）；买卖那条路会过它们，先打桩掉。
     M._ensure_background = lambda *a, **k: None
     M._peer_econ_mute = lambda *a, **k: None
@@ -1557,7 +1559,7 @@ def main():
                         {"name": "空牛", "type": "White Cow", "x": 15, "y": 14, "productReady": False}]}
 
     def _chores(chore_tiles=None, crab_ready=0, ore_pan=None, animals=None, weather=0,
-                hoe=True, season="spring", day=16, trash_cans=None):
+                hoe=True, season="spring", day=16, trash_cans=None, cola=None):
         # ⚠️ 日期默认 **春 16**（浆果窗口内）—— 浆果那笔账现在**只在浆果季**才给
         #    （见下面 `_BERRY_WINDOWS` 那两条用例：2026-10-02 恒「现在是夏天，不会有的」）。
         # ⚠️ 走**真路径** `_im_ctx()`（不是手搓 state/surr 递给 `_im_chores`）——
@@ -1565,7 +1567,7 @@ def main():
         #    ⇒ "没带锄头"那条假红、蟹笼那笔账也拿不到（自验当场逮到）。
         _stub(chore_tiles=chore_tiles, crab_ready=crab_ready, ore_pan=ore_pan,
               chore_animals=(animals if animals is not None else []),
-              trash_cans=trash_cans,
+              trash_cans=trash_cans, cola=cola,
               time_dict={"timeOfDay": 900, "season": season, "dayOfMonth": day,
                          "weather": weather})
         M.api.has_item = lambda n: bool(hoe) and ("Hoe" in str(n))
@@ -1645,13 +1647,28 @@ def main():
     res.append(ok("🗑️ `_im_run` 认 `garbage`，走的是现成的 `trash_run()`",
                   isinstance(_rtr, dict) and "trash_run 跑了" in str(_rtr.get("text")), _rtr))
 
-    # ── 🥤 可乐机（恒 2026-10-02：「趣味功能，也可以做进去」）──
-    #    ⚠️ 它**故意不进单子**（恒：「常驻的、对玩家的、不常用的…不推荐」）⇒ 走**进图一次**的状态条提示。
-    _c1 = M._fun_spot_hint("Saloon")
-    res.append(ok("🥤 进酒吧 ⇒ 报一次可乐机（坐标 + 怎么交互都写全，不给 AI 猜）",
-                  "可乐机" in _c1 and "(38,18)" in _c1 and "scene at 38 17" in _c1, _c1))
-    res.append(ok("🥤 同一张图**不重播**", M._fun_spot_hint("Saloon") == ""))
-    res.append(ok("🥤 别的图没有（这功能只认表里那张图）", M._fun_spot_hint("Town") == ""))
+    # ── 🥤 可乐机（恒 2026-10-02：「**不用了，不要加状态条了，上单吧**」）──
+    #    判据**不问地图名**：Action 瓦片里写着 `ColaMachine` 就是有（跟垃圾桶共用同一份 `/scan` 缓存）。
+    _stub(cola=[(37, 17), (38, 17)])
+    res.append(ok("🥤 可乐机从 Action 瓦片里认出来，取**右半台**（真机 Saloon 是 (37,17)+(38,17)）",
+                  M._cola_machine_here("Saloon") == (38, 17), M._cola_machine_here("Saloon")))
+    res.append(ok("🥤 两格机器只打**一次** `/scan`（两个消费点共用一份缓存）",
+                  len([c for c in CALLS if c[1] == "/scan"]) == 1,
+                  [c[1] for c in CALLS if c[1] == "/scan"]))
+    _ch_cola = _chores([_T_BUSH], cola=[(37, 17), (38, 17)])
+    res.append(ok("🥤 `Ctx.chores[\"cola\"]` 带着机器坐标（右半台）",
+                  (_ch_cola.get("cola") or {}).get("x") == 38
+                  and (_ch_cola.get("cola") or {}).get("y") == 17, _ch_cola))
+    res.append(ok("🥤 本图没机器 ⇒ 那笔账不给", "cola" not in _chores([_T_BUSH])))
+    # 执行侧：`_im_run` 认 `cola`，走专用小流程 `_cola_buy()`（不自己打端点）
+    _cb_orig = M._cola_buy
+    M._cola_buy = lambda *a, **k: "🥤（桩：_cola_buy 跑了）"
+    try:
+        _rcb = M._im_run("cola", {})
+    finally:
+        M._cola_buy = _cb_orig
+    res.append(ok("🥤 `_im_run` 认 `cola`，走的是 `_cola_buy()`",
+                  isinstance(_rcb, dict) and "_cola_buy 跑了" in str(_rcb.get("text")), _rcb))
 
     # 单子那 6 行：有账就出现、执行**只调现成 op 且不带参数**
     def _labels2(**kw):
@@ -1680,6 +1697,14 @@ def main():
                   "每天每桶一次" in _Lt_txt, _Lt_txt[:220]))
     _Lt2, _ = _labels2(chore_tiles=[_T_BUSH])
     res.append(ok("🗑️ 本图没桶 ⇒ 单子上**没有**那一行", "翻垃圾桶" not in _Lt2, _Lt2))
+    _Lc, _Lc_txt = _labels2(chore_tiles=[_T_BUSH], cola=[(37, 17), (38, 17)])
+    res.append(ok("🥤 单子上出现「买 Joja 可乐 (75g)」（**花钱的必须把价格写在行上**）",
+                  any("Joja 可乐" in x and "75g" in x for x in _Lc), _Lc))
+    res.append(ok("🥤 理由栏写到坐标 + 价格 + 能干嘛（谢恩最爱）",
+                  "(38,17)" in _Lc_txt and "75g" in _Lc_txt and "谢恩" in _Lc_txt,
+                  [x for x in _Lc_txt.splitlines() if "可乐" in x][:2]))
+    res.append(ok("🥤 没机器 ⇒ 单子上**没有**那一行",
+                  not any("Joja 可乐" in x for x in _labels2(chore_tiles=[_T_BUSH])[0])))
     # 执行：`_im_run` 认这 6 个名字，且**打的是现成 op**（把 op 换成桩看参数）
     _stubs = {}
     for _k, _fn in (("berry", "berry_run"), ("spot", "spot_run"), ("moss", "moss_run"),

@@ -133,15 +133,38 @@ def main():
     #    **不等于"这丛有果子"**——山地实测：7 棵 `bushBloom=True`，摇了 6 棵，
     #    **背包一件都没多**、摇完那几棵 `bushBloom` 还是 true。
     #    ⇒ 只在**浆果窗口**（春15~18 / 秋8~11，判据在 `calendar_data`，跟显示侧共用）里才摇。
+    #    🌰 例外（恒 2026-10-02 拍板）：「**姜岛地图摇晃树丛可以一直放行，直到当前图的金核桃
+    #       都被摇掉了**」——姜岛的"核桃丛"也是 `Bush`（`size==4`），**同一个 `tileSheetOffset` 字段**。
+    #       ⚠️ 判据**不靠地图名**（那又是一张会烂的名单），直接问游戏：`/nuts` 里还有没有
+    #       `kind=="bush"` 且没拿走的 ⇒ 有就一直放行，摇到没有为止（摇完 offset 变 0、重扫自然没了）。
     try:
-        _t = requests.get(f"{base}/state", timeout=10).json().get("time", {}) or {}
+        _st = requests.get(f"{base}/state", timeout=10).json()
+        _t = _st.get("time") or {}
     except Exception:
         _t = {}
-    if not calendar_data.in_berry_season(_t.get("season"), _t.get("dayOfMonth")):
+    _in_season = calendar_data.in_berry_season(_t.get("season"), _t.get("dayOfMonth"))
+
+    def bush_nuts_left():
+        """本图**还挂在树丛上**的金核桃：`/nuts` 里 `kind=="bush"` 且 `taken` 为假。读不到返回 None。"""
+        try:
+            nn = requests.get(f"{base}/nuts", timeout=10).json() or {}
+        except Exception:
+            return None
+        return [n for n in (nn.get("nuts") or [])
+                if n.get("kind") == "bush" and not n.get("taken")]
+
+    _nuts0 = bush_nuts_left()
+    _walnut_mode = bool(_nuts0)
+
+    if not _in_season and not _walnut_mode:
         log(f"🌿 {loc} 有 {len(all_bushes)} 丛灌木贴图是「有货」那帧，但**今天不在浆果季**"
-            f"（树莓=春15~18 / 黑莓=秋8~11，今天 {_t.get('season')} {_t.get('dayOfMonth')} 日）"
-            f"——**不是浆果，不摇**。那些多半是茶树丛/核桃丛之类（同一帧）。")
+            f"（树莓=春15~18 / 黑莓=秋8~11，今天 {_t.get('season')} {_t.get('dayOfMonth')} 日）、"
+            f"本图也没有挂着的金核桃 —— **不摇**。那些多半是茶树丛之类（同一帧）。")
         return
+
+    if _walnut_mode:
+        log(f"🌰 {loc} 有 {len(_nuts0)} 个**挂着的金核桃丛**{'(顺带也在浆果季)' if _in_season else ''}"
+            f" —— 姜岛的树丛一直放行，摇到本图摇干净为止。")
 
     log(f"🍓 {loc} 找到 {len(all_bushes)} 棵结果灌木: {all_bushes}")
 
@@ -195,12 +218,26 @@ def main():
     if _gain:
         log(f"✅ 摇了 {total} 棵结果灌木，**背包 +{sum(_gain.values())}**："
             + "、".join(f"{k}×{v}" for k, v in _gain.items()))
-    elif _before is not None and _after is not None:
+    elif _in_season and _before is not None and _after is not None:
         log(f"⚠️ 摇了 {total} 棵，可**背包一件都没多** —— 这些灌木现在并没有可摘的果子"
             f"（`bushBloom` 只是「贴图那一帧」，不等于有货）。别重复摇，白走路。")
-    else:
+    elif _before is None or _after is None:
         log(f"⚠️ 摇了 {total} 棵，但**没能回读背包**（读不到 /state）—— 到底摇到没有我不知道，"
             f"自己看一眼背包")
+
+    # 🌰 **金核桃不进背包**（它是存档计数）⇒ 背包 diff 说不了它的话，得单独回读 `/nuts`。
+    #    恒 2026-10-02：「姜岛地图摇晃树丛可以一直放行，**直到当前图的金核桃都被摇掉了**」
+    #    ⇒ 回执就得回答"摇掉几个 / 本图还剩几个"。
+    if _walnut_mode:
+        _nuts1 = bush_nuts_left()
+        if _nuts1 is None:
+            log("⚠️ 核桃那边**没能回读** `/nuts` —— 本图还剩几个我不知道，自己看一眼")
+        elif len(_nuts1) < len(_nuts0):
+            log(f"🌰 摇掉 {len(_nuts0) - len(_nuts1)} 个核桃丛，本图**还剩 {len(_nuts1)} 个**没拿"
+                + ("（本图摇干净了）" if not _nuts1 else " —— 再调一次 `scene ops=berry` 接着摇"))
+        else:
+            log(f"⚠️ 核桃丛**一个都没摇掉**（本图还剩 {len(_nuts1)} 个）—— 多半是走不到 / 没对准，"
+                f"自己看一眼再决定")
 
 
 if __name__ == "__main__":

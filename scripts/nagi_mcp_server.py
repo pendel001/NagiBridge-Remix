@@ -2629,15 +2629,12 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
     except Exception:
         pass
 
-    # ── 🥤 本图趣味交互点（恒 2026-10-02：可乐机；**进图报一次**，不占单子位）──
-    try:
-        _fs = _fun_spot_hint(loc_name)
-        if _fs:
-            lines.append(_fs)
-    except Exception:
-        pass
+    # ── 🥤 本图趣味交互点（2026-10-02 恒：「不用了，不要加状态条了，上单吧」）──
+    #    可乐机改走单子（`intent_menu.COLA_V`）⇒ 这里**一个字都不印**（同一个东西别两头说）。
 
     # ── 🗑️/🌾/🎒 三条顺手提示（恒 2026-09-25；都每天只提一次，详见各自函数） ──
+    #    ⚠️ 2026-10-02：`_trash_hint` **已退休**（恒要求"撤掉提示语、做成单子选项"）⇒ 恒返回 ""。
+    #       调用点留着（恒等空串），不是漏改 —— 见那个函数的墓碑注释。
     #    日期键从**手上的 data** 算（不为了几行提示再打一次 /state）。
     _dk = _day_key_safe(data)
     try:
@@ -3108,27 +3105,11 @@ def _mastery_cave_hint(loc_name: str = "") -> str:
     return line
 
 
-# 🥤 趣味交互点（恒 2026-10-02：「我想让你看酒吧是，有个**可乐机**在这里，趣味功能，也可以做进去」）
-#    表：地图名 → 一行提示。**故意不进单子** —— 恒的判据是「常驻的、对玩家的、不常用的，
-#    要么被挤到底下看不到、要么占一个单子位置，不推荐」⇒ 走**进图报一次**的状态条提示：
-#    零单子成本，而且正好落在"刚进屋、注意力还空着"的那一刻。
-#    加新点＝加一行（坐标 + 怎么交互都写在提示里，别让 AI 去猜）。
-_FUN_SPOTS = {
-    "Saloon": "🥤 可乐机 (37,17)：站 (38,18) 面北 `scene at 38 17` → 选「是」花 75g 买 Joja 可乐"
-              "（谢恩最爱 / 雷欧喜欢）",
-}
-_FUN_SPOT_SEEN = {"loc": None}
-
-
-def _fun_spot_hint(loc_name: str = "") -> str:
-    """🎲 本图的趣味交互点 —— **进图报一次**（同 `_scene_kit_hint` 那套缓存键；不占单子位）。"""
-    if _OPS_INNER["n"] > 0 or not loc_name or _FUN_SPOT_SEEN["loc"] == loc_name:
-        return ""
-    line = _FUN_SPOTS.get(loc_name) or ""
-    if line:
-        _FUN_SPOT_SEEN["loc"] = loc_name
-    return line
-
+# 🥤 趣味交互点（2026-10-02 恒：「**不用了，不要加状态条了，上单吧**」）
+#    ⚠️ 原来这里是「进图报一次」的状态条提示（`_FUN_SPOTS` / `_fun_spot_hint`）——恒当天看过就否了：
+#    可乐机**上单子**（`intent_menu.COLA_V`），理由是他给的「酒吧的交互项本来也不多」。
+#    📌 通式：同一个东西**别两头都有**（状态条提示 + 单子行）——两处一漂，AI 就得分清哪句还算数。
+#    以后再加趣味点：先问一句"这是不是单子上该有一行"，是就别在状态条上重说一遍。
 
 def _shipbin_hint(loc_name: str = "") -> str:
     """📦 本图的迷你出货箱 —— **切图才扫一次**（同 `_forage_summary` 那套节流，别每调都刷 /surroundings）。
@@ -3315,17 +3296,54 @@ def _scene_kit_hint(loc_name: str = "") -> str:
 #   而这三件事**都是它已经在做的动作的更好做法**，不是额外任务。
 # ═══════════════════════════════════════════
 
-_TRASH_HINT_KEY = {"day": None, "shown": False}   # 🗑️ 垃圾桶提示：每天只提一次
-_TRASH_CANS = {"key": None, "cans": []}           # 本图桶坐标缓存（/scan 一次，切图才重扫）
+_TRASH_HINT_KEY = {"day": None, "shown": False}   # 🗑️ 垃圾桶提示：每天只提一次（**已退休**，见 _trash_hint）
+_TRASH_CANS = {"key": None, "cans": []}           # ⚠️ 旧缓存，已被 `_SCAN_ACTIONS` 取代（留着防旧引用）
+_SCAN_ACTIONS = {"key": None, "actions": []}      # 本图 Action 瓦片（/scan 一次，切图才重扫）
+
+
+def _scan_actions_here(loc_name: str):
+    """本图 **Action 瓦片**清单（`/scan`）—— 按图名缓存一次，多个消费点共用。
+
+    ⚠️ 判据只此一处：`Garbage`（垃圾桶）和 `ColaMachine`（可乐机）**都不是 `loc.objects`**，
+       `/surroundings`、`/dump_tile` 都看不见它们，只能扫 Action 瓦片。
+       ⇒ **一次扫描喂两个消费点**（各扫一次 = 同一张图打两发，没必要）。
+    ⚠️ 读不到（老 DLL 没这端点 / 网络抖）⇒ **这次返回空，但绝不写缓存** ——
+       写进去就成了"这张图永远没有桶 / 没有可乐机"，一次抖动会静默关掉一整张图的功能。
+    """
+    if _SCAN_ACTIONS["key"] == loc_name:
+        return _SCAN_ACTIONS["actions"]
+    actions = []
+    try:
+        d = api._get("/scan") or {}
+        if not d.get("ok", True):
+            return []
+        actions = list(d.get("actions") or [])
+    except Exception:
+        return []
+    _SCAN_ACTIONS["key"] = loc_name
+    _SCAN_ACTIONS["actions"] = actions
+    return actions
 
 
 def _trash_cans_here(loc_name: str):
-    """本图垃圾桶坐标 —— `/scan`（枚举全图 Action 瓦片）扫一次，同图复用。
+    """本图垃圾桶坐标 —— 从 `_scan_actions_here()` 里认 `Garbage <id>`（判据只那一处）。"""
+    return [(int(a.get("x")), int(a.get("y"))) for a in _scan_actions_here(loc_name)
+            if str(a.get("action") or "").upper().startswith("GARBAGE")]
 
-    ⚠️ 垃圾桶**不是 `loc.objects`**，是地图瓦片 `Action="Garbage <id>"` ——
-       `/surroundings`、`/dump_tile` 都看不见它，只能扫 Action（`trash_run.auto_cans` 同款判据）。
-    ⚠️ `/scan` 只扫**当前图**，所以缓存键就是图名；换图/换天都会重扫。
+
+def _cola_machine_here(loc_name: str):
+    """🥤 本图可乐机的瓦片 `(x, y)`（**右半台**；没有就 `None`）。
+
+    ⚠️ **不问地图名**（那又是一张会烂的名单）：Action 瓦片里写着 `ColaMachine` 就是有。
+       真机 Saloon 是 (37,17)+(38,17) 两格 ⇒ 取右半台，交互站它正下方 (38,18) 面北。
     """
+    tiles = [(int(a.get("x")), int(a.get("y"))) for a in _scan_actions_here(loc_name)
+             if str(a.get("action") or "").upper().startswith("COLA")]
+    return max(tiles) if tiles else None
+
+
+def _trash_cans_here_old(loc_name: str):
+    """（旧实现，留着给后人看当初为什么这么写）"""
     if _TRASH_CANS["key"] == loc_name:
         return _TRASH_CANS["cans"]
     cans = []
@@ -3346,11 +3364,24 @@ def _trash_cans_here(loc_name: str):
 
 
 def _trash_hint(loc_name: str, px, py, radius: int = 5, daykey=None) -> str:
-    """🗑️ 身边就杵着个垃圾桶时提一句 —— 每天只提一次。
+    """🗑️ ~~身边就杵着个垃圾桶时提一句~~ —— **2026-10-02 恒要求撤掉**。
+
+    原话：「**翻垃圾桶上单，把原来进镇没翻过垃圾的提示语「看看垃圾桶有什么好东西」撤掉
+    做成选项包办执行**」⇒ 它已经变成单子上的一行（`intent_menu.TRASH_V`）：
+    **同一个东西别两头都有**（状态条喊一句 + 单子上一行 = 两处一漂，AI 就得分清哪句还算数）。
+    ⇒ 函数**留着但恒返回空串**（不删函数的理由：调用点/历史注释都指着这个名字，
+      直接删会让下一个人以为"这里本来就没做过"；留个墓碑比删干净更容易看懂）。
+    """
+    return ""
+
+
+def _trash_hint_old(loc_name: str, px, py, radius: int = 5, daykey=None) -> str:
+    """（已停用的旧实现，留着给后人看当初为什么做/为什么撤）
 
     恒 2026-09-25：「AI 看起来并不知道有垃圾桶工具。每日第一次在垃圾桶周围大概半径五格时
     或许可以塞提醒」。他说得对：`scene garbage`（翻垃圾桶）**早就实现了、域指引里也写着**，
     但 AI 的注意力全在"去哪儿钓鱼/种地"，**路过一整年也不会想到翻一次**。
+    ⚠️ 2026-10-02 它被**升级成单子行**（更强的形态：`can()` 说话 + 敲了就执行），所以退休。
     """
     if _OPS_INNER["n"] > 0:            # 内层闭嘴（同 _sit_hint/_forage_summary 那条规矩）
         return ""
@@ -8665,6 +8696,83 @@ def moss_run(radius: int = 25, target_max: int = 80, rounds: int = 5, dry_run: b
     #    这是 `spot_run` 早修过的同款洞（「留头也留尾」）—— 这里照做。
     txt = out if len(out) <= 1200 else out[:500] + "\n…（中间略）…\n" + out[-700:]
     return _with_state(f"🌿 苔藓搜刮报告：\n{txt}")
+
+
+def _cola_buy() -> str:
+    """🥤 走到可乐机买一瓶 Joja 可乐（单子那行「买 Joja 可乐 (75g)」的执行侧）。
+
+    恒 2026-10-02：「不用了，不要加状态条了，**上单吧**」（酒吧的交互项本来也不多）。
+
+    流程**全用现成原语**（不新开端点）：走到**右半台正下方** → 面北 → `/interact` 点机器 →
+    等「是/否」问句框 → `_im_menu_option(0, real=True)`（问句框**必须真实点击**，见那个函数）
+    → **回读**：钱少了 75 且背包多了 Joja Cola 才叫成（"点了"不等于"买了"）。
+    """
+    try:
+        st = api.state(light=True)
+        loc = ((st.get("location") or {}).get("name")) or ""
+        m = _cola_machine_here(loc)
+        if not m:
+            return "🥤 这图没有可乐机（Action 瓦片里没写着 `ColaMachine`）—— 白跑一趟，别按"
+        mx, my = m
+        sx, sy = mx, my + 1                      # 真机：机器 (37,17)+(38,17)，站 (38,18) 面北
+        money0 = ((st.get("player") or {}).get("money"))
+
+        def _cola_n():
+            try:
+                inv = (api.state(light=True).get("inventory") or [])
+            except Exception:
+                return None
+            return sum(int(i.get("stack") or 0) for i in inv if i.get("name") == "Joja Cola")
+
+        cola0 = _cola_n()
+        try:
+            api._post("/walk_to", {"location": loc, "x": sx, "y": sy})
+            _wait_arrival(loc, sx, sy, timeout=8)
+            api._post("/face", {"direction": 0})
+            time.sleep(0.3)
+        except Exception:
+            pass
+        try:
+            api._post("/interact", {"x": mx, "y": my})
+        except Exception as e:
+            return f"❌ 点可乐机失败：{type(e).__name__}: {e}"
+        # 等问句框（最多 ~3s；机器弹的是 `createQuestionDialogue`，带 responses）
+        q = None
+        for _ in range(12):
+            time.sleep(0.25)
+            try:
+                q = (api.state(light=True).get("activeMenu") or {})
+            except Exception:
+                q = {}
+            if q.get("type") == "DialogueBox" and q.get("responses"):
+                break
+            q = None
+        if not q:
+            return (f"⚠️ 点了可乐机 ({mx},{my}) 但**没弹出「是/否」问句框** —— 没买成。"
+                    f"看一眼是不是没走到/没对准（要站 ({sx},{sy}) 面北）")
+        # ⚠️⚠️ 2026-10-02 真机（买可乐）：这一发失败过两次，**真凶是"框一出现就点"**
+        #    ——`DialogueBox.receiveLeftClick` 开头 `if (safetyTimer > 0) return`
+        #    （我一度怀疑是 `real`：带 real 那次也没成。后来把等待补进 `_im_menu_option`，
+        #      再手点同一屏就一次成 ⇒ **real 是无辜的**，别再为这档改 `_question_needs_real`）。
+        #    ⇒ real 照判据给（跟单子那条「选」走同一个值，别两处各判一次）。
+        _needs_real = _question_needs_real(q)
+        _r = _im_menu_option(0, _needs_real)     # 0 = 「是」（花 75g）
+        money1 = None
+        try:
+            money1 = (((api.state(light=True).get("player")) or {}).get("money"))
+        except Exception:
+            pass
+        cola1 = _cola_n()
+        _paid = (isinstance(money0, int) and isinstance(money1, int) and money1 < money0)
+        _got = (cola0 is not None and cola1 is not None and cola1 > cola0)
+        if _got or _paid:
+            return (f"🥤 买到了：钱 {money0}→{money1}"
+                    + (f"（-{money0 - money1}）" if _paid else "")
+                    + f"、背包的 Joja Cola {cola0}→{cola1}。{_r}")
+        return (f"⚠️ 选了「是」，但**钱没少、包里也没多**（钱 {money0}→{money1}、"
+                f"可乐 {cola0}→{cola1}）—— 到底买没买我不知道。{_r}")
+    except Exception as e:
+        return f"❌ 买可乐出错：{type(e).__name__}: {e}"
 
 
 def trash_run(loc: str = "", pos: str = "", wait: float = 1.0, dry_run: bool = False) -> str:
@@ -16596,7 +16704,10 @@ _INTENT_INDEX = [
     ("金核桃,核桃,姜岛核桃", "scene", "walnut",
      "只在姜岛；**默认只拿脚边最近那一个**，想清图给 max_count；弹弓那只拿不了"),
     ("翻垃圾桶,垃圾桶,翻桶,垃圾箱", "scene", "garbage",
-     "每天每桶一次，能翻出好东西；站到桶旁边再翻（状态条看到桶会提醒你）"),
+     # ⚠️ 2026-10-02：那半句「状态条看到桶会提醒你」**作废了** —— 恒当天要求
+     #    「**把原来进镇没翻过垃圾的提示语撤掉，做成选项包办执行**」⇒ 现在单子上就有
+     #    「翻垃圾桶」那一行（`intent_menu.TRASH_V`），状态条那条"旁边就是个垃圾桶"已删。
+     "每天每桶一次，能翻出好东西；**站到桶旁边再翻**（单子上有「翻垃圾桶」那一行，按它就行）"),
     ("丢东西,扔掉,不要了", "scene", "drop", "一种 name+count / 多种 items='A,B'"),
     ("点这个格子,点柜台,点某格", "scene", "at",
      "**参数是 tile_x/tile_y，不是 x/y**（写成 x/y 会被静默丢掉）"),
@@ -22353,6 +22464,11 @@ def _im_chores(state: dict, surr: dict, animals: dict) -> dict:
         _cans = _trash_cans_here(_loc or "")
         if _cans:
             out["garbage"] = len(_cans)
+        # 🥤 可乐机（恒 2026-10-02：「不用了，不要加状态条了，**上单吧**」）
+        #    判据**不问地图名**（Action 瓦片里写着 `ColaMachine` 就是有）；跟垃圾桶共用一次 `/scan`。
+        _cola = _cola_machine_here(_loc or "")
+        if _cola:
+            out["cola"] = {"x": _cola[0], "y": _cola[1]}
     except Exception:
         pass
     # ── 🪙 淘金：水下闪光点（`/state.player.orePan`）──
@@ -23043,6 +23159,9 @@ def _im_run(op, args):
         # 🗑️ 翻垃圾桶（单子那行「翻垃圾桶」；恒 2026-10-02「捡垃圾可以上」）：
         #    调现成的 `trash_run()`（它自己逐桶走位 + 交互 + 报掉落），这一层不另写一套。
         "garbage": lambda: trash_run(),
+        # 🥤 买可乐（单子那行；恒 2026-10-02「不要状态条了，上单吧」）：
+        #    走专用小流程 `_cola_buy()`（机器 → 问句框 → 选「是」→ 回读钱和背包）。
+        "cola": lambda: _cola_buy(),
         "milk": lambda: milk_shear(),
         # 🌾 铺 干草（2026-10-01 恒：「支持上单子」）：调现成的 `feed_hay()`（筒仓→背包→逐格走过去铺）。
         #    ⚠️ 它也是**同步长活**（逐格走位铺），跟 `milk` 同一条账。
@@ -23141,6 +23260,17 @@ def _im_menu_option(option, real=None):
         except Exception:
             return None, ""
     before, _txt0 = _snap()
+    # ⚠️⚠️ 2026-10-02 真机（买可乐那次）：**刚弹出的问句框不能立刻点** ——
+    #    `DialogueBox.receiveLeftClick` 开头就是 `if (safetyTimer > 0) return`，
+    #    而 `safetyTimer` 只在 `update()` 里递减（184 那条注释里写着，我却还是在"框一出现就点"上栽了）。
+    #    现象极像"点空了"：C# 回 `ok:true`、**这一屏一个字没变**（钱没扣、包没多）。
+    #    ⇒ 点之前**先等过安全计时器**（0.6s；跟"选项转场"那半秒是两回事）。
+    try:
+        _am0 = ((api._ai_get("/state") or {}).get("activeMenu") or {})
+        if _am0.get("type") == "DialogueBox":
+            time.sleep(0.6)
+    except Exception:
+        pass
     try:
         r = api._ai_post("/menu/click", body) or {}
     except Exception as e:

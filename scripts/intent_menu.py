@@ -2847,7 +2847,27 @@ TRASH_V = Verb("garbage", "翻垃圾桶", 56,
                exec=lambda c, t, run: _exec_chore(c, t, run, "garbage", "翻垃圾桶"))
 
 
-# 8) 🌾 铺 干草（`farm ops="hay"` → `feed_hay()`；恒 2026-10-01：「**支持上单子**」）
+# 8) 🥤 买 Joja 可乐（`_im_run("cola")`；恒 2026-10-02 当天两改：先要"状态条提示"，看过就说
+#    「**不用了，不要加状态条了，上单吧**」+「酒吧的交互项本来也不多」）
+#    权重 54：**花钱的趣味项**（75g/瓶，效果=一瓶可乐）⇒ 排在"顺手活"那批的下面。
+#    账 = `Ctx.chores["cola"]`（服务器从 Action 瓦片 `ColaMachine` 认出来的**右半台**坐标，
+#    判据只那一处、不问地图名）—— 理由栏把**价格**和**能得到什么**都写出来（花钱的必须先说价）。
+def _cola_can(c, t):
+    return CAN_YES if (c.chores or {}).get("cola") else CAN_NO
+
+
+COLA_V = Verb("cola", "买 Joja 可乐 (75g)", 54,
+              _cola_can,
+              lambda c, t: (f"可乐机在 ({(c.chores.get('cola') or {}).get('x')},"
+                            f"{(c.chores.get('cola') or {}).get('y')}) · 花 **75g** 买一瓶 Joja 可乐"
+                            f"（谢恩最爱 / 雷欧喜欢）· 敲了自己走过去买，不用给坐标"),
+              # ⚠️ 屏上那行取的是 `show`（不是 `label`）——**花钱的行要把价格顶在行上**，
+              #    别让 AI 敲了才知道 75g（理由栏里再说一遍坐标/效果）。
+              lambda c, t: "买 Joja 可乐 (75g)", "world",
+              exec=lambda c, t, run: _exec_chore(c, t, run, "cola", "买可乐"))
+
+
+# 9) 🌾 铺 干草（`farm ops="hay"` → `feed_hay()`；恒 2026-10-01：「**支持上单子**」）
 #    can：**人此刻在动物建筑内**（服务器只在 `FARM_ANIMAL_BUILDINGS` 里推这笔账）+
 #         **筒仓有干草** + **喂食台没满**。权重 68：**它不喂也饿不着**（动物在外面吃草）
 #         ⇒ 别去抢"每天一次"那几档（蟹笼 72 / 放牧 84 / 收作物 88…）的位。
@@ -3030,6 +3050,9 @@ VERBS: list = [
     # 🗑️ 2026-10-02 恒「捡垃圾可以上」：**翻垃圾桶**（账 = `Ctx.chores["garbage"]`，
     #    判据是服务器那侧的 `_trash_cans_here()`，跟状态条那条提示共用一份）。
     TRASH_V,
+    # 🥤 2026-10-02 恒「**上单吧**」：买 Joja 可乐（账 = `Ctx.chores["cola"]`，判据在服务器
+    #    那侧的 `_cola_machine_here()`；坐标＋价格全在理由栏里）。
+    COLA_V,
     # 🌾 2026-10-01 恒「支持上单子」：**铺 干草**（只在动物建筑内、筒仓有草、槽没满时出现）。
     HAY_V,
 ]
