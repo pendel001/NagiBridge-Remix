@@ -3707,6 +3707,22 @@ def _moss_visible(c: dict, is_green_rain: bool) -> bool:
                 + int(c.get("moss_big") or 0) + int(c.get("moss_small") or 0))
 
 
+def _bush_nuts_here() -> bool:
+    """🌰 本图**还挂着**金核桃丛吗（`/nuts` 里 `kind=="bush"` 且没拿走）。
+
+    ⚠️ 恒 2026-10-02：「姜岛地图摇晃树丛可以一直放行，**直到当前图的金核桃都被摇掉了**」
+       ⇒ 这就是那条例外：非浆果季也可能"有东西可摇"，而且**摇完这行自然消失**
+       （判据本身就是"还有没有没拿的核桃丛"）。
+    ⚠️ 只在"本图真有 `bushBloom` 灌木、又不是浆果季"时才该问它 —— 别每张图都打一发 `/nuts`。
+    """
+    try:
+        nn = api._ai_get("/nuts") or {}
+    except Exception:
+        return False
+    return any((n.get("kind") == "bush") and not n.get("taken")
+               for n in (nn.get("nuts") or []))
+
+
 def _forage_counts(tiles: list, has_hoe: bool, berry_season: bool) -> dict:
     """把 `/surroundings` 的 tiles 分成"能采/能挖的几类" → 计数字典（**分类只此一处**）。
 
@@ -3721,7 +3737,7 @@ def _forage_counts(tiles: list, has_hoe: bool, berry_season: bool) -> dict:
     ⚠️ **苔藓那几类一律照数**（不再由 `show_moss` 在这里挡）—— 因为"今天该不该报苔藓"现在
        取决于**扫没扫到苔藓**，而那要数完才知道 ⇒ 计数在这儿、**显不显示由调用方按 `_moss_visible()` 定**。
     """
-    c = {"bush": 0, "spot": 0, "ginger": 0, "onion": 0, "truffle": 0,
+    c = {"bush": 0, "bush_bloom": 0, "spot": 0, "ginger": 0, "onion": 0, "truffle": 0,
          "moss_tree": 0, "greenrain_tree": 0, "moss_big": 0, "moss_small": 0,
          "forage": {}, "dig_tiles": []}
     moss_big_tiles = set()
@@ -3730,8 +3746,12 @@ def _forage_counts(tiles: list, has_hoe: bool, berry_season: bool) -> dict:
         if t.get("terrain") == "Bush":
             # 🍓 只有**浆果季**才把 `bushBloom` 当"有莓果"（`bushBloom` = 游戏那个
             #    `Bush.tileSheetOffset==1`，茶树丛/核桃丛的"有货"也是这一帧 —— 见 `_BERRY_WINDOWS`）
-            if t.get("bushBloom") and berry_season:
-                c["bush"] += 1
+            if t.get("bushBloom"):
+                # ⚠️ `bush_bloom` = **原始**帧数（不过季）——留一份给调用方判"姜岛核桃丛"那种例外
+                #    （恒 2026-10-02：姜岛摇到本图核桃没了为止；判据要 `/nuts`，得先知道有没有这种丛）。
+                c["bush_bloom"] += 1
+                if berry_season:
+                    c["bush"] += 1
             continue
         if has_hoe and t.get("forageCrop") == "2":
             c["ginger"] += 1
@@ -3822,6 +3842,9 @@ def _forage_summary(is_green_rain: bool = None, time_dict: dict = None) -> str:
         #    这里只拿结果回来排版，别再往回写一遍分类。
         _c = _forage_counts(r.get("tiles", []), api.has_item("Hoe"),
                             _in_berry_season(time_dict))
+        # 🌰 姜岛那条例外（恒 2026-10-02：一直放行到本图核桃摇完）——同 `_im_chores` 那处。
+        if _c.get("bush_bloom") and not _c.get("bush") and _bush_nuts_here():
+            _c["bush"] = int(_c["bush_bloom"])
         show_moss = _moss_visible(_c, bool(is_green_rain))
         berry_bushes = _c["bush"]
         spot_count = _c["spot"]
@@ -22424,6 +22447,9 @@ def _im_chores(state: dict, surr: dict, animals: dict) -> dict:
         _c = _forage_counts((surr or {}).get("tiles") or [], _hoe, _in_berry_season(_td))
     except Exception:
         _c = {}
+    # 🌰 非浆果季、但本图真有"贴图有货"的灌木 ⇒ 问一句是不是姜岛核桃丛（有就一直放行/报这行）
+    if _c.get("bush_bloom") and not _c.get("bush") and _bush_nuts_here():
+        _c["bush"] = int(_c["bush_bloom"])
     if _c.get("bush"):
         out["berry"] = int(_c["bush"])
     # 🪱 斑点那笔账**只算身边**（切比雪夫 ≤ `_SPOT_RADIUS`）——恒：「不需要特定跑大老远锄」。
