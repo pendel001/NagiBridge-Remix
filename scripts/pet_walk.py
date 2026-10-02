@@ -56,6 +56,37 @@ def post(ep, data=None):
     return requests.post(f"{NAGI}{ep}", json=data or {}, timeout=10).json()
 
 
+_SLEEP_MARKS = ("睡觉", "睡着", "sleep")
+
+
+def sleep_dialogue():
+    """🐄😴 现在这个对话框是不是「动物想睡觉」那种 → 返回游戏的原话；不是 / 没开着 → `""`。
+
+    ⚠️ 判据**问游戏**（`/menu` 的对白原话），不靠钟点猜 —— `main()` 里那条 18:00 闸只是**先拦一道**，
+       真正说了算的是游戏这句话：它弹了，这只（今天）就是摸不了。
+    """
+    try:
+        m = get("/menu") or {}
+        if not m.get("open"):
+            return ""
+        d = (m.get("dialogue") or "").strip()
+        if d and any(k in d for k in _SLEEP_MARKS):
+            return d
+    except Exception:
+        pass
+    return ""
+
+
+def close_dialogue():
+    """收掉当前对话框 —— `/menu_close`（⚠️ **别用 `key confirm`**：它可能顺带触发一次世界交互）。"""
+    try:
+        post("/menu_close")
+        time.sleep(0.3)
+        return True
+    except Exception:
+        return False
+
+
 def current_location():
     s = get("/state")
     return s.get("location", {}).get("name", "")
@@ -240,6 +271,14 @@ def main():
 
     if args.dry_run:
         return
+    # 😴 2026-10-02 真机（恒：「太晚了，动物都想要睡觉，挤奶抚摸都不行」）：
+    #    到点就**别摸了** —— 原来这里只打一句警告**照样往下跑**，于是 12 只 × 3 轮全"没摸到"，
+    #    还留下一只「…想要睡觉」的对话框把后面的操作全堵住（当晚就是这么卡的：人在棚里走不动了）。
+    #    ⚠️ 这是**先拦一道**；真正说了算的是游戏那句话（见 `sleep_dialogue()`，循环里也拦）。
+    if tod >= 1800:
+        log("😴 不摸了：这个点动物都睡了，摸了也白摸、还会弹「想睡觉」对话框挡住后面的操作"
+            " —— 明天早上 6~17 点再来（一早摸最好）")
+        return
     if not animals:
         log("🐾 都摸过了！")
         return
@@ -249,6 +288,7 @@ def main():
     #    （动物一直在动，一次性排好的顺序会立刻过期），再挑离自己最近的那只。
     petted = 0
     failed = []
+    stopped = ""
     total = len(animals)
     pending = [name for name, typ, x, y in animals]
 
@@ -274,6 +314,10 @@ def main():
         else:
             failed.append(name)
             log(f"  ❌ {name} 没摸到")
+            stopped = sleep_dialogue()
+            if stopped:
+                # 🐄😴 游戏自己弹了「想睡觉」⇒ 立刻收掉对话框 + 整趟收工（别在那儿耗 3 轮）
+                break
         time.sleep(0.2)
 
     # 🔁 2026-08-26 恒：补漏轮。动物（尤其室外的牛）一直在走，主循环常撞上
@@ -281,7 +325,7 @@ def main():
     #    赶上连续移动就废了。实测失败的牛单独重试一次就摸到（wasPetToday 立刻 True）。
     #    所以对没摸到的再跑最多 2 轮，每轮重读位置——只针对失败项，很便宜。
     for rnd in range(1, 3):
-        if not failed:
+        if not failed or stopped:
             break
         retry, failed = failed, []
         log(f"🔁 补漏第{rnd}轮：{len(retry)} 只")
@@ -295,9 +339,16 @@ def main():
                 log(f"  🐾 补摸了 {name}")
             else:
                 failed.append(name)
+                stopped = sleep_dialogue()
+                if stopped:
+                    break
             time.sleep(0.2)
 
-    log(f"\n✅ 摸完：{petted}/{total} 只")
+    if stopped:
+        close_dialogue()
+        log(f"😴 提前收工：游戏说「{stopped}」—— 动物睡了，今天摸不了；"
+            f"没摸到的还有 {len(failed)} 只，明天早上 6~17 点再来（对话框已收掉）")
+    log(f"\n{'⛔ 收工' if stopped else '✅ 摸完'}：{petted}/{total} 只")
     if failed:
         log(f"  没摸到: {', '.join(failed)}")
 

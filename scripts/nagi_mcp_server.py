@@ -6937,6 +6937,11 @@ def _walk_to_animal(ax: int, ay: int, tries: int = 2, timeout: int = 12) -> tupl
     return False, f"⚠️ 没站到正旁边（停在 ({px},{py}){_why}），就地交互了{_tail}"
 
 
+# 🐄😴 动物睡了那句对白的认法（**判据只有这一处**）：真机 2026-10-02「莹莹想要睡觉」。
+#    ⚠️ 它必须**在"没挤到"那边**：这句既没有"不产"也没有"没有" ⇒ 老代码把它算成 ✅（假成功）。
+_SLEEP_MARKS = ("睡觉", "睡着")
+
+
 def _milk_empty_note() -> str:
     """🐮🐑 挤奶/剪毛**一只都没成**时，点名最可能的原因 —— 恒 2026-10-02：「报错排除自动采集器后
     基本就是这个原因」（**背包满了**：产物进不了包，游戏只会弹「没有奶/没毛」那类话）。
@@ -6991,6 +6996,9 @@ def _milk_shear_animals(skip_grabber: bool = False) -> str:
         except Exception:
             pass
 
+        # 😴 牛/羊是两趟：任何一趟撞上"动物睡了"就记在这里，第二趟别再白跑（见 `_do` 的 sleep_msg）
+        _stop = []
+
         def _do(tool, animals, emoji, verb):
             cn, eng = tool   # (中文名给 /select, 英文名给 currentTool 确认)
             if not _has_tool(cn):
@@ -7000,6 +7008,7 @@ def _milk_shear_animals(skip_grabber: bool = False) -> str:
             #    ⇒ **把"几只"这个数吹大了**（8 只牛报成 15，分母比分子还小 = 一眼假）。
             #    ⇒ 兜底单独攒一份，挂在计数后面（**不占分子**）：`… 8/8 只（…） · 走位兜底：…`
             notes = []
+            sleep_msg = ""
             for a in animals:
                 try:
                     # ⚠️ 恒 2026-08-16：每轮重新取动物当前位置（动物会走，初始位置过期 → /use 落空）
@@ -7078,6 +7087,14 @@ def _milk_shear_animals(skip_grabber: bool = False) -> str:
                         # ⚠️ 关弹窗用 /menu_close（可靠）——key confirm 可能关掉后又触发世界交互
                         api._post("/menu_close")
                         time.sleep(0.3)
+                        # 😴 2026-10-02 真机（恒：「**太晚了，动物都想要睡觉，挤奶抚摸都不行**」）：
+                        #    这句对白**不是成功** —— 原来它既没"不产"也没"没有" ⇒ 落进 ✅ 那支，
+                        #    于是「挤奶 1/1 只（莹莹✅想要睡觉）」把"没挤到"报成了"挤到了"（假成功）。
+                        #    ⇒ 认它是**收工信号**：不占分子、点名原因、整趟别再来（牛/羊一视同仁）。
+                        if any(k in msg for k in _SLEEP_MARKS):
+                            notes.append(f"{a.get('name', '?')}[😴 {msg[:12]}]")
+                            sleep_msg = msg
+                            break
                         tag = "✅" if ("不产" not in msg and "没有" not in msg and "没毛" not in msg) else "⭕"
                         got.append(f"{a.get('name','?')}{tag}{msg[:10]}")
                     elif r.get("ok") and (not _inplace or _after > _before):
@@ -7090,9 +7107,14 @@ def _milk_shear_animals(skip_grabber: bool = False) -> str:
                     continue
             out = (f"{emoji} {verb} {len(got)}/{len(animals)} 只"
                    f"（{'、'.join(got) if got else '无'}）")
+            # 😴 动物睡了（游戏自己说的）⇒ 说清原因 + 下一步，**别再试第二类**（牛试完别接着试羊）
+            if sleep_msg:
+                out += (f" · 😴 动物睡了（游戏说「{sleep_msg}」）—— 这个点挤/剪不了，"
+                        "**明天早上 6~17 点再来**")
+                _stop.append(sleep_msg)
             # ⚠️ 一只都没成 ⇒ **点名最可能的原因**（恒 2026-10-02：排除自动采集器后基本就是满包）。
             #    判据与文案都在 `_milk_empty_note`（只有那一处），这里只负责"什么时候问"。
-            if not got:
+            elif not got:
                 out += " · " + _milk_empty_note()
             # 兜底那几行挂在后面（**不占分子**）——`挤奶 15/8 只` 那个假数就是这么来的
             if notes:
@@ -7101,7 +7123,7 @@ def _milk_shear_animals(skip_grabber: bool = False) -> str:
 
         if cows:
             reports.append(_do(("挤奶桶", "Milk Pail"), cows, "🐮", "挤奶"))
-        if sheep:
+        if sheep and not _stop:
             reports.append(_do(("剪刀", "Shears"), sheep, "🐑", "剪毛"))
         return "；".join(reports) if reports else "没有奶牛/绵羊"
     except Exception as e:
@@ -7877,13 +7899,17 @@ def machine_report() -> str:
         if not ml and not pond_s:
             return _with_state("⚙️ 农场里没有机器/鱼塘产出")
         agg = {}
-        _containers = {}
+        _containers = {"grab": [], "pet": []}
         for m in ml:
             if _is_container_obj(m):
-                # 🤖 采集器/抚摸机 = **容器**（恒 2026-10-02）⇒ 单独一档，**不混进机器账**
-                #    （它们的 `heldItemDisplay` 是「错误物品 (-1)」那族假名字，永远不许显示）
-                loc = m.get("location", "?")
-                _containers[loc] = _containers.get(loc, 0) + 1
+                # 🤖 采集器/抚摸机 = **不算机器**（恒 2026-10-02）⇒ 单独成行，**不混进机器账**
+                #    （它们的 `heldItemDisplay` 是「错误物品 (-1)」那族假名字，永远不许显示）。
+                #    ⚠️ 2026-10-02 真机把两台**分开说**（原来一句"按容器读"把抚摸机也说成容器 = 假门）：
+                #       只有**自动采集器**能当箱子打开（鸡舍 (4,3) 真弹出 `ItemGrabMenu`），
+                #       **自动抚摸机**打不开、没内容（鸡舍 (20,4) `interact` 没触发）。
+                #    ⚠️ 坐标带上：这两台都要**走到它旁边**才谈得上开（`storage` 域看不到它们）。
+                _c = f"{m.get('location', '?')}({m.get('x')},{m.get('y')})"
+                _containers["grab" if _is_auto_grabber(m) else "pet"].append(_c)
                 continue
             t = agg.setdefault(m.get("type") or "?", {"total": 0, "idle": 0, "processing": 0, "ready": 0, "byLoc": {}})
             t["total"] += 1
@@ -7897,9 +7923,13 @@ def machine_report() -> str:
             cn = MACHINE_CN.get(name, name)
             locs = ", ".join(f"{k}x{v}" for k, v in s["byLoc"].items())
             lines.append(f"  • {cn}: 共{s['total']}台 闲置{s['idle']} 加工{s['processing']} 完成{s['ready']}  ({locs})")
-        if _containers:
-            _cl = ", ".join(f"{k}x{v}" for k, v in _containers.items())
-            lines.append(f"  🤖 自动采集器/抚摸机 {sum(_containers.values())} 台（**按容器读，不算机器**）: {_cl}")
+        if _containers["grab"]:
+            lines.append(f"  🤖 自动采集器 {len(_containers['grab'])} 台（**当箱子用**：走到它旁边 "
+                         f"`scene at x y` 打开 → `menu read` 看里面 → 点物品取出；"
+                         f"⚠️ `storage` 域看不到它）: " + ", ".join(_containers["grab"]))
+        if _containers["pet"]:
+            lines.append(f"  🤖 自动抚摸机 {len(_containers['pet'])} 台（**不产东西、也打不开**——"
+                         f"它只管天天摸动物，别等它出产物）: " + ", ".join(_containers["pet"]))
         ready = [m for m in ml if m.get("status") == "ready" and not _is_container_obj(m)]
         if ready:
             # 📥 就绪清单：按建筑/场景分组只报数量——1450台机器逐台报坐标会爆 token（2026-08-28 恒）。
@@ -22936,14 +22966,29 @@ def _im_chest_open(x, y):
 #   ① **不再把采集器当机器**：机器表的计数/就绪清单里不算它；
 #   ② **不再打印那个假名字**：`错误物品`/空 id 一律不显示（宁缺勿编）；
 #   ③ 把它**如实标成容器**，并给"怎么读"的路（菜单开着时 `/menu.items` 里就是它的东西）。
+# ⚠️⚠️ 2026-10-02 **真机把"两台"分开了**（原来一句「按容器读」把它们说成一回事 = 半句假话）：
+#   · **自动采集器**（鸡舍 (4,3)）：`scene at 4 3` → **真弹出 `ItemGrabMenu`**（里面有蛋/毛/奶）⇒ 确实是容器 ✓
+#   · **自动抚摸机**（鸡舍 (20,4)）：同一招 `scene at 20 4` → **`interact` 没触发、`activeMenu` 空**，
+#     它**没有任何内容**（只负责天天摸动物）⇒ 对它说「按容器读」就是**假门**（AI 会去开一个开不了的东西）。
+#   · 还顺手验了 `storage` 域**看不到它**（鸡舍里 `storage view target=4,3` → 「当前地图没有箱子」，
+#     且 `view` 压根不吃 `target` 参数）⇒ 读采集器**只有** `scene at` → 菜单 → 「取」这条路，报告里要指名它。
 _GRABBER_TYPES = ("Auto-Grabber", "Auto-Petter")     # 这两个都是 (BC) 物件、不是机器
 _BOGUS_NAME_MARKS = ("错误物品", "Error Item", "???")
 
 
 def _is_container_obj(m: dict) -> bool:
-    """🤖 这台"机器"其实是**容器类物件**（自动采集器/自动抚摸机）吗。判据只有这一处。"""
+    """🤖 这台"机器"其实是**不由机器账管的 (BC) 物件**（自动采集器/自动抚摸机）吗。判据只有这一处。
+
+    ⚠️ 「不算机器」对两台都成立；但**「按容器读」只对采集器成立**（抚摸机打不开、没内容，见上面那段真机）
+    ⇒ 要问"是不是真容器"用 `_is_auto_grabber()`，别拿本函数当容器判据。
+    """
     t = str((m or {}).get("type") or "")
     return any(g in t for g in _GRABBER_TYPES)
+
+
+def _is_auto_grabber(m: dict) -> bool:
+    """🧺 这台是**自动采集器**（真能当箱子打开：`scene at x y` → `ItemGrabMenu` → 「取」）吗。"""
+    return "Auto-Grabber" in str((m or {}).get("type") or "")
 
 
 def _bogus_held_name(name) -> bool:

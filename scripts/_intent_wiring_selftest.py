@@ -2314,17 +2314,26 @@ def main():
     # ⚠️ 真回包是**两层**：`{"ok":True, "machines":{"machines":[…]}}`（第一版写平了 ⇒ "获取失败"）
     M.api.farm_report = lambda *a, **k: {
         "ok": True,
-        "machines": {"machines": [_grab_m, {"type": "Keg", "location": "Farm",
-                                            "status": "ready",
-                                            "heldItemDisplay": "钻石"}]}}
+        "machines": {"machines": [_grab_m,
+                                  {"type": "Auto-Petter", "location": "Deluxe Coop", "x": 20, "y": 4,
+                                   "status": "empty", "heldItemDisplay": ""},
+                                  {"type": "Keg", "location": "Farm", "status": "ready",
+                                   "heldItemDisplay": "钻石"}]}}
     try:
         _mr = M.machine_report()
     finally:
         M.api.farm_report = _old_fr
-    res.append(ok("🤖 197：机器表把采集器**单列**（「按容器读，不算机器」）且不印假名字",
-                  "自动采集器" in _mr and "按容器读，不算机器" in _mr
-                  and "错误物品" not in _mr, _mr[:220]))
-    res.append(ok("🤖 197：机器台数**不含**采集器（那一屏只该有 Keg 一台）",
+    # ⚠️ 2026-10-02(203e) 真机把这两台**分开**了 —— 原来说一句「按容器读，不算机器」，
+    #    可**抚摸机打不开也没内容**（鸡舍 (20,4) `interact` 没触发、`activeMenu` 空）⇒ 那是半句假话。
+    res.append(ok("🤖 197/203e：机器表把**采集器**单列成「当箱子用」（给 `scene at` 这条路 + 坐标），且不印假名字",
+                  "自动采集器 1 台" in _mr and "当箱子用" in _mr and "scene at" in _mr
+                  and "Deluxe Coop(5,5)" in _mr and "错误物品" not in _mr, _mr[:400]))
+    res.append(ok("🤖 203e：**抚摸机单独一行**、如实说「不产东西、也打不开」（**不许**混进「容器」那行）",
+                  "自动抚摸机 1 台" in _mr and "打不开" in _mr
+                  and "当箱子用" not in _mr.split("自动抚摸机")[1][:60], _mr[:400]))
+    res.append(ok("🤖 203e：`_is_auto_grabber` 分得出这两台（判据只此一处）",
+                  M._is_auto_grabber(_grab_m) and not M._is_auto_grabber({"type": "Auto-Petter"})))
+    res.append(ok("🤖 197：机器台数**不含**这两台（那一屏只该有 Keg 一台）",
                   "全农场机器 (1 台)" in _mr, _mr[:120]))
     _stub(loc="Deluxe Coop", surr_tiles=[])
     M._BARN_EMPTY_KEY.update(loc=None, txt="")
@@ -2432,6 +2441,23 @@ def main():
     _mn_ok = M._milk_empty_note()
     res.append(ok("🐮 包里还有空位 ⇒ **明说不是满包挡的**（不许把猜的说成原因）",
                   "不是满包" in _mn_ok and "背包满了" not in _mn_ok, _mn_ok))
+
+    # ㉔ 203e 😴 **动物睡了**（恒 2026-10-02 真机：「太晚了，动物都想要睡觉，挤奶抚摸都不行」）——
+    #    这条只能**查源码**：本档两个动物建筑都装了自动采集器 ⇒ 挤奶支路走不到（真机那一趟正是被它拦下的），
+    #    而 pet_walk 是个独立脚本（要真端口才跑得起来）。⚠️ 所以判据是"这两处必须长成这个样子"，
+    #    不是"跑过了" —— 记在账上别当已验。
+    import inspect as _insp9
+    _mss = _insp9.getsource(M._milk_shear_animals)
+    res.append(ok("😴 挤/剪：撞上「睡觉」**不算成功**（老代码没有「不产/没有」两词 ⇒ 会算成 ✅ 假成功）",
+                  "_SLEEP_MARKS" in _mss and "sleep_msg" in _mss, None))
+    res.append(ok("😴 挤/剪：撞上就**整趟收工**（牛试完别接着白试羊）+ 报原因给下一步",
+                  "_stop.append" in _mss and "not _stop" in _mss and "明天早上 6~17 点" in _mss, None))
+    _pw = open(os.path.join(os.path.dirname(os.path.abspath(M.__file__)),
+                            "pet_walk.py"), encoding="utf-8").read()
+    res.append(ok("😴 pet_walk：18:00 后**不摸了**（原来只打一句警告、照样跑 12 只×3 轮还留个对话框堵路）",
+                  "if tod >= 1800:" in _pw and "不摸了" in _pw, None))
+    res.append(ok("😴 pet_walk：循环里也认游戏那句（`sleep_dialogue()`）+ 收掉对话框（别留堵塞）",
+                  "def sleep_dialogue" in _pw and "close_dialogue()" in _pw, None))
 
     print(f"\n{sum(res)}/{len(res)} 过")
     return all(res)
