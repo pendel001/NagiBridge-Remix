@@ -19166,7 +19166,8 @@ public class ModEntry : Mod
         {
             try
             {
-                // 遍历范围与 /machine_collect、/machine_load 共用（farm + 建筑室内 + 地窖）
+                // 遍历范围与 `/machines`、`/machine_load` 共用（farm + 建筑室内 + 地窖）
+                // （`/machine_collect` 2026-10-03 已删，见路由表那处墓碑）
                 var farmLocs = ResolveLocations("");
                 var buildingMap = BuildBuildingMap();
 
