@@ -65,23 +65,57 @@ def main():
 
     base = NAGI
 
-    def scan_blooming():
-        """扫当前场景结果灌木列表 [(x,y),...]"""
+    def scan_targets():
+        """扫当前场景**该摇的**目标 → `([{x,y,kind},…], 图名, 全部瓦片)`。
+
+        ⚠️ 2026-10-02 一天之内这条判据升了三级（**每级都是"别自己猜，问游戏"**）：
+          ① 老口径：`bushBloom` + `calendar_data` 的浆果窗口（**猜**：会把茶树丛/夏天残留帧当浆果）；
+          ② `bushSize` + `bushInSeason`（C# 报 `Bush.size` / `Bush.inBloom()`）；
+          ③ `bushShakeable` = 游戏 `Bush.shake()` 的**原条件**（`!townBush && readyForHarvest() && inBloom()`）
+             —— 有它就用它（连"Town 装饰丛不给东西"这种只有游戏知道的事都算进去了）。
+        🍎 果树（`FruitTree`）是**另一类地形**、同一件事：`fruitCount>0` ⇒ 摇它果子**掉地上**、再走上去捡
+           （真机 2026-10-02 温室：`scene at 12 7` → 地上 3×Banana → 走上去 → 背包 Banana×3）。
+        🍵 茶树丛(size3) 摇出来是**茶叶(O)815**（同一份反编译 `GetShakeOffItem()`）⇒ **也摇**（恒：「茶树也值得摇」）。
+        ⚠️ 老 DLL 没这些键 ⇒ 退回 ①（那段退化**如实标着**，不是"也能用"）。
+        """
         try:
             d = requests.get(f"{base}/surroundings", params={"radius": args.radius}, timeout=10).json()
         except Exception:
-            return [], ""
+            return [], "", []
         loc = d.get("location", "?")
-        bushes = [(t["x"], t["y"]) for t in d.get("tiles", [])
-                  if t.get("terrain") == "Bush" and t.get("bushBloom")]
-        return bushes, loc
+        tiles = d.get("tiles", [])
+        out = []
+        for t in tiles:
+            _terr = t.get("terrain") or ""
+            if _terr == "FruitTree":
+                if int(t.get("fruitCount") or 0) > 0:          # 🍎 挂果了（新 DLL 才有这个字段）
+                    out.append({"x": t["x"], "y": t["y"], "kind": "fruit"})
+                continue
+            if _terr != "Bush" or not t.get("bushBloom"):
+                continue
+            _sz = t.get("bushSize")
+            if _sz is None:                                    # 老 DLL：帧 + 日历窗口（会误摇，见 docstring）
+                if _in_season:
+                    out.append({"x": t["x"], "y": t["y"], "kind": "berry"})
+                continue
+            _kind = {3: "tea", 4: "walnut"}.get(int(_sz), "berry")
+            if "bushShakeable" in t:
+                _ok = bool(t.get("bushShakeable"))
+            else:
+                _ok = bool(t.get("bushBloom")) and bool(t.get("bushInSeason", _in_season))
+            if not _ok:
+                continue
+            if _kind == "walnut" and not _walnut_mode:
+                continue                                       # 核桃丛只在"本图还有挂着的"时摇
+            out.append({"x": t["x"], "y": t["y"], "kind": _kind})
+        return out, loc, tiles
 
     def find_stand(bx, by, tiles):
-        """找灌木相邻可走格（优先下方），避开其他灌木/树。"""
+        """找目标相邻可走格（优先下方），避开其他灌木/树/果树。"""
         cands = [(bx, by + 1), (bx + 1, by), (bx, by - 1), (bx - 1, by)]
         blocked = {(bx, by)}
         for t in tiles:
-            if t.get("terrain") in ("Bush", "Tree:0", "Tree:1", "Tree:2", "Tree:3",
+            if t.get("terrain") in ("Bush", "FruitTree", "Tree:0", "Tree:1", "Tree:2", "Tree:3",
                                     "Tree:5", "Tree:6", "Tree:7", "Tree:8", "Tree:9", "Tree:10"):
                 blocked.add((t["x"], t["y"]))
         passable = {(t["x"], t["y"]) for t in tiles if t.get("passable", True)}
@@ -122,21 +156,22 @@ def main():
         requests.post(f"{base}/interact", {}, timeout=10)   # 无参数=面前格=灌木
         time.sleep(0.6)
 
-    # ── 主循环：扫→逐棵摇→重扫 ──
-    all_bushes, loc = scan_blooming()
-    if not all_bushes:
-        log(f"🎉 {loc or '当前场景'}没有结果的浆果灌木")
-        return
-
     # 🍓🍓 2026-10-02 真机（恒：「**看起来有些不会长树莓的树丛也摇摇了！**」）：
     #    `bushBloom` = 游戏那个 `Bush.tileSheetOffset == 1`，意思是"**贴图切到第 1 帧**"，
     #    **不等于"这丛有果子"**——山地实测：7 棵 `bushBloom=True`，摇了 6 棵，
     #    **背包一件都没多**、摇完那几棵 `bushBloom` 还是 true。
-    #    ⇒ 只在**浆果窗口**（春15~18 / 秋8~11，判据在 `calendar_data`，跟显示侧共用）里才摇。
+    #    ⚠️ 当晚先收成"只认**浆果窗口**"（春15~18 / 秋8~11，判据在 `calendar_data`）；
+    #    ⚠️ 2026-10-02 深夜 **C# 补了 `bushSize`/`bushInSeason`/`bushShakeable`** ⇒ **判据升级成问游戏**
+    #       （见 `scan_targets`）：有 `bushShakeable` 就用它（= 游戏 `Bush.shake()` 的原条件），
+    #       没有就 `bushBloom && bushInSeason`。日历窗口只在**老 DLL**（连 `bushSize` 都没）时兜底。
+    #    🍵 茶树丛(size3) 摇出来是**茶叶(O)815**（反编译 `GetShakeOffItem()`，跟浆果**同一次动作**）
+    #       ⇒ **也摇**（恒 2026-10-02：「**茶树也值得摇**，不过确实不是同一件事」）。
+    #    🍎 果树（`FruitTree`）也是"摇"，但**果子掉地上**（得走上去捡），见 `scan_targets` 的 docstring。
     #    🌰 例外（恒 2026-10-02 拍板）：「**姜岛地图摇晃树丛可以一直放行，直到当前图的金核桃
     #       都被摇掉了**」——姜岛的"核桃丛"也是 `Bush`（`size==4`），**同一个 `tileSheetOffset` 字段**。
     #       ⚠️ 判据**不靠地图名**（那又是一张会烂的名单），直接问游戏：`/nuts` 里还有没有
     #       `kind=="bush"` 且没拿走的 ⇒ 有就一直放行，摇到没有为止（摇完 offset 变 0、重扫自然没了）。
+    #    ⚠️ 顺序：**先把"在不在季 / 有没有核桃"问清楚，再扫**（`scan_targets` 里要用这两个状态）。
     try:
         _st = requests.get(f"{base}/state", timeout=10).json()
         _t = _st.get("time") or {}
@@ -156,17 +191,32 @@ def main():
     _nuts0 = bush_nuts_left()
     _walnut_mode = bool(_nuts0)
 
-    if not _in_season and not _walnut_mode:
-        log(f"🌿 {loc} 有 {len(all_bushes)} 丛灌木贴图是「有货」那帧，但**今天不在浆果季**"
-            f"（树莓=春15~18 / 黑莓=秋8~11，今天 {_t.get('season')} {_t.get('dayOfMonth')} 日）、"
-            f"本图也没有挂着的金核桃 —— **不摇**。那些多半是茶树丛之类（同一帧）。")
+    # ── 主循环：扫→逐个摇→重扫 ──
+    targets, loc, _tiles0 = scan_targets()
+    if not targets:
+        # ⚠️ 没该摇的也要**说清"为什么没有"**（原来只会说"没有结果的灌木"）：
+        #    本图可能有"贴图还亮着"的丛，但游戏说摇不出东西（老 DLL 甚至分不出是哪一丛）。
+        _raw = len([t for t in _tiles0
+                    if t.get("terrain") == "Bush" and t.get("bushBloom")])
+        _frt = len([t for t in _tiles0
+                    if t.get("terrain") == "FruitTree" and int(t.get("fruitCount") or 0) > 0])
+        if _raw or _frt:
+            log(f"🌿 {loc}：贴图是「有货」那帧的灌木 {_raw} 丛、挂着熟果的果树 {_frt} 棵 —— "
+                f"但**游戏说现在摇不出东西**（不在浆果季 / 茶叶还没到时候 / 果树已摘过）⇒ **不摇**")
+        else:
+            log(f"🎉 {loc or '当前场景'}没有该摇的东西")
         return
 
     if _walnut_mode:
         log(f"🌰 {loc} 有 {len(_nuts0)} 个**挂着的金核桃丛**{'(顺带也在浆果季)' if _in_season else ''}"
             f" —— 姜岛的树丛一直放行，摇到本图摇干净为止。")
 
-    log(f"🍓 {loc} 找到 {len(all_bushes)} 棵结果灌木: {all_bushes}")
+    _KIND_CN = {"berry": "浆果丛", "tea": "茶树丛", "walnut": "核桃丛", "fruit": "果树"}
+    _kinds = {}
+    for _t in targets:
+        _kinds[_t["kind"]] = _kinds.get(_t["kind"], 0) + 1
+    log(f"🍓 {loc} 该摇 {len(targets)} 处：" + "、".join(f"{_KIND_CN.get(k, k)}×{v}"
+                                                     for k, v in sorted(_kinds.items())))
 
     if args.dry_run:
         log("--dry-run：不摇")
@@ -189,16 +239,16 @@ def main():
     total = 0
     shaken = set()
     for _ in range(args.rounds):
-        bushes, loc = scan_blooming()
-        if not bushes:
+        targets, loc, _tl = scan_targets()
+        if not targets:
             break
-        data = requests.get(f"{base}/surroundings", params={"radius": args.radius}, timeout=10).json()
-        tiles = data.get("tiles", [])
-        for bx, by in bushes:
+        tiles = _tl
+        for _tg in targets:
+            bx, by, _kd = _tg["x"], _tg["y"], _tg.get("kind")
             if (bx, by) in shaken:
                 continue
             stand = find_stand(bx, by, tiles)
-            log(f"  · 摇 ({bx},{by}) 站 {stand}")
+            log(f"  · 摇 {_KIND_CN.get(_kd, _kd)} ({bx},{by}) 站 {stand}")
             if not walk_near(*stand):
                 log(f"    ⚠️ 走不到 {stand}，跳过")
                 continue
@@ -206,6 +256,25 @@ def main():
             shaken.add((bx, by))
             total += 1
         time.sleep(0.5)
+
+    # 🍎 **果子是掉在地上的**（`FruitTree.shake()` 逐颗 `Location.debris.Add` + `fruit.Clear()`，
+    #    反编译 `FruitTree.cs:361-425`）⇒ 摇完必须**走上去捡**（真机 2026-10-02 温室：
+    #    摇 (12,7) → 地上 3×Banana → 走到 (12,8) → 背包 Banana×3）。灌木那边是直接进包的。
+    picked = 0
+    try:
+        _db = requests.get(f"{base}/debris", timeout=10).json().get("debris") or []
+    except Exception:
+        _db = []
+    for _d in _db:
+        try:
+            dx, dy = int(_d.get("x")), int(_d.get("y"))
+        except Exception:
+            continue
+        if walk_near(dx, dy, timeout=12):
+            picked += 1
+        time.sleep(0.2)
+    if _db:
+        log(f"🍎 地上有 {len(_db)} 件掉落物（果子那类），走过去捡了 {picked} 处")
 
     # ⚠️ 回执必须**回读真值**：原来不管有没有摇到都说「✅ …树莓已进背包」（真机上那是假的）。
     _after = _inv_counts()
@@ -216,9 +285,11 @@ def main():
             if d > 0:
                 _gain[k] = d
     if _gain:
-        log(f"✅ 摇了 {total} 棵结果灌木，**背包 +{sum(_gain.values())}**："
+        log(f"✅ 摇了 {total} 棵该摇的灌木，**背包 +{sum(_gain.values())}**："
             + "、".join(f"{k}×{v}" for k, v in _gain.items()))
-    elif _in_season and _before is not None and _after is not None:
+    elif (not _walnut_mode) and _before is not None and _after is not None:
+        # ⚠️ 核桃模式不走这句：金核桃**不进背包**（是存档计数），"背包没多"在姜岛是**正常**的，
+        #    那句话留给下面的 `/nuts` 回读说（别拿背包账替核桃说话）。
         log(f"⚠️ 摇了 {total} 棵，可**背包一件都没多** —— 这些灌木现在并没有可摘的果子"
             f"（`bushBloom` 只是「贴图那一帧」，不等于有货）。别重复摇，白走路。")
     elif _before is None or _after is None:

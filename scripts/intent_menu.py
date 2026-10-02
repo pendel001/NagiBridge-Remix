@@ -2804,14 +2804,55 @@ def _exec_chore(ctx, targets, run, op, cn):
     return _receipt_from_helper(cn, "", r)
 
 
-# 1) 摇 浆果丛（`scene ops="berry"` → `berry_run` 现成脚本）
+# 1) 摇/摘 树上的东西（`scene ops="berry"` → `berry_run` 现成脚本）
+#    ⚠️ 2026-10-02 恒：「**茶树也值得摇**，不过确实不是同一件事」+「**对哦……好多果树也可以摇**」——
+#       **动作是同一个**（走过去对着树/丛按一下），摇出来的东西不同：
+#       野浆果丛(size0/1/2)→树莓/黑莓直接进包 · 茶树丛(size3)→茶叶 · 核桃丛(size4)→金核桃（存档计数）
+#       · **果树(`FruitTree`)→果子掉地上，得再走上去捡**（`berry_run` 摇完补了"走过去捡"那一段）。
+#    ⇒ 所以**只留一行**（一个动作一行是恒的口径），行文按本图有什么自己念。
+def _shake_kinds(c):
+    """本图现在摇得出什么 → `[("berry", n, "摇 浆果丛"), …]`（判据都在服务器 `_forage_counts`）。"""
+    out = []
+    for _k, _lbl in (("berry", "摇 浆果丛"), ("tea", "摘 茶叶"),
+                     ("walnut_bush", "摇 金核桃"), ("fruit_tree", "摇 果树(摘果子)")):
+        _n = _chore_n(c, _k)
+        if _n:
+            out.append((_k, _n, _lbl))
+    return out
+
+
+def _shake_label(c, t):
+    """这一行怎么念：本图有什么就念什么。"""
+    _k = _shake_kinds(c)
+    if not _k:
+        return "摇 树上的"
+    return " + ".join(x[2] for x in _k)
+
+
+def _shake_reason(c, t):
+    """理由栏：**分开说清**每一类几处 + 果子那类要"摇下来再捡"（别让 AI 以为它会自己进包）。"""
+    _k = _shake_kinds(c)
+    if not _k:
+        return ""
+    _bits = []
+    for _key, _n, _lbl in _k:
+        if _key == "fruit_tree":
+            _bits.append(f"🍎果树×{_n}(挂果 {_chore_n(c, 'fruit_n')} 个——**摇下来在地上，要再走上去捡**)")
+        elif _key == "tea":
+            _bits.append(f"🍵茶树丛×{_n}(茶叶好了)")
+        elif _key == "walnut_bush":
+            _bits.append(f"🌰核桃丛×{_n}(金核桃是**存档计数**，不进背包)")
+        else:
+            _bits.append(f"🍓浆果丛×{_n}")
+    return ("本图该摇：" + "、".join(_bits) + " · **拟人逐处走过去摇**（敲了不用给参数）"
+            " · 摇完回读背包/核桃数，不空口说")
+
+
 BERRY_V = Verb("berry", "摇 浆果丛", 66,
-               lambda c, t: CAN_YES if _chore_n(c, "berry") else CAN_NO,
-               lambda c, t: (f"本图扫到 {_chore_n(c, 'berry')} 棵**结果的灌木**"
-                             f" · 摇完果子直接进背包（拟人：逐棵走过去摇）"
-                             f" · 敲了就摇，不用给参数"),
-               lambda c, t: "摇 浆果丛", "world",
-               exec=lambda c, t, run: _exec_chore(c, t, run, "berry", "摇浆果丛"))
+               lambda c, t: CAN_YES if _shake_kinds(c) else CAN_NO,
+               _shake_reason,
+               _shake_label, "world",
+               exec=lambda c, t, run: _exec_chore(c, t, run, "berry", "摇/摘树上的"))
 # 2) 挖 远古斑点（`scene ops="spot"` → `spot_run`；**要带锄头**，没锄头服务器不给这笔账）
 #    ⚠️ **只算身边**（恒 2026-10-01：「不需要特定跑大老远锄！**扫一下周围**」）——
 #       半径由服务器递（`chores["spot_r"]`，常量在 `_SPOT_RADIUS` 一处），理由栏**写出来**。
@@ -2858,13 +2899,34 @@ MILK_V = Verb("milk", "挤奶 / 剪毛", 62,
 # 7) 🗑️ 翻垃圾桶（`scene ops="garbage"` → `trash_run`；恒 2026-10-02：「捡垃圾可以上」）
 #    权重 56：**每天每桶一次**、掉落看运势（刮刮乐），**不是待办** —— 排在顺手活那批的下面，
 #    别去抢"每天一次、过了就作废"那几档（蟹笼 72 / 放牧 84 / 收作物 88…）的位。
-#    ⚠️ 账是「本图有 N 个桶」，**不是"还有没翻的"**（游戏没暴露 CheckedGarbage）⇒ 理由栏写出来，
-#       别让 AI 以为按了就一定有东西（空翻是正常的）。
-TRASH_V = Verb("garbage", "翻垃圾桶", 56,
-               lambda c, t: CAN_YES if _chore_n(c, "garbage") else CAN_NO,
-               lambda c, t: (f"本图 {_chore_n(c, 'garbage')} 个垃圾桶"
-                             f" · **每天每桶一次**（翻过的再翻是空的，掉落看当天运势）"
-                             f" · 敲了自己扫图逐个翻，不用给坐标"),
+#    ⚠️ 账有两份（2026-10-02 晚 C# 之后）：`garbage` = 本图桶数 · `garbage_left` = **今天还没翻的**
+#       （= 游戏 `CheckedGarbage`，由 `/scan` 的 `garbageChecked` 带上来）。
+#       · 知道还剩 0 个 ⇒ **整行不出现**（"按了也是空的"这种事不该占单子 —— 恒的"过了就作废"口径）；
+#       · 老 DLL 报不出这个字段 ⇒ `None` = **不知道**（不是"都没翻"）⇒ 照老文案说，别下结论。
+def _trash_can(c, t):
+    """这行该不该给：桶数 > 0 **且**（翻没翻不知道 **或** 今天还有没翻的）。"""
+    if not _chore_n(c, "garbage"):
+        return CAN_NO
+    _left = (c.chores or {}).get("garbage_left")
+    if _left is not None and int(_left) <= 0:
+        return CAN_NO
+    return CAN_YES
+
+
+def _trash_show(c, t):
+    """理由栏：知道剩几个就**说清楚**（这才是"你按下去会不会有东西"的答案）。"""
+    _n = _chore_n(c, "garbage")
+    _left = (c.chores or {}).get("garbage_left")
+    if _left is None:
+        return (f"本图 {_n} 个垃圾桶"
+                f" · **每天每桶一次**（翻过的再翻是空的，掉落看当天运势）"
+                f" · 敲了自己扫图逐个翻，不用给坐标")
+    return (f"本图 {_n} 个垃圾桶，**今天还没翻的 {int(_left)} 个**"
+            f" · 掉落看当天运势（翻过的再翻是空的）"
+            f" · 敲了自己扫图逐个翻，不用给坐标")
+
+
+TRASH_V = Verb("garbage", "翻垃圾桶", 56, _trash_can, _trash_show,
                lambda c, t: "翻垃圾桶", "world",
                exec=lambda c, t, run: _exec_chore(c, t, run, "garbage", "翻垃圾桶"))
 

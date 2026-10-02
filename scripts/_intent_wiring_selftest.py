@@ -152,7 +152,8 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
           farm_buildings=(), time_dict=None, doors_open=False, walk_ok=True,
           chore_tiles=None, crab_ready=0, ore_pan=None, chore_animals=None, money=None,
           silo=None, troughs=None, trough_filled=0, trough_raise=False,
-          surr_tiles=None, trash_cans=None, cola=None, npcs=None):
+          surr_tiles=None, trash_cans=None, cola=None, npcs=None, nuts=None,
+          trash_checked=None):
     CALLS.clear()
     WALK_CALLS.clear()
     state = dict(STATE)
@@ -211,7 +212,11 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
             # 🗑️🥤 垃圾桶/可乐机**都不在 `loc.objects`**，只能从 `/scan` 的 Action 瓦片里认
             #    （`Garbage <id>` / `ColaMachine`）—— 判据在 `_scan_actions_here()`，
             #    这里照真回包形状给（真机 Saloon 的机器是 (37,17)+(38,17) 两格）。
-            acts = [{"action": f"Garbage C{i}", "x": x, "y": y}
+            #    ⚠️ `trash_checked=None`（默认）⇒ **不吐 `garbageChecked` 键** = **老 DLL 的形状**
+            #       （新 DLL 每格都带这个键，真假都有 ⇒ "键在不在"就是"这版报不报得出"的判据）。
+            acts = [dict({"action": f"Garbage C{i}", "x": x, "y": y},
+                         **({} if trash_checked is None
+                            else {"garbageChecked": i in set(trash_checked)}))
                     for i, (x, y) in enumerate(trash_cans or [])]
             acts += [{"action": "ColaMachine", "x": x, "y": y} for x, y in (cola or [])]
             return {"ok": True, "actions": acts}
@@ -219,6 +224,9 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
             if menu_get_raises:
                 raise RuntimeError("模拟：商店开着但 /menu 读不出来")
             return MENU_SHOP if menu_raw is None else menu_raw
+        if ep == "/nuts":
+            # 🌰 金核桃真回包形状：`{ok, nuts:[{kind, taken, …}]}` —— 姜岛"核桃丛"那条例外读它
+            return {"ok": True, "nuts": list(nuts or [])}
         if ep == "/crab_pots":
             # 🦀 真回包形状：`{ok, count, location, pots:[{...readyForHarvest...}]}`
             return {"ok": True, "count": crab_ready, "location": "Farm",
@@ -1572,7 +1580,7 @@ def main():
                         {"name": "空牛", "type": "White Cow", "x": 15, "y": 14, "productReady": False}]}
 
     def _chores(chore_tiles=None, crab_ready=0, ore_pan=None, animals=None, weather=0,
-                hoe=True, season="spring", day=16, trash_cans=None, cola=None):
+                hoe=True, season="spring", day=16, trash_cans=None, cola=None, nuts=None):
         # ⚠️ 日期默认 **春 16**（浆果窗口内）—— 浆果那笔账现在**只在浆果季**才给
         #    （见下面 `_BERRY_WINDOWS` 那两条用例：2026-10-02 恒「现在是夏天，不会有的」）。
         # ⚠️ 走**真路径** `_im_ctx()`（不是手搓 state/surr 递给 `_im_chores`）——
@@ -1580,7 +1588,7 @@ def main():
         #    ⇒ "没带锄头"那条假红、蟹笼那笔账也拿不到（自验当场逮到）。
         _stub(chore_tiles=chore_tiles, crab_ready=crab_ready, ore_pan=ore_pan,
               chore_animals=(animals if animals is not None else []),
-              trash_cans=trash_cans, cola=cola,
+              trash_cans=trash_cans, cola=cola, nuts=nuts,
               time_dict={"timeOfDay": 900, "season": season, "dayOfMonth": day,
                          "weather": weather})
         M.api.has_item = lambda n: bool(hoe) and ("Hoe" in str(n))
@@ -1605,6 +1613,68 @@ def main():
     _ch_fall = _chores([_T_BUSH], weather=0, hoe=True, season="fall", day=10)
     res.append(ok("🍓 秋天 10 日（黑莓窗口 8~11）⇒ 说浆果（不是一刀切掉这个功能）",
                   _ch_fall.get("berry") == 1, _ch_fall))
+    # 🆕 203f：C# 补了 `bushSize`/`bushInSeason` ⇒ 判据从"日历窗口"**升级成问游戏**
+    #    （老 DLL 形状的夹具 = `_T_BUSH`，上面那几条一个字没改 ⇒ 兼容性也在这一屏里验着）。
+    _T_TEA = {"x": 75, "y": 10, "terrain": "Bush", "bushBloom": True, "bushSize": 3,
+              "bushInSeason": True}
+    _T_WAL = {"x": 76, "y": 10, "terrain": "Bush", "bushBloom": True, "bushSize": 4,
+              "bushInSeason": True}     # ⚠️ size4 的 `inBloom()` **就是** `readyForHarvest()`
+    #                                       ⇒ "帧亮着但不在季"对核桃丛是**不可能的一格**（别拿假数据喂自验）
+    _T_BERRY_G = {"x": 77, "y": 10, "terrain": "Bush", "bushBloom": True, "bushSize": 0,
+                  "bushInSeason": True}
+    _T_BERRY_NS = {"x": 78, "y": 10, "terrain": "Bush", "bushBloom": True, "bushSize": 0}
+    _c_tea = M._forage_counts([_T_TEA], True, True)      # 就算在浆果季
+    res.append(ok("🍵 茶树丛(size3)：**在浆果季也不算浆果**（病根就是这一条 —— 帧字段分不出它）",
+                  _c_tea.get("bush") == 0 and _c_tea.get("bush_bloom") == 1, _c_tea))
+    _c_wal = M._forage_counts([_T_WAL], True, False)
+    res.append(ok("🌰 核桃丛(size4)：不算浆果，但记进 `walnut_bush`（姜岛那条例外要用它）",
+                  _c_wal.get("bush") == 0 and _c_wal.get("walnut_bush") == 1
+                  and M._walnut_bush_count(_c_wal) == 1, _c_wal))
+    _c_g = M._forage_counts([_T_BERRY_G], True, False)   # 日历说不在季、游戏说在季
+    res.append(ok("🍓 有 `bushInSeason` ⇒ **听游戏的**（日历说不在季也算）",
+                  _c_g.get("bush") == 1 and _c_g.get("walnut_bush") == 0, _c_g))
+    _c_ns = M._forage_counts([_T_BERRY_NS], True, False)  # 半新 DLL：有 size 没 season
+    res.append(ok("🍓 只有 `bushSize` 没 `bushInSeason`（半新 DLL）⇒ 退回日历窗口（不在季就不算）",
+                  _c_ns.get("bush") == 0, _c_ns))
+    _c_oldshape = M._forage_counts([_T_BUSH], True, True)
+    res.append(ok("🍓 老 DLL 瓦片（`bushSize` 都没这键）⇒ **原样退回**老口径（帧 + 日历窗口）",
+                  _c_oldshape.get("bush") == 1 and _c_oldshape.get("bush_bloom") == 1
+                  and M._walnut_bush_count(_c_oldshape) == 1, _c_oldshape))
+    res.append(ok("🍵 茶树丛**整行不出现**（单子那边也一样：`_im_chores` 不给 berry）",
+                  "berry" not in _chores([_T_TEA], season="spring", day=16)))
+    _ch_wal2 = _chores([_T_WAL], season="summer", day=17,
+                       nuts=[{"kind": "bush", "taken": False}])
+    res.append(ok("🌰 非浆果季 + 本图还有挂着的核桃 ⇒ 那行照给（姜岛：摇到没有为止）",
+                  _ch_wal2.get("berry") == 1, _ch_wal2))
+    # 🆕 203g（恒：「**茶树也值得摇**，不过确实不是同一件事」+「**对哦……好多果树也可以摇**」）：
+    #    三种（浆果/茶叶/果子）**是同一次动作** ⇒ **只留一行**，行文按本图有什么自己念。
+    _TEATA = {"x": 79, "y": 10, "terrain": "Bush", "bushBloom": True, "bushSize": 3,
+              "bushInSeason": True}
+    _FRUIT = {"x": 12, "y": 7, "terrain": "FruitTree", "passable": True,
+              "fruitCount": 3, "fruitName": "香蕉"}
+    _c_tea2 = M._forage_counts([_TEATA], True, False)
+    res.append(ok("🍵 `_forage_counts`：茶树丛(size3) 现在**记进 `tea`**（旧版它只是被排除、什么都不记）",
+                  _c_tea2.get("tea") == 1 and _c_tea2.get("bush") == 0, _c_tea2))
+    _c_fr = M._forage_counts([_FRUIT], True, False)
+    res.append(ok("🍎 `_forage_counts`：果树按 `fruitCount` 记账（几棵 + 一共几个果）",
+                  _c_fr.get("fruit_tree") == 1 and _c_fr.get("fruit_n") == 3
+                  and _c_fr.get("bush") == 0, _c_fr))
+    _ch_tf = _chores([_TEATA, _FRUIT], season="summer", day=17)
+    res.append(ok("🔌 `_im_chores` 把 tea / fruit_tree 也递给单子（跟浆果同一笔账一起给）",
+                  _ch_tf.get("tea") == 1 and _ch_tf.get("fruit_tree") == 1
+                  and _ch_tf.get("fruit_n") == 3, _ch_tf))
+    _Ltf, _Ltf_txt = (None, "")   # ⚠️ 标签那两条断言要等 `_labels2` 定义（在下面垃圾桶那段之后）⇒ 挪过去
+    # 🆕 203g：`bushShakeable` = 游戏 `Bush.shake()` 的原条件（tier ①）——**它说了算**
+    _TOWN = {"x": 80, "y": 10, "terrain": "Bush", "bushBloom": True, "bushSize": 0,
+             "bushInSeason": True, "bushShakeable": False}     # Town 装饰丛：帧亮、在季、但不给东西
+    _c_town = M._forage_counts([_TOWN], True, True)
+    res.append(ok("🏛️ 有 `bushShakeable=false` ⇒ **不摇**（Town 装饰丛：帧亮+在季也白摇，"
+                  "`!townBush` 这项只有游戏知道）",
+                  _c_town.get("bush") == 0, _c_town))
+    _SHK = dict(_T_BERRY_G, bushShakeable=True, bushInSeason=False)
+    _c_shk = M._forage_counts([_SHK], True, False)
+    res.append(ok("🎯 有 `bushShakeable=true` ⇒ **就算 `bushInSeason` 是假也摇**（tier ① 优先，问游戏最准）",
+                  _c_shk.get("bush") == 1, _c_shk))
     # ⚠️ **认不出的季节必须直接不算** —— 早先 `get(s, (0,0))` 会让 `(None,None)` 落进
     #    `0<=0<=0` ⇒ **返回 True**（"不知道 ⇒ 当在季"），正好反了（自验当场逮到）。
     import calendar_data as _cd
@@ -1706,10 +1776,42 @@ def main():
     # 🗑️ 垃圾桶那两行（`_labels2` 在这儿才定义 ⇒ 断言放这儿）
     _Lt, _Lt_txt = _labels2(chore_tiles=[_T_BUSH], trash_cans=[(13, 86)])
     res.append(ok("🗑️ 单子上出现「翻垃圾桶」", "翻垃圾桶" in _Lt, _Lt))
-    res.append(ok("🗑️ 理由栏写清「每天每桶一次」（账只是「本图有 N 个桶」，不是「还有没翻的」）",
+    res.append(ok("🗑️ 老 DLL（报不出翻没翻过）⇒ 理由栏退回「每天每桶一次」（**不许**说成「还有 N 个要翻」）",
                   "每天每桶一次" in _Lt_txt, _Lt_txt[:220]))
     _Lt2, _ = _labels2(chore_tiles=[_T_BUSH])
     res.append(ok("🗑️ 本图没桶 ⇒ 单子上**没有**那一行", "翻垃圾桶" not in _Lt2, _Lt2))
+    # 🆕 203f：游戏那边现在报得出"今天翻过没有"了（C# `/scan.garbageChecked` ← `CheckedGarbage`）
+    #    ⇒ 那行的账从"本图有 N 个桶"升级成"**今天还剩 M 个没翻**"，全翻完就整行不出现。
+    _stub(trash_cans=[(13, 86), (19, 89)])            # 不传 trash_checked = 老 DLL 形状
+    _tot_old, _left_old = M._trash_left_here("Town")
+    _stub(trash_cans=[(13, 86), (19, 89)], trash_checked=[0, 1])
+    _tot_new, _left_new = M._trash_left_here("Town")
+    res.append(ok("🗑️ `_trash_left_here`：老 DLL（瓦片没 `garbageChecked`）⇒ 总数报得出、**剩几个 = None（不知道）**",
+                  (_tot_old, _left_old) == (2, None), (_tot_old, _left_old)))
+    res.append(ok("🗑️ `_trash_left_here`：新 DLL 两个都翻过 ⇒ (2, 0)",
+                  (_tot_new, _left_new) == (2, 0), (_tot_new, _left_new)))
+    _Lt3, _ = _labels2(chore_tiles=[_T_BUSH], trash_cans=[(13, 86), (19, 89)],
+                       trash_checked=[0, 1])
+    res.append(ok("🗑️ 两个桶**今天都翻过了** ⇒ 整行不出现（按了也是空的，别占单子）",
+                  "翻垃圾桶" not in _Lt3, _Lt3))
+    _Lt4, _Lt4txt = _labels2(chore_tiles=[_T_BUSH], trash_cans=[(13, 86), (19, 89)],
+                             trash_checked=[0])
+    res.append(ok("🗑️ 翻过 1 个、还剩 1 个 ⇒ 那行在，而且理由栏**说清「今天还没翻的 1 个」**",
+                  "翻垃圾桶" in _Lt4 and "还没翻的 1 个" in _Lt4txt, _Lt4txt[:200]))
+    _Lt5, _Lt5txt = _labels2(chore_tiles=[_T_BUSH], trash_cans=[(13, 86)], trash_checked=[])
+    res.append(ok("🗑️ 新 DLL、一个都没翻（`garbageChecked=false`）⇒ 照旧出现（**假值 ≠ 读不到**）",
+                  "翻垃圾桶" in _Lt5 and "还没翻的 1 个" in _Lt5txt, _Lt5txt[:200]))
+    # 🍵🍎 203g：三种（浆果/茶叶/果子）是**同一次动作** ⇒ **只留一行**，行文按本图有什么自己念
+    _SUM17 = {"timeOfDay": 900, "season": "summer", "dayOfMonth": 17, "weather": 0}
+    _SPR16 = {"timeOfDay": 900, "season": "spring", "dayOfMonth": 16, "weather": 0}
+    _Ltf, _Ltf_txt = _labels2(chore_tiles=[_TEATA, _FRUIT], time_dict=_SUM17)
+    res.append(ok("🍵🍎 单子**只有一行**，标签按本图念：「摘 茶叶 + 摇 果树(摘果子)」",
+                  any(("摘 茶叶" in x and "摇 果树" in x) for x in _Ltf), _Ltf))
+    res.append(ok("🍎 理由栏明说「果子摇下来**在地上**，要再走上去捡」（别让 AI 以为会自己进包）",
+                  "走上去捡" in _Ltf_txt, _Ltf_txt[:260]))
+    _Lb_only, _ = _labels2(chore_tiles=[_T_BUSH], time_dict=_SPR16)
+    res.append(ok("🍓 只有浆果时，标签**照旧是「摇 浆果丛」**（老习惯不断档）",
+                  "摇 浆果丛" in _Lb_only, _Lb_only))
     _Lc, _Lc_txt = _labels2(chore_tiles=[_T_BUSH], cola=[(37, 17), (38, 17)])
     res.append(ok("🥤 单子上出现「买 Joja 可乐 (75g)」（**花钱的必须把价格写在行上**）",
                   any("Joja 可乐" in x and "75g" in x for x in _Lc), _Lc))

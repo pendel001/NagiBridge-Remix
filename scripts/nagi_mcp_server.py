@@ -3458,6 +3458,23 @@ def _trash_cans_here(loc_name: str):
             if str(a.get("action") or "").upper().startswith("GARBAGE")]
 
 
+def _trash_left_here(loc_name: str):
+    """🗑️ 本图垃圾桶 `(总数, 今天还没翻的)` —— 判据 = `/scan` 的 `garbageChecked`（游戏 `CheckedGarbage`）。
+
+    ⚠️ **老 DLL 没有这个字段** ⇒ 返回 `(总数, None)`：**"不知道" ≠ "都没翻"**（宁缺勿编）——
+       消费侧要按 `None` 退回老文案，别把"读不到"说成"还有 N 个要翻"。
+    ⚠️ 判据只此一处（状态条/单子那行都从这儿拿），别在别处再数一遍 Action 瓦片。
+    """
+    acts = [a for a in _scan_actions_here(loc_name)
+            if str(a.get("action") or "").upper().startswith("GARBAGE")]
+    total = len(acts)
+    if not total:
+        return 0, 0
+    if not any("garbageChecked" in a for a in acts):
+        return total, None
+    return total, sum(1 for a in acts if not a.get("garbageChecked"))
+
+
 def _cola_machine_here(loc_name: str):
     """🥤 本图可乐机的瓦片 `(x, y)`（**右半台**；没有就 `None`）。
 
@@ -3850,6 +3867,43 @@ def _bush_nuts_here() -> bool:
                for n in (nn.get("nuts") or []))
 
 
+def _bush_shake(t: dict, berry_season: bool):
+    """🍓🌰🍵 这一格灌木**现在摇得出东西吗**，摇出来是哪一种 → `(kind, ok)`。
+
+    `kind` ∈ `"berry"`（野浆果，size 0/1/2）· `"tea"`（茶叶，size 3）· `"walnut"`（金核桃，size 4）。
+
+    ⚠️ **判据三层，越前越准**（新 DLL 一上就永远走第一层）：
+      ① `bushShakeable`（2026-10-02 晚 C# 新增）= 游戏 `Bush.shake()` 的**原条件**
+         `!townBush && readyForHarvest() && inBloom()`（反编译 `Bush.cs:403`）；
+      ② 没有它但有 `bushSize`：`bushBloom && bushInSeason` —— 同一件事的**近似**
+         （差 `!townBush`：Town 里 x%5!=0 的装饰丛也亮那一帧，但摇不出东西）；
+      ③ 老 DLL（连 `bushSize` 都没有）：`bushBloom && berry_season` —— **当年只能靠日历猜**
+         （会把茶树丛/夏天残留帧当浆果，恒 2026-10-02 真机逮到的就是这一档）。
+    ⚠️ 摇出来的东西（同一份反编译 `GetShakeOffItem()`）：size3→茶叶 `(O)815` · size4→金核桃 `(O)73` ·
+      0/1/2→春树莓 `(O)296` / 秋黑莓 `(O)410` / **其它季节 `null`（摇不出）**。
+    """
+    _sz = t.get("bushSize")
+    if _sz is None:
+        return "berry", bool(t.get("bushBloom")) and berry_season      # ③
+    kind = {0: "berry", 1: "berry", 2: "berry", 3: "tea", 4: "walnut"}.get(int(_sz), "berry")
+    if "bushShakeable" in t:
+        return kind, bool(t.get("bushShakeable"))                      # ①
+    _in_season = t.get("bushInSeason")
+    if _in_season is None:
+        _in_season = berry_season
+    return kind, bool(t.get("bushBloom")) and bool(_in_season)          # ②
+
+
+def _walnut_bush_count(c: dict) -> int:
+    """🌰 本图**可摇的核桃丛**几处（姜岛那条例外用：一直放行到本图核桃摇完）。
+
+    ⚠️ 判据**只有这一处**（状态条与单子两处共用，别各写一份）：
+       有 `bushSize`（新 DLL）⇒ **只数 size==4**（精确，茶树丛 size3 不再混进来）；
+       老 DLL 没这字段 ⇒ 退回"帧数"那套（会多算茶树丛 —— 姜岛本没有茶树丛，退化可接受）。
+    """
+    return int(c.get("walnut_bush") or 0) or int(c.get("bush_bloom") or 0)
+
+
 def _forage_counts(tiles: list, has_hoe: bool, berry_season: bool) -> dict:
     """把 `/surroundings` 的 tiles 分成"能采/能挖的几类" → 计数字典（**分类只此一处**）。
 
@@ -3864,20 +3918,39 @@ def _forage_counts(tiles: list, has_hoe: bool, berry_season: bool) -> dict:
     ⚠️ **苔藓那几类一律照数**（不再由 `show_moss` 在这里挡）—— 因为"今天该不该报苔藓"现在
        取决于**扫没扫到苔藓**，而那要数完才知道 ⇒ 计数在这儿、**显不显示由调用方按 `_moss_visible()` 定**。
     """
-    c = {"bush": 0, "bush_bloom": 0, "spot": 0, "ginger": 0, "onion": 0, "truffle": 0,
+    c = {"bush": 0, "bush_bloom": 0, "tea": 0, "walnut_bush": 0, "fruit_tree": 0,
+         "fruit_n": 0, "spot": 0, "ginger": 0,
+         "onion": 0, "truffle": 0,
          "moss_tree": 0, "greenrain_tree": 0, "moss_big": 0, "moss_small": 0,
          "forage": {}, "dig_tiles": []}
     moss_big_tiles = set()
     counts = c["forage"]
     for t in tiles or []:
+        if t.get("terrain") == "FruitTree":
+            # 🍎 果树（恒 2026-10-02：「**对哦……好多果树也可以摇**」）——`fruitCount>0` = 挂着熟果。
+            #    ⚠️ 摇它**果子掉地上**（`FruitTree.shake()` 逐颗 `Location.debris.Add` + `fruit.Clear()`），
+            #       得再走上去捡 ⇒ 那是执行侧的事（`berry_run` 摇完补一段"走过去捡"）。
+            #    真机（温室 (12,7)）：`scene at 12 7` → 地上 3×Banana → 走到 (12,8) → 背包 Banana×3 ✓
+            _fn = int(t.get("fruitCount") or 0)
+            if _fn:
+                c["fruit_tree"] += 1
+                c["fruit_n"] += _fn
+            continue
         if t.get("terrain") == "Bush":
-            # 🍓 只有**浆果季**才把 `bushBloom` 当"有莓果"（`bushBloom` = 游戏那个
-            #    `Bush.tileSheetOffset==1`，茶树丛/核桃丛的"有货"也是这一帧 —— 见 `_BERRY_WINDOWS`）
+            # 🍓🌰🍵 三件事分别记（判据**只有 `_bush_shake()` 一处**：新 DLL 直接问游戏）：
+            #    · `bush`        = **野浆果丛**现在摇得出（→ 单子「摇 浆果丛」）
+            #    · `tea`         = **茶树丛**茶叶好了（→ 单子「摘 茶叶」）
+            #    · `walnut_bush` = **核桃丛**还挂着（→ 姜岛那条例外：摇到没有为止）
+            #    `bush_bloom` 仍记**原始帧数**（老 DLL 判"姜岛核桃丛"那种退化路径要用它）。
             if t.get("bushBloom"):
-                # ⚠️ `bush_bloom` = **原始**帧数（不过季）——留一份给调用方判"姜岛核桃丛"那种例外
-                #    （恒 2026-10-02：姜岛摇到本图核桃没了为止；判据要 `/nuts`，得先知道有没有这种丛）。
                 c["bush_bloom"] += 1
-                if berry_season:
+            _kind, _ok = _bush_shake(t, berry_season)
+            if _ok:
+                if _kind == "tea":
+                    c["tea"] += 1
+                elif _kind == "walnut":
+                    c["walnut_bush"] += 1
+                else:
                     c["bush"] += 1
             continue
         if has_hoe and t.get("forageCrop") == "2":
@@ -3969,11 +4042,14 @@ def _forage_summary(is_green_rain: bool = None, time_dict: dict = None) -> str:
         #    这里只拿结果回来排版，别再往回写一遍分类。
         _c = _forage_counts(r.get("tiles", []), api.has_item("Hoe"),
                             _in_berry_season(time_dict))
-        # 🌰 姜岛那条例外（恒 2026-10-02：一直放行到本图核桃摇完）——同 `_im_chores` 那处。
-        if _c.get("bush_bloom") and not _c.get("bush") and _bush_nuts_here():
-            _c["bush"] = int(_c["bush_bloom"])
+        # 🌰 姜岛那条例外（恒 2026-10-02：一直放行到本图核桃摇完）——判据抽在 `_walnut_bush_count()`
+        _wal = _walnut_bush_count(_c)
+        if _wal and not _c.get("bush") and _bush_nuts_here():
+            _c["bush"] = _wal
         show_moss = _moss_visible(_c, bool(is_green_rain))
         berry_bushes = _c["bush"]
+        tea_bushes = int(_c.get("tea") or 0)
+        fruit_trees = int(_c.get("fruit_tree") or 0)
         spot_count = _c["spot"]
         ginger_count = _c["ginger"]
         onion_count = _c["onion"]
@@ -3983,12 +4059,18 @@ def _forage_summary(is_green_rain: bool = None, time_dict: dict = None) -> str:
         counts = _c["forage"]
         moss_weed_big = _c["moss_big"]
         moss_weed_small = _c["moss_small"]
-        if not counts and not berry_bushes and not spot_count and not ginger_count \
+        if not counts and not berry_bushes and not tea_bushes and not fruit_trees \
+                and not spot_count and not ginger_count \
                 and not onion_count and not truffle_count and not moss_tree_count \
                 and not greenrain_tree_count and not moss_weed_big and not moss_weed_small:
             return ""
         parts = []
         if berry_bushes: parts.append(f"🍓浆果灌木×{berry_bushes}")
+        # 🍵🍎 2026-10-02 恒：「**茶树也值得摇**」「**好多果树也可以摇**」——
+        #    三种都是"走过去按一下、东西进包/掉地上"，**同一次动作**，所以都报在这一行里。
+        if tea_bushes: parts.append(f"🍵茶树丛×{tea_bushes}(茶叶好了)")
+        if fruit_trees:
+            parts.append(f"🍎果树×{fruit_trees}(挂果{int(_c.get('fruit_n') or 0)}个·摇下来要捡)")
         if ginger_count: parts.append(f"🫚姜×{ginger_count}")
         if onion_count: parts.append(f"🌱大葱×{onion_count}")
         if truffle_count: parts.append(f"🍄松露×{truffle_count}")
@@ -22631,10 +22713,19 @@ def _im_chores(state: dict, surr: dict, animals: dict) -> dict:
     except Exception:
         _c = {}
     # 🌰 非浆果季、但本图真有"贴图有货"的灌木 ⇒ 问一句是不是姜岛核桃丛（有就一直放行/报这行）
-    if _c.get("bush_bloom") and not _c.get("bush") and _bush_nuts_here():
-        _c["bush"] = int(_c["bush_bloom"])
+    #    判据抽在 `_walnut_bush_count()`（与状态条那处共用，别各写一份）
+    _wal = _walnut_bush_count(_c)
+    if _wal and not _c.get("bush") and _bush_nuts_here():
+        _c["bush"] = _wal
     if _c.get("bush"):
         out["berry"] = int(_c["bush"])
+    # 🍵🍎 2026-10-02 恒：「茶树也值得摇」+「好多果树也可以摇」——**同一次动作**（走过去按一下），
+    #    所以账一起给、单子上还是那一行（标签会按本图有什么自己念，见 `intent_menu.BERRY_V`）。
+    if _c.get("tea"):
+        out["tea"] = int(_c["tea"])
+    if _c.get("fruit_tree"):
+        out["fruit_tree"] = int(_c["fruit_tree"])
+        out["fruit_n"] = int(_c.get("fruit_n") or 0)
     # 🪱 斑点那笔账**只算身边**（切比雪夫 ≤ `_SPOT_RADIUS`）——恒：「不需要特定跑大老远锄」。
     #    ⚠️ 过滤用的是 `_forage_counts` 回的那份**坐标**（分类判据仍只一处），别在这儿重认一遍 objId。
     try:
@@ -22663,16 +22754,18 @@ def _im_chores(state: dict, surr: dict, animals: dict) -> dict:
     if _ready:
         out["crab"] = int(_ready)
     # ── 🗑️ 本图垃圾桶（恒 2026-10-02：「**捡垃圾可以上**」）──
-    #    ⚠️ 判据**只此一处**：`_trash_cans_here()`（跟状态条那条"旁边就是个垃圾桶"共用；
+    #    ⚠️ 判据**只此一处**：`_trash_left_here()`（跟状态条那条"旁边就是个垃圾桶"共用；
     #       它按图名缓存 `/scan` ⇒ 同图不重复打）。
-    #    ⚠️ 诚实边界：账是「**本图有 N 个桶**」，**不是"还有没翻的"**——游戏没暴露
-    #       `CheckedGarbage`（要精确得 C# 报，进批）⇒ 理由栏必须把这条写出来。
+    #    ⚠️ 2026-10-02（C# 之后）：游戏那边**暴露得出**"今天翻过没有"了
+    #       （`Game1.netWorldState.Value.CheckedGarbage`）⇒ `garbage` = 本图桶数、
+    #       `garbage_left` = **还没翻的**（老 DLL 没这字段 ⇒ `None` = 不知道，消费侧照老文案说）。
     try:
         _loc = ((state or {}).get("location") or {})
         _loc = _loc.get("name") if isinstance(_loc, dict) else _loc
-        _cans = _trash_cans_here(_loc or "")
-        if _cans:
-            out["garbage"] = len(_cans)
+        _tot, _left = _trash_left_here(_loc or "")
+        if _tot:
+            out["garbage"] = int(_tot)
+            out["garbage_left"] = None if _left is None else int(_left)
         # 🥤 可乐机（恒 2026-10-02：「不用了，不要加状态条了，**上单吧**」）
         #    判据**不问地图名**（Action 瓦片里写着 `ColaMachine` 就是有）；跟垃圾桶共用一次 `/scan`。
         _cola = _cola_machine_here(_loc or "")

@@ -6792,6 +6792,8 @@ public class ModEntry : Mod
                 bool treeTempGreenRain = false;  // 🌿 临时绿雨树
                 int cropPhase = -1;
                 bool harvestable = false;
+                int fruitCount = 0;              // 🍎 果树上**现在挂着几个熟果**（`FruitTree.fruit.Count`）
+                string? fruitName = null;        // 🍎 那是什么果子（DisplayName）
                 string? fertStr = null;   // 化肥 item ID 字符串（SDV1.6 HoeDirt.fertilizer 是 NetString，如 "368"/"(O)368"）— 撒化肥/检测兜底用
 
                 if (loc.terrainFeatures.TryGetValue(tileVec, out var tf))
@@ -6836,6 +6838,24 @@ public class ModEntry : Mod
                     {
                         terrainName = "GiantCrop";
                     }
+                    else if (tf is FruitTree ftree)
+                    {
+                        // 🍎 2026-10-02 恒：「**对哦……好多果树也可以摇**」——果树是**另一类**地形
+                        //    （`FruitTree`，不是 `Bush`），而摇它要的是同一件事：
+                        //      `performUseAction`→`shake()`（反编译 `FruitTree.cs:361-425`）把
+                        //      `tree.fruit`（`NetList<Item>`，1.6）**逐颗变成地上的 `Debris`**、
+                        //      然后 `fruit.Clear()` ⇒ **果子落在地上、再走上去捡**（不是直接进包）。
+                        //    ⇒ AI 唯一看不见的那件事 = "**哪几棵现在有熟果**"，报出来（`fruitCount`）。
+                        //    ⚠️ 温室里的果树 `IgnoresSeasonsHere()=true` ⇒ **全年结果**。
+                        terrainName = "FruitTree";
+                        try
+                        {
+                            fruitCount = ftree.fruit.Count;
+                            if (fruitCount > 0 && ftree.fruit[0] != null)
+                                fruitName = ftree.fruit[0].DisplayName ?? ftree.fruit[0].Name;
+                        }
+                        catch { }
+                    }
                 }
 
                 string? resourceName = null;
@@ -6857,6 +6877,9 @@ public class ModEntry : Mod
                 // 🍓 灌木丛（2026-08-17 恒+克劳德：Bush 不在 terrainFeatures，在 largeTerrainFeatures！）
                 string? largeTerrainName = null;
                 bool bushInBloom = false;
+                int bushSize = -1;               // 🍓 0/1/2=野浆果丛 · 3=茶树丛 · 4=核桃丛（`Bush.walnutBush`）
+                bool bushInSeason = false;       // 🌸 游戏自己的 `Bush.inBloom()`：**这一季它到底产不产**
+                bool bushShakeable = false;      // 🎯 游戏 `Bush.shake()` 的**原条件**（见下）
                 foreach (var ltf in loc.largeTerrainFeatures)
                 {
                     if (ltf.Tile == tileVec)
@@ -6868,6 +6891,28 @@ public class ModEntry : Mod
                             // ⚠️ 2026-08-17 恒实测：inBloom() 只按季节判断（spring15-18 全灌木 true），
                             //    真正结果（有莓果可摇）看 tileSheetOffset==1（贴图=果）。Backwoods 11棵里只有3棵结果。
                             bushInBloom = bush.tileSheetOffset.Value == 1;
+                            // ⚠️⚠️ 2026-10-02 补（恒真机逮到"夏天报浆果丛"的病根就是这里）：
+                            //    **光有上面那一帧分不出是哪一丛** —— 茶树丛(size3)的"茶叶好了"、
+                            //    核桃丛(size4)的"还挂着核桃"用的**也是这一帧**；而且 size 0/1/2 的丛
+                            //    在**夏天不会把帧清回 0**（`Bush.cs:505-507` 只对 `season != Summer` 清）
+                            //    ⇒ 春天留下的那一帧到夏天照样报"有莓果"。
+                            //    ⇒ 把**游戏自己的两件事**一起报出来（判据问游戏，别让 Python 按季节猜）：
+                            //      `bushSize`     = `Bush.size`（0/1/2 野浆果 · 3 茶 · 4 核桃）
+                            //      `bushInSeason` = `Bush.inBloom()`（这一季产不产东西；夏天对野浆果=False）
+                            bushSize = bush.size.Value;
+                            try { bushInSeason = bush.inBloom(); } catch { }
+                            // 🎯 **这一丛现在摇得出东西吗** = 游戏 `Bush.shake()` 里那句原条件：
+                            //    `!townBush && readyForHarvest() && inBloom()`（反编译 `Bush.cs:403`）。
+                            //    摇出来的是什么由 `GetShakeOffItem()` 按 size 定：
+                            //      3 → 茶叶 `(O)815` · 4 → 金核桃 `(O)73` · 0/1/2 → 春树莓 `(O)296`／
+                            //      秋黑莓 `(O)410`／**其它季节 null（摇不出）**。
+                            //    ⚠️ `!townBush` 这一项**只有游戏知道**（Town 里 x%5!=0 的装饰丛同样会亮
+                            //       那一帧、但摇不出东西）⇒ 必须由 C# 报，Python 猜不出来。
+                            try
+                            {
+                                bushShakeable = !bush.townBush.Value && bush.readyForHarvest() && bush.inBloom();
+                            }
+                            catch { }
                         }
                         break;
                     }
@@ -6884,6 +6929,10 @@ public class ModEntry : Mod
                     if (objId != null) tile["objId"] = objId;
                     if (objForage) tile["forage"] = true;   // 🌿 游戏判的"可手捡"（见上面 objForage 注释）
                     if (tileTerrain != null) tile["terrain"] = tileTerrain;
+                    // 🍓 灌木三件（消费侧优先用前两件，`bushBloom` 是**旧字段**，含义只是"贴图切到第 1 帧"）：
+                    if (bushSize >= 0) tile["bushSize"] = bushSize;
+                    if (bushInSeason) tile["bushInSeason"] = true;
+                    if (bushShakeable) tile["bushShakeable"] = true;   // 🎯 摇得出东西（游戏原判据）
                     if (bushInBloom) tile["bushBloom"] = true;   // 🍓 灌木在花期=可摇树莓/黑莓
                     if (largeTerrainName != null && largeTerrainName != "Bush")
                         tile["largeTerrain"] = largeTerrainName;
@@ -6891,6 +6940,12 @@ public class ModEntry : Mod
                     // ⚠️ 2026-08-17：大葱 cropName(indexOfHarvest) 为空但 forageCropType="1" 非空——
                     //    harvestable/cropPhase 不能只跟 cropName 走（否则成熟大葱漏报 harvestable）
                     if (cropName != null) tile["crop"] = cropName;
+                    if (fruitCount > 0)
+                    {
+                        // 🍎 果树挂了几个熟果（**摇它会掉地上**，走上去才捡得到）
+                        tile["fruitCount"] = fruitCount;
+                        if (fruitName != null) tile["fruitName"] = fruitName;
+                    }
                     if (cropName != null || forageCropType != null)
                     {
                         tile["cropPhase"] = cropPhase;
@@ -19605,7 +19660,21 @@ public class ModEntry : Mod
                     {
                         string? action = loc.doesTileHaveProperty(x, y, "Action", "Buildings");
                         if (action != null)
-                            actions.Add(new { x, y, action });
+                        {
+                            // 🗑️ 2026-10-02：垃圾桶**今天翻过没有** = `Game1.netWorldState.Value.CheckedGarbage`
+                            //    （反编译 `GameLocation.CheckGarbage:8383` 就是 `if (!CheckedGarbage.Add(id)) return false`
+                            //     ⇒ 这个集合就是"今天已翻过的桶 id"）。判据**由游戏给**，别让消费侧猜：
+                            //    单子那行原来只能写"本图有 N 个桶"，说不清"还剩几个没翻"（恒 2026-10-02 记过这笔）。
+                            //    非垃圾桶的 Action 瓦片 ⇒ `garbageChecked` 为 `null`（消费侧认 `null` = 不适用）。
+                            bool? garbageChecked = null;
+                            if (action.StartsWith("Garbage ", StringComparison.OrdinalIgnoreCase))
+                            {
+                                string gid = action.Substring("Garbage ".Length).Trim();
+                                try { garbageChecked = Game1.netWorldState.Value.CheckedGarbage.Contains(gid); }
+                                catch { }
+                            }
+                            actions.Add(new { x, y, action, garbageChecked });
+                        }
                     }
                 }
                 tcs.SetResult(new { ok = true, location = loc.Name, count = actions.Count, actions });
