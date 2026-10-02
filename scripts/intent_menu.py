@@ -192,6 +192,11 @@ class Ctx:
     #       `at` 指出来的世界动作，`do_row` 的菜单态守卫**全挡**。那是**假门**
     #       （2026-10-01 真机三步走完：show 空 → at 给"坐椅子" → do 被挡）。
     menu_hint: str = ""
+    # 🎓 2026-10-02 恒：「补一下缺门」—— 有些菜单**这一刻的正事不是"关掉"**：
+    #    精通碑开着时抬头写着"可以领"，而单子上只有「关掉界面」⇒ **领取那件事没有行**。
+    #    `menu_claim` = 服务器算好的**那一行的标题**（`""` = 这个菜单没有可领的）。
+    #    判据在服务器（`/state.activeMenu.mastery.canClaim`，跟抬头那句话**同源**），这一层只消费。
+    menu_claim: str = ""
     # 📋 **开着的菜单里摊出来的东西**（2026-10-01 · P-menus）。
     #    ⚠️ **由服务器挑好递进来**（`_im_menu_data`），这一层**不自己打 `/menu`、也不认菜单名**
     #       —— 跟 `menu_exit`/`shop`/`caps` 同一个形状：判据只有一处，消费侧只管用。
@@ -1878,6 +1883,23 @@ CLOSE_V = Verb("close_menu", "关掉界面", 30, _close_can, _close_reason, _clo
                exec=_exec_close, menu_ok=True)
 
 
+# 🎓 「领取」（**菜单里的一次性正事**）—— 恒 2026-10-02 点名的**缺门**：
+#    精通碑开着那一刻，抬头写着「可以领：神秘树种/宝藏图腾 → `menu click(button=mainButton)`」，
+#    可单子上**只有「关掉界面」** ⇒ AI 只看单子就会把那件正事错过去。
+#    ⚠️ 判据**全在服务器**（`Ctx.menu_claim` = 这一行的标题；空串 = 这块没得领 ⇒ 整行不出现），
+#       这一层**不认菜单名**（跟 `menu_exit` 同一个形状）。
+#    ⚠️ 权重 78：菜单态里它排在「关掉界面」（30）前面 —— **那一刻它才是正事**。
+#    📌 通式（这一批两次踩到同一个形状）：**"菜单态只有出口行"本身就是一种缺门** ——
+#       凡是"抬头上写着某件可做的事、而单子上没有对应行"的地方，都得补一行，
+#       否则 AI 的注意力（和它的手）就只剩"关掉界面"。
+_CLAIM_V = Verb("menu_claim", "领取", 78,
+                lambda c, t: CAN_YES if (c.menu_claim or "") else CAN_NO,
+                lambda c, t: f"{c.menu_claim} · 敲了就去领（领完这块就点亮了）",
+                lambda c, t: c.menu_claim or "领取", "world",
+                exec=lambda c, t, run: _exec_chore(c, t, run, "menu_claim", "领取"),
+                menu_ok=True)
+
+
 # ═══════════════════════════════════════════════════════════════════
 # 📋 菜单摊开：**开着的容器菜单里有什么**（2026-10-01 · P-menus 第一刀）
 # ═══════════════════════════════════════════════════════════════════
@@ -3047,6 +3069,8 @@ VERBS: list = [
     # 🌿 2026-10-01 恒「接吧」：P1 那批**空参行**（早就有的 6 个 op，一直没上单子）。
     #    判据全在 `Ctx.chores`（服务器算好的账）；执行只调现成 op —— 见上面那一段的账。
     BERRY_V, SPOT_V, MOSS_V, CRAB_V, PAN_V, MILK_V,
+    # 🎓 2026-10-02 恒「补一下缺门」：菜单里的一次性正事（精通碑领取）也要有行。
+    _CLAIM_V,
     # 🗑️ 2026-10-02 恒「捡垃圾可以上」：**翻垃圾桶**（账 = `Ctx.chores["garbage"]`，
     #    判据是服务器那侧的 `_trash_cans_here()`，跟状态条那条提示共用一份）。
     TRASH_V,
@@ -4056,7 +4080,7 @@ def scan_world(surr: dict, machines: list = None, chests: list = None,
 def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None,
              caps: dict = None, seats: dict = None, furniture: dict = None,
              animals: dict = None, shop: dict = None, beds: list = None,
-             menu_exit: str = "", menu_hint: str = "", worn: dict = None,
+             menu_exit: str = "", menu_hint: str = "", menu_claim: str = "", worn: dict = None,
              menu_data: dict = None, reforge: dict = None, mwork: dict = None,
              doors: dict = None, chores: dict = None, clint_open: bool = False,
              hay: dict = None, pick: dict = None) -> Ctx:
@@ -4132,7 +4156,7 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
                menu=(state or {}).get("activeMenu"),
                event=(state or {}).get("activeEvent"),
                # 🚪 界面出口（服务器算好的；`""` = 这一刻不该给这一行）。
-               menu_exit=menu_exit or "", menu_hint=menu_hint or "",
+               menu_exit=menu_exit or "", menu_hint=menu_hint or "", menu_claim=menu_claim or "",
                # 📋 菜单内容（同上：服务器挑好递进来，这里**不猜**）。
                menu_data=menu_data or {},
                # 🔨 铁砧能不能重铸（同上：服务器探针算好递进来，「铱锭要几块」这种数**不在这儿编**）。

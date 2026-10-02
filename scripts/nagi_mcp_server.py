@@ -3129,6 +3129,57 @@ _NPC_HINT_SEEN = {"loc": None, "names": None, "ts": 0.0}
 _NPC_HINT_GAP = 300.0      # 秒：同一批 NPC 最多 5 分钟重播一次（够 AI 看见，又不至于每发都刷）
 
 
+def _menu_claim_label(active_menu: dict) -> str:
+    """🎓 菜单里**这一刻能领的东西** → 那一行的标题（`""` = 没得领）。
+
+    ⚠️ 判据**复用现成那份**：`/state.activeMenu.mastery.canClaim` —— 跟抬头那句
+       「精通**XX**碑，**可以领**：…」**同源**（`C# BuildMasteryInfo`，`/state` 与 `/menu` 共用）。
+       别在这儿另判一套（本项目老病：同一件事写两遍必漂）。
+    ⚠️ 恒 2026-10-02「补一下缺门」：那一刻单子上原来**只有「关掉界面」** ——
+       抬头喊"可以领"、单子却没有那行 ⇒ AI 只看单子就会把正事错过去。
+    """
+    mt = ((active_menu or {}).get("type") or "").lower()
+    if mt == "masterytrackermenu":
+        mt2 = (active_menu or {}).get("mastery") or {}
+        if mt2.get("canClaim") and not mt2.get("claimed") and not mt2.get("isOverview"):
+            _who = mt2.get("title") or mt2.get("skill") or "精通"
+            _rw = [x.get("name") or x.get("id") for x in (mt2.get("rewards") or []) if x]
+            _tail = ("（" + "、".join(str(x) for x in _rw[:3]) + "）") if _rw else ""
+            return f"领 精通{_who}碑的奖励{_tail}"
+    return ""
+
+
+def _menu_claim_now() -> str:
+    """🎓 领下当前精通碑的奖励（单子那行「领取」的执行侧）→ 一句话。
+
+    底层 = 现成端点 `menu click(button=mainButton)`（2026-10-02 真机亲测：钱/奖励到手、
+    碑变 ✅、菜单自己关）；这一层只做**回读**：领完这块碑该亮了、名额该少一个。
+    """
+    try:
+        st = api.state(light=True)
+        am = st.get("activeMenu") or {}
+        before = (am.get("mastery") or {})
+        r = api._ai_post("/menu/click", {"button": "mainButton"}) or {}
+        if not r.get("ok"):
+            return f"❌ 没领成：{r.get('error') or r}"
+        time.sleep(0.4)
+        m = api.mastery() or {}
+        pl = {((p.get("skill") or "")).lower(): p for p in (m.get("plaques") or [])}
+        _sk = ((before.get("skill") or "")).lower()
+        if _sk and (pl.get(_sk) or {}).get("claimed"):
+            return (f"🎓 领到了（{before.get('title') or before.get('skill')}）—— "
+                    f"这块碑点亮了，精通名额还剩 {m.get('unspent')} 个")
+        return (f"⚠️ 点了领取，可**回读没看到这块碑点亮**（`/mastery` 里 "
+                f"{(pl.get(_sk) or {}).get('skill') or _sk} claimed="
+                f"{(pl.get(_sk) or {}).get('claimed')}、名额 {m.get('unspent')}）—— 自己看一眼")
+    except Exception as e:
+        return f"❌ 领取出错：{type(e).__name__}: {e}"
+
+
+def _menu_claim_label_placeholder():
+    return None
+
+
 def _npcs_hint(state: dict, loc_name: str = "") -> str:
     """👥 本图 NPC 名字 + 「可以 chat / gift」—— 进图一次，零额外请求。
 
@@ -3145,7 +3196,7 @@ def _npcs_hint(state: dict, loc_name: str = "") -> str:
        📌 通式：**"只报一次"的账，只有在"消费它的那一发一定是给 AI 看的那一发"时才成立** ——
           这个项目里中间层太多（导航/域 op/后台循环），所以这类账最容易变成"谁也看不见"。
     """
-    if _OPS_INNER["n"] > 0 or not loc_name:
+    if not loc_name:
         return ""
     names = []
     for n in ((state or {}).get("npcs") or []):
@@ -22604,6 +22655,7 @@ def _im_ctx():
                                 seats=seats, furniture=furniture, animals=animals,
                                 shop=_im_shop(state), beds=_im_beds(state),
                                 menu_exit=_menu_exit_of(_mt),
+        menu_claim=_menu_claim_label((state or {}).get("activeMenu") or {}),
                                 menu_hint=(_close_hint(_mt) if _mt else ""),
                                 # 📋 菜单里的东西（2026-10-01 · P-menus）：**只有菜单开着时
                                 #    才多打一次 `/menu`**，没菜单时一个字都不多花
@@ -23165,6 +23217,7 @@ def _im_run(op, args):
         #    ⚠️ 调现成的 `skip_event()` —— **别在单子这层自己按 ESC**：
         #       没事件时 `skipEvent()` 会退化成"按 ESC 关菜单"（另一件事），
         #       而 `skip_event()` 会把这种情况如实报出来。
+        "menu_claim": lambda: _menu_claim_now(),
         "skip": lambda: skip_event(),
         # 🧾 确认过夜结算（2026-10-01）：结算屏（ShippingMenu）上「确认结算」按下去走这里。
         "settle": lambda: confirm_settlement(),
