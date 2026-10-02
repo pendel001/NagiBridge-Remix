@@ -2854,10 +2854,70 @@ public class ModEntry : Mod
         }, token);
     }
 
+    // 🧾 2026-10-02：**mod 侧请求日志** —— 每个"会动世界"的请求写一行到 mod 目录的 `requests.log`。
+    //
+    //    为什么非要有它：恒两次问「**它怎么自己又跑起来了**」，而 Python 侧能查的全是**进程内**的
+    //    （`[walk]` 只进跑代码那个进程的 stdout；MCP 工具日志只记"哪个工具被调了"）⇒
+    //    **绕过 :8000 直打 7842/7843 的调用（裸 curl / 别人的探针 / 任何外部进程）一条都不留痕**。
+    //    这里是**唯一**能抓住它们的地方：请求进到游戏这一层，**谁都得从这儿过**。
+    //    ⚠️ 只记"会动世界"的（所有 POST + 走位/传送到 6 个 GET），**不记 GET /state 那类读**
+    //    （状态条每发都要读好几次，记了会把日志淹掉）。
+    //    ⚠️ **绝不读 body**：读了就会把 `ctx.Request.InputStream` 消费掉，后面 handler 的 `ReadJson` 全废。
+    //    ⚠️ 全是 try/catch 包着：日志坏不能把请求弄坏。
+    private static readonly object _reqLogLock = new();
+    private bool _reqMetaLogged;
+
+    private void AppendRequestLog(string line)
+    {
+        try
+        {
+            lock (_reqLogLock)
+            {
+                var p = Path.Combine(Helper.DirectoryPath, "requests.log");
+                File.AppendAllText(p, line + Environment.NewLine, System.Text.Encoding.UTF8);
+            }
+        }
+        catch { }
+    }
+
+    private void LogRequest(HttpListenerContext ctx, string path, string? method)
+    {
+        try
+        {
+            bool interesting = method == "POST"
+                || path.Contains("/walk_to") || path.Contains("/position")
+                || path.Contains("/move") || path.Contains("/warp")
+                || path.Contains("/tool") || path.Contains("/interact");
+            if (!interesting) return;
+            int port = 0;
+            try { port = (ctx.Request.LocalEndPoint as IPEndPoint)?.Port ?? 0; } catch { }
+            if (!_reqMetaLogged)
+            {
+                _reqMetaLogged = true;   // 只写一次：把"这个 pid 是谁、监听哪个端口"钉住（端口↔角色的映射是动态的）
+                try
+                {
+                    EnqueueMainThread(() =>
+                    {
+                        try
+                        {
+                            AppendRequestLog($"=== meta pid={Environment.ProcessId} player={Game1.player?.Name ?? "?"} " +
+                                             $"listenPort={port} at={DateTime.Now:MM-dd HH:mm:ss}");
+                        }
+                        catch { }
+                    });
+                }
+                catch { }
+            }
+            AppendRequestLog($"{DateTime.Now:MM-dd HH:mm:ss} pid={Environment.ProcessId} p{port} {method} {path}");
+        }
+        catch { }
+    }
+
     private void HandleRequest(HttpListenerContext ctx)
     {
         var path = ctx.Request.Url?.AbsolutePath ?? "/";
         var method = ctx.Request.HttpMethod;
+        LogRequest(ctx, path, method);      // 🧾 留痕（见上面那段注释：这是抓"外部调用"的唯一地方）
 
         try
         {
