@@ -782,6 +782,40 @@ def build_calendar_line(season: str, day: int, day_index: int, year: int = 1) ->
 
 
 # ═══════════════════════════════════════════════════════════════
+#  🍓 浆果窗口 —— **判据只此一处**（服务器显示 + `berry_run.py` 执行，两边共用）
+#
+#  游戏事实：野生浆果灌木只在两个窗口结果 ——
+#    · **salmonberry（树莓）春 15~18**   · **blackberry（黑莓）秋 8~11**
+#  ⚠️ **为什么必须跟"灌木"本身的样子分开判**（2026-10-02 真机，恒「不对啊，现在是夏天，不会有的」）：
+#     C# 的 `/surroundings.bushBloom` 就是游戏那个 `Bush.tileSheetOffset == 1` —— 它的意思只是
+#     **"贴图切到第 1 帧"**。夏天在山地实测：7 棵 `bushBloom=True` 的灌木，
+#     `berry_run` 摇了 6 棵 —— **背包一件都没多**，摇完那几棵 `bushBloom` **还是 true**。
+#     ⇒ 那一帧**不是"有果子"**（茶树丛的"茶叶好了"、核桃丛的"挂着核桃"也是这一帧）。
+#     ⇒ 判据 = `bushBloom` **且** 在浆果窗口里；缺了后半截，`scene ops=berry` 就会
+#       **对着一丛丛没有果子的灌木挨个摇、还报"树莓已进背包"**（恒：「看起来有些不会长树莓的
+#       树丛也摇摇了！」）。
+#     （在窗口里摇，`tileSheetOffset` 才会 1→0、果子才进包 —— 那是 2026-08-17 Backwoods 验过的。）
+BERRY_WINDOWS = {"spring": (15, 18), "fall": (8, 11)}
+
+
+def in_berry_season(season, day_of_month) -> bool:
+    """今天在不在**浆果窗口**里（读不到/认不出季节就说 `False` —— 宁缺勿编）。
+
+    ⚠️ 认不出的季节必须**直接 False**：早先写成 `BERRY_WINDOWS.get(s, (0, 0))`，
+       于是 `(None, None)` 落进 `0 <= 0 <= 0` ⇒ **返回 True**（"不知道 ⇒ 当在季"），
+       正好是反的（那会让 `berry_run` 到处乱摇）。自验当场逮到。
+    """
+    try:
+        s = str(season or "").strip().lower()
+        if s not in BERRY_WINDOWS:
+            return False
+        lo, hi = BERRY_WINDOWS[s]
+        return lo <= int(day_of_month or 0) <= hi
+    except Exception:
+        return False
+
+
+# ═══════════════════════════════════════════════════════════════
 #  🎁 社区中心区域奖励 —— **2026-09-11 已删，别在 calendar_data 里重建**
 #
 #  这里原来有个 `COMMUNITY_CENTER_REWARDS`（2026-08-16 手抄，唯一消费者是 bundle_status）。

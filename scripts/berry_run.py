@@ -35,6 +35,9 @@ if hasattr(sys.stdout, 'reconfigure'):
 
 os.environ.setdefault("NAGI_URL", f"http://localhost:{args.port or 7843}")
 import requests
+# 🍓 浆果窗口的判据在 `calendar_data`（**只此一处**：服务器显示侧 + 这儿的执行侧共用）。
+#    本脚本**不能** import `nagi_mcp_server`（那会把 MCP 服务器起起来），所以窗口放数据模块里。
+import calendar_data
 
 NAGI = os.environ["NAGI_URL"]
 
@@ -125,11 +128,40 @@ def main():
         log(f"🎉 {loc or '当前场景'}没有结果的浆果灌木")
         return
 
+    # 🍓🍓 2026-10-02 真机（恒：「**看起来有些不会长树莓的树丛也摇摇了！**」）：
+    #    `bushBloom` = 游戏那个 `Bush.tileSheetOffset == 1`，意思是"**贴图切到第 1 帧**"，
+    #    **不等于"这丛有果子"**——山地实测：7 棵 `bushBloom=True`，摇了 6 棵，
+    #    **背包一件都没多**、摇完那几棵 `bushBloom` 还是 true。
+    #    ⇒ 只在**浆果窗口**（春15~18 / 秋8~11，判据在 `calendar_data`，跟显示侧共用）里才摇。
+    try:
+        _t = requests.get(f"{base}/state", timeout=10).json().get("time", {}) or {}
+    except Exception:
+        _t = {}
+    if not calendar_data.in_berry_season(_t.get("season"), _t.get("dayOfMonth")):
+        log(f"🌿 {loc} 有 {len(all_bushes)} 丛灌木贴图是「有货」那帧，但**今天不在浆果季**"
+            f"（树莓=春15~18 / 黑莓=秋8~11，今天 {_t.get('season')} {_t.get('dayOfMonth')} 日）"
+            f"——**不是浆果，不摇**。那些多半是茶树丛/核桃丛之类（同一帧）。")
+        return
+
     log(f"🍓 {loc} 找到 {len(all_bushes)} 棵结果灌木: {all_bushes}")
 
     if args.dry_run:
         log("--dry-run：不摇")
         return
+
+    def _inv_counts():
+        """背包按名字计数 —— 用来**回读"到底摇到没有"**（别只说"按键发出去了"）。"""
+        try:
+            inv = requests.get(f"{base}/state", timeout=10).json().get("inventory") or []
+        except Exception:
+            return None
+        c = {}
+        for i in inv:
+            if i.get("name"):
+                c[i["name"]] = c.get(i["name"], 0) + int(i.get("stack") or 0)
+        return c
+
+    _before = _inv_counts()
 
     total = 0
     shaken = set()
@@ -152,10 +184,23 @@ def main():
             total += 1
         time.sleep(0.5)
 
-    if total:
-        log(f"✅ 摇完 {total} 棵结果灌木，树莓已进背包（掉落吸附）")
+    # ⚠️ 回执必须**回读真值**：原来不管有没有摇到都说「✅ …树莓已进背包」（真机上那是假的）。
+    _after = _inv_counts()
+    _gain = {}
+    if _before is not None and _after is not None:
+        for k, v in _after.items():
+            d = v - _before.get(k, 0)
+            if d > 0:
+                _gain[k] = d
+    if _gain:
+        log(f"✅ 摇了 {total} 棵结果灌木，**背包 +{sum(_gain.values())}**："
+            + "、".join(f"{k}×{v}" for k, v in _gain.items()))
+    elif _before is not None and _after is not None:
+        log(f"⚠️ 摇了 {total} 棵，可**背包一件都没多** —— 这些灌木现在并没有可摘的果子"
+            f"（`bushBloom` 只是「贴图那一帧」，不等于有货）。别重复摇，白走路。")
     else:
-        log("⚠️ 没有摇到任何灌木")
+        log(f"⚠️ 摇了 {total} 棵，但**没能回读背包**（读不到 /state）—— 到底摇到没有我不知道，"
+            f"自己看一眼背包")
 
 
 if __name__ == "__main__":

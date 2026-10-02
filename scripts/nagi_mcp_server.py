@@ -2629,6 +2629,14 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
     except Exception:
         pass
 
+    # ── 🥤 本图趣味交互点（恒 2026-10-02：可乐机；**进图报一次**，不占单子位）──
+    try:
+        _fs = _fun_spot_hint(loc_name)
+        if _fs:
+            lines.append(_fs)
+    except Exception:
+        pass
+
     # ── 🗑️/🌾/🎒 三条顺手提示（恒 2026-09-25；都每天只提一次，详见各自函数） ──
     #    日期键从**手上的 data** 算（不为了几行提示再打一次 /state）。
     _dk = _day_key_safe(data)
@@ -3097,6 +3105,28 @@ def _mastery_cave_hint(loc_name: str = "") -> str:
     except Exception:
         line = "🎓 在精通山洞：`check mastery` 查五碑状态（读不到 /mastery）"
     _MASTERY_CAVE_SEEN["line"] = line
+    return line
+
+
+# 🥤 趣味交互点（恒 2026-10-02：「我想让你看酒吧是，有个**可乐机**在这里，趣味功能，也可以做进去」）
+#    表：地图名 → 一行提示。**故意不进单子** —— 恒的判据是「常驻的、对玩家的、不常用的，
+#    要么被挤到底下看不到、要么占一个单子位置，不推荐」⇒ 走**进图报一次**的状态条提示：
+#    零单子成本，而且正好落在"刚进屋、注意力还空着"的那一刻。
+#    加新点＝加一行（坐标 + 怎么交互都写在提示里，别让 AI 去猜）。
+_FUN_SPOTS = {
+    "Saloon": "🥤 可乐机 (37,17)：站 (38,18) 面北 `scene at 38 17` → 选「是」花 75g 买 Joja 可乐"
+              "（谢恩最爱 / 雷欧喜欢）",
+}
+_FUN_SPOT_SEEN = {"loc": None}
+
+
+def _fun_spot_hint(loc_name: str = "") -> str:
+    """🎲 本图的趣味交互点 —— **进图报一次**（同 `_scene_kit_hint` 那套缓存键；不占单子位）。"""
+    if _OPS_INNER["n"] > 0 or not loc_name or _FUN_SPOT_SEEN["loc"] == loc_name:
+        return ""
+    line = _FUN_SPOTS.get(loc_name) or ""
+    if line:
+        _FUN_SPOT_SEEN["loc"] = loc_name
     return line
 
 
@@ -3599,28 +3629,33 @@ _SPOT_IDS = ("(O)590", "590", "(O)SeedSpot", "SeedSpot")
 _SPOT_RADIUS = 8
 
 
-# 🍓 浆果窗口（**游戏事实**，不是我们的规矩）：salmonberry = 春 15~18；blackberry = 秋 8~11。
+# 🍓 浆果窗口（**游戏事实**）：salmonberry = 春 15~18；blackberry = 秋 8~11。
 #    ⚠️ 为什么非要有它（2026-10-02 恒一眼看穿）：「**不对啊，现在是夏天，不会有的**」——
 #       那天我在农场报了「🍓浆果灌木×2」，可农场上根本没有莓果。
 #       根因：C# 的 `bushBloom` 就是 `Bush.tileSheetOffset == 1`，那个 NetInt 的意思是
 #       "**贴图切到第 1 帧**"——浆果丛的"有莓果"是这一帧，**但茶树丛(size3)的"茶叶好了"、
 #       核桃丛(size4)的"还挂着核桃"也是这一帧**（同一个字段，在 `ModEntry.cs` 的 `/nuts` 那段
-#       就见得到 `size==4` 核桃丛的用法）。⇒ 那两格多半是**茶叶还挂着的茶树丛**，被我读成了浆果。
-#    ⇒ 判据收紧：**只有浆果季才把 `bushBloom` 当浆果**；非浆果季不算浆果（宁缺勿编）。
-#      根治要 C# 多报一个 `Bush.size`（进批）——到那天才能把茶树丛/核桃丛**如实点名**，
-#      而不是像现在这样"季节不对就不说"。
-_BERRY_WINDOWS = {"spring": (15, 18), "fall": (8, 11)}
+#       就见得到 `size==4` 核桃丛的用法）。
+#       ⚠️⚠️ 同日**山地实测**把这条钉死了：7 棵 `bushBloom=True` 的灌木，`berry_run` 摇了 6 棵
+#       ——**背包一件都没多**、摇完 `bushBloom` **还是 true** ⇒ 那一帧**不是"有果子"**
+#       （恒当场看见：「看起来有些不会长树莓的树丛也摇摇了！」）。
+#    ⇒ 判据 = `bushBloom` **且** 在浆果窗口里。窗口本体放在 `calendar_data`
+#      （`BERRY_WINDOWS` / `in_berry_season`）——**执行侧 `berry_run.py` 也要用**，
+#      而它 import 不了本文件（那会把 MCP 服务器起起来）。
+#      根治要 C# 多报一个 `Bush.size`（进批）——到那天才能把茶树丛/核桃丛**如实点名**。
 
 
 def _in_berry_season(time_dict: dict) -> bool:
-    """今天在不在**浆果窗口**里（salmonberry 春 15~18 / blackberry 秋 8~11）。读不到就说 `False`。"""
+    """今天在不在**浆果窗口**里（salmonberry 春 15~18 / blackberry 秋 8~11）。读不到就说 `False`。
+
+    ⚠️ 判据本体在 `calendar_data.BERRY_WINDOWS` / `in_berry_season()`（**只此一处**）——
+       `berry_run.py` 那个执行侧也要用它（它不能 import 本文件，那会把 MCP 服务器起起来）。
+    """
     try:
-        s = str((time_dict or {}).get("season") or "").strip().lower()
-        d = int((time_dict or {}).get("dayOfMonth") or 0)
+        return calendar_data.in_berry_season((time_dict or {}).get("season"),
+                                             (time_dict or {}).get("dayOfMonth"))
     except Exception:
         return False
-    lo, hi = _BERRY_WINDOWS.get(s, (0, 0))
-    return lo <= d <= hi
 
 
 def _moss_visible(c: dict, is_green_rain: bool) -> bool:
@@ -4155,12 +4190,28 @@ def skip_event() -> str:
             return _with_state(f"⏭️ 没跳过：这段剧情**不可跳过**（skippable=false，id={ev.get('id')}），"
                                "只能 `menu advance` 一句句推")
         api.key("skip")
-        time.sleep(0.4)
-        ev2 = (api.state(light=True).get("activeEvent") or {})
-        if ev2.get("id"):
-            # 别只报"按键已发送"——回读确认，没跳掉就说没跳掉（恒：工具说成功但事没发生最坑）。
-            return _with_state(f"⏭️ 发了跳过键但事件还在播（id={ev2.get('id')}）——这段可能跳不动。"
-                               "再调一次 `menu skip`，或 `menu advance` 一句句推")
+        # ⚠️⚠️ 2026-10-02 **真机第一次按它**（恒：「哦！刚好有剧情！你可以试试跳了」）：
+        #    跳**成功了**，可回执写着「⏭️ 发了跳过键但事件还在播 —— 这段可能跳不动」
+        #    ——**报失败而事做成了**（跟"报成功而事没发生"是一对，都会把 AI 带沟里：
+        #    它会以为没跳掉，再按一次 skip / 改去 advance）。
+        #    根因：跳过不是"按完就没"，游戏要放完退场那段（淡出 + 把玩家挪回去），
+        #    原来固定 `sleep(0.4)` **只读一发** ⇒ 太早。⇒ 改成**轮询**（同 `_advance_story` 那套：
+        #    "点前拍快照、点后等这一屏变没变"，别拿一发读数下结论）。
+        _gone, _left = False, None
+        _deadline = time.time() + 4.0
+        while time.time() < _deadline:
+            time.sleep(0.25)
+            try:
+                _left = (api.state(light=True).get("activeEvent") or {})
+            except Exception:
+                _left = {}
+            if not _left.get("id"):
+                _gone = True
+                break
+        if not _gone and (_left or {}).get("id"):
+            # 4 秒还没退场：如实说没跳掉（不编、也不假装成功）
+            return _with_state(f"⏭️ 发了跳过键、等了 4 秒事件还在播（id={(_left or {}).get('id')}）"
+                               "——这段可能跳不动。再调一次 `menu skip`，或 `menu advance` 一句句推")
         return _with_state("⏭️ 已跳过当前剧情/事件，控制权交回（该干嘛干嘛去）")
     except Exception as e:
         return _with_state(f"❌ 跳过剧情失败: {e}")
@@ -22291,6 +22342,19 @@ def _im_chores(state: dict, surr: dict, animals: dict) -> dict:
         _ready = 0
     if _ready:
         out["crab"] = int(_ready)
+    # ── 🗑️ 本图垃圾桶（恒 2026-10-02：「**捡垃圾可以上**」）──
+    #    ⚠️ 判据**只此一处**：`_trash_cans_here()`（跟状态条那条"旁边就是个垃圾桶"共用；
+    #       它按图名缓存 `/scan` ⇒ 同图不重复打）。
+    #    ⚠️ 诚实边界：账是「**本图有 N 个桶**」，**不是"还有没翻的"**——游戏没暴露
+    #       `CheckedGarbage`（要精确得 C# 报，进批）⇒ 理由栏必须把这条写出来。
+    try:
+        _loc = ((state or {}).get("location") or {})
+        _loc = _loc.get("name") if isinstance(_loc, dict) else _loc
+        _cans = _trash_cans_here(_loc or "")
+        if _cans:
+            out["garbage"] = len(_cans)
+    except Exception:
+        pass
     # ── 🪙 淘金：水下闪光点（`/state.player.orePan`）──
     try:
         _ore = ((state or {}).get("player") or {}).get("orePan") or {}
@@ -22976,6 +23040,9 @@ def _im_run(op, args):
         "moss": lambda: moss_run(),
         "pan": lambda: _pan_run(),
         "crab": lambda: _crab_collect(),
+        # 🗑️ 翻垃圾桶（单子那行「翻垃圾桶」；恒 2026-10-02「捡垃圾可以上」）：
+        #    调现成的 `trash_run()`（它自己逐桶走位 + 交互 + 报掉落），这一层不另写一套。
+        "garbage": lambda: trash_run(),
         "milk": lambda: milk_shear(),
         # 🌾 铺 干草（2026-10-01 恒：「支持上单子」）：调现成的 `feed_hay()`（筒仓→背包→逐格走过去铺）。
         #    ⚠️ 它也是**同步长活**（逐格走位铺），跟 `milk` 同一条账。

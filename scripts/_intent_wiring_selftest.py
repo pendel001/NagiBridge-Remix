@@ -146,7 +146,7 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
           farm_buildings=(), time_dict=None, doors_open=False, walk_ok=True,
           chore_tiles=None, crab_ready=0, ore_pan=None, chore_animals=None, money=None,
           silo=None, troughs=None, trough_filled=0, trough_raise=False,
-          surr_tiles=None):
+          surr_tiles=None, trash_cans=None):
     CALLS.clear()
     WALK_CALLS.clear()
     state = dict(STATE)
@@ -194,6 +194,12 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
 
     def g(ep, params=None):
         CALLS.append(("GET", ep, params))
+        if ep == "/scan":
+            # 🗑️ 垃圾桶**不在 `loc.objects`**，只能从 `/scan` 的 Action 瓦片里认
+            #    （`Garbage <id>`）—— 判据在 `_trash_cans_here()`，这里照真回包形状给。
+            return {"ok": True,
+                    "actions": [{"action": f"Garbage C{i}", "x": x, "y": y}
+                                for i, (x, y) in enumerate(trash_cans or [])]}
         if ep == "/menu":
             if menu_get_raises:
                 raise RuntimeError("模拟：商店开着但 /menu 读不出来")
@@ -315,6 +321,10 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
     #    —— 真机不会（世界一直变），桩会 ⇒ **每个用例从头开始**（2026-10-01 自验现场逮到）。
     M._MASTERY_CACHE.update(ts=0.0, claimed=None)
     M._MACHINE_REQS_CACHE.update(ok=None, ts=0.0)
+    # 🗑️ 垃圾桶清单按**图名**缓存（`_trash_cans_here`）⇒ 用例之间必须清，
+    #    否则第一个用例把 `[]` 缓存住，后面所有"本图有桶"的用例都会假红。
+    M._TRASH_CANS.update(key=None, cans=[])
+    M._FUN_SPOT_SEEN.update(loc=None)          # 🥤 趣味点提示也是"进图一次"，用例间要清
     # 这两道闸门跟"接线"无关（它们要真游戏在场）；买卖那条路会过它们，先打桩掉。
     M._ensure_background = lambda *a, **k: None
     M._peer_econ_mute = lambda *a, **k: None
@@ -818,6 +828,34 @@ def main():
     #    桩换不掉它 ⇒ 真调会打到**正在跑的游戏**（7842 = 恒）—— 自验绝不许碰游戏。
     res.append(ok("⏭ `_im_run` 认 `skip` 且调的是 `skip_event()`",
                   '"skip": lambda: skip_event()' in _worn_src))
+    # ⏭️⏭️ 2026-10-02 **真机第一次按「跳过整段」**（恒：「哦！刚好有剧情！你可以试试跳了」）：
+    #      **跳成功了**，可回执写着「发了跳过键但事件还在播 —— 这段可能跳不动」
+    #      = **报失败而事做成了**（跟"报成功而事没发生"是一对，都会把 AI 带沟里）。
+    #      根因：跳过要放完退场那段（淡出 + 把玩家挪回去），原来 `sleep(0.4)` **只读一发**太早
+    #      ⇒ 改成轮询。下面用桩钉住（⚠️ `api.key` 必须一起桩掉，否则真按键盘打到游戏）。
+    def _skip_after(n_ev, skippable=True):
+        _calls = {"n": 0}
+
+        def _fake_state(*a, **k):
+            _calls["n"] += 1
+            ev = {"id": "2", "skippable": skippable} if _calls["n"] <= n_ev else None
+            return {"activeEvent": ev, "activeMenu": None}
+        _old_st, _old_key, _old_sleep = M.api.state, M.api.key, M.time.sleep
+        M.api.state, M.api.key, M.time.sleep = _fake_state, (lambda *a, **k: None), (lambda *a, **k: None)
+        try:
+            return M.skip_event(), _calls["n"]
+        finally:
+            M.api.state, M.api.key, M.time.sleep = _old_st, _old_key, _old_sleep
+
+    _sk_out, _sk_n = _skip_after(2)     # 前两发还在播、第三发没了 ⇒ 必须报"跳成功"
+    res.append(ok("⏭️ 跳过**会轮询**（事件退场要时间）—— 真机那次报「还在播」，两秒后一读其实早没了",
+                  "已跳过" in _sk_out and _sk_n >= 3, (_sk_out.splitlines()[0], _sk_n)))
+    _sk_bad, _ = _skip_after(10 ** 9)   # 一直不消失（⚠️ 轮询是**忙转**的，给 99 会被转过去）⇒ 如实说没跳掉
+    res.append(ok("⏭️ 真跳不掉 ⇒ 说清「等了 4 秒还在播」（不假装成功、也不编原因）",
+                  "还在播" in _sk_bad and "已跳过" not in _sk_bad, _sk_bad.splitlines()[0]))
+    _sk_no, _ = _skip_after(0)          # 压根没事件 ⇒ 老规矩：明说无事可跳
+    res.append(ok("⏭️ 没事件 ⇒ 照旧「无事可跳」（别把 skip 静默变成关菜单）",
+                  "没有剧情" in _sk_no, _sk_no.splitlines()[0]))
     # 📍 坐标那条判据**只有一处**（`_coord_seg`）：真机上我改完抬头、忘了状态条，
     #    同一屏就印出两种说法（抬头 `🎬 演出中`、状态条 `(-99,-99)`）——恒一眼看得见。
     res.append(ok("📍 `_coord_seg` 四种组合都对（演出在播 / 坐标不在图里 / 都正常）",
@@ -1519,7 +1557,7 @@ def main():
                         {"name": "空牛", "type": "White Cow", "x": 15, "y": 14, "productReady": False}]}
 
     def _chores(chore_tiles=None, crab_ready=0, ore_pan=None, animals=None, weather=0,
-                hoe=True, season="spring", day=16):
+                hoe=True, season="spring", day=16, trash_cans=None):
         # ⚠️ 日期默认 **春 16**（浆果窗口内）—— 浆果那笔账现在**只在浆果季**才给
         #    （见下面 `_BERRY_WINDOWS` 那两条用例：2026-10-02 恒「现在是夏天，不会有的」）。
         # ⚠️ 走**真路径** `_im_ctx()`（不是手搓 state/surr 递给 `_im_chores`）——
@@ -1527,6 +1565,7 @@ def main():
         #    ⇒ "没带锄头"那条假红、蟹笼那笔账也拿不到（自验当场逮到）。
         _stub(chore_tiles=chore_tiles, crab_ready=crab_ready, ore_pan=ore_pan,
               chore_animals=(animals if animals is not None else []),
+              trash_cans=trash_cans,
               time_dict={"timeOfDay": 900, "season": season, "dayOfMonth": day,
                          "weather": weather})
         M.api.has_item = lambda n: bool(hoe) and ("Hoe" in str(n))
@@ -1551,6 +1590,19 @@ def main():
     _ch_fall = _chores([_T_BUSH], weather=0, hoe=True, season="fall", day=10)
     res.append(ok("🍓 秋天 10 日（黑莓窗口 8~11）⇒ 说浆果（不是一刀切掉这个功能）",
                   _ch_fall.get("berry") == 1, _ch_fall))
+    # ⚠️ **认不出的季节必须直接不算** —— 早先 `get(s, (0,0))` 会让 `(None,None)` 落进
+    #    `0<=0<=0` ⇒ **返回 True**（"不知道 ⇒ 当在季"），正好反了（自验当场逮到）。
+    import calendar_data as _cd
+    res.append(ok("🍓 季节/日期**读不到** ⇒ 不算浆果季（不是「不知道就当真」）",
+                  _cd.in_berry_season(None, None) is False
+                  and _cd.in_berry_season("winter", 10) is False
+                  and _cd.in_berry_season("spring", 0) is False))
+    _br_src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "berry_run.py"),
+                   encoding="utf-8").read()
+    res.append(ok("🍓 而且**执行侧用的是同一份窗口**（`berry_run.py` import `calendar_data`，"
+                  "不是自己抄一份 15~18/8~11）",
+                  "import calendar_data" in _br_src
+                  and "calendar_data.in_berry_season" in _br_src))
     res.append(ok("🌿 苔藓：**真扫到了苔藓目标就给**（非绿雨天、没开设置也行 —— "
                   "恒 2026-10-02「农场有些树可以刮苔藓」，那天农场躺着 50 棵，老规矩一个字都不报）",
                   _ch.get("moss") == 1, _ch))
@@ -1577,6 +1629,30 @@ def main():
                   _ch.get("milk") == 2 and _ch.get("shear") == 1, _ch))
     res.append(ok("🌿 什么都没推出来 ⇒ **空账**（那 6 行全不出现）", _chores() == {}, _chores()))
 
+    # ── 🗑️ 翻垃圾桶（恒 2026-10-02：「**捡垃圾可以上**」）──
+    _ch_trash = _chores([_T_BUSH], trash_cans=[(13, 86), (19, 89)])
+    res.append(ok("🗑️ `Ctx.chores` 从 `/scan` 的 `Garbage` 瓦片数出本图桶数（垃圾桶不在 objects 里）",
+                  _ch_trash.get("garbage") == 2, _ch_trash))
+    res.append(ok("🗑️ 本图没桶 ⇒ 那笔账不给（别给一行按了没反应的）",
+                  "garbage" not in _chores([_T_BUSH]), _chores([_T_BUSH])))
+    # 执行侧：`_im_run` 认 `garbage`，且调的是现成的 `trash_run()`（不自己打端点）
+    _tr_orig = M.trash_run
+    M.trash_run = lambda *a, **k: "🗑️（桩：trash_run 跑了）"
+    try:
+        _rtr = M._im_run("garbage", {})
+    finally:
+        M.trash_run = _tr_orig
+    res.append(ok("🗑️ `_im_run` 认 `garbage`，走的是现成的 `trash_run()`",
+                  isinstance(_rtr, dict) and "trash_run 跑了" in str(_rtr.get("text")), _rtr))
+
+    # ── 🥤 可乐机（恒 2026-10-02：「趣味功能，也可以做进去」）──
+    #    ⚠️ 它**故意不进单子**（恒：「常驻的、对玩家的、不常用的…不推荐」）⇒ 走**进图一次**的状态条提示。
+    _c1 = M._fun_spot_hint("Saloon")
+    res.append(ok("🥤 进酒吧 ⇒ 报一次可乐机（坐标 + 怎么交互都写全，不给 AI 猜）",
+                  "可乐机" in _c1 and "(38,18)" in _c1 and "scene at 38 17" in _c1, _c1))
+    res.append(ok("🥤 同一张图**不重播**", M._fun_spot_hint("Saloon") == ""))
+    res.append(ok("🥤 别的图没有（这功能只认表里那张图）", M._fun_spot_hint("Town") == ""))
+
     # 单子那 6 行：有账就出现、执行**只调现成 op 且不带参数**
     def _labels2(**kw):
         _stub(**kw)
@@ -1597,6 +1673,13 @@ def main():
     res.append(ok("🌿 一件都推不出来 ⇒ **6 行全不出现**（宁缺勿编）",
                   not [x for x in _L0 if x in ("摇 浆果丛", "挖 远古斑点", "刮 苔藓",
                                                "收 蟹笼", "淘 金", "挤奶 / 剪毛")], _L0))
+    # 🗑️ 垃圾桶那两行（`_labels2` 在这儿才定义 ⇒ 断言放这儿）
+    _Lt, _Lt_txt = _labels2(chore_tiles=[_T_BUSH], trash_cans=[(13, 86)])
+    res.append(ok("🗑️ 单子上出现「翻垃圾桶」", "翻垃圾桶" in _Lt, _Lt))
+    res.append(ok("🗑️ 理由栏写清「每天每桶一次」（账只是「本图有 N 个桶」，不是「还有没翻的」）",
+                  "每天每桶一次" in _Lt_txt, _Lt_txt[:220]))
+    _Lt2, _ = _labels2(chore_tiles=[_T_BUSH])
+    res.append(ok("🗑️ 本图没桶 ⇒ 单子上**没有**那一行", "翻垃圾桶" not in _Lt2, _Lt2))
     # 执行：`_im_run` 认这 6 个名字，且**打的是现成 op**（把 op 换成桩看参数）
     _stubs = {}
     for _k, _fn in (("berry", "berry_run"), ("spot", "spot_run"), ("moss", "moss_run"),
