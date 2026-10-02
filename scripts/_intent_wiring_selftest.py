@@ -1865,6 +1865,35 @@ def main():
                   "子进程不 import stardew_api ⇒ 它自己不上闸，这是唯一堵得住的出口）",
                   "自验不许出网" in _ref and not _spawned, (_ref, _spawned)))
 
+    # 🎓 2026-10-02：**名额是有限的** —— 真机 Lv4/已花 3 ⇒ 只剩 1 个名额，
+    #    而屏上两块没领的碑**都**被盖了「可领」⇒ AI 以为两块都能领（按第二块游戏不理它）。
+    def _mastery_txt(unspent, claimed_flags):
+        _sk = [{"skill": s, "cn": s, "claimed": c}
+               for s, c in zip(("farming", "fishing", "foraging", "mining", "combat"),
+                               claimed_flags)]
+        _stub(menu=None)
+        M.api.mastery = lambda *a, **k: {"ok": True, "level": 4, "exp": 4588, "expForNext": 30000,
+                                         "levelsSpent": 3, "unspent": unspent,
+                                         "canClaim": unspent > 0, "plaques": _sk}
+        return M.mastery_status()
+
+    _mt = _mastery_txt(1, (True, False, False, True, True))       # 只剩 1 个名额、2 块没领
+    res.append(ok("🎓 名额不够时**不许给每块没领的碑都盖「可领」**（真机：2 块都写可领，其实只有 1 个名额）",
+                  _mt.count("**可领**") == 0 and "**未领**" in _mt, _mt.splitlines()[:8]))
+    res.append(ok("🎓 而且**说清有几个名额**（挑哪块都行）", "只有 1 个名额" in _mt, _mt.splitlines()[-2:]))
+    _mt2 = _mastery_txt(3, (True, False, False, True, True))      # 名额 ≥ 没领块数
+    res.append(ok("🎓 名额够 ⇒ 照旧逐块说「可领」（别把原来能领的也说成未领）",
+                  _mt2.count("**可领**") == 2 and "**未领**" not in _mt2, _mt2.splitlines()[:8]))
+    _mt3 = _mastery_txt(0, (True, True, True, True, True))
+    res.append(ok("🎓 全领完了 ⇒ 一句「没得领」都不多说", "没得领" in _mt3 and "可领" not in _mt3,
+                  _mt3.splitlines()[:3]))
+    # 洞内那条提示是**第二个消费点**（真机上写着两块 🟢 的就是它）—— 必须走同一份判据。
+    _mastery_txt(1, (True, False, False, True, True))
+    M._MASTERY_CAVE_SEEN.update(loc="", ts=0.0)
+    _cv = M._mastery_cave_hint("MasteryCave")
+    res.append(ok("🎓 洞内提示也改口：说清「没领的有 2 块、只有 1 个名额」（原来两块都画 🟢）",
+                  "没领的有 2 块" in _cv and "1 个名额" in _cv, _cv))
+
     # ── B. 「收 蟹笼」收完**回读真值**、如实报剩几个 ──
     def _crab_after(ready_left, scan_raises=False):
         """跑一次 `_crab_collect`：开工问一次 `/crab_pots`、收完回读一次。全打桩。

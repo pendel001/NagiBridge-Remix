@@ -3070,21 +3070,27 @@ def _mastery_cave_hint(loc_name: str = "") -> str:
         r = api.mastery()
         if r.get("ok"):
             can_claim = bool(r.get("canClaim"))
-            unspent = r.get("unspent") or 0
-            plaques = {(p.get("skill") or "").lower(): p for p in (r.get("plaques") or [])}
+            unspent = int(r.get("unspent") or 0)
+            plaques = _mastery_cave_plaques(r)
+            _short = _mastery_short(r, plaques)
+            _n_un = len([p for p in plaques if not p.get("claimed")])
             marks = []
-            for sk in _MASTERY_CAVE_ORDER:
-                p = plaques.get(sk) or {}
+            for p in plaques:
                 mark = "✅" if p.get("claimed") else ("🟢" if can_claim else "⚪")
-                marks.append(f"{mark}{p.get('cn') or sk}")
+                marks.append(f"{mark}{p.get('cn') or p.get('skill') or '?'}")
             head = f"🎓 精通山洞 · 五碑(左→右)：{' '.join(marks)}"
-            if can_claim:
+            if can_claim and _short:
+                # ⚠️ 2026-10-02 真机：2 块没领、只有 1 个名额，可这行两块都画 🟢 ⇒ 照着"走到 🟢 那块"
+                #    去按第二块时**游戏根本不理它**。⇒ 名额不够就说清"有几块没领、只有几个名额"。
+                tail = (f"有 {unspent} 个名额、没领的有 {_n_un} 块 → 挑 {unspent} 块领：走到碑前 `interact` → "
+                        f"`menu read` 看给什么 → `menu click(button=mainButton)`")
+            elif can_claim:
                 tail = (f"有 {unspent} 个可以领 → 走到 🟢 那块碑前 `interact` 开菜单 → "
                         f"`menu read` 看给什么 → `menu click(button=mainButton)` 领取")
-            elif plaques and all(p.get("claimed") for p in plaques.values()):
+            elif plaques and all(p.get("claimed") for p in plaques):
                 tail = "五块全领完了。出洞：走到 (7,12) 自动回森林"
             else:
-                tail = "暂时没有可领名额（先攒精通经验）。中央基座 (7,9) 看总进度；出洞走 (7,12)"
+                tail = f"暂时没有可领名额（{_n_un} 块没领，先攒精通经验）。中央基座 (7,9) 看总进度；出洞走 (7,12)"
             line = f"{head}\n  {tail}"
         else:
             line = "🎓 在精通山洞：`check mastery` 查五碑状态（端点报错，模组可能需重编译）"
@@ -8719,6 +8725,28 @@ def silo_status() -> str:
 #   按洞内实际走位顺序排，AI 一看就知道该往哪边走。坐标见 locations.POI 的"精通山洞(XX碑)"。
 _MASTERY_CAVE_ORDER = ["combat", "foraging", "farming", "fishing", "mining"]
 
+
+def _mastery_cave_plaques(r: dict) -> list:
+    """🎓 五碑按**洞内从左到右**排好（认不出的 skill 排最后，不丢）。
+
+    ⚠️ 判据**只此一处**：`check(what=mastery)` 和洞内那条提示（`_mastery_cave_hint`）共用，
+       各排一遍早晚漂（本项目的老病）。
+    """
+    return sorted(r.get("plaques") or [], key=lambda p: (
+        _MASTERY_CAVE_ORDER.index((p.get("skill") or "").lower())
+        if (p.get("skill") or "").lower() in _MASTERY_CAVE_ORDER else 99))
+
+
+def _mastery_short(r: dict, plaques: list) -> bool:
+    """🎓 **名额够不够把"没领的"都点亮** —— 不够就别给每块没领的碑都盖 🟢「可领」。
+
+    ⚠️ 2026-10-02 真机（就是这条把自己的洞照出来的）：轮回 Lv4、已花 3 ⇒ **只剩 1 个名额**，
+       而屏上**两块**没领的碑都写着 🟢「可领」⇒ AI 会以为两块都能领，
+       按第二块时**游戏根本不理它**（`mainButton` 是灰的）—— 又是一句让人白跑的话。
+    """
+    return bool(r.get("canClaim")) and int(r.get("unspent") or 0) < len(
+        [p for p in (plaques or []) if not p.get("claimed")])
+
 # 🎓 精通"开启条件" = 五项技能**全部到 10 级**（游戏的 `MasteryHint` 就是那时弹的）。
 #    在那之前 `MasteryExp` 不涨 ⇒ **不显示精通进度**（恒 2026-09-16 拍板）。
 _MASTERY_SKILLS = ("farming", "fishing", "foraging", "mining", "combat")
@@ -8791,21 +8819,23 @@ def mastery_status() -> str:
         else:
             lines.append(f"  ⚪ 暂时没得领（等级 {level}、已花 {spent}）—— 先攒精通经验")
 
-        plaques = r.get("plaques") or []
-        # 按洞内从左到右排（认不出的 skill 排最后，不丢）
-        plaques = sorted(plaques, key=lambda p: (
-            _MASTERY_CAVE_ORDER.index((p.get("skill") or "").lower())
-            if (p.get("skill") or "").lower() in _MASTERY_CAVE_ORDER else 99))
+        plaques = _mastery_cave_plaques(r)
+        _unclaimed = [p for p in plaques if not p.get("claimed")]
+        # ⚠️ 2026-10-02：**名额是有限的，别给每块未领的碑都盖"可领"的章**（判据见 `_mastery_short`）。
+        _short = _mastery_short(r, plaques)
         lines.append("  五块石碑（洞内从左到右）：")
         for p in plaques:
             cn = p.get("cn") or p.get("skill") or "?"
             if p.get("claimed"):
                 mark, tail = "✅", "已领"
             elif can_claim:
-                mark, tail = "🟢", "**可领**"
+                mark, tail = "🟢", ("**未领**" if _short else "**可领**")
             else:
                 mark, tail = "⚪", "没名额"
             lines.append(f"    {mark} {cn} — {tail}")
+        if _short:
+            lines.append(f"  ⚠️ 上面 {len(_unclaimed)} 块没领，但**只有 {unspent} 个名额** ⇒ "
+                         f"这次挑 {unspent} 块领（哪块都行），领完名额就用掉了")
 
         lines.append("  💡 在洞里：走到碑前 `interact` 开菜单 → `menu read` 看这块碑给什么 → "
                      "`menu click(button=mainButton)` 领；中央基座(7,9)看总进度")
