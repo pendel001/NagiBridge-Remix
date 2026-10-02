@@ -36,12 +36,42 @@ AI_BASE_URL = os.environ.get("NAGI_AI_URL", "http://localhost:7843")
 HOST_URL = os.environ.get("NAGI_HOST_URL", "http://localhost:7842")
 
 
+def _call_log(url: str, data):
+    """🧾 **谁在什么时候动了游戏** —— 所有 POST 无条件追加一行到一个**共享**日志文件。
+
+    ⚠️ 为什么要有它（2026-10-01/02 连踩两次）：恒两次问「**它怎么自己又跑起来了**」，
+       而我能查的东西全是**进程内**的：
+         · `[walk]` 留痕打在**跑代码那个进程的 stdout** ⇒ 独立进程（子代理的真机探针、裸脚本）**它不写**；
+         · MCP 工具日志只记"哪个工具被调了" ⇒ **绕过 :8000 直打 7843 的调用一条都不进**。
+       ⇒ 结果就是"看得见角色动了、查不出来是谁动的"。
+       现在改成**写文件**（不是 stdout）：MCP、脚本、子代理探针——只要走 `stardew_api` 的 POST，**全落在同一个文件里**，
+       一行带 `时间 PID →端口 端点 参数摘要` ⇒ 下次再有人问"谁动的"，`tail` 一下就有答案。
+    ⚠️ 只记 **POST**（改世界几乎都在 POST；GET 是读，记了会淹）。
+    ⚠️ 绝不影响调用本身：任何异常都吞掉（日志坏不能把动作弄坏）。
+    """
+    try:
+        import time as _t
+        p = os.environ.get("NAGI_CALL_LOG") or os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "..", "_game_calls.log")
+        try:
+            _d = json.dumps(data, ensure_ascii=False)
+        except Exception:
+            _d = str(data)
+        if len(_d) > 200:
+            _d = _d[:200] + "…"
+        with open(os.path.abspath(p), "a", encoding="utf-8") as f:
+            f.write(f"{_t.strftime('%m-%d %H:%M:%S')} pid={os.getpid()} {url} {_d}\n")
+    except Exception:
+        pass
+
+
 def _get(endpoint, params=None):
     r = requests.get(f"{BASE_URL}{endpoint}", params=params, timeout=10)
     return r.json()
 
 
 def _post(endpoint, data=None, timeout=10):
+    _call_log(f"{BASE_URL}{endpoint}", data)      # 🧾 留痕（见 _call_log）
     r = requests.post(f"{BASE_URL}{endpoint}", json=data or {}, timeout=timeout)
     return r.json()
 
@@ -54,8 +84,127 @@ def _ai_get(endpoint, params=None):
 
 def _ai_post(endpoint, data=None):
     """打到 AI 角色进程（AI_BASE_URL，默认7843）。"""
+    _call_log(f"{AI_BASE_URL}{endpoint}", data)      # 🧾 留痕（见 _call_log）
     r = requests.post(f"{AI_BASE_URL}{endpoint}", json=data or {}, timeout=10)
     return r.json()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 🚶🐄 「**挡路的是一只动物**」—— 走位层只软这一件事（恒 2026-10-02）
+# ═══════════════════════════════════════════════════════════════════════
+# 恒原话：「**有时候是给动物挡住了。真人玩家持续按住方向键不放可以穿过动物，但 ai 似乎不行。
+#          但如果取消这个碰撞，挤奶等应该又会对不准。**」
+# 真机已证：动物站的格 `/surroundings` 报 `passable=False` 且 `object` 为空
+#           （`(8,4) 松子` / `(10,5) 你好鸭` / `(5,7) 麻辣兔头` 都长这样）。
+# ⇒ 我们那些"**能不能站过去**"的判据（`/passable`）把动物当墙 ⇒ 走位/站位选不出来。
+#
+# ## 硬阻挡 / 软阻挡（判据就在这一处）
+#   · **硬阻挡** = 墙 / 水 / 物件 / 家具 / 地形 —— `/passable=False` 且**那格没有活物**；
+#   · **软阻挡** = **牲畜 / 宠物** —— 那格**站着游戏认得的活物**（`/animals` 或 `/surroundings.npcs`
+#     里 `kind=="pet"` 的那几只）＝**玩家能顶开的那种**。
+#   ⚠️ 走位时：**硬阻挡照旧不放行**，**软阻挡当可走**（玩家语义）。
+#   ⚠️ **只软化"能不能路过/能不能站过去"，绝不动互动层**：挤奶/剪毛/收集那些
+#      "**站到它正上下左右**才算够得着"的判据**一个字不改**（恒的担心正是这个）。
+#   ⚠️ 判据**只此一处**（`animals_at()` / `npcs_at()` / `soft_passable()`）：走位那几处都走它，
+#      别在各自的地方再写一遍"没 object 就当动物"。
+#   ⚠️ 名单**必须是游戏给的** —— **不许按"没 object 就是动物"猜**：空地也是没 object，
+#      猜了就变成"墙也能走"。
+#   ⚠️ 读不到名单（端点炸/形状不对）⇒ **一律不软化**：宁可照旧报"走不到"（诚实的失败），
+#      也别把墙当动物穿过去（那是改世界）。
+#   ⚠️⚠️ **软阻挡不是"问题"，别当告警报**（恒 2026-10-02：「**软阻挡我们自己处理了，说给 ai
+#      它也不能决定。所以没必要报，或者写得趣味一点，"路上有只动物（松子）挡了道，挤开了"**」）：
+#      软阻挡的说明**不带 ⚠️、不带"下一步"**，就是随走位那行出的一句文游播报；
+#      **硬阻挡/真走不到**才照旧"如实报 + 带下一步"（那条 AI 需要知道）。
+_SOFT_AT_CACHE = {"ts": 0.0, "at": None}
+
+
+def animals_at(ttl: float = 2.0):
+    """🐄 本图**动物坐标 → 名字**：`{(x, y): 名字}`；**读不到回 `None`**（调用方不许软化）。
+
+    ⚠️ 来源是游戏自己的 `/animals`（`farm.animals` = 玩家**当前所在图**的动物）。
+    ⚠️ 2 秒缓存：走位会在几秒里问十来次，每次都打一发没必要；但也不能长——
+       动物是会动的，缓存久了"那格现在有没有动物"就错了。
+    """
+    import time as _t
+    now = _t.time()
+    if _SOFT_AT_CACHE["at"] is not None and (now - _SOFT_AT_CACHE["ts"]) < ttl:
+        return _SOFT_AT_CACHE["at"]
+    try:
+        r = _ai_get("/animals") or {}
+        al = r.get("animals")
+        if not isinstance(al, list):
+            return None
+        at = {}
+        for a in al:
+            try:
+                at[(int(a.get("x")), int(a.get("y")))] = a.get("name") or "动物"
+            except (TypeError, ValueError):
+                continue
+        _SOFT_AT_CACHE["at"] = at
+        _SOFT_AT_CACHE["ts"] = now
+        return at
+    except Exception:
+        return None                   # ⚠️ 读不到 ⇒ None ⇒ 调用方**不许软化**
+
+
+def soft_blocker_at(x, y):
+    """🚧 这一格站着**能顶开的活物**吗 → 名字 / `None`；**读不到名单回 `None`**。
+
+    · 牲畜：`/animals`（游戏给的坐标）；
+    · 宠物：`/surroundings.npcs` 里 `kind == "pet"` 的那几只（`/animals` 不报它们）。
+    ⚠️ **只认这两类**：NPC/别的玩家**不算**（我们这边读不可靠 —— 读不到就**不软化**，
+       绝不用"猜"去顶一格墙）。
+    """
+    import time as _t
+    at = animals_at()
+    if at is None:
+        return None
+    if (int(x), int(y)) in at:
+        return at[(int(x), int(y))]
+    # 🐾 宠物：走 `/surroundings`（同一份缓存里再存一格 npcs 表）
+    now = _t.time()
+    npcs = _SOFT_AT_CACHE.get("npcs")
+    if npcs is None or (now - _SOFT_AT_CACHE.get("ts_npcs", 0.0)) >= 2.0:
+        try:
+            _s = _ai_get("/surroundings", {"radius": 25}) or {}
+            npcs = {}
+            for n in (_s.get("npcs") or []):
+                if str(n.get("kind") or "") != "pet":
+                    continue
+                try:
+                    npcs[(int(n.get("x")), int(n.get("y")))] = n.get("name") or "宠物"
+                except (TypeError, ValueError):
+                    continue
+            _SOFT_AT_CACHE["npcs"] = npcs
+            _SOFT_AT_CACHE["ts_npcs"] = now
+        except Exception:
+            npcs = None
+    if npcs and (int(x), int(y)) in npcs:
+        return npcs[(int(x), int(y))]
+    return None
+
+
+def soft_passable(x, y, **passable_params):
+    """🚶 这一格**能不能走** → `(能不能, 说明)`。
+
+    判据（**只此一处**）：
+      ① 先问游戏 `/passable`；**能走就直接过**（不查活物，省一发）；
+      ② 说不能走时：查活物名单（`soft_blocker_at()`）——**那格真站着一只牲畜/宠物** ⇒ 当**能走**
+         （玩家就是顶着它们过去的），说明是**文游播报**：「路上有只动物（松子）挡了道，挤开了」；
+      ③ 活物名单**读不到** ⇒ **不软化**（照旧不能走）；那格没活物（= **硬阻挡**）⇒ 也不能走，
+         说明留空（调用方照旧说"走不到 / 被墙圈隔开"）。
+    ⚠️ 说明**不带 ⚠️、不带下一步**（软阻挡我们自己处理了，报成问题只是噪声）。
+    """
+    try:
+        _p = _post("/passable", dict({"x": x, "y": y}, **(passable_params or {}))) or {}
+        if _p.get("passable"):
+            return True, ""
+    except Exception:
+        return False, ""
+    who = soft_blocker_at(x, y)
+    if who:
+        return True, f"路上有只动物（{who}）挡了道，挤开了"
+    return False, ""
 
 
 def _host_post(endpoint, data=None, timeout=30):
@@ -64,6 +213,7 @@ def _host_post(endpoint, data=None, timeout=30):
     世界状态的写操作（机器收放等）走这里——host 是权威端，直写能落档同步；
     farmhand(7843) 裸写 heldObject/MinutesUntilReady 这类字段不保证同步。
     """
+    _call_log(f"{HOST_URL}{endpoint}", data)      # 🧾 留痕（见 _call_log）
     r = requests.post(f"{HOST_URL}{endpoint}", json=data or {}, timeout=timeout)
     return r.json()
 

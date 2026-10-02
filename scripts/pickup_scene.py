@@ -186,6 +186,20 @@ def _dll_has_forage(base):
     return head >= _FORAGE_DLL_MIN
 
 
+def approach_tiles(x, y, px, py):
+    """🎯 想够到 (x,y) 那件东西，**先试哪个落点** → 四邻里按**离人最近**排好的一串。
+
+    ⚠️ 2026-10-02 恒：「**走不通才换个方向试，最好是先试试离自己近的那一个落点**」——
+       以前这里写死一个固定顺序（`(x,py) → (px,y) → (x,y+1) → …`），
+       一上来就可能挑到**离自己最远的边角**（真机那次挑的是 `(1,5)`）⇒ 白走一趟。
+    ⚠️ 顺序 = **离人曼哈顿距离升序**（同距离时按 下/上/右/左 的固定序，保证可复现）；
+       **只有前一个真走不通，才轮到下一个**（调用方按这个顺序试、够到了就 break）。
+    """
+    cands = [(x, y + 1), (x, y - 1), (x + 1, y), (x - 1, y)]
+    cands.sort(key=lambda c: abs(c[0] - px) + abs(c[1] - py))
+    return cands
+
+
 def main(radius=30, max_n=30, dry_run=False):
     base = NAGI
     # ⚠️ 2026-09-12 真机踩到（就在验 forage 那次）：`/surroundings` 的 radius **超过 30 会静默退回 10**
@@ -285,8 +299,10 @@ def main(radius=30, max_n=30, dry_run=False):
         s = requests.get(f"{base}/state", timeout=10).json()
         px, py = s.get("player", {}).get("x", 0), s.get("player", {}).get("y", 0)
         # 若对角（px!=x 且 py!=y），挪到卡迪纳尔相邻格
+        # 🎯 2026-10-02：落点顺序走 `approach_tiles()`（**离人最近的先试**，走不通才换下一个）——
+        #    原来那个写死的顺序一上来就可能挑到离自己最远的边角（真机挑的是 (1,5)）。
         if px != x and py != y:
-            for nx, ny in [(x, py), (px, y), (x, y + 1), (x, y - 1), (x + 1, y), (x - 1, y)]:
+            for nx, ny in approach_tiles(x, y, px, py):
                 try:
                     requests.post(f"{base}/walk_to", json={"location": loc, "x": nx, "y": ny}, timeout=10)
                     time.sleep(1.0)

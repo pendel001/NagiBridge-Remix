@@ -367,6 +367,71 @@ def main():
                   "scene(ops=" in _log9b and "tile_x" in _log9b, _log9b[:300]))
     res.append(ck("🚪 进不去那条路同样**零 `position`**", "pos" not in _S9b, _S9b.get("pos")))
 
+    # ⑩ 🚶🐄 195d：「**挡路的是一只动物**」——走位层只软这一件事（恒 2026-10-02）
+    #    真机形状：动物站的格 `/passable` 报 False、`/surroundings` 没 object。
+    #    ⚠️ 判据只一处（`stardew_api.soft_passable()`），动物名单**必须是游戏给的**。
+    _animal_at = (14, 15)          # 站着一只动物的格（挤奶时它挡在"正旁边"那条路上）
+    _A = M.api
+
+    def _passable_stub(animal_tile=None, animals_raise=False, wall=(30, 30)):
+        """`/passable`：**动物站的那格报 False**（照真机）、**真墙那格也 False**；`/animals` 给名单或炸。"""
+        def _p(ep, data=None):
+            CALLS.append(("POST", ep, data))
+            if ep == "/passable":
+                _p_xy = (int((data or {}).get("x", -9)), int((data or {}).get("y", -9)))
+                return {"passable": _p_xy not in (animal_tile, wall)}
+
+            def _noop(*a, **k):
+                return {"ok": True}
+            return _noop(ep, data)
+        _A._post = _p
+        _A._SOFT_AT_CACHE.update(ts=0.0, at=None, npcs=None)      # 清缓存（否则上一个用例的名单留着）
+        if animals_raise:
+            def _boom(*a, **k):
+                raise RuntimeError("模拟：/animals 读不到")
+            _A._ai_get = _boom
+        else:
+            _A._ai_get = lambda ep, params=None: (
+                {"animals": ([{"name": "松子", "type": "White Cow", "x": animal_tile[0],
+                               "y": animal_tile[1]}] if animal_tile else [])}
+                if ep == "/animals" else {})
+
+    # ① 判据本体：动物格 ⇒ 放行 + **文游风播报**（不是告警）；真墙 ⇒ 不放行；读不到名单 ⇒ 不软化
+    _passable_stub(animal_tile=_animal_at)
+    _ok1, _n1 = _A.soft_passable(*_animal_at)
+    res.append(ck("🚶 软阻挡（牲畜站那格）⇒ **当可走**，播报**点名**是哪只",
+                  _ok1 is True and "松子" in _n1, (_ok1, _n1)))
+    # ⚠️ 2026-10-02 恒：「软阻挡我们自己处理了，说给 ai 它也不能决定 ⇒ 没必要报，或者写得趣味一点」
+    res.append(ck("🚶 软阻挡那条**不是告警**（没有 ⚠️、没有「下一步」字样）",
+                  "⚠" not in _n1 and "下一步" not in _n1
+                  and "挤开了" in _n1, _n1))
+    _ok2, _n2 = _A.soft_passable(30, 30)
+    res.append(ck("🚶 **硬阻挡**（墙/物件，那格没活物）⇒ **不放行**、说明留空（由走位那条照实报）",
+                  _ok2 is False and _n2 == "", (_ok2, _n2)))
+    _passable_stub(animal_tile=_animal_at, animals_raise=True)
+    _ok3, _n3 = _A.soft_passable(*_animal_at)
+    res.append(ck("🚶 **读不到名单 ⇒ 一律不软化**（宁可照旧报走不到，别把墙当动物）",
+                  _ok3 is False and _n3 == "", (_ok3, _n3)))
+    # ② 走位层真用它：`_animal_side_tile` 会把"被动物占着的那格"当走位目标
+    _passable_stub(animal_tile=(12, 15))
+    _stub(loc="Farm")
+    _passable_stub(animal_tile=(12, 15))
+    _side = M._animal_side_tile(11, 15)        # 动物在 (11,15)；(12,15) 被另一只占着
+    res.append(ck("🚶 走位目标里**愿意选被动物占着的那格**（玩家就是顶上过去的）",
+                  _side[0] == 12 and _side[1] == 15 and "松子" in (_side[2] or ""), _side))
+    # ③ ⚠️ **互动层一个字没动**：够不够得着的判据仍是"卡迪纳尔正旁边"
+    import inspect as _insp6
+    res.append(ck("🚶 **互动层没动**（`_walk_to_animal` 里判「到没到」的仍然是 `_is_cardinal_to`）",
+                  "_is_cardinal_to(ax, ay)" in _insp6.getsource(M._walk_to_animal)))
+    res.append(ck("🚶 而且软阻挡那句**随走位那行一起出**（`_soft` 带进回执，不单列告警）",
+                  "_soft" in _insp6.getsource(M._walk_to_animal)))
+    # ④ 硬阻挡那条路照旧：**如实报 + 带下一步**（AI 需要知道的那种失败）
+    _stub(loc="Farm", walk_ok=False)
+    _okfail, _notefail = M._walk_to_animal(11, 15, tries=1, timeout=1)
+    res.append(ck("🚶 **硬走不到** ⇒ 照旧如实报（「没站到正旁边」+ 就地交互），不是软阻挡那套",
+                  _okfail is False and "没站到正旁边" in _notefail
+                  and "挤开了" not in _notefail, _notefail[:160]))
+
     print(f"\n{sum(res)}/{len(res)} 过")
     return all(res)
 

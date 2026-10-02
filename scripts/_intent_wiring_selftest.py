@@ -634,6 +634,9 @@ def main():
     # ⚠️ 槽名是**跨语言的契约**：Python 这边列 `hat`/`shirt`/…，C# 那边 `TryTakeOff`
     #    按同一批字符串分派。两边各写一份 = 早晚漂（漂了的样子是"脱 帽子"按下去回
     #    `未知槽位 'hat'`）。⇒ 这一条**去读 `ModEntry.cs` 的报错原话**当权威清单。
+    # ⚠️ 2026-10-02：「穿戴」撤出单子 ⇒ **Python 那份槽表（`_WORN_SLOTS`）已删**，
+    #    所以这条从"两边对齐"改成"C# 那份权威清单**还在**、而 Python 侧确实没留半截"。
+    #    哪天恢复穿戴，**回到这条**把两张表重新对齐。
     _slots_cs = set()
     try:
         _src = open(os.path.join(_here, "..", "ModEntry.cs"), encoding="utf-8").read()
@@ -642,12 +645,13 @@ def main():
             _slots_cs = {x.strip() for x in _m.group(1).split("/") if x.strip()}
     except Exception as e:
         print(f"     （读 ModEntry.cs 失败：{e}）")
-    _slots_py = {k for k, _cn in M.intent_menu._WORN_SLOTS}
-    res.append(ok(f"👕 「脱」的槽名跟 C# `TryTakeOff` 一致（C#={sorted(_slots_cs)}）",
-                  bool(_slots_cs) and _slots_py == _slots_cs,
-                  f"Python 多/少的：{sorted(_slots_py ^ _slots_cs)}"))
+    res.append(ok(f"👕 C# 的槽位权威清单**还在**（C#={sorted(_slots_cs)}）；Python 侧 `_WORN_SLOTS` 已随穿戴撤掉",
+                  bool(_slots_cs) and not hasattr(M.intent_menu, "_WORN_SLOTS"),
+                  f"C#={sorted(_slots_cs)}"))
 
     # 数据来源：`/worn` **必须打 AI 自己那端**（打错端 = 劝 AI 去脱恒的帽子）
+    # ⚠️ 2026-10-02：单子上**已经没有穿戴那行**了（撤走），但 `/worn` 这条读取**留着**
+    #    （`Ctx.worn` 仍是"我自己穿着什么"的事实来源，将来谁要用直接有）。用例照旧守它。
     _stub()
     ctx = M._im_ctx()
     _worn_calls = [c for c in CALLS if c[1] == "/worn"]
@@ -660,19 +664,13 @@ def main():
     _worn_src = open(os.path.join(_here, "nagi_mcp_server.py"), encoding="utf-8").read()
     res.append(ok("👕 `/worn` 走的是 `_ai_get`（AI 自己那端），不是 `_get`",
                   'api._ai_get("/worn")' in _worn_src))
-    # 单子上要真长出来（顶层一行目录 + 点开是"脱/穿"）
+    # ⛔ 195b：单子上**不再**长出来（原来这里验"顶层一行目录 + 点开是脱/穿"那一整套）
     _stub()
     _wt = M.intent(ops="show", kw={"n": 40})
-    res.append(ok("👕 顶层有「穿戴…」一行", "穿戴…" in _wt))
-    _wn = next((r.no for r in M.intent_menu._LAST_ROWS if (r.label or "") == "穿戴"), None)
-    _wl = M.intent(ops="do", kw={"code": str(_wn)})
-    res.append(ok("👕 点开 = 字符串槽 + 字典槽都列出",
-                  "脱 帽子（Straw Hat）" in _wl and "脱 靴子（Old Boots）" in _wl))
-    res.append(ok("👕 空槽不列（leftRing/pants 都是 None）",
-                  "左戒指" not in _wl and "裤子" not in _wl))
-    # ⚠️ `accessory`（面部饰品）**`/worn` 会吐、C# 的槽位表却不认** ⇒ 永远不许列出来
-    res.append(ok("👕 `accessory` **不列**（C# 槽位表不认它 → 列了就是按不成）",
-                  "面部" not in _wl and "accessory" not in _wl))
+    res.append(ok("👕⛔ 195b：`/worn` 里有东西也**不再**长出「穿戴」那行",
+                  "穿戴" not in _wt))
+    res.append(ok("👕⛔ 195b：`_im_run` 的 `wear` helper 也删了（墓碑注释在，指向 `daily wear`）",
+                  "穿 / 脱的 helper 2026-10-02 删了" in _worn_src))
 
     # ⑫ 🧾 过夜结算屏（2026-10-01）——**不给通用出口**，它有自己的行（「确认结算」）。
     #    ⚠️ 判据：`cancel()` 那套是 ESC + menu_close，而结算屏要点 `ok` 才算完
@@ -1437,9 +1435,9 @@ def main():
     #    人真走到了门口（`[walk] … 到位`），可 AI 看到的回执里一个字都没提。
     #    「翻完了却不说人到没到门口」两头都是谎 ⇒ 两条用例各钉一头（走到 / 没走到）。
     _r_conv_ok, _n_conv_ok, _, _ = _doors_hit(800, "放牧（开棚门）", doors_open=True)
-    res.append(ok("🚪 **收敛后**最终回执里**仍含走位那行**（走到了：带棚名 + 门口坐标）",
+    res.append(ok("🚪 **收敛后**最终回执里**仍含走位那行**（走到了：带棚名 + 门坐标）",
                   "🚶 已走到" in _r_conv_ok and "Deluxe" in _r_conv_ok
-                  and "门口" in _r_conv_ok, _r_conv_ok[:220]))
+                  and "旁边" in _r_conv_ok, _r_conv_ok[:220]))
     _stub(loc="Farm", farm_buildings=FARM_BUILDINGS, doors_open=True, walk_ok=False,
           time_dict={"timeOfDay": 800, "season": "summer", "weather": 0})
     M.intent(ops="show", kw={"n": 40})
@@ -1846,6 +1844,183 @@ def main():
     _rbe = _crab_after(ready_left=1, scan_raises=True)
     res.append(ok("🦀 B：**读不到** ⇒ 如实说「到底收没收干净我不知道」（不编）",
                   "不知道" in _rbe and "回读" in _rbe, _rbe.splitlines()[-1:]))
+
+    # ⑰ 195 批：门态**现在能只读**了（`animalDoorOpen` + `animalDoorX/Y`）
+    #     ⇒ 两行按"当前门态 vs 本行目标态"沉底；走位目标改**动物小门**。
+    def _farm_b(want_open=None, animal_door=True):
+        """`FARM_BUILDINGS` 的深拷 + 按用例给门态/小门坐标（**只在动物建筑上加**）。"""
+        out = []
+        for b in FARM_BUILDINGS:
+            b2 = dict(b)
+            if "Coop" in b["type"] or "Barn" in b["type"]:
+                if animal_door:
+                    # 形照真机：`Deluxe Coop: animalDoor(49,38)` / `Deluxe Barn: animalDoor(41,39)`
+                    b2["animalDoorX"] = 45 if "Coop" in b["type"] else 53
+                    b2["animalDoorY"] = 20
+                if want_open is not None:
+                    b2["animalDoorOpen"] = want_open
+            out.append(b2)
+        return out
+
+    def _doors_ctx(buildings):
+        _stub(loc="Farm", farm_buildings=buildings,
+              time_dict={"timeOfDay": 900, "season": "summer", "dayOfMonth": 6, "weather": 0})
+        return M._im_ctx()
+
+    _c_all_open = _doors_ctx(_farm_b(want_open=True))
+    res.append(ok("🚪 195：`/farm_buildings` 的门态被数出来（全开 ⇒ open=2 / closed=0 / unknown=0）",
+                  _c_all_open.doors.get("open") == 2 and _c_all_open.doors.get("closed") == 0
+                  and _c_all_open.doors.get("unknown") == 0, _c_all_open.doors))
+    _c_mixed = _doors_ctx([dict(_farm_b(want_open=True)[0]),
+                           dict(_farm_b(want_open=False)[1]), dict(FARM_BUILDINGS[2])])
+    res.append(ok("🚪 195：一开一关 ⇒ open=1 / closed=1（温室不算进 builds）",
+                  _c_mixed.doors.get("open") == 1 and _c_mixed.doors.get("closed") == 1
+                  and _c_mixed.doors.get("builds") == 2, _c_mixed.doors))
+    _c_nokey = _doors_ctx(_farm_b(want_open=None))
+    res.append(ok("🚪 195：**缺键 ⇒ unknown=2**（不许当成「开着」或「关着」）",
+                  _c_nokey.doors.get("unknown") == 2, _c_nokey.doors))
+
+    _IM = M.intent_menu
+    _w_open, _w_close = _IM._VERB_BY_KEY["opendoors"], _IM._VERB_BY_KEY["doors"]
+    res.append(ok("🚪 195：**门都开着** ⇒ 「放牧」沉底、「关棚门」照常",
+                  _IM._weight_of(_w_open, _c_all_open) == _IM._DOORS_SUNK_W
+                  and _IM._weight_of(_w_close, _c_all_open) == 70,
+                  (_IM._weight_of(_w_open, _c_all_open), _IM._weight_of(_w_close, _c_all_open))))
+    _c_all_closed = _doors_ctx(_farm_b(want_open=False))
+    res.append(ok("🚪 195：**门都关着** ⇒ 反过来（放牧 84 / 关棚门沉底）",
+                  _IM._weight_of(_w_open, _c_all_closed) == 84
+                  and _IM._weight_of(_w_close, _c_all_closed) == _IM._DOORS_SUNK_W,
+                  (_IM._weight_of(_w_open, _c_all_closed), _IM._weight_of(_w_close, _c_all_closed))))
+    res.append(ok("🚪 195：**一开一关 ⇒ 两行都不沉**（都没到目标态）",
+                  _IM._weight_of(_w_open, _c_mixed) == 84
+                  and _IM._weight_of(_w_close, _c_mixed) == 70,
+                  (_IM._weight_of(_w_open, _c_mixed), _IM._weight_of(_w_close, _c_mixed))))
+    res.append(ok("🚪 195：**读不到（缺键）⇒ 两行都不沉**（宁缺勿编）",
+                  _IM._weight_of(_w_open, _c_nokey) == 84
+                  and _IM._weight_of(_w_close, _c_nokey) == 70,
+                  (_IM._weight_of(_w_open, _c_nokey), _IM._weight_of(_w_close, _c_nokey))))
+    res.append(ok("🚪 195：读得出来时理由栏**如实**带门态（「都开着」）",
+                  "都开着" in _w_open.reason(_c_all_open, None),
+                  _w_open.reason(_c_all_open, None)[:120]))
+    res.append(ok("🚪 195：**读不到时理由栏一个字都不提门态**",
+                  "现在" not in _w_open.reason(_c_nokey, None)
+                  and "现在" not in _w_close.reason(_c_nokey, None),
+                  _w_open.reason(_c_nokey, None)[:120]))
+    _L_doors, _ = _labels2(loc="Farm", farm_buildings=_farm_b(want_open=True),
+                           time_dict={"timeOfDay": 900, "season": "summer",
+                                      "dayOfMonth": 6, "weather": 0})
+    _i_open = _L_doors.index("放牧（开棚门）") if "放牧（开棚门）" in _L_doors else -1
+    res.append(ok("🚪 195：单子上「放牧」真的**掉到后面**了（排在其它行之后）",
+                  _i_open > 3 and _i_open >= len(_L_doors) - 2, _L_doors))
+
+    # 🚶 走位目标 = **动物小门旁边那格**（缺键退回人类门那一套）
+    #    ⚠️ `_stub()` **要在打桩 `_walk_and_wait` 之前**调 —— 它会重新封一遍走位函数
+    #       （第一版先打桩后 `_stub`，记录器被覆盖 ⇒ 记到空（这个坑今天第二次踩）。
+    _WALK_SEEN = []
+    _adj = {(45, 21), (45, 19), (44, 20), (46, 20)}      # 小门 (45,20) 的四邻
+
+    def _patch_walk():
+        _old = (M._walk_and_wait, M.api.face)
+        M._walk_and_wait = lambda loc, x, y, timeout=None: (
+            _WALK_SEEN.append((loc, x, y)), (True, ""))[1]
+        M.api.face = lambda *a, **k: None
+        return _old
+
+    _stub(loc="Farm", farm_buildings=_farm_b(want_open=True),
+          time_dict={"timeOfDay": 900, "season": "summer", "dayOfMonth": 6, "weather": 0})
+    _o_ww = _patch_walk()
+    try:
+        _nm, _note = M._walk_to_animal_door()
+    finally:
+        M._walk_and_wait, M.api.face = _o_ww
+    res.append(ok("🚶 195：走位目标是**小门旁边那格**（小门(45,20) ⇒ 站它四邻之一，朝门）",
+                  bool(_WALK_SEEN) and tuple(_WALK_SEEN[-1][1:]) in _adj and "小门" in _note,
+                  (_WALK_SEEN, _note)))
+    _WALK_SEEN.clear()
+    _stub(loc="Farm", farm_buildings=_farm_b(animal_door=False),
+          time_dict={"timeOfDay": 900, "season": "summer", "dayOfMonth": 6, "weather": 0})
+    _o_ww2 = _patch_walk()
+    try:
+        _nm2, _note2 = M._walk_to_animal_door()
+    finally:
+        M._walk_and_wait, M.api.face = _o_ww2
+    res.append(ok("🚶 195：**缺小门键 ⇒ 退回人类门那一套**（door(44,16) ⇒ 站 (44,17)）",
+                  bool(_WALK_SEEN) and tuple(_WALK_SEEN[-1][1:]) == (44, 17)
+                  and "门(44,16)" in _note2, (_WALK_SEEN, _note2)))
+    import inspect as _insp3
+    res.append(ok("🚶 195：翻门**仍然走 `/toggle_doors`**（注释写清为什么不用 interact：未验）",
+                  "/toggle_doors" in _insp3.getsource(M._doors_flip_once)
+                  and "先在真机 A/B" in _insp3.getsource(M._walk_to_animal_door)))
+
+    # ⑱ 195b：**「穿戴」撤出单子**（恒拍板）—— 功能搬到 `daily(ops="wear", …)`
+    import inspect as _insp4
+    _wear_bag = [{"slotIndex": 2, "name": "Straw Hat", "displayName": "草帽", "catNum": -95,
+                  "stack": 1}]
+    # ⚠️ `/worn` 的夹具是模块级 `WORN`（`_stub` 没有 `worn=` 这个旋钮）——穿戴行撤了之后
+    #    也不改了：这一条要的就是"**身上戴着 + 背包有得穿**，单子照样不出现"。
+    _stub(inv=_wear_bag,
+          time_dict={"timeOfDay": 900, "season": "summer", "dayOfMonth": 6, "weather": 0})
+    _wo = M.intent(ops="show", kw={"n": 40})
+    res.append(ok("👕 195b：单子上**没有「穿戴」**（身上戴着 + 背包有得穿也不出现）",
+                  "穿戴" not in _wo, _wo[:160]))
+    res.append(ok("👕 195b：动词表里 `wear` / `wear_on` / `wear_off` **都不在**（撤干净）",
+                  all(k not in M.intent_menu._VERB_BY_KEY for k in ("wear", "wear_on", "wear_off"))))
+    res.append(ok("👕 195b：`daily` 的 dispatch 里**仍然有** `wear`（功能没少）",
+                  '"wear": wear' in _insp4.getsource(M.daily)))
+    _dw = ""
+    try:
+        _dw = str(M.daily(ops="wear", kw={"name": "Straw Hat"}))
+    except Exception as e:
+        _dw = f"（抛了 {type(e).__name__}: {e}）"      # 自验里闸会把 POST 拦掉，这就是预期
+    res.append(ok("👕 195b：`daily(ops=\"wear\")` **认得这个 op**（不是「未知 ops」）",
+                  "未知" not in _dw, _dw[:180]))
+    res.append(ok("👕 195b：意图索引里「穿戴」指向 `daily wear`",
+                  any(d == "daily" and o == "wear" and "穿戴" in k
+                      for k, d, o, _h in M._INTENT_INDEX)))
+    res.append(ok("👕 195b：`daily` 的域说明里写着 `wear`（别「删了单子又没写路」）",
+                  "wear(穿/脱衣物" in str(M._DOMAIN_GUIDES.get("daily") or "")))
+
+    # ⑲ 195c：`搬走` 撤出单子（替代路 = scene 域）· 棚里"没东西可捡"的原因标注
+    import inspect as _insp5
+    res.append(ok("🛋⛔ 195c：`pickup_f` / `pickup_one` **都不在动词表**里（撤干净）",
+                  all(k not in M.intent_menu._VERB_BY_KEY for k in ("pickup_f", "pickup_one"))))
+    _scene_src = _insp5.getsource(M.scene)
+    res.append(ok("🛋 195c：替代路**确实在**（`scene` 的 dispatch 有 `pickup`→`furniture_pickup` + "
+                  "`furniture`→`scan_furniture`）",
+                  '"pickup": furniture_pickup' in _scene_src
+                  and '"furniture": scan_furniture' in _scene_src))
+    _stub(loc="Deluxe Coop", surr_tiles=[])
+    M._BARN_EMPTY_KEY.update(loc=None, txt="")
+    _bn = M._barn_empty_hint("Deluxe Coop")
+    res.append(ok("🥚 195c：棚里地上没东西可捡 ⇒ 标注**两种可能**（采集器收走了 / 今天没下蛋没吃草）",
+                  "自动采集器" in _bn and "没吃上草" in _bn, _bn[:220]))
+    res.append(ok("🥚 195c：**不说死、不写成失败**（两种并列 + 明说「不是出错」「分不出来」）",
+                  "不是出错" in _bn and "分不出来" in _bn))
+    _stub(loc="Deluxe Coop")
+    M._BARN_EMPTY_KEY.update(loc=None, txt="")
+    res.append(ok("🥚 195c：地上**有**可捡的 ⇒ 不标这句（那行自己会出现）",
+                  M._barn_empty_hint("Deluxe Coop") == ""))
+    M._BARN_EMPTY_KEY.update(loc=None, txt="")
+    res.append(ok("🥚 195c：**不在动物建筑里**（农场）⇒ 不标（别在矿洞/农场刷这句）",
+                  M._barn_empty_hint("Farm") == ""))
+    res.append(ok("🌾 195c：顺手确认 193b 那条 —— **喂食台铺满 ⇒ 「铺 干草」不出现**（本轮再核一次）",
+                  not _hay_row(loc="Deluxe Coop", silo={"hay": 3, "capacity": 240},
+                               troughs=_TROUGHS, trough_filled=4)[0]))
+
+    # ⑳ 195d 追加：落点**最近优先**（恒：「走不通才换个方向试，最好是先试试离自己近的那一个落点」）
+    _ap = _PS.approach_tiles(1, 5, 3, 6)          # 目标 (1,5)，人在 (3,6)
+    _ad = [abs(a - 3) + abs(b - 6) for a, b in _ap]
+    res.append(ok("🎯 195d：落点候选**按离人距离升序**（最近的在最前）",
+                  _ad == sorted(_ad), (_ap, _ad)))
+    res.append(ok("🎯 195d：候选就是目标的**四个正邻**（能站到它正旁边才够得着）",
+                  sorted(_ap) == sorted([(1, 6), (1, 4), (2, 5), (0, 5)]), _ap))
+    _ad2 = [abs(a - 1) + abs(b - 9) for a, b in _PS.approach_tiles(1, 5, 1, 9)]
+    res.append(ok("🎯 195d：换个站位，顺序跟着变（**离得近的那个先试**，不是写死方向）",
+                  _ad2 == sorted(_ad2) and _PS.approach_tiles(1, 5, 1, 9)[0] == (1, 6), _ad2))
+    import inspect as _insp7
+    _pu_src = _insp7.getsource(_PS.main)
+    res.append(ok("🎯 195d：**走不通才换下一个**（循环里够到就 `break`）",
+                  "for nx, ny in approach_tiles(" in _pu_src and "break" in _pu_src))
 
     print(f"\n{sum(res)}/{len(res)} 过")
     return all(res)

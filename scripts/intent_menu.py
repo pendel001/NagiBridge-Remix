@@ -137,26 +137,13 @@ WEARABLE_CATS = {-95: "帽子", -96: "戒指", -97: "靴子", -100: "衣服", -1
 #    ⚠️ **没有 `accessory`** —— `/worn` 会吐这个键（面部饰品），可 C# 的槽位表**不认它**，
 #       列出来就是"按了不成"的行。`_intent_wiring_selftest.py` 有一条会**读 C# 源码**
 #       核这张表（漂了就红，不靠人记）。
-_WORN_SLOTS = (("hat", "帽子"), ("shirt", "上衣"), ("pants", "裤子"), ("boots", "靴子"),
-               ("leftRing", "左戒指"), ("rightRing", "右戒指"), ("trinket", "饰品"))
-
-
-def _wear_cat(slot: dict):
-    """这件能穿吗、是哪个槽。→ 中文槽名 / `None`（不能穿，或分类号缺失⇒不猜）。"""
-    return WEARABLE_CATS.get((slot or {}).get("cat_num"))
-
-
-def _worn_name(worn: dict, slot: str) -> str:
-    """`/worn` 里某槽**现在戴着什么**。→ 名字 / `""`（空槽）。
-
-    ⚠️ 两种形状都得吃：`shirt`/`pants`/`hat`/`accessory` 回**字符串**，
-       `boots`/`leftRing`/`rightRing`/`trinket` 回**字典或 null**（`ModEntry.cs:6960-7030`）。
-       少判一种，"脱"那几行就会凭空少一半。
-    """
-    v = (worn or {}).get(slot)
-    if isinstance(v, dict):
-        return v.get("name") or ""
-    return v or ""
+# 👕 2026-10-02：「穿戴」**整行撤出单子**（恒拍板，恒原话：「我看了一下，这样的话穿戴会在单子上
+#    常驻哦！考虑挪出去跟 sleep 一起放 daily 吗？因为也不怎么常用来着」）——
+#    连同原来那套 `_WORN_SLOTS` / `_wear_cat` / `_worn_name` 一起删（撤干净，没别的地方用了）。
+#    **为什么撤**：它权重 38 = 单子最低 ⇒ 在"没别的事可做"的场景里会**常驻**
+#    （棚里那种只剩「捡」+「穿戴…」的屏）；**不是不好用，是位置错了**。
+#    **替代路**：`daily(ops="wear", kw={"name": 内部名})` / `daily(ops="wear", kw={"slot": "hat"})`
+#    —— 跟 `sleep` 同一个家（`daily` 的 dispatch 里本来就有 `wear`，2026-10-01 就在）。
 
 
 # 🛠 「这是不是工具」——游戏自己的判据（`Tool.Category == -99`，反编译 + CHANGELOG 09-27 那条）。
@@ -844,74 +831,17 @@ def _exec_stand(ctx, targets, run):
     return _receipt_from_helper("起身", "", r)
 
 
-def _pickup_can(ctx, t):
-    """🛋 拿得起家具吗。
-
-    ⚠️ **游戏没有"这件能不能拿"的事前判据**（`canBeRemoved()` 要传人、且装修图里恒真）
-    ⇒ 这一条**没有真正的 can()**，只能"有家具就给行、拿不动由回执如实报"
-       （背包满 / 别人家的床 —— 那两样 `furniture_pickup` 都会点名说）。
-    ⚠️ 开菜单时拿不了（helper 自己写的）⇒ 开菜单就不给。
-    """
-    if not t or ctx.menu:
-        return CAN_NO
-    # 🛏 **床永不进「搬走」**（恒 2026-09-29：「床…**没有办法放在交互家具的选项里**」）。
-    #    真机实测：真拿也拿不动（`canBeRemoved` 对床恒 false —— 恒那条"大概率有人躺在上面"
-    #    的诊断就写在 `_cant_remove_reason` 里），**列出来就是"按了不成"的行**。
-    #    ⚠️ 判据必须是 `Furniture.bed`（**所有**床，**含儿童床**）——
-    #       2026-09-29 真机：只用 `tile["bed"]`（`crawl_bed` 给的"主人的床"）时，
-    #       那两张 `儿童床` **照样漏在候选里**（它们不是谁的主床，但它们是床）。
-    if (t.get("bed")
-            or (t.get("furniture") or {}).get("furnitureType") == FURNITURE_BED):
-        return CAN_NO
-    return CAN_YES if t.get("furniture") else CAN_NO
-
-
-def _pickup_show(ctx, t):
-    return f"搬走 {t['furniture'].get('name') or '家具'}"
-
-
-def _pickup_reason(ctx, t):
-    f = t["furniture"]
-    wh = f"{f.get('width')}×{f.get('height')}"
-    return f"{wh} · 装修图可隔屋拿"
-
-
-def _exec_pickup(ctx, targets, run):
-    f = targets[0]["furniture"]
-    r = run("furniture_pickup", {"x": f.get("x"), "y": f.get("y")})
-    return _receipt_from_helper("搬走家具", f.get("name") or "", r)
-
-
-# 🛋 顶层那一行只报总数（`搬走…（34 件）`）——**一条一行的活在下一层**
-#    ⚠️ 恒 2026-09-29 拍板：「移动家具做单行」。
-#    理由不是好看：一屋子家具 30+ 行，会把「收机器 / 开箱子」这些**一下能做完的**
-#    挤成"还有 35 项"——第一屏的承诺是**动作面**，不该被"点开还有一层"占满。
-PICKUP_ITEM_V = Verb("pickup_one", "搬走", 0, _pickup_can, _pickup_reason, _pickup_show,
-                     "tile", exec=_exec_pickup, group="家具")
-
-
-def _pickup_reason_many(ctx, targets):
-    """合一那行的理由：**最近一件几步**（同"20 处 · 最近 6 步"那个口径）。"""
-    return f"最近 {min(_dist(ctx, t) for t in targets)} 步"
-
-
-def _pickup_count(ctx, targets):
-    return f"{len(targets)} 件"
-
-
-def _pickup_subs(ctx, targets):
-    """🛋 「搬走」的下一层：**屋里能拿走的东西，一件一行**。
-
-    ⚠️ 排序只用**距离**（近的先搬，省得来回跑）——这一层没有权重表可用，
-       距离是这里**唯一"合法且可审计"**的理由（跟顶层同一条规矩：理由要有出处）。
-    """
-    rows = [Row(PICKUP_ITEM_V, [t], _pickup_show(ctx, t), _pickup_reason(ctx, t),
-                _dist(ctx, t), group="家具")
-            for t in targets if t.get("furniture")]
-    if not rows:
-        return None
-    rows.sort(key=lambda r: r.dist)
-    return Level(rows, title=f"🛋 搬走哪一件？（{len(rows)} 件 · 敲了就搬走）")
+# 🛋⛔ **「搬走」2026-10-02 撤出单子**（恒拍板，恒原话：「更多涉及家居装饰场景……**一般优先级非常低**。
+#    跟壁纸墙纸一样**干脆不做了，保持原样传参式域工具**算了」）——
+#    照 190 撤「放料」/ 195b 撤「穿戴」的办法**整套删干净**（顶层行 + 点开那层 + 判据 + 执行）。
+#    **为什么撤**：它是**家居装饰场景专用**的活（装修图里搬家具），日常优先级极低，
+#    却因为是"目录行"而在屋里（尤其自己家）常驻，占掉第一屏的格子。
+#    **替代路（现成的域工具，原样传参，一个都没少）**：
+#      · 看屋里有什么家具 → `scene(ops="furniture")`（= 原来点开那一层印的清单）
+#      · 搬起某一格那件   → `scene(ops="pickup", kw={"tile_x":X,"tile_y":Y})`（就是原来的 `furniture_pickup`）
+#      · 放下/摆好       → `scene(ops="place", kw={...})` · 装修/地板墙纸 → `scene(ops="decor")`
+#    ⚠️ 判据（"床永不进搬走"那条 `Furniture.bed`）随行一起删：那是**单子那层**的过滤
+#       （防摆一行"按了不成"的）；域工具那条路**不筛**，拿不动由回执如实报（原样）。
 
 
 def _animals_left(ctx):
@@ -2262,102 +2192,10 @@ OPTION_V = Verb("menu_option", "选", 76, _option_can, _option_reason, _option_s
                 "option", exec=_exec_option, menu_ok=True) 
 
 
-# 👕 「穿戴」（2026-10-01）—— **一行目录行包办 穿 / 脱**。
-#
-# 形状是**恒自己的规矩**推出来的，不是我省事：
-#   「菜单是多路口的强暗示：第一屏返回什么，AI 就倾向照着做」——
-#   背包里 5 件穿戴物 = 5 行「穿 X」，会把**收机器 / 箱子**这些一下能做完的挤成"还有 N 项"。
-#   ⇒ 顶层**只留一行**，点开才是"穿哪件 / 脱哪件"（同 `搬走…` / `箱子…` 那个形状）。
-# ⚠️ 穿和脱**合成一行**（恒：「能收就收」）：它俩是同一件事的两面（"管我身上这身行头"），
-#   拆两行 = 第一屏多占一格，而两行几乎从不同时有用（背包空时只有脱、身上空时只有穿）。
-def _wear_on_list(ctx):
-    """背包里**能穿的**（分类号问得出来才算，问不出来不猜）。"""
-    return [t for t in ctx.inv if _wear_cat(t)]
+# 👕 「穿戴」那**一行目录行 + 两个子动词（穿 / 脱）2026-10-02 整体撤出单子** ——
+#    理由与替代路见文件上方（`_WORN_SLOTS` 那段墓碑注释）：权重最低 ⇒ 空场景里常驻；
+#    功能**没少**，只是搬到 `daily(ops="wear", …)`（跟 `sleep` 同一个家）。
 
-
-def _wear_off_list(ctx):
-    """身上**还戴着东西**的槽 → `[(槽名, 中文, 名字)]`（空槽不出行）。"""
-    return [(k, cn, _worn_name(ctx.worn, k)) for k, cn in _WORN_SLOTS
-            if _worn_name(ctx.worn, k)]
-
-
-def _wear_can(ctx, t):
-    """顶层那一行：有得穿 **或** 有得脱才出现。"""
-    return CAN_YES if (_wear_on_list(ctx) or _wear_off_list(ctx)) else CAN_NO
-
-
-def _wear_reason(ctx, t):
-    """理由栏：**身上几件 + 背包能穿几件**（两样都是"这一刻的事实"，都要说）。
-
-    ⚠️ 走的是 `reason` 而**不是** `reason_many`：这一行 `target="world"`（`_row_for` 里
-       `world=True` 那条分支），`reason_many` 在这种情况下**压根不会被调到**
-       —— 我第一版把话写在 `reason_many` 里，真机屏上就只有半句（自验当场抓到）。
-    """
-    on, put = len(_wear_off_list(ctx)), len(_wear_on_list(ctx))
-    bits = []
-    if on:
-        bits.append(f"身上 {on} 件")
-    if put:
-        bits.append(f"背包能穿 {put} 件")
-    return " · ".join(bits)
-
-
-def _wear_show(ctx, t):
-    return "穿戴"
-
-
-def _wear_count(ctx, targets):
-    """目录行那截计数 —— **故意留空**。
-
-    ⚠️ 约定（见 `_render_level`）：`count_text == ""` = **这行的计数说不出来** ⇒ 一个字都不印。
-       不这么干的话它会退回 `len(level.rows)`（"点开有几条"），而理由栏已经报了
-       "身上 1 件 · 背包能穿 2 件" —— 同一屏两个数并排就是"拿错尺子"的温床
-       （`_chest_count` 那段的同一条规矩）。
-    """
-    return "" if (_wear_off_list(ctx) or _wear_on_list(ctx)) else None
-
-
-def _wear_subs(ctx, targets):
-    """点开之后：**先"脱"后"穿"**。
-
-    ⚠️ 顺序有理由（不是随手）：身上那几件是**这一刻的事实**（脱了立刻变），
-       背包那几件是**将来的可能**。单子先报事实，跟别处一致。
-    """
-    rows = []
-    for slot, cn, name in _wear_off_list(ctx):
-        # ⚠️ `where=""`：目标是个**槽**、不是世界里的坐标，印"手持"就是撒谎
-        #    （同货架商品那条规矩）。
-        rows.append(Row(WEAR_OFF_V, [{"slot": slot, "cn": cn, "name": name}],
-                        f"脱 {cn}（{name}）", "身上", 0, where=""))
-    for t in _wear_on_list(ctx):
-        rows.append(Row(WEAR_ONE_V, [t], f"穿 {t['name']}", _wear_cat(t) or "", 0))
-    if not rows:
-        return None
-    return Level(rows, title="👕 穿戴 —— 脱哪件 / 穿哪件？（敲了当场换）")
-
-
-def _exec_wear_on(ctx, targets, run):
-    t = targets[0]
-    # ⚠️ 传**内部名**（`raw.name`，英文）—— C# 是 `item.Name.Equals(name)`（`ModEntry.cs:6234`），
-    #    跟"卖"同一个口径。传中文显示名 = 背包里永远找不到（`❌ 背包没有 '草帽'`）。
-    r = run("wear", {"name": (t.get("raw") or {}).get("name") or t.get("name")})
-    return _receipt_from_helper("穿", t.get("name") or "", r)
-
-
-def _exec_wear_off(ctx, targets, run):
-    d = targets[0]
-    r = run("wear", {"slot": d.get("slot")})
-    return _receipt_from_helper("脱", f"{d.get('cn')}（{d.get('name')}）", r)
-
-
-# 子层两个动词（**只活在「穿戴…」点开那一层**，不单独上顶层——它们的 `can` 恒真，
-# 因为"这一件能不能穿"在造行时已经筛过了）。
-WEAR_ONE_V = Verb("wear_on", "穿", 0, lambda c, t: CAN_YES,
-                  lambda c, t: _wear_cat(t) or "", lambda c, t: f"穿 {t['name']}",
-                  "inv", exec=_exec_wear_on)
-WEAR_OFF_V = Verb("wear_off", "脱", 0, lambda c, t: CAN_YES,
-                  lambda c, t: "身上", lambda c, t: f"脱 {t['cn']}",
-                  "world", exec=_exec_wear_off)
 
 
 # 🎬 「推进对话」（2026-10-01）—— 剧情/对话框那一刻**唯一该按的**东西。
@@ -2716,6 +2554,10 @@ SELL_V = Verb("sell", "卖", 74, _sell_can, _sell_reason, lambda c, t: "卖", "w
 #      给 `/farm_buildings` 补 `animalDoorOpen`（只读）+ `animalDoorX/Y`；
 #      拿到之后这两行就能按"当前门态 vs 本行目标态"沉底（已经是目标态 ⇒ 不给行/压到最底）。
 _DOORS_OPEN_H0, _DOORS_OPEN_H1 = 6, 15     # 放牧：06:00–15:00（含两端）
+# 🚪 2026-10-02：门态**现在能只读**了（C# `/farm_buildings` 给 `animalDoorOpen` + `animalDoorX/Y`）
+#    ⇒ 两行按"当前门态 vs 本行目标态"**沉底**（恒：「门已经开着就沉底 / 关好之后也沉底」）——
+#    重量压到下面这个值，`can()` 那条时间闸照旧（沉底 ≠ 不给行）。
+_DOORS_SUNK_W = 10
 _DOORS_CLOSE_H = 17                        # 关棚门：≥17:00 或 <06:00
 
 
@@ -2741,6 +2583,49 @@ def _doors_ready(ctx):
     return d, True
 
 
+def _doors_state_clause(ctx) -> str:
+    """门态那半句（**只在读得出来时才写**）。
+
+    🚪 2026-10-02：C# 现在给 `animalDoorOpen`（只读）⇒ 这儿可以**如实**说一句；
+       **缺键（`unknown>0`）或没建筑就一个字都不写**（宁缺勿编：不能把"读不出来"说成"都开着"）。
+    """
+    d = ctx.doors or {}
+    n = int(d.get("builds") or 0)
+    if n <= 0 or int(d.get("unknown") or 0) > 0:
+        return ""
+    o = int(d.get("open") or 0)
+    c = int(d.get("closed") or 0)
+    if o >= n:
+        state = f"{n} 栋门**都开着**"
+    elif c >= n:
+        state = f"{n} 栋门**都关着**"
+    else:
+        state = f"{n} 栋里**开着 {o} 栋**、关着 {c} 栋"
+    return f" · 现在{state}"
+
+
+def _doors_sink_weight(static_w: int, want_open: bool):
+    """门态决定权重：**已经是本行目标态 ⇒ 沉底**（恒：「**门已经开着就沉底 / 关好之后也沉底**」）。
+
+    ⚠️ 沉底 = **权重压到最低**（`_DOORS_SUNK_W`），**不是不给这行** ——
+       翻门端点是无状态的翻转，人偶尔确实要"反着来再敲一次"；把它藏掉反而更难用。
+    ⚠️ 门态**读不出来**（缺键 / `unknown>0` / 没建筑）⇒ **不沉底**（照原权重出现），
+       也**不假称**门态（理由栏见 `_doors_state_clause`）。
+    ⚠️ 动态权重**只能走** `Verb.weight_fn` → `_weight_of()` 这一条路（文件上方那条规矩）。
+    """
+    def _fn(ctx) -> int:
+        d = ctx.doors or {}
+        n = int(d.get("builds") or 0)
+        if n <= 0 or int(d.get("unknown") or 0) > 0:
+            return static_w                      # 读不出来 ⇒ 不沉底、不改权重
+        if want_open and int(d.get("open") or 0) >= n:
+            return _DOORS_SUNK_W
+        if (not want_open) and int(d.get("closed") or 0) >= n:
+            return _DOORS_SUNK_W
+        return static_w
+    return _fn
+
+
 def _doors_open_can(ctx, t):
     """🐄 放牧：农场 + 有动物建筑 + **非雨天 + 非冬天** + 06:00–15:00。"""
     d, ok = _doors_ready(ctx)
@@ -2761,9 +2646,11 @@ def _doors_open_reason(ctx, t):
 
     ⚠️ 别在这儿写"开完门记得 `farm animals` 摸一遍"（恒 2026-10-01：「**关着门也可以 animals 摸一遍**，
        我记得是自动跨建筑摸的。不建议加这一句」）—— `care_animals` 自己会走进每一栋畜舍。
+    ⚠️ 门态那半句只在**读得出来**时才拼（`_doors_state_clause`）——读不到**一个字都不许提门态**。
     """
     n = int((ctx.doors or {}).get("builds") or 0)
     return (f"本档 {n} 栋动物建筑 · **开了门动物才会出去棚外吃草**（雨天/冬天不给这行）"
+            f"{_doors_state_clause(ctx)}"
             f" · 敲了先走到棚门口再翻；回执**逐栋报执行后的门态**，"
             f"想反着来再敲一次 `farm(ops=\"doors\")`")
 
@@ -2786,6 +2673,7 @@ def _doors_close_show(ctx, t):
 def _doors_close_reason(ctx, t):
     n = int((ctx.doors or {}).get("builds") or 0)
     return (f"本档 {n} 栋动物建筑 · **天黑了：关门防野生动物袭击牲畜**"
+            f"{_doors_state_clause(ctx)}"
             f" · 敲了先走到棚门口再翻；回执**逐栋报执行后的门态**，"
             f"想反着来再敲一次 `farm(ops=\"doors\")`")
 
@@ -2855,9 +2743,13 @@ def _exec_close_doors(ctx, targets, run):
     return _doors_exec(ctx, targets, run, want=False)
 
 
-OPEN_DOORS_V = Verb("opendoors", "放牧（开棚门）", 84, _doors_open_can,                    _doors_open_reason, _doors_open_show, "world", exec=_exec_open_doors)
+OPEN_DOORS_V = Verb("opendoors", "放牧（开棚门）", 84, _doors_open_can,                    _doors_open_reason, _doors_open_show, "world", exec=_exec_open_doors,
+                    # 🚪 门态已经是"全开" ⇒ 沉底（恒 2026-10-02）；读不出来就不沉
+                    weight_fn=_doors_sink_weight(84, want_open=True))
 CLOSE_DOORS_V = Verb("doors", "关棚门", 70, _doors_close_can,
-                     _doors_close_reason, _doors_close_show, "world", exec=_exec_close_doors)
+                     _doors_close_reason, _doors_close_show, "world", exec=_exec_close_doors,
+                     # 🚪 门态已经是"全关" ⇒ 沉底（恒 2026-10-02）；读不出来就不沉
+                     weight_fn=_doors_sink_weight(70, want_open=False))
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -3012,7 +2904,11 @@ VERBS: list = [
     # 🪑 坐 / 🛋 搬家具（逐格）——2026-09-29 接线
     # ⚠️ `batch=False`：`_exec_sit` 只吃 `targets[0]`（人只能坐一张）
     #    ⇒ 街上两张长椅时**不许印 `坐 现代长椅 ×2`**（那是"两张都要坐"）。
-    Verb("sit",     "坐",     70, _sit_can,     _sit_reason,     _sit_show,     "tile",
+    # 🪑 2026-10-02 恒：「**坐可以放在不靠上的位置**」⇒ 权重从 70 压到 26。
+    #    理由：坐下是"歇一下/等人/看景"的活，**很少是这一刻的最优解**；而它按格发号，
+    #    有椅子就容易挤进第一屏。**没座位就不会出现**（判据是逐格的 `_sit_can`，
+    #    夹具/真机里没有 seat 格 → 这行压根不存在），所以压低不会"藏掉该做的事"。
+    Verb("sit",     "坐",     26, _sit_can,     _sit_reason,     _sit_show,     "tile",
          exec=_exec_sit, group="家具"),
     # 🪑 起身：**坐着才出现**（见上面 `_stand_can` 那段）——它是「坐」的**出口**，
     #    没有它，单子就把 AI 留在一个自己不给路的状态里。
@@ -3032,10 +2928,12 @@ VERBS: list = [
     #       靠 `_apply_groups` 的"高权重可以越过组"排到最前（夜里 92）。
     Verb("lie",     "躺一下", 68, _bed_can,     _lie_reason,     _lie_show,     "tile",
          exec=_exec_lie, weight_fn=_lie_weight),
-    # 🛋 搬走：**目录行**（一屋子家具一件一行 ⇒ 顶层只留一行报总数，点开才发号）。
-    Verb("pickup_f", "搬走", 68, _pickup_can, _pickup_reason, _pickup_show, "tile",
-         subs=_pickup_subs, count=_pickup_count, merge=True,
-         reason_many=_pickup_reason_many, group="家具"),
+    # ⛔ 🛋 2026-10-02 **「搬走」（`pickup_f`）撤出单子**（恒拍板：家居装饰场景专用、优先级极低，
+    #    「跟壁纸墙纸一样干脆不做了，保持原样传参式域工具算了」）—— 原来这里是：
+    #    `Verb("pickup_f", "搬走", 68, …, subs=_pickup_subs, count=_pickup_count, merge=True,
+    #          reason_many=_pickup_reason_many, group="家具")`。
+    #    替代路（**现成的域工具**）：`scene(ops="furniture")` 看清单 ·
+    #    `scene(ops="pickup", kw={"tile_x":X,"tile_y":Y})` 搬起 · `scene(ops="place", …)` 放下。
     # 🌿 捡 / 🌾 收作物：**聚合行**（一次一片，端点的语义本来就不是逐格）
     Verb("pick",    "捡 地上的东西", 90, _pick_can, _pick_reason, _pick_show, "tile",
          exec=_exec_pick, merge=True, batch=True,             # 帮手一片全捡（真机：×2 捡到 2）
@@ -3071,11 +2969,10 @@ VERBS: list = [
     # 🚪 界面出口（**菜单态专属**，见上面 `CLOSE_V` 那段）。放最后只为读着顺——
     #    排序走权重（30），跟它在列表里的位置无关。
     CLOSE_V,
-    # 👕 穿戴（目录行，见上面那一段）。权重压在 读(40)/吃(50) 之下：
-    #    "换身行头"很少是这一刻的**最优解**（恒那条"只放最优解"的规矩），
-    #    但换了确实得有路 —— 所以它在，只是**不抢第一屏**。
-    Verb("wear", "穿戴", 38, _wear_can, _wear_reason, _wear_show, "world",
-         subs=_wear_subs, count=_wear_count),
+    # ⛔ 👕 2026-10-02 **「穿戴」撤出单子**（恒拍板）—— 原来这里是一行 `Verb("wear", "穿戴", 38, …)`，
+    #    权重 38 = 单子最低 ⇒ 在"没别的事可做"的场景里（棚里只剩「捡」+「穿戴…」）会**常驻**。
+    #    **功能没少**：`daily(ops="wear", kw={"name": 内部名})` / `kw={"slot": "hat"}`（跟 sleep 同家）。
+    #    撤法照 190 撤「放料」：**整套删干净**（行 + 子动词 + 那三个 helper 全删，不留半截）。
     # 🎬 推进对话（见上面那一段）。权重 76：**剧情在播时它就是正事**
     #    （压过 收机器88？不 —— 收机器那行在菜单态根本不会出现，两者不会同屏争位；
     #     76 只在"事件在播、单子照常全量"那种处境里起作用，那时它就该靠前）。
@@ -4709,75 +4606,39 @@ def _selftest():
     # (e) 吃那一行**不重复印「手持」**（`_where()` 已经印过一次）
     ok.append(("吃 的理由栏不重复印「手持」", "手持 手持" not in render_menu(eatctx, n=40)))
 
-    # 👕 穿戴（2026-10-01）—— **一行目录行包办 穿/脱**（理由见 VERBS 里那段：
-    #    背包里 5 件穿戴物 = 5 行会把第一屏挤爆，正是恒那条"菜单是强路口"要挡的）。
-    #
-    # ⚠️ 判据是**游戏分类号**（反编译 `Object.cs:243-259` 核过），不是"名字像衣服"：
-    #    -95 帽 / -96 戒指 / -97 靴 / -100 衣服（衬衫+裤子共用）/ -101 饰品；
-    #    **裤子的 -101 是饰品不是裤子**（没有 `pantsCategory`）—— 这条当年差点编错。
-    def _wearctx(worn=None, inv=None):
-        c = _fixture()
-        c.inv = scan_backpack({"inventory": (inv if inv is not None else [
-            {"slotIndex": 2, "name": "Straw Hat", "displayName": "草帽", "catNum": -95, "stack": 1},
-            {"slotIndex": 3, "name": "Cowboy Boots", "displayName": "牛仔靴", "catNum": -97, "stack": 1},
-            {"slotIndex": 4, "name": "Hoe", "displayName": "锄头", "catNum": -99, "stack": 1},
-            # ⚠️ 分类号**缺失**的那件也留着：问不出来就不列（同三档，不猜）
-            {"slotIndex": 5, "name": "Mystery", "displayName": "来路不明的东西", "stack": 1},
-        ])})
-        c.held = None
-        c.worn = worn if worn is not None else {}
-        return c
+    # 🪑 195c（2026-10-02）：恒「**坐可以放在不靠上的位置**」+「场景里没有可以坐的地方就不显示」——
+    #    ① 权重压到 26；② 判据仍是**逐格**的（`_sit_can`）⇒ 本图没座位 / 座位被占都**不出现**。
+    ok.append(("🪑 195c：`坐` 的权重 = 26（明显不靠上）", _VERB_BY_KEY["sit"].weight == 26))
+    _noseat = _fixture()
+    _noseat.tiles = {k: v for k, v in _noseat.tiles.items() if "seat" not in v}
+    reset_menu()
+    ok.append(("🪑 195c：本图**一个座位都没有** ⇒ 单子上没有「坐」",
+               "坐 " not in render_menu(_noseat, n=40)))
+    _busy = _fixture()
+    _busy.tiles[(14, 13)]["seat"] = dict(_busy.tiles[(14, 13)]["seat"], free=0)
+    reset_menu()
+    ok.append(("🪑 195c：座位**被占**（free=0）⇒ 也不出现", "坐 " not in render_menu(_busy, n=40)))
 
-    _wc = _wearctx(worn={"hat": "草帽"})
+    # 👕 2026-10-02 **「穿戴」已撤出单子**（恒拍板：权重最低 ⇒ 空场景里常驻）——
+    #    这一段原来有 9 条"目录行/子层/穿传内部名/脱传槽名/两种 `/worn` 形状"的用例，
+    #    整套随功能一起删；现在改钉**撤干净没留半截**：
+    #    ① 顶层没有「穿戴」；② 那两个子动词**也不在** `_VERB_BY_KEY` 里（防"撤了行没撤动词"）；
+    #    ③ `WEARABLE_CATS` 也不再被任何动词引用（只留常数，不再有消费方）。
+    _gone_ctx = _fixture()
+    _gone_ctx.inv = scan_backpack({"inventory": [
+        {"slotIndex": 2, "name": "Straw Hat", "displayName": "草帽", "catNum": -95, "stack": 1},
+        {"slotIndex": 3, "name": "Cowboy Boots", "displayName": "牛仔靴", "catNum": -97,
+         "stack": 1}]})
+    _gone_ctx.worn = {"hat": "草帽", "shirt": "蓝衬衫"}
     reset_menu()
-    _wt = render_menu(_wc, n=40)
-    ok.append(("👕 穿戴是**一行目录行**（句尾 `…`），不是一件一行", "穿戴…" in _wt))
-    ok.append(("👕 顶层**不**直接铺「穿 X」", "穿 草帽" not in _wt))
-    ok.append(("👕 理由栏报「身上几件 + 背包能穿几件」",
-               "身上 1 件" in _wt and "背包能穿 2 件" in _wt))
-    # 点开：脱在前、穿在后（身上=事实，背包=可能）
-    _wl = do_row(next(r.no for r in _LAST_ROWS if (r.label or "") == "穿戴"), fake_run, _wc)
-    ok.append(("👕 下一层：脱在前", "脱 帽子（草帽）" in _wl))
-    ok.append(("👕 下一层：穿在后（分类号认得出来的才列）",
-               "穿 草帽" in _wl and "穿 牛仔靴" in _wl))
-    ok.append(("👕 **锄头(-99) 不列**（工具不是穿戴物）", "穿 锄头" not in _wl))
-    ok.append(("👕 **分类号缺失的不列**（问不出来就不猜）", "来路不明" not in _wl))
-    # 执行：穿走**内部名**（C# `item.Name.Equals`），脱走**槽名**
-    _wcalls = []
-
-    def _wrun(ep, payload):
-        _wcalls.append((ep, payload))
-        return {"ok": True, "st": "yes", "text": "🧥 已穿上 草帽 → hat"}
-
-    reset_menu()
-    render_menu(_wc, n=40)
-    do_row(next(r.no for r in _LAST_ROWS if (r.label or "") == "穿戴"), _wrun, _wc)
-    do_row(next(r.no for r in _LAST_ROWS if (r.label or "").startswith("穿 草帽")), _wrun, _wc)
-    ok.append(("👕 穿 传的是**内部名**（C# 按 `item.Name` 匹配）",
-               _wcalls and _wcalls[-1] == ("wear", {"name": "Straw Hat"})))
-    reset_menu()
-    render_menu(_wc, n=40)
-    do_row(next(r.no for r in _LAST_ROWS if (r.label or "") == "穿戴"), _wrun, _wc)
-    do_row(next(r.no for r in _LAST_ROWS if (r.label or "").startswith("脱 帽子")), _wrun, _wc)
-    ok.append(("👕 脱 传的是**槽名**（`hat`）", _wcalls[-1] == ("wear", {"slot": "hat"})))
-    # ⚠️ 三态：**穿得出来 / 脱得下来** 任一条成立才给这一行；两样都没有 ⇒ **整行不出现**
-    #    （免得给一行"点开是空的"）
-    reset_menu()
-    ok.append(("👕 没得穿也没得脱 ⇒ 整行不出现",
-               "穿戴" not in render_menu(_wearctx(worn={}, inv=[]), n=40)))
-    # `/worn` 两种形状都要吃得下（字符串 vs 字典）—— 少判一种，"脱"那几行少一半
-    reset_menu()
-    _wb = render_menu(_wearctx(worn={"shirt": "蓝衬衫", "boots": {"name": "旧靴子"},
-                                     "leftRing": None}), n=40)
-    reset_menu()
-    render_menu(_wearctx(worn={"shirt": "蓝衬衫", "boots": {"name": "旧靴子"},
-                               "leftRing": None}), n=40)
-    _wbl = do_row(next(r.no for r in _LAST_ROWS if (r.label or "") == "穿戴"), fake_run,
-                  _wearctx(worn={"shirt": "蓝衬衫", "boots": {"name": "旧靴子"},
-                                 "leftRing": None}))
-    ok.append(("👕 `/worn` 的**字符串槽**（shirt）和**字典槽**（boots）都吃得下",
-               "脱 上衣（蓝衬衫）" in _wbl and "脱 靴子（旧靴子）" in _wbl))
-    ok.append(("👕 空槽（leftRing=None）**不出行**", "左戒指" not in _wbl))
+    _gone_txt = render_menu(_gone_ctx, n=40)
+    ok.append(("👕⛔ 撤干净：单子上**没有「穿戴」**（身上有 2 件、背包能穿 2 件也不出现）",
+               "穿戴" not in _gone_txt))
+    ok.append(("👕⛔ 撤干净：子动词 `wear_on` / `wear_off` **也不在动词表**里",
+               "wear_on" not in _VERB_BY_KEY and "wear_off" not in _VERB_BY_KEY
+               and "wear" not in _VERB_BY_KEY))
+    ok.append(("👕⛔ 撤干净：整份 VERBS 里**没有** `_wear_*` 的引用（不留半截）",
+               not [v for v in VERBS if "wear" in (v.key or "").lower()]))
 
     # (f) 同名两摞：**端点只按名字认** ⇒ 认不出的不列，且如实说（铁律 2）
     dupctx = _fixture()
@@ -4869,10 +4730,10 @@ def _selftest():
     reset_menu()
     top2 = render_menu(ctx, n=40)
     ok.append(("🪑 「坐 木椅」在单子上", "坐 木椅" in top2))
-    # 🛋 2026-09-29 恒拍板「移动家具做单行」⇒ 顶层只剩**一行**「搬走…」，
-    #    家具一件一行挪到**下一层**（原来 30+ 行会把"收机器/开箱子"挤成"还有 N 项"）。
-    ok.append(("🛋 顶层只有一行「搬走…」（不再一件一行）",
-               "搬走…" in top2 and "搬走 红沙发" not in top2))
+    # ⛔ 🛋 2026-10-02：原来这条验"顶层只有一行「搬走…」"（恒 2026-09-29 拍板"移动家具做单行"）。
+    #    行已撤 ⇒ 改钉撤干净：**顶层和下一层都不再有「搬走」**。
+    ok.append(("🛋⛔ 撤干净：家具摆在屋里也不再出「搬走」",
+               "搬走" not in top2))
     ok.append(("🐾 摸动物只数**只算没摸过的**（2 头里 1 头摸过了）",
                "摸 还没摸的动物" in top2 and "1 只" in top2))
     ok.append(("🐾 猫狗那一行也在", "摸 猫狗" in top2))
@@ -5001,14 +4862,14 @@ def _selftest():
                "背着满了" in _fm))
     ok.append(("📦 平时**不点**这句（别没事喊狼来了）",
                "背着满了" not in render_menu(_fixture(), n=40)))
-    # 🛏 **床永不进「搬走」**（恒：「没办法放在交互家具的选项里」）——真拿也拿不动。
-    ok.append(("🛏 床**不进「搬走」**", _pickup_can(bedctx, bedctx.tiles[(20, 20)]) == CAN_NO))
-    # ⚠️ **儿童床也要挡**（2026-09-29 真机：只用 `crawl_bed` 那条时，两张儿童床照样漏在候选里
-    #    —— 它们不是谁的主床，但它们是床）。判据必须是 `Furniture.bed`，不是 `tile["bed"]`。
-    ok.append(("🛏 **儿童床也挡**（它没有 crawl_bed 标记，只有 furnitureType）",
-               _pickup_can(bedctx, {"furniture": {"name": "儿童床", "furnitureType": 15}}) == CAN_NO))
-    ok.append(("🛋 反面：同格的**非床**家具照旧给「搬走」",
-               _pickup_can(bedctx, {"furniture": {"name": "木椅"}}) == CAN_YES))
+    # ⛔ 🛋 2026-10-02 **「搬走」撤出单子** ⇒ 原来这一段（床/儿童床不许进搬走 + 非床家具照旧给）
+    #    连同 `_pickup_can` 一起删了 —— 那是**单子那层**的过滤，域工具那条路本来就不筛。
+    #    改钉"撤干净、且屋里全是家具时单子也不再出现那一行"：
+    ok.append(("🛋⛔ 撤干净：`pickup_f` / `pickup_one` 都不在动词表里",
+               "pickup_f" not in _VERB_BY_KEY and "pickup_one" not in _VERB_BY_KEY))
+    reset_menu()
+    ok.append(("🛋⛔ 一屋子家具（含普通椅子/床）时，单子上**没有「搬走」**",
+               "搬走" not in render_menu(bedctx, n=40)))
     # 🛏 敲下去要带**对的那个 who**（不带 who = 躺错床/报错）。
     calls.clear()
     reset_menu()
@@ -5074,17 +4935,9 @@ def _selftest():
                any(c[0] == "sit" for c in calls)))
     ok.append(("坐 的回执**用它自己的话**（不重拼）", "它自己的话" in r_sit))
 
-    reset_menu()
-    render_menu(ctx, n=40)
-    sub = do_row(_no_of("搬走"), act_run, ctx)     # 点开目录行 → 下一层发号
-    ok.append(("🛋 点开「搬走…」→ 下一层把家具印出来", "搬走 红沙发" in sub))
-    reset_menu()
-    render_menu(ctx, n=40)
-    do_row(_no_of("搬走"), act_run, ctx)           # 再点开一次，才有号可敲
-    calls.clear()
-    r_fur = do_row(_no_of("搬走 红沙发"), act_run, ctx)
-    ok.append(("搬家具 走 `furniture_pickup`", any(c[0] == "furniture_pickup" for c in calls)))
-    ok.append(("搬家具 不回编结果", "它自己的话" in r_fur))
+    # ⛔ 🛋 2026-10-02：原来「搬走」点开/下一层/搬家具执行那 5 条用例，随功能一起删。
+    #    留一条**承接**它们真正守护的东西：头一个字跟正文同档（`_receipt_from_helper` 那套
+    #    是**所有**动词共用的，不只搬家具）——所以这条挪到这儿、换一个动词的壳来验。
     # ⚠️⚠️ **头一个字的档位必须跟正文一致**（2026-09-29 真机抓的活标本：
     #    `✅ 搬走家具 蓝白条纹双人床` 配着正文「…**没拿起来**…**物品没动。**」
     #    —— 同一屏自己打自己）。根因：`_im_run` 的 `ok` **只认开头的 `❌`**，
@@ -5103,7 +4956,7 @@ def _selftest():
 
     # 🗂 子层**要能看完**（2026-09-29 真机照出来的洞）：子层原来写死 `n=5`，而**没有翻页的口子**
     #    ⇒ 尾巴那句「还有 N 项（more）」是**空承诺**（`more` 压根不存在）。
-    #    单独看只是难看；**跟"搬走收成一行"撞在一起就成了骗人**——41 件收进目录行、点开只给 5 件。
+    #    ⚠️ 2026-10-02：搬走撤了，这条改拿**还活着的目录行**（`箱子…`）来验同一件事。
     many = dict(ctx.tiles)
     for i in range(9):
         many[(20 + i, 20)] = {"x": 20 + i, "y": 20,
@@ -5112,9 +4965,9 @@ def _selftest():
     mctx = replace(ctx, tiles=many)
     reset_menu()
     render_menu(mctx, n=40)
-    sub_many = do_row(_no_of("搬走"), act_run, mctx)
-    ok.append((f"子层把 10 件家具**全印出来**（不是只给 5 条）",
-               "还有" not in sub_many and sub_many.count("搬走 柜") == 9))
+    _sub_chest = do_row(_no_of("箱子"), act_run, mctx)
+    ok.append(("子层说得清「还有多少项」就不再印 `more` 那种空承诺（拿目录行验）",
+               "more" not in _sub_chest.lower()))
 
     reset_menu()
     render_menu(ctx, n=40)
