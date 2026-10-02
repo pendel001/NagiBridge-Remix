@@ -3145,7 +3145,7 @@ def _menu_claim_label(active_menu: dict) -> str:
             _who = mt2.get("title") or mt2.get("skill") or "精通"
             _rw = [x.get("name") or x.get("id") for x in (mt2.get("rewards") or []) if x]
             _tail = ("（" + "、".join(str(x) for x in _rw[:3]) + "）") if _rw else ""
-            return f"领 精通{_who}碑的奖励{_tail}"
+            return f"领 {_who}碑的奖励{_tail}"
     return ""
 
 
