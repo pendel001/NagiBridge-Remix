@@ -2705,24 +2705,28 @@ def _doors_close_reason(ctx, t):
             f"想反着来再敲一次 `farm(ops=\"doors\")`")
 
 
-def _doors_at_target(doors: dict, want: bool) -> bool:
-    """这一份门态**到目标态了吗**（`want=True` 要全开）。
+def _doors_at_target(states, want: bool) -> bool:
+    """这一串门态**到目标态了吗**（`want=True` 要全开）。
 
-    ⚠️ 有一条 `None`（未确认）或空表就**不算到了** —— 那两种都"不知道"，不能当成了。
+    ⚠️ 吃的是**状态串**（`snap`/`entries` 里那一列），**不是**"名字→态"的字典 ——
+       同名两栋（两个 Deluxe Coop）在字典里会并成一条，**少算一栋就可能误判"全到了"**（2026-10-03 改）。
+    ⚠️ 有一条 `None`（未确认/够不着）或空表就**不算到了** —— 那两种都"不知道"，不能当成了。
     """
-    if not doors:
+    states = list(states or [])
+    if not states:
         return False
-    return all((v is True) if want else (v is False) for v in doors.values())
+    return all((v is True) if want else (v is False) for v in states)
 
 
 def _doors_exec(ctx, targets, run, want: bool):
-    """🚪🐄 放牧/关棚门：**都只调同一个翻转 op**（`doors`），再按目标态**最多收敛一次**。
+    """🚪🐄 放牧/关棚门：**都只调同一个翻转 op**（`doors`），再按目标态**只对没到位的那几栋**收敛一次。
 
     ⚠️ 方向是**这一行的意图**，不是端点的能力（`/toggle_doors` 忽略 action、纯翻转）⇒
-       第一下敲完**看回执里的门态**：没到目标态就**再翻一次**（翻转端点翻两次回原状，所以**最多一次**，
+       敲完**看回执里逐栋的门态**：没到目标态就**再翻那几栋**（翻转端点翻两次回原状，所以**每扇门最多一次**，
        不来回抖）。
-    ⚠️ 人先**走到棚门口**再翻（`walk=True` 由 op 做，走位那行**如实**在回执里）；
-       第二下 `walk=False`（人已经在门口，再走一次是白等）。
+    ⚠️ 收敛那一发**也走位**（`only=[没到位的门坐标]`）：🧭 2026-10-03 起 C# **只翻玩家 4 格内的门**，
+       "人已经在门口"这个前提不再成立（第一趟本来就是**逐栋**走的）；而且"再翻一次全部"会把
+       刚翻好、就在旁边的那栋**翻回去** —— 所以收敛必须**按门坐标点名**，不是 `walk=False` 再翻全部。
     ⚠️ 回执把话说全：**目标态 + 实际门态**（读不到就明说读不到），没到目标态时给下一步。
     """
     verm, tgt = ("开棚门", "全开") if want else ("关棚门", "全关")
@@ -2732,30 +2736,53 @@ def _doors_exec(ctx, targets, run, want: bool):
     if not want:
         _args["want"] = "close"
     r = run("doors", _args) or {}
-    d = (r.get("doors") if isinstance(r, dict) else None) or {}
-    if d and not _doors_at_target(d, want):
-        r2 = run("doors", {"walk": False}) or {}
-        if isinstance(r2, dict) and r2.get("doors"):
-            # ⚠️ 收敛那一发是 `walk=False` ⇒ 它的 `text` 里**没有走位行**。把**第一次那行事实**
-            #    补回最终回执（`walk` 是结构化字段，不是从文案里抠）。
-            #    ⚠️ 2026-10-01 真机逮到的洞：人**真走到**了门口（`[walk] … 到位`），
-            #       可 AI 看到的回执里一个字都没提 —— 那两头都是谎（让 AI 以为没走 / 让人以为走了）。
+    _d = (r.get("doors") if isinstance(r, dict) else None) or {}
+    _ents = (r.get("entries") if isinstance(r, dict) else None) or []
+    if not _ents:
+        # 老 DLL / 老形状（没有 `entries`）⇒ 退回"名字→态"那份（**没有门坐标**，也就没法点名收敛）
+        _ents = [{"name": k, "state": v} for k, v in _d.items()]
+    _tgt_ok = (lambda st: st is True) if want else (lambda st: st is False)
+    _bad = [e for e in _ents if not _tgt_ok(e.get("state"))]
+    if _bad and all(isinstance(e.get("x"), int) and isinstance(e.get("y"), int) for e in _bad):
+        r2 = run("doors", {"walk": True,
+                           "only": [{"x": e["x"], "y": e["y"]} for e in _bad]}) or {}
+        if isinstance(r2, dict) and r2.get("entries"):
+            # ⚠️ 把**第一趟的走位事实**补回最终回执（`walk` 是结构化字段，不是从文案里抠）——
+            #    2026-10-01 真机逮到的洞：人**真走到**了门口（`[walk] … 到位`），
+            #    可 AI 看到的回执里一个字都没提 —— 那两头都是谎。
             _wl = str(r.get("walk") or "")
             _tx = str(r2.get("text") or "")
             if _wl and _wl not in _tx:
-                r2 = dict(r2, text=(_wl + "\n" + _tx))
+                r2 = dict(r2, text=(_wl + "\n" + _tx), walk=_wl)
             r = r2
-            d = r2.get("doors") or {}
+            # 🐛 2026-10-03 自验代理逮到：收敛那发**只重翻了没到位的几栋** ⇒ 直接拿它的 `entries`
+            #    会把**已经到位**的栋从下面「🎯 实际=…」那行里抹掉（不是谎报，但 AI 读不出全貌，
+            #    想核对"到底几栋开着"还得再敲一次）。⇒ 按「名字 + 门坐标」**合并**：
+            #    第一趟的顺序保序，第二趟的同键条目覆盖成新状态；只在第二趟出现的也补进来。
+            def _ek(e):
+                return (e.get("name"), e.get("x"), e.get("y"))
+            _merged = {_ek(e): e for e in _ents}
+            for e in (r2.get("entries") or []):
+                _merged[_ek(e)] = e
+            _seen, _new = set(), []
+            for e in _ents:
+                _new.append(_merged[_ek(e)])
+                _seen.add(_ek(e))
+            for k, e in _merged.items():
+                if k not in _seen:
+                    _new.append(e)
+            _ents = _new
     got = "、".join(
-        f"{k} " + ("开" if v is True else ("关" if v is False else "**未确认**"))
-        for k, v in d.items()) or "**没读到门态**"
+        f"{e.get('name')} " + ("开" if e.get("state") is True
+                              else ("关" if e.get("state") is False else "**未确认**"))
+        for e in _ents) or "**没读到门态**"
     head = _receipt_from_helper(verm, f"（目标 {tgt}）", r)
     # ⚠️ 被"外面还有动物"那道闸拦下时（`blocked`）：**一个字都不许提门态** ——
     #    我们压根没翻、也没读门态，"实际=没读到门态"读起来像"翻了但读不到"（两回事）。
     if isinstance(r, dict) and r.get("blocked"):
         return head
     line = f"\n   🎯 目标={tgt} · 实际={got}"
-    if d and not _doors_at_target(d, want):
+    if _ents and not _doors_at_target([e.get("state") for e in _ents], want):
         line += "—— 还没到就**再敲一次** `farm(ops=\"doors\")`（翻转端点，敲一次变一次）"
     return head + line
 
@@ -2830,16 +2857,27 @@ def _shake_label(c, t):
 
 
 def _shake_reason(c, t):
-    """理由栏：**分开说清**每一类几处 + 果子那类要"摇下来再捡"（别让 AI 以为它会自己进包）。"""
+    """理由栏：**分开说清**每一类几处 + 果子那类要"摇下来再捡"（别让 AI 以为它会自己进包）。
+
+    🍵 2026-10-03：本图**有茶树但一丛都摇不出来**时，这里**必须说为什么**（恒当天真机就问过
+    「暂时摇不下来茶」）—— 沉默会被 AI 读成"这图没茶树"。判据是游戏自己的 `Bush.inBloom()`（size3）：
+    「长了 ≥20 天 **且** 当月 22 号起 **且**（非冬季 或 室内/盆栽）」。
+    """
     _k = _shake_kinds(c)
     if not _k:
+        _w = _chore_n(c, "tea_wait")
+        if _w:
+            return (f"🍵 本图有 **{_w} 丛茶树**，但现在**摇不出茶叶** —— 游戏的原条件"
+                    f"（反编译 `Bush.inBloom()` size3）是「长了 ≥20 天 **且** 当月 **22 号**起 "
+                    f"**且**（非冬季 或 室内/盆栽）」；盆栽茶树算「室内」⇒ 只等**日期/成熟度**。到点再敲这一行")
         return ""
     _bits = []
     for _key, _n, _lbl in _k:
         if _key == "fruit_tree":
             _bits.append(f"🍎果树×{_n}(挂果 {_chore_n(c, 'fruit_n')} 个——**摇下来在地上，要再走上去捡**)")
         elif _key == "tea":
-            _bits.append(f"🍵茶树丛×{_n}(茶叶好了)")
+            _tp = _chore_n(c, "tea_pot")
+            _bits.append(f"🍵茶树丛×{_n}(茶叶好了" + (f"·其中盆栽 {_tp}" if _tp else "") + ")")
         elif _key == "walnut_bush":
             _bits.append(f"🌰核桃丛×{_n}(金核桃是**存档计数**，不进背包)")
         else:

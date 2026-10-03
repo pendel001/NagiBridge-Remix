@@ -22,12 +22,20 @@ import stardew_api as api            # noqa: E402
 CALLS = []
 
 # 🚪🐄 门那条路的桩状态（`_stub` 每次按 `farm_buildings=` / `doors_open=` 重算）：
-#    `door_buildings` = 翻哪几栋；`door_open_state` = **现在**这些门开着没。
-#    ⚠️ 桩**照抄 C# 的真行为**：`/toggle_doors` 忽略 action、**纯翻转**（`netBool.Value = !netBool.Value`）
-#    —— 这一位就是"翻转后的门态"，`doors()` 的回读 + 单子按目标态收敛全靠它才测得出来。
-door_buildings = []
-door_open_state = False
-# 🚶 走位调用记录（`_stub` 每次清空；门那条路要证"**只走一次**"—— 收敛的第二下不许再走）。
+#    `DOOR_STATES` = **逐扇门**一张表 `[{building, doorX, doorY, open}]`（同名两栋各自成行）；
+#    `AI_POS` = "我"在桩里站哪格（`/state.player.x/y` 现读它）。
+#    ⚠️ 桩照抄 **2026-10-03 之后**的 C# `/toggle_doors` 真契约：
+#      · `action` 忽略、**纯翻转**（`netBool.Value = !netBool.Value`）；
+#      · 支持点名（`building` 类型子串 / `doorX,doorY` 精确到门 —— 同名两栋只能靠坐标分开）；
+#      · **只翻玩家 `ReachTiles` 格内**的门，够不着/不在农场/没门坐标的一律进 `skipped`。
+#    ⇒ 少了"够得着"这层，`_doors_flip_all` 的 `left`/「没翻成」那条路**根本测不到**（假绿）。
+DOOR_STATES = []
+# 🚶 "我"在桩里站哪格：`_stub(ai_xy=…)` 给初值；**走位成功会把人挪过去**（`M._walk_and_wait` 的桩）
+#    —— C# 的 4 格闸判的就是这个位置，桩不挪人就等于"人站在原地遥控翻门"（真机上翻不动）。
+AI_POS = [12, 12]
+# 🚪 C# 侧 `ReachTiles` 的口径（`ModEntry.cs`）：与门格的**切比雪夫**距离 ≤ 4。
+_REACH_TILES = 4
+# 🚶 走位调用记录（`_stub` 每次清空；门那条路要证"**逐栋都走**"—— 一栋一发）。
 WALK_CALLS = []
 # ⚠️ `api.close_doors()` 走的是 **`api._post`**（不是 `_ai_post`）⇒ 敲门那几条用例要把它接上桩。
 _LAST_P = None
@@ -40,6 +48,19 @@ FARM_BUILDINGS = [
      "doorX": 52, "doorY": 16, "indoorsName": "Deluxe Barn"},
     # ⚠️ **非动物建筑**（温室就在 `/farm_buildings` 里）：它**不许**被数进 `doors.builds`
     #    —— 判据是 `type` 含 `Coop`/`Barn`，不是"农场上的建筑个数"。
+    {"type": "Greenhouse", "x": 28, "y": 20, "width": 7, "height": 7},
+]
+
+# 🚪 **翻门那条路**专用的建筑夹具：照**真机形状**带动物小门坐标（`/farm_buildings.animalDoorX/Y`，
+#    C# 反射读 `building.animalDoor`；2026-10-02 真机验通）。
+#    ⚠️ 为什么不能直接拿上面那份：`_doors_flip_all(only=[…])` 筛建筑时**只读 `animalDoorX/Y`**
+#       （**没有** `_door_goal()` 那种"缺键退回人类门"的兜底）⇒ 少了这两键就点不回来，
+#       收敛那一下会**静默什么都不做**（口径不一致，只记在案、**没动产品代码**）。
+FARM_BUILDINGS_DOORS = [
+    {"type": "Deluxe Coop", "x": 40, "y": 12, "width": 7, "height": 4,
+     "doorX": 44, "doorY": 16, "animalDoorX": 45, "animalDoorY": 20},
+    {"type": "Deluxe Barn", "x": 48, "y": 12, "width": 7, "height": 4,
+     "doorX": 52, "doorY": 16, "animalDoorX": 53, "animalDoorY": 20},
     {"type": "Greenhouse", "x": 28, "y": 20, "width": 7, "height": 7},
 ]
 
@@ -153,9 +174,15 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
           chore_tiles=None, crab_ready=0, ore_pan=None, chore_animals=None, money=None,
           silo=None, troughs=None, trough_filled=0, trough_raise=False,
           surr_tiles=None, trash_cans=None, cola=None, npcs=None, nuts=None,
-          trash_checked=None, pet_bowls=None, passable_ret=None):
+          trash_checked=None, pet_bowls=None, passable_ret=None, ai_xy=None):
     CALLS.clear()
     WALK_CALLS.clear()
+    # 🚶 "我"站哪格：默认照 `STATE`（(12,12)），用例要"人已经站在棚门口"就传 `ai_xy=`。
+    if ai_xy is None:
+        _p0 = STATE.get("player") or {}
+        AI_POS[0], AI_POS[1] = int(_p0.get("x") or 0), int(_p0.get("y") or 0)
+    else:
+        AI_POS[0], AI_POS[1] = int(ai_xy[0]), int(ai_xy[1])
     state = dict(STATE)
     if time_dict is not None:
         # 🕐 `/state.time` 的真形状（**字典**，不是标量串）：`{"timeOfDay":1320,"season":"summer",
@@ -263,6 +290,11 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
             # 🪨 砸晶球（那条 op 把 count 放在 query 里，所以按前缀匹配）
             return {"ok": True, "processed": 3, "cost": 75, "remainingGold": 1234,
                     "results": [{"itemName": "钻石"}, {"itemName": "石英"}, {"itemName": "粘土"}]}
+        if ep == "/state":
+            # 🚶 "我"的坐标**每次现读 `AI_POS`**（走位那一发的桩会挪它）——
+            #    写死成夹具 (12,12) 的话，C# 那 4 格闸在桩里就成了"永远够不着/永远够得着"。
+            return dict(state, player=dict(state.get("player") or {},
+                                           x=AI_POS[0], y=AI_POS[1]))
         return {
             # 🆕 2026-09-30：新 DLL 会带 `caps`（能力位）；`caps=None` = **老 DLL 的形状**（只有 build）。
             "/status": ({"ok": True, "build": build} if caps is None
@@ -302,14 +334,43 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
         if ep == "/select":                # 拿在手上（重铸那条路的第一步）
             return {"ok": True, "selected": (data or {}).get("name")}
         if ep == "/toggle_doors":
-            # 🚪 C# `/toggle_doors` 的真形状：**忽略 action**、纯翻转，回 `{ok, toggled, details}`；
-            #    `details` 每项 `{building, door_open}`（⚠️ 没有 `door` 坐标对 —— 旧代码就是栽在这个键上）。
-            #    桩照抄这个"翻转"语义 ⇒ `doors()` 那条**回读 + 单子按目标态再翻一次**的路才走得到
-            #    （只回一个固定值的桩会把收敛那段测成假绿）。
-            global door_open_state
-            door_open_state = not door_open_state
-            _dl = [{"building": b, "door_open": door_open_state} for b in door_buildings]
-            return {"ok": True, "toggled": len(_dl), "details": _dl}
+            # 🚪 C# `/toggle_doors` 的**新**契约（2026-10-03 起，照 `ModEntry.cs` 抄）：
+            #    · 忽略 `action`（翻转端点，没有方向）；
+            #    · 支持点名：`building` = 类型子串 / `doorX,doorY` = **精确到门**；
+            #    · **只翻玩家 `ReachTiles` 格内的门** —— 够不着/不在农场/没门坐标 ⇒ 进 `skipped` 点名；
+            #    · 回 `details:[{building, door_open, doorX, doorY}]`（⚠️ 旧桩**没有** `doorX/doorY`
+            #      ⇒「逐栋报执行后的门态」那条在旧桩上恒成「未确认」，这就是它变红的原因）。
+            #    ⚠️ 桩不模拟"点名了但一扇都没匹配上"的糊弄：C# 那边也没这条路，匹配不上就是空回包
+            #       （消费侧会如实记成 `no_reply`，别在这儿编一个 reason）。
+            _d = data or {}
+            _wb = str(_d.get("building") or "")
+            _wdx, _wdy = _d.get("doorX"), _d.get("doorY")
+            _loc_nm = str((state.get("location") or {}).get("name") or "")
+            _on_farm = (_loc_nm == "Farm")
+            _px, _py = AI_POS[0], AI_POS[1]
+            _det, _skip = [], []
+            for _st_d in DOOR_STATES:
+                if _wb and _wb.lower() not in str(_st_d["building"]).lower():
+                    continue
+                if _wdx is not None and int(_wdx) != _st_d["doorX"]:
+                    continue
+                if _wdy is not None and int(_wdy) != _st_d["doorY"]:
+                    continue
+                _dist = max(abs(_st_d["doorX"] - _px), abs(_st_d["doorY"] - _py))
+                if not _on_farm:
+                    _skip.append(dict(_st_d, reason="not_on_farm", distance=_dist))
+                    continue
+                if _dist > _REACH_TILES:
+                    _skip.append(dict(_st_d, reason="too_far", distance=_dist))
+                    continue
+                _st_d["open"] = not _st_d["open"]      # ← 纯翻转（照 C#）
+                _det.append({"building": _st_d["building"], "door_open": _st_d["open"],
+                             "doorX": _st_d["doorX"], "doorY": _st_d["doorY"]})
+            return {"ok": True, "location": _loc_nm, "onFarm": _on_farm,
+                    "reachTiles": _REACH_TILES, "playerX": _px, "playerY": _py,
+                    "toggled": len(_det), "details": _det,
+                    "skipped": [{k: s[k] for k in ("building", "doorX", "doorY", "reason", "distance")}
+                                for s in _skip]}
         if ep == "/interact":              # 交互（真机形状：ok 恒真、actionTriggered 才是真话）
             return {"ok": True, "actionTriggered": True, "object": "Anvil"}
         return {"ok": True,
@@ -331,27 +392,46 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
     #    绑进来的**名字**，桩 `M.navigation._walk_and_wait` **改不到它** —— 第一次就是只桩了
     #    navigation 那份，结果门那条路**真走位**：`/walk_to`（桩回了个不含 destination 的空包）
     #    → `_wait_arrival` 拿夹具坐标去等真人 → **每发死等 15 秒**（自验从 18 秒变卡死）。
-    M._walk_and_wait = lambda loc, x, y, timeout=25: (
-        WALK_CALLS.append((loc, x, y)),
-        (True, "") if walk_ok else (False, "走位超时没到"))[1]
+    def _walk_stub(loc, x, y, timeout=25):
+        """走位（桩）：记一笔；**走成了就把"我"挪过去**。
+
+        ⚠️ 必须挪：`/toggle_doors` 现在**只翻玩家 4 格内的门**，桩若让"人"钉在 (12,12)，
+           真机那条"走到门口就翻得成"的路在自验里**永远走不通**（会全变成 `too_far`）。
+        """
+        WALK_CALLS.append((loc, x, y))
+        if walk_ok:
+            AI_POS[0], AI_POS[1] = int(x), int(y)
+            return True, ""
+        return False, "走位超时没到"      # ⚠️ 没走到 ⇒ 人留在原地（C# 那边也就够不着了）
+
+    M._walk_and_wait = _walk_stub
     M.navigation.walk_to = lambda *a, **k: None
     api.position = lambda x, y: {"ok": True, "stub": True}
     # 把桩函数也留一份在模块级：有些 op 走的是 **`api._get`**（不是 `_ai_get`），
     # 用例要临时把 `_get` 也接到同一个桩上（例：`process_geodes`）。
-    global _LAST_G, _LAST_P, door_buildings, door_open_state
+    global _LAST_G, _LAST_P
     _LAST_G = g
     # ⚠️ 有些 op 走的是 **`api._post`**（不是 `_ai_post`）—— `api.close_doors()` 就是
     #    （它内部 `_post("/toggle_doors", …)`）。用例要临时把 `_post` 也接到同一个桩上，
     #    否则"敲放牧/关棚门"会真的去敲 localhost:7842（真机端口！）而不是走桩。
     _LAST_P = p
-    # 🚪 门那条路的**桩状态**：`door_buildings` 决定翻哪几扇（`/toggle_doors` 的桩读它）。
-    #    默认（没给 farm_buildings 的老用例）给两栋 —— 那两栋只在**真去敲门**时才会被用到，
-    #    而老用例一个都不敲门 ⇒ 行为一个字不变。
-    door_buildings = [str(b.get("type") or "?") for b in (farm_buildings or ())
-                      if "Coop" in str(b.get("type") or "") or "Barn" in str(b.get("type") or "")]
-    if not door_buildings:
-        door_buildings = ["Deluxe Coop", "Deluxe Barn"]
-    door_open_state = bool(doors_open)          # 桩的"现在门开着没"（照 C# 的翻转语义用）
+    # 🚪 门那条路的**桩状态**：逐扇门一张表（`/toggle_doors` 的桩读它）。
+    #    `type` 含 Coop/Barn 的建筑才算；门坐标优先 `animalDoorX/Y`（小门），缺了退回人类门
+    #    `doorX/doorY` —— 跟 `_door_goal()` 一个口径，**别在桩里另立一套**。
+    #    初始开合：建筑自己带 `animalDoorOpen` 就用它（`_farm_b()` 就是这么造"一开一关"的），
+    #    否则统一用 `doors_open=` 那个旋钮（老用例一个字不用改）。
+    DOOR_STATES.clear()
+    for _b in (farm_buildings or ()):
+        _ty = str((_b or {}).get("type") or "")
+        if "Coop" not in _ty and "Barn" not in _ty:
+            continue
+        _ax, _ay = (_b or {}).get("animalDoorX"), (_b or {}).get("animalDoorY")
+        if not (isinstance(_ax, int) and isinstance(_ay, int)):
+            _ax, _ay = (_b or {}).get("doorX"), (_b or {}).get("doorY")
+        if not (isinstance(_ax, int) and isinstance(_ay, int)):
+            continue          # 连人类门坐标都没有 ⇒ 这条桩路没法点名（真机会进 no_door_coords）
+        DOOR_STATES.append({"building": _ty, "doorX": int(_ax), "doorY": int(_ay),
+                            "open": bool((_b or {}).get("animalDoorOpen", doors_open))})
     M._with_state = lambda x, *a, **k: x      # 状态机跟"接线"无关，打桩掉
     # 🔁 两个**跨用例的缓存**（精通 30s / `/machine_reqs` 10min）在这里清干净：
     #    它们是给热路径省调用用的，可"上一个用例问到的答案"会被下一个用例读到
@@ -1462,59 +1542,165 @@ def main():
                   "关棚门" in _lw and "放牧（开棚门）" not in _lw, _lw[:4]))
 
     # ④ 敲下去真走**那一个翻转 op**（`doors`）：`_im_run` 认它、别掉进裸端点兜底；
-    #    两行的**方向**由 exec 看回执里的门态收敛（最多再翻一次）。
-    def _doors_hit(tod, sub, doors_open, chore_animals=None):
+    #    🧭 2026-10-03 起 C# **只翻玩家 4 格内的门** ⇒ 执行侧改成**逐栋走位 + 按门坐标点名翻**
+    #       （一栋一发；收不收敛都**必须走位**，因为"人已经在门口"这个前提不再成立）。
+    def _doors_posts():
+        """这一发打出去的 `/toggle_doors` 请求体（`api.close_doors` 走 `api._post`）。"""
+        return [c[2] for c in CALLS if c[1] == "/toggle_doors"]
+
+    def _doors_hit(tod, sub, doors_open, chore_animals=None, **kw):
         """敲那一行 → (回执, 打了几次 `/toggle_doors`, 那几次的 (方法, 端点), 全部端点)。不出网。
 
         `chore_animals` = 站在农场时 `/animals` 报的那批（= 棚外那批）——
         「关棚门」那行现在会先看它（外面有动物就不关），所以要能按用例指定。
         """
-        _stub(loc="Farm", farm_buildings=FARM_BUILDINGS, doors_open=doors_open,
+        _stub(loc="Farm", farm_buildings=FARM_BUILDINGS_DOORS, doors_open=doors_open,
               chore_animals=chore_animals,
-              time_dict={"timeOfDay": tod, "season": "summer", "weather": 0})
+              time_dict={"timeOfDay": tod, "season": "summer", "weather": 0}, **kw)
         M.intent(ops="show", kw={"n": 40})
         _rc = M.intent(ops="do", kw={"code": str(_no_of(sub))})
         _td = [(c[0], c[1]) for c in CALLS if c[1] == "/toggle_doors"]
         return _rc, len(_td), _td, [c[1] for c in CALLS]
 
-    # 门关着 ⇒ 翻一下就该全开（**一次收敛**）
+    # 门关着 ⇒ **逐栋各走一趟、各翻一发**（老行为是"走到最近一栋、翻全部"一发，
+    #   现在 C# 只翻 4 格内 ⇒ 站在 A 门口叫"全翻"根本翻不到 B）。
     _r_open, _n_open, _td_open, _eps_open = _doors_hit(800, "放牧（开棚门）", doors_open=False)
-    res.append(ok("🚪 敲「放牧」⇒ 真打 `/toggle_doors`（**POST**；`/opendoors` 这个端点不存在）",
-                  _n_open == 1 and _td_open[0] == ("POST", "/toggle_doors")
+    _post_open = _doors_posts()
+    res.append(ok("🚪 敲「放牧」⇒ 真打 `/toggle_doors`（**POST**）、**逐栋各一发**"
+                  "（2 栋 = 2 发；`/opendoors` 这个端点不存在）",
+                  _n_open == 2 and {e for e in _td_open} == {("POST", "/toggle_doors")}
                   and not any("/opendoors" in str(e) for e in _eps_open), _td_open))
+    res.append(ok("🚪 **每一发都带 `doorX/doorY` 点名**（同名两栋靠门坐标分开，不靠名字）"
+                  "—— 两发点的正是那两扇**动物小门**，且**互不相同**",
+                  len(_post_open) == 2
+                  and all(isinstance(b.get("doorX"), int) and isinstance(b.get("doorY"), int)
+                          for b in _post_open)
+                  and {(b["doorX"], b["doorY"]) for b in _post_open} == {(45, 20), (53, 20)},
+                  _post_open))
     res.append(ok("🚪 敲「放牧」⇒ 回执**逐栋报执行后的门态** + 目标态（『门现在是：…开』）",
-                  "门现在是：Deluxe Coop 开" in _r_open and "目标=全开" in _r_open,
-                  _r_open[:200]))
+                  "门现在是：" in _r_open and "Deluxe Coop 开" in _r_open
+                  and "Deluxe Barn 开" in _r_open and "目标=全开" in _r_open,
+                  _r_open[:260]))
+    # 🚪 **同名两栋**（两个 Deluxe Coop）：名字分不开 ⇒ 只能靠门坐标。这是这轮 C# 加 `doorX/doorY`
+    #    点名的**唯一理由**，所以单独立一条 —— 名字并成一条就会少翻一栋、还报"全到位了"。
+    _TWIN = [{"type": "Deluxe Coop", "x": 40, "y": 12, "width": 7, "height": 4,
+              "doorX": 44, "doorY": 16, "animalDoorX": 45, "animalDoorY": 20},
+             {"type": "Deluxe Coop", "x": 50, "y": 12, "width": 7, "height": 4,
+              "doorX": 54, "doorY": 16, "animalDoorX": 55, "animalDoorY": 20}]
+    _stub(loc="Farm", farm_buildings=_TWIN, doors_open=False,
+          time_dict={"timeOfDay": 800, "season": "summer", "weather": 0})
+    _htw = M._im_run("doors", {"walk": True})
+    _post_tw = _doors_posts()
+    res.append(ok("🚪 同名两栋：**两发各点一扇门**（(45,20) 与 (55,20)）—— 靠坐标分开，不靠名字",
+                  len(_post_tw) == 2
+                  and {(b["doorX"], b["doorY"]) for b in _post_tw} == {(45, 20), (55, 20)},
+                  _post_tw))
+    res.append(ok("🚪 同名两栋：回执里**两条都报**（`snap`/文案不许并成一条）",
+                  _htw.get("snap") == [("Deluxe Coop", True), ("Deluxe Coop", True)]
+                  and str(_htw.get("text")).count("Deluxe Coop 开") == 2, _htw.get("snap")))
+    #    ⚠️ `walk=False` 得**人真站在门口**才有意义（C# 只翻 4 格内）⇒ `ai_xy` 放到 (55,19)。
+    _stub(loc="Farm", farm_buildings=_TWIN, doors_open=True, ai_xy=(55, 19),
+          time_dict={"timeOfDay": 800, "season": "summer", "weather": 0})
+    _honly = M._im_run("doors", {"walk": False, "only": [{"x": 55, "y": 20}]})
+    _post_only = _doors_posts()
+    res.append(ok("🚪 同名两栋：`only` 点**第二栋的门坐标** ⇒ 真的**只翻那一扇**"
+                  "（第一栋不动：两栋名字一样，只能靠坐标认）",
+                  len(_post_only) == 1 and (_post_only[0]["doorX"], _post_only[0]["doorY"]) == (55, 20)
+                  and _honly.get("entries") == [{"name": "Deluxe Coop", "x": 55, "y": 20,
+                                                 "state": False}]
+                  and _honly.get("left") == [], (_post_only, _honly.get("entries"))))
+    res.append(ok("🚪 两栋门态都**确认到了**（不许有「未确认」、也不许进「没翻成」）",
+                  "未确认" not in _r_open and "没翻成" not in _r_open, _r_open[:260]))
     res.append(ok("🚪 回执**不许**再提「farm animals 摸一遍」（恒：关着门也能摸）",
                   "animals" not in _r_open, _r_open[:200]))
     res.append(ok("🚪 回执带**下一步**（反着来敲哪一下，op+参数都在）",
                   'farm(ops="doors")' in _r_open, _r_open[:200]))
     # 门本来就开着 ⇒ C# 纯翻转会把它关上 ⇒ exec 必须**再翻一次**收敛到目标态
+    #   （第一趟 2 发 + 收敛趟 2 发 = 4 发；且**收敛趟也走位**，见下面那条）
     _r_open2, _n_open2, _, _ = _doors_hit(800, "放牧（开棚门）", doors_open=True)
-    res.append(ok("🚪 门本来就开着时敲「放牧」⇒ **再翻一次收敛到全开**（C# 是纯翻转）",
-                  _n_open2 == 2 and "门现在是：Deluxe Coop 开" in _r_open2
-                  and "目标=全开" in _r_open2, (_n_open2, _r_open2[:160])))
+    res.append(ok("🚪 门本来就开着时敲「放牧」⇒ **再翻一次收敛到全开**（C# 是纯翻转）"
+                  "—— 两栋各翻两下 = 4 发，且最终两栋都报『开』",
+                  _n_open2 == 4 and "Deluxe Coop 开" in _r_open2
+                  and "Deluxe Barn 开" in _r_open2
+                  and "目标=全开" in _r_open2 and "未确认" not in _r_open2,
+                  (_n_open2, _r_open2[:260])))
 
     _r_close, _n_close, _, _ = _doors_hit(1900, "关棚门", doors_open=True, chore_animals=[])
     res.append(ok("🚪 敲「关棚门」⇒ 一次收敛，回执报『门现在是：…关』+ 目标=全关",
-                  _n_close == 1 and "门现在是：Deluxe Coop 关" in _r_close
-                  and "目标=全关" in _r_close, (_n_close, _r_close[:160])))
+                  _n_close == 2 and "门现在是：" in _r_close
+                  and "Deluxe Coop 关" in _r_close and "Deluxe Barn 关" in _r_close
+                  and "目标=全关" in _r_close, (_n_close, _r_close[:260])))
     _r_close2, _n_close2, _, _ = _doors_hit(1900, "关棚门", doors_open=False, chore_animals=[])
-    res.append(ok("🚪 门本来就关着时敲「关棚门」⇒ **再翻一次收敛到全关**",
-                  _n_close2 == 2 and "门现在是：Deluxe Coop 关" in _r_close2,
-                  (_n_close2, _r_close2[:160])))
-    # ⚠️ 收敛第二下**不许再走一遍路**（人已经站在门口了）—— 由 `walk=False` 控
-    _doors_hit(800, "放牧（开棚门）", doors_open=True)      # 这一发会翻两次
-    res.append(ok("🚪 收敛的第二下**不再走位**（只有第一下走过去；否则白等 15 秒）",
-                  len(WALK_CALLS) == 1, WALK_CALLS))
+    res.append(ok("🚪 门本来就关着时敲「关棚门」⇒ **再翻一次收敛到全关**"
+                  "（两栋各两下 = 4 发，最终两栋都报『关』）",
+                  _n_close2 == 4 and "Deluxe Coop 关" in _r_close2
+                  and "Deluxe Barn 关" in _r_close2 and "未确认" not in _r_close2,
+                  (_n_close2, _r_close2[:260])))
+
+    # 🧭 收敛那一发**按门坐标点名**（不是 `walk=False` 再翻全部）——
+    #    ⚠️ 老用例断言的是"第二下不走位"，那条**行为已经反了**：C# 只翻 4 格内 ⇒
+    #       不走过去就翻不到，收敛趟**必须带 walk**；而且"再翻全部"会把刚翻好、就在旁边的
+    #       那栋**翻回去**（来回翻，永远收敛不了）。
+    #    造"**一开两关**"（小门坐标都不同）：目标=全开时第一趟只有**一栋**没到位
+    #    ⇒ 收敛趟**只该带那一扇门**（带多了就是把刚翻好的翻回去）。
+    _FARM3 = ([{"type": "Deluxe Coop", "x": 40, "y": 12, "width": 7, "height": 4,
+                "doorX": 44, "doorY": 16, "animalDoorX": 45, "animalDoorY": 20,
+                "animalDoorOpen": True},
+               {"type": "Deluxe Barn", "x": 48, "y": 12, "width": 7, "height": 4,
+                "doorX": 52, "doorY": 16, "animalDoorX": 53, "animalDoorY": 20,
+                "animalDoorOpen": False},
+               {"type": "Big Barn", "x": 56, "y": 12, "width": 7, "height": 4,
+                "doorX": 60, "doorY": 16, "animalDoorX": 61, "animalDoorY": 20,
+                "animalDoorOpen": False}])
+    _run_log = []
+    _orig_im_run = M._im_run
+
+    def _rec_im_run(op, args):
+        _run_log.append((op, dict(args or {})))
+        return _orig_im_run(op, args)
+
+    _stub(loc="Farm", farm_buildings=_FARM3, doors_open=False,
+          time_dict={"timeOfDay": 800, "season": "summer", "weather": 0})
+    M.intent(ops="show", kw={"n": 40})
+    M._im_run = _rec_im_run
+    try:
+        _rc3 = M.intent(ops="do", kw={"code": str(_no_of("放牧（开棚门）"))})
+    finally:
+        M._im_run = _orig_im_run
+    res.append(ok("🚪 收敛：第一趟**不带 `only`**（全量逐栋走一遍，`walk=True`）",
+                  bool(_run_log) and _run_log[0] == ("doors", {"walk": True}), _run_log))
+    _only2 = (_run_log[1][1].get("only") if len(_run_log) > 1 else None)
+    res.append(ok("🚪 收敛：第二发**只带没到位的那一扇门的坐标**（`only`）——"
+                  "**不许**再翻全部（那会把刚翻好的两栋翻回去）",
+                  len(_run_log) == 2 and _run_log[1][0] == "doors"
+                  and _run_log[1][1].get("walk") is True
+                  and [(o.get("x"), o.get("y")) for o in (_only2 or [])] == [(45, 20)],
+                  _run_log))
+    res.append(ok("🚪 收敛：第二发**没带**已经到位的两栋（53,20 与 61,20 不在名单里）+ "
+                  "**没有** `walk=False` 那种「人已经站在门口」的旧写法",
+                  bool(_only2) and {(o.get("x"), o.get("y")) for o in _only2}.isdisjoint(
+                      {(53, 20), (61, 20)})
+                  and _run_log[1][1].get("walk") is not False, _only2))
+    res.append(ok("🚪 收敛：**逐栋走的是小门那一格**（三栋的动物小门 (45/53/61,20) ⇒ "
+                  "每一趟的站格都挨着**某扇小门**，**不回退到人类门 (44/52/60,16)**）",
+                  len(WALK_CALLS) == 4
+                  and all(any(max(abs(wx - ax), abs(wy - ay)) == 1
+                              for ax, ay in [(45, 20), (53, 20), (61, 20)])
+                          for (_lc, wx, wy) in WALK_CALLS),
+                  WALK_CALLS))
+    res.append(ok("🚪 收敛：最终回执里那栋**如实报成『开』**（收敛真的翻回来了，不是嘴上说收敛）",
+                  "门现在是：Deluxe Coop 开" in _rc3 and "目标=全开" in _rc3
+                  and "没翻成" not in _rc3, _rc3[:260]))
 
     # ⚠️⚠️ 2026-10-01 真机逮到的洞：**收敛那发会把走位那条事实盖掉** ——
     #    人真走到了门口（`[walk] … 到位`），可 AI 看到的回执里一个字都没提。
     #    「翻完了却不说人到没到门口」两头都是谎 ⇒ 两条用例各钉一头（走到 / 没走到）。
     _r_conv_ok, _n_conv_ok, _, _ = _doors_hit(800, "放牧（开棚门）", doors_open=True)
     res.append(ok("🚪 **收敛后**最终回执里**仍含走位那行**（走到了：带棚名 + 门坐标）",
-                  "🚶 已走到" in _r_conv_ok and "Deluxe" in _r_conv_ok
-                  and "旁边" in _r_conv_ok, _r_conv_ok[:220]))
+                  _r_conv_ok.count("🚶 已走到") == 4 and "Deluxe Coop" in _r_conv_ok
+                  and "Deluxe Barn" in _r_conv_ok and "旁边" in _r_conv_ok, _r_conv_ok[:260]))
+    res.append(ok("🚪 收敛趟**也走位**（`len(WALK_CALLS)` = 4：两栋 × 两趟 —— 老行为是 1 次）",
+                  _n_conv_ok == 4 and len(WALK_CALLS) == 4, (WALK_CALLS, _n_conv_ok)))
     _stub(loc="Farm", farm_buildings=FARM_BUILDINGS, doors_open=True, walk_ok=False,
           time_dict={"timeOfDay": 800, "season": "summer", "weather": 0})
     M.intent(ops="show", kw={"n": 40})
@@ -1533,15 +1719,38 @@ def main():
                   isinstance(_hits_open, dict) and isinstance(_hits_open.get("doors"), dict)
                   and _hits_open.get("doors") == {"Deluxe Coop": True, "Deluxe Barn": True}
                   and "门现在是" in str(_hits_open.get("text")), _hits_open))
+    res.append(ok("🚪 而且**逐栋带门坐标**（`entries`）—— 收敛要靠它点名，字典会并同名两栋",
+                  [ (e.get("name"), e.get("x"), e.get("y"), e.get("state"))
+                    for e in (_hits_open.get("entries") or []) ]
+                  == [("Deluxe Coop", 44, 16, True), ("Deluxe Barn", 52, 16, True)]
+                  and _hits_open.get("left") == [], _hits_open.get("entries")))
     res.append(ok("🚪 `walk=False` ⇒ **不调走位**（收敛的第二下用它）",
                   isinstance(_hits_flip, dict) and "🚶" not in str(_hits_flip.get("text")),
                   _hits_flip))
+
+    # 🧭 够不着 ⇒ 门态记 `None`、回执里**点名那栋** + 说**没翻成**，绝不许说成"翻了/门是开是关"。
+    #    造法照真机：走不到 ⇒ 人留在远处 ⇒ C# 那 4 格闸把它丢进 `skipped(reason=too_far)`。
     _stub(loc="Farm", farm_buildings=FARM_BUILDINGS, doors_open=False, walk_ok=False,
           time_dict={"timeOfDay": 800, "season": "summer", "weather": 0})
-    _hf = M._im_run("doors", {"walk": True})
-    res.append(ok("🚪 走位没到 ⇒ 回执里明写「遥控翻的，人还在半路」（且门还是照翻、状态照报）",
-                  "遥控翻的" in str(_hf.get("text")) and "门现在是" in str(_hf.get("text")),
-                  _hf))
+    _hfar = M._im_run("doors", {"walk": True})
+    _hfar_txt = str(_hfar.get("text"))
+    _stub(loc="Farm", farm_buildings=FARM_BUILDINGS, doors_open=False, walk_ok=False,
+          time_dict={"timeOfDay": 800, "season": "summer", "weather": 0})
+    M.intent(ops="show", kw={"n": 40})
+    _r_far = M.intent(ops="do", kw={"code": str(_no_of("放牧（开棚门）"))})
+    res.append(ok("🚪 够不着（`skipped reason=too_far`）⇒ 门态**记 `None`**、进 `left`，"
+                  "**不许**报成「门现在是开的/关的」",
+                  _hfar.get("doors") == {"Deluxe Coop": None, "Deluxe Barn": None}
+                  and [x.get("reason") for x in (_hfar.get("left") or [])] == ["too_far", "too_far"],
+                  _hfar.get("doors")))
+    res.append(ok("🚪 够不着 ⇒ 回执里**点名那一栋**（棚名 + 门坐标）+ 明说「**没翻成**」+ 给原因",
+                  "没翻成" in _hfar_txt and "Deluxe Coop(44,16)" in _hfar_txt
+                  and "Deluxe Barn(52,16)" in _hfar_txt and "too_far" in _hfar_txt,
+                  _hfar_txt[:300]))
+    res.append(ok("🚪 够不着时**不许**出现「门现在是：… 开/关」（那两栋都没确认过）",
+                  "门现在是：Deluxe Coop 开" not in _r_far
+                  and "门现在是：Deluxe Coop 关" not in _r_far
+                  and "未确认" in _r_far and "没翻成" in _r_far, _r_far[:260]))
 
     # ⑤ `farm` 域的**别名**：`doors`/`放牧`/`开关门`/`棚门` → **同一个函数**；
     #    ⚠️ **不许**再有 `开门`/`关门`/`开棚门`/`关棚门`/`opendoors` 这种**带方向**的别名
@@ -1689,6 +1898,128 @@ def main():
     _c_shk = M._forage_counts([_SHK], True, False)
     res.append(ok("🎯 有 `bushShakeable=true` ⇒ **就算 `bushInSeason` 是假也摇**（tier ① 优先，问游戏最准）",
                   _c_shk.get("bush") == 1, _c_shk))
+
+    # ㉔b 203j 🍵 **盆栽茶树**：那丛住在 `IndoorPot.bush` 里 ⇒ `terrain` **不是** "Bush"
+    #     ⇒ 老判据（只认 `terrain=="Bush"`）把农场主屋/温室那两排茶树**整个漏掉**。
+    #     C# 新报 `bushInPot:true`（同一套 `bushSize/bushInSeason/bushShakeable`）。
+    #     ⚠️ 盆栽**不记 `bush_bloom`**：那个计数是"地形灌木贴图那一帧"，`_walnut_bush_count()`
+    #        拿它当老 DLL 的退化路径 ⇒ 混进盆栽会把"姜岛还有核桃丛"判错。
+    _POT_OK = {"x": 4, "y": 9, "object": "Garden Pot", "objId": "(BC)62",
+               "bushInPot": True, "bushSize": 3, "bushInSeason": True, "bushShakeable": True}
+    _POT_WAIT = dict(_POT_OK, bushShakeable=False)
+    _WINTER12 = {"timeOfDay": 900, "season": "winter", "dayOfMonth": 12, "weather": 0}
+    _c_pot = M._forage_counts([_POT_OK], True, False)
+    res.append(ok("🍵 盆栽茶树（`bushInPot` + 摇得出来）⇒ `tea==1` + `tea_pot==1`"
+                  "（`terrain` 不是 Bush 也认），且**不记 `bush_bloom`**",
+                  _c_pot.get("tea") == 1 and _c_pot.get("tea_pot") == 1
+                  and _c_pot.get("bush") == 0 and _c_pot.get("bush_bloom") == 0, _c_pot))
+    _c_potw = M._forage_counts([_POT_WAIT], True, False)
+    res.append(ok("🍵 盆栽茶树**摇不出来**（`bushShakeable=false`）⇒ 不进 `tea`、"
+                  "**单独记 `tea_wait==1`**（别沉默：沉默 = AI 以为这图没茶树）",
+                  _c_potw.get("tea") == 0 and _c_potw.get("tea_pot") == 0
+                  and _c_potw.get("tea_wait") == 1 and _c_potw.get("bush_bloom") == 0, _c_potw))
+    # 状态条那一行：摇不出来的也要**报出来**（`_forage_summary` 走真路径，`surroundings` 是桩）
+    _old_fl = M._last_forage_loc
+    _old_hi = M.api.has_item
+    M._last_forage_loc = None
+    M.api.has_item = lambda n: False
+    try:
+        _stub(surr_tiles=[_POT_WAIT], time_dict=_WINTER12)
+        _sum_wait = M._forage_summary(time_dict=dict(_WINTER12))
+        M._last_forage_loc = None
+        _stub(surr_tiles=[_POT_OK], time_dict=_WINTER12)
+        _sum_ok = M._forage_summary(time_dict=dict(_WINTER12))
+    finally:
+        M._last_forage_loc = _old_fl
+        M.api.has_item = _old_hi
+    res.append(ok("🍵 `_forage_summary`：摇不出来时**多报一句**「还没好」+ 游戏原条件"
+                  "（别让 AI 以为这图没茶树）",
+                  "还没好" in _sum_wait and "22号" in _sum_wait, _sum_wait))
+    res.append(ok("🍵 `_forage_summary`：摇得出来时**不报「还没好」**，且标出「盆栽 M」",
+                  "还没好" not in _sum_ok and "茶树丛×1" in _sum_ok and "盆栽1" in _sum_ok,
+                  _sum_ok))
+    _ch_potw = _chores([_POT_WAIT], season="winter", day=12)
+    res.append(ok("🍵 `_im_chores`：`tea_wait` **单独成一笔账**（跟 `tea` 是两笔，"
+                  "而且**不会带出 `berry`**）",
+                  _ch_potw.get("tea_wait") == 1 and not _ch_potw.get("tea")
+                  and not _ch_potw.get("berry"), _ch_potw))
+    # 单子那两行：只有 `tea_wait` ⇒ **一行都不出现**，但**理由栏必须说清为什么**
+    _Lw = _show(chore_tiles=[_POT_WAIT], time_dict=_WINTER12)
+    _stub(chore_tiles=[_POT_WAIT], chore_animals=[], time_dict=_WINTER12)
+    _old_hi2 = M.api.has_item
+    M.api.has_item = lambda n: False          # ⚠️ 别让"有没有锄头"这条真去打 `/state`
+    try:
+        _c_wait = M._im_ctx()
+    finally:
+        M.api.has_item = _old_hi2
+    _why_wait = M.intent_menu._shake_reason(_c_wait, None)
+    res.append(ok("🍵 只有 `tea_wait` ⇒ 「摇 树上的」那行**不进单子**（摇不出来就不给这行）",
+                  not [x for x in _Lw if x.startswith("摇")], _Lw))
+    res.append(ok("🍵 但理由栏**非空**且明说「**摇不出茶叶**」+ 游戏原条件"
+                  "（沉默会被读成「这图没茶树」，恒 2026-10-03 当天就问过）",
+                  bool(str(_why_wait).strip()) and "摇不出茶叶" in _why_wait
+                  and "22 号" in _why_wait, _why_wait))
+    res.append(ok("🍵 而且这一行的 `can` 仍是 **CAN_NO**（理由栏有话说 ≠ 这行能做）",
+                  M.intent_menu._VERB_BY_KEY["berry"].can(_c_wait, None)
+                  is M.intent_menu.CAN_NO))
+    # 🍓 `berry_run.scan_targets`：盆栽**也收**（老判据 `_terr != "Bush"` 会把它整条漏掉）。
+    #    ⚠️ 全打桩：`berry_run` 是独立脚本（自己 `requests`）⇒ 换掉它模块里的 `requests`，
+    #       并用 `--dry-run` 拿"扫到几处"（扫完就 return，不走位、不 interact）。
+    import io as _io
+    import contextlib as _ctx
+    _saved_argv2 = sys.argv
+    sys.argv = ["berry_run.py", "--dry-run"]
+    try:
+        import berry_run as _BR
+    finally:
+        sys.argv = _saved_argv2
+    _BR.args.dry_run = True                      # 双保险：绝不进"真摇"那段循环
+
+    class _BRResp:
+        def __init__(self, d):
+            self._d = d
+
+        def json(self):
+            return self._d
+
+    class _BRReq:
+        """桩：只回答 `berry_run` 会问的那几个端点（**一个字节都不出网**）。"""
+
+        def __init__(self, tiles):
+            self._tiles = tiles
+
+        def get(self, url, *a, **k):
+            if url.endswith("/status"):
+                return _BRResp({"worldReady": True})
+            if url.endswith("/surroundings"):
+                return _BRResp({"location": "Greenhouse", "tiles": self._tiles})
+            if url.endswith("/nuts"):
+                return _BRResp({"ok": True, "nuts": []})
+            return _BRResp({"location": {"name": "Greenhouse"},
+                            "player": {"x": 4, "y": 10}, "inventory": [],
+                            "time": {"season": "spring", "dayOfMonth": 16}})
+
+        def post(self, url, *a, **k):
+            return _BRResp({"ok": True})
+
+    def _br_run(tiles):
+        _old_req = _BR.requests
+        _buf = _io.StringIO()
+        _BR.requests = _BRReq(tiles)
+        try:
+            with _ctx.redirect_stdout(_buf):
+                _BR.main()
+        finally:
+            _BR.requests = _old_req
+        return _buf.getvalue()
+
+    _br_pot = _br_run([_POT_OK])
+    _br_wait = _br_run([_POT_WAIT])
+    res.append(ok("🍓 `berry_run`：**盆栽**（`bushInPot` + 摇得出来）也收进目标（kind=tea）"
+                  "—— `terrain` 不是 Bush 不再被漏掉",
+                  "该摇 1 处" in _br_pot and "茶树丛×1" in _br_pot, _br_pot[-160:]))
+    res.append(ok("🍓 `berry_run`：盆栽**摇不出来** ⇒ 不收（不进目标、也不假装扫到了）",
+                  "该摇 1 处" not in _br_wait and "没有该摇的东西" in _br_wait, _br_wait[-160:]))
 
     # ㉕ 203h 🍽️ 宠物碗：新 DLL 报得出"哪碗已经满了"（`/petbowl.bowls[].watered`）
     #    ⇒ **满了别白挥壶**（旧版只报第一个碗，只能靠天气一刀切，见 `_water_pet_bowls` 的 docstring）。
@@ -1928,7 +2259,8 @@ def main():
     res.append(ok("🚪 被拦下时**一个字都不提门态**（没翻也没读 ⇒ 别说成『没读到门态』）",
                   "门现在是" not in _rc_out and "实际=" not in _rc_out, _rc_out[:200]))
     _rc_in, _n_in = _close_click([])
-    res.append(ok("🚪 外面没动物 ⇒ 照常翻（`/toggle_doors` 打了一次）", _n_in == 1, _n_in))
+    res.append(ok("🚪 外面没动物 ⇒ 照常翻（**逐栋各一发**：2 栋 = 2 次 `/toggle_doors`）",
+                  _n_in == 2, _n_in))
     res.append(ok("🚪 照常翻时回执照旧给「门现在是…」+ 目标/实际",
                   "门现在是" in _rc_in and "目标=全关" in _rc_in, _rc_in[:220]))
     # 判不出来 ⇒ **也不许关**（⚠️ 这里**不能**拿单子那行验：`关棚门` 那行本来就要求站在农场，
@@ -2354,6 +2686,8 @@ def main():
     # 🚶 走位目标 = **动物小门旁边那格**（缺键退回人类门那一套）
     #    ⚠️ `_stub()` **要在打桩 `_walk_and_wait` 之前**调 —— 它会重新封一遍走位函数
     #       （第一版先打桩后 `_stub`，记录器被覆盖 ⇒ 记到空（这个坑今天第二次踩）。
+    #    🧭 2026-10-03：`_walk_to_animal_door()`（"挑最近那栋"）**已删**（没有生产调用点了），
+    #       走位这条路现在只有 `_walk_to_door_of(b)` 一处 ⇒ 下面**直接对着它**验。
     _WALK_SEEN = []
     _adj = {(45, 21), (45, 19), (44, 20), (46, 20)}      # 小门 (45,20) 的四邻
 
@@ -2368,7 +2702,7 @@ def main():
           time_dict={"timeOfDay": 900, "season": "summer", "dayOfMonth": 6, "weather": 0})
     _o_ww = _patch_walk()
     try:
-        _nm, _note = M._walk_to_animal_door()
+        _note = M._walk_to_door_of(_farm_b(want_open=True)[0])
     finally:
         M._walk_and_wait, M.api.face = _o_ww
     res.append(ok("🚶 195：走位目标是**小门旁边那格**（小门(45,20) ⇒ 站它四邻之一，朝门）",
@@ -2379,16 +2713,22 @@ def main():
           time_dict={"timeOfDay": 900, "season": "summer", "dayOfMonth": 6, "weather": 0})
     _o_ww2 = _patch_walk()
     try:
-        _nm2, _note2 = M._walk_to_animal_door()
+        _note2 = M._walk_to_door_of(_farm_b(animal_door=False)[0])
     finally:
         M._walk_and_wait, M.api.face = _o_ww2
     res.append(ok("🚶 195：**缺小门键 ⇒ 退回人类门那一套**（door(44,16) ⇒ 站 (44,17)）",
                   bool(_WALK_SEEN) and tuple(_WALK_SEEN[-1][1:]) == (44, 17)
                   and "门(44,16)" in _note2, (_WALK_SEEN, _note2)))
     import inspect as _insp3
-    res.append(ok("🚶 195：翻门**仍然走 `/toggle_doors`**（注释写清为什么不用 interact：未验）",
-                  "/toggle_doors" in _insp3.getsource(M._doors_flip_once)
-                  and "先在真机 A/B" in _insp3.getsource(M._walk_to_animal_door)))
+    res.append(ok("🚶 195：翻门**仍然走 `/toggle_doors`**（`_doors_flip_once` 调 `api.close_doors`，"
+                  "端点名收在 `stardew_api` 那一层 —— **不许**改成对着小门 interact）",
+                  "api.close_doors" in _insp3.getsource(M._doors_flip_once)
+                  and "/toggle_doors" in _insp3.getsource(M.api.close_doors)))
+    res.append(ok("🚶 195：那句**重要告诫**（真要换 interact 得**先在真机 A/B**）跟着代码搬到"
+                  "`_doors_flip_all()` 上了（删函数不等于删这条口径）",
+                  "先在真机 A/B" in _insp3.getsource(M._doors_flip_all)))
+    res.append(ok("🚶 195：孤儿 `_walk_to_animal_door` **真的没了**（没人调就删，别留两套）",
+                  not hasattr(M, "_walk_to_animal_door")))
 
     # ⑱ 195b：**「穿戴」撤出单子**（恒拍板）—— 功能搬到 `daily(ops="wear", …)`
     import inspect as _insp4

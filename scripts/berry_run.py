@@ -98,7 +98,17 @@ def main():
                 if int(t.get("fruitCount") or 0) > 0:          # 🍎 挂果了（新 DLL 才有这个字段）
                     out.append({"x": t["x"], "y": t["y"], "kind": "fruit"})
                 continue
-            if _terr != "Bush" or not t.get("bushBloom"):
+            # 🍵🍓 2026-10-03 **盆栽茶树**（恒：「farmhouse 有一排，温室也有一排！是的，在花盆里」）：
+            #    那丛住在 `IndoorPot.bush` 里 —— C# 报的是 `bushInPot:true` + 同一套
+            #    `bushSize/bushInSeason/bushShakeable`，**`terrain` 不是 "Bush"**。
+            #    ⚠️ 老判据 `_terr != "Bush"` 会把恒那两排茶树**整个漏掉**（真机现场：扫不到 = 白开档）。
+            #    花盆格 `passable=false` 无所谓：下面 `find_stand` 找的本来就是**相邻格**再 interact。
+            _is_pot = bool(t.get("bushInPot"))
+            if _terr != "Bush" and not _is_pot:
+                continue
+            # ⚠️ "帧亮"那道闸（`bushBloom`）**只对地形灌木**有意义：盆栽茶树不报那一帧，
+            #    它的"有货"由下面的 `bushShakeable` 说了算（判据问游戏）。
+            if _terr == "Bush" and not t.get("bushBloom"):
                 continue
             _sz = t.get("bushSize")
             if _sz is None:                                    # 老 DLL：帧 + 日历窗口（会误摇，见 docstring）

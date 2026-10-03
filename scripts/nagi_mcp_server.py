@@ -3918,7 +3918,7 @@ def _forage_counts(tiles: list, has_hoe: bool, berry_season: bool) -> dict:
     ⚠️ **苔藓那几类一律照数**（不再由 `show_moss` 在这里挡）—— 因为"今天该不该报苔藓"现在
        取决于**扫没扫到苔藓**，而那要数完才知道 ⇒ 计数在这儿、**显不显示由调用方按 `_moss_visible()` 定**。
     """
-    c = {"bush": 0, "bush_bloom": 0, "tea": 0, "walnut_bush": 0, "fruit_tree": 0,
+    c = {"bush": 0, "bush_bloom": 0, "tea": 0, "tea_pot": 0, "tea_wait": 0, "walnut_bush": 0, "fruit_tree": 0,
          "fruit_n": 0, "spot": 0, "ginger": 0,
          "onion": 0, "truffle": 0,
          "moss_tree": 0, "greenrain_tree": 0, "moss_big": 0, "moss_small": 0,
@@ -3936,7 +3936,12 @@ def _forage_counts(tiles: list, has_hoe: bool, berry_season: bool) -> dict:
                 c["fruit_tree"] += 1
                 c["fruit_n"] += _fn
             continue
-        if t.get("terrain") == "Bush":
+        # 🍵🍓 **盆栽茶树**（2026-10-03 恒：「**farmhouse 有一排，温室也有一排！是的，在花盆里**」）：
+        #    那丛住在 `IndoorPot.bush` 里、**既不在 `terrainFeatures` 也不在 `largeTerrainFeatures`**
+        #    ⇒ `terrain` 不是 "Bush"；靠 C# 新报的 `bushInPot` 认（判据仍只有 `_bush_shake()` 一处）。
+        #    ⚠️ 盆栽**不记 `bush_bloom`**：那个计数是"地形灌木贴图那一帧"，`_walnut_bush_count()`
+        #       拿它当老 DLL 的退化路径 ⇒ 让盆栽混进去会把"姜岛还有核桃丛"判错。
+        if t.get("terrain") == "Bush" or t.get("bushInPot"):
             # 🍓🌰🍵 三件事分别记（判据**只有 `_bush_shake()` 一处**：新 DLL 直接问游戏）：
             #    · `bush`        = **野浆果丛**现在摇得出（→ 单子「摇 浆果丛」）
             #    · `tea`         = **茶树丛**茶叶好了（→ 单子「摘 茶叶」）
@@ -3948,10 +3953,18 @@ def _forage_counts(tiles: list, has_hoe: bool, berry_season: bool) -> dict:
             if _ok:
                 if _kind == "tea":
                     c["tea"] += 1
+                    if t.get("bushInPot"):
+                        c["tea_pot"] += 1
                 elif _kind == "walnut":
                     c["walnut_bush"] += 1
                 else:
                     c["bush"] += 1
+            elif _kind == "tea":
+                # 🍵 **茶树在、但现在摇不出来** —— 如实报一句（否则 AI 以为"这图没茶树"）。
+                #    游戏原条件（反编译 `Bush.inBloom()` size3）：
+                #      `getAge() >= 20 && dayOfMonth >= 22 && (季节 != 冬 || IsSheltered())`
+                #    ⇒ 恒 2026-10-03 真机"摇不下来茶"就是这个：**冬 12 日没到 22 号**（跟成熟度无关）。
+                c["tea_wait"] += 1
             continue
         if has_hoe and t.get("forageCrop") == "2":
             c["ginger"] += 1
@@ -4049,6 +4062,7 @@ def _forage_summary(is_green_rain: bool = None, time_dict: dict = None) -> str:
         show_moss = _moss_visible(_c, bool(is_green_rain))
         berry_bushes = _c["bush"]
         tea_bushes = int(_c.get("tea") or 0)
+        tea_wait = int(_c.get("tea_wait") or 0)
         fruit_trees = int(_c.get("fruit_tree") or 0)
         spot_count = _c["spot"]
         ginger_count = _c["ginger"]
@@ -4059,7 +4073,7 @@ def _forage_summary(is_green_rain: bool = None, time_dict: dict = None) -> str:
         counts = _c["forage"]
         moss_weed_big = _c["moss_big"]
         moss_weed_small = _c["moss_small"]
-        if not counts and not berry_bushes and not tea_bushes and not fruit_trees \
+        if not counts and not berry_bushes and not tea_bushes and not tea_wait and not fruit_trees \
                 and not spot_count and not ginger_count \
                 and not onion_count and not truffle_count and not moss_tree_count \
                 and not greenrain_tree_count and not moss_weed_big and not moss_weed_small:
@@ -4068,7 +4082,12 @@ def _forage_summary(is_green_rain: bool = None, time_dict: dict = None) -> str:
         if berry_bushes: parts.append(f"🍓浆果灌木×{berry_bushes}")
         # 🍵🍎 2026-10-02 恒：「**茶树也值得摇**」「**好多果树也可以摇**」——
         #    三种都是"走过去按一下、东西进包/掉地上"，**同一次动作**，所以都报在这一行里。
-        if tea_bushes: parts.append(f"🍵茶树丛×{tea_bushes}(茶叶好了)")
+        if tea_bushes:
+            _tp = int(_c.get("tea_pot") or 0)
+            parts.append(f"🍵茶树丛×{tea_bushes}(茶叶好了" + (f"·盆栽{_tp}" if _tp else "") + ")")
+        if tea_wait:
+            # 🍵 茶树在、但摇不出来 ⇒ **说出来**（别沉默：沉默会被读成"这图没茶树"）
+            parts.append(f"🍵茶树丛×{tea_wait}(还没好·游戏要「长了≥20天+当月22号起+非冬或室内」)")
         if fruit_trees:
             parts.append(f"🍎果树×{fruit_trees}(挂果{int(_c.get('fruit_n') or 0)}个·摇下来要捡)")
         if ginger_count: parts.append(f"🫚姜×{ginger_count}")
@@ -6869,7 +6888,7 @@ def _pet_pets_natural() -> str:
 def pet_pet() -> str:
     """🐾 摸摸宠物（猫狗，2026-08-24 恒：pet 只指猫狗）：当前场景自然走摸猫狗（_pet_pets_natural）。
     ⚠️ 牲畜（牛羊鸡鸭）不在这里——用 care_animals（摸+挤奶剪毛+室外放牧）。
-    走过去→面朝→interact，够不着 position 兜底。区别于 petall 作弊摸。"""
+    走过去→面朝→interact。⚠️ **别改回"反射写 `wasPet` 那种作弊口"**（`/petall` 那条 2026-10-03 已整个删除）。"""
     return _with_state(_pet_pets_natural())
 
 
@@ -7360,8 +7379,8 @@ def _wait_on_map(loc_name: str, timeout: float = 6.0) -> bool:
 
 def _grazing_care() -> str:
     """🌾 室外放牧牲畜照料（2026-08-24 恒：忘关门牛羊鸡跑 Farm 上）。AI 站在 Farm 上调用——
-    读 api.animals()(=farm.animals 放牧动物)，拟人自然走路摸（pet_walk 已改读 /animals 物理位置，
-    petall 摸不到室外）+ 挤奶剪毛(_milk_shear_animals skip_grabber=True，室外无自动采集器)。无放牧动物→空串。
+    读 api.animals()(=farm.animals 放牧动物)，拟人自然走路摸（pet_walk 已改读 /animals 物理位置）
+    + 挤奶剪毛(_milk_shear_animals skip_grabber=True，室外无自动采集器)。无放牧动物→空串。
 
     ⚠️ 2026-09-16 恒真机抓到**静默跳过**：`/animals` 读的是**玩家当前所在图**（实测棚内恒 0 只、
     Farm 上 24 只），而调用方 `care_animals` 从畜棚 `api.warp("Farm")` 后只 `sleep(0.5)`
@@ -7562,13 +7581,15 @@ def _door_snapshot(r: dict) -> list:
 #
 # ⚠️ 拟人：翻之前**先走到那栋棚的门口**（`/farm_buildings` 的 `doorX/doorY`，站在门下方那格 + 面朝门），
 #    走位那行**如实进回执**；没走到就明说"门是遥控翻的、人还在半路"，不许装成走到了。
-# ⏳ C# 待办（**这版不做** —— C# 要攒批次，不能为零一条让恒重启游戏）：
-#    · `/farm_buildings` 现在只给**人类门** `doorX/doorY`，**没有** `building.animalDoor` 的偏移
-#      ⇒ "走到动物小门前手动开门"这个更拟人的做法做不了（只能站人类门口翻）。
-#      补 `animalDoorX/Y` 之后把 `_walk_to_animal_door()` 换成小门那格即可。
-#    · **门态没有只读口**：`/toggle_doors` 是翻转端点，想读就等于翻一下 ⇒ 现在**谁都不敢说"门是开的"**
-#      （状态条那两句提醒、单子那两行都只写"该放牧了/该关门了"）。补一个只读 `animalDoorOpen` 端点，
-#      这两处才能说实话。
+# ✅ 那两条"C# 待办"**早就做完了**（2026-10-03 复核：注释比代码旧了一个月，差点又按旧注释下结论）：
+#    · `/farm_buildings` **有** `animalDoorX/Y`（C# 反射读 `building.animalDoor`，2026-10-02 真机验通）
+#      ⇒ 走位目标本来就是**动物小门**那格（`_walk_to_door_of`）。
+#    · **门态有只读口**：`/farm_buildings.animalDoorOpen`（同日期真机验通；`/toggle_doors` 只翻不读）
+#      ⇒ 「门现在是开还是关」这件事**能说实话**，别再写"没有只读口"。
+# 🧭 2026-10-03 新增（恒点头）：C# 那侧加了「够得着」闸 —— `/toggle_doors` **只翻玩家 4 格内的门**，
+#    够不着的进 `skipped` 点名。⇒ 这一层从"走到最近一栋、翻**全部**"改成**逐栋走位 + 按门坐标点名翻**
+#    （`_doors_flip_all`）。⚠️ 为什么必须逐栋：站在 B 栋门口叫"全翻"，会把刚翻好的 A 栋（也在 4 格内）
+#    **翻回去** —— 来回翻，永远收敛不了。
 _DOOR_WALK_TIMEOUT = 15
 # 「想反着来再敲一次」这句两句共用 —— **别顺手加"记得 farm animals 摸一遍"**：
 # 恒原话「**关着门也可以 animals 摸一遍**，我记得是自动跨建筑摸的。不建议加这一句」（`care_animals`
@@ -7577,73 +7598,73 @@ _DOORS_NEXT = ("下一步：想**反着来**就再敲一次 `farm(ops=\"doors\")
                "（它是**翻转**端点：敲一次变一次，回执会再报一遍执行后的门态）")
 
 
-def _walk_to_animal_door() -> tuple:
-    """先走到**最近那栋**动物建筑的门口 → `(那栋的名字, 走位那行)`。
+def _ai_xy() -> tuple:
+    """我（AI 角色）现在站哪格。读不到给 (0,0) —— **只用来挑最近的**，读不到就不许挑远箱/远门。"""
+    try:
+        p = (api.state().get("player") or {})
+        return int(p.get("x") or 0), int(p.get("y") or 0)
+    except Exception:
+        return 0, 0
 
-    🚪 2026-10-02：走位目标改成**动物小门**（`animalDoorX/Y`，C# 反射读出来的）
-    —— 恒要的观感是"**人站在小门边上翻**"；**缺键就退回人类门那一套**（`doorX/doorY+1`）。
-    ⚠️ 站在小门**旁边那格**（小门正下方 → 正上方 → 左右），不站到门格上；到位后 `face` 朝它。
-    ⚠️ 走不到**不抛也不装**：回的那行会明说"门是遥控翻的，人还在半路"（回执如实带出去）。
 
-    ⚠️⚠️ **翻门仍然走现成的 `/toggle_doors`（反射），绝不改成"对着小门 interact"**：
-       · 那条路**没在真机验过**（interact 到动物门到底会不会翻、要不要持有东西，全是猜）；
-       · `/toggle_doors` 是**唯一验过的来源**，两套机制并存必然漂（一个翻了、另一个以为没翻）。
-       ⇒ 如果哪天真要换成 interact：**先在真机 A/B**（开→interact→读 `animalDoorOpen` 变了没），
-         验通了再换，并且**只留一条**。
+def _door_goal(b: dict, px: int, py: int) -> tuple:
+    """这栋的**走位目标格 + 面朝方向 + 门坐标 + 是人门还是小门**。
+
+    🚪 2026-10-02：走位目标用**动物小门**（`animalDoorX/Y`，C# 反射读出来的）——恒要的观感是
+    "**人站在小门边上翻**"；**缺键就退回人类门那一套**（`doorX/doorY+1`）。
+    ⚠️ 站在小门**旁边那格**（小门正下方 → 正上方 → 左右，按离人由近到远挑），不站到门格上。
     ⚠️ 方向 0 = 面朝北（SDV：0上/1右/2下/3左）。
     """
-    try:
-        bs = _find_animal_buildings()
-    except Exception as e:
-        return "", f"⚠️ 读不到动物建筑（{type(e).__name__}: {e}）"
-    if not bs:
-        return "", "⚠️ 没读到动物建筑（`/farm_buildings` 空）"
-    try:
-        s = api.state()
-        px = int((s.get("player") or {}).get("x") or 0)
-        py = int((s.get("player") or {}).get("y") or 0)
-    except Exception:
-        px = py = 0
+    ax, ay = (b or {}).get("animalDoorX"), (b or {}).get("animalDoorY")
+    if isinstance(ax, int) and isinstance(ay, int):
+        cands = [(ax, ay + 1, 0), (ax, ay - 1, 2), (ax - 1, ay, 1), (ax + 1, ay, 3)]
+        cands.sort(key=lambda c: abs(c[0] - px) + abs(c[1] - py))
+        sx, sy, face = cands[0]
+        return sx, sy, face, ax, ay, "小门"
+    dx, dy = (b or {}).get("doorX", (b or {}).get("x")), (b or {}).get("doorY", (b or {}).get("y"))
+    return int(dx), int(dy) + 1, 0, int(dx), int(dy), "门"
 
-    def _goal(b):
-        """这栋的**走位目标格 + 面朝方向 + 门坐标 + 是人门还是小门**。"""
-        ax, ay = (b or {}).get("animalDoorX"), (b or {}).get("animalDoorY")
-        if isinstance(ax, int) and isinstance(ay, int):
-            # 小门：站在它**旁边那格**（正下方 → 正上方 → 左 → 右，按离人由近到远挑）
-            cands = [(ax, ay + 1, 0), (ax, ay - 1, 2), (ax - 1, ay, 1), (ax + 1, ay, 3)]
-            cands.sort(key=lambda c: abs(c[0] - px) + abs(c[1] - py))
-            sx, sy, face = cands[0]
-            return sx, sy, face, ax, ay, "小门"
-        dx, dy = (b or {}).get("doorX", (b or {}).get("x")), (b or {}).get("doorY", (b or {}).get("y"))
-        return int(dx), int(dy) + 1, 0, int(dx), int(dy), "门"
 
-    b = min(bs, key=lambda x: abs(int(x.get("doorX", x["x"])) - px)
-            + abs(int(x.get("doorY", x["y"])) - py))
-    name = b.get("type") or "?"
-    sx, sy, face, gx, gy, kind = _goal(b)
+def _walk_to_door_of(b: dict) -> str:
+    """走到**这一栋**的（小）门旁边 → 面朝它 → 走位那行。
+
+    ⚠️ 走不到**不抛也不装**：回的那行会明说"门是遥控翻的，人还在半路"（回执如实带出去）。
+    """
+    name = (b or {}).get("type") or "?"
+    px, py = _ai_xy()
+    sx, sy, face, gx, gy, kind = _door_goal(b, px, py)
     try:
         ok, note = _walk_and_wait("Farm", sx, sy, timeout=_DOOR_WALK_TIMEOUT)
     except Exception as e:
-        return name, (f"⚠️ 走位出错（{type(e).__name__}: {e}）"
-                      f"—— 门是**遥控翻的**，人还在半路，别以为站到门口了")
+        return (f"⚠️ 走位出错（{type(e).__name__}: {e}）"
+                f"—— 门是**遥控翻的**，人还在半路，别以为站到门口了")
     if not ok:
-        return name, (f"⚠️ 没走到「{name}」{kind}边（{note}）"
-                      f"—— 门是**遥控翻的**，人还在半路，别以为站到门口了")
+        return (f"⚠️ 没走到「{name}」{kind}({gx},{gy}) 边（{note}）"
+                f"—— 门是**遥控翻的**，人还在半路，别以为站到门口了")
     try:
         api.face(face)                   # 朝那扇门
     except Exception:
         pass
-    return name, f"🚶 已走到「{name}」{kind}({gx},{gy}) 旁边 ({sx},{sy})，面朝门"
+    return f"🚶 已走到「{name}」{kind}({gx},{gy}) 旁边 ({sx},{sy})，面朝门"
 
 
-def _doors_flip_once() -> dict:
-    """翻一次 `/toggle_doors` 并回读 → `{"ok","error","snap":[(名, True/False/None)],"doors":{名:态}}`。
+def _doors_flip_once(building: str = "", door_xy=None) -> dict:
+    """翻一次 `/toggle_doors`（**可点名一栋/一扇门**）并回读。
+
+    → `{"ok","error","snap":[(名, True/False/None)],"doors":{名:态},"skipped":[...],"detail":[...]}`
 
     ⚠️ `snap` 是**有序列表**（同名两栋也不许并成一条）；`doors` 那份字典只给"要按目标态判断"的
        调用方（单子那两行的 exec）用。
+    ⚠️ 2026-10-03 起 C# **只翻玩家 4 格内的门**：够不着的进 `skipped`（带 `doorX/doorY/reason`），
+       **不静默跳过**。`door_xy` 就是用来**精确点名**的（同名两栋靠名字分不开，必须按门坐标）。
     """
+    kw = {}
+    if building:
+        kw["building"] = building
+    if door_xy:
+        kw["doorX"], kw["doorY"] = int(door_xy[0]), int(door_xy[1])
     try:
-        r = api.close_doors()
+        r = api.close_doors(**kw)
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
     if not r.get("ok"):
@@ -7652,7 +7673,90 @@ def _doors_flip_once() -> dict:
     doors = {}
     for n, o in snap:
         doors[n] = o
-    return {"ok": True, "snap": snap, "doors": doors, "toggled": r.get("toggled")}
+    return {"ok": True, "snap": snap, "doors": doors, "toggled": r.get("toggled"),
+            "skipped": r.get("skipped") or [], "detail": r.get("details") or []}
+
+
+def _doors_flip_all(only=None, walk: bool = True) -> dict:
+    """🚪 **逐栋**走位 + 按门坐标点名翻（2026-10-03 起 C# 只翻**玩家 4 格内**的门）。
+
+    → `{"ok","error","snap","doors","walks","walk","left","flipped"}`
+
+    ⚠️ 为什么必须逐栋：闸门是"玩家周围 N 格"⇒ 站在 B 栋门口叫"全翻"会把刚翻好的 A 栋（也在 4 格内）
+       **翻回去**，来回翻永远收敛不了。所以这里**一栋一发**、发发都用 `doorX/doorY` 点名。
+    ⚠️ `only` = 只处理这几栋（元素 `{"x","y"}` = `animalDoorX/Y`；单子收敛那一下用）。
+    ⚠️ `left` = 翻完仍**够不着/没门坐标/没回包**的那些 —— 回执要**如实说**，不许当成翻了。
+    ⚠️ 同名两栋（两个 Deluxe Coop）在 `snap` 里是**两条**，靠"门坐标"对齐，不靠名字。
+
+    ⚠️⚠️ **翻门仍然走现成的 `/toggle_doors`（反射），绝不改成"对着小门 interact"**：
+       · 那条路**没在真机验过**（interact 到动物门到底会不会翻、要不要持有东西，全是猜）；
+       · `/toggle_doors` 是**唯一验过的来源**，两套机制并存必然漂（一个翻了、另一个以为没翻）。
+       ⇒ 如果哪天真要换成 interact：**先在真机 A/B**（开→interact→读 `animalDoorOpen` 变了没），
+         验通了再换，并且**只留一条**。
+    """
+    try:
+        bs = _find_animal_buildings()
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    if only:
+        # 🐛 2026-10-03 自验代理逮到的真 bug：这里原来**只读 `animalDoorX/Y`**，而 `only` 的来源
+        #    （`entries`）是走 `_door_goal()` 的 —— 那个**缺小门键会退回人类门 `doorX/doorY`**。
+        #    ⇒ 老 DLL（或任何 `/farm_buildings` 不带小门坐标的场景）下，收敛那发传回来的坐标
+        #      **永远匹配不上** ⇒ `bs` 被筛空 ⇒ 回 `entries: []` ⇒ `_doors_exec` 以为"没结果" ⇒
+        #      **收敛静默什么都不做，回执却还写着"还没到就再敲一次"**（AI 永远收敛不了）。
+        #    判据必须与 `_door_goal()` **同源**（门坐标 gx,gy 本来就与玩家站位无关）。
+        _want = {(int(o.get("x", -99999)), int(o.get("y", -99999))) for o in only}
+        _px0, _py0 = _ai_xy()
+        _kept = []
+        for _b in bs:
+            _g = _door_goal(_b, _px0, _py0)
+            if (int(_g[3]), int(_g[4])) in _want:
+                _kept.append(_b)
+        bs = _kept
+    if not bs:
+        return {"ok": True, "snap": [], "doors": {}, "walks": [], "walk": "", "left": [], "flipped": 0}
+
+    px, py = _ai_xy()
+    bs = sorted(bs, key=lambda b: abs(int(b.get("animalDoorX", b.get("doorX", 0))) - px)
+                + abs(int(b.get("animalDoorY", b.get("doorY", 0))) - py))
+
+    walks, left, order, state_by_door = [], [], [], {}
+    flipped = 0
+    for b in bs:
+        name = b.get("type") or "?"
+        _sx, _sy, _face, gx, gy, _kind = _door_goal(b, px, py)
+        order.append((name, gx, gy))
+        if walk:
+            walks.append(_walk_to_door_of(b))
+        r = _doors_flip_once(building=name, door_xy=(gx, gy))
+        if not r.get("ok"):
+            state_by_door[(gx, gy)] = None
+            left.append({"name": name, "x": gx, "y": gy, "reason": r.get("error") or "error"})
+            continue
+        hit = next((d for d in r.get("detail") or []
+                    if int(d.get("doorX", -1)) == gx and int(d.get("doorY", -1)) == gy), None)
+        if hit is not None:
+            flipped += 1
+            state_by_door[(gx, gy)] = bool(hit["door_open"]) if "door_open" in hit else None
+            continue
+        sk = next((s for s in (r.get("skipped") or [])
+                   if int(s.get("doorX", -1)) == gx and int(s.get("doorY", -1)) == gy), None)
+        state_by_door[(gx, gy)] = None
+        left.append({"name": name, "x": gx, "y": gy,
+                     "reason": (sk or {}).get("reason") or "no_reply"})
+
+    # ⚠️ 回执里的门态**按建筑原顺序**（不是走位顺序），同名两条也各自成行
+    snap = [(n, state_by_door.get((x, y))) for (n, x, y) in order]
+    # ⚠️ `doors` 是**给单子收敛用**的字典：同名两栋会并成一条（字典键就是名字）⇒ 判"到没到目标态"
+    #    **要拿 `snap` 那串状态**（同名两条都在），别拿这个字典（`_doors_at_target` 已改成吃状态串）。
+    doors = {}
+    for n, _x, _y in order:
+        doors[n] = state_by_door.get((_x, _y))
+    # ⚠️ `entries` 是**带门坐标**的那份（同名两栋也能分开）—— 单子收敛要按坐标点名再翻那几栋
+    entries = [{"name": n, "x": x, "y": y, "state": state_by_door.get((x, y))}
+               for (n, x, y) in order]
+    return {"ok": True, "snap": snap, "doors": doors, "entries": entries, "walks": walks,
+            "walk": "\n".join([w for w in walks if w]), "left": left, "flipped": flipped}
 
 
 def _doors_state_text(flip: dict) -> str:
@@ -7679,28 +7783,37 @@ def _doors_state_text(flip: dict) -> str:
 
 
 def _doors_text(flip: dict, walk: str = "") -> str:
-    """回执正文（走位那行在前、门态在后）—— `doors()` 与单子那条 op **共用这一份**。"""
-    return ((walk + "\n") if walk else "") + _doors_state_text(flip) + "\n" + _DOORS_NEXT
+    """回执正文（走位那几行在前、门态在后）—— `doors()` 与单子那条 op **共用这一份**。
+
+    🧭 2026-10-03：C# 现在只翻**玩家 4 格内**的门 ⇒ 够不着的那几栋**必须点名**（`left`），
+       否则"逐栋报了门态"读起来像"全翻完了"。
+    """
+    body = ((walk + "\n") if walk else "") + _doors_state_text(flip)
+    left = flip.get("left") or []
+    if left:
+        _who = "、".join(f"{l['name']}({l['x']},{l['y']})" for l in left)
+        body += (f"\n  ⚠️ **没翻成**：{_who} —— 原因 `{left[0].get('reason')}`"
+                 f"（`too_far`=门在 4 格之外 / `not_on_farm`=人不在农场 / `no_door_coords`=读不到门坐标）"
+                 f"；走过去再敲一次即可")
+    return body + "\n" + _DOORS_NEXT
 
 
 @mcp.tool()
 def doors() -> str:
-    """🚪 开关畜棚/鸡舍的门（**一个翻转 op**：走位 → 翻一次 → 回读 → 逐栋报执行后的门态）
+    """🚪 开关畜棚/鸡舍的门（**一个翻转 op**：**逐栋**走位 → 点名翻 → 回读 → 逐栋报执行后的门态）
 
     ⚠️ 它**不是**"开门"也不是"关门"：C# `/toggle_doors` 忽略 action、纯翻转 ⇒ 敲一次把每扇门
        翻到反面。回执**逐栋点名执行后的状态**，要哪个方向自己看回执再决定敲不敲第二下。
-    ⚠️ 翻之前**先走到最近那栋棚的门口**（拟人；走位那行如实进回执，没走到会明说"遥控翻的，人还在半路"）。
-    ⏳ C# 待办：`/farm_buildings` 只有**人类门** `doorX/doorY`，没有 `building.animalDoor`
-       ⇒ 现在只能站人类门口翻；也没有**只读**门态端点（读了等于翻一下）。
-    💡 放牧（早上开）与关棚门（晚上）在**单子**上是**两行**（`intent`），各自带目标态与最多一次收敛；
-       状态条在早上/晚上也各有一句提醒（都**不声称门现在是开是关**）。
+    ⚠️ 翻之前**逐栋走到那栋的小门旁边**（拟人；走位那几行如实进回执，没走到会明说"遥控翻的，人还在半路"）。
+    🧭 C# 侧有「够得着」闸：**一次只翻玩家 4 格内的门** ⇒ 逐栋走位是必需的（也正因如此，
+       够不着的那几栋会在回执里**点名**，不会假装翻过）。
+    💡 放牧（早上开）与关棚门（晚上）在**单子**上是**两行**（`intent`），各自带目标态与收敛；
+       状态条在早上/晚上也各有一句提醒。
     """
-    _n, walk = _walk_to_animal_door()
-    flip = _doors_flip_once()
+    flip = _doors_flip_all()
     if not flip.get("ok"):
-        return _with_state(f"{walk}\n❌ {flip.get('error')}" if walk
-                           else f"❌ {flip.get('error')}")
-    return _with_state(_doors_text(flip, walk))
+        return _with_state(f"❌ {flip.get('error')}")
+    return _with_state(_doors_text(flip, flip.get("walk") or ""))
 
 
 # ⚠️ **一份实现的别名**（恒：`close_doors` 还被别处引用就当同一个函数的别名）。
@@ -9088,8 +9201,8 @@ def blessing_statue() -> str:
 @mcp.tool()
 def pet_walk(include_petted: bool = False) -> str:
     """🐾 拟人化摸动物：走过去→面朝→interact（和捡蛋蛋同一套操作）
-    动物会动，动过就 /position 精确定位到它旁边。摸当前场景所有没摸的动物。
-    区别于作弊 /petall——这是真走过去摸。
+    动物会动，动过就重新走过去面对它；实在走不到才用 `/position` 落到它旁边那格（脚本会**如实报**那一下）。
+    摸当前场景所有没摸的动物。
     ⏰ 动物作息：一早醒来（6点）就能摸，傍晚6点后睡觉摸不了——最好早上摸。
 
     Args:
@@ -17700,6 +17813,84 @@ def storage_view(box=-1) -> str:
     return _with_state(f"❌ box 要序号或箱子名/色名/坐标，「{box}」看不懂")
 
 
+# ═══════════════════════════════════════════════════════════════
+#  🧭 「够得着」闸的消费侧（2026-10-03）
+#  C# 侧 `/store_all` `/chest_take_list` `/toggle_doors` 现在**只动玩家 4 格内的目标**
+#  （口径：恒点头「删两个孤儿 + 给门/箱子加够得着门」；总注释在 `ModEntry.cs` 的 `ReachTiles`），
+#  够不着的**不静默丢** —— 在回包里点名（`tooFar:[{x,y,name}]`）。
+#  ⇒ 这里负责**走过去再叫一次**（最多 `_REACH_ROUNDS` 轮），并把"还剩几口够不着"如实报给 AI。
+#  ⚠️ 关键区别（不许混）：**"够不着" ≠ "箱子里没有"**。老 DLL 没有 `tooFar` 键 ⇒ 行为与改前逐字相同。
+# ═══════════════════════════════════════════════════════════════
+
+_REACH_ROUNDS = 3
+
+
+def _nearest_of(cands):
+    """🧭 从 C# 点名的 `tooFar` 里挑**离我最近**的那口（读不到位置就取第一个，别瞎挑）。"""
+    cands = [c for c in (cands or []) if c]
+    if not cands:
+        return None
+    try:
+        px, py = _ai_pos()
+        if px is not None and py is not None:
+            return min(cands, key=lambda c: abs((c.get("x") or 0) - px) + abs((c.get("y") or 0) - py))
+    except Exception:
+        pass
+    return cands[0]
+
+
+def _take_wants_more(it) -> bool:
+    """这一项还值得再走一趟吗：点了具体数量但没拿够 / 不限量却一件没拿到。"""
+    want = it.get("wanted", -1)
+    taken = it.get("taken", 0) or 0
+    return taken <= 0 if want in (-1, None) else taken < want
+
+
+def _take_remaining(it):
+    """这一项还要几件（`0` = 不限量，C# 把 `<=0` 当不限）。"""
+    want = it.get("wanted", -1)
+    taken = it.get("taken", 0) or 0
+    return 0 if want in (-1, None) else max(0, want - taken)
+
+
+def _merge_take_results(a, b):
+    """把两轮 `/chest_take_list` 的回包按物品名合并（`taken` 累加、`from` 拼接）。"""
+    out = {}
+    for src in (a, b):
+        for it in (src.get("items") or []):
+            k = it.get("item")
+            cur = out.setdefault(k, {"item": k, "wanted": it.get("wanted", -1), "taken": 0, "from": []})
+            cur["taken"] += it.get("taken", 0) or 0
+            cur["from"].extend(it.get("from") or [])
+            if it.get("wanted", -1) not in (-1, None):
+                cur["wanted"] = it.get("wanted")
+    return {"ok": True, "location": a.get("location") or b.get("location"),
+            "items": list(out.values()), "tooFar": b.get("tooFar") or []}
+
+
+def _merge_store_results(a, b):
+    """把两轮 `/store_all` 的回包合并：`stored` 累加，`leftovers`/`chests`/`tooFar` 取**最后一轮**。"""
+    return {"ok": True, "mode": a.get("mode"), "scope": a.get("scope"),
+            "location": a.get("location") or b.get("location"),
+            "noHome": b.get("noHome", a.get("noHome", 0)),
+            "stored": (a.get("stored") or []) + (b.get("stored") or []),
+            "leftovers": b.get("leftovers") or [],
+            "chests": b.get("chests") or (a.get("chests") or []),
+            "totalFree": b.get("totalFree", a.get("totalFree", 0)),
+            "tooFar": b.get("tooFar") or []}
+
+
+def _reach_leftover_note(too_far, verb: str) -> str:
+    """🧭 收尾话术：还剩几口箱够不着 + 下一步（**带下一步**，别只说"没成功"）。"""
+    too_far = [c for c in (too_far or []) if c]
+    if not too_far:
+        return ""
+    c = too_far[0]
+    nm = f"【{c.get('name')}】" if c.get("name") else ""
+    return (f"  🧭 还有 {len(too_far)} 口箱子**够不着**（最近 {nm}({c.get('x')},{c.get('y')})）"
+            f"——我一次只够得着 **4 格内**的箱子：要{verb}那边的东西，先走过去再叫一次")
+
+
 def _primary_chest_for_smart():
     """智能 store 要走到的主箱：默认箱(若设) else **离我最近**的箱。返回 {"x","y"} or None。
 
@@ -17861,6 +18052,27 @@ def storage_take(items: str = "", x: int = -1, y: int = -1, name: str = "", coun
         r = api._post("/chest_take_list", {"items": reqs})
         if not r.get("ok"):
             return f"取物失败: {r.get('error', r)}"
+        # 🧭 2026-10-03「够得着」闸：C# 现在只掏**玩家 4 格内**的箱，够不着的在 `tooFar` 里点名
+        #    ⇒ **走过去再叫一次**（见 `_REACH_ROUNDS` 那段总注释）。⚠️ 第一轮没取到的物品，
+        #      **只有 `tooFar` 为空时**才算"箱子里真的没有"——别把"够不着"报成"没有"。
+        _rounds = 0
+        _extra_walks = []
+        while _rounds < _REACH_ROUNDS:
+            _left = [it for it in (r.get("items") or []) if _take_wants_more(it)]
+            _tf = r.get("tooFar") or []
+            if not _left or not _tf:
+                break
+            _c = _nearest_of(_tf)
+            _w2 = _walk_to_chest(_c["x"], _c["y"]) if _c else ""
+            _r2 = api._post("/chest_take_list",
+                            {"items": [{"name": it.get("item"), "count": _take_remaining(it)}
+                                       for it in _left]})
+            if not _r2.get("ok"):
+                break
+            if _w2:
+                _extra_walks.append(_w2)
+            r = _merge_take_results(r, _r2)
+            _rounds += 1
         lines = ["📤 从当前场景箱子取物" + (f" ({r.get('location')})" if r.get("location") else "")]
         if _w:
             lines.append(_w)
@@ -17869,7 +18081,10 @@ def storage_take(items: str = "", x: int = -1, y: int = -1, name: str = "", coun
             itn = it.get("item")
             taken = it.get("taken", 0)
             if taken <= 0:
-                lines.append(f"  ⚠️ 「{itn}」没取到（箱子没有；storage find 搜搜）")
+                _tf_any = r.get("tooFar") or []
+                lines.append(f"  ⚠️ 「{itn}」没取到"
+                             + ("（**是那几口箱够不着**，不是箱里没有——走过去再取一次）" if _tf_any
+                                else "（箱子没有；storage find 搜搜）"))
                 continue
             any_taken = True
             srcs = it.get("from", [])
@@ -17879,8 +18094,16 @@ def storage_take(items: str = "", x: int = -1, y: int = -1, name: str = "", coun
             w = it.get("wanted")
             amt = f"x{taken}" if (w is None or w == -1) else f"{taken}/{w}"
             lines.append(f"  ✅ {itn} {amt} ← {src_txt}")
+        lines.extend(_extra_walks)        # 🧭 为"够不着的箱"多走的几趟（实况，别只报结果）
+        _note = _reach_leftover_note(r.get("tooFar"), "取")
         if not any_taken:
-            lines.append("  什么都没取到（可能背包满了——先清背包/再找）")
+            if _note:
+                lines.append("  ⚠️ 一件都没取到 —— **不是箱子里没有，是那些箱子够不着**"
+                             "（一次只够得着 4 格内的箱）")
+            else:
+                lines.append("  什么都没取到（可能背包满了——先清背包/再找）")
+        if _note:
+            lines.append(_note)
         return _with_state("\n".join(lines))
     except Exception as e:
         return f"取物失败: {e}"
@@ -18140,6 +18363,26 @@ def storage_store(what: str = "", items: str = "", target: str = "", keepTools: 
         r = api.store_all(keepTools=keepTools, what=what_list, target=targ, default=dflt, clear_all=all, counts=counts)
         if not r.get("ok"):
             return _with_state(f"存储失败: {r.get('error', r)}")
+        # 🧭 2026-10-03「够得着」闸：C# 只往**玩家 4 格内**的箱子里放，够不着的箱在 `tooFar` 里点名、
+        #    对应物品在 `leftovers` 里带 `reason="out_of_reach"` ⇒ **走过去再叫一次**（最多 `_REACH_ROUNDS` 轮）。
+        #    ⚠️ 只对 `out_of_reach` 重试：`target_full`/`chest_rejected` 走过去也没用（那是真放不下）。
+        _rounds = 0
+        _extra_walks = []
+        while _rounds < _REACH_ROUNDS:
+            _tf = r.get("tooFar") or []
+            _left = [lo for lo in (r.get("leftovers") or []) if lo.get("reason") == "out_of_reach"]
+            if not _tf or not _left:
+                break
+            _c = _nearest_of(_tf)
+            _w2 = _walk_to_chest(_c["x"], _c["y"]) if _c else ""
+            _r2 = api.store_all(keepTools=keepTools, what=[lo["item"] for lo in _left], target=targ,
+                                default=dflt, clear_all=False, counts=None)
+            if not _r2.get("ok"):
+                break
+            if _w2:
+                _extra_walks.append(_w2)
+            r = _merge_store_results(r, _r2)
+            _rounds += 1
 
         mode = r.get("mode", "smart")
         scope = r.get("scope", "tidy")
@@ -18157,6 +18400,7 @@ def storage_store(what: str = "", items: str = "", target: str = "", keepTools: 
             # 🚶 走位实况（2026-09-24）：到了就说到了，没到就说人还在半路 —— 状态条那个 📍 是**实时**的，
             #    两者对不上时，这一行才是"为什么人在动"的答案（恒那天就是靠这点问出来的）
             lines.append(_walkline)
+        lines.extend(_extra_walks)   # 🧭 为"够不着的箱"多走的几趟（实况，别只报结果）
         # 🚫 场景里**压根没有箱子**：C# 会提前返回（stored/leftovers 都空、totalFree=0、附带一条 note）。
         #    ⚠️ 2026-09-25 恒真机逮到：Python **从来没读过这个 `note`** ⇒ 顺着"什么都没动"落到下面那个兜底，
         #    报出「✅ 没有要存的（背包没有非工具物品）」+「📦 剩余总格: 0」——
@@ -18181,10 +18425,14 @@ def storage_store(what: str = "", items: str = "", target: str = "", keepTools: 
         leftovers = r.get("leftovers", [])
         if leftovers:
             reason_txt = {"target_not_found": "指定箱没找到", "target_full": "指定箱满了",
-                          "all_chests_full": "箱子全满", "chest_rejected": "放不进箱子"}
+                          "all_chests_full": "箱子全满", "chest_rejected": "放不进箱子",
+                          "out_of_reach": "箱子够不着(4格外)"}   # 🧭 2026-10-03
             lines.append("  ⚠️ 没存下: " + ", ".join(
                 f"{lo['item']}×{lo['count']}" + ("(" + reason_txt.get(lo.get('reason'), lo.get('reason', '')) + ")" if lo.get('reason') else "")
                 for lo in leftovers))
+        _rnote = _reach_leftover_note(r.get("tooFar"), "存")   # 🧭 还剩几口箱够不着 + 下一步
+        if _rnote:
+            lines.append(_rnote)
         elif not stored:
             # 什么都没动：分开说清"名字对不上"还是"对上了却没搬动"——**别替背包下结论**。
             # 🔴 2026-09-27：这里原来无条件说「背包里没有指定的？」，而那天名字明明在背包里
@@ -22710,6 +22958,12 @@ def _im_chores(state: dict, surr: dict, animals: dict) -> dict:
     #    所以账一起给、单子上还是那一行（标签会按本图有什么自己念，见 `intent_menu.BERRY_V`）。
     if _c.get("tea"):
         out["tea"] = int(_c["tea"])
+        if _c.get("tea_pot"):
+            out["tea_pot"] = int(_c["tea_pot"])
+    if _c.get("tea_wait"):
+        # 🍵 茶树在、但现在摇不出来（游戏要「长了≥20天 + 当月22号起 + 非冬或室内」）——
+        #    单独一笔账：单子那行的理由会照它说实话，别让 AI 以为"这图没茶树"（恒 2026-10-03 栽过）。
+        out["tea_wait"] = int(_c["tea_wait"])
     if _c.get("fruit_tree"):
         out["fruit_tree"] = int(_c["fruit_tree"])
         out["fruit_n"] = int(_c.get("fruit_n") or 0)
@@ -23333,8 +23587,9 @@ def _im_doors_op(args: dict) -> dict:
     ⚠️ 为什么回 dict 而不回一句话：单子那两行**方向是意图**（早上要开、晚上要关），而端点是
        **翻转**的 ⇒ `intent_menu` 那边要拿"执行后每栋的门态"判断"到没到目标态"，没到就再翻一次。
        判据必须落在**结构化数据**上，不能靠解析文案（解析文案 = 判据长在措辞上，改个字就坏）。
-    ⚠️ `walk=True`（默认）**先走到棚门口再翻**（拟人，见 `_walk_to_animal_door`）；
-       exec 收敛的**第二下**传 `walk=False` —— 人已经站在门口了，再走一次纯属白等 15 秒。
+    ⚠️ `walk=True`（默认）**逐栋走到小门旁边再翻**（拟人，见 `_doors_flip_all`）；
+       收敛那一发传 `only=[那几扇没到位的门]` —— ⚠️ **不再用 `walk=False` 翻全部**：
+       C# 现在只翻玩家 4 格内的门，而"再翻一次全部"会把**已经翻好、就在旁边**的那栋翻回去。
     """
     # 🚪 带"关"意图的那条路（单子「关棚门」）**先问游戏再动手**：外面还有动物就**报错、不翻**
     #    （恒 2026-10-01：「还有在棚外的话报错不关」）。
@@ -23345,20 +23600,17 @@ def _im_doors_op(args: dict) -> dict:
         if _blk:
             return {"ok": False, "st": "maybe", "blocked": True, "walk": "",
                     "doors": {}, "snap": [], "text": _blk}
-    walk_line = ""
-    if bool((args or {}).get("walk", True)):
-        _n, walk_line = _walk_to_animal_door()
-    flip = _doors_flip_once()
+    flip = _doors_flip_all(only=(args or {}).get("only"),
+                           walk=bool((args or {}).get("walk", True)))
     if not flip.get("ok"):
-        return {"ok": False, "st": "no", "walk": walk_line,
-                "text": ((walk_line + "\n") if walk_line else "") + f"❌ {flip.get('error')}"}
-    return {"ok": True, "st": "yes", "text": _doors_text(flip, walk_line),
-            # ⚠️ 走位那行**也单独给一个字段**（不只混在文案里）：单子那两行会翻**第二下**
-            #    （`walk=False`，那一发的 text 天然没有走位行）⇒ exec 得把**第一次那行事实**
-            #    补回最终回执 —— 2026-10-01 真机就是这个洞：人真走到了门口（`[walk] … 到位`），
-            #    可 AI 看到的回执里一个字都没提（被收敛那发盖掉了，两头都是谎）。
-            "walk": walk_line,
-            "doors": flip.get("doors") or {}, "snap": flip.get("snap") or []}
+        return {"ok": False, "st": "no", "walk": "", "text": f"❌ {flip.get('error')}"}
+    return {"ok": True, "st": "yes", "text": _doors_text(flip, flip.get("walk") or ""),
+            # ⚠️ 走位那几行**也单独给一个字段**（不只混在文案里）：单子那两行会按没到位的门**再走一趟**
+            #    ⇒ exec 得把**第一趟那几行事实**补回最终回执 —— 2026-10-01 真机就是这个洞：人真走到了
+            #    门口（`[walk] … 到位`），可 AI 看到的回执里一个字都没提（两头都是谎）。
+            "walk": flip.get("walk") or "",
+            "doors": flip.get("doors") or {}, "snap": flip.get("snap") or [],
+            "entries": flip.get("entries") or [], "left": flip.get("left") or []}
 
 
 def _im_run(op, args):

@@ -153,9 +153,12 @@ ENDPOINTS = {
         "/equip":         ("通用穿脱(2026-08-22)", "name=穿(背包找同名,自动判槽位)/slot=脱/加hand=戒指指定手;一个工具替代分槽位穿法;走游戏原生 Farmer.Equip 保染色,MCP 侧挂 daily ops=wear"),
         "/weapon_diag":  ("武器诊断", "wtype 0剑/1匕/2锤/3格挡剑镰 + 挥击速度"),
         "/till_area /water /clear_ground /harvest /ripen /sprinklers": ("农活", "锄地区域/浇水/清地/收获/催熟/洒水器"),
-        "/toggle_doors": ("开关畜棚门", "门"),
+        "/toggle_doors": ("开关畜棚门", "门 —— 🧭 2026-10-03 起只翻**玩家同图 4 格内**的门，够不着的进 `skipped` 点名；可用 doorX/doorY 精确点名一栋"),
         "/silo /mastery /mastery_claim /carpenter": ("设施", "干草塔/精通/木匠升级"),
-        "/petbowl /petall /waterbowl": ("宠物", "宠物水碗/全摸/水碗"),
+        # 🗑️ `/petall` `/waterbowl` 已于 2026-10-03 删除（零调用点；一个反射直写 wasPet/假签收、
+        #    一个反射猜字段名从来没成功过）。拟人路：`pet_walk.py` / `_pet_pets_natural` / `pet_water`。
+        "/petbowl": ("宠物", "宠物水碗只读（4 个碗的坐标 + watered）"),
+        "/surroundings + /farm_buildings": ("🧭 够得着闸要的两份数据", "灌木三件（含盆栽茶树 bushInPot/bushAge）/ 动物门坐标 animalDoorX,Y + 只读门态 animalDoorOpen"),
     },
     "💬 社交/聊天/送礼（写）：": {
         "/chat":         ("发聊天", "message（AI 进程内用）"),

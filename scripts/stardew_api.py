@@ -2033,17 +2033,12 @@ def walk_natural(target_x, target_y, timeout_scale=2, min_timeout=5):
         position(target_x, target_y)
         return False
 
-def petall():
-    """作弊：直接标记所有宠物/动物为已摸，不用走过去。
-    返回: {"ok": true, "petted": N, "details": [...]}
-    """
-    return _get("/petall")
-
-def waterbowl():
-    """作弊：直接标记水碗为已装满，不用真浇水。
-    返回: {"ok": true, "watered": true}
-    """
-    return _get("/waterbowl")
+# ⛔ **`petall()` / `waterbowl()` 2026-10-03 删除**（连同 C# 的 `/petall` `/waterbowl`）。
+#   两条都是**孤儿 + 假签收**：`/petall` 反射直写 `wasPet/wasPetToday`（不是"替玩家摸一下"，
+#   是替玩家把"今天摸过了"写进存档），`/waterbowl` 反射猜字段名、**从来没成功过**
+#   （真机当场 `ok:false Could not water bowl`），而且全 repo **零调用点**。
+#   拟人路（有调用点、真机验过）：`pet_walk.py` / `_pet_animals_in_building` / `_pet_pets_natural`（走过去 + interact）、
+#   喂水 `pet_water` / `_water_pet_bowls`（站碗位真浇）。**要恢复先问恒。**
 
 
 def buy_animal(animal_type, name, building=""):
@@ -2117,16 +2112,27 @@ def carpenter():
     return _get("/carpenter")
 
 
-def close_doors():
-    """🚪 开关畜棚/鸡舍门 — **翻转**所有动物建筑的门（C# `/toggle_doors` 忽略 action，纯翻转）
+def close_doors(building="", doorX=None, doorY=None):
+    """🚪 开关畜棚/鸡舍门 — **翻转**动物建筑的门（C# `/toggle_doors` 忽略 action，纯翻转）
 
     ⚠️ 它**不是**"关门"、也不是"开门"：想收敛到某个方向由调用方按回读状态再翻一次
-    （`nagi_mcp_server.doors()` 就是干这个的：翻一次 → 回读 → 逐栋报执行后的门态）。
+    （`nagi_mcp_server.doors()` 就是干这个的：逐栋走位 → 翻 → 回读 → 报执行后的门态）。
     ⚠️ **别再说"早上开门已包含在 care_animals 中"**（那是句假话：`care_animals` 里没有任何开门动作）
     —— 门走 `farm(ops="doors")`（别名 `放牧`/`开关门`/`棚门`），单子上是早上/晚上两行。
     直接调游戏内部接口开关，不走点击模拟。
+
+    🧭 2026-10-03：C# 加了「够得着」闸（**只翻玩家 4 格内的门**），并支持点名：
+      · `building`  = 建筑类型子串（`"Barn"` 能中 Deluxe Barn）
+      · `doorX/doorY` = `/farm_buildings.animalDoorX/Y` —— **同名两栋（两个 Deluxe Coop）只能靠它分开**
+    够不着的门**不会静默跳过**，在回包 `skipped:[{building,doorX,doorY,reason}]` 里点名。
     """
-    return _post("/toggle_doors", {"action": "close"})
+    data = {"action": "close"}
+    if building:
+        data["building"] = building
+    if doorX is not None and doorY is not None:
+        data["doorX"] = int(doorX)
+        data["doorY"] = int(doorY)
+    return _post("/toggle_doors", data)
 
 
 def till_area(tiles=None, x=None, y=None, length=None, direction=None, power=0):

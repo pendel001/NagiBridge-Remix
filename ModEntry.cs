@@ -29,6 +29,7 @@ using StardewValley.Minigames;
 using Lidgren.Network;
 using HarmonyLib;
 using Chest = StardewValley.Objects.Chest;
+using IndoorPot = StardewValley.Objects.IndoorPot;   // 🍵 花盆（茶树苗种进去住在 `IndoorPot.bush`，见 BuildSurroundings）
 
 namespace NagiBridge;
 
@@ -3062,8 +3063,14 @@ public class ModEntry : Mod
                 "/animals" => HandleAnimals(),
                 "/scan" => HandleScan(),
                 "/petbowl" => HandlePetBowl(),
-                "/petall" => HandlePetAll(),
-                "/waterbowl" => HandleWaterBowl(),
+                // ⛔ `/petall` 与 `/waterbowl` **2026-10-03 删除**（恒：「删掉收放兼容之外的所有口」同一把尺子）。
+                //    · `/petall`   = 全农场建筑内部动物 + 宠物，**反射直写 `wasPet/wasPetToday`**
+                //      ——**不是"替玩家摸一下"，是替玩家把"今天摸过了"写进存档**（假签收），而且
+                //      MCP 侧 `api.petall()` **零调用点**（真机现场：恒人在 FarmHouse，它回 `petted:4`）。
+                //    · `/waterbowl` = 反射猜 7 个字段名，**从来没成功过**（2026-10-03 真机当场 `ok:false`），
+                //      同样零调用点。
+                //    拟人路是现成的、且有调用点：`pet_walk.py` / `_pet_pets_natural`（走过去 + interact 摸）、
+                //    `pet_water` / `_water_pet_bowls`（站碗位真浇）。**要恢复先问恒。**
                 "/ladder" => HandleLadder(),
                 "/bombs" => HandleBombs(),
                 "/silo" => HandleSilo(),
@@ -3103,7 +3110,7 @@ public class ModEntry : Mod
                 "/till_area" => HandleTillArea(ctx),
                 "/tool_area" => HandleToolArea(ctx),
                 "/dig_spot" => HandleDigSpot(ctx),   // 🪱 挖蚯蚓格子/姜（digUpArtifactSpot，2026-08-17）
-                "/toggle_doors" => HandleToggleDoors(),
+                "/toggle_doors" => HandleToggleDoors(ctx),
                 "/crawl_bed" => HandleCrawlBed(ctx),
                 "/cancel_sleep" => HandleCancelSleep(),
                 "/settlement_confirm" => HandleSettlementConfirm(),
@@ -5860,21 +5867,12 @@ public class ModEntry : Mod
                         BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
                     if (fOpen != null && fOpen.GetValue(b) is Netcode.NetBool nb)
                         entry["animalDoorOpen"] = nb.Value;
-                    var fDoor = rt.GetField("animalDoor",
-                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
-                        ?? typeof(Building).GetField("animalDoor",
-                            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                    var dv = fDoor?.GetValue(b);
-                    if (dv != null)
+                    // 🧭 2026-10-03：门坐标那段抽成 `TryGetAnimalDoorTile()`（`/toggle_doors` 的"够得着"闸
+                    //    要按同一格算距离）——**同一件事只留一份实现**，免得两边读法漂。
+                    if (TryGetAnimalDoorTile(b, out int adx, out int ady))
                     {
-                        var vt = dv.GetType();
-                        var xv = (object?)vt.GetProperty("X")?.GetValue(dv) ?? vt.GetField("X")?.GetValue(dv);
-                        var yv = (object?)vt.GetProperty("Y")?.GetValue(dv) ?? vt.GetField("Y")?.GetValue(dv);
-                        if (xv != null && yv != null)
-                        {
-                            entry["animalDoorX"] = b.tileX.Value + Convert.ToInt32(xv);
-                            entry["animalDoorY"] = b.tileY.Value + Convert.ToInt32(yv);
-                        }
+                        entry["animalDoorX"] = adx;
+                        entry["animalDoorY"] = ady;
                     }
                 }
                 catch { }
@@ -6825,11 +6823,13 @@ public class ModEntry : Mod
                 //    ⚠️ 只给**事实**（游戏怎么判），**不给策略**（捡不捡由 Python 的黑名单/规则定）——
                 //    同 09-11「判据别放消费侧猜」那条。消费侧：`if passable or forage`。
                 bool objForage = false;
+                IndoorPot? potObj = null;   // 🍵 花盆：茶树苗种进去后住在 `IndoorPot.bush`（见下面那段）
                 if (loc.objects.TryGetValue(tileVec, out var obj))
                 {
                     objName = SafeObjectName(obj);
                     objId = obj.QualifiedItemId ?? obj.itemId?.Value;
                     try { objForage = obj.isForage(); } catch { }   // 认不出就不报（别瞎猜 true）
+                    potObj = obj as IndoorPot;
                 }
 
                 string? terrainName = null;
@@ -6935,6 +6935,7 @@ public class ModEntry : Mod
                 int bushSize = -1;               // 🍓 0/1/2=野浆果丛 · 3=茶树丛 · 4=核桃丛（`Bush.walnutBush`）
                 bool bushInSeason = false;       // 🌸 游戏自己的 `Bush.inBloom()`：**这一季它到底产不产**
                 bool bushShakeable = false;      // 🎯 游戏 `Bush.shake()` 的**原条件**（见下）
+                int bushAge = -1;                // 🌱 `Bush.getAge()`（茶树：**< 20 天不算成年**，摇不出）
                 foreach (var ltf in loc.largeTerrainFeatures)
                 {
                     if (ltf.Tile == tileVec)
@@ -6966,11 +6967,37 @@ public class ModEntry : Mod
                             try
                             {
                                 bushShakeable = !bush.townBush.Value && bush.readyForHarvest() && bush.inBloom();
+                                bushAge = bush.getAge();
                             }
                             catch { }
                         }
                         break;
                     }
+                }
+
+                // 🍵🍓 2026-10-03 恒：「**farmhouse 有一排，温室也有一排！是的，在花盆里**」
+                //    ——茶树苗种进**花盆**之后，那丛茶树**既不在 `terrainFeatures`、也不在
+                //    `largeTerrainFeatures`**，而是住在花盆对象自己的字段上（反编译 `Objects/IndoorPot.cs`：
+                //      `public readonly NetRef<Bush> bush = new NetRef<Bush>();`
+                //      种下去那行：`performObjectDropInAction` 里 `(O)251` 茶苗 → `new Bush(tile, 3, Location)`
+                //      再 `obj.inPot.Value = true`）。
+                //    ⇒ 只扫地形的话，**AI 眼里那两排茶树根本不存在**（只报一句「Garden Pot」）——
+                //      这是 2026-10-03 真机现场逮到的**缺门**（恒开这个档就是为了验茶，结果扫不到）。
+                //    收法**不用新机制**：`IndoorPot.checkForAction` 末尾就是 `bush.Value?.performUseAction(...)`
+                //    ⇒ 走到花盆边 `interact` 即可（`berry_run.py` 摇灌木用的就是这条）。
+                //    ⚠️ 判据仍然是**游戏自己的那两句**（`inBloom()` / `shake()` 的原条件），一个字都不自己编。
+                bool bushInPot = false;
+                if (bushSize < 0 && potObj?.bush?.Value is Bush pbush)
+                {
+                    bushSize = pbush.size.Value;
+                    try { bushInSeason = pbush.inBloom(); } catch { }
+                    try
+                    {
+                        bushShakeable = !pbush.townBush.Value && pbush.readyForHarvest() && pbush.inBloom();
+                        bushAge = pbush.getAge();
+                    }
+                    catch { }
+                    bushInPot = true;
                 }
 
                 bool hasInfo = !passable || objName != null || terrainName != null
@@ -6996,6 +7023,8 @@ public class ModEntry : Mod
                         tile["bushSize"] = bushSize;
                         tile["bushInSeason"] = bushInSeason;
                         tile["bushShakeable"] = bushShakeable;   // 🎯 摇得出东西（游戏原判据，真/假都报）
+                        if (bushAge >= 0) tile["bushAge"] = bushAge;     // 🌱 长了几天（茶树 <20 天＝未成年）
+                        if (bushInPot) tile["bushInPot"] = true;         // 🍵 长在**花盆**里（收法：对花盆 interact）
                     }
                     if (bushInBloom) tile["bushBloom"] = true;   // 🍓 灌木在花期=可摇树莓/黑莓
                     if (largeTerrainName != null && largeTerrainName != "Bush")
@@ -10909,6 +10938,17 @@ public class ModEntry : Mod
                     }
                 }
 
+                // 🧭 2026-10-03「够得着」闸（口径见 `ReachTiles` 那段总注释）：候选箱从"整张地图"收窄到
+                //    **玩家同图 ≤ 4 格**。⚠️ 必须早于 `ResolveTarget()` / 四级智能路由 —— 它们全读这张表。
+                //    够不着的**不静默丢**：进 `tooFar`（带坐标），上层走过去再叫一次。
+                var tooFar = new List<object>();
+                chests = chests.Where(ch =>
+                {
+                    bool near = IsWithinReach(farmer, loc, ch.tile);
+                    if (!near) tooFar.Add(new { x = (int)ch.tile.X, y = (int)ch.tile.Y, name = DisplayName(ch.c) });
+                    return near;
+                }).ToList();
+
                 // 显示名：已标记用 Name，内置冰箱用 label，其余用 ChestName
                 string DisplayName(StardewValley.Objects.Chest c) =>
                     DisplayChestName(c, labelOf.TryGetValue(c, out var lb) ? lb : "");
@@ -11023,7 +11063,7 @@ public class ModEntry : Mod
                     string reason = "";
                     if (targetMode)
                     {
-                        if (targetChest == null) reason = "target_not_found";
+                        if (targetChest == null) reason = tooFar.Count > 0 ? "out_of_reach" : "target_not_found";
                         else if (Free(targetChest) <= 0) reason = "target_full";
                         else target = targetChest;
                     }
@@ -11057,7 +11097,7 @@ public class ModEntry : Mod
                         if (target == null && defChest != null && Free(defChest) > 0) target = defChest;
                         // 4. 空位最多箱
                         if (target == null) target = SpaceChest();
-                        if (target == null) reason = "all_chests_full";
+                        if (target == null) reason = tooFar.Count > 0 ? "out_of_reach" : "all_chests_full";
                     }
 
                     if (target == null)
@@ -11128,6 +11168,8 @@ public class ModEntry : Mod
                     location = loc.Name,
                     stored,
                     leftovers,
+                    tooFar,                                   // 🧭 够不着的箱（x/y/name）⇒ 走过去再叫一次
+                    reachTiles = ReachTiles,
                     chests = chestSummary,
                     totalFree = chests.Sum(x => Free(x.c)),
                     dbg = new { count = counts.Count, name = dbgN, displayName = dbgD, qid = dbgQ, reqCount = dbgR }   // 🐛 数量诊断
@@ -12030,6 +12072,19 @@ public class ModEntry : Mod
                 var labelOf = new Dictionary<Chest, string>();
                 foreach (var (c, t, lb) in chests) { tileOf[c] = t; labelOf[c] = lb; }
 
+                // 🧭 2026-10-03「够得着」闸（口径见 `ReachTiles` 总注释）：原来是从**整张地图所有箱**里凑数
+                //    （Python 注释自己写着"只走到第一个箱旁，却把整张图的箱都掏了"）⇒ 收窄到玩家同图 ≤ 4 格。
+                //    ⚠️ `tileOf` 保持**全量**（只过滤 `chests`）：下面回包按 `tileOf[chest]` 取坐标，
+                //       先滤后建字典会当场 KeyNotFound。
+                var tooFar = new List<object>();
+                chests = chests.Where(ch =>
+                {
+                    bool near = IsWithinReach(farmer, loc, ch.tile);
+                    if (!near) tooFar.Add(new { x = (int)ch.tile.X, y = (int)ch.tile.Y,
+                                                name = DisplayChestName(ch.c, ch.label) });
+                    return near;
+                }).ToList();
+
                 bool Match(Item it, string name) =>
                     it != null
                     && (string.Equals(it.Name, name, StringComparison.OrdinalIgnoreCase)
@@ -12087,7 +12142,9 @@ public class ModEntry : Mod
                     });
                 }
 
-                tcs.SetResult(new { ok = true, location = loc.Name, items = results });
+                tcs.SetResult(new { ok = true, location = loc.Name, items = results,
+                    tooFar,                                   // 🧭 够不着的箱（x/y/name）⇒ 走过去再叫一次
+                    reachTiles = ReachTiles });
             }
             catch (Exception ex)
             {
@@ -17989,11 +18046,24 @@ public class ModEntry : Mod
     }
 
     /// <summary>
-    /// POST /toggle_doors  { action: "close" }
-    /// Toggle all animal building doors (open or close).
+    /// POST /toggle_doors  { building?: "Deluxe Barn", doorX?: 37, doorY?: 13 }
+    /// **翻转**动物建筑的门（⚠️ **忽略 `action`**——只有"翻一下"这一种动作，方向是**调用方的意图**；
+    /// 门态的**只读口**在 `GET /farm_buildings` 的 `animalDoorOpen`）。
+    ///
+    /// 🧭 2026-10-03 加「够得着」闸（恒点头，口径见 `ReachTiles` 那段总注释）：只翻**玩家人在农场、
+    ///    且门格 ≤ `ReachTiles` 格**的建筑；够不着的进 `skipped`（带门坐标 + `reason`）。
+    ///
+    /// ⚠️ 为什么必须能**点名单栋**翻：闸门是按"玩家周围 N 格"选的 ⇒ 若你站在 B 栋门口
+    ///    再叫一次"全翻"，刚翻好的 A 栋只要也在 N 格内就**会被翻回去**（来回翻，永远收敛不了）。
+    ///    `building` 用**子串**匹配（`"Barn"` 能中 Deluxe Barn）；⚠️ **同名两栋**（两个 Deluxe Coop）
+    ///    靠名字分不开 ⇒ 精确点名用 `doorX`/`doorY`（`/farm_buildings` 的 `animalDoorX/Y`，按坐标只翻那一栋）。
     /// </summary>
-    private object HandleToggleDoors()
+    private object HandleToggleDoors(HttpListenerContext ctx)
     {
+        var p = ReadJson(ctx);
+        var wantBuilding = GetParamOr(p, "building", "");
+        var wantDoorX = GetParamOr(p, "doorX", -1);
+        var wantDoorY = GetParamOr(p, "doorY", -1);
         if (!Context.IsWorldReady)
             throw new InvalidOperationException("World not ready");
 
@@ -18003,8 +18073,12 @@ public class ModEntry : Mod
             try
             {
                 var farm = Game1.getFarm();
+                var farmer = Game1.player;
+                var fTile = farmer?.TilePoint ?? Point.Zero;
+                bool onFarm = farm != null && ReferenceEquals(farmer?.currentLocation, farm);
                 int toggled = 0;
                 var details = new List<object>();
+                var skipped = new List<object>();
 
                 foreach (var building in farm.buildings)
                 {
@@ -18012,6 +18086,29 @@ public class ModEntry : Mod
                     var bType = building.buildingType?.Value ?? "";
                     bool isAnimalBuilding = bType.Contains("Coop") || bType.Contains("Barn");
                     if (!isAnimalBuilding) continue;
+                    // 点名那一栋（子串、大小写不敏感）；不点名＝翻所有**够得着**的
+                    if (wantBuilding.Length > 0
+                        && !bType.Contains(wantBuilding, StringComparison.OrdinalIgnoreCase)) continue;
+
+                    // 🧭 闸：人不在农场 / 读不到门坐标 / 门太远 ⇒ 不翻，点名报出去（**不静默跳过**）
+                    bool hasDoor = TryGetAnimalDoorTile(building, out int dx, out int dy);
+                    // 精确点名那一栋的门（同名两栋靠名字分不开，必须按坐标）
+                    if (wantDoorX >= 0 && wantDoorY >= 0 && (!hasDoor || dx != wantDoorX || dy != wantDoorY))
+                        continue;
+                    if (!onFarm || !hasDoor || !IsWithinReach(farmer, farm, new Vector2(dx, dy)))
+                    {
+                        skipped.Add(new
+                        {
+                            building = bType,
+                            doorX = hasDoor ? dx : -1,
+                            doorY = hasDoor ? dy : -1,
+                            reason = !onFarm ? "not_on_farm" : (!hasDoor ? "no_door_coords" : "too_far"),
+                            distance = hasDoor
+                                ? Math.Max(Math.Abs(fTile.X - dx), Math.Abs(fTile.Y - dy))
+                                : (int?)null
+                        });
+                        continue;
+                    }
 
                     try
                     {
@@ -18023,7 +18120,7 @@ public class ModEntry : Mod
                         {
                             netBool.Value = !netBool.Value;
                             toggled++;
-                            details.Add(new { building = bType, door_open = netBool.Value });
+                            details.Add(new { building = bType, door_open = netBool.Value, doorX = dx, doorY = dy });
                         }
                         else
                         {
@@ -18034,7 +18131,7 @@ public class ModEntry : Mod
                             {
                                 method.Invoke(building, null);
                                 toggled++;
-                                details.Add(new { building = bType, toggled_via = "ToggleAnimalDoor" });
+                                details.Add(new { building = bType, toggled_via = "ToggleAnimalDoor", doorX = dx, doorY = dy });
                             }
                             else
                             {
@@ -18052,8 +18149,14 @@ public class ModEntry : Mod
                 tcs.SetResult(new
                 {
                     ok = true,
+                    location = farm?.Name,
+                    onFarm,                                   // 🧭 人不在农场 ⇒ 一条都没翻（全在 skipped 里）
+                    reachTiles = ReachTiles,
+                    playerX = fTile.X,
+                    playerY = fTile.Y,
                     toggled,
-                    details
+                    details,                                  // 翻了哪几栋（带 doorX/doorY + 翻后门态）
+                    skipped                                   // 🧭 够不着的（doorX/doorY + reason）⇒ 走过去再叫一次
                 });
             }
             catch (Exception ex)
@@ -19931,240 +20034,23 @@ public class ModEntry : Mod
         return tcs.Task.GetAwaiter().GetResult();
     }
 
-    private object HandlePetAll()
-    {
-        if (!Context.IsWorldReady)
-            throw new InvalidOperationException("World not ready");
+    // ⛔ **`HandlePetAll()`（`/petall`）与 `HandleWaterBowl()`（`/waterbowl`）2026-10-03 删除。**
+    //
+    //   判据不是"拟人不拟人"，是**这两条连"做了那件事"都不是**：
+    //     · `HandlePetAll` 遍历 `Game1.getFarm().buildings` 里每个 `AnimalHouse` 的 `animals`
+    //       （反编译读法：`building.indoors.Value is AnimalHouse`）+ `farm.characters` 里的 `Pet`，
+    //       然后**反射把 `wasPet/wasPetToday/petted` 字段直接置 true**（或调 `pet()`/`checkAction`）
+    //       ⇒ 玩家在 FarmHouse（甚至矿洞）里，全农场动物当天就算"摸过了"。
+    //       2026-10-03 真机现场：恒人在 FarmHouse，`GET /petall` 回 `petted:4`（砂糖/绿豆/葡萄/龙眼）。
+    //     · `HandleWaterBowl` 靠**猜字段名**（`petBowlWatered` 等 7 个）改农场级 bool，真机当场
+    //       `ok:false Could not water bowl` —— 它连"假装成功"都做不到。
+    //   两条都**零调用点**（`api.petall()` / `api.waterbowl()` 在 `scripts/stardew_api.py` 里
+    //   只有定义、全 repo 无调用）⇒ 删除对任何活路零影响。
+    //
+    //   AI 的拟人路（有调用点、真机验过）是：`pet_walk.py` / `_pet_animals_in_building`
+    //   （走过去 → 面朝 → interact 摸）与 `_pet_pets_natural`（walk_to + 邻格判定 + interact），
+    //   喂水是 `pet_water` / `_water_pet_bowls`（走到碗位朝右浇）。**要恢复先问恒。**
 
-        var tcs = new TaskCompletionSource<object>();
-        EnqueueMainThread(() =>
-        {
-            try
-            {
-                var farm = Game1.getFarm();
-                if (farm == null)
-                {
-                    tcs.SetResult(new { ok = false, error = "Not on a farm" });
-                    return;
-                }
-
-                var petted = new List<object>();
-                var errors = new List<string>();
-
-                // ── 摸宠物（猫/狗） ──
-                foreach (var npc in farm.characters)
-                {
-                    if (npc is Pet petNpc)
-                    {
-                        try
-                        {
-                            // 方法1: 直接调用 pet() 方法（如果有）
-                            var petMethod = petNpc.GetType().GetMethod("pet",
-                                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                            if (petMethod != null)
-                            {
-                                petMethod.Invoke(petNpc, petMethod.GetParameters().Length == 1
-                                    ? new object[] { Game1.player } : null);
-                                petted.Add(new { type = "pet", name = petNpc.Name, method = "pet()" });
-                            }
-                            else
-                            {
-                                // 方法2: 设置 wasPetToday 字段
-                                bool flagged = false;
-                                foreach (var fname in new[] { "wasPetToday", "wasPet", "petted" })
-                                {
-                                    var f = petNpc.GetType().GetField(fname,
-                                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                                    if (f != null && f.FieldType == typeof(bool))
-                                    {
-                                        f.SetValue(petNpc, true);
-                                        petted.Add(new { type = "pet", name = petNpc.Name, method = $"field:{fname}" });
-                                        flagged = true;
-                                        break;
-                                    }
-                                }
-                                if (!flagged)
-                                {
-                                    // 方法3: 模拟 checkAction
-                                    petNpc.checkAction(Game1.player, Game1.currentLocation);
-                                    petted.Add(new { type = "pet", name = petNpc.Name, method = "checkAction" });
-                                }
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            errors.Add($"pet '{petNpc.Name}': {ex.Message}");
-                        }
-                    }
-                }
-
-                // ── 摸农场动物（鸡牛羊猪……） ──
-                foreach (var building in farm.buildings)
-                {
-                    // SDV 1.6: use AnimalHouse instead of deprecated Barn/Coop
-                    var indoors = building.indoors?.Value;
-                    if (indoors == null) continue;
-                    if (!(indoors is AnimalHouse)) continue;
-
-                        // Get animals from the building's indoor location
-                        var animalsField = indoors.GetType().GetField("animals",
-                            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                        if (animalsField?.GetValue(indoors) is IEnumerable<FarmAnimal> animalList)
-                        {
-                            foreach (var animal in animalList)
-                            {
-                                try
-                                {
-                                    bool flagged = false;
-                                    foreach (var fname in new[] { "wasPet", "wasPetToday", "petted" })
-                                    {
-                                        var f = animal.GetType().GetField(fname,
-                                            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                                        if (f != null && f.FieldType == typeof(bool))
-                                        {
-                                            f.SetValue(animal, true);
-                                            petted.Add(new { type = "farmAnimal", name = animal.Name ?? animal.displayName, method = $"field:{fname}" });
-                                            flagged = true;
-                                            break;
-                                        }
-                                    }
-                                    if (!flagged)
-                                    {
-                                        var m = animal.GetType().GetMethod("pet",
-                                            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                                        if (m != null)
-                                        {
-                                            m.Invoke(animal, m.GetParameters().Length == 1
-                                                ? new object[] { Game1.player } : null);
-                                            petted.Add(new { type = "farmAnimal", name = animal.Name ?? animal.displayName, method = "pet()" });
-                                            flagged = true;
-                                        }
-                                    }
-                                    if (!flagged)
-                                        errors.Add($"animal '{animal.displayName}': no known field/method");
-                                }
-                                catch (Exception ex)
-                                {
-                                    errors.Add($"animal '{animal.displayName}': {ex.Message}");
-                                }
-                            }
-                    }
-                }
-
-                tcs.SetResult(new
-                {
-                    ok = true,
-                    petted = petted.Count,
-                    details = petted,
-                    errors = errors.Count > 0 ? errors : null
-                });
-            }
-            catch (Exception ex)
-            {
-                tcs.SetResult(new { ok = false, error = ex.Message });
-            }
-        });
-        return tcs.Task.GetAwaiter().GetResult();
-    }
-
-    private object HandleWaterBowl()
-    {
-        if (!Context.IsWorldReady)
-            throw new InvalidOperationException("World not ready");
-
-        var tcs = new TaskCompletionSource<object>();
-        EnqueueMainThread(() =>
-        {
-            try
-            {
-                var farm = Game1.getFarm();
-                if (farm == null)
-                {
-                    tcs.SetResult(new { ok = false, error = "Not on a farm" });
-                    return;
-                }
-
-                bool set = false;
-                string method = "unknown";
-                List<string> tried = new();
-
-                // Method 1: Try many possible field names
-                string[] fieldNames = {
-                    "petBowlWatered", "petBowlWateredToday", "wateredPetBowl",
-                    "petWaterBowl", "petWaterBowlWatered",
-                    "petBowlFilled", "wasPetBowlWatered"
-                };
-                foreach (var fname in fieldNames)
-                {
-                    tried.Add(fname);
-                    var f = farm.GetType().GetField(fname,
-                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                    if (f != null)
-                    {
-                        if (f.FieldType == typeof(bool))
-                        { f.SetValue(farm, true); set = true; method = $"field:{fname}"; break; }
-                        if (f.FieldType.Name == "NetBool" || f.FieldType.Name == "NetBoolDelta")
-                        {
-                            var val = f.GetValue(farm);
-                            val?.GetType().GetMethod("Set")?.Invoke(val, new object[] { true });
-                            set = true; method = $"netfield:{fname}"; break;
-                        }
-                    }
-                }
-
-                // Method 2: Scan all pet/bowl related fields
-                if (!set)
-                {
-                    foreach (var f in farm.GetType().GetFields(
-                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
-                    {
-                        if (!f.Name.ToLower().Contains("pet") && !f.Name.ToLower().Contains("bowl"))
-                            continue;
-                        tried.Add($"(scan){f.Name}:{f.FieldType.Name}");
-                        if (f.FieldType == typeof(bool))
-                        { f.SetValue(farm, true); set = true; method = $"scan:{f.Name}"; break; }
-                    }
-                }
-
-                // Method 3: Simulate right-click at bowl position
-                if (!set)
-                {
-                    try
-                    {
-                        var bpField = farm.GetType().GetField("petBowl",
-                            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                        if (bpField?.GetValue(farm) is Point bp)
-                        {
-                            var wc = Game1.player.Items.OfType<WateringCan>().FirstOrDefault();
-                            if (wc != null && wc.WaterLeft > 0)
-                            {
-                                Game1.player.CurrentTool = wc;
-                                int px = bp.X * 64 + 32;
-                                int py = bp.Y * 64 + 32;
-                                if (farm.checkAction(new Location(px, py), Game1.viewport, Game1.player))
-                                { set = true; method = "simulateCheckAction"; }
-                            }
-                        }
-                    }
-                    catch { }
-                }
-
-                if (!set)
-                {
-                    tcs.SetResult(new { ok = false, error = "Could not water bowl",
-                        attempted = tried.ToArray() });
-                    return;
-                }
-
-                tcs.SetResult(new { ok = true, watered = true, method });
-            }
-            catch (Exception ex)
-            {
-                tcs.SetResult(new { ok = false, error = ex.Message });
-            }
-        });
-        return tcs.Task.GetAwaiter().GetResult();
-    }
 
     // ═══════════════════════════════════════════════════════════════
     //  🏗️ 建筑/干草/精通（2026-08-06 新增）
@@ -22839,6 +22725,61 @@ public class ModEntry : Mod
             catch { }
         }
         return false;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //  🧭 「够得着」闸 —— 2026-10-03 恒点头的统一口径（一键全图那族）
+    // ═══════════════════════════════════════════════════════════════
+    //
+    //  起因：`/store_all` `/chest_take_list` `/toggle_doors` 这三条"一键全图"端点
+    //        **一个距离判定都没有**（2026-10-03 审计复核：三个 handler 区间内 `TilePoint` 零命中）——
+    //        玩家站在农场任何角落，背包里的东西能飞进几十格外的箱子、五个棚门一起翻。
+    //        ⚠️ 这**不是"拟人"问题**：Python 侧那三条路**都有走位**（`_walk_to_chest` 等）。
+    //        真正的缺口只有两个：① "走到了 A 箱、写入却落到 B 箱"（候选集是整图）；
+    //        ② "人没到门口，门先翻了"（`/toggle_doors` 压根不碰玩家对象）。
+    //
+    //  口径（和 10-01 恒「不兜底了，走到附近做个样子就 ok」同一把尺子）：
+    //    · **只对玩家同图、且切比雪夫距离 ≤ `ReachTiles` 的目标生效**；
+    //    · 够不着的**不静默丢弃** —— 一律进回包（`tooFar` / `skipped`，带坐标），
+    //      上层拿坐标走过去再叫一次（`/toggle_doors` 还支持 `building` 只翻点名的那一栋）。
+    //
+    //  ⚠️ 别和 `IsReachableByWalking` 混：那个问的是"**结构上连连通**"（给兜底瞬移当闸，要 BFS）；
+    //     这里问的是"**伸手够不够得着**"，跟中间有没有墙无关，一个减法就够。
+    private const int ReachTiles = 4;
+
+    /// <summary>玩家**够得着**这一格吗：同图（`loc` 给了就必须是当前图）且切比雪夫距离 ≤ `ReachTiles`。</summary>
+    private static bool IsWithinReach(Farmer? farmer, GameLocation? loc, Vector2 tile)
+    {
+        if (farmer == null) return false;
+        if (loc != null && !ReferenceEquals(farmer.currentLocation, loc)) return false;
+        return Math.Abs(farmer.TilePoint.X - (int)tile.X) <= ReachTiles
+            && Math.Abs(farmer.TilePoint.Y - (int)tile.Y) <= ReachTiles;
+    }
+
+    /// <summary>动物门所在格 = `building.tileX/tileY + animalDoor`（反射，逐个探测类型）。
+    /// 读不到就返回 false —— **不许猜**（同 `/farm_buildings` 的只读口径：缺键＝不知道）。</summary>
+    private static bool TryGetAnimalDoorTile(Building? b, out int x, out int y)
+    {
+        x = -1; y = -1;
+        if (b == null) return false;
+        try
+        {
+            var rt = b.GetType();
+            var fDoor = rt.GetField("animalDoor",
+                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                ?? typeof(Building).GetField("animalDoor",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            var dv = fDoor?.GetValue(b);
+            if (dv == null) return false;
+            var vt = dv.GetType();
+            var xv = (object?)vt.GetProperty("X")?.GetValue(dv) ?? vt.GetField("X")?.GetValue(dv);
+            var yv = (object?)vt.GetProperty("Y")?.GetValue(dv) ?? vt.GetField("Y")?.GetValue(dv);
+            if (xv == null || yv == null) return false;
+            x = b.tileX.Value + Convert.ToInt32(xv);
+            y = b.tileY.Value + Convert.ToInt32(yv);
+            return true;
+        }
+        catch { return false; }
     }
 
     /// <summary>

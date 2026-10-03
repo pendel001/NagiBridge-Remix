@@ -137,6 +137,143 @@ try:
     call_kw, dropped = M._filter_kw(sig, {"name": "Pickaxe"})
     ck("…过滤后**不再**落进 dropped", call_kw.get("what") == "Pickaxe" and not dropped, str((call_kw, dropped)))
 
+    # ═══════════════════════════════════════════════════════════════════
+    # 🧭 2026-10-03「够得着」闸：C# 只动**玩家 4 格内**的箱子，够不着的在 `tooFar` 里点名
+    #    ⇒ Python 这层的活是「**走过去再叫一次**」+ 如实说「还剩几口够不着」。
+    #    ⚠️ 关键判据：**「够不着」≠「箱子里没有」** —— 报错那句会把 AI 指反方向。
+    #    ⚠️ 老 DLL（回包**没有 `tooFar` 键**）⇒ 行为必须与改前**逐字相同**（一下都不多打）。
+    # ═══════════════════════════════════════════════════════════════════
+    print("\n⑥ 🧭 取物：够不着 ⇒ **走过去再叫一次**，别报成「箱子没有」")
+
+    class FakeChestApi:
+        """桩：`/chest_take_list` / `/store_all` 前 N 轮回 `tooFar`（= 够不着），之后才真给。
+
+        `no_toofar=True` ⇒ 回包里**连 `tooFar` 这个键都没有** = **老 DLL 的形状**。
+        """
+
+        def __init__(self, take_rounds=0, store_rounds=0, no_toofar=False):
+            self.take_rounds = take_rounds
+            self.store_rounds = store_rounds
+            self.no_toofar = no_toofar
+            self.take_calls = []
+            self.store_calls = []
+
+        # ── 读 ──
+        def state(self, **kw):
+            return {"inventory": [{"name": "Diamond", "displayName": "钻石",
+                                   "itemId": "(O)72", "catNum": -12, "stack": 2}],
+                    "player": {"x": 11, "y": 13}}
+
+        def _get(self, ep, params=None):
+            if ep == "/scan_chests":
+                return {"chests": [{"x": 58, "y": 14, "name": "矿石箱", "capacity": 36,
+                                    "used": 1, "freeSlots": 35,
+                                    "items": [{"name": "Diamond", "displayName": "钻石",
+                                               "qualifiedId": "(O)72", "count": 2}]}]}
+            return {}
+
+        # ── 写 ──
+        def _post(self, ep, data=None):
+            if ep != "/chest_take_list":
+                return {"ok": True}
+            self.take_calls.append(dict(data or {}))
+            _req = (data or {}).get("items") or []
+            # ⚠️ 照 C# 的口径：`count<=0` = **不限量** ⇒ 回包里的 `wanted` 是 `-1`（不是 0）。
+            _want = lambda it: (-1 if int(it.get("count", -1) or 0) <= 0 else int(it["count"]))
+            _far = (not self.no_toofar) and len(self.take_calls) <= self.take_rounds
+            _got = 0 if (self.no_toofar or _far) else 2
+            r = {"ok": True, "location": "Farm", "reachTiles": 4,
+                 "items": [{"item": it.get("name"), "wanted": _want(it), "taken": _got,
+                            "from": ([] if _got == 0 else [{"name": "矿石箱", "x": 58, "y": 14,
+                                                            "got": _got}])}
+                           for it in _req]}
+            if not self.no_toofar:
+                r["tooFar"] = ([{"x": 58, "y": 14, "name": "矿石箱"}] if _far else [])
+            return r
+
+        def store_all(self, **kw):
+            self.store_calls.append(dict(kw or {}))
+            _far = (not self.no_toofar) and len(self.store_calls) <= self.store_rounds
+            _ok = (not self.no_toofar) and not _far
+            r = {"ok": True, "mode": "smart", "scope": "specified", "location": "Farm",
+                 "totalFree": 60,
+                 "stored": ([{"item": "Diamond", "count": 2, "to": {"x": 58, "y": 14}}] if _ok else []),
+                 # 老 DLL 不会有 `out_of_reach` 这个新 reason ⇒ 连 leftovers 都不给（= 就是没搬动）
+                 "leftovers": ([] if self.no_toofar
+                               else ([{"item": "Diamond", "count": 2, "reason": "out_of_reach"}]
+                                     if _far else []))}
+            if not self.no_toofar:
+                r["tooFar"] = ([{"x": 58, "y": 14, "name": "矿石箱"}] if _far else [])
+            return r
+
+    _WALKED = []
+    _old_walk = M._walk_to_chest
+    _old_aipos = getattr(M, "_ai_pos", None)
+    M._walk_to_chest = lambda x, y: (_WALKED.append((x, y)), "  🚶 已走到箱子 (58,14) 旁边")[1]
+    M._ai_pos = lambda: (11, 13)          # ⚠️ 别走 navigation 那份（它读的是**没打桩**的 api）
+    try:
+        # ① 第一轮够不着、第二轮走过去取到 ⇒ **两发 + 一次走位**，且**不许**说"箱子没有"。
+        M.api = FakeChestApi(take_rounds=1)
+        _WALKED[:] = []
+        out = M.storage_take(items="Diamond")
+        ck("🧭 够不着 ⇒ 挑最近的箱**走过去再叫一次**（`/chest_take_list` 真打了两发）",
+           len(M.api.take_calls) == 2, str(len(M.api.take_calls)))
+        ck("…而且**为重试走了一趟**（第一发前那次是「走到第一个配到的箱」，重试那次走的是 `tooFar` 点名的箱）",
+           len(_WALKED) == 2 and _WALKED[-1] == (58, 14), str(_WALKED))
+        ck("…第二发**只问没拿到的那件**（`Diamond`，数量 0 = 不限量）",
+           M.api.take_calls[1].get("items") == [{"name": "Diamond", "count": 0}],
+           str(M.api.take_calls[1]))
+        ck("…两轮回包**合并**：最终报取到 x2（不是「第一轮 0 件」那个数）",
+           "✅ Diamond x2" in out, out)
+        ck("🚫 **绝不说「箱子没有」**（那是把「够不着」读成「没有」，会把 AI 指反方向）",
+           "箱子没有" not in out and "够不着" not in out, out)
+
+        # ② 够不着一直够不着（走位也没用）⇒ 打到 `_REACH_ROUNDS` 上限就停，**如实报"够不着"**。
+        M.api = FakeChestApi(take_rounds=99)
+        _WALKED[:] = []
+        out = M.storage_take(items="Diamond")
+        ck("🧭 一直够不着 ⇒ 最多 `_REACH_ROUNDS` 轮（1 发 + 3 轮重试 = 4 发，不无限重试）",
+           len(M.api.take_calls) == 1 + M._REACH_ROUNDS, str(len(M.api.take_calls)))
+        ck("…每轮都走过去（第一发前 1 次 + 重试 3 次）",
+           len(_WALKED) == 1 + M._REACH_ROUNDS, str(_WALKED))
+        ck("…回执**点名那口箱够不着** + 给下一步", "够不着" in out and "(58,14)" in out, out)
+        ck("🚫 而且**明说不是箱里没有**（`（箱子没有；storage find 搜搜）` 这句一个字都不许出现）",
+           "（箱子没有" not in out and "是那几口箱够不着" in out, out)
+
+        # ③ **老 DLL**：回包连 `tooFar` 键都没有 ⇒ **一下都不多打**，行为与改前逐字相同。
+        M.api = FakeChestApi(no_toofar=True)
+        _WALKED[:] = []
+        out = M.storage_take(items="Diamond")
+        ck("🧭 老 DLL（**没有 `tooFar` 键**）⇒ **只打一发**（不许凭空多走一趟）",
+           len(M.api.take_calls) == 1 and len(_WALKED) == 1, (len(M.api.take_calls), _WALKED))
+        ck("…照旧说「箱子没有」（老口径逐字不变：读不到 ≠ 够不着）", "箱子没有" in out, out)
+
+        # ④ 存物：`leftovers[].reason == "out_of_reach"` 才算"够不着" ⇒ 走过去再叫一次。
+        M.api = FakeChestApi(store_rounds=1)
+        _WALKED[:] = []
+        out = M.storage_store.__wrapped__(items="Diamond")
+        ck("🧭 存物够不着 ⇒ 走过去再叫一次（`/store_all` 两发）",
+           len(M.api.store_calls) == 2, str(len(M.api.store_calls)))
+        ck("…第二发**只重试没存下的那件**（`what=['Diamond']`）",
+           M.api.store_calls[1].get("what") == ["Diamond"], str(M.api.store_calls[1]))
+        ck("…两轮回包合并：最终报存进 (58,14)", "进 (58,14)" in out, out)
+        ck("🚫 也不许报成「名字对上了，但一件都没搬动」那种误判",
+           "一件都没搬动" not in out and "够不着" not in out, out)
+
+        # ⑤ 老 DLL 的存物：没有 `tooFar` 键 ⇒ 只一发（`out_of_reach` 那条重试路也走不到）。
+        M.api = FakeChestApi(no_toofar=True, store_rounds=99)
+        _WALKED[:] = []
+        out = M.storage_store.__wrapped__(items="Diamond")
+        ck("🧭 老 DLL（没 `tooFar` 键）⇒ 存物也只打一发（重试的判据在 `tooFar` 上）",
+           len(M.api.store_calls) == 1 and _WALKED == [], (len(M.api.store_calls), _WALKED))
+        ck("…照旧报「一件都没搬动」（老口径逐字不变）", "一件都没搬动" in out, out)
+    finally:
+        M._walk_to_chest = _old_walk
+        if _old_aipos is None:
+            del M._ai_pos
+        else:
+            M._ai_pos = _old_aipos
+
     print("\n" + ("=" * 46))
     print("❌ 失败 " + str(len(FAIL)) + " 项: " + ", ".join(FAIL) if FAIL else "✅ 全过（0 失败）")
 finally:
