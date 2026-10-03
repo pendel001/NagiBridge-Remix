@@ -371,8 +371,21 @@ class BombMineBot(BombMiner):
 
     def _run_cooperate(self):
         """2026-08-22 恒：没炸弹+玩家(恒)在同矿井 → 转【内部】协同保镖：跟随恒+帮忙敲矿/打怪+开路。
-        自动接棒、不经 AI 主动启用（bomb_escort 不对外暴露）。持续到：
-        恒离开矿井 / AI 被 bomb_retreat 传出矿(不再在矿井) / 血低没吃的。结束按情况撤退出矿口。"""
+        自动接棒、不经 AI 主动启用（**沙漠这档只能被动起**：AI 调不到 `bomb_escort` 那个隐藏工具）。
+
+        结束/交回的三条路（恒 2026-10-03 晚：「确认一下这个协同可以在异步时随时结束，
+        以及随时得到炸弹能『复活』成炸矿模式」）：
+          ① **随时结束**：`mine bomb_retreat`（MCP 单步工具）⇒ 先 `/guard off` 再 kill 本进程
+             + `retreat_to_entrance` 把人传出矿井 ⇒ 本循环下一拍就因"不在矿井"退出。
+             ⚠️ kill 是 `TerminateProcess`（没 finally），所以 guard 那一刀由 MCP 侧补（见 `_bg_kill`）。
+          ② **有炸弹了 ⇒ 复活回炸矿**（2026-10-03 新增，照**火山**那套"同一循环里重估炸弹"的形状）：
+             每拍先问一次 `choose_bomb_type()`（会顺手换成包里真有的那种：黑>超级>樱桃）
+             ⇒ 有 ⇒ 返回 `"bombs_back"`，调用方**接着炸**（不是结束整趟）。
+             原版没这条 ⇒ 一旦交棒就**永远回不去**，哪怕 `/give` 补了满包炸弹、或包里本来还有别的类型。
+          ③ 恒离开矿井 / 被传出矿 / 自保判危险 ⇒ 结束（危险那条会先撤退）。
+
+        返回值：`"bombs_back"` = 又有炸弹了，请调用方继续冲层；其余 = 协同结束（该收工了）。
+        """
         log("\n🔄 背包炸弹不足 → 内部协同保镖：跟随 host + 帮忙敲矿/打怪。AI 可随时 bomb_retreat 结束协同并脱离矿井回门口。")
         quiet = 0
         while True:
@@ -382,6 +395,15 @@ class BombMineBot(BombMiner):
                 # 退出：AI已被bomb_retreat传出矿 / 恒离开矿井
                 if not is_mine_location(ml) or not is_mine_location(hl):
                     break
+                # 💣 复活：又有炸弹了（/give 补的、捡到的、或包里本来还有别的类型）⇒ 交回炸矿模式
+                _now_bomb = self.choose_bomb_type()
+                if _now_bomb:
+                    if _now_bomb != self.bomb_type:
+                        log(f"  🧨 换用炸弹: {_now_bomb}（回炸矿模式）")
+                    else:
+                        log(f"  💣 又有炸弹了（{_now_bomb} ×{self.count_bombs(_now_bomb)}）→ 回到炸矿模式")
+                    self.bomb_type = _now_bomb
+                    return "bombs_back"
                 # 生存优先：该撤了先吃，吃完还该撤就撤（原因串分开报，不再笼统"血低无食"）
                 why = self.unsafe_reason()
                 if why:
@@ -404,7 +426,15 @@ class BombMineBot(BombMiner):
                 if self.smash_nearby_rocks(max_n=3, radius=8, ores_only=False):
                     self.retaliate_if_hit()
                     acted = True
+                # 🫥 值班心跳（2026-10-03 恒「3我有点不懂……交给你来修」）：
+                #    原来 `quiet` 只写不读 ⇒ 纯跟随时**日志一片静**，从日志上看不出它还在不在岗
+                #    （恒站着不动时尤其像"脚本死了"）。⇒ 用它打一行心跳；**不**据它自动撤退
+                #    （恒只是站着不动而已，悄悄走人才是真的坑）。
                 quiet = 0 if acted else quiet + 1
+                if quiet == 15 or (quiet > 15 and (quiet - 15) % 50 == 0):
+                    log(f"  👥 协同中：跟着恒、暂无活干（静默 {quiet} 拍 ≈{quiet * 0.6:.0f}s）"
+                        f" | 血 {self.state().get('player', {}).get('health')}"
+                        f" | 炸弹 {self.count_all_bombs()}")
                 time.sleep(0.6)
             except Exception as e:
                 log(f"  ⚠️ 协同循环异常: {e}")
@@ -413,6 +443,7 @@ class BombMineBot(BombMiner):
         if is_mine_location(self.my_location()):
             self.retreat_to_entrance("协同结束")
         log("🔄 === 协同结束 ===")
+        return "ended"
 
     def clear_floor(self, level, goal):
         """炸穿当前层直到找到梯子/无法继续。
@@ -496,11 +527,22 @@ class BombMineBot(BombMiner):
                     pass
 
             # 炸弹库存
+            # ⚠️ 先试**换类型**再判"没炸弹"：`count_bombs()` 只数**当前那种**，而包里可能还有
+            #    超级/樱桃（火山那套就是这么做的：`choose_bomb_type()` 回调）。少了这一步 =
+            #    手里有樱桃却因为"黑炸弹用完了"就去当保镖。
+            _sw = self.choose_bomb_type()
+            if _sw and _sw != self.bomb_type:
+                log(f"  🧨 换用炸弹: {_sw}（{self.bomb_type or '当前那种'} 用完了）")
+                self.bomb_type = _sw
+                self.select(self.bomb_type)
             if self.count_bombs() <= 0:
                 # 2026-08-22 恒：没炸弹+玩家在同矿井 → 不再自主撤退出矿，转【内部】协同保镖（不经AI启用）
                 if self.follow_host and is_mine_location(self.host_location()):
                     self.coop_handoff = True
-                    self._run_cooperate()   # 内部协同(跟随恒+敲矿+打怪)；结束/撤退由内部处理
+                    if self._run_cooperate() == "bombs_back":
+                        # 💣 2026-10-03：协同期间又拿到炸弹 ⇒ **回到炸矿模式继续这一层**（恒要的"复活"）
+                        self.coop_handoff = False
+                        continue
                     return None, "__COOP__"
                 # 2026-08-09 按user要求：炸弹用完弹明确警告+结束撤退（别再默默转跟随让user以为卡死）
                 log("  ⚠️💣 炸弹用完了！脚本结束（先 /give 补炸弹再跑）")
@@ -833,7 +875,10 @@ class BombMineBot(BombMiner):
             if self.count_bombs() <= 0:
                 if follow_host and is_mine_location(self.host_location()):
                     self.coop_handoff = True
-                    self._run_cooperate()   # 内部协同
+                    if self._run_cooperate() == "bombs_back":
+                        # 💣 2026-10-03：协同期间又拿到炸弹 ⇒ **回炸矿模式接着冲**（不结束整趟）
+                        self.coop_handoff = False
+                        continue
                     break
                 retreat_reason = "炸弹用完了"
                 break
