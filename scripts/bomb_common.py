@@ -65,6 +65,37 @@ EAT_HP_PCT = 60
 #    ⚠️ 以后动这两条线，先核"**吃 < 撤** 才成立"（吃必须**高于**撤）。
 EAT_STA_PCT = 30
 
+
+def pick_food_closest_to_full(foods, need_hp=0, need_sta=0):
+    """🍽️ 按「**离补满最接近**」挑一件吃的（恒 2026-10-03 的口径）。
+
+    恒原话：「**先碰到哪条线，就选"离能回复满最接近的那个背包食物（效果食物除外）"**，
+    比如奶酪 +60、韭葱 +20，我的血是 20/40 触发了吃食，那就**吃韭葱不浪费**。」
+
+    规则：
+      · 有**够补**（恢复量 ≥ 缺口）的 ⇒ 挑其中**恢复量最小**的（刚好够、不浪费好东西）；
+      · **都不够** ⇒ 挑**恢复量最大**的（别拿小的白吃一顿）；
+      · **血低时恢复量为 0 的永不选**（保留 2026-09-06 的老规矩"绝不拿纯体力咖啡保命"）；
+      · `need_hp`/`need_sta` **只该有一条 > 0**（哪条线触发就补哪条；调用方决定"血优先"）。
+    `foods` = `detect_food()` 的形状 `[(名字, 回体力, 回血), …]`；返回**食物名**或 `None`。
+    ⚠️ "效果食物（带 buff 的）除外"**还没做** —— 那要 C# 报"这件有没有 buff"（恒已选方案 A，进下一批 C#）；
+       在那之前靠"点名"（`food_hp`/`food_sta`）避开：**不点名它就不吃**。
+    """
+    cand = [f for f in (foods or []) if isinstance(f, (list, tuple)) and len(f) >= 3]
+    if not cand:
+        return None
+    use_hp = need_hp > 0
+    val = (lambda f: f[2] or 0) if use_hp else (lambda f: f[1] or 0)
+    need = need_hp if use_hp else need_sta
+    ok = [f for f in cand if val(f) > 0]          # 血低时不选"回血 0"的（咖啡那种）
+    if not ok:
+        return None
+    if need > 0:
+        enough = [f for f in ok if val(f) >= need]
+        if enough:
+            return min(enough, key=val)[0]        # 刚好够 ⇒ 挑最小的，不浪费
+    return max(ok, key=val)[0]                    # 都不够 ⇒ 挑最大的
+
 # 协同模式只在路径上炸这些高价值矿（不浪费炸弹炸普通石头）
 HIGH_VALUE_ORES = {
     "Iridium Node", "Gem Node", "Diamond Node", "Gold Node",
@@ -948,23 +979,21 @@ class BombMiner(WeaponMixin):
             else:
                 log(f"  ⚠️ 这次需要{label}，但没点过那类的名 —— 退回自动挑")
 
-        # ── 自动挑（老逻辑，2026-09-06）：血低→回血量×10 主导；体力低→回体力加分；0回血重罚 ──
-        def _rank(f):
-            name, ed, hpv = f
-            score = 0
-            if hp_pct < EAT_HP_PCT:
-                score += hpv * 10 - (10000 if hpv <= 0 else 0)
-            if sta_pct < sta_threshold:
-                score += ed
-            return score
-        foods.sort(key=_rank, reverse=True)
-        for fname, ed, hpv in foods:
+        # ── 自动挑：🍽️ 2026-10-03 恒 —— 改成「**离补满最接近**」（见 `pick_food_closest_to_full`：
+        #    够补的挑**最小**、都不够挑**最大**）。老逻辑是"回血最多优先"（`hpv*10` 主导）
+        #    ⇒ **满 180 缺 20 也掏奶酪** —— 恒举的"20/40 该吃韭葱+20 而不是奶酪+60"就是这个浪费。
+        #    ⚠️ 老规矩保留：血低时**回血为 0 的绝不选**（"绝不拿纯体力咖啡保命"）。
+        _need_hp = max(0, max_hp - hp) if hp_pct < EAT_HP_PCT else 0
+        _need_sta = max(0, max_sta - sta) if (hp_pct >= EAT_HP_PCT and sta_pct < sta_threshold) else 0
+        pick = pick_food_closest_to_full(foods, _need_hp, _need_sta)
+        if pick:
             try:
-                if self.eat(fname):
-                    log(f"  🍽️ 吃了 {fname}（体{ed} 血{hpv}）")
+                if self.eat(pick):
+                    vals = next((f for f in foods if f[0] == pick), (pick, 0, 0))
+                    log(f"  🍽️ 吃了 {pick}（体{vals[1]} 血{vals[2]}；缺口 血{_need_hp}/体{_need_sta}）")
                     return True
-            except Exception:
-                continue
+            except Exception as e:
+                log(f"  ⚠️ 吃 {pick} 出错：{e}")
         return False
 
     def eat(self, name=None):

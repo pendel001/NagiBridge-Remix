@@ -47,7 +47,8 @@ import requests
 # ⚔️ 2026-09-06 复用 bomb 的武器系统（WeaponMixin：选武器/类别/挥速自适应/锤子重砸）
 # 🎁 2026-09-07 复用 bomb 的开箱（BombMiner.open_treasure_chests，真机验证城镇 40 层能开）
 from bomb_common import (WeaponMixin, BombMiner, ManualChestFull,
-                         parse_food_list, pick_food_by_priority, EAT_HP_PCT, EAT_STA_PCT)
+                         parse_food_list, pick_food_by_priority, EAT_HP_PCT, EAT_STA_PCT,
+                         pick_food_closest_to_full)
 
 # ── 常量 ──
 
@@ -1075,8 +1076,10 @@ class MineBot(WeaponMixin):
 
         s = self.state()
         p = s["player"]
-        hp_pct = (p["health"] / p["maxHealth"] * 100) if p["maxHealth"] > 0 else 100
-        sta_pct = (p["stamina"] / p["maxStamina"] * 100) if p["maxStamina"] > 0 else 100
+        hp0, max_hp = p["health"], (p["maxHealth"] or 1)
+        sta0, max_sta = p["stamina"], (p["maxStamina"] or 1)
+        hp_pct = (hp0 / max_hp * 100) if max_hp > 0 else 100
+        sta_pct = (sta0 / max_sta * 100) if max_sta > 0 else 100
 
         if sta_pct >= sta_threshold and hp_pct >= hp_threshold:
             return False
@@ -1091,25 +1094,21 @@ class MineBot(WeaponMixin):
         except Exception:
             pass
 
-        # 挑食排序：血低→**回血量×10 主导**（山羊奶酪101 >> 咖啡1，别抓早出现的咖啡）；体力低→回体力加分
-        def _rank(f):
-            name, ed, hp = f
-            score = 0
-            if hp_pct < hp_threshold:
-                score += hp * 10 - (10000 if hp <= 0 else 0)   # 血低：回血越多越优先；0回血重罚垫底
-            if sta_pct < sta_threshold:
-                score += ed                                    # 体力低：回体力越多越优先
-            return score
-        foods.sort(key=_rank, reverse=True)
-
-        for fname, ed, hp in foods:
+        # 🍽️ 2026-10-03 恒：改成「**离补满最接近**」（`pick_food_closest_to_full`：够补的挑**最小**、都不够挑**最大**）。
+        #    老逻辑是"回血量×10 主导" ⇒ **满 180 缺 20 也掏奶酪**（恒举的"20/40 该吃韭葱+20"就是这个浪费）。
+        _need_hp = max(0, max_hp - hp0) if hp_pct < hp_threshold else 0
+        _need_sta = max(0, max_sta - sta0) if (hp_pct >= hp_threshold and sta_pct < sta_threshold) else 0
+        _pick = pick_food_closest_to_full(foods, _need_hp, _need_sta)
+        if not _pick:
+            return False
+        for fname, ed, hp in [f for f in foods if f[0] == _pick] or []:
             try:
                 self.select(fname)
                 time.sleep(0.2)
                 r = self._post("/eat")
                 time.sleep(2.0)  # 等动画播完效果才生效
                 if r.get("ok"):
-                    log(f"  🍽️ 吃了 {fname}（体{ed} 血{hp}）")
+                    log(f"  🍽️ 吃了 {fname}（体{ed} 血{hp}；缺口 血{_need_hp}/体{_need_sta}）")
                     return True
             except Exception:
                 continue
