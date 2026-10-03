@@ -87,6 +87,9 @@ COLLECT_BUDGET = 30
 CO_LOCATED_DIST = 10     # user同层且曼哈顿距离≤此值=贴身（增援站user旁边用）
 COOP_CHECK_EVERY = 1     # clear_floor 每次迭代都查user（增援要灵敏，错过窗口就打不到了）
 COOP_BURST_SEC = 12      # 增援限时（打完user的对手就回来炸矿）
+# 🎁 协同里多久扫一次宝箱（拍数，1 拍≈0.6s）。主循环是"每层开一次"，协同没有"层"的概念
+#    ⇒ 用节流。⚠️ 别设成 1：`open_treasure_chests()` 内部是 `surroundings(30)` 大扫描。
+COOP_CHEST_EVERY = 8
 LEAD_MAX = 3             # AI 领先user超过这层数就传送回user身边（不然一个人在前面挨打）
 
 
@@ -371,7 +374,8 @@ class BombMineBot(BombMiner):
 
     def _run_cooperate(self):
         """2026-08-22 恒：没炸弹+玩家(恒)在同矿井 → 转【内部】协同保镖：跟随恒+帮忙敲矿/打怪+开路。
-        自动接棒、不经 AI 主动启用（**沙漠这档只能被动起**：AI 调不到 `bomb_escort` 那个隐藏工具）。
+        自动接棒、不经 AI 主动启用（**沙漠这档只能被动起**：恒 2026-10-03 确认过；
+        `bomb_escort.py` 那个独立脚本**已删**——协同本来就只是这段内联代码）。
 
         结束/交回的三条路（恒 2026-10-03 晚：「确认一下这个协同可以在异步时随时结束，
         以及随时得到炸弹能『复活』成炸矿模式」）：
@@ -386,10 +390,12 @@ class BombMineBot(BombMiner):
 
         返回值：`"bombs_back"` = 又有炸弹了，请调用方继续冲层；其余 = 协同结束（该收工了）。
         """
-        log("\n🔄 背包炸弹不足 → 内部协同保镖：跟随 host + 帮忙敲矿/打怪。AI 可随时 bomb_retreat 结束协同并脱离矿井回门口。")
+        log("\n🔄 背包炸弹不足 → 内部协同保镖：跟随 host + 帮忙敲矿/打怪 + 开宝箱。AI 可随时 bomb_retreat 结束协同并脱离矿井回门口。")
         quiet = 0
+        coop_tick = 0
         while True:
             try:
+                coop_tick += 1
                 ml = (self.state().get("location") or {}).get("name", "")
                 hl = self.host_location()
                 # 退出：AI已被bomb_retreat传出矿 / 恒离开矿井
@@ -422,6 +428,25 @@ class BombMineBot(BombMiner):
                 # 贴跟随恒（自然走，不闪现）
                 if not acted:
                     self.follow_host_once(walk_only=True)
+                # 🎁 开宝箱（2026-10-03 恒真机：「**协同不会开箱子！**让协同也加开箱吧」）
+                #    主循环是"**每层**开一次"（`_run_rush_inner` 里那个 `% 10` / `(level-120)%100` 判断），
+                #    而协同**没有"层"这个概念**（恒换层就跟着 warp）⇒ 改成**节流**：每
+                #    `COOP_CHEST_EVERY` 拍扫一次（`open_treasure_chests` 内部是 `surroundings(30)`
+                #    的大扫描，每拍都扫会把 API 打满、还会拖慢跟随）。
+                #    ⚠️ 满包这条规矩跟主循环**一模一样**（恒 2026-08-23：满包领不走就停脚本交 AI 手动，
+                #      不自动丢物）——但协同这层的 `except Exception` 会把 `ManualChestFull`
+                #      当普通异常吞掉（主循环那段注释专门警告过），所以这里**必须单独接住**。
+                if coop_tick % COOP_CHEST_EVERY == 0:
+                    try:
+                        if self.open_treasure_chests():
+                            acted = True
+                    except ManualChestFull as e:
+                        log(f"  ⭐ 宝箱满包领不走（{e}）→ 结束协同交 AI 手动"
+                            f"（同 run_rush 那条规矩）：menu read 看待领取 → 处理完重开脚本")
+                        if is_mine_location(self.my_location()):
+                            self.retreat_to_entrance("宝箱满包")
+                        log("🔄 === 协同结束 ===")
+                        return "ended"
                 # 敲恒身边/附近石头开路 + 敲高价值矿
                 if self.smash_nearby_rocks(max_n=3, radius=8, ores_only=False):
                     self.retaliate_if_hit()

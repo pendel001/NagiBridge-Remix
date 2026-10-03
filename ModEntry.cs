@@ -12827,7 +12827,33 @@ public class ModEntry : Mod
             var item = ItemRegistry.Create(itemId, count);
             if (item is Tool tool && upgrade > 0)
                 tool.UpgradeLevel = upgrade;  // 作弊给升级工具
-            farmer.addItemToInventory(item);
+            // 🔴 2026-10-03 真机逮到（恒在沙漠那趟摆场时）：`addItemToInventory` 的返回值**原来没人看**
+            //    ⇒ 背包 36/36 满格时**东西根本没进包，回包却照旧 `ok:true, given:"Bomb", count:3`**。
+            //    现场后果：我按回包以为"给了 3 颗炸弹"，脚本却报「背包里黑/超级/樱桃炸弹都没有了」
+            //    —— **假门**（说给了其实没给），而且 AI 会拿它当"我准备好了"继续往下走。
+            //    ⇒ 现在：塞不进就**如实报失败** + 报空格数 + 给下一步（腾格的路子）。
+            //    ⚠️ 1.6 的签名是 `public Item addItemToInventory(Item item)` —— 返回的是**没塞进去的余量**
+            //      （`null` = 全进包了），**不是 bool**（反编译 `_FarmerInventory.decompiled.cs:4268`）。
+            //      所以"真进去了几个" = `count − 余量.Stack`，别一律当 0 或当全进。
+            Item? leftover = farmer.addItemToInventory(item);
+            int left = leftover?.Stack ?? 0;
+            int realGiven = count - left;
+            if (left > 0)
+            {
+                int free = farmer.freeSpotsInInventory();
+                tcs.SetResult(new
+                {
+                    ok = false,
+                    given = item?.Name ?? itemId,
+                    requested = count,
+                    actuallyGiven = realGiven,
+                    freeSlots = free,
+                    error = realGiven > 0
+                        ? $"背包只塞得下 {realGiven}/{count} 个（空格 {free}）——剩下的**没进包**，先腾格再来"
+                        : $"背包满了（空格 {free}），{count} 个**一个都没进包**——先腾格再来"
+                });
+                return;
+            }
             tcs.SetResult(new { ok = true, given = item.Name, count, id = itemId, upgrade });
         });
         return tcs.Task.GetAwaiter().GetResult();

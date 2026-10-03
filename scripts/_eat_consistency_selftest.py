@@ -7,7 +7,8 @@
   ② `bomb_volcano.py` 炸矿·火山（`VolcanoBot(BombMineBot)`）
   ③ `mine_run.py --mode rush`  下矿·冲层
   ④ `mine_run.py --mode farm`  下矿·刷矿
-  （外加 `bomb_escort.py` = 内部协同，bomb_mine 没炸弹时自动转，不对外暴露）
+  （🗑️ 2026-10-03 恒拍板：`bomb_escort.py` **已真删** —— 协同是 `bomb_mine._run_cooperate()` 内联的，
+   那个独立脚本全仓没有启动点。见 `_coop_recovery_selftest.py`。）
 
 钉的是**『吃法/判据只有一套』**这类跨文件不变量 —— 本项目的病历来是「两个类各抄一遍，
 改了一处、另一处还是死的」（2026-09-20「点名在炸矿脚本里是死的」、2026-10-03「`_eat_one`
@@ -70,7 +71,6 @@ bc = src("bomb_common.py")
 mr = src("mine_run.py")
 bm = src("bomb_mine.py")
 bv = src("bomb_volcano.py")
-be = src("bomb_escort.py")
 
 print("① 吃法只有一条：`/eat`（**不是** `/use` —— 后者是『用/放』，吃不动）")
 eat_m = block(bc, r"    def eat\(self, name=None\)", span=14)
@@ -119,7 +119,6 @@ ck("…`eat_recovery()` 的『自保吃 X』那行**只在真吃上时才打**�
 print("⑤ 吃食线只有一个口径：`EAT_HP_PCT`（`hp_threshold` 形参已废弃，别再传它装样子）")
 ck("…常量是 60", "EAT_HP_PCT = 60" in bc)
 ck("…`bomb_mine.py` 不再传那个废弃形参", "eat_if_needed(self.hp_threshold)" not in code_only(bm))
-ck("…`bomb_escort.py` 不再传", "eat_if_needed(self.hp_threshold)" not in code_only(be))
 ck("…`bomb_volcano.py` 也不传", "eat_if_needed(self.hp_threshold)" not in code_only(bv))
 ck("…注释里写明『参数保留但不再影响吃』（别让下一个人以为 `--hp-threshold` 能调吃食线）",
    "不再影响吃" in bc)
@@ -142,9 +141,9 @@ ck("…`bomb_mine` 那两处也是 `want=... or None`（本来就是自动补）
    code_only(bm).count('want=getattr(self, "food_buff", "") or None') >= 2)
 ck("…banner 要把『不点名=自动挑』说出来（别让日志看着像『没在补』）",
    "不点名（自动挑带 buff 的那份）" in mr)
-# ⚠️ 火山/协同**没有**这条线 —— 恒 2026-10-03 晚拍板「都不接，维持现状」⇒ 这里只**记录事实**。
-print(f"  ℹ️ 恒拍板维持现状：bomb_volcano 里 `maintain_buffs` {code_only(bv).count('maintain_buffs(')} 次；"
-      f"bomb_escort 里 {code_only(be).count('maintain_buffs(')} 次（这两套不补 buff，MCP 指南已写明）")
+# ⚠️ 火山**没有**这条线 —— 恒 2026-10-03 晚拍板「都不接，维持现状」⇒ 这里只**记录事实**。
+print(f"  ℹ️ 恒拍板维持现状：bomb_volcano 里 `maintain_buffs` {code_only(bv).count('maintain_buffs(')} 次"
+      f"（火山不补 buff，MCP 指南已写明）；协同那段同口径（bomb_mine._run_cooperate 里也 0 次）")
 
 print()
 if fails:

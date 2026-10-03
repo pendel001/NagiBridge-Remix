@@ -86,7 +86,7 @@ C:\Users\Administrator\.claude\projects\G--wingheng-Claude-NagiBridge-NagiBridge
 ## 已退役 / 忽略（别去找）
 
 - `plan_engine.py`（计划模式 2026-08-17 退役）；`server.ts` / `ChatHud.cs` / `LlmClient.cs`（原作者遗留，已 `.claudeignore`）
-- MCP 侧：`accept_quest`、`buy_item`（直购作弊）已退役；`bomb_escort` 不再对外暴露（内建进 `bomb_mine`，没炸弹自动转内部）
+- MCP 侧：`accept_quest`、`buy_item`（直购作弊）已退役；🗑️ `bomb_escort`（独立协同脚本 + MCP 工具）**2026-10-03 真删**——协同是 `bomb_mine` 内联的 `_run_cooperate()`（没炸弹且 host 同矿井自动转；有炸弹自动回炸矿）
 - `festival bot`（`mods/NagiFestivalBots`）体系已全删；`set_appearance` ok 后自动退役（捏脸不可逆，走 `settings ops=confirm_look` 先核对）
 
 ## 排障入口

@@ -114,7 +114,7 @@
 ### `mine(ops)` — 下矿（冲层/刷矿/炸矿）**只在 矿井/头骨/火山**
 `go`(去挖矿) `progress`(进度) `bomb_status` `bomb_plan` `bomb_place` `bomb_collect` `bomb_ladder` `bomb_retreat`(单步炸矿) `bomb_mine`(自动) `bomb_volcano`(火山) `organize`(整理背包)
 
-> 🚫 协同（跟随 host 敲矿打怪）**不是独立 op**：`bomb_mine` 发现**没炸弹且 host 同矿井**时自动转内部协同；`bomb_retreat` 结束协同+脱矿回门口。`bomb_escort` **早就不对外暴露**（旧版这里写了"协同"是过期信息）。
+> 🚫 协同（跟随 host 敲矿打怪）**不是独立 op**：`bomb_mine` 发现**没炸弹且 host 同矿井**时自动转内部协同；`bomb_retreat` 结束协同+脱矿回门口；**协同期间又拿到炸弹会自动回炸矿模式**（2026-10-03）。🗑️ `bomb_escort` 那个独立脚本 + 它的 MCP 工具 **2026-10-03 恒拍板已真删**（协同本来就是 `bomb_mine` 内联的，那个脚本全仓没有启动点）。
 
 **📐 `mine` 参数速查**
 

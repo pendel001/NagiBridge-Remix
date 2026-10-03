@@ -60,7 +60,7 @@ FILE_STRUCTURE = {
     "scripts/plan_engine.py": "⚠️ 已退役（计划模式 2026-08-17 下线），勿用",
 
     # ── 自动化脚本（可后台异步跑，白名单内自动转后台 + 自动注入 --port）──
-    "scripts/bomb_mine.py / bomb_escort.py / bomb_common.py / bomb_volcano.py": "炸矿三模式：自动/协同/火山（炸弹=select+placementAction 自动引爆，躲半径+4 防自伤）",
+    "scripts/bomb_mine.py / bomb_common.py / bomb_volcano.py": "炸矿两种模式：自动(含**内联协同** _run_cooperate)/火山（炸弹=select+placementAction 自动引爆，躲半径+4 防自伤）；🗑️ bomb_escort.py 2026-10-03 已删（协同是内联的，那脚本没有启动点）",
     "scripts/mine_run.py": "矿洞/头骨矿冲层脚本（逐层+整理背包）——08-29 _rock_name 三级(object名>ORE_NODE_IDS>dump_tile真名)认隐藏名宝石/放射矿,ore_score 关键词(放射>宝石),mine_rock 校验改目标格有object",
     "scripts/rock_run.py / rock_scan.py": "室外镐击：采石场/挖掘场/蚌矿场 敲可破物(骨/黏土/蚌/矿点/宝石/煤/放射矿)，只跳普通石。默认只扫不敲(--dig 才敲)，目标按 objId+dump_tile 真名认(1.6 节点 Name 全报 'Stone' 只 objId 可信)；MCP scene ops=rock",
     "scripts/fish_run.py": "钓鱼自动化（walk_to 到钓点→拿竿→抛竿，--max-casts 收手）+ 拿竿后自动补饵/钓具",
@@ -277,7 +277,7 @@ Python 侧：
 · 15 域 = check/farm/mine/cabin/social/scene/menu/storage/daily/map/festival/fish/settings + script/session
 · care→farm、quest→menu 已于 09-02 合并（不再单列）
 · 改名/合并：settings 域合并「捏脸」(appearance)+外观参考进来(不再拆)；scene 因 interact 占用改名；fish 域曾缺注册不可达(2026-08-22 修复)
-· 退役：plan(计划模式)/accept_quest/buy_item 已下线；bomb_escort 不再对外暴露(内建进 bomb_mine 自动转内部)；festival bot 体系全删
+· 退役：plan(计划模式)/accept_quest/buy_item 已下线；festival bot 体系全删；🗑️ bomb_escort（独立协同脚本 + MCP 工具）**2026-10-03 真删**——协同是 bomb_mine 内联的 _run_cooperate，那脚本全仓没有启动点
 · 收编：wear/lie_bed → daily ops；bundle_kb/donate/read_book → menu ops；rock/挖石 → scene ops(2026-08-29 室外镐击)
 · 🗜️ 2026-09-11 再收编（20→17）：advance_story → menu ops(menu 的 dispatch 本就直指同一函数，留着=两条路做同一件事)；profile/which_role → check(what="profile"/"role")(都是"查我自己"归查询域)。⚠️改 keep-set 必须同步改引导文案(状态条/menu/check/fish/daily 的 help)，否则 AI 照旧文案调隐藏名=当场卡死
 """,

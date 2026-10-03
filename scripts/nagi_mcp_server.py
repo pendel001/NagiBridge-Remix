@@ -4713,14 +4713,14 @@ def _state_suffix(result: str, force_full: bool = False) -> str:
 
 # ⚠️ 2026-08-15 修复：这些脚本默认打 host 7842（会挪恒的角色/耗恒体力），必须注入 --port AI端口
 _PORT_SCRIPTS = {"water_crops", "chop_trees", "clear_area", "mine_run", "fish_run",
-                 "bomb_mine", "bomb_escort", "bomb_volcano", "farm_row", "go_to",
+                 "bomb_mine", "bomb_volcano", "farm_row", "go_to",
                  "berry_run", "spot_run", "moss_run", "trash_run", "fair_fishing",
                  "rock_run", "fruit_round"}   # 🏠 2026-08-31：fruit_round 收放改走严格交互，注入 --port AI
                  # 🍓🪱 2026-08-17：摇树莓/挖斑点脚本注入 AI 端口（防挪恒角色）；🌿 2026-08-21 moss_run；🗑️ 2026-08-24 trash_run；🎣 2026-08-28 fair_fishing(秋收钓鱼兜底)；⛏️ 2026-08-29 rock_run(室外镐击)
 
 # 🚀 自动异步白名单（2026-08-16 恒拍板）：便利工具跑这些长脚本 → 自动后台异步，AI 不用手动后台。
 # 长任务（钓鱼/挖矿/炸矿/收放机器/浇水可能很久）被动异步；短任务（清地/砍树/摸动物/捡采集等）保持同步。
-_ASYNC_SCRIPTS = {"mine_run", "fish_run", "bomb_mine", "bomb_escort", "bomb_volcano",
+_ASYNC_SCRIPTS = {"mine_run", "fish_run", "bomb_mine", "bomb_volcano",
                   "fruit_round", "machine_loader",
                   # 💧 2026-09-23 恒拍板：`water_crops` **移出白名单、改同步等结果**。
                   #    原话「浇水是异步的耶！我不记得是我自己把它放进异步了还是怎样」——是 08-16
@@ -8742,8 +8742,8 @@ def bomb_place(x: int, y: int) -> str:
         if bot.count_bombs() <= 0:
             return _with_state(f"❌ 没有 {bot.bomb_type} 了（用 /give 或先去买）")
         # ⚠️ 2026-09-17 真机抓到：这里原写 `ok, msg = ...` —— 而 `bomb_and_collect` 按自己的
-        #    docstring 返回 **3 个值** `(ok, message, broken_estimate)`（另外三个调用方
-        #    bomb_escort/bomb_mine/bomb_volcano 也都解 3 个）⇒ 每次调用必抛
+        #    docstring 返回 **3 个值** `(ok, message, broken_estimate)`（另外两个调用方
+        #    bomb_mine/bomb_volcano 也都解 3 个）⇒ 每次调用必抛
         #    `ValueError: too many values to unpack (expected 2)`，被下面 except 兜成
         #    "❌ 放炸弹失败" ⇒ **bomb_place 从来没成功过**。
         #    更糟的是**炸弹真放出去炸了**（那一下就放完即炸，AI 掉了 4 血），
@@ -8800,7 +8800,7 @@ def bomb_retreat() -> str:
     try:
         with _bg_lock:
             for j in list(_bg_jobs.values()):
-                if j.running and getattr(j, "name", "") in ("bomb_mine", "bomb_escort", "bomb_volcano"):
+                if j.running and getattr(j, "name", "") in ("bomb_mine", "bomb_volcano"):
                     try:
                         _bg_kill(j)
                         _stopped = True
@@ -8902,29 +8902,6 @@ def bomb_organize(disable: bool = False, reset: bool = False) -> str:
         args.append("--organize-reset")
     out = _run_script("bomb_mine", args, timeout=10)
     return _with_state(f"💼 {out[:300]}")
-
-
-@mcp.tool()
-def bomb_escort(ore_radius: int = 7, cooldown: int = 20, max_minutes: Optional[int] = None,
-                hp_threshold: int = 30) -> str:   # ⚠️ 出门线；吃的线是 bomb_common.EAT_HP_PCT(=60)，两回事
-    """👥 协同模式：跟着 user 下矿炸矿（贴身保镖）
-    滞后跟随 user（站身后不贴脸），只在途径处看到高价值矿（铱/宝石/金）才放炸弹，
-    帮打怪（user 附近出现怪物就砍）。user 离开矿井就撤，没炸弹就转纯保镖跟随。
-
-    Args:
-        ore_radius: 高价值矿离 user 多近才炸（默认7格）
-        cooldown: 两次炸弹最小间隔秒数（默认20）
-        max_minutes: 最多跟随分钟数（默认不限）
-        hp_threshold: 血量低于此%吃食物（默认30）。⚠️ 吃/兜底线，不是撤退线（撤退看 HP<20 绝对值）
-    """
-    args_list = [f"--ore-radius", str(ore_radius), f"--cooldown", str(cooldown),
-                 f"--hp-threshold", str(hp_threshold)]
-    if max_minutes:
-        args_list.extend(["--max-minutes", str(max_minutes)])
-    out = _run_script("bomb_escort", args_list, timeout=1200, async_ok=True)
-    if out.startswith("🚀"):
-        return _with_state(out)   # 长脚本自动异步：立即返回 job_id
-    return _with_state(f"👥 协同报告：\n{out[:800]}")
 
 
 @mcp.tool()
@@ -11553,7 +11530,9 @@ def mine(ops: str = "", kw: dict | None = None) -> str:
         "progress": check_mine_progress, "进度": check_mine_progress,
         "bomb_status": bomb_status, "bomb_plan": bomb_plan, "bomb_place": bomb_place,
         "bomb_collect": bomb_collect, "bomb_ladder": bomb_ladder, "bomb_retreat": bomb_retreat,
-        "bomb_mine": bomb_mine, "bomb_volcano": bomb_volcano,   # 🚫 2026-08-22 恒：bomb_escort 不对外暴露(协同内建进 bomb_mine 自动转)，AI 不再能主动启用
+        "bomb_mine": bomb_mine, "bomb_volcano": bomb_volcano,
+        # 🗑️ 2026-10-03 恒拍板：`bomb_escort`（独立协同脚本 + 那个工具）**真删** ——
+        #    协同是 `bomb_mine._run_cooperate()` 内联的，那个脚本**全仓没有启动点**（留着=看着像在用）。
         "organize": bomb_organize, "整理背包": bomb_organize,
     }
     _body = _ops_run(ops, dispatch, kw)
@@ -21413,7 +21392,7 @@ def _list_scripts() -> list:
 #  🚀 后台脚本任务（B1 异步，2026-08-14）
 #  核心目的（恒 08-14 澄清）：脚本跑的时候 AI 还能聊天/看状态/整理背包，
 #  不打断脚本——script_start 立即返回 job_id；进度/收工(含总时长)自动播报，AI 不用查。
-#  值得异步的长任务：bomb_mine / bomb_escort / go_fishing / 拟人浇水。
+#  值得异步的长任务：bomb_mine / bomb_volcano / go_fishing / 拟人浇水。
 #  短任务继续用同步 run_script。
 # ═══════════════════════════════════════════
 import threading as _threading
@@ -21740,7 +21719,7 @@ def script_start(name: str, args: str = "") -> str:
         f"  收工会自动播报（含总时长）   停止: script(ops=\"stop\", kw={{\"job_id\":\"{job.job_id}\"}})")
 
 
-_MINE_SCRIPTS = {"mine_run", "bomb_mine", "bomb_escort", "bomb_volcano"}
+_MINE_SCRIPTS = {"mine_run", "bomb_mine", "bomb_volcano"}
 
 
 def _send_home_from_mine(tries: int = 4):
@@ -22069,7 +22048,7 @@ def _plan_pack_reminder(tasks) -> str:
     need = set()
     for t in tasks or []:
         s = t.get("script", "")
-        if s in ("bomb_mine", "bomb_escort", "bomb_volcano"):
+        if s in ("bomb_mine", "bomb_volcano"):
             need.add("💣 炸弹 + 🍱 回血食物")
         elif s == "fish_run":
             need.add("🎣 鱼竿 + 鱼饵")

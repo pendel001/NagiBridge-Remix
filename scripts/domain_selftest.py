@@ -34,7 +34,9 @@ _KNOWN_SUBSUMED = {
     "clear_area",    # → farm ops="clear"（_farm_clear）
     "go_to",         # → map ops="go"（map_go）/ walk_to POI
     "dance_invite",  # → festival ops="dance"（_festival_dance）
-    "bomb_escort",   # 🚫 2026-08-22 恒：不对外暴露（协同内建进 bomb_mine 没炸弹自动转内部），AI 不主动启用
+    "bomb_escort",   # 🗑️ 2026-10-03 恒拍板**真删**（脚本 + MCP 工具一起删）。原来只是"不对外暴露"，
+                     #   但它**全仓没有任何启动点**（协同是 `bomb_mine._run_cooperate()` 内联的），
+                     #   留着 = "看着像在用、其实没人起"的坑。⇒ 留在本表里只为记账（惰性项）。
     "menu_claim_swap", # 🚫 2026-08-28 恒：claim_swap(替换领取)退役——改 menu click action=discard 丢桶 + action=claim/slot 领；不判断档
     # 🔍 2026-09-11 恒：下面三个 storage 老工具**不是误报**（自检说"没人调用"是对的），
     #   但**功能都由 storage 域 op 覆盖** ⇒ 对 AI 不存在断档，按本集合的定义（"隐藏安全"）收编。
