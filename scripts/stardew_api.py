@@ -194,16 +194,28 @@ def soft_passable(x, y, **passable_params):
          （恒查过：牛羊两格、鸡鸭一格 ⇒ 光拿 `/animals` 的**格坐标**对会对不上，
           以前那种格会被误判成"硬阻挡"）；
       ③ 老 DLL（没 `blocker`）⇒ 退回问名单（`soft_blocker_at()`：`/animals` + `/surroundings` 的宠物）。
-     ⚠️ **只有牲畜/宠物能顶**：NPC/马/怪/浣熊**不软化**（读不到就**不软化**，绝不用"猜"去顶一格墙）。
-     ⚠️ 说明**不带 ⚠️、不带下一步**（软阻挡我们自己处理了，报成问题只是噪声）。
+     ⚠️ **只有牲畜/宠物能顶**（恒 2026-10-02 的裁决：真人按住方向键能穿过动物）；
+     👹 **怪是硬阻挡**（恒 2026-10-03：「怪给一个不可穿行吧」——优先级「绕过怪 ＞ 走路被挡穿过 npc ＞ 马」），
+        而且**必须点名 + 给下一步**（只说"不能走"等于让人以为那是堵墙）；
+     🧑 NPC / 🐴 马 / 🦝 浣熊**不软化**（读不到就**不软化**，绝不用"猜"去顶一格墙）。
+     ⚠️ 说明**不带 ⚠️、不带下一步**（软阻挡我们自己处理了，报成问题只是噪声）——硬阻挡那条相反，要带。
     """
     try:
         _p = _post("/passable", dict({"x": x, "y": y}, **(passable_params or {}))) or {}
         if _p.get("passable"):
             return True, ""
         _bl = _p.get("blocker") or {}
-        if _bl and str(_bl.get("kind") or "") in ("animal", "pet"):
-            return True, f"路上有只动物（{_bl.get('name') or '动物'}）挡了道，挤开了"
+        if _bl:
+            _kind = str(_bl.get("kind") or "")
+            _nm = _bl.get("name") or ""
+            if _kind in ("animal", "pet"):
+                return True, f"路上有只动物（{_nm or '动物'}）挡了道，挤开了"
+            if _kind == "monster":
+                # 👹 怪：**不可穿行**（C# 的 `IsTilePassable` 现在把怪算实心，BFS 会自己绕开）。
+                #    这一行是给"目标格正好站着怪"的场景看的 —— 要明说**绕开/换条路**，
+                #    否则 AI 会以为是墙、在原地换锚点硬试（同"报错必须给下一步"那条）。
+                return False, (f"⚠️ 那格站着一只怪（{_nm or '怪'}）—— **不可穿行**，绕开它："
+                               f"换条路 / 退到上一格等它走开，别贴上去（怪会打人）")
         if "blocker" in _p:
             return False, ""          # 新 DLL 明确说了"没人挡着" ⇒ 就是硬阻挡，别再问名单
     except Exception:

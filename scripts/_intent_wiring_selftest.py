@@ -2075,6 +2075,36 @@ def main():
     res.append(ok("🧱 新 DLL 说 `blocker=null`（没人挡）⇒ **就是硬阻挡**，不再多问一发名单",
                   _sp3 == (False, ""), _sp3))
     res.append(ok("🚶 能走就直接过（`blocker` 有值也不管）", _sp4 == (True, ""), _sp4))
+
+    # 👹 2026-10-03 恒：「**怪给一个不可穿行吧**，碰到怪或者站在怪上的情况还是比较频繁的」
+    #    + 优先级「**绕过怪 ＞ 走路被挡穿过 npc ＞ 马**」。
+    #    C# 侧：`IsTilePassable` 现在把**怪**算实心（`GetMonsterTiles`，包围盒相交）；
+    #    NPC/马/宠物**故意不算**（穿过就够用）。消费侧：怪 = 硬阻挡 + **点名 + 给下一步**。
+    try:
+        api.animals_at = lambda *a, **k: {}
+        _stub(passable_ret={"ok": True, "passable": False, "x": 10, "y": 11,
+                            "blocker": {"kind": "monster", "name": "史莱姆", "x": 10, "y": 11}})
+        _sp5 = api.soft_passable(10, 11)
+        # 🧑 NPC 的**真实形状**：C# 不把 NPC 算实心 ⇒ `/passable` 回 `passable=true`（AI 直接走过去）
+        _stub(passable_ret={"ok": True, "passable": True, "x": 10, "y": 11})
+        _sp6 = api.soft_passable(10, 11)
+    finally:
+        api.animals_at = _old_an_at
+    res.append(ok("👹 那格站着**怪** ⇒ **硬阻挡（不可穿行）**，而且**点名 + 让 AI 绕开**（别让它以为是堵墙）",
+                  _sp5[0] is False and "史莱姆" in _sp5[1] and "绕开" in _sp5[1], _sp5))
+    res.append(ok("🧑 NPC/马**照旧穿过**（恒排的第二/三档：C# 不算它们实心 ⇒ `passable=true`）",
+                  _sp6 == (True, ""), _sp6))
+    # 👹 源码断言：判据长在 C# 那处就别只测消费侧 —— 钉死"怪算实心"、并防止以后有人"顺手补全" NPC/马。
+    try:
+        _i0 = _src.index("private bool IsTilePassable(")
+        _i1 = _src.index("\n    private ", _i0 + 10)
+        _ip = _src[_i0:_i1]
+    except ValueError:
+        _ip = ""
+    res.append(ok("👹 C# `IsTilePassable` 把**怪**算实心（`GetMonsterTiles(location).Contains(tile)`）",
+                  "GetMonsterTiles(location).Contains(tile)" in _ip, _ip[:160]))
+    res.append(ok("🧑🐴 C# **故意不算** NPC/马/宠物（恒排的序：绕过怪 ＞ 穿过 npc ＞ 马）——别顺手补全",
+                  bool(_ip) and "GetNpcTiles" not in _ip and "Horse" not in _ip, ""))
     # ⚠️ **认不出的季节必须直接不算** —— 早先 `get(s, (0,0))` 会让 `(None,None)` 落进
     #    `0<=0<=0` ⇒ **返回 True**（"不知道 ⇒ 当在季"），正好反了（自验当场逮到）。
     import calendar_data as _cd

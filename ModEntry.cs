@@ -22504,6 +22504,10 @@ public class ModEntry : Mod
     private HashSet<Point>? _animalTiles;
     private string? _animalTilesLoc;
     private int _animalTilesTick = int.MinValue;
+    // 👹 怪物占的格（2026-10-03 恒「怪给一个不可穿行」）——与牲畜同款缓存（BFS 每格都要问，不能每次扫 characters）
+    private HashSet<Point>? _monsterTiles;
+    private string? _monsterTilesLoc;
+    private int _monsterTilesTick = int.MinValue;
 
     /// <summary>
     /// 🛡️ 2026-08-26 恒：找离 target 最近的可走格（含 target 自己）。walk_to 入口校验用。
@@ -22557,10 +22561,42 @@ public class ModEntry : Mod
         return set;
     }
 
-    /// <summary>
-    /// 判定某格能否作为走位落点。allowWater=false(默认)：水格不可站(普通走位不落水)；
-    /// allowWater=true：放行水格(淘金/放蟹笼时允许站水上近格——SDV 站浅水合法，配合"淘完回原位")。
+    /// <summary>当前地点**怪物**占的格子（2026-10-03 恒：「怪给一个不可穿行」）。非怪物地点返回空集。
+    ///
+    /// ⚠️ 判据与 `/passable` 的 `blocker` **同一套**：`Character.GetBoundingBox()` 与该格 64×64 相交
+    ///    （游戏自己的 `GameLocation.isCharacterAtTile` 就是这么写的，反编译 `:5318`）——
+    ///    用**包围盒**而不是 `TilePoint`：大怪占多格，只对 `TilePoint` 会漏掉它压着的那几格。
+    /// ⚠️ 与 `GetAnimalTiles` 一样带 30 tick 缓存：BFS 是**逐格**问它的（一张图几千格），
+    ///    每次现扫 `loc.characters` 会把走位拖慢；30 tick 的滞后对"绕过怪"完全够用。
     /// </summary>
+    private HashSet<Point> GetMonsterTiles(GameLocation location)
+    {
+        var locName = location.NameOrUniqueName ?? location.Name;
+        if (_monsterTiles != null && _monsterTilesLoc == locName && Game1.ticks - _monsterTilesTick < 30)
+            return _monsterTiles;
+
+        var set = new HashSet<Point>();
+        try
+        {
+            foreach (var c in location.characters)
+            {
+                if (c is not StardewValley.Monsters.Monster) continue;
+                var box = c.GetBoundingBox();
+                int x0 = box.X / 64, y0 = box.Y / 64;
+                int x1 = (box.X + box.Width - 1) / 64, y1 = (box.Y + box.Height - 1) / 64;
+                for (int gx = x0; gx <= x1; gx++)
+                    for (int gy = y0; gy <= y1; gy++)
+                        set.Add(new Point(gx, gy));
+            }
+        }
+        catch { }
+
+        _monsterTiles = set;
+        _monsterTilesLoc = locName;
+        _monsterTilesTick = Game1.ticks;
+        return set;
+    }
+
     /// <summary>
     /// 连通域洪水填充：从 start 沿**地图图层 isTilePassable**（不含 object/家具/水）能走到 target 吗。
     /// ⚠️ 刻意只用地图图层——岩石是 object 层且可炸穿，不该当连通分界；只有墙/地形（地图层不可走）才切胞腔。
@@ -22819,6 +22855,19 @@ public class ModEntry : Mod
         return false;
     }
 
+    /// <summary>
+    /// 判定某格能否作为走位落点（BFS / `/passable` / `/surroundings` / `/move` 全走这一处）。
+    ///
+    /// `allowWater=false`(默认)：水格不可站（普通走位不落水）；
+    /// `allowWater=true`：放行水格（淘金/放蟹笼时允许站水上近格——SDV 站浅水合法，配合"淘完回原位"）。
+    ///
+    /// 「运行时阻挡物」现在有四层，**按恒的裁决各管各的**：
+    ///   · 🐄 **牲畜**（`GetAnimalTiles`，08-26）：实心 —— 不挡就会规划出踩牛身上的路、顶住干等到超时；
+    ///   · 👹 **怪物**（`GetMonsterTiles`，10-03 恒「怪给一个不可穿行」）：实心；
+    ///   · 🧑 **NPC / 🐴 马 / 🐾 宠物**：**故意不算**（恒 2026-10-03 给的优先级「绕过怪 ＞ 走路被挡**穿过 npc** ＞ 马」——
+    ///     镇子道路开阔、马又停在马厩里，这两个"穿过去"就够用；⚠️ 以后别顺手把它们也堵上）；
+    ///   · `ignoreTransient=true`（连通闸门用）：**牲畜和怪都不算** —— 它们会走，构不成结构性屏障。
+    /// </summary>
     private bool IsTilePassable(GameLocation location, Point tile, bool allowWater = false,
                                 bool ignoreTransient = false)
     {
@@ -22916,6 +22965,14 @@ public class ModEntry : Mod
         //    ⚠️ `ignoreTransient`（2026-09-23）：连通闸门 `IsReachableByWalking` 用得到 ——
         //       动物会走，不是结构性屏障；把它们算进去的话，满屋牲畜的畜棚会被判成"和外面不连通"。
         if (!ignoreTransient && GetAnimalTiles(location).Contains(tile)) return false;
+
+        // 👹 2026-10-03 恒：「**怪给一个不可穿行吧**，碰到怪或者站在怪上的情况还是比较频繁的」。
+        //    ⚠️ 在这之前 `IsTilePassable` **一个字都没查 `loc.characters`** ⇒ 怪/NPC/马/宠物**全都不挡路**，
+        //       AI 是**直接从怪身上走过去**的（走位是直接改 `farmer.Position`，游戏碰撞没机会介入）。
+        //    只把**怪**算进来（NPC/马照旧穿过，理由见本函数 doc）；`ignoreTransient` 时也不算（会走）。
+        //    ⚠️ 反过来说：怪踩到玩家身上时**起点格也会变成"不可走"** —— 这不影响走位，
+        //       `BfsParents()` 是把起点**无条件**入队的（回溯到它就停），人照样走得出来。
+        if (!ignoreTransient && GetMonsterTiles(location).Contains(tile)) return false;
 
         // 额外：家具/摆放物碰撞（室内床/桌子/箱子等 isTilePassable 不查，会穿墙）
         // 🛏️ 2026-09-27(164)：**判据照游戏改** —— 恒一句破案：「是我干的。我挪了床和电视。
