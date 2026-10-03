@@ -17528,6 +17528,13 @@ def eat_item(name: str = "", item_name: str = "") -> str:
             # ⏳ **等体力/血真的落地再回**（否则紧跟的状态条是吃之前的，AI 会看到"吃了还体力危险"）
             _wait_eat_effect(_st0, _hp0)
             return _with_state(msg)
+        # 🔴 2026-10-03：失败要给**对的那条路**。`eat_not_settled` / `eat_verify_timeout` 不是
+        #    "没选中食物"，而是**动画被打断/没结算**（东西也没扣）—— 再甩一句"先选中食物再吃"
+        #    会把 AI 支去白跑一趟（它本来选得好好的）。别让收尾那句话比事实更响。
+        if r.get("action") in ("eat_not_settled", "eat_verify_timeout"):
+            return _with_state(
+                f"❌ {r.get('error', '吃失败')}——**站稳了再吃一次**"
+                f"（刚切完地图/刚走完路别立刻吃: `scene ops=stop` 等一秒 → `daily ops=eat`）")
         # 2026-09-03 恒：AI 常先不选中食物就被拒——直接给路径，别只甩"先/select"
         return _with_state(f"❌ {r.get('error', '吃失败')}——先选中食物再吃: scene ops=select name={name or '<食物名>'} → daily ops=eat")
     except Exception as e:

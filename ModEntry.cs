@@ -350,6 +350,46 @@ internal static class MasteryToastPatch
 ///   另：`IsEquipItem` 会把饰品/衣服过滤掉 ⇒ 蹭小新闻的话"丢个鹦鹉蛋给你"压根不会报。
 ///   ⇒ 改成**直接从 collect 记账**：这里物品引用、整叠数量、`__result`（真进包没有）全是现成的。
 /// </summary>
+/// <summary>
+/// 🍽️ 2026-10-03：`/eat` 的**权威结算信号** —— postfix `Farmer.doneEating`。
+///
+/// 为什么必须挂这一发（而不是继续拿数值倒推）：
+///   `doneEating()`（`Farmer.cs:8851`）是"吃下去真的生效"的**唯一那一步**（加血/加体力/`applyBuff`
+///   全在里面），而它**只在吃东西动画收尾时被调一次**——
+///   `FarmerSprite.cs:863`：`doneWithAnimation(); if (owner.isEating) owner.doneEating();`
+///   （所以"动画被掐掉"⇒ `doneEating` 不跑 ⇒ 东西白吃，这就是恒那条「边走边吃吃不上」）。
+///   `/eat` 原先靠"血/体力/buff 数变了没"倒推结算，**两个真机反例**（2026-10-03 当趟都抓到了）：
+///     · **满血满体力**吃不带 buff 的（芝士）⇒ `health/Stamina` 被 `Math.Min` 夹住、一个数都不动；
+///     · **续同一个槽的 buff**（咖啡续咖啡）⇒ `BuffManager.Apply` 是 `Remove(同 id) + 放进去`
+///       ⇒ 条数不变、还是 1。
+///   这两种情况**结算明明跑了**，却会被报成 `eat_not_settled`（假失败：AI 会以为没吃上、
+///   下一步白重试；`eat_recovery` 还会拿它当"吃不上"）。
+///   ⇒ 判据换成"doneEating 这个 tick 涨了没"。数值变化降级成**附带情报**（`statsChanged`），不当门。
+///   📌 通式：**别拿"顺带看到的现象"当"那一步跑没跑"的判据** —— 现象的边角（夹住/同槽）会骗人。
+///
+/// ⚠️ 本模组**没有 `PatchAll()`**，所有补丁都在 `OnGameLaunched` 里手工 `harmony.Patch()`
+///    （同文件那段有警告）⇒ 光有下面这个类**不生效**，必须两处都写。
+/// </summary>
+[HarmonyPatch(typeof(Farmer), nameof(Farmer.doneEating))]
+internal static class DoneEatingPatch
+{
+    /// <summary>最近一次 `doneEating` 的 `Game1.ticks`（-1 = 本进程从没结算过）。</summary>
+    internal static int LastTick = -1;
+    /// <summary>最近一次结算的那件东西（诊断用；`/eat` 拿它核对"结算的是我这一口"）。</summary>
+    internal static string LastItem = "";
+
+    internal static void Postfix(Farmer __instance)
+    {
+        try
+        {
+            if (__instance == null || __instance != Game1.player) return;   // 只认本进程自己那个人
+            LastTick = Game1.ticks;
+            LastItem = __instance.itemToEat?.Name ?? "";
+        }
+        catch { }
+    }
+}
+
 [HarmonyPatch(typeof(Debris), nameof(Debris.collect))]
 internal static class DebrisCollectPatch
 {
@@ -939,6 +979,21 @@ public class ModEntry : Mod
                     if (m == null) { Monitor.Log($"Harmony: 找不到 {mt.t.Name}.{mt.n}，那件工具的第二发按不掉", LogLevel.Error); continue; }
                     harmony.Patch(m, prefix: new HarmonyMethod(supPrefix));
                     Monitor.Log($"Harmony: {mt.t.Name}.{mt.n} 补丁已应用（按掉第二发落地，防双扣水/体力）", LogLevel.Info);
+                }
+
+                // 🍽️ 2026-10-03：`/eat` 的"真结算"信号。⚠️ 这里**必须手工挂**（本模组没有 PatchAll()，
+                //    见上面 2026-09-23 那段警告）：`doneEating` 只在吃东西动画收尾被调，
+                //    光靠"血/体力/buff 数变了没"在**满值**或**续同槽 buff**时会假报没结算。
+                var doneEatingMethod = AccessTools.Method(typeof(Farmer), nameof(Farmer.doneEating));
+                if (doneEatingMethod != null)
+                {
+                    var donePostfix = AccessTools.Method(typeof(DoneEatingPatch), nameof(DoneEatingPatch.Postfix));
+                    harmony.Patch(doneEatingMethod, postfix: new HarmonyMethod(donePostfix));
+                    Monitor.Log("Harmony: Farmer.doneEating 补丁已应用（/eat 的权威结算信号）", LogLevel.Info);
+                }
+                else
+                {
+                    Monitor.Log("Harmony: 找不到 Farmer.doneEating，/eat 只能退回看数值（满值/续同槽会假报没结算）", LogLevel.Error);
                 }
 
                 // 恒的聊天检测：postfix receiveChatMessage（联机时所有 farmhand 进程同步触发）
@@ -5747,6 +5802,14 @@ public class ModEntry : Mod
                 qiGems = SafeQiGems(farmer),   // 💎 齐钻（矿/齐先生单变化；核桃房全程；2026-09-02 状态条变才报）
                 walnuts = SafeWalnuts(farmer),   // 🌰 金核桃（只在姜岛；2026-09-02 状态条变才报）
                 buffs = EnumerateBuffs(farmer),
+                // 🍽️ 2026-10-03：把"正在吃 / 动不了"这两个**动作状态**摆到明面上。
+                //    起因：真机逮到 `isEating` 会**卡在 true**（吃东西动画被掐掉时，
+                //    游戏只在动画收尾或 `completelyStopAnimatingOrDoingAction()` 里清它）——
+                //    后果是 guard 门⑩ 恒 10（这一趟一刀不挥）+ `CanMove=false`。
+                //    而这两个字段**原来一个都没暴露** ⇒ 现场只能靠 `/guard` 的 `block=10` 间接猜，
+                //    我在真机上白采了一轮样才定案（"看不见的状态 = 只能猜的状态"）。
+                isEating = farmer.isEating,
+                canMove = farmer.CanMove,
                 fishing = farmer.CurrentTool is FishingRod rod ? new
                 {
                     isCasting = rod.isTimingCast,
@@ -12516,10 +12579,22 @@ public class ModEntry : Mod
     ///    真机后果不止是"没吃上"：血没回 ⇒ `eat_recovery` 的 `_recover_streak` 连中 3 ⇒
     ///    判「连吃 3 次血回不上来」⇒ **假撤退**（恒看到"也没到撤退线啊"）。
     ///
-    /// ⇒ 现在**等结算**：吃下去后轮询到 `isEating` 回到 false（= `doneEating` 跑过），
-    ///    并比对**血/体力/buff 数有没有真变**；变了才算 `ok`。
-    ///    没变 ⇒ `ok:false` + 原因，而且**刚扣掉的那一个不扣了**（宁报错别兜底：白扣一口食物更糟）。
+    /// ⇒ 现在**等结算**：吃下去后轮询到 `doneEating` **真的跑过**才算 ok（见 `DoneEatingPatch`），
+    ///    并附带报血/体力/buff 数的前后值。没跑 ⇒ `ok:false` + 原因，而且**刚扣掉的那一个不扣了**
+    ///    （宁报错别兜底：白扣一口食物更糟）。
     ///    📌 顺序也改了：**先吃、确认结算了才扣物品**（老版先扣再吃，动画一断就白扣）。
+    ///    📌 判据为什么不是"血/体力/buff 变了"：**满血满体力**吃不带 buff 的、或**续同一个槽的 buff**
+    ///       （`BuffManager.Apply` = `Remove(同 id)` + 放进去 ⇒ 条数不变）时数值一个都不动，
+    ///       可结算**明明跑了** ⇒ 会假报失败（2026-10-03 真机两次实测）。
+    ///
+    /// 🔴 2026-10-03 第二处（同一趟真机）：**失败路径必须复位动作状态**。吃东西动画被掐掉时
+    ///    `isEating` 会**卡在 true**（游戏只在动画收尾或 `completelyStopAnimatingOrDoingAction()`
+    ///    里清它；真机实测：`/warp` 打断后 **10 秒仍是 10**，`doneEating` 再没跑过）——
+    ///    后果一：`CanMove` 也是 `false`（同一次 `eatObject` 置的，只有结算/复位会还回来）；
+    ///    后果二：guard 门⑩（`if (farmer.isEating)`）**恒真** ⇒ **这一趟再也不会挥刀**
+    ///      （恒 2026-10-03 看到的"吃完之后一刀不挥"就是这个形状，跟 `itemToEat` 那次同族）。
+    ///    ⇒ 失败分支主动调 `completelyStopAnimatingOrDoingAction()`（游戏自己的"停止一切动作"，
+    ///      和瞬移走的是同一条），再如实报失败 + `reset:true`。**别把毒留在场上**。
     ///
     /// ⚠️ 轮询在**调用线程**（HTTP 线程池）上做，**不占主线程** —— 每次读状态都走
     ///    `EnqueueMainThread` 拿快照；主线程只被占用"吃 + 几次读"，帧不受影响。
@@ -12529,7 +12604,7 @@ public class ModEntry : Mod
         if (!Context.IsWorldReady)
             throw new InvalidOperationException("World not ready");
 
-        const int settleMs = 6000;     // 等结算上限（动画 ~1.6s + 余量；超了就是被打断了）
+        const int settleMs = 6000;     // 等结算上限（动画 ~2s + 余量；超了就是被打断了）
         var tcs = new TaskCompletionSource<object>();
         // ⚠️ 「吃」这一步是在**主线程**上跑的，而 `EnqueueMainThread` 是**异步**的
         //    （排队、当前线程立刻返回）⇒ 必须用一个信号量等它**真的跑过**再往下走。
@@ -12565,6 +12640,7 @@ public class ModEntry : Mod
 
         StardewValley.Object? eaten = null;
         int hp0 = 0, sta0 = 0, nb0 = 0;
+        int eatTick0 = -1;      // 🍽️ 吃之前 doneEating 的 tick（结算后该变大）
         EnqueueMainThread(() =>
         {
             try
@@ -12579,6 +12655,7 @@ public class ModEntry : Mod
                 }
                 hp0 = farmer.health; sta0 = (int)farmer.Stamina;
                 nb0 = farmer.buffs?.AppliedBuffs?.Count ?? 0;
+                eatTick0 = DoneEatingPatch.LastTick;   // ⬅️ 和 eatObject 同一块主线程里读，没有竞态
                 eaten = obj;
                 // ⚠️ **先清掉还在跑的走位队列**：`/walk_to` 是**异步**的（排队走、当次就返回），
                 //    所以脚本会在"人还在走"的时候发 `/eat` —— 队列继续推着人走，吃东西动画立刻被
@@ -12600,21 +12677,28 @@ public class ModEntry : Mod
 
         // ── 等结算（调用线程轮询，不卡主线程）──
         int waited = 0;
-        bool landed = false, finished = false;
+        bool settled = false;      // doneEating 真的跑过
+        bool animationOver = false;
         while (waited < settleMs)
         {
             System.Threading.Thread.Sleep(200);
             waited += 200;
-            var s = Snap();
-            if (!s.eating)
+            // ① 权威信号：结算那一步跑过了（跨线程读一个 int，够用）
+            if (DoneEatingPatch.LastTick != eatTick0)
             {
-                finished = true;
-                landed = s.hp != hp0 || s.sta != sta0 || s.nb != nb0;
+                settled = true;
+                break;
+            }
+            // ② 动画已经没了却还没结算 ⇒ 被打断了，不用再等满 6s
+            var s = Snap();
+            if (!s.eating && waited >= 600)
+            {
+                animationOver = true;
                 break;
             }
         }
 
-        // ── 结算了才扣；没结算就一个都不扣 + 如实报 ──
+        // ── 结算了才扣；没结算就一个都不扣 + 复位 + 如实报 ──
         var obj2 = eaten;
         EnqueueMainThread(() =>
         {
@@ -12623,17 +12707,33 @@ public class ModEntry : Mod
                 var farmer = Game1.player;
                 int hp1 = farmer.health, sta1 = (int)farmer.Stamina;
                 int nb1 = farmer.buffs?.AppliedBuffs?.Count ?? 0;
-                if (!landed)
+                bool statsChanged = hp1 != hp0 || sta1 != sta0 || nb1 != nb0;
+                if (!settled)
                 {
+                    // 🔴 **别把毒留在场上**（见方法头第二段）：动画被掐掉时 `isEating` 卡 true
+                    //    ⇒ `CanMove=false` + guard 门⑩ 恒 10（这一趟再也不会挥刀）。
+                    bool reset = false;
+                    try
+                    {
+                        if (farmer.isEating || !farmer.CanMove)
+                        {
+                            farmer.completelyStopAnimatingOrDoingAction();
+                            reset = true;
+                        }
+                    }
+                    catch { }
                     tcs.TrySetResult(new
                     {
                         ok = false,
                         ate = obj2.Name,
                         action = "eat_not_settled",
-                        error = finished
-                            ? $"吃下去了但**没结算**（{waited}ms 内血/体力/buff 一样没变）——多半是动画被下一步动作打断"
-                              + "（边走边吃老毛病）；**物品没扣**，站稳了再吃一次"
-                            : $"吃东西动画 {waited}ms 还没播完（=`doneEating` 一直没跑）—— 同上是被打断了；**物品没扣**"
+                        reset,
+                        error = (animationOver
+                            ? $"吃下去了但**没结算**（{waited}ms 内 `doneEating` 没跑）——多半是动画被下一步动作打断"
+                              + "（边走边吃老毛病）"
+                            : $"吃东西动画 {waited}ms 还没播完（=`doneEating` 一直没跑）—— 同上是被打断了")
+                            + "；**物品没扣**，站稳了再吃一次"
+                            + (reset ? "；**已顺手复位动作状态**（isEating/CanMove，否则 guard 会一直卡在门⑩）" : "")
                     });
                     return;
                 }
@@ -12648,6 +12748,11 @@ public class ModEntry : Mod
                     ok = true, ate = obj2.Name, settledMs = waited,
                     hpBefore = hp0, hpAfter = hp1, staBefore = sta0, staAfter = sta1,
                     buffsBefore = nb0, buffsAfter = nb1,
+                    // 数值没动**不代表没吃上**（满值 / 续同一个 buff 槽 —— 见方法头）：
+                    // 结算信号说跑了就是跑了，这里只把"数值有没有动"当附带情报报出来。
+                    statsChanged,
+                    note = statsChanged ? null
+                        : "结算已跑（doneEating）但血/体力/buff 数没变 —— 多半是本来就满 / 续的是同一个 buff 槽",
                     health = hp1, stamina = sta1
                 });
             }

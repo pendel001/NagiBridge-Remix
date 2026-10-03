@@ -385,7 +385,10 @@ class BombMineBot(BombMiner):
                 # 生存优先：该撤了先吃，吃完还该撤就撤（原因串分开报，不再笼统"血低无食"）
                 why = self.unsafe_reason()
                 if why:
-                    if self.eat_if_needed(self.hp_threshold):
+                    # ⚠️ 这里原来写 `eat_if_needed(self.hp_threshold)` —— 那个形参**已经废弃**
+                    #    （吃的线固定在 `EAT_HP_PCT=60`，见 bomb_common 顶部 2026-10-03 那段），
+                    #    留着这个实参只会让人以为"--hp-threshold 能调吃食线"（真机就是这么被坑的）。
+                    if self.eat_if_needed():
                         why = self.unsafe_reason()
                     if why:
                         self.retreat(f"协同：{why}")
@@ -458,7 +461,7 @@ class BombMineBot(BombMiner):
             self.eat_recovery(hard=self.hp_threshold, target=60)
             why = self.unsafe_reason()
             if why:
-                if self.eat_if_needed(self.hp_threshold):
+                if self.eat_if_needed():     # 吃食线固定 EAT_HP_PCT=60；那个 hp_threshold 形参已废弃
                     why = self.unsafe_reason()
                 if why:
                     return None, why
@@ -757,7 +760,7 @@ class BombMineBot(BombMiner):
             #    "被怪打到死还在吃东西"就长在这）。2026-09-19 补齐，两处对齐。
             why = self.unsafe_reason()
             if why:
-                if self.eat_if_needed(self.hp_threshold):
+                if self.eat_if_needed():     # 吃食线固定 EAT_HP_PCT=60；那个 hp_threshold 形参已废弃
                     why = self.unsafe_reason()
                 if why:
                     retreat_reason = why

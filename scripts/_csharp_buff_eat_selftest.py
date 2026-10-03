@@ -61,7 +61,7 @@ ck("…`GuardBlockName(10)` 文案同步成「正在吃」", '10 => "正在吃�
 ck("…顺手把「字段什么时候被清」这条教训写进注释（别只改代码）", "永不清零" in guard)
 
 print("② `/eat`：**等结算**才扣、失败如实报 + 不清走位队列不吃")
-eat = _block(r"private object HandleEat\(\)", span=150)
+eat = _block(r"private object HandleEat\(\)", span=170)
 ck("…吃东西前 `ClearMovementState()`（清掉异步走位队列，否则动画被覆盖）",
    "ClearMovementState();" in eat)
 ck("…`eatObject` 出现在 `Stack--` **之前**（先吃、确认结算了才扣）",
@@ -79,6 +79,43 @@ ck("…**不许**再有 `if (eaten == null) return tcs.Task...` 那种形状（�
    not re.search(r"if \(eaten == null\)\s*\n\s*return tcs\.Task", eat))
 ck("…HTTP 请求有兜底超时（主线程卡住也不让请求挂死）",
    "eat_verify_timeout" in eat and "tcs.Task.Wait(" in eat)
+
+print("②之二 🔴 2026-10-03 第二趟真机：结算判据**不能**看「血/体力/buff 数变了没」")
+# 两个反例（都在这一趟真机上撞到）：
+#   · 满血满体力吃不带 buff 的（芝士）⇒ `Math.Min` 夹住，数值一个不动；
+#   · 续**同一个槽**的 buff（咖啡续咖啡）⇒ `BuffManager.Apply` = Remove 同 id + 放进去 ⇒ 条数不变。
+# 两种都**结算跑了**却被报成没结算（假失败）。⇒ 权威信号 = postfix `Farmer.doneEating` 记 tick。
+ck("…`/eat` 拿 `DoneEatingPatch.LastTick` 当结算判据（不是拿数值倒推）",
+   "DoneEatingPatch.LastTick" in eat and "settled = true" in eat)
+ck("…吃之前先记下 tick（同一块主线程里读，避开竞态）", "eatTick0 = DoneEatingPatch.LastTick" in eat)
+ck("…数值变化降级成附带情报（`statsChanged`），不再当门",
+   "statsChanged" in eat and "if (!settled)" in eat)
+ck("…**不许**再拿 `s.hp != hp0 || s.sta != sta0 || s.nb != nb0` 当结算判据",
+   not re.search(r"landed\s*=\s*s\.hp", eat))
+dep = _block(r"internal static class DoneEatingPatch", span=30)
+# ⚠️ 特性和类是**上下两行**（特性在类上面）⇒ 断言要跨行找，不能用从类名往下的窗口
+ck("…`DoneEatingPatch` 的特性挂的确实是 `Farmer.doneEating`",
+   re.search(r"\[HarmonyPatch\(typeof\(Farmer\),\s*nameof\(Farmer\.doneEating\)\)\]\s*\n\s*"
+             r"internal static class DoneEatingPatch", src) is not None)
+ck("…Postfix 记的是 tick + 吃了什么（诊断要看得出『结算是哪一口』）",
+   "LastTick = Game1.ticks" in dep and "LastItem" in dep)
+ck("…补丁只在**本进程自己那个人**身上记（联机时别的 farmer 不算）",
+   "__instance != Game1.player" in dep)
+ck("…⚠️ 手工 `harmony.Patch` 也挂了（本模组**没有 PatchAll()**，光写特性不生效）",
+   "doneEatingMethod" in src and "donePostfix" in src)
+
+print("②之三 🔴 失败路径**必须复位**：`isEating` 卡住 ⇒ CanMove=false + guard 门⑩ 恒 10")
+# 真机实测（2026-10-03）：`/warp` 在吃东西动画中途插进来 ⇒ 动画冻住、`isEating` **10 秒后还是 true**、
+# `doneEating` 再没跑过；下一个成功的吃才把它清掉。⇒ 失败分支自己复位，别把毒留在场上。
+ck("…没结算时调 `completelyStopAnimatingOrDoingAction()`（游戏自己的『停止一切动作』）",
+   "completelyStopAnimatingOrDoingAction()" in eat)
+ck("…复位结果如实回包（`reset`）", "reset," in eat or "reset = true" in eat)
+ck("…回包文案点明『否则 guard 会卡门⑩』", "门⑩" in eat)
+
+print("②之四 `isEating`/`canMove` 摆到 `/state` 上（看不见的状态=只能猜的状态）")
+st = _block(r"buffs = EnumerateBuffs\(farmer\),", span=14)
+ck("…`/state.player.isEating` 有暴露", "isEating = farmer.isEating" in st)
+ck("…`/state.player.canMove` 有暴露", "canMove = farmer.CanMove" in st)
 
 print("③ buffs 两处都读**权威表** `AppliedBuffs`（不再反射摸黑）")
 eb = _block(r"private List<object>\? EnumerateBuffs", span=60)

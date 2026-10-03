@@ -308,7 +308,7 @@ class EscortBot(BombMiner):
             tod = s_ai.get("time", {}).get("timeOfDay", 600)
             if hp <= 0 or (maxhp and hp_pct < self.hp_threshold) or tod >= 2430:
                 # 紧急：拟人吃 + /heal 兜底（farmhand 吃食物不回血）
-                self.eat_if_needed(self.hp_threshold)
+                self.eat_if_needed()      # 吃食线固定 EAT_HP_PCT=60；那个 hp_threshold 形参已废弃
                 self.eat_recovery(hard=self.hp_threshold, target=60)
                 if not self.is_safe(self.hp_threshold):
                     self.retreat_to_entrance("血回不上来，撤退")

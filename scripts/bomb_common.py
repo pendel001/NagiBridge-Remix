@@ -80,6 +80,22 @@ BUFF_APPLY_TIMEOUT = 6.0
 #    ⇒ 从此两边都是 `(名字, 回体力, 回血, buff档)`，下标含义只此一份。
 
 
+def food_buff_entries(raw):
+    """🍽️ 把 `/state.inventory[].foodBuffs` 的**原值**拆成 buff 列表 —— **跨语言形状适配的唯一一处**。
+
+    C# 真形状是**对象**：`{"isDrink": bool, "buffs": [ {id, source, ms, effects, rawEffects}, … ]}`。
+    ⚠️ 2026-10-03 加这一层的原因：`eat_recovery` 那边是**直接** `it.get("foodBuffs")` 判真假的
+    （`if buffs: continue`）—— 今天**结果碰巧是对的**（对象非空即真 ⇒ "有效果"判对），
+    但那是**靠形状巧合**：哪天 C# 改成"永远发这个对象"（哪怕 `buffs` 是空的），
+    这句就会把**所有食物**都当效果食物 ⇒ 自保吃食整条线哑掉，而没人看得出来。
+    ⇒ 判据统一走这里（和 `food_buffs_of` 同一份实现），别再各处自己 `or []`。
+    """
+    v = raw
+    if isinstance(v, dict):                 # ⬅️ C# 真形状：{isDrink, buffs:[…]}
+        v = v.get("buffs")
+    return list(v) if isinstance(v, (list, tuple)) else []
+
+
 def food_buffs_of(f):
     """🍽️ 这条食物"吃下去会挂什么 buff"（条目第 4 位 = C# `/state` 的 `foodBuffs`）。
 
@@ -99,10 +115,7 @@ def food_buffs_of(f):
     """
     if not isinstance(f, (list, tuple)) or len(f) < 4:
         return []
-    v = f[3]
-    if isinstance(v, dict):                 # ⬅️ C# 真形状：{isDrink, buffs:[…]}
-        v = v.get("buffs")
-    return list(v) if isinstance(v, (list, tuple)) else []
+    return food_buff_entries(f[3])
 
 
 def food_buff_text(f):
@@ -1364,9 +1377,11 @@ class BombMiner(WeaponMixin):
             name = it.get("name", "")
             if not name or name in BOMB_NAMES:
                 continue
-            buffs = it.get("foodBuffs") or []
+            buffs = food_buff_entries(it.get("foodBuffs"))
             if buffs:
                 continue     # 🍽️ 效果食物除外（恒的规矩；判据=游戏报的 foodBuffs，不再拿名单认）
+                             # ⚠️ 这里原来写的是 `it.get("foodBuffs") or []`（拿对象真假当判据）——
+                             #    今天**碰巧对**，但那是靠形状巧合，见 `food_buff_entries` 的 docstring。
             cat = it.get("category", "")
             if name in FOOD_RECOVERY:
                 pass  # 已知食物直接认（沙拉/菠萝/胡萝卜等）
@@ -1477,7 +1492,13 @@ class BombMiner(WeaponMixin):
         _hp_show = next((f[2] for f in foods if f[0] == chosen), None)
         if _hp_show is None:      # 拿不到真值才退回手抄表（显示用，别拿它当判据）
             _hp_show = FOOD_RECOVERY.get(chosen, (0, 0))[1]
-        log(f"  🍽️ 自保吃 {chosen}(回{_hp_show}) HP {hp_pct:.0f}%")
+        # ⚠️ 2026-10-03：这一行**原来无条件打**（"🍽️ 自保吃 X"）—— 而 `ate_ok` 要到下面才判
+        #    ⇒ 没吃上时会先看到一句"自保吃奶酪"、再看到一句"没吃上"，**前一句是假的**。
+        #    日志写"我吃了"就必须真吃了（恒那套"别让日志比事实好看"）。
+        if ate_ok:
+            log(f"  🍽️ 自保吃 {chosen}(回{_hp_show}) HP {hp_pct:.0f}%")
+        else:
+            log(f"  ⚠️ 自保想吃 {chosen}(回{_hp_show}) HP {hp_pct:.0f}% —— **没吃上**（/eat 没结算）")
         # ⏳ 等回血落地：由 eatObject→doneEating 结算。
         # ⚠️ 2026-09-20 改（恒这趟沙漠跑掐出来的，代价=整趟在第 136 层被误判撤退）：
         #    原来这里 `time.sleep(2.0)` 后**只采样一次**，那一枪就定"回没回"。而实测结算在 **~2.5s**
