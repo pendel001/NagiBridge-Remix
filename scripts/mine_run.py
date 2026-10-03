@@ -1542,7 +1542,16 @@ class MineBot(WeaponMixin):
         resume=True 时，如果 start_level 是默认值1，则从进度记录的已到达最深恢复
         """
         # ── 动态起始层：读电梯当前可达最高层（替代静态进度，2026-08-22） ──
-        if resume and start_level <= 1:
+        if start_level >= 121:
+            # 🕳️ 头骨矿洞（2026-10-03 恒：「沙漠下矿不能续。出去进来就得 121 开始。」）：
+            #    **没有电梯** ⇒ 电梯那套（5 的倍数、可达上限、续层）**一律不适用**，
+            #    否则 121 会被"往下取 5 的倍数"折成 **120**（传回鹈鹕镇矿井去了）。
+            #    直接从 121（或显式给的更深层）warp 进去，一层层往下走。
+            log(f"  🕳️ 头骨矿洞：从第 {start_level} 层开始（无电梯、不续层）")
+            if start_level > 121:
+                log(f"     ⚠️ 原版头骨**只能从 121 进**（无电梯）——这个 start={start_level} 是"
+                    f"**直接 warp 跳层**（和 `bomb_mine --start>{121}` 一个口径，非原版行为）")
+        elif resume and start_level <= 1:
             auto_start = resume_start_level(self.port)
             if auto_start > 1:
                 log(f"  🪜 当前就在第 {auto_start} 层 → 从该层继续（重置/入口=1）")
@@ -2029,12 +2038,22 @@ def main():
         return
 
     # 验证参数
-    if args.mode == "rush" and args.target > 120:
-        log("⚠️ 鹈鹕镇矿井最高 120 层，目标设为 120")
-        args.target = 120
-    if args.mode == "rush" and args.start > 120:
-        log("⚠️ 起始层超过 120 了，设为 1")
-        args.start = 1
+    # 🕳️ 2026-10-03 恒真机纠正：「**沙漠下矿不能续。出去进来就得 121 开始。**」
+    #    ⇒ "最高 120 / 起始层不许超 120" 是**鹈鹕镇矿井**的规矩（它有电梯、能续层）。
+    #      头骨矿洞（UndergroundMine≥121）**没有电梯、也没有"续层"这回事**：人一出去再进来
+    #      一定从 121 开始 ⇒ 想从 121+ 起只能让脚本 warp 过去（和 `bomb_mine --start>121` 一个口径）。
+    #    ⇒ 钳位只在**目标确实是镇矿井（≤120）**时生效。
+    if args.mode == "rush" and args.target <= 120:
+        if args.target > 120:
+            log("⚠️ 鹈鹕镇矿井最高 120 层，目标设为 120")
+            args.target = 120
+        if args.start > 120:
+            log("⚠️ 起始层超过 120 了，设为 1")
+            args.start = 1
+    elif args.mode == "rush":
+        if args.start <= 120:
+            args.start = 121          # 沙漠矿洞只能从 121 进（没有电梯、不续层）
+        log(f"🕳️ 头骨矿洞模式（目标 {args.target} 层，无电梯、不续层）⇒ 从第 {args.start} 层起")
 
     # 检查游戏状态
     s = _get("/status")

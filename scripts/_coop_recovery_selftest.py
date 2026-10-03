@@ -65,6 +65,7 @@ def code_only(text):
 bm = src("bomb_mine.py")
 bc = src("bomb_common.py")
 srv = src("nagi_mcp_server.py")
+mr = src("mine_run.py")      # ⑨ 头骨 start=121 那条钉子要读它
 
 print("① 沙漠协同**只能被动起**：真跑的是内联的 `_run_cooperate()`；`bomb_escort.py` 已删（恒 2026-10-03 拍板）")
 ck("…进协同的判据 = 炸弹耗竭 + host 同矿井（`count_bombs() <= 0` + `is_mine_location(host)`）",
@@ -157,10 +158,23 @@ ck("…不再只判 `\"SkullCave\" in ln`（头骨矿洞层名**不含** SkullCa
 ck("…镇矿井入口那层（location 就叫 `Mine`）也送回 Mountain",
    'if ln == "Mine"' in _ex)
 
+print("⑨ 🕳️ 头骨矿洞（≥121）**不能续层**：`start=121` 不许被钳成 120（恒：「沙漠下矿不能续。出去进来就得121开始。」）")
+ck("…`mine_run` 的钳位只在**目标 ≤120（镇矿井）**时生效",
+   "if args.mode == \"rush\" and args.target <= 120:" in mr)
+ck("…头骨模式会把 start 兜到 121（进沙漠矿洞只能从 121 起）",
+   "args.start = 121" in mr)
+ck("…`run_rush` 里 `start_level >= 121` **跳过电梯那套**（否则 121 会被『往下取 5 的倍数』折成 120）",
+   "if start_level >= 121:" in mr and "往下取 5 的倍数" in mr)
+ck("…显式 start>121 会**如实说明**那是直接 warp 跳层（非原版行为，别装成正常路径）",
+   "直接 warp 跳层" in mr)
+# ✅ 真机验过（2026-10-03 晚）：`mine_run --mode rush --start 121 --target 124` 在头骨矿洞跑出
+#    `起点 121 → 终点 124，通过 3 层`（日志 `_live/_v203r_skull121.log`）。
+
 print()
 if fails:
     print(f"❌ {len(fails)} 条没过：")
     for f in fails:
         print(f"   · {f}")
     sys.exit(1)
-print("🎉 全部通过（协同：被动起 / 随时结束 / 有弹自动复活 / 会开宝箱 / 主循环每层扫箱 / 送出矿认层号 / give 不假成功）")
+print("🎉 全部通过（协同：被动起/随时结束/复活/开宝箱/主循环每层扫箱/送出矿认层号）"
+      " + give 不假成功 + 头骨 start=121 不被钳")
