@@ -12729,6 +12729,44 @@ public class ModEntry : Mod
                 bool statsChanged = hp1 != hp0 || sta1 != sta0 || nb1 != nb0;
                 if (!settled)
                 {
+                    // 🔴 2026-10-03 深夜真机逮到的**第二层、比假失败更坏**的问题：
+                    //    信号漏读时**效果其实已经生效**（`doneEating` 跑了、血加上去了），而这段老代码
+                    //    **既不扣物品、又回 `ok:false`** ⇒ **白吃一颗**。
+                    //    真机实据：芝士 11→9（只扣 2），人却回了 **3 次**血（18→74→130→180）——
+                    //    中间那一次就是"效果生效 + 没扣 + 回执说没吃上"。脚本按回执以为"没吃上"还会再吃 ⇒ 越攒越多。
+                    //    ⇒ 数值变化在这里当**纠错**（不是当"门"，门仍然是权威信号）：
+                    //      **变了就说明它跑了** ⇒ 照常扣、照常回 ok，只把"信号漏读"写进 `note` 与 SMAPI 日志。
+                    //    📌 与"满值吃 `statsChanged:false`"不冲突：那种情况靠 400ms 宽限正常结算，
+                    //      走不到这儿；走到这儿且数值**没**变 = 真被打断 ⇒ 走下面的失败分支（不扣）。
+                    if (statsChanged)
+                    {
+                        try
+                        {
+                            Monitor.Log($"[eat] doneEating 信号漏读但数值变了（hp {hp0}→{hp1} / 体力 {sta0}→{sta1} / "
+                                        + $"buff {nb0}→{nb1}）⇒ 按已结算处理并扣物（防白吃）", LogLevel.Warn);
+                        }
+                        catch { }
+                        obj2.Stack--;
+                        if (obj2.Stack <= 0)
+                        {
+                            int idx0 = farmer.Items.IndexOf(obj2);
+                            if (idx0 >= 0) farmer.Items[idx0] = null;
+                        }
+                        tcs.TrySetResult(new
+                        {
+                            ok = true,
+                            ate = obj2.Name,
+                            settledMs = waited,
+                            settledBy = "values",   // 诊断用：这次不是 tick 信号，是数值纠错救回来的
+                            hpBefore = hp0, hpAfter = hp1, staBefore = sta0, staAfter = sta1,
+                            buffsBefore = nb0, buffsAfter = nb1,
+                            statsChanged = true,
+                            note = "权威信号（doneEating 的 tick）这一次没读到，但**数值确实变了** ⇒ 判定为已结算并照常扣物"
+                                 + "（不这么做就会「效果生效却不扣东西」= 白吃）；根因与治本见 400ms 宽限那段注释",
+                            health = hp1, stamina = sta1
+                        });
+                        return;
+                    }
                     // 🔴 **别把毒留在场上**（见方法头第二段）：动画被掐掉时 `isEating` 卡 true
                     //    ⇒ `CanMove=false` + guard 门⑩ 恒 10（这一趟再也不会挥刀）。
                     bool reset = false;

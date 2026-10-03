@@ -61,9 +61,9 @@ ck("…`GuardBlockName(10)` 文案同步成「正在吃」", '10 => "正在吃�
 ck("…顺手把「字段什么时候被清」这条教训写进注释（别只改代码）", "永不清零" in guard)
 
 print("② `/eat`：**等结算**才扣、失败如实报 + 不清走位队列不吃")
-eat = _block(r"private object HandleEat\(\)", span=210)
-# ⚠️ span 170 → 210：2026-10-03 晚在轮询里加了"动画没了先给 400ms 宽限"那段（+13 行），
-#    170 行的窗口够不到尾部那句"HTTP 兜底超时" ⇒ 假红。
+eat = _block(r"private object HandleEat\(\)", span=260)
+# ⚠️ span 170 → 210 → 260：2026-10-03 晚先加了"动画没了先给 400ms 宽限"，又加了"信号漏读时数值纠错
+#    （防白吃）" ⇒ 窗口够不到尾部那句"HTTP 兜底超时" ⇒ 假红。**这个方法每长一段就要跟着抬窗口**。
 ck("…吃东西前 `ClearMovementState()`（清掉异步走位队列，否则动画被覆盖）",
    "ClearMovementState();" in eat)
 ck("…`eatObject` 出现在 `Stack--` **之前**（先吃、确认结算了才扣）",
@@ -130,6 +130,21 @@ ck("…宽限内不算失败（有 `waited - animGoneAt >=` 这条判据）",
    re.search(r"waited - animGoneAt >=", eat) is not None)
 ck("…**不许**再有『一看到 `!s.eating` 就 `animationOver = true`』的当场判死形状",
    not re.search(r"if \(!s\.eating && waited >= 600\)\s*\{\s*\n\s*animationOver = true;", eat))
+
+print("②之六 🔴 2026-10-03 深夜真机：信号漏读时**不许白吃**（效果生效了就必须扣物）")
+# 现场（真机 /eat + /state 逐发看）：`/eat` 回 `eat_not_settled`，可**血从 18 涨到 74**（芝士生效了）；
+#   那一发**没扣物品** ⇒ 芝士 11→9 却回了 **3 次**血（18→74→130→180）= **白吃一颗**。
+#   脚本按回执以为"没吃上"还会再吃 ⇒ 越攒越多。⇒ 失败分支里加**数值纠错**（只纠错、不当门）。
+ck("…失败分支里先做数值纠错（`if (statsChanged)` 在 `eat_not_settled` **之前**）",
+   ("if (statsChanged)" in eat and '"eat_not_settled"' in eat
+    and eat.index("if (statsChanged)") < eat.index('"eat_not_settled"')))
+ck("…纠错分支**照常扣物**（不许只回 ok 不扣）",
+   'settledBy = "values"' in eat and eat.count("obj2.Stack--") >= 2)
+ck("…回执把「信号漏读」如实写出来（`settledBy=\"values\"` + note）",
+   'settledBy = "values"' in eat and "没读到" in eat)
+ck("…SMAPI 日志留痕（这种漏读要能在日志里数出来）", "信号漏读" in eat and "LogLevel.Warn" in eat)
+ck("…注释点明「数值只当纠错、门仍是权威信号」，并指向 400ms 宽限",
+   "不是当" in eat and "400ms 宽限" in eat)
 
 print("④ 🔴 `/give` 传**名字**会静默造 Error Item（真机：9 发 `Wood` 占满 9 格、回包还说 ok:true）")
 give = _block(r"private object HandleGive\(HttpListenerContext ctx\)", span=90)
