@@ -12531,6 +12531,13 @@ public class ModEntry : Mod
 
         const int settleMs = 6000;     // 等结算上限（动画 ~1.6s + 余量；超了就是被打断了）
         var tcs = new TaskCompletionSource<object>();
+        // ⚠️ 「吃」这一步是在**主线程**上跑的，而 `EnqueueMainThread` 是**异步**的
+        //    （排队、当前线程立刻返回）⇒ 必须用一个信号量等它**真的跑过**再往下走。
+        //    2026-10-03 我自己踩过一次（真机 25s 超时 + 请求永久挂住）：原来直接在 enqueue 之后判
+        //    `eaten == null` —— 那一刻主线程还没跑，条件**恒为真** ⇒ 提前 `return tcs.Task...`，
+        //    而 `tcs` 只有**后面那个被跳过的块**才会置 ⇒ HTTP 请求永远不返回。
+        //    📌 通式：**异步排队 + 之后立刻读它写的结果 = 恒读到旧值**。
+        var issued = new TaskCompletionSource<bool>();
 
         // 主线程上的状态快照（血/体力/buff 数 + 是否正在吃）
         (bool eating, int hp, int sta, int nb) Snap()
@@ -12550,7 +12557,7 @@ public class ModEntry : Mod
                     nb = f.buffs?.AppliedBuffs?.Count ?? 0;
                 }
                 catch { }
-                t.SetResult(true);
+                t.TrySetResult(true);
             });
             t.Task.GetAwaiter().GetResult();
             return (eating, hp, sta, nb);
@@ -12566,7 +12573,8 @@ public class ModEntry : Mod
                 var item = farmer.CurrentItem;
                 if (item is not StardewValley.Object obj || obj.Edibility <= 0)
                 {
-                    tcs.SetResult(new { ok = false, error = "当前物品不可食用（先 /select 选个食物）" });
+                    tcs.TrySetResult(new { ok = false, error = "当前物品不可食用（先 /select 选个食物）" });
+                    issued.TrySetResult(false);
                     return;
                 }
                 hp0 = farmer.health; sta0 = (int)farmer.Stamina;
@@ -12578,15 +12586,17 @@ public class ModEntry : Mod
                 //    吃完由调用方自己重新发走位（各吃食路径本来就是"停下→吃→再走"）。
                 ClearMovementState();
                 farmer.eatObject(obj, true);   // 只播动画；结算在 doneEating —— 所以**先别扣**
+                issued.TrySetResult(true);
             }
             catch (Exception ex)
             {
-                tcs.SetResult(new { ok = false, error = ex.Message });
+                tcs.TrySetResult(new { ok = false, error = ex.Message });
+                issued.TrySetResult(false);
             }
         });
 
-        if (eaten == null)
-            return tcs.Task.GetAwaiter().GetResult();   // 上面已经给了失败结果
+        if (!issued.Task.GetAwaiter().GetResult())
+            return tcs.Task.GetAwaiter().GetResult();   // 上面已经给了失败结果（不可食用/异常）
 
         // ── 等结算（调用线程轮询，不卡主线程）──
         int waited = 0;
@@ -12615,7 +12625,7 @@ public class ModEntry : Mod
                 int nb1 = farmer.buffs?.AppliedBuffs?.Count ?? 0;
                 if (!landed)
                 {
-                    tcs.SetResult(new
+                    tcs.TrySetResult(new
                     {
                         ok = false,
                         ate = obj2.Name,
@@ -12633,7 +12643,7 @@ public class ModEntry : Mod
                     int idx = farmer.Items.IndexOf(obj2);
                     if (idx >= 0) farmer.Items[idx] = null;
                 }
-                tcs.SetResult(new
+                tcs.TrySetResult(new
                 {
                     ok = true, ate = obj2.Name, settledMs = waited,
                     hpBefore = hp0, hpAfter = hp1, staBefore = sta0, staAfter = sta1,
@@ -12643,9 +12653,19 @@ public class ModEntry : Mod
             }
             catch (Exception ex)
             {
-                tcs.SetResult(new { ok = false, error = ex.Message });
+                tcs.TrySetResult(new { ok = false, error = ex.Message });
             }
         });
+        // ⚠️ 兜底：主线程万一没把上面那块跑完（菜单卡死/游戏没在 tick），**也别让这个 HTTP 请求挂死**
+        //    —— 挂死的请求会把 AI 那一侧卡几十秒（2026-10-03 我自己踩过一模一样的形状）。
+        if (!tcs.Task.Wait(settleMs + 3000))
+        {
+            return new
+            {
+                ok = false, ate = eaten?.Name, action = "eat_verify_timeout",
+                error = $"吃完 {settleMs + 3000}ms 都没等到结算回执（主线程卡住？）—— **物品没扣**，自己看一眼血/buff"
+            };
+        }
         return tcs.Task.GetAwaiter().GetResult();
     }
 

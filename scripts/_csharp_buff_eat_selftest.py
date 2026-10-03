@@ -61,7 +61,7 @@ ck("…`GuardBlockName(10)` 文案同步成「正在吃」", '10 => "正在吃�
 ck("…顺手把「字段什么时候被清」这条教训写进注释（别只改代码）", "永不清零" in guard)
 
 print("② `/eat`：**等结算**才扣、失败如实报 + 不清走位队列不吃")
-eat = _block(r"private object HandleEat\(\)", span=130)
+eat = _block(r"private object HandleEat\(\)", span=150)
 ck("…吃东西前 `ClearMovementState()`（清掉异步走位队列，否则动画被覆盖）",
    "ClearMovementState();" in eat)
 ck("…`eatObject` 出现在 `Stack--` **之前**（先吃、确认结算了才扣）",
@@ -70,6 +70,15 @@ ck("…有诚实的失败码 `eat_not_settled`（没结算就说没结算）", '
 ck("…轮询读的是**权威表** `AppliedBuffs` 数 buff", "AppliedBuffs" in eat)
 ck("…吃完不再盲等 2 秒就回 ok（老形状 no more：`Stack--` 紧跟 `eatObject`）",
    not re.search(r"eatObject\([^;]*;\s*\n\s*obj\.Stack--", eat))
+# 🔴 2026-10-03 我自己踩的第二个坑（真机 25s 超时 + 请求永久挂住）：`EnqueueMainThread` 是**异步**的，
+#    却在 enqueue 之后立刻判 `eaten == null` ⇒ 那一刻主线程还没跑、条件恒真 ⇒ 提前 return，
+#    而 tcs 只有后面被跳过的块才置 ⇒ 请求永不返回。⇒ 必须有「吃这步跑完了」的信号量，且请求有兜底超时。
+ck("…有「吃这步跑过了」的信号量（不许 enqueue 后立刻读它写的变量）",
+   "issued.TrySetResult(true)" in eat and "issued.Task.GetAwaiter().GetResult()" in eat)
+ck("…**不许**再有 `if (eaten == null) return tcs.Task...` 那种形状（异步排队后立刻读=恒读旧值）",
+   not re.search(r"if \(eaten == null\)\s*\n\s*return tcs\.Task", eat))
+ck("…HTTP 请求有兜底超时（主线程卡住也不让请求挂死）",
+   "eat_verify_timeout" in eat and "tcs.Task.Wait(" in eat)
 
 print("③ buffs 两处都读**权威表** `AppliedBuffs`（不再反射摸黑）")
 eb = _block(r"private List<object>\? EnumerateBuffs", span=60)
