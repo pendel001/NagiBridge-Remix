@@ -227,6 +227,14 @@ ck("…`value <= 0` 一律不丢（卖不掉=装备）", "if value <= 0:" in bc 
 ck("…注释里记着铁证「腾格：丢 Galaxy Hammer」", "腾格：丢 Galaxy Hammer" in bc)
 ck("…腾不出格时**如实报**（不静默失败）", "一个能丢的都没有" in bc)
 
+print("⑭ 🎒 `ensure_free_slot` 必须是**全包最低分**（恒：「说好的腾价值最低项呢」）")
+# 原来是 `for …: if keep < 40: 丢它; return True` ⇒ 丢的是「第一个低分项」，背包顺序说了算，
+# 跟"价值最低"没有关系（银河之锤就是这么被丢的）。⇒ 先全表算分、再挑最低分那件。
+ck("…先全表算分再排序（`cands.sort()`）", "cands.sort()" in bc and "cands.append((item_keep_score" in bc)
+ck("…取的就是最低分那件（`cands[0]`）", "cands[0]" in bc)
+ck("…最低分 ≥40 时**一件都不丢**并如实报", "一件都不丢" in bc and "score >= 40" in bc)
+ck("…日志写明「全包最低分」", "全包最低分" in bc)
+
 print()
 if fails:
     print(f"❌ {len(fails)} 条没过：")

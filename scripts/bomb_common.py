@@ -3033,24 +3033,36 @@ class BombMiner(WeaponMixin):
     # ═══════════ 楼梯（99石头造，感染层跳关） ═══════════
 
     def ensure_free_slot(self, need=1):
-        """确保背包有 need 个空格：满了丢一个低价值物。
-        不丢石头（造楼梯要用）、不丢工具/炸弹/高价值食物。返回是否腾出格。"""
+        """确保背包有 need 个空格：满了**丢"保留分最低"的那一件**。
+        不丢石头（造楼梯要用）、不丢工具/炸弹/高价值食物（`item_keep_score` 判）+ **卖价≤0 的装备一律不丢**。
+
+        🔴 2026-10-03 深夜（恒：「太离谱了。**说好的腾价值最低项呢**」）—— 原来这里是
+          `for …: if keep < 40: 丢它; return True` ⇒ **丢的是"第一个低分项"，不是最低分项**
+          （背包顺序一撞就先丢谁，跟"价值最低"没有关系；银河之锤就是这么被丢的）。
+          ⇒ 改成**先全表算分、再挑最低分那件丢**；同分时挑价值更小、堆叠更多的（先清垃圾堆）。
+          全都 ≥40 分（=包里剩的都是家当）⇒ **一件都不丢 + 如实报**（宁造不了楼梯也别丢锤子）。
+        """
         if self.inventory_free_slots() >= need:
             return True
-        s = self.state()
-        for i in s.get("inventory", []):
+        cands = []
+        for idx, i in enumerate(self.state().get("inventory", [])):
             name = i.get("name", "")
-            if not name:
+            if not name or name == "Stone":
                 continue
-            keep = item_keep_score(name, i.get("value") or 0)
-            if keep < 40 and name != "Stone":  # 只丢真正低价值的，石头除外
-                self._post("/drop", {"name": name, "count": i.get("stack", 1)})
-                log(f"  🎒 腾格：丢 {name}")
-                return True
-        # 🔴 一个能丢的都没有 ⇒ **如实说**（别静默失败）。2026-10-03 起"卖价≤0 的装备"一律不丢
-        #    ⇒ 满包又全是装备时这条会走到（那就真的腾不出格：宁造不了楼梯，也别把锤子/工具丢了）。
-        log("  🎒 腾格：**一个能丢的都没有**（剩下的全是装备/工具/稀有物）—— 不丢家当")
-        return False
+            val = i.get("value") or 0
+            stack = i.get("stack") or 1
+            cands.append((item_keep_score(name, val), val, -stack, idx, name, stack))
+        if not cands:
+            log("  🎒 腾格：**一个能丢的都没有**（全是石头/装备）—— 不丢家当")
+            return False
+        cands.sort()
+        score, val, _neg, _idx, name, stack = cands[0]
+        if score >= 40:
+            log(f"  🎒 腾格：最低分是 {name}（保留分 {score}）—— 也算家当，**一件都不丢**")
+            return False
+        self._post("/drop", {"name": name, "count": stack})
+        log(f"  🎒 腾格：丢 {name}（保留分 {score}·价值 {val}g —— **全包最低分**）")
+        return True
 
     def craft_staircase(self):
         """99石头造一个楼梯（需要学会配方）。返回是否成功且背包真有楼梯。
