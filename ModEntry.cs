@@ -5167,6 +5167,106 @@ public class ModEntry : Mod
         }
     }
 
+    /// <summary>
+    /// 🍽️ **这件吃食吃下去会挂什么 buff**（`/state.inventory[].foodBuffs`）—— 恒 2026-10-03 选的"方案 A"。
+    ///
+    /// 为什么要这一位：恒的吃食规矩里有一条「**效果食物除外**」（自动挑恢复食物时别把带 buff 的那
+    /// 份当普通回血吃掉）。而"哪些是效果食物"**以前只能靠消费侧手抄名单**（Python 侧的
+    /// `BUFF_DISH_PRIORITY` / `BUFF_DRINK_PRIORITY` 两张表）—— 名单认物品是本项目反复栽的坑
+    /// （1.6 矿节点 ID、`Jewels Of The Sea`…）⇒ 判据回游戏这边来。
+    ///
+    /// 判据（反编译 `Farmer` 吃食结算那条链，`doneEating` 里）：
+    ///     `foreach (var b in @object.GetFoodOrDrinkBuffs()) applyBuff(b);`
+    ///   —— **`GetFoodOrDrinkBuffs()` 就是"吃下去会挂什么"的唯一真源**，不是我们猜的。
+    ///
+    /// 文案来源：`BuffsDisplay.displayAttributes`（游戏自己那张属性表，含**本地化**描述，就是玩家
+    /// 把鼠标放到 buff 图标上看到的那几行）。⚠️ 那张表只有 10 个加值属性（耕种/钓鱼/采矿/幸运/
+    /// 采集/体力上限/攻击/磁力/防御/速度）——`CombatLevel`/`Immunity`/各种乘区**不在里面**，
+    /// 所以"表里一条都没给出、但 buff 其实有效果"时，用**反射 `BuffEffects` 自己的字段名**兜底报
+    /// 出来（字段名是游戏类型自己的名字，仍然不是我们编的名单），否则 AI 会以为"这件没效果"。
+    ///
+    /// ⚠️ **`Buff.displayName` 对食物 buff 恒 null**（`Object.TryCreateBuffsFromData` 构造 `Buff` 时
+    ///    只传了 `source`/`displaySource`，第 9 个参数 `displayName` 没传）⇒ 别拿它当"这食物叫什么"；
+    ///    那件吃食的显示名在 **`displaySource`** 里（= `Item.DisplayName`）。`/buffs` 那条老链
+    ///    （`EnumerateBuffs`）当初就是被这一点坑的：`name` 落成 buff 的 id（`food`/`drink`）。
+    ///
+    /// 返回 `null` = 这件东西**吃下去不会挂 buff**（或压根不是 Object）——**省略字段**，不给每件东西
+    /// 挂空数组：`/state` 是热路径，背包 36 格每格多一个空字段是白烧 token。
+    /// </summary>
+    private static object? DescribeFoodBuffs(Item item)
+    {
+        if (item is not StardewValley.Object obj) return null;
+        List<Buff> buffs;
+        try
+        {
+            buffs = obj.GetFoodOrDrinkBuffs().Where(b => b != null).ToList();
+        }
+        catch (Exception)
+        {
+            return null;   // 拿不到就**不说**（宁可少报，不编）
+        }
+        if (buffs.Count == 0) return null;
+
+        var rows = new List<object>();
+        foreach (var b in buffs)
+        {
+            // ① 玩家视角的那几行（游戏自己的属性表 + 本地化文案）
+            var labels = new List<string>();
+            try
+            {
+                foreach (var attr in BuffsDisplay.displayAttributes)
+                {
+                    float v;
+                    try { v = attr.Value(b); } catch (Exception) { continue; }
+                    if (v == 0f) continue;
+                    try { labels.Add(attr.Description(v)); } catch (Exception) { labels.Add(v.ToString()); }
+                }
+            }
+            catch (Exception) { }
+
+            // ② 表里没有的效果（战斗等级/免疫/乘区…）→ 反射 BuffEffects 自己的字段，别静默丢掉
+            var raw = new List<string>();
+            if (labels.Count == 0 && b.effects != null)
+            {
+                try
+                {
+                    foreach (var f in b.effects.GetType().GetFields(BindingFlags.Public | BindingFlags.Instance))
+                    {
+                        var fv = f.GetValue(b.effects);
+                        var vp = fv?.GetType().GetProperty("Value");
+                        if (vp?.GetValue(fv) is not float fval || fval == 0f) continue;
+                        raw.Add($"{f.Name}={fval}");
+                    }
+                }
+                catch (Exception) { }
+            }
+
+            rows.Add(new
+            {
+                // buff 的 id **就是它的槽位**（反编译 `BuffManager.Apply`：先 `Remove(buff.id)` 再放进去）
+                // ⇒ 数据里没写 BuffId 的食物/饮品，id 落 `food`/`drink`（`TryCreateBuffsFromData`）；
+                //    写了 BuffId 的（某些汽水/药水）落那个 id。同 id 的互相顶掉 —— 这一位就是"顶谁"。
+                id = b.id,
+                source = b.displaySource ?? b.source,   // 这件吃食的显示名（不是 buff 名，见上面 ⚠️）
+                ms = b.millisecondsDuration,            // 持续时间（已含星级 ×1.5 / 戒指减半等游戏自己的修正）
+                effects = labels,
+                rawEffects = raw.Count > 0 ? raw : null
+            });
+        }
+        if (rows.Count == 0) return null;
+
+        // 是不是"喝"的（`Data/Objects` 自己的 `IsDrink`）—— 它就是 `TryCreateBuffsFromData` 给
+        // "**没写 BuffId 的**食物"挑 id 的那把尺子（`obj.IsDrink ? "drink" : "food"`）⇒ 消费侧要分
+        // "饮品/菜品"时用它，**别按名字猜**。
+        // ⚠️ 但真正的**槽位是 buff id**（`BuffManager.Apply` 按 id 顶掉旧的那个），不是"菜/饮"这个二分 ——
+        //    写了 BuffId 的（某些汽水/药水）落的是那个 id，`isDrink` 分不出它的槽。
+        bool isDrink = false;
+        try { isDrink = Game1.objectData != null && Game1.objectData.TryGetValue(obj.ItemId, out var od) && od.IsDrink; }
+        catch (Exception) { }
+
+        return new { isDrink, buffs = rows };
+    }
+
     // 💎 齐钻 + 🌰 金核桃 计数（2026-09-02 恒：状态条"变才报"用——齐钻在矿/齐单变化、核桃房全程；金核桃只在姜岛）。
     //   SafeWalnuts 用反射安全读 team.collectedWalnuts（SDV 字段名变体 NetInt/int 都兼容；读不到返回 0 静默，不炸编译）。
     private static int SafeQiGems(Farmer f)
@@ -5365,6 +5465,10 @@ public class ModEntry : Mod
                         //    healthRecoveredOnConsumption(血)——咖啡=只有体力、奶酪=回血，AI 按需求挑食才不会"血低了吃咖啡"。
                         ["edibleValue"] = (i as StardewValley.Object)?.staminaRecoveredOnConsumption() ?? 0,
                         ["healthRecovered"] = (i as StardewValley.Object)?.healthRecoveredOnConsumption() ?? 0,
+                        // 🍽️ 2026-10-03：**这件吃下去会不会挂 buff**（`null` 就省略字段）——
+                        //    恒的「效果食物除外」这条规矩的判据，见 `DescribeFoodBuffs` 的 docstring。
+                        //    ⚠️ 只有非 light 这条给（状态条那条只要格数，不吃这一份开销）。
+                        ["foodBuffs"] = DescribeFoodBuffs(i),
                         ["quality"] = (i as StardewValley.Object)?.Quality ?? 0,
                         ["value"] = SafeSellPrice(i),
                         ["sellable"] = IsSellable(i),   // 🔒 不可卖的工具/武器/戒指/靴子（标 0 + 不可卖，别让 AI 拿去卖）

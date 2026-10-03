@@ -66,6 +66,62 @@ EAT_HP_PCT = 60
 EAT_STA_PCT = 30
 
 
+# ── 🍽️ 食物条目：**一个形状** ────────────────────────────────────────────────
+# 全项目统一成 `(名字, 回体力, 回血, buff档)`（第 4 位可缺 = 老形状/拿不到）。
+# ⚠️ 2026-10-03 顺带查出的**形状漂移旧账**：`bomb_common.detect_food()` 原来返回
+#    `(名字, 回血, 性价比)`，而 `pick_food_closest_to_full` 按 `(名字, 回体力, 回血)` 读
+#    ⇒ 炸矿脚本里"血低"那一支其实在**按性价比挑**、"体力低"那一支在**按回血量挑**。
+#    同族病（`/state` 瘦/`/menu` 详、`catNum` 两种口径）：**同一个字段名两种口径**。
+#    ⇒ 从此两边都是 `(名字, 回体力, 回血, buff档)`，下标含义只此一份。
+
+
+def food_buffs_of(f):
+    """🍽️ 这条食物"吃下去会挂什么 buff"（条目第 4 位 = C# `/state` 的 `foodBuffs`）。
+
+    ⚠️ **判据只此一处**：游戏自己的 `Object.GetFoodOrDrinkBuffs()`（反编译 `Farmer` 吃食结算
+    那条链就是遍历它逐个 `applyBuff`）。消费侧**不许再编名单** —— 恒 2026-10-03 拍的就是这个清理
+    （`BUFF_DISH_PRIORITY` / `BUFF_DRINK_PRIORITY` / `DRINK_BUFFS` / `buff_duration` 四张手抄表已删）。
+    拿不到这一位（老 DLL / 自验假数据 / 3 元组）⇒ 空列表 = "不知道"，**不猜**（宁缺勿编）。
+    """
+    if not isinstance(f, (list, tuple)) or len(f) < 4:
+        return []
+    v = f[3]
+    return list(v) if isinstance(v, (list, tuple)) else []
+
+
+def food_buff_text(f):
+    """这条食物的效果文案（**游戏自己**的本地化描述，如 `+1 幸运 +1 速度`）；没 buff 给 `""`。"""
+    parts = []
+    for b in food_buffs_of(f):
+        if not isinstance(b, dict):
+            continue
+        for key in ("effects", "rawEffects"):
+            for e in (b.get(key) or []):
+                s = str(e)
+                if s and s not in parts:
+                    parts.append(s)
+    return " ".join(parts)
+
+
+def food_buff_ids(f):
+    """这条食物会挂的 buff id（= 游戏里的 buff **槽位**，同 id 互相顶掉，见 `BuffManager.Apply`）。"""
+    out = []
+    for b in food_buffs_of(f):
+        if isinstance(b, dict) and b.get("id"):
+            out.append(str(b["id"]))
+    return out
+
+
+def food_matches_buff(f, keyword):
+    """这条食物是否符合效果关键字（`food_buff` 点名用）：**只打游戏报的那些字**（效果文案/buff id/
+    吃食名），大小写无关。关键字为空 ⇒ 恒真（等于"不挑"）。"""
+    kw = (keyword or "").strip().lower()
+    if not kw:
+        return True
+    hay = " ".join([food_buff_text(f)] + food_buff_ids(f) + [str(f[0])]).lower()
+    return all(k in hay for k in [x for x in re.split(r"[,，\s]+", kw) if x])
+
+
 def pick_food_closest_to_full(foods, need_hp=0, need_sta=0):
     """🍽️ 按「**离补满最接近**」挑一件吃的（恒 2026-10-03 的口径）。
 
@@ -76,25 +132,170 @@ def pick_food_closest_to_full(foods, need_hp=0, need_sta=0):
       · 有**够补**（恢复量 ≥ 缺口）的 ⇒ 挑其中**恢复量最小**的（刚好够、不浪费好东西）；
       · **都不够** ⇒ 挑**恢复量最大**的（别拿小的白吃一顿）；
       · **血低时恢复量为 0 的永不选**（保留 2026-09-06 的老规矩"绝不拿纯体力咖啡保命"）；
+      · **带 buff 的（效果食物）不参与**（恒那句"效果食物除外"）—— 判据是 `food_buffs_of()`
+        （游戏报的），不是名单。⚠️ **包里除了效果食物没别的 ⇒ 就是不吃**（不是"退回吃效果食物"）：
+        恒 2026-10-03 把规矩说死了 ——「**有点名只吃点名，吃完了也不吃别的；不点名才自动吃**」
+        ⇒ 没有"自作主张兜底"这一档。**调用方必须吭一声**（拿 `effect_food_note()` 打一行），
+        让 AI 知道"不是没吃的，是只有带效果的、按规矩没动" —— 想吃就自己点名（`food_buff`）。
       · `need_hp`/`need_sta` **只该有一条 > 0**（哪条线触发就补哪条；调用方决定"血优先"）。
-    `foods` = `detect_food()` 的形状 `[(名字, 回体力, 回血), …]`；返回**食物名**或 `None`。
-    ⚠️ "效果食物（带 buff 的）除外"**还没做** —— 那要 C# 报"这件有没有 buff"（恒已选方案 A，进下一批 C#）；
-       在那之前靠"点名"（`food_hp`/`food_sta`）避开：**不点名它就不吃**。
+    `foods` = `(名字, 回体力, 回血[, buff档])`；返回**食物名**或 `None`。
     """
     cand = [f for f in (foods or []) if isinstance(f, (list, tuple)) and len(f) >= 3]
     if not cand:
         return None
+    pool = [f for f in cand if not food_buffs_of(f)]   # 效果食物除外（恒的规矩，见 docstring）
+    if not pool:
+        return None
     use_hp = need_hp > 0
     val = (lambda f: f[2] or 0) if use_hp else (lambda f: f[1] or 0)
     need = need_hp if use_hp else need_sta
-    ok = [f for f in cand if val(f) > 0]          # 血低时不选"回血 0"的（咖啡那种）
+    ok = [f for f in pool if val(f) > 0]            # 血低时不选"回血 0"的（咖啡那种）
     if not ok:
         return None
     if need > 0:
         enough = [f for f in ok if val(f) >= need]
         if enough:
-            return min(enough, key=val)[0]        # 刚好够 ⇒ 挑最小的，不浪费
-    return max(ok, key=val)[0]                    # 都不够 ⇒ 挑最大的
+            return min(enough, key=val)[0]          # 刚好够 ⇒ 挑最小的，不浪费
+    return max(ok, key=val)[0]                      # 都不够 ⇒ 挑最大的
+
+
+def effect_food_note(foods):
+    """「包里**只剩**带效果的那些了」这句话（没这种情况给 `""`）—— 自动挑食**一条都没挑出来**时,
+    调用方打这一行：不吃饭的原因要**说得出来**（同族教训：静默 = "我点名了"和"点名没生效"长得一样）。"""
+    if not foods:
+        return ""
+    plain = [f for f in foods if not food_buffs_of(f)]
+    if plain:
+        return ""
+    buffed = [f for f in foods if food_buffs_of(f)]
+    if not buffed:
+        return ""
+    names = "、".join(f"{f[0]}({food_buff_text(f) or '效果游戏没报数值'})" for f in buffed[:4])
+    more = f" 等 {len(buffed)} 样" if len(buffed) > 4 else ""
+    return f"⚠️ 包里只剩带效果的食物：{names}{more} —— 按「效果食物除外」没动它们（要吃就点名 food_buff）"
+
+
+# ⚰️ `pick_buff_food(foods, keyword)` 2026-10-03 删：写完发现**没有调用点** ——
+#    补 buff 那条路（`maintain_buffs_for`）要的是**整条记录**（id/ms/效果文案），不是光一个名字
+#    ⇒ 它自己按 `food_buffs_of` + `food_matches_buff` 遍历就够了。**没有调用点的函数不许留着**
+#    （本项目 2026-10-03 刚清过两个这种孤儿：`/petall` `/waterbowl`）。
+
+
+# ── 🔌 两个脚本族的"机器人"接口不同名，这里各收一处 ──────────────────────────────
+#   `mine_run.MineBot` 与 `bomb_common.BombMiner` 是**两个类**（不是继承），吃食/状态入口名字不同。
+#   ⚠️ 同族教训（2026-09-20 真机）：给一个类写好分支**不等于**另一个类也走那条路
+#      （当时 `eat_recovery` 压根没读 `self.food_hp`，点名在炸矿脚本里是死的）。
+#      ⇒ 凡是两边都要用的判据，**只写在这里一份**，别在各自的类里各抄一遍。
+
+def bot_foods(bot):
+    """背包里的吃食列表（`MineBot.detect_inventory_food` / `BombMiner.detect_food`；
+    形状同一个 `(名字, 回体力, 回血, buff档)`，见文件顶部的形状说明）。"""
+    for attr in ("detect_inventory_food", "detect_food"):
+        fn = getattr(bot, attr, None)
+        if callable(fn):
+            try:
+                return fn() or []
+            except Exception:
+                return []
+    return []
+
+
+def bot_eat(bot, name):
+    """让 bot 吃**指定**那样。两个族的吃法入口不同名（`BombMiner.eat` / `MineBot._eat_one`）。"""
+    fn = getattr(bot, "eat", None)
+    if callable(fn):
+        try:
+            return bool(fn(name))
+        except Exception:
+            return False
+    fn2 = getattr(bot, "_eat_one", None)
+    if callable(fn2):
+        try:
+            return bool(fn2(name, "补 buff"))
+        except Exception:
+            return False
+    return False
+
+
+def eat_patiently(bot, name, after=2.0):
+    """拟人吃：**先停下**（瞬移/移动中吃动画不生效 ⇒ 吃掉了但 buff 挂不上）→ 吃 → 等动画播完。"""
+    try:
+        for _ in range(5):
+            s = bot.state() or {}
+            if not (s.get("player") or {}).get("isMoving", True):
+                break
+            time.sleep(0.3)
+    except Exception:
+        pass
+    time.sleep(0.4)          # 等游戏 tick 完全空闲（刚瞬移/切层完立刻吃会"吃掉但不加 buff"）
+    ok = bot_eat(bot, name)
+    if ok:
+        time.sleep(after)    # 等吃喝动画播完（buff 才真正生效）
+    return ok
+
+
+def active_buffs(bot):
+    """现在挂着的 buff：`{id: 剩余秒}`（**id 就是槽位**，同 id 互相顶，见 `BuffManager.Apply`）。"""
+    out = {}
+    try:
+        r = bot._get("/buffs") or {}
+    except Exception:
+        return out
+    for b in (r.get("buffs") or []):
+        b = b or {}
+        bid = str(b.get("id") or "")
+        try:
+            secs = float(b.get("seconds") or 0)
+        except Exception:
+            secs = 0.0
+        if bid:
+            out[bid] = max(out.get(bid, 0.0), secs)
+    return out
+
+
+def maintain_buffs_for(bot, threshold=30, want=None, min_gap=8.0):
+    """🍽️ 补 buff（**数据驱动**：认游戏报的 buff，不认名单）—— 返回是否吃了一次。
+
+    判据两侧全是游戏给的：
+      · **该吃什么**：背包里 `food_buffs_of()` 非空的那些（C# = `Object.GetFoodOrDrinkBuffs()`），
+        每条buff 自带 `id`/`ms`/效果文案；
+      · **现在挂着什么**：`/buffs` 的 `id` + 剩余秒。
+    两侧**同一个 id 就是同一个槽**（`BuffManager.Apply` 先 `Remove(buff.id)` 再放进去）⇒
+    原先那两张"菜品/饮品优先级"手抄表 + `DRINK_BUFFS` + `buff_duration`（时长也是抄的）**全部删掉**。
+
+    `want` = 恒的 `food_buff` 点名（效果关键字，如 `"幸运"`）：
+      · 点名 ⇒ **只认匹配的那份**；没有 ⇒ **不吃别的**（恒 2026-10-03：「有点名只吃点名，
+        吃完了也不吃别的；不点名才自动吃」）；
+      · 不点名 ⇒ 包里任意带 buff 的都算候选，**按背包顺序**（不另立优先级表）。
+    """
+    now = time.time()
+    if now - getattr(bot, "_last_buff_check", 0.0) < min_gap:
+        return False
+    bot._last_buff_check = now
+
+    cands = [f for f in bot_foods(bot) if food_buffs_of(f) and food_buff_ids(f)]
+    if want:
+        cands = [f for f in cands if food_matches_buff(f, want)]
+    if not cands:
+        if want:
+            log(f"  ⚠️ 背包里没有「{want}」那份带 buff 的吃食 —— 不吃别的（有点名只吃点名的）")
+        else:
+            log("  ⚠️ 背包里没有带 buff 的吃食 —— 跳过补 buff")
+        return False
+
+    active = active_buffs(bot)
+    for f in cands:                                   # 背包顺序，第一个"该补"的吃
+        left = max([active.get(i, 0.0) for i in food_buff_ids(f)] or [0.0])
+        if left > threshold:
+            continue
+        name = f[0]
+        if eat_patiently(bot, name):
+            log(f"  🍽️ 补 buff：{name}（{food_buff_text(f) or '效果游戏没报数值'}；"
+                f"补前剩 {left:.0f}s）")
+            return True
+        log(f"  ⚠️ 补 buff 要吃的 {name} 没吃上 —— 跳过（不换别的）")
+        return False
+    return False
 
 # 协同模式只在路径上炸这些高价值矿（不浪费炸弹炸普通石头）
 HIGH_VALUE_ORES = {
@@ -568,15 +769,20 @@ class BombMiner(WeaponMixin):
         self._bombed_rocks = set()     # 已爆炸覆盖的石头，贪心排除，防同范围重复放炸弹
         self._pending_bombs = []       # [(ax, ay, 放置时间, bomb_type)] 还没爆炸的炸弹——选锚点/敲石头要避开其范围
         self._floor_entrance = None    # 当前层入口梯子（逃出用）
-        self._buff_track = {}          # buff 自跟踪 {"dish":{start,duration}, "drink":{...}}——重启不重复吃
         self._recover_streak = 0       # 连续吃了几次血还没回上去（"站着吃挨打"的收敛计数，见 unsafe_reason）
         self._guard_on = False         # 🛡️ C# 侧贴身自动防御是否开上了（见 guard_on / retaliate_if_hit）
         # 🍽️ 2026-09-20 恒：自定义吃食 —— **点名 + 优先级**（`--food-hp`/`--food-sta`）。
-        #    空 = 不点名（退回原来的"自动挑"，见 eat_if_needed）。
+        #    空 = 不点名（走"自动挑"，见 eat_if_needed）。
         #    为什么要有它：自动挑按"回血量×10"打分，**会把想留着卖的山羊奶酪吃了**；
         #    点了名就只在点名的几样里挑，靠前的先吃。
+        #    ⚠️ 2026-10-03 恒把这条规矩说死了：「**有点名只吃点名，吃完了也不吃别的；不点名才自动吃**」
+        #       —— 原来第 ③ 条"整张表都没货就退回自动挑"**已作废**（那是我 09-20 自己加的保命兜底）。
         self.food_hp = []              # 回血：按优先级排的食物名列表
         self.food_sta = []             # 体力：同上
+        # 🍽️ 2026-10-03 恒：`food_buff` —— **点名"现在去吃带这个效果的那份"**（如 "幸运"/"钓鱼"）。
+        #    判据是游戏报的 `foodBuffs` 效果文案/buff id/吃食名（见 `food_matches_buff`），不是名单。
+        #    维护走 `maintain_buffs_for`：该 buff 没了/快过期就吃；点名了就不吃别的。
+        self.food_buff = ""
 
     # ═══════════ 炸弹类型选择（黑>超级>樱桃，背包实际有才算数） ═══════════
 
@@ -836,10 +1042,14 @@ class BombMiner(WeaponMixin):
     FOOD_CATEGORIES = {"Cooking", "Vegetable", "Fruit", "Fish", "Forage", "Flower",
                        "菜品", "蔬菜", "水果", "鱼", "采集品", "花"}
 
-    # 饮品（独立 buff 槽，和菜品 buff 并存）
-    DRINK_BUFFS = {"Coffee", "Triple Shot Espresso", "Green Tea", "Ginger Ale",
-                   "Espresso", "Tea", "Pina Colada", "Cola",
-                   "咖啡", "三倍浓缩咖啡", "绿茶", "姜汁汽水"}
+    # ⚰️ 2026-10-03 删：`DRINK_BUFFS`（饮品名单）+ `BUFF_DISH_PRIORITY` / `BUFF_DRINK_PRIORITY`
+    #    （buff 菜/饮优先级）+ `buff_duration()`（时长手抄表）+ `_buff_track`（自家时间记账）。
+    #    理由（恒：「顺带清理那两张手抄表，有判据之后就该问游戏，别再维护名单」）：
+    #    C# 现在把每件吃食**吃下去会挂什么 buff**（id/时长/本地化效果文案）直接报出来
+    #    （`/state.inventory[].foodBuffs` = 游戏自己的 `Object.GetFoodOrDrinkBuffs()`），
+    #    补 buff 那一支改成 `maintain_buffs_for()`：**按 buff id 对槽**，时长也用游戏报的。
+    #    ⚠️ 名单认物品在本项目栽过不止一次（1.6 矿节点 ID、`Jewels Of The Sea`、`isForage`）——
+    #       下次想加"某类物品的名单"之前，先问一句：**游戏自己报不报这一位？**
 
     # 恢复食物参考表（不再用于排序——eat_recovery 改按性价比=恢复量/价格实时算；此处仅作兜底参考/文档）
     RECOVERY_PRIORITY = ["Salad", "沙拉", "Pineapple", "菠萝",
@@ -847,18 +1057,20 @@ class BombMiner(WeaponMixin):
                          "Common Mushroom", "普通蘑菇", "Farmer's Lunch", "农夫午餐",
                          "Carp", "鲤鱼", "Chub", "鲦鱼"]
 
-    # buff 菜品优先级（AI 可改）
-    BUFF_DISH_PRIORITY = ["Spicy Eel", "辣鳗鱼", "Crab Cakes", "蟹黄糕",
-                          "Pepper Poppers", "辣椒爆炒", "Lucky Lunch", "幸运午餐",
-                          "Fish Stew", "鱼汤", "Pumpkin Soup", "南瓜汤", "Miner's Treat", "矿工糖"]
-    # buff 饮品优先级
-    BUFF_DRINK_PRIORITY = ["Triple Shot Espresso", "三倍浓缩咖啡", "Coffee", "咖啡",
-                           "Green Tea", "绿茶", "Ginger Ale", "姜汁汽水"]
+    # buff 菜品/饮品优先级表：⚰️ 2026-10-03 已删（见类上方那条 tombstone）——
+    # 补 buff 改走 `maintain_buffs_for()`：拿 C# 报的 `foodBuffs`（游戏自己的判据）对 `/buffs`。
 
     def detect_food(self):
         """找背包里可回血/补体力的食物列表。⚠️ 2026-09-06 复用 /state 的 edibleValue/healthRecovered
-        判真实回血/体力值（老 DLL 无字段时按类别兜底、回血当0），返回 [(name, edibleValue, healthRecovered)]。
-        血低挑食用（bomb_common 维护 buff 另走 maintain_buffs，不受这影响）。"""
+        判真实回血/体力值（老 DLL 无字段时按类别兜底、回血当0）。
+
+        形状 = **全项目统一那一份** `(名字, 回体力, 回血, buff档)`：
+          · ⚠️ 2026-10-03 改：原来是 `(名字, 回血, 性价比)`，而 `pick_food_closest_to_full`
+            按 `(名字, 回体力, 回血)` 读 ⇒ 炸矿脚本里"血低"在**按性价比挑**、"体力低"在**按回血量挑**
+            （同一个字段名两种口径，同族病）。性价比是 `eat_recovery` 自己那份排序的事，
+            要算就在**那里**算（它自己算 eff），别硬塞进这个形状里。
+          · `buff档` = `/state` 的 `foodBuffs`（游戏报的；拿不到 = 空 = "不知道"，见 `food_buffs_of`）。
+        """
         s = self.state()
         inv = s.get("inventory", [])
         has_info = any("edibleValue" in (it or {}) for it in inv)
@@ -871,15 +1083,16 @@ class BombMiner(WeaponMixin):
             if not name or name in seen or name in BOMB_NAMES:
                 continue
             cat = item.get("category", "")
+            buffs = item.get("foodBuffs") or []
             if has_info:
                 ed = int(item.get("edibleValue") or 0)
                 hp = int(item.get("healthRecovered") or 0)
                 if (ed > 0 or hp > 0) and cat in self.FOOD_CATEGORIES:
                     seen.add(name)
-                    foods.append((name, ed, hp))
+                    foods.append((name, ed, hp, buffs))
             elif cat in self.FOOD_CATEGORIES:
                 seen.add(name)
-                foods.append((name, 1, 0))
+                foods.append((name, 1, 0, buffs))
         return foods
 
     # ── 🏳️ 撤退触发线（恒 2026-09-19 拍板）──
@@ -929,15 +1142,21 @@ class BombMiner(WeaponMixin):
     def eat_if_needed(self, hp_threshold=40, sta_threshold=EAT_STA_PCT, food_hp=None, food_sta=None):
         """按需进食。`food_hp`/`food_sta` 传**列表（靠前的先吃）**或逗号串；空 = 不点名。
 
-        🕐 2026-09-20 恒「自定义吃食」的三条规矩（拍板原话见 CHANGELOG）：
+        🕐 恒的两版规矩（**新版覆盖旧版**，别照旧注释办事）：
+
+        2026-09-20（① ② 仍然有效）：
           ① **点名就在点名的里挑**：血低 → 只看 `food_hp` 那张表；体力低 → 只看 `food_sta`。
              两张表分开是有意的 —— 同一个顺序表对两种需求不可能都对（奶酪补血、沙拉补体力，
              合成一条「奶酪,沙拉」时体力低会先把奶酪吃了）。
           ② **列表内降级**：表里靠前的没货就试下一项（这才是"优先级"的意义）。
-          ③ **整张表都没货 → 明确报一句，再退回自动挑**。理由：不吃饭会死
-             （恒当日刚确认"蟹子会碰掉血"），而吃错东西只是浪费 —— 保命优先。
-             ⚠️ **别把这条"降级"改成静默**：那样"我明明点名了"和"点名根本没生效"
-                在日志里长得一模一样（同族教训：`/passable_rect` 静默无视 location）。
+
+        2026-10-03（恒原话：「**有点名只吃点名，吃完了也不吃别的；不点名才自动吃**」）：
+          ③ **点名 = 白名单**。点名的几样没了/吃不上 ⇒ **报一句就不吃了**，
+             ~~退回自动挑~~ **作废**（那条"保命优先"的兜底是我 09-20 自己加的，恒现在不要）。
+          ④ **不点名才自动挑** —— 挑的时候**效果食物除外**（带 buff 的那份不动，
+             想吃就 `food_buff` 点名）。
+          ⚠️ **别把"没吃上"改成静默**：那样"我明明点名了"和"点名根本没生效"
+             在日志里长得一模一样（同族教训：`/passable_rect` 静默无视 location）。
         """
         hp_list = parse_food_list(food_hp) if food_hp is not None else list(self.food_hp)
         sta_list = parse_food_list(food_sta) if food_sta is not None else list(self.food_sta)
@@ -958,7 +1177,7 @@ class BombMiner(WeaponMixin):
         hp_pct = (hp / max_hp * 100) if max_hp > 0 else 100
         sta_pct = (sta / max_sta * 100) if max_sta > 0 else 100
 
-        # ── ① 点名优先 ──
+        # ── ① 点名（白名单）──
         if hp_list or sta_list:
             hp_low = hp_pct < EAT_HP_PCT
             want = hp_list if hp_low else sta_list
@@ -967,33 +1186,44 @@ class BombMiner(WeaponMixin):
             if pick:
                 try:
                     if self.eat(pick):
-                        vals = next((f for f in foods if f[0] == pick), (pick, 0, 0))
+                        vals = next((f for f in foods if f[0] == pick), (pick, 0, 0, []))
                         log(f"  🍽️ 吃了 {pick}（点名·{label} 体{vals[1]} 血{vals[2]}）")
                         return True
                 except Exception as e:
                     log(f"  ⚠️ 吃 {pick} 出错：{e}")
-            # ── ③ 整张表都没货（或吃失败）→ 吭一声，再退回自动挑 ──
+            # ── ③ 点名白名单：没了就**不吃了**，不换别的（恒 2026-10-03）──
             if want:
                 log(f"  ⚠️ 点名的{label}食物一个都没吃上（表：{','.join(want)}）"
-                    f" —— 退回自动挑（想吃点名的那几样，请先确保它们在包里）")
+                    f" —— 按「有点名只吃点名」**不吃别的**")
+            elif hp_low:
+                log(f"  ⚠️ 这次需要{label}，但 `food_hp` 没点名 —— 按「不点名才自动吃」去自动挑")
             else:
-                log(f"  ⚠️ 这次需要{label}，但没点过那类的名 —— 退回自动挑")
+                log(f"  ⚠️ 这次需要{label}，但 `food_sta` 没点名 —— 按「不点名才自动吃」去自动挑")
+            # 一侧点名、另一侧没点名时：**没点名的那一侧照样走自动挑**（两张表两条线）
+            if want:
+                return False   # 点了名而没吃上 ⇒ 到此为止，不换别的
+            # 触发的那一侧**没点名** ⇒ 按「不点名才自动吃」继续往下走自动挑
 
-        # ── 自动挑：🍽️ 2026-10-03 恒 —— 改成「**离补满最接近**」（见 `pick_food_closest_to_full`：
+        # ── ④ 自动挑：🍽️ 2026-10-03 恒 —— 「**离补满最接近**」（见 `pick_food_closest_to_full`：
         #    够补的挑**最小**、都不够挑**最大**）。老逻辑是"回血最多优先"（`hpv*10` 主导）
         #    ⇒ **满 180 缺 20 也掏奶酪** —— 恒举的"20/40 该吃韭葱+20 而不是奶酪+60"就是这个浪费。
-        #    ⚠️ 老规矩保留：血低时**回血为 0 的绝不选**（"绝不拿纯体力咖啡保命"）。
+        #    ⚠️ 老规矩保留：血低时**回血为 0 的绝不选**（"绝不拿纯体力咖啡保命"）；
+        #       并且**效果食物除外**（恒那句"效果食物除外"，判据=游戏报的 `foodBuffs`）。
         _need_hp = max(0, max_hp - hp) if hp_pct < EAT_HP_PCT else 0
         _need_sta = max(0, max_sta - sta) if (hp_pct >= EAT_HP_PCT and sta_pct < sta_threshold) else 0
         pick = pick_food_closest_to_full(foods, _need_hp, _need_sta)
-        if pick:
-            try:
-                if self.eat(pick):
-                    vals = next((f for f in foods if f[0] == pick), (pick, 0, 0))
-                    log(f"  🍽️ 吃了 {pick}（体{vals[1]} 血{vals[2]}；缺口 血{_need_hp}/体{_need_sta}）")
-                    return True
-            except Exception as e:
-                log(f"  ⚠️ 吃 {pick} 出错：{e}")
+        if not pick:
+            note = effect_food_note(foods)
+            if note:
+                log("  " + note)
+            return False
+        try:
+            if self.eat(pick):
+                vals = next((f for f in foods if f[0] == pick), (pick, 0, 0, []))
+                log(f"  🍽️ 吃了 {pick}（体{vals[1]} 血{vals[2]}；缺口 血{_need_hp}/体{_need_sta}）")
+                return True
+        except Exception as e:
+            log(f"  ⚠️ 吃 {pick} 出错：{e}")
         return False
 
     def eat(self, name=None):
@@ -1014,7 +1244,11 @@ class BombMiner(WeaponMixin):
         return 0
 
     def check_buffs(self):
-        """读 /buffs，去重返回 [{source, displayName, seconds}]"""
+        """读 `/buffs`（按 `(source, id)` 去重）→ `[{id, source, displayName, seconds}]`。
+
+        ⚠️ 补 buff 的判据**已经不在这里**了（`maintain_buffs_for` 直接读 `id`/`seconds` 对槽）——
+        本方法只留给"想知道自己挂着什么"的调用方。
+        """
         try:
             r = self._get("/buffs")
         except Exception:
@@ -1029,59 +1263,15 @@ class BombMiner(WeaponMixin):
             out.append(b)
         return out
 
-    def buff_duration(self, name):
-        """食物/饮品 buff 持续时间（现实秒）。"""
-        return {
-            "Spicy Eel": 420, "辣鳗鱼": 420, "Crab Cakes": 960, "蟹黄糕": 960,
-            "Pepper Poppers": 420, "辣椒爆炒": 420, "Lucky Lunch": 660, "幸运午餐": 660,
-            "Fish Stew": 480, "鱼汤": 480, "Pumpkin Soup": 420, "南瓜汤": 420,
-            "Miner's Treat": 480, "矿工糖": 480,
-            "Triple Shot Espresso": 252, "三倍浓缩咖啡": 252, "Coffee": 126, "咖啡": 126,
-            "Green Tea": 168, "绿茶": 168, "Ginger Ale": 252, "姜汁汽水": 252,
-        }.get(name, 420)
+    # ⚰️ `buff_duration()` 2026-10-03 删：时长是**手抄表**，而游戏在 `foodBuffs[].ms` 里
+    #    已经报得明明白白（含星级 ×1.5、戒指减半这些游戏自己的修正）。
 
-    def maintain_buffs(self, threshold=30):
-        """buff 维护：吃 buff 菜/饮补时间。每 ~20s 用 /buffs 校准真实剩余——
-        吃恢复食物（如沙拉）会把菜品 buff 顶掉，光靠时间自跟踪发现不了，校准后能补吃。"""
-        now = time.time()
-        # 周期性校准：读 /buffs 真实状态（覆盖"吃沙拉顶掉鳗鱼 buff"这类时间跟踪看不到的情况）
-        if now - getattr(self, "_last_buff_calib", 0) > 20:
-            self._last_buff_calib = now
-            track = {}
-            for b in self.check_buffs():
-                src = b.get("source", "")
-                secs = b.get("seconds")
-                if not src or not secs:
-                    continue
-                kind = "drink" if src in self.DRINK_BUFFS else "dish"
-                track[kind] = {"start": now, "duration": float(secs)}
-            self._buff_track = track
-        # 检查菜品/饮品 buff 剩余
-        for kind, prio, label in (("dish", self.BUFF_DISH_PRIORITY, "buff菜"),
-                                  ("drink", self.BUFF_DRINK_PRIORITY, "buff饮")):
-            remaining = 0.0
-            tr = self._buff_track.get(kind)
-            if tr:
-                remaining = tr["start"] + tr["duration"] - now
-            if remaining > threshold:
-                continue  # buff 还有效，不补吃
-            for name in prio:
-                if self.count_item(name) > 0:
-                    # 拟人吃：先停下（瞬移/移动中吃动画不生效，buff 挂不上）→ 吃 → 等动画播完
-                    try:
-                        for _ in range(5):
-                            s = self.state()
-                            if not s.get("player", {}).get("isMoving", True):
-                                break
-                            time.sleep(0.3)
-                    except Exception:
-                        pass
-                    time.sleep(0.4)  # 等游戏 tick 完全空闲（刚瞬移/切层完立刻吃会吃掉但不加 buff）
-                    if self.eat(name):
-                        log(f"  🍽️ {label} {name}")
-                        self._buff_track[kind] = {"start": time.time(), "duration": self.buff_duration(name)}
-                        time.sleep(2.0)  # 等吃喝动画播完（buff 才真正生效）
-                    break
+    def maintain_buffs(self, threshold=30, want=None):
+        """🍽️ 补 buff —— 实际逻辑在**模块级** `maintain_buffs_for()`（`MineBot` 也要用同一份，
+        两个类各抄一遍就是 2026-09-20 那个"点名在炸矿脚本里是死的"病的温床）。
+
+        `want` = 恒的 `food_buff` 点名（效果关键字）；点名就只认那份，没有就不吃别的。"""
+        return maintain_buffs_for(self, threshold=threshold, want=want)
 
     def heal(self):
         """作弊回满血（救急用）。IsActive 补丁修好后台冻结后，正常吃食物回血已可靠；
@@ -1112,12 +1302,15 @@ class BombMiner(WeaponMixin):
         now = time.time()
         last_eat = getattr(self, "_last_eat", 0.0)
         gap = maxhp - hp
-        buff_names = set(self.BUFF_DISH_PRIORITY) | set(self.BUFF_DRINK_PRIORITY)
         foods = []
+        eff_of = {}          # 名字 → 性价比（排序用；**不进食物条目形状**，见 detect_food 的注释）
         for it in s.get("inventory", []):
             name = it.get("name", "")
-            if not name or name in buff_names or name in BOMB_NAMES:
-                continue  # 排除 buff 菜/饮、炸弹
+            if not name or name in BOMB_NAMES:
+                continue
+            buffs = it.get("foodBuffs") or []
+            if buffs:
+                continue     # 🍽️ 效果食物除外（恒的规矩；判据=游戏报的 foodBuffs，不再拿名单认）
             cat = it.get("category", "")
             if name in FOOD_RECOVERY:
                 pass  # 已知食物直接认（沙拉/菠萝/胡萝卜等）
@@ -1139,7 +1332,11 @@ class BombMiner(WeaponMixin):
             hp_rec = int(hp_rec)
             value = max(int(it.get("value", 0) or 0), 1)
             eff = hp_rec / (value * (1 + 0.5 * q))          # 含星级：高星实际卖价贵→性价比低→留卖
-            foods.append((name, hp_rec, eff))
+            # ⚠️ 2026-10-03：条目形状跟全项目统一成 `(名字, 回体力, 回血)`，性价比**另存 eff_of**
+            #    （原来把它塞在 `f[2]` 上 ⇒ 跟 `pick_food_closest_to_full` 读的"回血"撞车）。
+            sta_rec = int(it.get("edibleValue") or 0)
+            foods.append((name, sta_rec, hp_rec))
+            eff_of[name] = eff
         # 吃东西冷却：动画 2 秒播完效果才生效，吃完 3 秒内不重复吃（防连续炫）
         if now - last_eat < 3.0:
             return False
@@ -1161,17 +1358,16 @@ class BombMiner(WeaponMixin):
                 priority = 1
             else:
                 priority = 0
-            return (-priority, -f[2])
+            return (-priority, -eff_of.get(n, 0.0))
         foods.sort(key=rank)
-        # ── ① 点名优先（2026-09-20 恒拍板，与 `eat_if_needed` 同一套规矩）──
+        # ── ① 点名（白名单）2026-09-20 恒拍板，2026-10-03 改成**不兜底**（与 `eat_if_needed` 同一套）──
         #    ⚠️ 原来这里**根本不读 `self.food_hp`**：恒点名「鱼肉卷,奶酪」，真机日志却是
         #       `🍽️ 自保吃 Cheese(回38) HP 42%` —— 鱼肉卷 20 个**一个没动**，点名在三个炸矿
         #       脚本里是**死的**。根因：`bomb_*` 的血线自保走的是**本函数**（`bomb_mine.py:458`），
         #       不是 `eat_if_needed`；我当初只改了后者。
         #       通式教训：**给消费方写了分支 ≠ 消费方拿得到数据**（同族：`/state` 瘦/`/menu` 详）。
         #    · 点名命中 → 就吃它（不再走"补得满/菠萝优先"那套排序）
-        #    · 整张表都没货 → **吭一声**再退回自动挑（绝不静默：静默会让"我点名了"和"点名没生效"
-        #      在日志里长得一模一样）
+        #    · 点名全没货 → **吭一声就不吃了**（恒 2026-10-03：「有点名只吃点名，吃完了也不吃别的」）
         named = parse_food_list(self.food_hp) if getattr(self, "food_hp", None) else []
         chosen = None
         if named:
@@ -1180,12 +1376,13 @@ class BombMiner(WeaponMixin):
                 chosen = picked
             else:
                 log(f"  ⚠️ 点名的回血食物一个都没吃上（表：{','.join(named)}）"
-                    f" —— 退回自动挑（想吃点名的，请先确保它们在包里）")
-        # ② 没点名（或点名全没货）：自适应血量——优先吃补得满的；硬兜底/补不满吃排序最前
+                    f" —— 按「有点名只吃点名」**不吃别的**")
+                return False
+        # ② 没点名：自适应血量——优先吃补得满的；硬兜底/补不满吃排序最前
         if chosen is None:
             if hp_pct >= hard:
                 for f in foods:
-                    if f[1] >= gap:
+                    if f[2] >= gap:          # 🩹 回血在 f[2]（形状统一后；原来读的是 f[1]=回血）
                         chosen = f[0]
                         break
             if chosen is None:
@@ -1201,7 +1398,10 @@ class BombMiner(WeaponMixin):
             pass
         self.eat(chosen)
         self._last_eat = time.time()
-        log(f"  🍽️ 自保吃 {chosen}(回{FOOD_RECOVERY.get(chosen, (0, 0))[1]}) HP {hp_pct:.0f}%")
+        _hp_show = next((f[2] for f in foods if f[0] == chosen), None)
+        if _hp_show is None:      # 拿不到真值才退回手抄表（显示用，别拿它当判据）
+            _hp_show = FOOD_RECOVERY.get(chosen, (0, 0))[1]
+        log(f"  🍽️ 自保吃 {chosen}(回{_hp_show}) HP {hp_pct:.0f}%")
         # ⏳ 等回血落地：由 eatObject→doneEating 结算。
         # ⚠️ 2026-09-20 改（恒这趟沙漠跑掐出来的，代价=整趟在第 136 层被误判撤退）：
         #    原来这里 `time.sleep(2.0)` 后**只采样一次**，那一枪就定"回没回"。而实测结算在 **~2.5s**

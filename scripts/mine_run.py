@@ -23,13 +23,16 @@
   --target        目标层数（rush）/ --ore 指定矿（farm）
   --cycles        刷矿循环次数（farm 模式，默认 5）
   --resume / --no-resume   是否从已到达最深恢复（rush默认resume）
-  --hp-threshold  吃/兜底线：血量低于此 % 吃食物（默认 30，与 argparse 一致）
+  --hp-threshold  出门/撤退预检线（默认 30）——**不是吃食线**：吃食的 HP 线固定 EAT_HP_PCT=60
+                  （2026-10-03 真机踩过"两条线搅在一起 ⇒ 血 33% 还不吃"，见 bomb_common）
   --sta-threshold 体力低于此 % 吃食物（默认 EAT_STA_PCT=30；⚠️ 必须**高于**体力撤退线 15%，否则永远轮不到吃）
   ⚠️ 撤退线不在这两个阈值里：**撤退看 HP<20 绝对值**（恒 2026-09-19 拍板）
   ⚠️ 撤退时间：**24:30**（与 bomb 系列统一；原来这里是 24:00）
 
-  --food-sta      体力食物名称（如 Salad）
-  --food-hp       回血食物名称（如 Cheese）
+  --food-sta      体力食物名称（如 Salad）；点名=白名单（吃完了也不吃别的）
+  --food-hp       回血食物名称（如 Cheese）；同上
+  --food-buff     🍽️ 点名「去吃带这个效果的那份」（效果关键字，如 幸运/钓鱼）：
+                  每层开打前看 buff 没了/快过期就吃；不传=包里任意带 buff 的都算候选
   --port          NagiBridge 端口（默认 7842）
   --check-progress  查看已到达的最深层数，不挖矿
   --reset-progress  重置进度文件
@@ -48,7 +51,8 @@ import requests
 # 🎁 2026-09-07 复用 bomb 的开箱（BombMiner.open_treasure_chests，真机验证城镇 40 层能开）
 from bomb_common import (WeaponMixin, BombMiner, ManualChestFull,
                          parse_food_list, pick_food_by_priority, EAT_HP_PCT, EAT_STA_PCT,
-                         pick_food_closest_to_full)
+                         pick_food_closest_to_full, effect_food_note, food_buff_text,
+                         food_buffs_of, maintain_buffs_for)
 
 # ── 常量 ──
 
@@ -410,7 +414,11 @@ class MineBot(WeaponMixin):
         """查背包里能吃的（按回体力/回血值挑，2026-09-06 修复"按关键词乱抓→血低吃咖啡"）。
         优先用 /state 新字段 edibleValue(体力)+healthRecovered(血)（机器/工具=0 自动排除）；
         旧 DLL 无这些字段时退回关键词+类别兜底。
-        返回 [(name, edibleValue, healthRecovered), ...]。"""
+        返回 `[(name, edibleValue, healthRecovered, buffs), ...]`。
+
+        ⚠️ 第 4 位 `buffs` = `/state` 的 `foodBuffs`（**游戏自己**的 `Object.GetFoodOrDrinkBuffs()`），
+           形状与 `bomb_common` 那边**同一份**（`(名字, 回体力, 回血, buff档)`）；判据用它，
+           **别在消费侧编"哪些是效果食物"的名单**（恒 2026-10-03 拍）。"""
         s = self.state()
         inv = s.get("inventory", [])
         has_info = any("edibleValue" in (it or {}) for it in inv)  # 新 DLL 才有
@@ -422,12 +430,13 @@ class MineBot(WeaponMixin):
             name = item.get("name", "")
             if not name or name in seen:
                 continue
+            buffs = item.get("foodBuffs") or []
             if has_info:
                 ed = int(item.get("edibleValue") or 0)
                 hp = int(item.get("healthRecovered") or 0)
                 if ed > 0 or hp > 0:  # 真能吃（机器/工具=0 自动排除）
                     seen.add(name)
-                    foods.append((name, ed, hp))
+                    foods.append((name, ed, hp, buffs))
             else:
                 # 兜底：关键词 + 类别（老 DLL 无回血/体力值，回血当 0）
                 cat = item.get("category", "")
@@ -436,7 +445,7 @@ class MineBot(WeaponMixin):
                                    "Flower", "Forage", "Artisan Goods", "Syrup")):
                     if name not in _NON_FOOD:
                         seen.add(name)
-                        foods.append((name, 1, 0))
+                        foods.append((name, 1, 0, buffs))
         return foods
 
     # ── 导航 ──
@@ -1073,9 +1082,9 @@ class MineBot(WeaponMixin):
 
         · **不上单子**（菜单是"处境动作"的强暗示，十来行吃的会把第一屏淹掉）——摊在 `mine` 的回执里就够；
         · 名字**照抄这里给的**（这就是 `detect_inventory_food()` 读到的、`--food-hp` 能匹配上的那个名字）；
-        · 不点名 = 自动挑（按缺口挑最省的，见 `pick_food_closest_to_full`）。
-        ⚠️ "**带效果的**"这一档**暂时不标**：判据要 C# 报"这件有没有 buff"（恒已选方案 A，进下一批 C#）——
-           **没判据就别编名单**（本项目的老病）。
+        · 不点名 = 自动挑（按缺口挑最省的，见 `pick_food_closest_to_full`）；
+        · 2026-10-03：**带效果的另起一段标出来**（`【带效果】香辣鳗鱼 +1幸运 +1速度`）——
+          自动挑**不会动**它们（恒的"效果食物除外"），想吃就在 `food_buff` 里点名。
         """
         try:
             foods = self.detect_inventory_food()
@@ -1083,18 +1092,42 @@ class MineBot(WeaponMixin):
             return "  🍽️ 包里的吃的：读不到（`/state` 失败）"
         if not foods:
             return "  🍽️ 包里的吃的：**没有**（要下矿先备点回血/回体力的）"
-        # 血多的排前面（一眼看到"最能救命的"），最多列 8 样，其余折叠
-        rows = sorted(foods, key=lambda f: (-(f[2] or 0), -(f[1] or 0)))[:8]
-        txt = " · ".join(f"{n} 血+{hpv} 体+{ed}" for n, ed, hpv in rows)
-        more = f"（还有 {len(foods) - len(rows)} 样）" if len(foods) > len(rows) else ""
-        return (f"  🍽️ 包里的吃的（点名就**照抄这里的名字**）：{txt}{more}\n"
-                f"     不点名=我按缺口自动挑；想点名：kw={{\"food_hp\": \"{rows[0][0]}\"}} / "
-                f"kw={{\"food_sta\": \"{rows[0][0]}\"}}")
+        plain = [f for f in foods if not food_buffs_of(f)]
+        buffed = [f for f in foods if food_buffs_of(f)]
+        lines = []
+        if plain:
+            # 血多的排前面（一眼看到"最能救命的"），最多列 8 样，其余折叠
+            rows = sorted(plain, key=lambda f: (-(f[2] or 0), -(f[1] or 0)))[:8]
+            txt = " · ".join(f"{n} 血+{hpv} 体+{ed}" for n, ed, hpv, _b in rows)
+            more = f"（还有 {len(plain) - len(rows)} 样）" if len(plain) > len(rows) else ""
+            lines.append(f"  🍽️ 包里的吃的（点名就**照抄这里的名字**）：{txt}{more}")
+        if buffed:
+            rows_b = buffed[:4]
+            txtb = " · ".join(f"{f[0]}[{food_buff_text(f) or '效果游戏没报数值'}]" for f in rows_b)
+            moreb = f"（还有 {len(buffed) - len(rows_b)} 样）" if len(buffed) > len(rows_b) else ""
+            lines.append(f"  ✨ 带效果的（**自动挑不动它们**，想吃要点名）：{txtb}{moreb}")
+        first = (plain or buffed)[0][0]
+        lines.append(f"     不点名=我按缺口自动挑；点名：kw={{\"food_hp\": \"{first}\"}} / "
+                     f"kw={{\"food_sta\": \"{first}\"}}"
+                     + (" / kw={\"food_buff\": \"<效果关键字，如 幸运>\"}" if buffed else ""))
+        return "\n".join(lines)
+
+    def maintain_buffs(self, threshold=30, want=None):
+        """🍽️ 补 buff —— 走**模块级** `maintain_buffs_for`（与炸矿脚本**同一份实现**，
+        别再各写一遍；2026-09-20 那个"点名在炸矿脚本里是死的"就是这么来的）。
+
+        `want` = `food_buff` 点名（效果关键字）；点名了就只补那个效果，没有就不吃别的。"""
+        return maintain_buffs_for(self, threshold=threshold, want=want)
 
     def auto_eat(self, hp_threshold=EAT_HP_PCT, sta_threshold=EAT_STA_PCT):
         """自动扫背包找吃的，不依赖外部参数。⚠️ 2026-09-06 按需求挑食：
         血低→挑回血(healthRecovered>0)的（奶酪/沙拉，绝不拿纯体力咖啡保命）；
-        体力低→挑回体力(edibleValue>0)的；都低→回血优先。"""
+        体力低→挑回体力(edibleValue>0)的；都低→回血优先。
+
+        🍽️ 2026-10-03：**只有"一个字都没点名"才走这里**（恒：「有点名只吃点名，吃完了也不吃别的；
+        不点名才自动吃」）—— 点名那条白名单在 `eat_if_needed` 里，没吃上就**不吃了**，不回落到这。
+        另外**效果食物除外**（判据=游戏报的 `foodBuffs`）：带 buff 的那份自动挑不动它，
+        想吃就在 `food_buff` 里点名。"""
         foods = self.detect_inventory_food()
         if not foods:
             return False
@@ -1109,6 +1142,18 @@ class MineBot(WeaponMixin):
         if sta_pct >= sta_threshold and hp_pct >= hp_threshold:
             return False
 
+        # 🍽️ 2026-10-03 恒：改成「**离补满最接近**」（`pick_food_closest_to_full`：够补的挑**最小**、都不够挑**最大**）。
+        #    老逻辑是"回血量×10 主导" ⇒ **满 180 缺 20 也掏奶酪**（恒举的"20/40 该吃韭葱+20"就是这个浪费）。
+        _need_hp = max(0, max_hp - hp0) if hp_pct < hp_threshold else 0
+        _need_sta = max(0, max_sta - sta0) if (hp_pct >= hp_threshold and sta_pct < sta_threshold) else 0
+        _pick = pick_food_closest_to_full(foods, _need_hp, _need_sta)
+        if not _pick:
+            # 挑不出来要**说得出来**：包里只剩效果食物时明说（别让 AI 以为"我明明有吃的却没吃"）
+            note = effect_food_note(foods)
+            if note:
+                log("  " + note)
+            return False
+
         # 先停下（边走边吃动画不生效），再吃 + 等 2 秒动画播完（bomb 同款逻辑）
         try:
             for _ in range(5):
@@ -1119,24 +1164,19 @@ class MineBot(WeaponMixin):
         except Exception:
             pass
 
-        # 🍽️ 2026-10-03 恒：改成「**离补满最接近**」（`pick_food_closest_to_full`：够补的挑**最小**、都不够挑**最大**）。
-        #    老逻辑是"回血量×10 主导" ⇒ **满 180 缺 20 也掏奶酪**（恒举的"20/40 该吃韭葱+20"就是这个浪费）。
-        _need_hp = max(0, max_hp - hp0) if hp_pct < hp_threshold else 0
-        _need_sta = max(0, max_sta - sta0) if (hp_pct >= hp_threshold and sta_pct < sta_threshold) else 0
-        _pick = pick_food_closest_to_full(foods, _need_hp, _need_sta)
-        if not _pick:
-            return False
-        for fname, ed, hp in [f for f in foods if f[0] == _pick] or []:
-            try:
-                self.select(fname)
-                time.sleep(0.2)
-                r = self._post("/eat")
-                time.sleep(2.0)  # 等动画播完效果才生效
-                if r.get("ok"):
-                    log(f"  🍽️ 吃了 {fname}（体{ed} 血{hp}；缺口 血{_need_hp}/体{_need_sta}）")
-                    return True
-            except Exception:
-                continue
+        row = next((f for f in foods if f[0] == _pick), (_pick, 0, 0, []))
+        try:
+            self.select(_pick)
+            time.sleep(0.2)
+            r = self._post("/eat")
+            time.sleep(2.0)  # 等动画播完效果才生效
+            if r.get("ok"):
+                fx = food_buff_text(row)
+                log(f"  🍽️ 吃了 {_pick}（体{row[1]} 血{row[2]}；缺口 血{_need_hp}/体{_need_sta}"
+                    + (f"；带效果 {fx}" if fx else "") + "）")
+                return True
+        except Exception:
+            pass
         return False
 
     def _eat_one(self, name, why=""):
@@ -1163,12 +1203,16 @@ class MineBot(WeaponMixin):
     def eat_if_needed(self, food_sta, food_hp, hp_threshold, sta_threshold):
         """按需进食。`food_hp`/`food_sta` 收**列表（靠前的先吃）**或逗号串；空 = 不点名。
 
-        🕐 2026-09-20 恒「自定义吃食」：跟 `bomb_common.BombMiner.eat_if_needed` 是**同一套规矩**
-        （那边有完整的三条注释），这里只说本条：
-          · 点名就在点名的里挑（血低看 `food_hp`、体力低看 `food_sta`，两表分开不混）
-          · 表内降级：靠前的没货试下一项
-          · **整张表都没货 → 吭一声再退回自动挑**（不吃饭会死，吃错只是浪费）
-        """
+        🕐 恒的两版规矩（**新版覆盖旧版**），跟 `bomb_common.BombMiner.eat_if_needed` 同一套
+        （那边注释更全）：
+          · 2026-09-20：点名就在点名的里挑（血低看 `food_hp`、体力低看 `food_sta`，两表分开不混）；
+            表内降级：靠前的没货试下一项。
+          · 2026-10-03（恒：「**有点名只吃点名，吃完了也不吃别的；不点名才自动吃**」）：
+            **点名 = 白名单** —— 点名的没了就报一句、**不吃了**（原来那条"退回自动挑"作废）；
+            **一个字都没点名**才走 `auto_eat` 自动挑（那边**效果食物除外**）。
+
+        ⚠️ `food_buff` **不走本函数**：它是"补 buff"那条线（`maintain_buffs`，看 buff 剩多久，
+        跟血/体力两条线互不打扰）—— 血低时不会去啃"带幸运的那份"。"""
         hp_list = parse_food_list(food_hp)
         sta_list = parse_food_list(food_sta)
         if not hp_list and not sta_list:
@@ -1204,13 +1248,14 @@ class MineBot(WeaponMixin):
         if pick and self._eat_one(pick, f"点名·{label}"):
             return True
 
-        # ③ 整张表都没货（或吃失败）→ 吭一声，再退回自动挑
+        # ③ 点名白名单：没了/没吃上 ⇒ **到此为止**（恒 2026-10-03：「吃完了也不吃别的」）
         if want:
             log(f"  ⚠️ 点名的{label}食物一个都没吃上（表：{','.join(want)}）"
-                f" —— 退回自动挑（想吃点名的，请先确保它们在包里）")
-        else:
-            log(f"  ⚠️ 这次需要{label}，但没点过那类的名 —— 退回自动挑")
-        return self.auto_eat(hp_threshold, sta_threshold)
+                f" —— 按「有点名只吃点名」**不吃别的**")
+            return False
+        # 触发的那一侧没点名（另一侧点了）⇒ 这一侧按「不点名才自动吃」走自动挑
+        log(f"  ⚠️ 这次需要{label}，但没点过那类的名 —— 按「不点名才自动吃」去自动挑")
+        return self.auto_eat(EAT_HP_PCT, sta_threshold)
 
     def _check_eat_result(self, result):
         """检查 use_item 结果"""
@@ -1464,7 +1509,7 @@ class MineBot(WeaponMixin):
     # ═══════════════════════════════════════════════════════════════
 
     def run_rush(self, start_level, target_floor, food_sta, food_hp,
-                 hp_threshold=50, sta_threshold=EAT_STA_PCT, resume=True):
+                 hp_threshold=50, sta_threshold=EAT_STA_PCT, resume=True, food_buff=""):
         """冲层模式：从 start_level 一路下到 target_floor
 
         resume=True 时，如果 start_level 是默认值1，则从进度记录的已到达最深恢复
@@ -1514,7 +1559,8 @@ class MineBot(WeaponMixin):
 
         log(f"\n🏃 === 冲层模式: {start_level} → {target_floor}层 ===")
         log(f"  镐子: {self.pickaxe_name} (Lv.{self.pickaxe_level})"
-            f" | 食物: 体力={food_sta or '无'} 回血={food_hp or '无'}")
+            f" | 食物: 体力={food_sta or '无'} 回血={food_hp or '无'}"
+            f"{' 补buff=' + food_buff if food_buff else ''}")
         log(self.food_menu_line())
 
         # warp 到起始层（矿洞必须带坐标，不然被重定向）
@@ -1556,6 +1602,13 @@ class MineBot(WeaponMixin):
                     log(f"  ⚠️ 开宝箱失败: {e}")
 
             # ── 安全检查（原因串分开报，别再一律"状态不足"）──
+            # 🍽️ 2026-10-03：先补 buff（每层一遍；`food_buff` 点名了就只补那个效果）。
+            #    ⚠️ 放在安全检查**之前**：补 buff 吃的那份也回血/回体力，先吃再判更接近真人。
+            if food_buff:
+                try:
+                    self.maintain_buffs(threshold=30, want=food_buff)
+                except Exception as e:
+                    log(f"  ⚠️ 补 buff 出错（继续）: {e}")
             why = self.unsafe_reason(sta_threshold)
             if why:
                 if self.eat_if_needed(food_sta, food_hp, EAT_HP, sta_threshold):
@@ -1747,7 +1800,7 @@ class MineBot(WeaponMixin):
     # ═══════════════════════════════════════════════════════════════
 
     def run_farm(self, ore_type, cycles, food_sta, food_hp,
-                 hp_threshold=50, sta_threshold=EAT_STA_PCT):
+                 hp_threshold=50, sta_threshold=EAT_STA_PCT, food_buff=""):
         """刷矿模式：在指定层反复刷特定矿石"""
         # 矿石 ↔ 层数映射
         ORE_FLOORS = {
@@ -1774,7 +1827,8 @@ class MineBot(WeaponMixin):
         log(f"\n⛏️ === 刷矿模式: {ore_type} ===")
         log(f"  目标层: {floor} | 循环 {cycles} 次"
             f" | 镐子: {self.pickaxe_name} (Lv.{self.pickaxe_level})"
-            f" | 食物: {food_sta or '无'} / {food_hp or '无'}")
+            f" | 食物: {food_sta or '无'} / {food_hp or '无'}"
+            f"{' 补buff=' + food_buff if food_buff else ''}")
 
         total_rocks = 0
         total_pickups = 0
@@ -1791,6 +1845,13 @@ class MineBot(WeaponMixin):
             self.mine_level = floor
             self._rock_count = 0
             time.sleep(1.0)
+
+            # 🍽️ 2026-10-03：每轮开打前补 buff（`food_buff` 点名了就只补那个效果）
+            if food_buff:
+                try:
+                    self.maintain_buffs(threshold=30, want=food_buff)
+                except Exception as e:
+                    log(f"  ⚠️ 补 buff 出错（继续）: {e}")
 
             # 被动回击：贴脸怪还手（任何怪）
             self.combat_check(loc)
@@ -1901,9 +1962,14 @@ def main():
     parser.add_argument("--sta-threshold", type=int, default=EAT_STA_PCT,
                         help="体力低于此百分比时吃食物（默认 20）")
     parser.add_argument("--food-sta", type=str, default=None,
-                        help="体力食物（**逗号分隔、靠前的先吃**，如 '沙拉,面包'）。单个名字照旧")
+                        help="体力食物（**逗号分隔、靠前的先吃**，如 '沙拉,面包'）。"
+                             "点名=白名单（吃完了也不吃别的），不传才自动挑")
     parser.add_argument("--food-hp", type=str, default=None,
-                        help="回血食物（**逗号分隔、靠前的先吃**，如 '奶酪,鱼肉卷'）。单个名字照旧")
+                        help="回血食物（**逗号分隔、靠前的先吃**，如 '奶酪,鱼肉卷'）。"
+                             "点名=白名单，不传才自动挑")
+    parser.add_argument("--food-buff", type=str, default=None,
+                        help="🍽️ 点名「去吃带这个效果的那份」（效果关键字，如 '幸运'/'钓鱼'）；"
+                             "每层开打前看 buff 没/快过期就吃。不传=包里任意带 buff 的都算候选")
     parser.add_argument("--port", type=int, default=7842,
                         help="NagiBridge 端口（默认 7842）")
     parser.add_argument("--resume", action="store_true", default=True,
@@ -1992,6 +2058,7 @@ def main():
                 hp_threshold=args.hp_threshold,
                 sta_threshold=args.sta_threshold,
                 resume=args.resume,
+                food_buff=args.food_buff or "",
             )
         else:
             bot.run_farm(
@@ -2001,6 +2068,7 @@ def main():
                 food_hp=args.food_hp,
                 hp_threshold=args.hp_threshold,
                 sta_threshold=args.sta_threshold,
+                food_buff=args.food_buff or "",
             )
     finally:
         if not args.no_guard:

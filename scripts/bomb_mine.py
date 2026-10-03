@@ -451,8 +451,8 @@ class BombMineBot(BombMiner):
             pass
 
         for attempt in range(MAX_FLOOR_ATTEMPTS):
-            # buff 维护（菜品/饮品快过期补吃）
-            self.maintain_buffs(threshold=30)
+            # buff 维护（按游戏报的 buff id 对槽；点名 food_buff 就只补点名那个）
+            self.maintain_buffs(threshold=30, want=getattr(self, "food_buff", "") or None)
 
             # 自保：HP<60% 真实吃食物回血（IsActive 补丁后 eatObject 回血可靠；吃完仍低才 /heal 救急）
             self.eat_recovery(hard=self.hp_threshold, target=60)
@@ -744,7 +744,8 @@ class BombMineBot(BombMiner):
 
         while level < target_floor:
             log(f"\n--- 💣 第 {level} 层 ---")
-            self.maintain_buffs(threshold=30)  # 每层开打前看一遍 buff（补被沙拉顶掉的菜品 buff）
+            # 每层开打前看一遍 buff（按 buff id 对槽补，不是靠名单猜）
+            self.maintain_buffs(threshold=30, want=getattr(self, "food_buff", "") or None)
 
             # 宝箱层开箱（恒 2026-09-06：城镇【整10层】也有宝箱，之前只认沙漠整百层120+100n——40层整10的宝箱从没被开）
             #   沙漠整百层=120+100n（宝箱房）；城镇整10层=level%10==0。open_treasure_chests 内部扫不到 Chest 即无操作不卡。
@@ -907,9 +908,15 @@ def main():
     parser.add_argument("--organize-reset", action="store_true", help="整理完背包后重置间隔计数（bomb_organize.json floors_since_organize=0）")
     parser.add_argument("--no-guard", action="store_true", help="🛡️ 关掉 C# 侧贴身自动防御（A/B 对照用）")
     parser.add_argument("--food-hp", type=str, default=None,
-                        help="🍽️ 回血食物（**逗号分隔、靠前的先吃**，如 '奶酪,鱼肉卷'）；不传=自动挑")
+                        help="🍽️ 回血食物（**逗号分隔、靠前的先吃**，如 '奶酪,鱼肉卷'）；"
+                             "点名=白名单（吃完了也不吃别的），不传才自动挑")
     parser.add_argument("--food-sta", type=str, default=None,
-                        help="🍽️ 体力食物（**逗号分隔、靠前的先吃**，如 '沙拉,面包'）；不传=自动挑")
+                        help="🍽️ 体力食物（**逗号分隔、靠前的先吃**，如 '沙拉,面包'）；"
+                             "点名=白名单，不传才自动挑")
+    parser.add_argument("--food-buff", type=str, default=None,
+                        help="🍽️ 点名「现在去吃带这个效果的那份」（效果关键字，如 '幸运'/'钓鱼'，"
+                             "判据=游戏报的 foodBuffs 效果文案/buff id/吃食名）；"
+                             "该 buff 没了/快过期就吃；点名了就不吃别的。不传=包里任意带 buff 的都算候选")
     args = parser.parse_args()
 
     # ⚠️ 2026-09-19：--lead 自 2026-08-23 起**完全无效**（goal 恒等于 target_floor，
@@ -1024,9 +1031,11 @@ def main():
                       lead=args.lead, autodrop=args.autodrop,
                       weapon=args.weapon)
     # 🍽️ 2026-09-20 恒：自定义吃食 —— 点名 + 优先级（逗号分隔、靠前的先吃）。
-    #    不传 = 空表 = 退回原来的"自动挑"（一个字没变）。
+    #    2026-10-03 恒：「**有点名只吃点名，吃完了也不吃别的；不点名才自动吃**」⇒ 点名 = 白名单。
     bot.food_hp = parse_food_list(args.food_hp)
     bot.food_sta = parse_food_list(args.food_sta)
+    # 🍽️ 2026-10-03：`food_buff` = 点名"去吃带这个效果的那份"（判据=游戏报的 foodBuffs）
+    bot.food_buff = args.food_buff or ""
     bot.target_was_default = target_was_default   # 🔥 结束段据此点名"默认target到顶就撤"（2026-09-06 恒）
     bot.target_was_default_skull = target_was_default and in_skull   # 默认 target 且是头骨(≥121)→结束段不提示（头骨无电梯/进度层数概念）
 

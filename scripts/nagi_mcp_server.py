@@ -8236,6 +8236,7 @@ def go_mining(
     hp_threshold: int = 30,
     food_sta: Optional[str] = None,
     food_hp: Optional[str] = None,
+    food_buff: Optional[str] = None,
     resume: bool = True,
 ) -> str:
     """⛏️ 去矿井挖矿（双模式最全）
@@ -8268,13 +8269,20 @@ def go_mining(
         hp_threshold: 血量低于此 % 吃食物（默认 30%）。⚠️ 这是**吃/兜底**线不是撤退线——
             **撤退看 HP<20 绝对值**（恒 2026-09-19："不到快死都可以跟着房主继续下"）
         food_sta: 体力食物。**可以给一串、逗号分隔、靠前的先吃**（如 "沙拉,面包"）；单个名字照旧。
-                  不传 = 不由你点名，退回脚本自带的"自动挑"（按回血量×10 打分）。
+                  不传 = 不由你点名，脚本自己"自动挑"。
         food_hp:  回血食物。同样支持一串 + 优先级（如 "奶酪,鱼肉卷,沙拉"）。
         🍽️ 为什么要能点名：自动挑会**把你留着卖的东西吃了**（山羊奶酪最典型）。
-           点名之后就只在这几样里挑：靠前的没货自动试下一项；**整串都没货**会明确报一句
-           （"点名的回血食物一个都没吃上"）再退回自动挑 —— 不会静默当成"点过名了"。
-           ⚠️ 两张表是**分开**的：血低只看 food_hp、体力低只看 food_sta，不会串。
-              所以"补血的"和"补体力的"要各写各的，别混在一串里。
+           ⚠️ 2026-10-03 恒把规矩说死了：「**有点名只吃点名，吃完了也不吃别的；不点名才自动吃**」
+              ⇒ 点名 = **白名单**：点名的没了就报一句、**不吃别的**（原来那句"再退回自动挑"已作废）；
+              一个字都没点名才自动挑，而自动挑**不吃带效果的**（见 food_buff）。
+              ⚠️ 两张表是**分开**的：血低只看 food_hp、体力低只看 food_sta，不会串。
+                 所以"补血的"和"补体力的"要各写各的，别混在一串里。
+        food_buff: 🍽️ 点名「**现在去吃带这个效果的那份**」（效果关键字，如 "幸运"/"钓鱼"/"采矿"）。
+              判据是游戏自己报的（`/state.inventory[].foodBuffs` 的效果文案 / buff id / 吃食名，
+              大小写无关，多个关键字用逗号分隔=要全中）。每层开打前看：该 buff 没挂/快过期就吃它。
+              不传 = 包里**任意**带 buff 的都算候选（按背包顺序，不另立优先级表）；
+              传了但包里没有匹配的 ⇒ **不吃别的**（同"点名=白名单"）。
+              ℹ️ 想要的效果名照抄 `mine` 回执里 `✨ 带效果的` 那一行。
         resume: 是否从已到达最深层恢复（默认 True，仅 rush 模式）
     """
     args_list = [
@@ -8294,6 +8302,8 @@ def go_mining(
             args_list.extend(["--food-sta", food_sta])
         if food_hp:
             args_list.extend(["--food-hp", food_hp])
+        if food_buff:
+            args_list.extend(["--food-buff", food_buff])
     else:
         args_list.extend(["--ore", ore or "Iron"])
         args_list.extend(["--cycles", str(cycles)])
@@ -8301,6 +8311,8 @@ def go_mining(
             args_list.extend(["--food-sta", food_sta])
         if food_hp:
             args_list.extend(["--food-hp", food_hp])
+        if food_buff:
+            args_list.extend(["--food-buff", food_buff])
 
     # ⚠️ 2026-09-06 恒：门禁——只能在矿井里触发下矿，别让 mine_run 从远图 warp 飞进矿(音乐乱)。
     #    AI 先自己 map_go('Mine') 自然到矿井口，再下矿。
@@ -8809,7 +8821,8 @@ def bomb_retreat() -> str:
 def bomb_mine(target: int = 0, bomb: str = "Bomb", min_covered: int = 3,
               follow_host: bool = True, lead: int = 2, autodrop: int = 0,
               one_floor: bool = False,
-              food_hp: Optional[str] = None, food_sta: Optional[str] = None) -> str:
+              food_hp: Optional[str] = None, food_sta: Optional[str] = None,
+              food_buff: Optional[str] = None) -> str:
     """💣 自主炸矿（贪心炸弹下矿）
     每层贪心找覆盖最多岩体的点放炸弹，生存优先（血低吃/撤、没炸弹撤、卡死检测）。
     user 在矿里就一起冲层（目标层=user 层数±lead），user 同层打架就 position 增援只打 user 的对手。
@@ -8829,7 +8842,10 @@ def bomb_mine(target: int = 0, bomb: str = "Bomb", min_covered: int = 3,
         one_floor: 逐层模式，跑一层返回摘要不撤退（默认 False）
         food_hp: 🍽️ 回血食物，**逗号分隔、靠前的先吃**（如 "奶酪,鱼肉卷"）；不传=自动挑
         food_sta: 🍽️ 体力食物，同上（如 "沙拉,面包"）。两张表分开：血低只看 food_hp、体力低只看 food_sta。
-                  ⚠️ 点名的整串都没货时会**报一句再退回自动挑**（自动挑可能吃掉你留着卖的）。
+                  ⚠️ 点名 = **白名单**（恒 2026-10-03：「有点名只吃点名，吃完了也不吃别的」）：
+                  点名的没了就报一句**不吃别的**；一个字都没点名才自动挑（自动挑不吃带效果的）。
+        food_buff: 🍽️ 点名「去吃带这个效果的那份」（效果关键字，如 "幸运"）；每层开打前看该 buff
+                  没挂/快过期就吃它。判据=游戏报的 foodBuffs（效果文案/buff id/吃食名），不传=任意带 buff 的都算候选。
     """
     _cur = api.state().get("location", {}).get("name", "")
     # ⚠️ 2026-09-20 补 `Desert` —— 它就在头骨矿洞门口，是去头骨的必经地；
@@ -8844,6 +8860,8 @@ def bomb_mine(target: int = 0, bomb: str = "Bomb", min_covered: int = 3,
         args_list.extend(["--food-hp", food_hp])
     if food_sta:
         args_list.extend(["--food-sta", food_sta])
+    if food_buff:
+        args_list.extend(["--food-buff", food_buff])
     if not follow_host:
         args_list.extend(["--follow-host", "0"])
     if lead != 2:
@@ -16929,7 +16947,7 @@ _DOMAIN_GUIDES = {
 "intent": "🎯 意图选项单（**先看单子、再敲编号**）：`intent(ops=\"show\")` 看这一刻能做的事（一行一件，`←` 后面是理由）；`intent(ops=\"do\", kw={\"code\":\"1\"})` 敲第 1 行；`intent(ops=\"at\", kw={\"x\":12,\"y\":30})` 指哪打哪（逃生口，问「这一格能做什么」）。敲法：`1` 一行 · `1,4` **多选**（选哪些，顺序无所谓）· `1=2,4=7` **各多少**（号=数量，配对，顺序也无所谓）· `0` = 这些都不是（子层里 = 返回上一层）。⚠️**目录行句尾带 `…`**（点开还有下一层，顶层只报个数不发号）；**号是当场发的、不跨屏** —— 敲之前先 `show` 看一眼当前那一屏，别记着上一屏的号去敲。⚠️单子上**出现的那条，按了就成**；没出现 = 这一刻算不出来（不是「不行」）。覆盖：收机器 / 开箱子（取·存）/ **箱子里…**（容器界面**开着**时，箱内容**直接摊成一行行「取」**——那儿有格号，同名不同星的两摞也点得准；不用再 `menu read` 自己解析）/ **存…**（同一个界面里往这只箱子放东西：跟箱子**关着**时同一套「选哪几样 → 各多少」；放进去屏幕上是**当场看得见**的）/ 吃 / 看书（**背包里没拿手上的也算**）/ 捡 / 收作物 / 坐·**起身** / 摸动物 / 摸猫狗 / **放牧（开棚门）**（早上 06:00–15:00 且不下雨/非冬天，站在农场上时）/ **关棚门**（≥17:00 或 <06:00，同条件） **买·卖**（只在商店 menu 开着时才出现）/ **推进对话**（有对话框或剧情在播时）/ **确认结算**（过夜结算屏 ShippingMenu）/ **投出货箱**（站在农场 + 背包里有投得进去的）/ **关掉界面**（任何界面开着时的出口）。⚠️**要规划的那些农活不在单子上**（锄地/播种/施肥/清场/砍树）—— 它们得按矩形/布局算落点、还要挑蓄力站位，走 `farm` 域（`farm ops=till, kw={x1,y1,x2,y2,layout}` 这种），**单子上一格一格敲比它慢得多、还更费体力**。挖蚯蚓/远古斑点走 `scene ops=spot`（一次全挖）。⚠️**搬家具（搬走）2026-10-02 也撤出单子了**（恒：家居装饰场景专用、优先级极低）—— 走现成的域工具 `scene(ops=\"furniture\")` 看清单 / `scene(ops=\"pickup\", kw={\"tile_x\":X,\"tile_y\":Y})` 搬起。⚠️**穿戴（穿/脱）2026-10-02 也撤出单子了**（恒：权重最低 ⇒ 空场景里常驻）—— 走 `daily(ops=\"wear\", kw={\"name\": 内部名})` 或 `kw={\"slot\": \"hat\"}`。⚠️**买**是两层（选哪几样 → 各多少）；**卖**只有一层（选哪几摞 → 敲了就卖，**整摞走**——游戏单击就是卖整摞，别试 `1=2` 那种写法，那一层不收数量）。",
 "check": "查询域，what=...：status(完整状态) backpack(逐格价值/星级) worn(穿戴) machines(全场机器清单) mine(下矿进度) silo(干草) mastery(精通) buildings(木匠建筑) quest(开任务日志) chests(当前图箱) storage(箱子网络) look(环视周围) profile(我的技能等级+职业分支,如是否 Luremaster 蟹笼免饵) role(端口↔角色确认:我是谁/恒是谁)。⚠️查概览用 status，查逐格用 backpack，别都调浪费 token。📌profile/role 一律走 check（不叫 profile()/which_role()）。📐这个域的参数叫 **what**，**不是 ops**。带参的只有两个: chests(chest=N 看第N个箱) / look(radius=10 环视半径)；其余(status/backpack/worn/machines/mine/silo/mastery/buildings/quest/storage/profile/role)**全无参**。⚠️查概览用 status、查逐格用 backpack，别都调一遍浪费 token。",
 "farm": "农活域(🌱必走，别手动挥工具组合，用域 ops)：till(锄地) plant(种,跳过已种;带 layout 就按洒水器布局种) water(浇,自动跳雨+水壶没水先装满) harvest(收) scythe(镰刀收蒜/花/茶) fertilize(化肥) clear(清杂草石树桩;坐标同 till，也可 `radius=N` 走**圆形**；**会自动往外多清 2 格**——田边的杂草会长进田里把作物顶掉，不用自己放大) plot(连通域规划) plan(方形规划,纯算格) chop(砍树)。⚠️**锄地/播种各只有一个实现**：锄地=`till`（`hoe`/`布局锄`/`tillfield`/`蓄力锄` 都是它的别名）、播种=`plant`（`sow`/`plantlayout`/`播种规划` 都是它的别名）；⛔ 没有 `till_plant`——要锄+种写 `ops=\"till plant\"`。 clearground(清单格) load(收放机器:**拟人走过去逐台**、收放一条过;`item` 留空=只收不放) break(拆/敲同scene,镐子敲可破物/翻已耕地) place(放置/播种同scene) pond/pond_add/pond_feed/pond_collect/pond_fish(鱼塘)。⚠️漏格DLL自动补；**缺的格会被点名「被什么挡着」**（🌿草/杂草/🪨石头/🪵树枝→**先 `clear` 清一遍再 till/plant**；🏗️洒水器/箱子等设施→⛔别清、那是规划该绕开的格）——草占着地格时锄头是锄不出 HoeDirt 的，别对着「缺失N格」发呆。只在 Farm/温室/姜岛。带参 op(plant 的 seed_name、till/clear 的 x/y/rows、fertilize 的 fertilizer_name、place 的 name、load 的 item/machine_type/here、pond_add 的 item)→ kw={'参数名':值}。🐄动物: animals(摸+收) 喂水/碗(宠物水,🌧️雨天自动跳过——雨会把碗填满) milk(挤奶剪毛) doors(开关畜棚鸡舍门,别名 放牧/开关门/棚门——**翻转端点**:先走到棚门口再翻,回执逐栋报执行后的门态,要反着来再敲一次) buy(买动物,豁免建议) hay(干草) pet(猫狗) petwalk(拟人摸) 畜舍/这间(这间屋动物) statue(祈福)——⚠️farm water=浇地,动物水用 喂水; farm load=机器收放,这屋动物用 畜舍。📐参数键名: till/clear/plant/fertilize 都是 x,y(**必填**),rows,length,direction（till/plant 也可用 x1,y1,x2,y2 直接给矩形两角）；plant 另有 seed_name,layout,direct,trellis；harvest/scythe=radius；plot=x,y,radius,all_plots；chop=area(**值写几个数**：4 个数=矩形两角 / 3 个数=圆心+半径，逗号空格都认)；collect=machine_type,location；load=item,machine_type,location,here；place=name,x,y；break=x,y,steps,radius；pond_add=item+x,y（pond_feed/collect/fish 只要 x,y）；buy=animal_type,name,building；petwalk=include_petted；hay=dry_run。⚠️direction 只认 horizontal(默认)/vertical 两个值,别写'横'/'竖'。💡大田洒水器布局(可选,纯自动化建议)：要按洒水器留格/留走道就 plan→till→plant 三件套——plan(x1,y1,x2,y2,layout=0,hoe_level=-1,trellis=False) **纯算格不动机器**先看要锄/种哪些; till(x1,y1,x2,y2,layout=0) 按布局锄; plant(x1,y1,x2,y2,seed_name,**layout**) 按布局种（layout=0 整块/1 初级十字/2 高级/3 铱；direct=True 瞬移快、默认走位拟人）。想一次说完就 `ops=\"till plant\"`（**一份 kw 共用**，锄地会自动点名忽略 seed_name）。**layout 四档**: 0=标准整块(不预留洒水器,锄法蛇形逐格走位,任何锄头等级都行) 1=初级(十字稀疏,每台覆盖上下左右4格;锄法=精确锄每台4格,**与锄头等级无关**) 2=高级(优质,田宽高先裁成**3的倍数**,每3×3中心1台覆盖8格,整块蓄力锄) 3=铱(裁成**5的倍数**,每5×5中心1台覆盖24格;⚠️爬架作物不适用)。hoe_level: 0→1格 1→3线 2→5线 3→3×3 4→6×3,-1=自动读手持。trellis=True=爬架作物(啤酒花/青豆/葡萄,不可通过格)⇒自动**种2留1**留走道让AI能进田浇收。只管种不摆洒水器就直接 plant,不用 plan 那套。⚠️已知限制: layout 0/2/3 碰上金/铱锄(hoe_level>=3)会报**0处锄地站位**并自打一行'落点未实测校准,暂不规划蓄力站位'——**那是刻意不猜不是出错**; layout 1 不吃蓄力站位不受影响。",
-"mine": "下矿域(⚒️ 矿井/头骨/火山)：go(去挖矿:mode=rush冲层/farm刷矿,start起始层,target目标层,ore,cycles圈数) progress(进度) bomb_status/bomb_plan/bomb_place/bomb_collect/bomb_ladder/bomb_retreat(单步炸,**都要 bomb_ 前缀**) bomb_mine(自动) bomb_volcano(火山) organize(整理背包)。🔁**刷矿=mode=go(mode=farm)**：定点刷指定矿→ore=Copper铜(21层)/Iron铁(41层)/Gold金(71层)；**煤靠 farm 铁层(41)顺手清尘埃精灵/蝙蝠掉**（不是 ore 选项，跑 auto 内部刷）。🏃下矿=mode=go(mode=rush,start可选≤电梯上限+5倍数,target默认120)。⚠️无镐/血低硬拦；梯子 /ladder+confirm。⚔️贴身(3×3)自卫=游戏自己每 tick 挥刀(go/bomb_mine/bomb_escort/bomb_volcano 四个脚本都自开自关,**只转向不移动**;手上是锤子且冷却好了会重砸6×6)；2格外的怪仍靠脚本扫描,别站桩。🍽️**自定义吃食**：go/bomb_mine/bomb_volcano 都可传 food_hp/food_sta=**逗号分隔、靠前的先吃**(如 food_hp=「奶酪,鱼肉卷」)。血低只看 food_hp、体力低只看 food_sta(**两张表分开别混**)。点名后就只在这几样里挑——**防止自动挑把你留着卖的吃了**(山羊奶酪最典型)；整串都没货会明确报一句再退回自动挑。⚠️bomb_mine 没炸弹+host在同矿井→自动转【内部】协同(跟随host+帮忙敲矿/打怪)不撤退出矿(bomb_escort 不对外暴露、AI 不主动启用)；bomb_retreat 结束协同+停脚本+脱离矿井回门口。⚠️接「深处的危险」重置电梯→起始层动态从1起(内置脚本自动读，不暴露工具)；刷矿目标层不可直达会上报，需先冲层带回或改浅层。📐带参速查: go(mode=rush冲层/farm刷矿, start起始层, target目标层, ore=Copper铜/Iron铁/Gold金, cycles圈数, hp_threshold, food_sta, food_hp, resume) bomb_plan(radius,min_covered,top) bomb_place(x,y **必填**) bomb_collect(max_items) bomb_mine(target,bomb,min_covered,follow_host,lead,autodrop,one_floor,food_hp,food_sta) bomb_volcano(bomb,min_covered,hp_threshold,max_minutes,poll,food_hp,food_sta) organize(disable,reset)。💣bomb 三个取值 'Cherry Bomb'樱桃/'Bomb'黑/'Mega Bomb'超级——**点名的包里没有就按 黑>超级>樱桃 自动换成有的**(不会误报没炸弹)；范围 樱桃=边长7十字 / 黑=11x11方块 / 超级=15x15方块，⚠️黑和超级**会炸伤自己**(实测黑掉3血)。⚠️bomb_volcano **要求 host 已在矿/火山里**才放行(火山瓦片没法程序化换层)。⚠️bomb_mine one_floor=True=逐层模式(同步,只跑一层出摘要,不撤退)；**默认冲层模式=异步后台跑,推荐**。💡出发前占位物：提前放1个可堆叠物(铱矿/铱锭/五彩碎片)在包，满包时同种战利品自动堆叠吸附、少触发满包停；别拿银河之魂这类带死亡会丢的稀有物当占位。",
+"mine": "下矿域(⚒️ 矿井/头骨/火山)：go(去挖矿:mode=rush冲层/farm刷矿,start起始层,target目标层,ore,cycles圈数) progress(进度) bomb_status/bomb_plan/bomb_place/bomb_collect/bomb_ladder/bomb_retreat(单步炸,**都要 bomb_ 前缀**) bomb_mine(自动) bomb_volcano(火山) organize(整理背包)。🔁**刷矿=mode=go(mode=farm)**：定点刷指定矿→ore=Copper铜(21层)/Iron铁(41层)/Gold金(71层)；**煤靠 farm 铁层(41)顺手清尘埃精灵/蝙蝠掉**（不是 ore 选项，跑 auto 内部刷）。🏃下矿=mode=go(mode=rush,start可选≤电梯上限+5倍数,target默认120)。⚠️无镐/血低硬拦；梯子 /ladder+confirm。⚔️贴身(3×3)自卫=游戏自己每 tick 挥刀(go/bomb_mine/bomb_escort/bomb_volcano 四个脚本都自开自关,**只转向不移动**;手上是锤子且冷却好了会重砸6×6)；2格外的怪仍靠脚本扫描,别站桩。🍽️**自定义吃食**：go/bomb_mine/bomb_volcano 都可传 food_hp/food_sta=**逗号分隔、靠前的先吃**(如 food_hp=「奶酪,鱼肉卷」)。血低只看 food_hp、体力低只看 food_sta(**两张表分开别混**)。点名=**白名单**——只在这几样里挑、**吃完了也不吃别的**(恒 2026-10-03)，目的是**防止自动挑把你留着卖的吃了**(山羊奶酪最典型)；一个字都没点名才自动挑(自动挑**不吃带效果的**)。🍽️food_buff=点名「去吃带这个效果的那份」(效果关键字如 幸运/钓鱼，判据=游戏报的 foodBuffs)；每层开打前看该 buff 没挂/快过期就吃。⚠️food_buff **只有 go/bomb_mine 有**（火山不补 buff，别指望它）。⚠️bomb_mine 没炸弹+host在同矿井→自动转【内部】协同(跟随host+帮忙敲矿/打怪)不撤退出矿(bomb_escort 不对外暴露、AI 不主动启用)；bomb_retreat 结束协同+停脚本+脱离矿井回门口。⚠️接「深处的危险」重置电梯→起始层动态从1起(内置脚本自动读，不暴露工具)；刷矿目标层不可直达会上报，需先冲层带回或改浅层。📐带参速查: go(mode=rush冲层/farm刷矿, start起始层, target目标层, ore=Copper铜/Iron铁/Gold金, cycles圈数, hp_threshold, food_sta, food_hp, food_buff, resume) bomb_plan(radius,min_covered,top) bomb_place(x,y **必填**) bomb_collect(max_items) bomb_mine(target,bomb,min_covered,follow_host,lead,autodrop,one_floor,food_hp,food_sta) bomb_volcano(bomb,min_covered,hp_threshold,max_minutes,poll,food_hp,food_sta) organize(disable,reset)。💣bomb 三个取值 'Cherry Bomb'樱桃/'Bomb'黑/'Mega Bomb'超级——**点名的包里没有就按 黑>超级>樱桃 自动换成有的**(不会误报没炸弹)；范围 樱桃=边长7十字 / 黑=11x11方块 / 超级=15x15方块，⚠️黑和超级**会炸伤自己**(实测黑掉3血)。⚠️bomb_volcano **要求 host 已在矿/火山里**才放行(火山瓦片没法程序化换层)。⚠️bomb_mine one_floor=True=逐层模式(同步,只跑一层出摘要,不撤退)；**默认冲层模式=异步后台跑,推荐**。💡出发前占位物：提前放1个可堆叠物(铱矿/铱锭/五彩碎片)在包，满包时同种战利品自动堆叠吸附、少触发满包停；别拿银河之魂这类带死亡会丢的稀有物当占位。",
 # 🏠 2026-10-01：`"cabin"` 这条**删掉了** —— 整个域撤出顶层（恒：能收就收）。
 #    它每个 op 的新家：cook→**daily**（做饭是吃的上游）· sleep→daily · statue→farm ·
 #    interact/place/break/furniture/decor→**scene** · pickup→**scene**（单子那行 2026-10-02 撤） ·
