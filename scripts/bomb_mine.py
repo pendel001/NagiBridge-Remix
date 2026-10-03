@@ -914,7 +914,7 @@ def main():
                         help="🍽️ 体力食物（**逗号分隔、靠前的先吃**，如 '沙拉,面包'）；"
                              "点名=白名单，不传才自动挑")
     parser.add_argument("--food-buff", type=str, default=None,
-                        help="🍽️ 点名「现在去吃带这个效果的那份」（效果关键字，如 '幸运'/'钓鱼'，"
+                        help="🍽️ 点名「现在去吃带这个效果的那份」（效果关键字，如 '运气'/'钓鱼'，"
                              "判据=游戏报的 foodBuffs 效果文案/buff id/吃食名）；"
                              "该 buff 没了/快过期就吃；点名了就不吃别的。不传=包里任意带 buff 的都算候选")
     args = parser.parse_args()

@@ -31,7 +31,7 @@
 
   --food-sta      体力食物名称（如 Salad）；点名=白名单（吃完了也不吃别的）
   --food-hp       回血食物名称（如 Cheese）；同上
-  --food-buff     🍽️ 点名「去吃带这个效果的那份」（效果关键字，如 幸运/钓鱼）：
+  --food-buff     🍽️ 点名「去吃带这个效果的那份」（效果关键字，如 运气/钓鱼）：
                   每层开打前看 buff 没了/快过期就吃；不传=包里任意带 buff 的都算候选
   --port          NagiBridge 端口（默认 7842）
   --check-progress  查看已到达的最深层数，不挖矿
@@ -1083,7 +1083,7 @@ class MineBot(WeaponMixin):
         · **不上单子**（菜单是"处境动作"的强暗示，十来行吃的会把第一屏淹掉）——摊在 `mine` 的回执里就够；
         · 名字**照抄这里给的**（这就是 `detect_inventory_food()` 读到的、`--food-hp` 能匹配上的那个名字）；
         · 不点名 = 自动挑（按缺口挑最省的，见 `pick_food_closest_to_full`）；
-        · 2026-10-03：**带效果的另起一段标出来**（`【带效果】香辣鳗鱼 +1幸运 +1速度`）——
+        · 2026-10-03：**带效果的另起一段标出来**（`【带效果】香辣鳗鱼 +1运气 +1速度`）——
           自动挑**不会动**它们（恒的"效果食物除外"），想吃就在 `food_buff` 里点名。
         """
         try:
@@ -1109,7 +1109,7 @@ class MineBot(WeaponMixin):
         first = (plain or buffed)[0][0]
         lines.append(f"     不点名=我按缺口自动挑；点名：kw={{\"food_hp\": \"{first}\"}} / "
                      f"kw={{\"food_sta\": \"{first}\"}}"
-                     + (" / kw={\"food_buff\": \"<效果关键字，如 幸运>\"}" if buffed else ""))
+                     + (" / kw={\"food_buff\": \"<效果关键字，如 运气>\"}" if buffed else ""))
         return "\n".join(lines)
 
     def maintain_buffs(self, threshold=30, want=None):
@@ -1212,7 +1212,7 @@ class MineBot(WeaponMixin):
             **一个字都没点名**才走 `auto_eat` 自动挑（那边**效果食物除外**）。
 
         ⚠️ `food_buff` **不走本函数**：它是"补 buff"那条线（`maintain_buffs`，看 buff 剩多久，
-        跟血/体力两条线互不打扰）—— 血低时不会去啃"带幸运的那份"。"""
+        跟血/体力两条线互不打扰）—— 血低时不会去啃"带运气的那份"。"""
         hp_list = parse_food_list(food_hp)
         sta_list = parse_food_list(food_sta)
         if not hp_list and not sta_list:

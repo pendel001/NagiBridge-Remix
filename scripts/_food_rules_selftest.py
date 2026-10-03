@@ -34,25 +34,47 @@ def ck(name, cond, extra=""):
 
 
 # 一条件食：`(名字, 回体力, 回血, buff档)`
+# ⚠️ **buff 档照 C# 真回包写**（2026-10-03 真机 7842 抄下来的形状）：
+#    `{"isDrink": bool, "buffs": [{id, source, ms, effects, rawEffects}, …]}`
+#    —— 上一版夹具用的是"我脑子里那个形状"（直接一个数组），于是 C# 报对象、Python 按数组读，
+#       **恒真"没有效果"**，36 条自验全绿也没照出来（真机一跑就露）。**夹具必须照真回包抄。**
 CHEESE = ("奶酪", 125, 56, [])
 LEEK = ("韭葱", 40, 20, [])
-EEL = ("辣鳗鱼", 225, 115, [{"id": "food", "ms": 420000,
-                            "effects": ["+1 幸运", "+1 速度"]}])
-COFFEE = ("咖啡", 30, 0, [{"id": "drink", "ms": 126000, "effects": ["+1 速度"]}])
+# ⚠️ **名字/数值照 7842 真回包抄**（`name` 是内部英文名 —— 回执印的就是它；中文显示名在 buff 的
+#    `source` 里）。上一版夹具名字写的是"辣鳗鱼"、恢复量也是我编的 ⇒ 连"点名匹配"都没照出真形状。
+EEL = ("Spicy Eel", 115, 51, {"isDrink": False, "buffs": [
+    {"id": "food", "source": "香辣鳗鱼", "ms": 420000,
+     "effects": ["+1 运气", "+1 速度"], "rawEffects": None}]})
+TACO = ("Fish Taco", 165, 74, {"isDrink": False, "buffs": [
+    {"id": "food", "source": "鱼肉卷", "ms": 420000, "effects": ["+2 钓鱼"], "rawEffects": None}]})
+# 假想件：只为钉住"血低时回血 0 的永不选"那条守卫（1.6 里回血=edibility×0.45 ⇒ 真食物基本都 >0）
+COFFEE = ("咖啡", 30, 0, {"isDrink": True, "buffs": [
+    {"id": "drink", "source": "咖啡", "ms": 126000, "effects": ["+1 速度"], "rawEffects": None}]})
+# 真机同款第二例：果酒的 buff 不是 "drink" 而是 BuffId `17`（醉醺醺）⇒ 只有 `isDrink` 分得出它是喝
+WINE = ("Wine", 50, 22, {"isDrink": True, "buffs": [
+    {"id": "17", "source": "果酒", "ms": 30000, "effects": ["-1 速度"], "rawEffects": None}]})
 
 print("① 效果食物判据：**只认游戏报的那一位**（老 3 元组 = 不知道，不许猜）")
-ck("…带 foodBuffs 的 ⇒ 是效果食物", bool(bc.food_buffs_of(EEL)))
+ck("…带 foodBuffs 的 ⇒ 是效果食物（**C# 真形状=对象，要拆到 buffs 那层**）", bool(bc.food_buffs_of(EEL)))
+ck("…**果酒那种**（buff id 是 `17` 不是 `drink`）同样认得出", bool(bc.food_buffs_of(WINE)))
 ck("…不带 ⇒ 不是", not bc.food_buffs_of(CHEESE))
 ck("…**老形状 3 元组**（老 DLL/自验假数据）⇒ 空 = 不知道（不猜、不炸）",
    bc.food_buffs_of(("奶酪", 125, 56)) == [], bc.food_buffs_of(("奶酪", 125, 56)))
-ck("…效果文案 = 游戏给的那几行", bc.food_buff_text(EEL) == "+1 幸运 +1 速度", bc.food_buff_text(EEL))
+ck("…`foodBuffs` 为 `null`（没 buff 的东西 C# 那边落 null）⇒ 空",
+   bc.food_buffs_of(("奶酪", 125, 56, None)) == [])
+ck("…效果文案 = 游戏给的那几行", bc.food_buff_text(EEL) == "+1 运气 +1 速度", bc.food_buff_text(EEL))
 ck("…buff id = 槽位（同 id 互相顶）", bc.food_buff_ids(EEL) == ["food"], bc.food_buff_ids(EEL))
 
-print("② 点名匹配 `food_matches_buff`（效果文案 / buff id / 吃食名，大小写无关）")
-ck("…中文效果文案", bc.food_matches_buff(EEL, "幸运"))
+print("② 点名匹配 `food_matches_buff`（效果文案 / buff id / 吃食名 / 来源显示名，大小写无关）")
+ck("…中文效果文案（**照抄游戏印的**：真机是「运气」不是「幸运」）", bc.food_matches_buff(EEL, "运气"))
+ck("…中文**来源显示名**（回执印英文名、buff 里带中文名 ⇒ 两种抄法都认）",
+   bc.food_matches_buff(EEL, "香辣鳗鱼") and bc.food_matches_buff(EEL, "香辣鳗鱼"))
 ck("…buff id（英文、大小写无关）", bc.food_matches_buff(EEL, "FOOD"))
-ck("…吃食名", bc.food_matches_buff(EEL, "辣鳗"))
-ck("…多个关键字要**全中**", bc.food_matches_buff(EEL, "幸运,速度") and not bc.food_matches_buff(EEL, "幸运,钓鱼"))
+ck("…吃食名（回执里印的那个英文名）", bc.food_matches_buff(EEL, "spicy"))
+ck("…果酒那种：id `17` 认，效果「速度」也认", bc.food_matches_buff(WINE, "17")
+   and bc.food_matches_buff(WINE, "速度"))
+ck("…多个关键字要**全中**",
+   bc.food_matches_buff(EEL, "运气,速度") and not bc.food_matches_buff(EEL, "运气,钓鱼"))
 ck("…空关键字 = 不挑（恒真）", bc.food_matches_buff(CHEESE, ""))
 
 print("③ 自动挑「**离补满最接近**」+ **效果食物除外**")
@@ -60,14 +82,14 @@ ck("…缺口 20 ⇒ 吃韭葱（不是奶酪）", bc.pick_food_closest_to_full(
 ck("…缺口 72 ⇒ 只有奶酪够 ⇒ 吃奶酪", bc.pick_food_closest_to_full([CHEESE, LEEK], need_hp=72) == "奶酪")
 ck("…都不够 ⇒ 挑最大的（别拿小的白吃）",
    bc.pick_food_closest_to_full([LEEK, ("面包", 50, 25, [])], need_hp=999) == "面包")
-ck("…**效果食物不参与**（辣鳗鱼回的更多也不用）",
+ck("…**效果食物不参与**（香辣鳗鱼回的更多也不用）",
    bc.pick_food_closest_to_full([EEL, LEEK], need_hp=20) == "韭葱",
    bc.pick_food_closest_to_full([EEL, LEEK], need_hp=20))
 ck("…包里只剩效果食物 ⇒ **返回 None**（不是「照吃」）",
    bc.pick_food_closest_to_full([EEL], need_hp=20) is None)
 tk = bc.effect_food_note([EEL])
 ck("…只剩效果食物时**说得出原因**（含名字 + 效果 + 点名提示）",
-   "只剩带效果" in tk and "辣鳗鱼" in tk and "food_buff" in tk, tk)
+   "只剩带效果" in tk and "Spicy Eel" in tk and "food_buff" in tk, tk)
 ck("…有普通食物时那句话是空的（别乱报）", bc.effect_food_note([EEL, LEEK]) == "")
 ck("…血低时**回血 0 的永不选**（老规矩：绝不拿纯体力咖啡保命）",
    bc.pick_food_closest_to_full([COFFEE], need_hp=10) is None)
@@ -98,28 +120,28 @@ class FakeBot:
 
 print("④ 补 buff（`maintain_buffs_for`）：认游戏报的 id 对槽，**不认名单**")
 b = FakeBot([CHEESE, EEL], buffs=[])            # 什么都没挂 ⇒ 该补
-ck("…buff 没挂 ⇒ 吃那份带 buff 的", bc.maintain_buffs_for(b, want=None) is True and b.ate == ["辣鳗鱼"], b.ate)
+ck("…buff 没挂 ⇒ 吃那份带 buff 的", bc.maintain_buffs_for(b, want=None) is True and b.ate == ["Spicy Eel"], b.ate)
 b = FakeBot([CHEESE, EEL], buffs=[{"id": "food", "seconds": 400}])
 ck("…buff 还剩 400s > 30 ⇒ **不补**（也不会去吃奶酪）",
    bc.maintain_buffs_for(b, want=None) is False and b.ate == [], b.ate)
 b = FakeBot([CHEESE, EEL], buffs=[{"id": "food", "seconds": 10}])
-ck("…快过期（10s < 30）⇒ 补", bc.maintain_buffs_for(b, want=None) is True and b.ate == ["辣鳗鱼"], b.ate)
+ck("…快过期（10s < 30）⇒ 补", bc.maintain_buffs_for(b, want=None) is True and b.ate == ["Spicy Eel"], b.ate)
 b = FakeBot([CHEESE, EEL], buffs=[])
 ck("…`want` 点名没匹配的 ⇒ **不吃别的**（恒：「有点名只吃点名」）",
    bc.maintain_buffs_for(b, want="钓鱼") is False and b.ate == [], b.ate)
 b._last_buff_check = 0            # 清掉 min_gap 节流（同一 bot 连调会被节流，那是另一条钉子）
-ck("…`want` 点名匹配的 ⇒ 吃它", bc.maintain_buffs_for(b, want="幸运") is True and b.ate == ["辣鳗鱼"], b.ate)
+ck("…`want` 点名匹配的 ⇒ 吃它", bc.maintain_buffs_for(b, want="运气") is True and b.ate == ["Spicy Eel"], b.ate)
 b = FakeBot([CHEESE], buffs=[])
 ck("…包里**一件带 buff 的都没有** ⇒ 不吃（也不会抓奶酪充数）",
    bc.maintain_buffs_for(b, want=None) is False and b.ate == [], b.ate)
 b = FakeBot([EEL, COFFEE], buffs=[])
 bc.maintain_buffs_for(b, want=None)
-ck("…候选按**背包顺序**取第一件（不另立优先级表）", b.ate == ["辣鳗鱼"], b.ate)
+ck("…候选按**背包顺序**取第一件（不另立优先级表）", b.ate == ["Spicy Eel"], b.ate)
 b = FakeBot([EEL], buffs=[])
 bc.maintain_buffs_for(b, want=None)
 ck("…`min_gap` 节流：同一 bot 连调第二次不再打网络/不再吃", bc.maintain_buffs_for(b, want=None) is False)
 ck("…`want` 匹配的是**吃食名**也算（`food_matches_buff` 同一把尺子）",
-   FakeBot([EEL], buffs=[]).foods and bc.food_matches_buff(EEL, "辣鳗鱼"))
+   FakeBot([EEL], buffs=[]).foods and bc.food_matches_buff(EEL, "香辣鳗鱼"))
 
 
 class FakeMiner:

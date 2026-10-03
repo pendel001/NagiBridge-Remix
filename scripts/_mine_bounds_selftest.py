@@ -166,11 +166,13 @@ ck("…合并成一行：`奶酪 血+56 体+125`", "奶酪 血+56 体+125" in _l
 ck("…给了**可照抄的名字** + 点名写法（免去翻背包/大小写）",
    "照抄" in _line and 'food_hp' in _line, _line)
 ck("…没带效果的 ⇒ 不出现「带效果的」那一段（不编、不吓人）", "带效果的" not in _line, _line)
-b7.detect_inventory_food = lambda: [("辣鳗鱼", 225, 115,
-                                     [{"id": "food", "ms": 420000, "effects": ["+1 幸运", "+1 速度"]}])]
+b7.detect_inventory_food = lambda: [("Spicy Eel", 115, 51,
+                                     {"isDrink": False, "buffs": [
+                                         {"id": "food", "source": "香辣鳗鱼", "ms": 420000,
+                                          "effects": ["+1 运气", "+1 速度"], "rawEffects": None}]})]
 _lb = b7.food_menu_line()
 ck("…带效果的**单独标出来**（自动挑不动它 ⇒ 得让 AI 看得见、点得了名）",
-   "带效果的" in _lb and "+1 幸运" in _lb and "food_buff" in _lb, _lb)
+   "带效果的" in _lb and "+1 运气" in _lb and "food_buff" in _lb, _lb)
 b7.detect_inventory_food = lambda: []
 ck("…包里没吃的 ⇒ 明确说没有（别让 AI 以为自动挑会凭空变出食物）", "没有" in b7.food_menu_line(), b7.food_menu_line())
 print()

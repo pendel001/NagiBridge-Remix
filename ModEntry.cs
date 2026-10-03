@@ -5465,10 +5465,6 @@ public class ModEntry : Mod
                         //    healthRecoveredOnConsumption(血)——咖啡=只有体力、奶酪=回血，AI 按需求挑食才不会"血低了吃咖啡"。
                         ["edibleValue"] = (i as StardewValley.Object)?.staminaRecoveredOnConsumption() ?? 0,
                         ["healthRecovered"] = (i as StardewValley.Object)?.healthRecoveredOnConsumption() ?? 0,
-                        // 🍽️ 2026-10-03：**这件吃下去会不会挂 buff**（`null` 就省略字段）——
-                        //    恒的「效果食物除外」这条规矩的判据，见 `DescribeFoodBuffs` 的 docstring。
-                        //    ⚠️ 只有非 light 这条给（状态条那条只要格数，不吃这一份开销）。
-                        ["foodBuffs"] = DescribeFoodBuffs(i),
                         ["quality"] = (i as StardewValley.Object)?.Quality ?? 0,
                         ["value"] = SafeSellPrice(i),
                         ["sellable"] = IsSellable(i),   // 🔒 不可卖的工具/武器/戒指/靴子（标 0 + 不可卖，别让 AI 拿去卖）
@@ -5500,6 +5496,14 @@ public class ModEntry : Mod
                         ["stats"] = DescribeItemStats(i),
                         ["slotIndex"] = x.slotIdx   // 真实背包槽位（点坐标用这个，不是列表 index）
                     };
+                    // 🍽️ 2026-10-03：**这件吃下去会不会挂 buff** —— 恒的「效果食物除外」这条规矩的判据
+                    //    （见 `DescribeFoodBuffs` 的 docstring）。**只有真会挂的才加这一位**。
+                    //    ⚠️ 真机验过（7842，25 件包）：`Dictionary` 里塞 `null` **照样会序列化成
+                    //       `"foodBuffs":null`**（不是我注释里以为的"省略字段"）⇒ 25/25 件都白带一个键，
+                    //       每次 `/state` 多烧约 500 字节 token。**省略要自己动手**，别指望 null 会消失。
+                    //    ⚠️ 只有非 light 这条给（状态条那条只要格数，不吃这一份开销）。
+                    var _fb = DescribeFoodBuffs(i);
+                    if (_fb != null) entry["foodBuffs"] = _fb;
                     if (i is WateringCan wc)
                     {
                         entry["waterLeft"] = wc.WaterLeft;

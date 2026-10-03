@@ -78,19 +78,30 @@ EAT_STA_PCT = 30
 def food_buffs_of(f):
     """🍽️ 这条食物"吃下去会挂什么 buff"（条目第 4 位 = C# `/state` 的 `foodBuffs`）。
 
-    ⚠️ **判据只此一处**：游戏自己的 `Object.GetFoodOrDrinkBuffs()`（反编译 `Farmer` 吃食结算
-    那条链就是遍历它逐个 `applyBuff`）。消费侧**不许再编名单** —— 恒 2026-10-03 拍的就是这个清理
+    **判据只此一处**：游戏自己的 `Object.GetFoodOrDrinkBuffs()`（反编译 `Farmer` 吃食结算那条链
+    就是遍历它逐个 `applyBuff`）。消费侧**不许再编名单** —— 恒 2026-10-03 拍的就是这个清理
     （`BUFF_DISH_PRIORITY` / `BUFF_DRINK_PRIORITY` / `DRINK_BUFFS` / `buff_duration` 四张手抄表已删）。
-    拿不到这一位（老 DLL / 自验假数据 / 3 元组）⇒ 空列表 = "不知道"，**不猜**（宁缺勿编）。
+
+    ⚠️ **C# 真形状是对象**：`{"isDrink": bool, "buffs": [ {id, source, ms, effects, rawEffects}, … ]}`
+       —— 本函数**负责拆到 `buffs` 那一层**；调用方拿到的是 buff 列表（不是那个对象）。
+    🐛 2026-10-03 真机逮到的（**我自己造的假绿灯**）：C# 那边写的是对象，Python 这边却按**数组**读
+       ⇒ `isinstance(v, (list, tuple))` 不成立 ⇒ **恒真返回"没有效果"** ⇒
+       「效果食物除外」「✨带效果的」「点名补 buff」全成了哑巴，而自验还是全绿 ——
+       因为**夹具用的是我脑子里那个形状**，不是 C# 真报的形状。
+       ⇒ 教训：跨语言的那一层，**夹具必须照真回包抄**（这次照抄的是 7842 的真 `/state`）。
+    也**兼容**直接给数组的老写法（自验里的假数据），但**别把它当真形状用**。
+    拿不到这一位（老 DLL / 3 元组）⇒ 空列表 = "不知道"，**不猜**（宁缺勿编）。
     """
     if not isinstance(f, (list, tuple)) or len(f) < 4:
         return []
     v = f[3]
+    if isinstance(v, dict):                 # ⬅️ C# 真形状：{isDrink, buffs:[…]}
+        v = v.get("buffs")
     return list(v) if isinstance(v, (list, tuple)) else []
 
 
 def food_buff_text(f):
-    """这条食物的效果文案（**游戏自己**的本地化描述，如 `+1 幸运 +1 速度`）；没 buff 给 `""`。"""
+    """这条食物的效果文案（**游戏自己**的本地化描述，如 `+1 运气 +1 速度`）；没 buff 给 `""`。"""
     parts = []
     for b in food_buffs_of(f):
         if not isinstance(b, dict):
@@ -114,11 +125,20 @@ def food_buff_ids(f):
 
 def food_matches_buff(f, keyword):
     """这条食物是否符合效果关键字（`food_buff` 点名用）：**只打游戏报的那些字**（效果文案/buff id/
-    吃食名），大小写无关。关键字为空 ⇒ 恒真（等于"不挑"）。"""
+    吃食名/buff 的来源显示名），大小写无关。关键字为空 ⇒ 恒真（等于"不挑"）。
+
+    ⚠️ 四种字面都认，是因为**同一个东西在不同地方名字不同**（真机 7842 的样本）：
+       · 效果文案 `+1 运气`（游戏本地化）· buff id `food`/`17` · 背包里的名字 `Spicy Eel`（英文内部名，
+         就是回执里印的那个）· buff 的来源显示名 `香辣鳗鱼`（中文）。AI 从回执里抄哪个都该命中。
+    """
     kw = (keyword or "").strip().lower()
     if not kw:
         return True
-    hay = " ".join([food_buff_text(f)] + food_buff_ids(f) + [str(f[0])]).lower()
+    parts = [food_buff_text(f)] + food_buff_ids(f) + [str(f[0])]
+    for b in food_buffs_of(f):
+        if isinstance(b, dict) and b.get("source"):
+            parts.append(str(b["source"]))
+    hay = " ".join(parts).lower()
     return all(k in hay for k in [x for x in re.split(r"[,，\s]+", kw) if x])
 
 
@@ -263,7 +283,7 @@ def maintain_buffs_for(bot, threshold=30, want=None, min_gap=8.0):
     两侧**同一个 id 就是同一个槽**（`BuffManager.Apply` 先 `Remove(buff.id)` 再放进去）⇒
     原先那两张"菜品/饮品优先级"手抄表 + `DRINK_BUFFS` + `buff_duration`（时长也是抄的）**全部删掉**。
 
-    `want` = 恒的 `food_buff` 点名（效果关键字，如 `"幸运"`）：
+    `want` = 恒的 `food_buff` 点名（效果关键字，如 `"运气"`）：
       · 点名 ⇒ **只认匹配的那份**；没有 ⇒ **不吃别的**（恒 2026-10-03：「有点名只吃点名，
         吃完了也不吃别的；不点名才自动吃」）；
       · 不点名 ⇒ 包里任意带 buff 的都算候选，**按背包顺序**（不另立优先级表）。
@@ -779,7 +799,7 @@ class BombMiner(WeaponMixin):
         #       —— 原来第 ③ 条"整张表都没货就退回自动挑"**已作废**（那是我 09-20 自己加的保命兜底）。
         self.food_hp = []              # 回血：按优先级排的食物名列表
         self.food_sta = []             # 体力：同上
-        # 🍽️ 2026-10-03 恒：`food_buff` —— **点名"现在去吃带这个效果的那份"**（如 "幸运"/"钓鱼"）。
+        # 🍽️ 2026-10-03 恒：`food_buff` —— **点名"现在去吃带这个效果的那份"**（如 "运气"/"钓鱼"）。
         #    判据是游戏报的 `foodBuffs` 效果文案/buff id/吃食名（见 `food_matches_buff`），不是名单。
         #    维护走 `maintain_buffs_for`：该 buff 没了/快过期就吃；点名了就不吃别的。
         self.food_buff = ""
