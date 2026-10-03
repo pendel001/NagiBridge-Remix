@@ -2275,26 +2275,47 @@ class BombMiner(WeaponMixin):
             self.face(2)
         time.sleep(0.15)
         # 选炸弹 + 放
-        self.select(bt)
-        time.sleep(0.15)
-        n_before = self.count_bombs(bt)
-        r = self.use_item()
-        time.sleep(0.3)
-        # ⚠️ 以 /use 返回 placed 为准：炸弹自动引爆快，surroundings 验证会因炸弹已爆而误报"没放到"（2026-08-08 实测）
-        if isinstance(r, dict) and r.get("ok") and r.get("action") == "placed":
-            return True, f"{bt} 放在 ({x},{y})"
-        # 🔴 2026-10-03 深夜（恒的观察/猜测：「那个傻愣着是它**没往下炸**…**可能因为那个位置被挡了
-        #    放不了炸弹**」——他是对的，日志里正面写着 `连续放置失败，疑似卡死`，我先前赖给木乃伊是错的）：
-        #    原来这里只回一句 `use 失败`（`r.get("error", …)`），**把 `/use` 的原始回包丢了**
-        #    ⇒ 现场根本分不清是"目标格被怪/物挡"、"人没站到位"，还是"其实放上了、只是 action 不叫 placed"。
-        #    ⇒ 两条：① 把原始回包记进 msg（下次一眼看出原因）
-        #            ② **顺手数炸弹**：数量少了就说明炸弹真出包了 ⇒ 按"放出去了"算
-        #               （比抠 action 字符串可靠；`use 失败` 那条很可能就是这里误判）。
-        n_after = self.count_bombs(bt)
-        if n_after < n_before:
-            return True, (f"{bt} 放在 ({x},{y})（/use 没报 placed，但炸弹少了 {n_before - n_after} 颗 "
-                          f"⇒ 按「已放出」算；原始回包 {str(r)[:120]}）")
-        err = (r or {}).get("error") or (f"/use 回包 {str(r)[:160]} —— 炸弹数没变（{n_before}），**真没放出去**")
+        # 🔴🔴 2026-10-03 深夜真机抓到**真凶**（恒的观察「它没往下炸…可能位置被挡了放不了炸弹」）：
+        #    `/use` 回包 `{'ok':True,'action':'tool','item':'Galaxy Hammer'}` ⇒ **我们把锤子挥出去了**，
+        #    炸弹一颗没少（93）。原因：**guard（C# `GuardTick`）为了砍怪会把手持槽切到武器**——
+        #    `farmer.CurrentToolIndex = slot` 那一步是它自己的硬约束，而我们在它切完之后才 `/use`
+        #    ⇒ 手里的已经不是炸弹了 ⇒ 判定失败 ⇒ 空转重试 ⇒ `连续放置失败，疑似卡死` ⇒ **整趟撤退**。
+        #    ⇒ 三重保险：① **放之前先确认手持真是炸弹**（读 `/state.player.currentItem`），不是就重选
+        #              ② 回包 `action == "tool"` ⇒ 明显是被抢了 ⇒ 重选再来
+        #              ③ 数炸弹兜底（少了就是真放出去了）
+        placed_ok = False
+        r = None
+        for attempt in (1, 2, 3):
+            self.select(bt)
+            time.sleep(0.12)
+            cur = ((self.state().get("player") or {}).get("currentItem") or "")
+            if bt not in cur:
+                log(f"  ↻ 手持是「{cur or '空'}」不是 {bt}（第 {attempt} 次）—— 重选")
+                time.sleep(0.2)
+                continue
+            n_before = self.count_bombs(bt)
+            r = self.use_item()
+            time.sleep(0.3)
+            # ⚠️ 以 /use 返回 placed 为准：炸弹自动引爆快，surroundings 验证会因炸弹已爆而误报"没放到"（2026-08-08 实测）
+            if isinstance(r, dict) and r.get("ok") and r.get("action") == "placed":
+                placed_ok = True
+                break
+            if isinstance(r, dict) and r.get("action") == "tool":
+                log(f"  ↻ `/use` 又挥成工具了（{r.get('item')}）—— **多半是 guard 抢的手持槽**，重选再来")
+                time.sleep(0.25)
+                continue
+            n_after = self.count_bombs(bt)
+            if n_after < n_before:
+                placed_ok = True
+                r = {"ok": True, "action": "placed_by_count",
+                     "note": f"炸弹少了 {n_before - n_after} 颗"}
+                break
+            break   # 既不是 placed 也不是 tool ⇒ 留原始回包报错，别瞎重试
+        if placed_ok:
+            extra = "" if (isinstance(r, dict) and r.get("action") == "placed") else f"（{r.get('action')}：{r.get('note')}）"
+            return True, f"{bt} 放在 ({x},{y}){extra}"
+        err = ((r or {}).get("error")
+               or f"/use 回包 {str(r)[:160]} —— 炸弹数没变，**真没放出去**")
         return False, f"放炸弹失败: {err}"
 
     def wait_explosion(self, x, y, timeout=9.0):

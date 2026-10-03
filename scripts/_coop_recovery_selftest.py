@@ -107,7 +107,7 @@ ck("…复活时把 `coop_handoff` 复位（否则结尾会打『协同模式结
 ck("…**交棒前先试换类型**（`count_bombs()` 只数当前那种 ⇒ 手里有樱桃也会被判『没炸弹』）",
    "先试**换类型**再判" in bm or "_sw = self.choose_bomb_type()" in bm)
 ck("…放炸弹那条路自己会 `select`（换类型/复活后不用担心手上不是炸弹）",
-   "self.select(bt)" in block(bc, r"    def place_bomb_at", span=40))
+   "self.select(bt)" in block(bc, r"    def place_bomb_at", span=95))
 ck("…火山那套本来就是这么干的（对照事实：同一循环里 `choose_bomb_type` 重估）",
    "choose_bomb_type()" in src("bomb_volcano.py"))
 
@@ -238,11 +238,20 @@ ck("…日志写明「全包最低分」", "全包最低分" in bc)
 print("⑮ 💣 「放不了炸弹」必须**自证**（恒：那个傻愣着是它没往下炸；可能位置被挡放不了）")
 # 现场：bomb4 那趟撤退原因就是 `连续放置失败，疑似卡死`，另有 `⚠️ 放炸弹失败: use 失败`——
 # 而原来 `place_bomb_at` 只回一句 `use 失败`，把 `/use` 原始回包**丢了**，现场看不出原因。
-_pb = block(bc, r"    def place_bomb_at\(", span=55)
+_pb = block(bc, r"    def place_bomb_at\(", span=95)
 ck("…放之前后都数一遍炸弹（`n_before`/`n_after`）", "n_before = self.count_bombs" in _pb and "n_after = self.count_bombs" in _pb)
-ck("…炸弹数少了 ⇒ 按「已放出」算（不抠 action 字符串）", "n_after < n_before" in _pb and "已放出" in _pb)
-ck("…失败时把**原始回包**记进 msg（下次一眼看出为什么）", "原始回包" in _pb and "str(r)[:160]" in _pb)
-ck("…注释点明恒的观察 + 我先前赖木乃伊是错的", "没往下炸" in _pb and "木乃伊" in _pb)
+ck("…炸弹数少了 ⇒ 按「已放出」算（不抠 action 字符串）", "n_after < n_before" in _pb and "placed_by_count" in _pb)
+ck("…失败时把 `/use` **原始回包**记进 msg（下次一眼看出为什么）", "/use 回包" in _pb and "str(r)[:160]" in _pb)
+ck("…注释点明恒的观察（「没往下炸…位置被挡放不了炸弹」）", "没往下炸" in _pb)
+
+print("⑯ 🔨 guard 抢手持槽 ⇒ `/use` 挥成锤子、炸弹放不出去（真机抓到的真凶）")
+# 真机回包：`{'ok':True,'action':'tool','item':'Galaxy Hammer'}` + 炸弹数没变 ⇒ 那颗炸弹根本没放。
+# guard（C#）为了砍怪会把 `CurrentToolIndex` 切到武器槽，我们在它之后 `/use` ⇒ 手里已经不是炸弹了。
+_pb2 = block(bc, r"    def place_bomb_at\(", span=70)
+ck("…放之前先确认手持真是炸弹（读 `currentItem`）", "currentItem" in _pb2 and "bt not in cur" in _pb2)
+ck("…回包 `action == \"tool\"` 被视为「被 guard 抢了」并重选重试", '== "tool"' in _pb2 and "guard 抢" in _pb2)
+ck("…有重试次数上限（`for attempt in (1, 2, 3)`）", "for attempt in (1, 2, 3)" in _pb2)
+ck("…数炸弹兜底仍在（少了=放出去了）", "n_after < n_before" in _pb2)
 
 print()
 if fails:
