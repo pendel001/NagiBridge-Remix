@@ -88,8 +88,9 @@ CO_LOCATED_DIST = 10     # user同层且曼哈顿距离≤此值=贴身（增援
 COOP_CHECK_EVERY = 1     # clear_floor 每次迭代都查user（增援要灵敏，错过窗口就打不到了）
 COOP_BURST_SEC = 12      # 增援限时（打完user的对手就回来炸矿）
 # 🎁 协同里多久扫一次宝箱（拍数，1 拍≈0.6s）。主循环是"每层开一次"，协同没有"层"的概念
-#    ⇒ 用节流。⚠️ 别设成 1：`open_treasure_chests()` 内部是 `surroundings(30)` 大扫描。
-COOP_CHEST_EVERY = 8
+#    ⇒ 用节流。⚠️ 别设太小：`open_treasure_chests()` 内部是 `surroundings(30)` 大扫描
+#    （矿层整张图，回包几百 KB）⇒ 15 拍≈9s 是"跟得上逛房间"和"别把 API 打满"之间的折中。
+COOP_CHEST_EVERY = 15
 LEAD_MAX = 3             # AI 领先user超过这层数就传送回user身边（不然一个人在前面挨打）
 
 
@@ -393,6 +394,8 @@ class BombMineBot(BombMiner):
         log("\n🔄 背包炸弹不足 → 内部协同保镖：跟随 host + 帮忙敲矿/打怪 + 开宝箱。AI 可随时 bomb_retreat 结束协同并脱离矿井回门口。")
         quiet = 0
         coop_tick = 0
+        coop_opened = set()      # 🎁 这一层已经开过的箱子坐标（换层清空）——防"每 9 秒重开同一个空箱"
+        coop_chest_loc = ""
         while True:
             try:
                 coop_tick += 1
@@ -438,7 +441,15 @@ class BombMineBot(BombMiner):
                 #      当普通异常吞掉（主循环那段注释专门警告过），所以这里**必须单独接住**。
                 if coop_tick % COOP_CHEST_EVERY == 0:
                     try:
-                        if self.open_treasure_chests():
+                        # 🎁 记账 `skip`（**只在当次下矿有效**，恒 2026-10-03 确认）：
+                        #    同一层里同一个箱子只开一次；**换层清空** —— 因为"整百层宝箱房每次重进都会刷新"，
+                        #    回到同一层本来就该再看一眼有没有新箱子；而已经空了的箱子，再点一下会**爆掉消失**，
+                        #    所以"重开一次"本身没有害处（这条记账纯粹是为了别每 9 秒白等一次菜单开关）。
+                        if ml != coop_chest_loc:
+                            coop_chest_loc = ml
+                            coop_opened.clear()
+                        for _at in (self.open_treasure_chests(skip=coop_opened) or []):
+                            coop_opened.add(tuple(_at))
                             acted = True
                     except ManualChestFull as e:
                         log(f"  ⭐ 宝箱满包领不走（{e}）→ 结束协同交 AI 手动"
@@ -817,10 +828,13 @@ class BombMineBot(BombMiner):
             # 每层开打前看一遍 buff（按 buff id 对槽补，不是靠名单猜）
             self.maintain_buffs(threshold=30, want=getattr(self, "food_buff", "") or None)
 
-            # 宝箱层开箱（恒 2026-09-06：城镇【整10层】也有宝箱，之前只认沙漠整百层120+100n——40层整10的宝箱从没被开）
-            #   沙漠整百层=120+100n（宝箱房）；城镇整10层=level%10==0。open_treasure_chests 内部扫不到 Chest 即无操作不卡。
-            if (level - 120) % 100 == 0 or (level < 121 and level % 10 == 0):
-                self.open_treasure_chests()
+            # 宝箱：**每层都扫**（2026-10-03 恒真机：「跳了。是不是因为不是整百层也不认？」——**正是**）。
+            #    原来这里只在"宝箱层"（城镇整10层 / 头骨 `(level-120)%100==0`）才调一次
+            #    ⇒ **别的层上的箱子连扫都不扫**（那天协同在 135 层照样开出一个宝箱，主循环却会错过它）。
+            #    `open_treasure_chests()` 内部"扫不到 Chest 就无操作"⇒ 每层调一次只是多一次
+            #    `surroundings(30)`（一层一次，可接受；协同那边是 15 拍≈9s 一次）。
+            #    ⚠️ 满包时它会抛 `ManualChestFull`（上面 run_rush 有专门处理，交 AI 手动）。
+            self.open_treasure_chests()
 
             # 安全：⚠️ 吃完必须**复检**。clear_floor 那处有复检、主循环这处原来没有——
             #    结果吃一口就当"安全"继续走，跟吃食目标线之间留出一段死区（恒观察到的

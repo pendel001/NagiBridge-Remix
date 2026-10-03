@@ -1524,9 +1524,11 @@ class MineBot(WeaponMixin):
         城镇宝箱只在**整10层**、一次性领完即止（沙漠/火山会刷）；扫不到 Chest 即 no-op 不卡。
         开箱满包 → 抛 ManualChestFull（交 AI 手动处理，不自动丢物）。"""
         m = BombMiner(port=self.port)
+        # ⚠️ 2026-10-03：`open_treasure_chests()` 现在返回**开过的坐标列表**（为了协同那边记账防重开），
+        #    这里要的是**个数** ⇒ `len()`（原来直接 f-string 出来会印成 `×[(9, 9)]`）。
         n = m.open_treasure_chests()
         if n:
-            log(f"  🎁 本层开宝箱 ×{n}")
+            log(f"  🎁 本层开宝箱 ×{len(n)}")
         return n
 
     # ═══════════════════════════════════════════════════════════════

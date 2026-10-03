@@ -21747,14 +21747,26 @@ def _send_home_from_mine(tries: int = 4):
 
 def _mine_exit_from_loc(loc_name: str):
     """判断 farmhand 当前是否站在矿井，是则回对应出口（复用 bomb_common.retreat_to_entrance 约定）。
-    返回 (location, x, y) 或 None（不在矿井→不动）。让"主动停矿"不把 farmhand 留在矿井里。"""
+    返回 (location, x, y) 或 None（不在矿井→不动）。让"主动停矿"不把 farmhand 留在矿井里。
+
+    🔴 2026-10-03 恒真机逮到：原来只判 `"SkullCave" in ln` ⇒ 而**头骨矿洞的层名是
+    `UndergroundMine121…`（不含 "SkullCave" 字样）** ⇒ 被上面那条 `"UndergroundMine" in ln`
+    判成普通矿井、把人**从沙漠传回鹈鹕镇**（跨大陆传错）。恒原话：
+    「如果是 mcp 的 stop，那，应该到沙漠洞口而不是 mountain」。
+    ⇒ 按**层号**分：`UndergroundMine121+` = 头骨矿洞（出口在沙漠）；`≤120` = 镇矿井（Mountain）。
+    ⚠️ 同一个坑 `bomb_common._retreat_warp` 里已经踩过一次并留了警告（那边写的是
+    `loc.startswith("SkullCave") or level >= 121`）——本函数是**另一处**实现，漏了层号那半。
+    """
     ln = loc_name or ""
     if "VolcanoDungeon" in ln:
         return ("IslandNorth", 40, 24)    # 火山矿洞出口（姜岛火山入口）
-    if "SkullCave" in ln:
-        return ("Desert", 8, 6)           # 头骨矿洞出口（沙漠）
-    if "UndergroundMine" in ln:
-        return ("Mountain", 54, 5)        # 普通矿井出口（鹈鹕镇矿井口）
+    if ln.startswith("SkullCave"):
+        return ("Desert", 8, 6)           # 头骨矿洞入口那层（location 就叫 SkullCave）
+    m = re.match(r"UndergroundMine(\d+)", ln)   # ⚠️ 用模块级 `re`（`_re` 只是别的函数里的局部别名）
+    if m:
+        return ("Desert", 8, 6) if int(m.group(1)) >= 121 else ("Mountain", 54, 5)
+    if ln == "Mine":
+        return ("Mountain", 54, 5)        # 🏚️ 镇矿井入口那层（location 就叫 "Mine"）
     return None
 
 

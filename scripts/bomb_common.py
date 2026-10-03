@@ -2067,13 +2067,22 @@ class BombMiner(WeaponMixin):
 
     # ═══════════ 炸弹核心 ═══════════
 
-    def open_treasure_chests(self):
+    def open_treasure_chests(self, skip=None):
         """宝箱层：开完所有 Chest。开箱弹 ItemGrabMenu（宝箱物品菜单）——满包领不走 → raise ManualChestFull
         停脚本交 AI 手动（menu_claim_swap/ok，恒 2026-08-23 不自动丢物）；有空位 → 循环 claim_swap(prefer空槽) 拿完再关；
-        DialogueBox 则推进。开完直接走下楼逻辑，不卡死循环。"""
+        DialogueBox 则推进。开完直接走下楼逻辑，不卡死循环。
+
+        `skip` = **已经开过的坐标集合**（2026-10-03 加）：协同是"每 N 拍扫一次"的循环，
+        不记账就会**把同一个（已经空了的）箱子每 9 秒再开一遍** —— 真机日志里
+        `🎁 开宝箱 (9,9)` 连出两行、每次都白等菜单开关两秒。主循环"每层只开一次"所以看不出这个问题。
+        返回**开过的坐标列表**（空列表 = 这层没有没开过的箱子）。⚠️ 调用方原来只把它当 bool/计数用，
+        列表在这两种用法下语义不变。
+        """
+        skip = skip or set()
         data = self.surroundings(30)
-        chests = [(t["x"], t["y"]) for t in data.get("tiles", []) if t.get("object") == "Chest"]
-        opened = 0
+        chests = [(t["x"], t["y"]) for t in data.get("tiles", [])
+                  if t.get("object") == "Chest" and (t["x"], t["y"]) not in skip]
+        opened_at = []
         for cx, cy in chests:
             sx, sy, _, _ = self.find_stand_tile(cx, cy, set())
             if sx is None:
@@ -2120,14 +2129,14 @@ class BombMiner(WeaponMixin):
                         time.sleep(2.0)
                     else:
                         break
-                opened += 1
+                opened_at.append((cx, cy))
                 log(f"  🎁 开宝箱 ({cx},{cy})")
             except ManualChestFull:
                 raise   # ⭐ 满包停：向上抛（run_rush 接住干净停），不能被下面的 except Exception 吞掉——恒 2026-08-23
             except Exception:
                 pass
             time.sleep(1.0)
-        return opened
+        return opened_at
 
     def autodrop_cheap(self):
         """背包快满时丢低价值物腾格（开箱拿取需要空位）。"""

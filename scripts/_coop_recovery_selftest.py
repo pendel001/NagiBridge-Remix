@@ -119,9 +119,16 @@ ck("…心跳**不**自动撤退（恒只是站着不动，悄悄走人才是坑
    re.search(r'if quiet == 15[^\n]*\n\s+log\(', code_only(_coop)) is not None)
 
 print("⑤ 🎁 协同也要开宝箱（恒 2026-10-03 真机：「协同不会开箱子！让协同也加开箱吧」）")
-ck("…协同循环里调了 `open_treasure_chests()`", "open_treasure_chests()" in _coop)
+ck("…协同循环里调了 `open_treasure_chests()`（带 `skip` 记账）",
+   "open_treasure_chests(skip=coop_opened)" in _coop)
+ck("…🎁 记账只在当次下矿有效（换层清空；恒：空箱再点会爆掉消失、百层宝箱房重进会刷新 ⇒ 重开无害）",
+   "coop_opened.clear()" in _coop and "coop_opened = set()" in _coop)
+ck("…`mine_run` 那边把新返回值当**个数**用（`len()`，别印成 `×[(9, 9)]`）",
+   "len(n)" in src("mine_run.py"))
 ck("…是**节流**扫的（`COOP_CHEST_EVERY`）——`open_treasure_chests` 内部是 `surroundings(30)` 大扫描，每拍都扫会打满 API",
    "COOP_CHEST_EVERY" in bm and "coop_tick % COOP_CHEST_EVERY" in _coop)
+ck("…🎁 记账**开过的箱子**（`skip=` + 换层清空）——不然每 9s 把同一个空箱再开一遍（真机 `🎁 开宝箱 (9,9)` 连出两行）",
+   "skip=coop_opened" in _coop and "coop_opened.clear()" in _coop)
 ck("…⭐ `ManualChestFull` **单独接住**（协同那层 `except Exception` 会把它当普通异常吞掉 ⇒ 满包就静默不吭声）",
    "except ManualChestFull" in _coop)
 ck("…满包那条走**和主循环一样的规矩**：停脚本交 AI 手动（不自动丢物）",
@@ -136,10 +143,24 @@ ck("…1.6 的签名是返回**余量 Item**（不是 bool）——拿 `leftover
    "Item? leftover" in _gv and "leftover?.Stack" in _gv)
 ck("…塞不进 ⇒ `ok:false` + 报空格 + 给下一步", "ok = false" in _gv and "freeSlots" in _gv)
 
+print("⑦ 炸矿主循环也**每层都扫**宝箱（恒 2026-10-03：「跳了。是不是因为不是整百层也不认？」——正是）")
+ck("…主循环里 `open_treasure_chests()` **不再**被 `% 10` / `(level-120)%100` 的条件包住",
+   not re.search(r"if \(level - 120\) % 100 == 0", code_only(bm))
+   and "self.open_treasure_chests()" in code_only(bm))
+
+print("⑧ `script stop` 把人送出矿时，**头骨矿洞要送回沙漠**（恒：「应该到沙漠洞口而不是 mountain」）")
+_ex = block(srv, r"def _mine_exit_from_loc", span=26)
+ck("…按**层号**分（`UndergroundMine121+` = 头骨 ⇒ Desert）",
+   "UndergroundMine(\\d+)" in _ex or "UndergroundMine(\\\\d+)" in _ex or ">= 121" in _ex)
+ck("…不再只判 `\"SkullCave\" in ln`（头骨矿洞层名**不含** SkullCave 字样 ⇒ 原来会判成普通矿井）",
+   "int(m.group(1)) >= 121" in _ex)
+ck("…镇矿井入口那层（location 就叫 `Mine`）也送回 Mountain",
+   'if ln == "Mine"' in _ex)
+
 print()
 if fails:
     print(f"❌ {len(fails)} 条没过：")
     for f in fails:
         print(f"   · {f}")
     sys.exit(1)
-print("🎉 全部通过（协同：被动起 / 随时结束 / 有弹自动复活 / 会开宝箱 / give 不假成功）")
+print("🎉 全部通过（协同：被动起 / 随时结束 / 有弹自动复活 / 会开宝箱 / 主循环每层扫箱 / 送出矿认层号 / give 不假成功）")
