@@ -508,10 +508,24 @@ def drop_value(name):
 
 
 def item_keep_score(name, value):
-    """物品保留优先级（越高越该留）。背包满取舍用：丢最低分垃圾，保留工具/炸弹/石头/稀有。"""
+    """物品保留优先级（越高越该留）。背包满取舍用：丢最低分垃圾，保留工具/炸弹/石头/稀有。
+
+    🔴🔴 2026-10-03 深夜（恒**第二次**问「锤子怎么又不见了？」）——**是这条函数把锤子当垃圾丢了**：
+      保护名单里有 `Sword`/`Blade`，**偏偏没有 `Hammer`**（SDV 的锤子是 **Club 类**武器、名字以 Hammer 结尾），
+      而武器**卖不掉** ⇒ `/state.inventory` 的 `value` 报 0 ⇒ 一路落到最后一行 `return 10`（垃圾）
+      ⇒ `ensure_free_slot()`（背包满时为造楼梯腾格）就把它 `/drop` 了。
+      **铁证**：三趟炸矿日志里各有一行 `🎒 腾格：丢 Galaxy Hammer`（bomb2 / bomb4 / bombday）——
+      恒一直以为"是被打死才丢的"，其实**没死也会丢**（`deathCount=0` 那趟照样丢）。
+      ⇒ 两条修：① 补全武器/工具关键字（Hammer/Club/Dagger/Slingshot/Staff/Scythe/Pan/…Rod）
+                ② **卖价 ≤ 0 的一律不丢**——卖不掉的东西就是装备，不是垃圾；这条让**将来新加的装备**也自动受保护。
+    """
     if name in BOMB_NAMES or "Pickaxe" in name or "Axe" in name or "Hoe" in name \
-            or "Can" in name or "Sword" in name or "Blade" in name:
-        return 100  # 工具/武器/炸弹
+            or "Can" in name or "Sword" in name or "Blade" in name \
+            or "Hammer" in name or "Club" in name or "Dagger" in name or "Slingshot" in name \
+            or "Staff" in name or "Scythe" in name or "Rod" in name or name == "Pan":
+        return 100  # 工具/武器/炸弹（⚠️ `Hammer` 这条是 2026-10-03 补的，丢过一次锤子）
+    if value <= 0:
+        return 100  # 卖价 0/未知 ⇒ 认定"装备/任务物"，**绝不丢**（宁背包满也别丢家当）
     if name == "Stone":
         return 90  # 石头造楼梯跳关
     if name in ("Iridium Ore", "Prismatic Shard", "Diamond", "Golden Walnut", "Qi Gem",
@@ -2739,7 +2753,13 @@ class BombMiner(WeaponMixin):
         for attempt in range(3):
             # 1. position 精确站上梯子格（差1格 confirm 无效）。⚠️ 不加连通校验——梯子就是要去的出口，
             #    即使它在另一胞腔，瞬移到梯子=成功逃出（比"卡隔区回不去"好）；加了反而会拒掉合法逃生
-            if not self.position_safe(lx, ly, exact=True):
+            # ⚠️ **这里必须显式 `check_passable=False`**：梯子格在 `IsTilePassable` 眼里
+            #    **本来就是"不可走"**（站上去会被游戏传下一层），跟墙/水不是一回事。
+            #    🔴 2026-10-03 深夜现场（我把 `position_safe` 默认改成校验之后立刻撞到）：
+            #      `⚠️ position (8,31) 被拒（不可走/孤岛）` ×3 ⇒ `站不上梯子` ⇒ 造楼梯 ⇒
+            #      楼梯格**同样**被拒 ⇒ `撤退原因: 没梯子也没楼梯材料`（121 层就撤了）。
+            #    ⇒ 这就是那条注释里说的"**明知要落不可走格**的特例"，必须显式关掉校验。
+            if not self.position_safe(lx, ly, exact=True, check_passable=False):
                 log(f"  ⚠️ 站不上梯子 ({lx},{ly})，重试 {attempt + 1}/3")
                 time.sleep(0.5)
                 continue
@@ -3027,6 +3047,9 @@ class BombMiner(WeaponMixin):
                 self._post("/drop", {"name": name, "count": i.get("stack", 1)})
                 log(f"  🎒 腾格：丢 {name}")
                 return True
+        # 🔴 一个能丢的都没有 ⇒ **如实说**（别静默失败）。2026-10-03 起"卖价≤0 的装备"一律不丢
+        #    ⇒ 满包又全是装备时这条会走到（那就真的腾不出格：宁造不了楼梯，也别把锤子/工具丢了）。
+        log("  🎒 腾格：**一个能丢的都没有**（剩下的全是装备/工具/稀有物）—— 不丢家当")
         return False
 
     def craft_staircase(self):
@@ -3098,7 +3121,11 @@ class BombMiner(WeaponMixin):
                     if not placed:
                         continue  # 这格放不上，换方向
                     # position 精确站上楼梯格（283 轮实测可行）→ confirm
-                    if not self.position_safe(nx, ny, exact=True):
+                    # ⚠️ 同梯子那条：**楼梯格在 `IsTilePassable` 眼里也是"不可走"**
+                    #    （是自己刚放下去的 `Staircase` 对象，站上去才会传层）⇒ 必须显式关校验。
+                    #    真机现场（2026-10-03 深夜）：`position (20,19) 被拒（不可走/孤岛）` ⇒
+                    #    `站不上楼梯格，放弃这轮` ⇒ `撤退原因: 没梯子也没楼梯材料`。
+                    if not self.position_safe(nx, ny, exact=True, check_passable=False):
                         log(f"  ⚠️ 站不上楼梯格 ({nx},{ny})，放弃这轮")
                         return False
                     time.sleep(0.2)

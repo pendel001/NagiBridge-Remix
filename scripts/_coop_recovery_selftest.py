@@ -207,6 +207,26 @@ ck("…注释记着「人进墙 ⇒ guard 贴不到脸 ⇒ 撤退路上被打死
 ck("…开箱站位 / 通用走过去 两处裸 `position` 也改了（`position_safe` + 不可站就报）",
    'self.position(sx, sy)' not in bc and "开箱站位" in bc and "目标格" in bc)
 
+print("⑫ 🪜 梯子格/楼梯格**必须显式关掉可站校验**（它们本来就「不可走」，站上去才传层）")
+# 真机现场（2026-10-03 深夜，我把 position_safe 默认改成校验之后**立刻**撞到）：
+#   `position (8,31) 被拒（不可走/孤岛）` ×3 ⇒ 站不上梯子 ⇒ 造楼梯 ⇒ 楼梯格同样被拒 ⇒
+#   `撤退原因: 没梯子也没楼梯材料`（恒看到的：「两个竖井，一把梯，又插一把，然后自己撤退了」）。
+ck("…梯子站位显式 `check_passable=False`",
+   "position_safe(lx, ly, exact=True, check_passable=False)" in bc)
+ck("…楼梯站位同样显式关掉",
+   "position_safe(nx, ny, exact=True, check_passable=False)" in bc)
+ck("…两处注释都写明「它们本来就不可走」+ 真机现场",
+   bc.count("本来就") >= 1 and bc.count("被拒（不可走/孤岛）") >= 1)
+
+
+print("⑬ 🔨 `item_keep_score` 不许再把**卖价0的装备**当垃圾（银河之锤被丢过三次）")
+# 铁证：三趟炸矿日志各一行 `🎒 腾格：丢 Galaxy Hammer`（bomb2/bomb4/bombday）。
+# 病因：保护名单有 Sword/Blade 却**没有 Hammer**（SDV 锤子是 Club 类），而武器卖不掉 val=0 ⇒ 判成垃圾。
+ck("…武器关键字补全了 `Hammer`", "\"Hammer\" in name" in bc)
+ck("…`value <= 0` 一律不丢（卖不掉=装备）", "if value <= 0:" in bc and "绝不丢" in bc)
+ck("…注释里记着铁证「腾格：丢 Galaxy Hammer」", "腾格：丢 Galaxy Hammer" in bc)
+ck("…腾不出格时**如实报**（不静默失败）", "一个能丢的都没有" in bc)
+
 print()
 if fails:
     print(f"❌ {len(fails)} 条没过：")
