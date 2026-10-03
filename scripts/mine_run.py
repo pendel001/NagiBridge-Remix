@@ -1157,8 +1157,11 @@ class MineBot(WeaponMixin):
             return False
 
         # 先停下（边走边吃动画不生效），再吃 + 等 2 秒动画播完（bomb 同款逻辑）
+        # 🔴 2026-10-03：**加 `/stop`** —— `/walk_to` 是异步排队走，光等 `isMoving` 会等到"这一格走完"
+        #    而队列还在（下一格接着推）⇒ 吃动画照样被覆盖（恒真机「边走边吃吃不上」）。
         try:
-            for _ in range(5):
+            self._post("/stop")
+            for _ in range(6):
                 s = self.state()
                 if not s.get("player", {}).get("isMoving", True):
                     break
@@ -1171,7 +1174,9 @@ class MineBot(WeaponMixin):
             self.select(_pick)
             time.sleep(0.2)
             r = self._post("/eat")
-            time.sleep(2.0)  # 等动画播完效果才生效
+            # ⚠️ `/eat` 现在会**等 `doneEating` 结算**（C#），所以这一枪回来时血/buff 已经落地；
+            #    `ok:false` 一律是"真没吃上"（动画被打断），**如实当成没吃**（下一步会重试）。
+            time.sleep(0.6)
             if r.get("ok"):
                 fx = food_buff_text(row)
                 log(f"  🍽️ 吃了 {_pick}（体{row[1]} 血{row[2]}；缺口 血{_need_hp}/体{_need_sta}"
@@ -1198,6 +1203,17 @@ class MineBot(WeaponMixin):
         """
         tag = f"（{why}）" if why else ""
         try:
+            # 🔴 2026-10-03：**先清走位队列**。`/walk_to` 是异步的（排队走、当次就返回），
+            #    而吃东西的结算在动画收尾的 `doneEating()` —— 队列继续推着人走就会把动画覆盖掉，
+            #    于是**东西白扣、血/buff 一点没补**（恒真机「因为边走边吃吃不上」）。
+            self._post("/stop")
+            for _ in range(6):
+                try:
+                    if not (self.state().get("player") or {}).get("isMoving", False):
+                        break
+                except Exception:
+                    break      # 读状态失手也照吃（别让"读不到"变成"不吃"）
+                time.sleep(0.2)
             self.select(name)
             time.sleep(0.2)
             r = self._post("/eat")          # ⬅️ 必须 /eat；/use 是"用/放"，吃不动

@@ -642,7 +642,7 @@ public class ModEntry : Mod
         7 => "游泳/浴衣/桥上",
         8 => "isInBed（躺床）",
         9 => "骑着马",
-        10 => "嘴里有东西（isEating/itemToEat）",
+        10 => "正在吃（isEating）",
         11 => "正在蓄力（_isChargingTool）",
         12 => "🎬 UsingTool —— 工具/挥击动画还没播完",
         13 => "3×3 内没有打得动的怪",
@@ -5131,30 +5131,44 @@ public class ModEntry : Mod
     }
 
     /// <summary>
-    /// 🧪 当前生效 buff 列表（/state 用）：name + 剩余/总时长。buff 生效/结束提醒（2026-08-16 恒）。
+    /// 🧪 当前生效 buff 列表（`/state.player.buffs`）：名字 + 剩余/总时长 + 可见性。
+    /// （2026-08-16 恒：「buff 生效/结束提醒」——`nagi_mcp_server._buff_reminder` 消费它。）
+    ///
+    /// 🔴 2026-10-03 **治本**（恒「记住这一项等会儿治本」）。老版是**反射摸黑**：
+    ///    先找 `Farmer.buffs` **属性** —— 而 1.6 里它是 `public readonly BuffManager buffs` **字段**
+    ///    （`Farmer.cs:331`）；退一步找 `BuffManager.activeBuffs` 字段 —— **1.6 根本没有这个字段**
+    ///    （权威表叫 `AppliedBuffs`）⇒ 一路 null ⇒ **这个字段从上线起恒为 `[]`**，
+    ///    那条提醒**一次都没响过**（假门）。
+    /// ⇒ 现在**直读权威表**：`farmer.buffs.AppliedBuffs` 是 `IDictionary<string, Buff>`，
+    ///    **键 = buff id**，而且 `BuffManager.Apply` 里先 `Remove(buff.id)` 再放 ⇒ **按 id 天然唯一**。
+    ///    ⚠️ 与 `/buffs`（`HandleBuffs`）那份的差别：那份读的是 `Game1.buffsDisplay.buffs` =
+    ///    `Dictionary<ClickableTextureComponent, Buff>` —— **按图标组件做键** ⇒ 会重复（同 id 两条，
+    ///    真机实测过）、且只有"要画图标的"那些。**数值口径一致**（显示层就是从 `AppliedBuffs` 灌的、
+    ///    连 Buff 对象都是同一个引用），差的只是**容器** ⇒ 两处现在都以权威表为准。
     /// </summary>
     private List<object>? EnumerateBuffs(Farmer farmer)
     {
         try
         {
             var list = new List<object>();
-            var buffsProp = farmer.GetType().GetProperty("buffs");
-            var buffsObj = buffsProp?.GetValue(farmer);
-            if (buffsObj == null) return list;
-            IEnumerable<Buff>? buffs = buffsObj as IEnumerable<Buff>;
-            if (buffs == null)
+            var applied = farmer?.buffs?.AppliedBuffs;   // ✅ public readonly 字段，不用反射
+            if (applied == null) return list;
+            foreach (var b in applied.Values)
             {
-                var act = buffsObj.GetType().GetField("activeBuffs",
-                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                buffs = act?.GetValue(buffsObj) as IEnumerable<Buff>;
-            }
-            if (buffs == null) return list;
-            foreach (var b in buffs)
-            {
-                if (b == null || !b.visible) continue;
+                if (b == null) continue;
+                // 名字取**最像人话的那个**：buff 自己的名字 → 来源的显示名 → 来源内部名 → id。
+                // ⚠️ 食物/饮品 buff 的 `displayName` **恒 null**（`Object.TryCreateBuffsFromData` 只传
+                //    source/displaySource）⇒ 不补这一层的话，提醒会印成「buff生效: food」这种废话。
+                var dn = b.displayName ?? "";
+                var ds = b.displaySource ?? "";
+                var src = b.source ?? "";
                 list.Add(new
                 {
-                    name = b.displayName ?? b.id ?? "",
+                    id = b.id ?? "",
+                    name = dn.Length > 0 ? dn : (ds.Length > 0 ? ds : (src.Length > 0 ? src : (b.id ?? ""))),
+                    source = src,
+                    displaySource = ds,
+                    visible = b.visible,
                     remainingMs = b.millisecondsDuration,
                     totalMs = b.totalMillisecondsDuration,
                 });
@@ -12490,36 +12504,142 @@ public class ModEntry : Mod
     /// 2026-08-06：/use 对食物是放置(placementAction)不是吃，矿里没血只能撤退。
     /// eatObject 会自动减 1 个。
     /// </summary>
+    /// <summary>
+    /// POST /eat — 吃掉手上那件（走游戏自己的 `Farmer.eatObject`）。
+    ///
+    /// 🔴 2026-10-03 真机（恒「**因为边走边吃吃不上**」那趟）改成**验真**。老版是：
+    ///    `eatObject(...)` → `obj.Stack--` → **当场回 `ok:true`**。而 `eatObject` 只是**播动画**
+    ///    （`Farmer.cs:9111`，末尾 `CanMove=false; freezePause=20000`），真正加血/加体力/挂 buff 的是
+    ///    **动画收尾那次 `doneEating()`**（`Farmer.cs:8851`）。动画要是被下一个动作
+    ///    （继续走路 / 挥工具 / 瞬移 / 开菜单）**打断**，`doneEating` 就**不触发** ⇒
+    ///    **东西照扣、一点没补、回包还说 ok:true**（同族：`/use` 那条"说用了其实没动"）。
+    ///    真机后果不止是"没吃上"：血没回 ⇒ `eat_recovery` 的 `_recover_streak` 连中 3 ⇒
+    ///    判「连吃 3 次血回不上来」⇒ **假撤退**（恒看到"也没到撤退线啊"）。
+    ///
+    /// ⇒ 现在**等结算**：吃下去后轮询到 `isEating` 回到 false（= `doneEating` 跑过），
+    ///    并比对**血/体力/buff 数有没有真变**；变了才算 `ok`。
+    ///    没变 ⇒ `ok:false` + 原因，而且**刚扣掉的那一个不扣了**（宁报错别兜底：白扣一口食物更糟）。
+    ///    📌 顺序也改了：**先吃、确认结算了才扣物品**（老版先扣再吃，动画一断就白扣）。
+    ///
+    /// ⚠️ 轮询在**调用线程**（HTTP 线程池）上做，**不占主线程** —— 每次读状态都走
+    ///    `EnqueueMainThread` 拿快照；主线程只被占用"吃 + 几次读"，帧不受影响。
+    /// </summary>
     private object HandleEat()
     {
         if (!Context.IsWorldReady)
             throw new InvalidOperationException("World not ready");
 
+        const int settleMs = 6000;     // 等结算上限（动画 ~1.6s + 余量；超了就是被打断了）
         var tcs = new TaskCompletionSource<object>();
+
+        // 主线程上的状态快照（血/体力/buff 数 + 是否正在吃）
+        (bool eating, int hp, int sta, int nb) Snap()
+        {
+            bool eating = false; int hp = 0, sta = 0, nb = 0;
+            var t = new TaskCompletionSource<bool>();
+            EnqueueMainThread(() =>
+            {
+                try
+                {
+                    var f = Game1.player;
+                    eating = f.isEating;
+                    hp = f.health;
+                    sta = (int)f.Stamina;
+                    // ✅ `farmer.buffs`（BuffManager）的 `AppliedBuffs` 是**权威表**（按 buff id 唯一）
+                    //    —— 反编译 `Farmer.cs:331` 是 public readonly 字段，直接读，不用反射。
+                    nb = f.buffs?.AppliedBuffs?.Count ?? 0;
+                }
+                catch { }
+                t.SetResult(true);
+            });
+            t.Task.GetAwaiter().GetResult();
+            return (eating, hp, sta, nb);
+        }
+
+        StardewValley.Object? eaten = null;
+        int hp0 = 0, sta0 = 0, nb0 = 0;
         EnqueueMainThread(() =>
         {
             try
             {
                 var farmer = Game1.player;
                 var item = farmer.CurrentItem;
-                if (item is StardewValley.Object obj && obj.Edibility > 0)
-                {
-                    // 原版吃法：eatObject 播动画+游戏自动回血+buff，调用方吃完等动画（~2s）再继续
-                    farmer.eatObject(obj, true);
-                    obj.Stack--;
-                    if (obj.Stack <= 0)
-                    {
-                        int idx = farmer.Items.IndexOf(obj);
-                        if (idx >= 0)
-                            farmer.Items[idx] = null;
-                    }
-                    tcs.SetResult(new { ok = true, ate = item.Name, health = farmer.health,
-                        stamina = (int)farmer.Stamina });
-                }
-                else
+                if (item is not StardewValley.Object obj || obj.Edibility <= 0)
                 {
                     tcs.SetResult(new { ok = false, error = "当前物品不可食用（先 /select 选个食物）" });
+                    return;
                 }
+                hp0 = farmer.health; sta0 = (int)farmer.Stamina;
+                nb0 = farmer.buffs?.AppliedBuffs?.Count ?? 0;
+                eaten = obj;
+                // ⚠️ **先清掉还在跑的走位队列**：`/walk_to` 是**异步**的（排队走、当次就返回），
+                //    所以脚本会在"人还在走"的时候发 `/eat` —— 队列继续推着人走，吃东西动画立刻被
+                //    覆盖 ⇒ `doneEating` 不跑 ⇒ 白吃（恒的"边走边吃吃不上"就是这个）。
+                //    吃完由调用方自己重新发走位（各吃食路径本来就是"停下→吃→再走"）。
+                ClearMovementState();
+                farmer.eatObject(obj, true);   // 只播动画；结算在 doneEating —— 所以**先别扣**
+            }
+            catch (Exception ex)
+            {
+                tcs.SetResult(new { ok = false, error = ex.Message });
+            }
+        });
+
+        if (eaten == null)
+            return tcs.Task.GetAwaiter().GetResult();   // 上面已经给了失败结果
+
+        // ── 等结算（调用线程轮询，不卡主线程）──
+        int waited = 0;
+        bool landed = false, finished = false;
+        while (waited < settleMs)
+        {
+            System.Threading.Thread.Sleep(200);
+            waited += 200;
+            var s = Snap();
+            if (!s.eating)
+            {
+                finished = true;
+                landed = s.hp != hp0 || s.sta != sta0 || s.nb != nb0;
+                break;
+            }
+        }
+
+        // ── 结算了才扣；没结算就一个都不扣 + 如实报 ──
+        var obj2 = eaten;
+        EnqueueMainThread(() =>
+        {
+            try
+            {
+                var farmer = Game1.player;
+                int hp1 = farmer.health, sta1 = (int)farmer.Stamina;
+                int nb1 = farmer.buffs?.AppliedBuffs?.Count ?? 0;
+                if (!landed)
+                {
+                    tcs.SetResult(new
+                    {
+                        ok = false,
+                        ate = obj2.Name,
+                        action = "eat_not_settled",
+                        error = finished
+                            ? $"吃下去了但**没结算**（{waited}ms 内血/体力/buff 一样没变）——多半是动画被下一步动作打断"
+                              + "（边走边吃老毛病）；**物品没扣**，站稳了再吃一次"
+                            : $"吃东西动画 {waited}ms 还没播完（=`doneEating` 一直没跑）—— 同上是被打断了；**物品没扣**"
+                    });
+                    return;
+                }
+                obj2.Stack--;
+                if (obj2.Stack <= 0)
+                {
+                    int idx = farmer.Items.IndexOf(obj2);
+                    if (idx >= 0) farmer.Items[idx] = null;
+                }
+                tcs.SetResult(new
+                {
+                    ok = true, ate = obj2.Name, settledMs = waited,
+                    hpBefore = hp0, hpAfter = hp1, staBefore = sta0, staAfter = sta1,
+                    buffsBefore = nb0, buffsAfter = nb1,
+                    health = hp1, stamina = sta1
+                });
             }
             catch (Exception ex)
             {
@@ -20227,6 +20347,20 @@ public class ModEntry : Mod
     /// <summary>
     /// GET /buffs — 当前生效的 buff 列表（右上角那些，含祝福/食物效果），含剩余毫秒。
     /// 吃东西逻辑靠它：知道 buff 还剩多久，快过期就补吃。
+    ///
+    /// 🔴 2026-10-03 **治本**（恒「记住这一项等会儿治本」）。老版是**反射摸黑 + 一大堆诊断**：
+    ///    先扒 `Game1.buffsDisplay` 上叫 `buffs`/`Buff` 的字段——那是
+    ///    `Dictionary<ClickableTextureComponent, Buff>`（`BuffsDisplay.cs:30`）即**显示层的图标表**，
+    ///    **按图标组件做键** ⇒ 同一个 buff 能有**多条**（真机实测到两条同 id 的 `food`，
+    ///    毫秒数一模一样），而且只有"要画图标的"才在里面；摸不到才退到 BuffManager，还靠**猜方法名**
+    ///    （`GetAppliedBuffs`/`GetBuffs`——1.6 里两个都不存在）。
+    /// ⇒ 现在直读**权威表** `Game1.player.buffs.AppliedBuffs`：
+    ///    `IDictionary<string, Buff>`，**键 = buff id**（`BuffManager.Apply` 先 `Remove(buff.id)` 再放
+    ///    ⇒ 天然唯一）、含**全部**生效 buff（不管有没有图标）。
+    ///    ⚠️ 数值口径与显示层一致（`BuffsDisplay.GetSortedBuffs()` 就是从 `AppliedBuffs.Values` 灌的，
+    ///    连 Buff 对象都是同一个引用）——**差的只是容器**，见 `EnumerateBuffs` 那段。
+    ///    🗑️ 顺手删掉那段"列出所有集合字段找祝福存哪"的 `diagnostic`：它要查的问题已经查清，
+    ///    没有消费方（`grep diagnostic scripts/*.py` 零命中），留着只是每次回包多几百字节。
     /// </summary>
     private object HandleBuffs()
     {
@@ -20239,113 +20373,26 @@ public class ModEntry : Mod
             try
             {
                 var list = new List<object>();
-                var flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static;
-
-                // 反射找 buff 容器。
-                // 1.6 实测：buffsDisplay.buffs 是私有 Dictionary（真正的 buff 列表）；
-                // Farmer.buffs 是 BuffManager（不是字典，会误导）→ 先查 buffsDisplay！
-                object? container = null;
-                if (Game1.buffsDisplay != null)
+                var applied = Game1.player?.buffs?.AppliedBuffs;   // public readonly 字段，不用反射
+                if (applied != null)
                 {
-                    foreach (var name in new[] { "buffs", "Buff" })
+                    foreach (var b in applied.Values)
                     {
-                        try
-                        {
-                            var prop = Game1.buffsDisplay.GetType().GetProperty(name, flags);
-                            if (prop != null) { container = prop.GetValue(Game1.buffsDisplay); if (container != null) break; }
-                        }
-                        catch { }
-                        try
-                        {
-                            var field = Game1.buffsDisplay.GetType().GetField(name, flags);
-                            if (field != null) { container = field.GetValue(Game1.buffsDisplay); if (container != null) break; }
-                        }
-                        catch { }
-                    }
-                }
-                // 兜底：Farmer.buffs (BuffManager) → 调 GetAppliedBuffs()
-                if (container == null)
-                {
-                    try
-                    {
-                        var bmField = typeof(Farmer).GetField("buffs", flags);
-                        var bm = bmField?.GetValue(Game1.player);
-                        if (bm != null)
-                        {
-                            foreach (var mn in new[] { "GetAppliedBuffs", "getAppliedBuffs", "GetBuffs" })
-                            {
-                                var m = bm.GetType().GetMethod(mn, flags);
-                                if (m != null) { container = m.Invoke(bm, null); break; }
-                            }
-                        }
-                    }
-                    catch { }
-                }
-
-                // 诊断：列出 player 和 buffsDisplay 上所有集合字段（找祝福存哪）
-                var diagnostic = new List<object>();
-                foreach (var src in new[] { (object?)Game1.player, Game1.buffsDisplay })
-                {
-                    if (src == null) continue;
-                    foreach (var f in src.GetType().GetFields(flags))
-                    {
-                        object? v = null;
-                        try { v = f.GetValue(src); } catch { }
-                        if (v is System.Collections.IEnumerable en2)
-                        {
-                            int c = 0;
-                            try { foreach (var _ in en2) { c++; if (c > 20) break; } } catch { }
-                            diagnostic.Add(new { on = src.GetType().Name, field = f.Name, type = f.FieldType.Name, count = c });
-                        }
-                        else if (v != null)
-                        {
-                            var tn = v.GetType().Name;
-                            if (tn.StartsWith("Net") || tn.Contains("Buff") || tn.Contains("List") || tn.Contains("Dict"))
-                                diagnostic.Add(new { on = src.GetType().Name, field = f.Name, type = f.FieldType.Name, value = v.ToString()?.Substring(0, Math.Min(40, (v.ToString()?.Length ?? 0))) });
-                        }
-                    }
-                }
-
-                if (container != null)
-                {
-                    // 取 Buff 对象列表（dict 取 Values，list 直接枚举）
-                    var buffs = new List<object>();
-                    if (container is System.Collections.IDictionary dict)
-                        buffs.AddRange(dict.Values.OfType<object>());
-                    else if (container is System.Collections.IEnumerable en)
-                        buffs.AddRange(en.OfType<object>());
-
-                    foreach (var b in buffs)
-                    {
-                        var bt = b.GetType();
-                        object? Get(string n)
-                        {
-                            try
-                            {
-                                var p = bt.GetProperty(n, flags);
-                                if (p != null) return p.GetValue(b);
-                                var f = bt.GetField(n, flags);
-                                if (f != null) return f.GetValue(b);
-                            }
-                            catch { }
-                            return null;
-                        }
-                        var src = Get("source")?.ToString() ?? Get("Source")?.ToString() ?? "";
-                        var dn = Get("displayName")?.ToString() ?? Get("DisplayName")?.ToString() ?? "";
-                        var bid = Get("id")?.ToString() ?? Get("BuffId")?.ToString() ?? Get("which")?.ToString() ?? "";
-                        var ms = Get("millisecondsDuration") ?? Get("MillisecondsDuration") ?? Get("msDuration");
-                        int msInt = ms is int i ? i : (ms is long l ? (int)l : 0);
+                        if (b == null) continue;
                         list.Add(new
                         {
-                            id = bid,
-                            source = src,
-                            displayName = dn,
-                            msRemaining = msInt,
-                            seconds = msInt / 1000
+                            id = b.id ?? "",
+                            source = b.source ?? "",
+                            displaySource = b.displaySource ?? "",
+                            displayName = b.displayName ?? "",
+                            visible = b.visible,
+                            msRemaining = b.millisecondsDuration,
+                            totalMs = b.totalMillisecondsDuration,
+                            seconds = b.millisecondsDuration / 1000
                         });
                     }
                 }
-                tcs.SetResult(new { ok = true, count = list.Count, buffs = list, diagnostic });
+                tcs.SetResult(new { ok = true, count = list.Count, buffs = list });
             }
             catch (Exception ex)
             {
@@ -22268,7 +22315,16 @@ public class ModEntry : Mod
         // ⑤补：反编译里没有、但这条路必须有的三条
         if (farmer.isInBed.Value) { _guardBlock = 8; return; }                // 躺床时姿势是躺的，别举剑
         if (farmer.isRidingHorse()) { _guardBlock = 9; return; }              // 骑马：DoDamage 末尾会 forceCanMove 把动画掐了
-        if (farmer.isEating || farmer.itemToEat != null) { _guardBlock = 10; return; }   // 嘴里有东西：挥击会把吃东西拆了
+        // 🔴🔴 2026-10-03 真机逮到（恒「这次怎么好像甚至连怪都不打了」）：这里原来写的是
+        //    `farmer.isEating || farmer.itemToEat != null` —— **`itemToEat` 是个永不清零的字段**：
+        //    反编译 `Farmer.cs` 全文件，它只在 3 处被赋值（`eatObject` 9123 / `eat` 9165 / 9228），
+        //    **没有任何一处置 null**（`doneEating()` 8851 只清 `isEating` 和 `mostRecentlyGrabbedItem`）
+        //    ⇒ **这辈子吃过一次东西之后，这个条件恒为真** ⇒ guard 从此一刀不挥。
+        //    真机现场：连吃 buff 之后遇怪，`/guard` 的 `block` 一直是 **10**、两趟下矿都是「共挥 0 刀」，
+        //    人被阴影萨满/狙击手从 2~6 格外磨到 20 血（恒看着「快被打死了」）。
+        //    ⇒ 判据**只留 `isEating`** —— 那才是"正在吃"的瞬时状态，`doneEating` 会把它清零。
+        //    📌 教训：拿游戏字段当门之前，先反编译看**它什么时候被清**（只赋值不清零的字段 = 一次性闩）。
+        if (farmer.isEating) { _guardBlock = 10; return; }   // 正在吃：挥击会把吃东西拆了
 
         // ⑥ 别抢正在播的动画（`UsingTool` 是权威信号，见方法头）
         if (_isChargingTool) { _guardBlock = 11; return; }   // 双保险：调用点本来就在蓄力块之后；

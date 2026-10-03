@@ -14335,7 +14335,10 @@ _BUFF_TRACK = {"buffs": None}
 
 def _buff_reminder(loc_name: str = "") -> str:
     """🧪 buff 生效/结束提醒（2026-08-16 恒）：对比上次 buff 列表，新增→生效、消失→结束。
-    进小新闻。⚠️ 矿井内不推（挖矿脚本自动吃 buff）。需新 DLL /state 的 buffs 字段。"""
+    进小新闻。⚠️ 矿井内不推（挖矿脚本自动吃 buff）。
+    🔴 2026-10-03：这条**从上线起就是哑的**（C# `EnumerateBuffs` 反射摸错了地方，`/state.player.buffs`
+    恒为 `[]`）—— 已治本（改读 `farmer.buffs.AppliedBuffs` 权威表）。现在它才第一次真的会响。
+    ⚠️ 权威表**含隐藏 buff**（没图标的，`visible=false`）⇒ 这里只报**玩家看得见**的那些，别拿隐藏项刷屏。"""
     try:
         if _BUFF_TRACK["buffs"] is None:
             _BUFF_TRACK["buffs"] = {}
@@ -14348,6 +14351,8 @@ def _buff_reminder(loc_name: str = "") -> str:
         buffs = (st.get("player") or {}).get("buffs") or []
         cur = {}
         for b in buffs:
+            if b.get("visible") is False:
+                continue      # 隐藏 buff（权威表里有、玩家看不到）不提醒
             n = b.get("name") or ""
             if n:
                 cur[n] = (b.get("remainingMs") or 0) // 1000

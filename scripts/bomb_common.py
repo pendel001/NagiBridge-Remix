@@ -243,9 +243,14 @@ def bot_eat(bot, name):
 
 
 def eat_patiently(bot, name, after=2.0):
-    """拟人吃：**先停下**（瞬移/移动中吃动画不生效 ⇒ 吃掉了但 buff 挂不上）→ 吃 → 等动画播完。"""
+    """拟人吃：**先把走位停干净**（`/stop` 清掉异步走位队列 —— 边走边吃会让动画被覆盖、
+    `doneEating` 不跑 ⇒ 白吃，恒真机「边走边吃吃不上」）→ 吃 → 等动画播完。"""
     try:
-        for _ in range(5):
+        bot._post("/stop")          # `/walk_to` 是异步的：不清队列，人会被继续推着走
+    except Exception:
+        pass
+    try:
+        for _ in range(6):
             s = bot.state() or {}
             if not (s.get("player") or {}).get("isMoving", True):
                 break
@@ -309,9 +314,12 @@ def maintain_buffs_for(bot, threshold=30, want=None, min_gap=8.0):
         return False
 
     active = active_buffs(bot)
+    best_left, best_name = -1.0, ""
     for f in cands:                                   # 背包顺序，第一个"该补"的吃
         left = max([active.get(i, 0.0) for i in food_buff_ids(f)] or [0.0])
         if left > threshold:
+            if left > best_left:
+                best_left, best_name = left, f[0]
             continue
         name = f[0]
         if eat_patiently(bot, name):
@@ -337,6 +345,12 @@ def maintain_buffs_for(bot, threshold=30, want=None, min_gap=8.0):
             return True
         log(f"  ⚠️ 补 buff 要吃的 {name} 没吃上 —— 跳过（不换别的）")
         return False
+    # 🍽️ 一件都不用补时**也要说一句**（2026-10-03 真机我自己踩的）：原来这里静默 `return False`，
+    #    于是**「查过了、还没到线」和「压根没跑这一步」在日志里长得一模一样** —— 我为了查
+    #    "矿井里 food_buff 为什么一声没吭"白跑了两趟（真因就是它当时还剩 35s > 30s，正常跳过）。
+    #    ⇒ 同族规矩：**判过就要留痕**（`/passable_rect` 静默无视 location 也是这个病）。
+    if best_left >= 0:
+        log(f"  🍽️ 补 buff：还没到线（{best_name} 还剩 {best_left:.0f}s > {threshold}s）—— 不吃")
     return False
 
 # 协同模式只在路径上炸这些高价值矿（不浪费炸弹炸普通石头）
@@ -1438,7 +1452,27 @@ class BombMiner(WeaponMixin):
                 time.sleep(0.3)
         except Exception:
             pass
-        self.eat(chosen)
+        # 🔴 2026-10-03：**先停下走位队列**再吃。`/walk_to` 是异步的（排队走、当次就返回），
+        #    所以"边走边吃"是真的会发生的：队列继续推人走 ⇒ 吃动画被覆盖 ⇒ `doneEating` 不跑 ⇒
+        #    白吃（恒真机「因为边走边吃吃不上」）。C# 侧 `/eat` 现在也会自己 `ClearMovementState`，
+        #    这里再显式停一次（+ 等真的不动了），双保险。
+        try:
+            self._post("/stop")
+        except Exception:
+            pass
+        for _ in range(6):
+            try:
+                if not (self.state().get("player") or {}).get("isMoving", False):
+                    break
+            except Exception:
+                break
+            time.sleep(0.2)
+
+        ate_ok = False
+        try:
+            ate_ok = bool(self.eat(chosen))
+        except Exception:
+            ate_ok = False
         self._last_eat = time.time()
         _hp_show = next((f[2] for f in foods if f[0] == chosen), None)
         if _hp_show is None:      # 拿不到真值才退回手抄表（显示用，别拿它当判据）
@@ -1472,9 +1506,19 @@ class BombMiner(WeaponMixin):
             #    **这条是砍掉"站着吃挨打直到死"的关键**（光有 HP<35 只解决"何时该撤"，
             #    解决不了"撤之前一直在原地吃"）。所以它必须准 —— 误报的代价是**好端端把整趟掐停**。
             if hp2 <= hp + 1:
-                self._recover_streak += 1
-                log(f"  🩸 吃完血没回（{hp}→{hp2}，等满 {self.EAT_SETTLE_TIMEOUT:.0f}s），"
-                    f"连 {self._recover_streak}/{self.EAT_RECOVER_MAX} 次")
+                # 🔴 2026-10-03：**「没吃上」和「吃了没回血」必须分开**。老版不管 `self.eat()` 成没成
+                #    都照样 `_recover_streak += 1` ⇒ 动画被打断（边走边吃）时，连中 3 次就判
+                #    「连吃 3 次血回不上来」⇒ **假撤退**（恒真机：「因为边走边吃吃不上，于是好像撤了
+                #    （也没到撤退线啊？）」—— 血还在 30+ 就撤了，就是这个）。
+                #    ⇒ 只有**真吃上了**（C# `/eat` 现在会等 `doneEating` 结算并如实回 ok）才计数；
+                #      没吃上就不记、也不动 `_recover_streak`（下一步会重试）。
+                if not ate_ok:
+                    log(f"  ⚠️ 这次没吃上（`/eat` 没结算：动画被打断？）—— **不记入「回不上来」**"
+                        f"（仍是 {self._recover_streak}/{self.EAT_RECOVER_MAX}），会重试")
+                else:
+                    self._recover_streak += 1
+                    log(f"  🩸 吃完血没回（{hp}→{hp2}，等满 {self.EAT_SETTLE_TIMEOUT:.0f}s），"
+                        f"连 {self._recover_streak}/{self.EAT_RECOVER_MAX} 次")
             else:
                 self._recover_streak = 0
             if max2 and hp2 / max2 * 100 < hard:

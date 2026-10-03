@@ -239,11 +239,16 @@ print("⑧ 🔴 点名吃食必须走 **`/eat`**（2026-10-03 真机逮到：`_e
 
 
 class EatProbe(mine_run.MineBot):
-    """只记端点，不打网络。"""
+    """只记端点，不打网络。⚠️ `state()` 也必须桩掉 —— 2026-10-03 起 `_eat_one` 会先 `/stop`
+    再等 `isMoving` 变 false（边走边吃会让动画被覆盖），那一步要读状态。"""
 
     def __init__(self):
         super().__init__(port=7843)
         self.eps = []
+
+    def state(self):
+        return {"player": {"isMoving": False, "health": 180, "maxHealth": 180,
+                           "stamina": 474, "maxStamina": 474}}
 
     def select(self, name):
         self.eps.append(("select", name))
