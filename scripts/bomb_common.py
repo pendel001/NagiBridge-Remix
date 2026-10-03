@@ -51,6 +51,13 @@ BOMB_PRIORITY = ["Bomb", "Mega Bomb", "Cherry Bomb"]
 # 反编译确认 clubCooldown=6000ms（6秒）；Artful 附魔/职业28 减半→3秒。取 6 保守（冷却中调用会被游戏静默跳过）
 HAMMER_SPECIAL_COOLDOWN = 6.0
 
+# 🍽️ **吃东西的线**（恒 2026-09-06 拍板：**HP<60% 就吃**）——与 `--hp-threshold`（出门/撤退线，默认 30）**两回事**。
+# 🔴 2026-10-03 恒真机逮到：深层 87 层血掉到 **33% 还在打、不吃**。查下来是**这两条线被搅在一起了** ——
+#    `--hp-threshold`（我按 MCP 默认传了 30）**同时**当了吃的线 ⇒ 吃被压到 <30%（满 180 血 = 54 才吃）。
+#    而本文件那条注释早就写着"两者分开，别重合"（注释对了、代码没做到）。
+#    ⇒ 吃的线**固定**在这个常量上，`hp_threshold` 形参从此只管出门/撤退那两条（**参数保留但不再影响吃**）。
+EAT_HP_PCT = 60
+
 # 协同模式只在路径上炸这些高价值矿（不浪费炸弹炸普通石头）
 HIGH_VALUE_ORES = {
     "Iridium Node", "Gem Node", "Diamond Node", "Gold Node",
@@ -906,7 +913,7 @@ class BombMiner(WeaponMixin):
         max_hp = p.get("maxHealth", 1)
         sta = p.get("stamina", 0)
         max_sta = p.get("maxStamina", 1)
-        need = (max_hp > 0 and hp / max_hp * 100 < hp_threshold) or \
+        need = (max_hp > 0 and hp / max_hp * 100 < EAT_HP_PCT) or \
                (max_sta > 0 and sta / max_sta * 100 < sta_threshold)
         if not need:
             return False
@@ -915,7 +922,7 @@ class BombMiner(WeaponMixin):
 
         # ── ① 点名优先 ──
         if hp_list or sta_list:
-            hp_low = hp_pct < hp_threshold
+            hp_low = hp_pct < EAT_HP_PCT
             want = hp_list if hp_low else sta_list
             label = "回血" if hp_low else "体力"
             pick = pick_food_by_priority(want, {f[0] for f in foods})
@@ -938,7 +945,7 @@ class BombMiner(WeaponMixin):
         def _rank(f):
             name, ed, hpv = f
             score = 0
-            if hp_pct < hp_threshold:
+            if hp_pct < EAT_HP_PCT:
                 score += hpv * 10 - (10000 if hpv <= 0 else 0)
             if sta_pct < sta_threshold:
                 score += ed

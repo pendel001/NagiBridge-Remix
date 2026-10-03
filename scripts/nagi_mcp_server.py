@@ -8229,6 +8229,10 @@ def go_mining(
     target: Optional[int] = None,
     ore: Optional[str] = None,
     cycles: int = 5,
+    # ⚠️ 这个只是**出门线**（血量低于它就不肯下矿、先回血）：**不是吃食物的线**！
+    #    吃的线是 `bomb_common.EAT_HP_PCT = 60`（恒 2026-09-06 拍板 HP<60% 就吃）。
+    #    2026-10-03 真机逮到这两条**被搅在一起**（我传 30 同时把吃的线压到 30 ⇒ 33% 还在打不吃），
+    #    已按"两线分开"修好（吃的线固定常量、这里只管出门）。**别再拿它当吃的线调。**
     hp_threshold: int = 30,
     food_sta: Optional[str] = None,
     food_hp: Optional[str] = None,
@@ -8881,7 +8885,7 @@ def bomb_organize(disable: bool = False, reset: bool = False) -> str:
 
 @mcp.tool()
 def bomb_escort(ore_radius: int = 7, cooldown: int = 20, max_minutes: Optional[int] = None,
-                hp_threshold: int = 30) -> str:
+                hp_threshold: int = 30) -> str:   # ⚠️ 出门线；吃的线是 bomb_common.EAT_HP_PCT(=60)，两回事
     """👥 协同模式：跟着 user 下矿炸矿（贴身保镖）
     滞后跟随 user（站身后不贴脸），只在途径处看到高价值矿（铱/宝石/金）才放炸弹，
     帮打怪（user 附近出现怪物就砍）。user 离开矿井就撤，没炸弹就转纯保镖跟随。

@@ -10212,6 +10212,29 @@ public class ModEntry : Mod
                 });
                 return;
             }
+            // 🚫 2026-10-03 **图外坐标一律拒绝**（与 check_passable 无关，**永远生效**）。
+            //    起因（恒真机）：「它太凶狠了，直接串到了墙外去杀怪」—— 矿井里蝙蝠/幽灵**能飞出地图外**
+            //    （`/surroundings` 如实报负坐标，如 `Frost Bat(7,-1)`），而 `mine_run` 的"贴近反击"
+            //    会算"怪旁边那格"再调本端点；那条路上**一个边界检查都没有**（`/surroundings` 只报图内格
+            //    ⇒ 图外格从来不在"不可站"名单里），于是人被瞬移到 `(6,-1)` —— 墙外、走不回来（只能 warp 兜底）。
+            //    ⇒ 判据放在**源头这一处**：以后任何脚本/任何将来写的代码都不可能再把角色传出地图。
+            //    ⚠️ 这是**恒久护栏**，不是可选项：SDV 地图原点就是 (0,0)，图外永远是虚空。
+            {
+                int mw = loc.Map.DisplayWidth / 64, mh = loc.Map.DisplayHeight / 64;
+                if (x < 0 || y < 0 || x >= mw || y >= mh)
+                {
+                    tcs.SetResult(new
+                    {
+                        ok = false,
+                        action = "position_rejected",
+                        reason = $"({x},{y}) 在**地图外**（本图 {mw}x{mh}）—— 拒绝把角色传出地图"
+                                 + (x < 0 || y < 0 ? "（负坐标：多半是怪/掉落飞出了图外，别追）" : ""),
+                        location = loc.Name,
+                        x = farmer.TilePoint.X, y = farmer.TilePoint.Y
+                    });
+                    return;
+                }
+            }
             // ② 连通域：目标格必须与 AI 当前格同一个墙圈胞腔（防瞬移进隔区卡死）
             if (checkPassable && checkConnectivity)
             {

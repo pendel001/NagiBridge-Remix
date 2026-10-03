@@ -47,14 +47,20 @@ import requests
 # ⚔️ 2026-09-06 复用 bomb 的武器系统（WeaponMixin：选武器/类别/挥速自适应/锤子重砸）
 # 🎁 2026-09-07 复用 bomb 的开箱（BombMiner.open_treasure_chests，真机验证城镇 40 层能开）
 from bomb_common import (WeaponMixin, BombMiner, ManualChestFull,
-                         parse_food_list, pick_food_by_priority)
+                         parse_food_list, pick_food_by_priority, EAT_HP_PCT)
 
 # ── 常量 ──
 
 TOOL_DELAY = 0.85          # 每次挥工具后的等待（秒）
 SCAN_RADIUS = 14           # surroundings 扫描半径
 WALK_TIMEOUT = 45          # 单次 /walk_to 超时
-LADDER_SCAN_INTERVAL = 4   # 每敲 N 块石头扫一次梯子
+LADDER_SCAN_INTERVAL = 1   # 每敲 N 块石头扫一次梯子。
+# 🔁 2026-10-03 恒真机（86→87 层）：「**梯子已经出了，它做了好几次奇怪的 position…对梯子出现的反应有点迟滞**」
+#    ⇒ 原来是 **4**：梯子可能在第 1 块石头就出来了，它却要再敲 3 块才扫到（每块还要挥 2~5 下）——
+#      那就是他看到的迟滞。而这里那一发是 `detect_ladder(brute=False)` = **只问 `/ladder` 端点**（一次 GET，很便宜），
+#      贵的"暴力搜"不在这条路上 ⇒ 改成**每敲一块就查一次**（代价可忽略，反应即时）。
+#    ⚠️ 别把这里改成 `brute=True`：那才是"在周围 tile 瞬移按 Down"的探路式搜索（恒看到的奇怪 position），
+#      它只该在"整层都清完还找不到梯子"时兜底（见 `find_ladder_by_search` 的调用处）。
 MONSTER_SCAN_INTERVAL = 3  # 每敲 N 块石头扫一次怪物
 PICKUP_SCAN_INTERVAL = 3   # 每敲 N 块石头扫一次地上物品
 NEAR_ROCK_POSITION_DIST = 3  # 🎯 石头距玩家≤3格→直接position精确落格敲（近处走位偏敲不准；3格才够触发，2格太小）
@@ -736,19 +742,36 @@ class MineBot(WeaponMixin):
         for t in data.get("tiles", []):
             if not t.get("passable", True):
                 blocked.add((t["x"], t["y"]))
-        # 玩家当前坐标（就近排序用；读不到就退固定序）
+        # 玩家当前坐标（就近排序用；读不到就退固定序）+ **本图尺寸**（同一发 `/state` 里读，零额外开销）
         px = py = -1
+        _w = _h = 0
         try:
-            p = self.state().get("player", {})
+            _s = self.state()
+            p = _s.get("player", {})
             px = int(p.get("x", 0) or 0)
             py = int(p.get("y", 0) or 0)
+            _loc = _s.get("location") or {}
+            _w = int(_loc.get("mapWidth") or 0)
+            _h = int(_loc.get("mapHeight") or 0)
         except Exception:
             pass
+
+        def _in_map(nx, ny):
+            """🔴 2026-10-03：**图外格必须当"不可站"** —— `/surroundings` **只报图内的格**，
+            所以图外格从来不在 `blocked` 里、以前会被当成能站；蝙蝠/幽灵飞出图外时，
+            "贴近反击"算出的"怪旁边那格"在地图外 ⇒ 人直接被瞬移到墙外（恒真机逮到）。
+            读不到尺寸时**只卡负坐标**那层（绝不用猜的去顶一格墙）。"""
+            if nx < 0 or ny < 0:
+                return False
+            if _w and _h and (nx >= _w or ny >= _h):
+                return False
+            return True
+
         # 候选：目标 4 邻位可站格，按到玩家曼哈顿距离排序（就近；等距按上下右左定序）
         cand = []
         for dx, dy in [(0, -1), (1, 0), (-1, 0), (0, 1)]:
             nx, ny = tx + dx, ty + dy
-            if (nx, ny) not in blocked:
+            if (nx, ny) not in blocked and _in_map(nx, ny):
                 cand.append((abs(nx - px) + abs(ny - py), nx, ny, dx, dy))
         if cand:
             cand.sort()
@@ -757,9 +780,13 @@ class MineBot(WeaponMixin):
         # 兜底：对角线
         for dx, dy in [(1, -1), (1, 1), (-1, -1), (-1, 1)]:
             nx, ny = tx + dx, ty + dy
-            if (nx, ny) not in blocked:
+            if (nx, ny) not in blocked and _in_map(nx, ny):
                 return nx, ny, dx, dy
-        # 兜底：目标本身
+        # 兜底：目标本身 —— ⚠️ **目标在图外就绝不返回它**（那正是"瞬移到墙外"那一格），
+        #       改成**原地不动**（把玩家自己的坐标还回去），让上层自己决定还挥不挥这一下。
+        if not _in_map(tx, ty):
+            log(f"  👀 目标 ({tx},{ty}) 在**地图外**，没有可站的边格 —— 原地不动")
+            return (px if px >= 0 else 0), (py if py >= 0 else 0), 0, 0
         return tx, ty, 0, 0
 
     def face_toward(self, tx, ty):
@@ -777,7 +804,25 @@ class MineBot(WeaponMixin):
     # ── 矿洞内移动（近的走两步，远的才闪） ──
 
     def mine_teleport(self, x, y):
-        """矿洞内瞬移到指定坐标"""
+        """矿洞内瞬移到指定坐标。
+
+        🔴 2026-10-03 恒真机：「**它太凶狠了，直接串到了墙外去杀怪**」——病根就在这儿：
+           **本函数以前一个边界都不查**，而 `combat_step` 的"贴近反击"会去算"**怪旁边那格**"；
+           而蝙蝠/幽灵**能飞出地图外**（`/surroundings` 如实报负坐标，如 `Frost Bat(7,-1)`），
+           那格也就落在地图外 ⇒ 人被**瞬移到墙外**（事后从图外回不来，只能靠 warp 兜底）。
+        ⇒ 两层判据：① **负坐标**（SDV 地图原点就是 0,0，负的永远非法，且**不用读状态**，免费）；
+           ② 当前图尺寸（带缓存，同一张图只读一次 `/state`）。
+        """
+        if x is None or y is None:
+            log("  ⚠️ 不瞬移：没给坐标")
+            return False
+        if x < 0 or y < 0:
+            log(f"  ⚠️ 不瞬移 ({x},{y})：**在地图外**（负坐标）—— 多半是怪飞出了图外，不追")
+            return False
+        _w, _h = self._map_size()
+        if _w and _h and (x >= _w or y >= _h):
+            log(f"  ⚠️ 不瞬移 ({x},{y})：超出本图 {_w}x{_h}")
+            return False
         try:
             r = self._post("/position", {"x": x, "y": y})
             if r.get("ok"):
@@ -786,6 +831,20 @@ class MineBot(WeaponMixin):
             return False
         except Exception as e:
             return False
+
+    def _map_size(self):
+        """当前地图尺寸 `(w,h)`（带缓存：同一张图只读一次 `/state`）。读不到给 `(0,0)`
+        —— 那时只靠"负坐标"那层免费判据，**绝不假装知道**。"""
+        try:
+            loc = (self.state() or {}).get("location") or {}
+        except Exception:
+            return (0, 0)
+        nm = loc.get("name")
+        if nm and nm == getattr(self, "_map_size_name", None):
+            return getattr(self, "_map_size_wh", (0, 0))
+        wh = (int(loc.get("mapWidth") or 0), int(loc.get("mapHeight") or 0))
+        self._map_size_name, self._map_size_wh = nm, wh
+        return wh
 
     def safe_teleport(self, x, y):
         """position 到可走格：目标不可走就找相邻可走格（防卡墙）。"""
@@ -837,16 +896,32 @@ class MineBot(WeaponMixin):
         if teleport:
             ok = self.mine_teleport(adj_x, adj_y)
         elif is_mine_location(location):
-            # 🎯 2026-09-06 恒：近处石头（距玩家≤3格）走 /walk_to 易偏、面向/敲击错位 → 直接
-            #    position 到精确相邻格敲（体感准）；稍远仍走自然路（长距离走路、短距离 position）。
+            # 🎯 2026-09-06 恒：近处石头走 /walk_to 易偏、面向/敲击错位 → 直接 position 到精确相邻格敲；
+            #    稍远仍走自然路（长距离走路、短距离 position）。
+            # 🔁 2026-10-03 恒把本意说清了：「**我的本意是说 walk_to 之后不校验有没有准确站在目标，
+            #    100% position 兜底一下，而不是弃用 walk_to 全部走 position**」。
+            #    ⇒ 所以两条都留：**远处照旧走**（观感），但**走完一律核对落点**，不在目标格就 position 补——
+            #      以前是"先挥 3 下打空、才发现没对准"（`空敲3次，重新站位...`）= 白等 + 白挥，
+            #      恒看到的「敲矿慢」就是这个。现在**不再靠挥空来发现**。
+            # ⚠️ "近"用**切比雪夫**（max(|dx|,|dy|)，= 视觉上的格数）：原来用曼哈顿 ⇒ **斜着 2 格算 4**
+            #    ⇒ 看着就在鼻子底下的石头被判成"远"、照样走半天（恒：「体感好像小于3也在走半天」就是这个）。
             s0 = self.state()
-            rock_dist = abs(x - int(s0["player"]["x"])) + abs(y - int(s0["player"]["y"]))
+            _px, _py = int(s0["player"]["x"]), int(s0["player"]["y"])
+            rock_dist = max(abs(x - _px), abs(y - _py))
             if rock_dist <= NEAR_ROCK_POSITION_DIST:
-                log(f"  📍 position→敲 {name} ({x},{y}) 距{rock_dist}")   # 近处精确落格
+                log(f"  📍 position→敲 {name} ({x},{y}) 距{rock_dist}")
                 ok = self.mine_teleport(adj_x, adj_y)
             else:
-                log(f"  🚶 走→敲 {name} ({x},{y}) 距{rock_dist}")            # 远处走路（自然）
+                log(f"  🚶 走→敲 {name} ({x},{y}) 距{rock_dist}")
                 ok = self.natural_walk(adj_x, adj_y)
+                # 🎯 走完**核对落点**（恒要的"100% 兜底"）：没站在目标格上就 position 补到位。
+                try:
+                    _p = self.state().get("player", {})
+                    if abs(int(_p.get("x", -99)) - adj_x) + abs(int(_p.get("y", -99)) - adj_y) > 0:
+                        log(f"  🎯 没站到 ({adj_x},{adj_y}) → position 兜底")
+                        self.mine_teleport(adj_x, adj_y)
+                except Exception:
+                    pass
         else:
             ok = self.safe_walk_to(adj_x, adj_y, location, timeout=30)
 
@@ -967,10 +1042,18 @@ class MineBot(WeaponMixin):
             self.swing((mx, my), special=self.weapon_class == "hammer")
             return "fighting"
         elif dist <= 2:
-            # 近身：先瞬移到旁边再砍，别被磨血还站桩
-            log(f"  ⚔️ 怪物 {name} 近身 ({mx},{my})，贴近反击")
-            adj_x, adj_y, _, _ = self.find_adjacent_tile(mx, my)
-            self.mine_teleport(adj_x, adj_y)
+            # 近身：先瞬移到旁边再砍，别被磨血还站桩。
+            # 🔴 2026-10-03 恒真机：「它太凶狠了，直接串到了墙外去杀怪」——**怪飞出图外时别追**：
+            #    以前这里无条件"贴近"（`find_adjacent_tile` 把图外格当能站 + `mine_teleport` 不查边界），
+            #    结果人被瞬移到 (6,-1) 这种墙外格。现在**先判怪在不在图内**，图外就原地挥一下、不追出去。
+            _w, _h = self._map_size()
+            _oob = (mx < 0 or my < 0 or (_w and _h and (mx >= _w or my >= _h)))
+            if _oob:
+                log(f"  👀 怪物 {name} 在 ({mx},{my}) **地图外** —— 不追出去（就在原地挥一下）")
+            else:
+                log(f"  ⚔️ 怪物 {name} 近身 ({mx},{my})，贴近反击")
+                adj_x, adj_y, _, _ = self.find_adjacent_tile(mx, my)
+                self.mine_teleport(adj_x, adj_y)
             time.sleep(0.15)
             self.swing((mx, my), special=self.weapon_class == "hammer")
             return "fighting"
@@ -982,7 +1065,7 @@ class MineBot(WeaponMixin):
 
     # ── 进食 ──
 
-    def auto_eat(self, hp_threshold=50, sta_threshold=15):
+    def auto_eat(self, hp_threshold=EAT_HP_PCT, sta_threshold=15):
         """自动扫背包找吃的，不依赖外部参数。⚠️ 2026-09-06 按需求挑食：
         血低→挑回血(healthRecovered>0)的（奶酪/沙拉，绝不拿纯体力咖啡保命）；
         体力低→挑回体力(edibleValue>0)的；都低→回血优先。"""
@@ -1065,7 +1148,7 @@ class MineBot(WeaponMixin):
         hp_list = parse_food_list(food_hp)
         sta_list = parse_food_list(food_sta)
         if not hp_list and not sta_list:
-            return self.auto_eat(hp_threshold, sta_threshold)   # 没点名 = 老行为，一个字没变
+            return self.auto_eat(EAT_HP_PCT, sta_threshold)   # 没点名 = 老行为；吃的线固定 EAT_HP_PCT（见其注释）
 
         s = self.state()
         p = s["player"]
@@ -1073,7 +1156,7 @@ class MineBot(WeaponMixin):
         sta, max_sta = p["stamina"], p["maxStamina"]
         hp_pct = (hp / max_hp * 100) if max_hp > 0 else 100
         sta_pct = (sta / max_sta * 100) if max_sta > 0 else 100
-        if hp_pct >= hp_threshold and sta_pct >= sta_threshold:
+        if hp_pct >= EAT_HP_PCT and sta_pct >= sta_threshold:
             return False   # 都不缺
 
         inv_names = {it.get("name") for it in (s.get("inventory") or []) if it}
@@ -1083,12 +1166,12 @@ class MineBot(WeaponMixin):
         #    同一件事三个口径。恒 2026-09-19 也说过"不到快死都可以继续下"。
         #    取**血优先**：血归零是**死亡掉东西**，体力归零只是力竭（`unsafe_reason` 两条都管撤退）。
         #    ⚠️ 一次只吃一样、这个函数每层会被反复调用 ⇒ 两样都低时不会饿着体力那条，只是先后。
-        hp_low = hp_pct < hp_threshold
+        hp_low = hp_pct < EAT_HP_PCT
         want = hp_list if hp_low else sta_list
         label = "回血" if hp_low else "体力"
 
         if hp_low:
-            log(f"  ❤️ HP {hp_pct:.0f}% < {hp_threshold}%")
+            log(f"  ❤️ HP {hp_pct:.0f}% < {EAT_HP_PCT}%")
         else:
             log(f"  ⚡ 体力 {sta_pct:.0f}% < {sta_threshold}%")
 
