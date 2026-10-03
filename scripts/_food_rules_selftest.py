@@ -14,6 +14,7 @@
 """
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault("NAGI_URL", "http://localhost:7843")
@@ -115,6 +116,11 @@ class FakeBot:
 
     def eat(self, name=None):
         self.ate.append(name)
+        # 🍽️ 照**真机行为**抄：吃下去那个 buff 就挂上了（真机延迟 2~3s；这里立刻挂，
+        #    免得"等落地"那条轮询在假 bot 上白等满 6 秒 —— 夹具慢 6s 会顺带把节流钉子的前提搞坏）
+        for f in self.foods:
+            if f[0] == name:
+                self.buffs = [{"id": i, "seconds": 400} for i in bc.food_buff_ids(f)]
         return True
 
 
@@ -139,7 +145,8 @@ bc.maintain_buffs_for(b, want=None)
 ck("…候选按**背包顺序**取第一件（不另立优先级表）", b.ate == ["Spicy Eel"], b.ate)
 b = FakeBot([EEL], buffs=[])
 bc.maintain_buffs_for(b, want=None)
-ck("…`min_gap` 节流：同一 bot 连调第二次不再打网络/不再吃", bc.maintain_buffs_for(b, want=None) is False)
+b._last_buff_check = time.time()      # 刚查过（**别拿"等真实时间"测节流**：一次调用现在可能花几秒）
+ck("…`min_gap` 节流：刚查过就再调 ⇒ 不打网络、不再吃", bc.maintain_buffs_for(b, want=None) is False)
 ck("…`want` 匹配的是**吃食名**也算（`food_matches_buff` 同一把尺子）",
    FakeBot([EEL], buffs=[]).foods and bc.food_matches_buff(EEL, "香辣鳗鱼"))
 
@@ -227,6 +234,42 @@ ck("…点名有货 ⇒ 吃它", mine_run.MineBot.eat_if_needed(fm, None, ["奶�
 fm = FakeMineBot([EEL], hp=90)
 ck("…没点名 + 只剩效果食物 ⇒ 不吃（也不报「吃了」）",
    mine_run.MineBot.eat_if_needed(fm, None, None, 60, 30) is False and fm.ate == [], fm.ate)
+
+print("⑧ 🔴 点名吃食必须走 **`/eat`**（2026-10-03 真机逮到：`_eat_one` 原来发的是 `/use` ⇒ **从来吃不上**）")
+
+
+class EatProbe(mine_run.MineBot):
+    """只记端点，不打网络。"""
+
+    def __init__(self):
+        super().__init__(port=7843)
+        self.eps = []
+
+    def select(self, name):
+        self.eps.append(("select", name))
+
+    def _post(self, ep, data=None, **kw):
+        self.eps.append(ep)
+        return ({"ok": True, "ate": "Spicy Eel"} if ep == "/eat"
+                else {"ok": False, "error": "不是可放置物（只能放箱子/机器/种子/树苗/地板等）"})
+
+
+p8 = EatProbe()
+ok8 = mine_run.MineBot._eat_one(p8, "Spicy Eel", "补 buff")
+ck("…发的是 `/eat`", "/eat" in p8.eps, p8.eps)
+ck("…**不许**发 `/use`（/use 是「用/放」，食物会被判成「不是可放置物」）", "/use" not in p8.eps, p8.eps)
+ck("…`ok:true` 才算吃上", ok8 is True, ok8)
+class EatFail(EatProbe):
+    """`/eat` 明确回 ok:false 的假 bot。"""
+
+    def _post(self, ep, data=None, **kw):
+        self.eps.append(ep)
+        return {"ok": False, "error": "当前物品不可食用（先 /select 选个食物）"}
+
+
+ck("…`ok:false` 如实报「没吃上」（不装成功）", mine_run.MineBot._eat_one(EatFail(), "石头") is False)
+ck("…`_check_eat_result` 已删（它是按 `/use` 回包形状写的判据，留着会误导）",
+   not hasattr(mine_run.MineBot, "_check_eat_result"))
 
 print()
 if fails:

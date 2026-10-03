@@ -65,6 +65,11 @@ EAT_HP_PCT = 60
 #    ⚠️ 以后动这两条线，先核"**吃 < 撤** 才成立"（吃必须**高于**撤）。
 EAT_STA_PCT = 30
 
+# ⏳ 补 buff 吃完后**等它真挂上**的上限（秒）。2026-10-03 真机量到：吃下去到 `/buffs` 里出现
+#    大约 **2~3 秒**（动画播完 → doneEating → applyBuff）。**别拿"吃完立刻读"当结论** ——
+#    那一枪必然读到空的，于是"没挂上 ⇒ 再吃一份"（现场连吃两份香辣鳗鱼）。
+BUFF_APPLY_TIMEOUT = 6.0
+
 
 # ── 🍽️ 食物条目：**一个形状** ────────────────────────────────────────────────
 # 全项目统一成 `(名字, 回体力, 回血, buff档)`（第 4 位可缺 = 老形状/拿不到）。
@@ -310,8 +315,25 @@ def maintain_buffs_for(bot, threshold=30, want=None, min_gap=8.0):
             continue
         name = f[0]
         if eat_patiently(bot, name):
-            log(f"  🍽️ 补 buff：{name}（{food_buff_text(f) or '效果游戏没报数值'}；"
-                f"补前剩 {left:.0f}s）")
+            # ⏳ 等 buff **真挂上**再走（2026-10-03 真机：吃完 2 秒内 `/buffs` 还是空的 ⇒
+            #    紧接着再调一次会**把同一份又吃一遍** —— 现场就是连吃了两份香辣鳗鱼）。
+            #    老代码用 `_buff_track`（自家记时间）糊过去，那份记账 2026-10-03 已删（会漂）
+            #    ⇒ 改成**问游戏**：轮询到该 id 出现为止。写法照 `eat_recovery` 那条"轮询到真回血"
+            #    （同一族教训：**别拿采样太早当结论**）。
+            landed = 0.0
+            deadline = time.time() + BUFF_APPLY_TIMEOUT
+            while time.time() < deadline:
+                time.sleep(0.3)
+                got = max([active_buffs(bot).get(i, 0.0) for i in food_buff_ids(f)] or [0.0])
+                if got > 0:
+                    landed = got
+                    break
+            if landed > 0:
+                log(f"  🍽️ 补 buff：{name}（{food_buff_text(f) or '效果游戏没报数值'}；"
+                    f"补前剩 {left:.0f}s → 挂上 {landed:.0f}s）")
+            else:
+                log(f"  ⚠️ 补 buff：{name} 吃下去了，但 {BUFF_APPLY_TIMEOUT:.0f}s 内 `/buffs` 没见它挂上"
+                    f"（动画被打断？）—— **如实报，不装成功**")
             return True
         log(f"  ⚠️ 补 buff 要吃的 {name} 没吃上 —— 跳过（不换别的）")
         return False

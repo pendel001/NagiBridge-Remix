@@ -336,6 +336,8 @@ class MineBot(WeaponMixin):
         return self._post("/warp", d)
 
     def use_item(self):
+        """⚠️ 通用"用/放"（C# `/use`）—— **吃东西别用它**：食物会落到"不是可放置物"那条分支去。
+        2026-10-03 真机踩过（`_eat_one` 原来就发的这个 ⇒ 点名吃食从来没吃上）。吃食物一律 **`/eat`**。"""
         return self._post("/use", {"force": True})
 
     def interact(self):
@@ -1181,21 +1183,29 @@ class MineBot(WeaponMixin):
 
     def _eat_one(self, name, why=""):
         """吃**指定**那样，返回是否真吃上了。
-        ⚠️ 2026-09-20 修：原来"只剩一种食物"那条分支是
-           `r = self.use_item()` 之后**压根没看 r**，直接 `log("✅ 吃了 X")` + `return True` ——
-           又一处"说吃了、其实没吃"（前两条分支都老实判了 `_check_eat_result`，唯独它没判）。
-           现在三条路统一走这一个函数，判据只有一份。
+
+        🔴 2026-10-03 真机逮到（恒「你给点吧」那趟验补 buff）：这里原来发的是 `use_item()` = **`/use`**，
+           而 `/use` 走的是"**用/放**"那条路 —— 食物会落到"不是可放置物（只能放箱子/机器/种子/树苗/地板等）"
+           那条分支去 ⇒ **点名吃食从来没吃上过**（真机回包原文见 CHANGELOG 203p补2）。
+           ⚠️ **为什么一直没人发现**：老规矩是"点名没货/没吃上 ⇒ 退回自动挑"，而 `auto_eat` 发的是
+             **`/eat`（对的）** ⇒ 点名死在前头、自动挑在后面把人喂饱了，**日志看上去一切正常**。
+           ⚠️ 恒 2026-10-03 把那条兜底撤了（「有点名只吃点名，吃完了也不吃别的」）⇒ 这条死路
+             **立刻变成致命的**：点了名 = 什么都不吃。
+           ⇒ 判据改回 **`/eat`**（与 `BombMiner.eat` / `auto_eat` 同一条路）。**这不是"口味"问题，
+             是唯一那条能被游戏认的吃法**（C# 侧 `/eat` → `farmer.eatObject`，`/use` → 用/放）。
+        📌 通式：**点名那条路必须真机走过一次** —— 有兜底的时候，"点名是死的"会被兜底盖住，
+           日志里一点异常都看不出来（同族：`eat_recovery` 当初压根不读 `self.food_hp`）。
         """
         tag = f"（{why}）" if why else ""
         try:
             self.select(name)
             time.sleep(0.2)
-            r = self.use_item()
+            r = self._post("/eat")          # ⬅️ 必须 /eat；/use 是"用/放"，吃不动
             time.sleep(0.5)
-            if self._check_eat_result(r):
+            if isinstance(r, dict) and r.get("ok"):
                 log(f"  ✅ 吃了 {name}{tag}")
                 return True
-            log(f"  ⚠️ {name} 没吃上{tag} —— 端点回的是 {str(r)[:80]}")
+            log(f"  ⚠️ {name} 没吃上{tag} —— /eat 回的是 {str(r)[:80]}")
         except Exception as e:
             log(f"  ⚠️ 吃 {name} 出错{tag}: {e}")
         return False
@@ -1257,15 +1267,10 @@ class MineBot(WeaponMixin):
         log(f"  ⚠️ 这次需要{label}，但没点过那类的名 —— 按「不点名才自动吃」去自动挑")
         return self.auto_eat(EAT_HP_PCT, sta_threshold)
 
-    def _check_eat_result(self, result):
-        """检查 use_item 结果"""
-        if isinstance(result, dict):
-            error = result.get("error", "")
-            if error and "nothing" in str(error).lower():
-                return False
-            if result.get("ok") is False:
-                return False
-        return True
+    # ⚰️ `_check_eat_result(result)` 2026-10-03 删：它是**按 `/use` 的回包形状**写的判据
+    #    （`ok:false` / error 里带 "nothing"），而 `_eat_one` 已经改回 `/eat` ⇒ 判据就是 `r["ok"]`
+    #    （和 `BombMiner.eat` / `auto_eat` 同一条）。留着它 = 留一条**没人走的判定**，
+    #    下次有人照着它想"吃什么会被判成没吃上"就又错一遍。
 
     # 🏳️ 撤退血量线用**绝对值**（恒 2026-09-19 拍板，与 bomb_common 对齐）：
     #    "不到快死都可以跟着房主继续下"。原来是百分比阈值 ⇒ 时间到点会被报成
