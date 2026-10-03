@@ -156,6 +156,16 @@ ck("…HP：吃 60% > 撤 RETREAT_HP_ABS=35 绝对值（约 19%）",
    bomb_common.EAT_HP_PCT == 60 and bomb_common.EAT_HP_PCT > 35, bomb_common.EAT_HP_PCT)
 ck("…体力：吃 30% > 撤 15%（原来吃 10% < 撤 15% ⇒ 永远轮不到吃，2026-10-03 恒一问才照出来）",
    bomb_common.EAT_STA_PCT == 30 and bomb_common.EAT_STA_PCT > 15, bomb_common.EAT_STA_PCT)
+
+print("⑦ 吃的摊开：每样**同时给血/体两列**（恒：「没有只补其一的食物，奶酪(hp+56,体力+125)可以合并写」）")
+b7 = FakeBot(px=6, py=0)
+b7.detect_inventory_food = lambda: [("奶酪", 125, 56), ("韭葱", 40, 20)]
+_line = b7.food_menu_line()
+ck("…合并成一行：`奶酪 血+56 体+125`", "奶酪 血+56 体+125" in _line, _line)
+ck("…给了**可照抄的名字** + 点名写法（免去翻背包/大小写）",
+   "照抄" in _line and 'food_hp' in _line, _line)
+b7.detect_inventory_food = lambda: []
+ck("…包里没吃的 ⇒ 明确说没有（别让 AI 以为自动挑会凭空变出食物）", "没有" in b7.food_menu_line(), b7.food_menu_line())
 print()
 if fails:
     print(f"❌ {len(fails)} 条没过：")

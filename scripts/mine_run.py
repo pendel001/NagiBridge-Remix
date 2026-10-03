@@ -1066,6 +1066,31 @@ class MineBot(WeaponMixin):
 
     # ── 进食 ──
 
+    def food_menu_line(self):
+        """🍽️ 把**包里能吃的**摊成一行（恒 2026-10-03：「不然 ai 还要翻一轮背包，输一下名字，
+        注意中英文大小写等问题」）——**每样同时给血/体两列**（恒：「印象里好像没有只补其一的食物，
+        奶酪（hp+56,体力+125）可以合并写」）。
+
+        · **不上单子**（菜单是"处境动作"的强暗示，十来行吃的会把第一屏淹掉）——摊在 `mine` 的回执里就够；
+        · 名字**照抄这里给的**（这就是 `detect_inventory_food()` 读到的、`--food-hp` 能匹配上的那个名字）；
+        · 不点名 = 自动挑（按缺口挑最省的，见 `pick_food_closest_to_full`）。
+        ⚠️ "**带效果的**"这一档**暂时不标**：判据要 C# 报"这件有没有 buff"（恒已选方案 A，进下一批 C#）——
+           **没判据就别编名单**（本项目的老病）。
+        """
+        try:
+            foods = self.detect_inventory_food()
+        except Exception:
+            return "  🍽️ 包里的吃的：读不到（`/state` 失败）"
+        if not foods:
+            return "  🍽️ 包里的吃的：**没有**（要下矿先备点回血/回体力的）"
+        # 血多的排前面（一眼看到"最能救命的"），最多列 8 样，其余折叠
+        rows = sorted(foods, key=lambda f: (-(f[2] or 0), -(f[1] or 0)))[:8]
+        txt = " · ".join(f"{n} 血+{hpv} 体+{ed}" for n, ed, hpv in rows)
+        more = f"（还有 {len(foods) - len(rows)} 样）" if len(foods) > len(rows) else ""
+        return (f"  🍽️ 包里的吃的（点名就**照抄这里的名字**）：{txt}{more}\n"
+                f"     不点名=我按缺口自动挑；想点名：kw={{\"food_hp\": \"{rows[0][0]}\"}} / "
+                f"kw={{\"food_sta\": \"{rows[0][0]}\"}}")
+
     def auto_eat(self, hp_threshold=EAT_HP_PCT, sta_threshold=EAT_STA_PCT):
         """自动扫背包找吃的，不依赖外部参数。⚠️ 2026-09-06 按需求挑食：
         血低→挑回血(healthRecovered>0)的（奶酪/沙拉，绝不拿纯体力咖啡保命）；
@@ -1490,6 +1515,7 @@ class MineBot(WeaponMixin):
         log(f"\n🏃 === 冲层模式: {start_level} → {target_floor}层 ===")
         log(f"  镐子: {self.pickaxe_name} (Lv.{self.pickaxe_level})"
             f" | 食物: 体力={food_sta or '无'} 回血={food_hp or '无'}")
+        log(self.food_menu_line())
 
         # warp 到起始层（矿洞必须带坐标，不然被重定向）
         loc = f"UndergroundMine{start_level}"
@@ -1744,6 +1770,7 @@ class MineBot(WeaponMixin):
                 log("     （接「深处的危险」后电梯被重置，需先冲层把电梯层带回，或改刷浅层矿如 Copper 21）")
                 return
 
+        log(self.food_menu_line())
         log(f"\n⛏️ === 刷矿模式: {ore_type} ===")
         log(f"  目标层: {floor} | 循环 {cycles} 次"
             f" | 镐子: {self.pickaxe_name} (Lv.{self.pickaxe_level})"
