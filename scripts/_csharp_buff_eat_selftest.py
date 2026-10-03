@@ -61,7 +61,9 @@ ck("…`GuardBlockName(10)` 文案同步成「正在吃」", '10 => "正在吃�
 ck("…顺手把「字段什么时候被清」这条教训写进注释（别只改代码）", "永不清零" in guard)
 
 print("② `/eat`：**等结算**才扣、失败如实报 + 不清走位队列不吃")
-eat = _block(r"private object HandleEat\(\)", span=170)
+eat = _block(r"private object HandleEat\(\)", span=210)
+# ⚠️ span 170 → 210：2026-10-03 晚在轮询里加了"动画没了先给 400ms 宽限"那段（+13 行），
+#    170 行的窗口够不到尾部那句"HTTP 兜底超时" ⇒ 假红。
 ck("…吃东西前 `ClearMovementState()`（清掉异步走位队列，否则动画被覆盖）",
    "ClearMovementState();" in eat)
 ck("…`eatObject` 出现在 `Stack--` **之前**（先吃、确认结算了才扣）",
@@ -116,6 +118,29 @@ print("②之四 `isEating`/`canMove` 摆到 `/state` 上（看不见的状态=�
 st = _block(r"buffs = EnumerateBuffs\(farmer\),", span=14)
 ck("…`/state.player.isEating` 有暴露", "isEating = farmer.isEating" in st)
 ck("…`/state.player.canMove` 有暴露", "canMove = farmer.CanMove" in st)
+
+print("②之五 🔴 同日真机第三趟：『动画没了』**不许当场判失败**（边界竞态）")
+# 现场：同一条（满值吃芝士）第一次回 `eat_not_settled`、物品没扣；紧接着同一格连吃 3 次**全过**
+# （`settledMs` 2400 / 2600 / 2400）⇒ 不是信号坏，是**边界**：动画收尾与 `doneEating` 是
+# `FarmerSprite` 里**同一帧的两句话**，200ms 的采样点会正压在那条边界上。
+# ⇒ ① 判失败前给一段宽限 ② 跨线程读的 tick 要 `volatile`（否则读侧可能吃旧值）。
+ck("…`LastTick` 声明成 `volatile`（主线程写 / HTTP 线程读）", "volatile int LastTick" in dep)
+ck("…记下『头一次看到动画没了』的时刻（`animGoneAt`）", "animGoneAt" in eat)
+ck("…宽限内不算失败（有 `waited - animGoneAt >=` 这条判据）",
+   re.search(r"waited - animGoneAt >=", eat) is not None)
+ck("…**不许**再有『一看到 `!s.eating` 就 `animationOver = true`』的当场判死形状",
+   not re.search(r"if \(!s\.eating && waited >= 600\)\s*\{\s*\n\s*animationOver = true;", eat))
+
+print("④ 🔴 `/give` 传**名字**会静默造 Error Item（真机：9 发 `Wood` 占满 9 格、回包还说 ok:true）")
+give = _block(r"private object HandleGive\(HttpListenerContext ctx\)", span=90)
+_gv_code = _code_only(give)   # ⚠️ 必须去注释再比顺序：我给这段写的**说明注释**里先出现 Create、后出现 Exists
+ck("…先 `ItemRegistry.Exists` 验 ID（假的直接 ok:false）", "ItemRegistry.Exists(" in _gv_code)
+ck("…再兜一层 Error Item 名字判定", '"Error Item"' in _gv_code)
+ck("…验 ID 在 `ItemRegistry.Create` **之前**（顺序反了就等于没验）",
+   ("ItemRegistry.Exists" in _gv_code and "ItemRegistry.Create" in _gv_code
+    and _gv_code.index("ItemRegistry.Exists") < _gv_code.index("ItemRegistry.Create")))
+ck("…错误文案点明『要用限定 ID』+ 给出现场核过的例子",
+   "限定 ID" in _gv_code and "(O)388" in _gv_code and "(O)395" in _gv_code)
 
 print("③ buffs 两处都读**权威表** `AppliedBuffs`（不再反射摸黑）")
 eb = _block(r"private List<object>\? EnumerateBuffs", span=60)

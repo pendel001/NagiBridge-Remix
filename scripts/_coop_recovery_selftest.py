@@ -138,7 +138,9 @@ ck("…文档行也提到开宝箱（别让 help 文案落后于行为）",
    "开宝箱" in _coop)
 
 print("⑥ `/give` 不许假成功（恒那趟现场：包满 36/36 时回 `ok:true, given:Bomb` 而**一颗没进包**）")
-_gv = block(src(os.path.join("..", "ModEntry.cs")), r"private object HandleGive", span=45)
+_gv = block(src(os.path.join("..", "ModEntry.cs")), r"private object HandleGive", span=95)
+# ⚠️ span 从 45 抬到 95：2026-10-03 晚又往这个方法头上加了"验 ID"那段（Error Item 假门），
+#    45 行的窗口够不到下面的 `addItemToInventory` ⇒ 假红。
 ck("…看 `addItemToInventory` 的返回值", "addItemToInventory(item)" in _gv)
 ck("…1.6 的签名是返回**余量 Item**（不是 bool）——拿 `leftover?.Stack` 算真进去了几个",
    "Item? leftover" in _gv and "leftover?.Stack" in _gv)

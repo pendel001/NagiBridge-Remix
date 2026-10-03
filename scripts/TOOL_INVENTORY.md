@@ -1,4 +1,4 @@
-# NagiBridge MCP 域工具速查手册（2026-08-22 重写 · keep-set **16** 个 · 09-02 合并 script 域 · 09-06 `--full` 退役 · 09-11 收编 advance_story/profile/which_role · **10-01 收编 session→settings、cabin→scene/farm/daily/check**）
+# NagiBridge MCP 域工具速查手册（2026-08-22 重写 · keep-set **16** 个 · 09-02 合并 script 域 · 09-06 `--full` 退役 · 09-11 收编 advance_story/profile/which_role · **10-01 收编 session→settings、cabin→scene/farm/daily/check** · **10-03 `bomb_escort` 真删 / `farm collect`+`building` 删除（收放合一走 `load`）/ 协同会开箱且**有炸弹自动回炸矿** / 开箱记账（换层清空）**）
 
 > 域工具速查手册：AI 现在**默认只看到 16 个工具**（13 域入口 + 3 独立工具 `intent`/`screenshot`/`help`），
 > 其余旧独立工具**全部收进域入口**（函数还在，只是 AI 不再直调）。
@@ -25,7 +25,7 @@
 > 🗜️ **2026-10-01 撤下顶层两个域**（**函数没删**，只是 AI 不再直调；逐 op 的替代路见 `domain_selftest._SUBSUMED_DOMAINS`）：
 > **`cabin`** → `cook`→`daily cook` · `sleep`→`daily sleep` · `statue`→`farm statue` ·
 > `interact/place/break/furniture/decor`→`scene` 同名 op · `pickup`→`scene pickup`/单子「搬走…」 ·
-> `collect`→单子「收 已好的机器」/`farm collect` · `enum`→`check(what="machines")`（+ 单子）。
+> `collect`→单子「收 已好的机器」/`farm load`（**只收不放**） · `enum`→`check(what="machines")`（+ 单子）。
 > **`session`** → 三条 op 全进 **`settings`**（`session_status`/`session_set`/`session_export`）——
 > 这不是简化而是**消除重复**：`settings status` 早在印会话设置，
 > 而 `settings(setting="context_turns")` 与 `session set max_turns` 改的是同一个变量。
@@ -39,7 +39,8 @@
 | `machines` | 全农场机器清单 |
 | `mine` | 下矿进度 |
 | `silo` / `mastery` / `buildings` | 筒仓干草 / 精通 / 木匠建筑 |
-| `quest` | 任务列表 |
+| `quest` | **打开任务日志**（回执让你再 `menu read` 读卡；**不直接返回列表**）|
+| `ready` / `就绪` | 就绪握手实况（卡在"等待其他玩家"框时查；两侧都读才看得出死锁在哪头）｜🆕09-11 原顶层就绪工具 |
 | `chests` / `storage` | 当前图箱子 / 箱子网络视图 |
 | `look` | 环视周围（NPC/怪物/物品/地形）|
 | `profile` / `技能` | 我的技能等级 + 职业分支（如是否 Luremaster 蟹笼免饵）｜🆕09-11 原顶层 `profile()` |
@@ -52,7 +53,7 @@
 | `chests` | `chest`(-1) | 看当前图的箱子；`chest=N` 看第 N 个的全清单 |
 | `look` | `radius`(10) | 环视半径（NPC/怪物/物品/地形）|
 
-> 其余 `what`（`status`/`backpack`/`worn`/`machines`/`mine`/`silo`/`mastery`/`buildings`/`quest`/`storage`/`profile`/`role`）**全部无参**。
+> 其余 `what`（`status`/`backpack`/`worn`/`machines`/`mine`/`silo`/`mastery`/`buildings`/`quest`/`ready`/`storage`/`profile`/`role`）**全部无参**。
 > 💡 查概览用 `status`、查逐格用 `backpack`，别都调一遍浪费 token。
 
 ### `farm(ops)` — 农活（锄/种/水/收/机器）*AI 必走* **只能在 Farm/温室/姜岛**
@@ -64,7 +65,7 @@
 | `fertilize` / `clear` / `plot` | 撒化肥 / 清杂草石头树桩 / 地皮规划 |
 | `tillfield` / `hoe` / `plan` | 全是 `till` 的别名（蓄力锄/布局锄）/ **方形规划(算格)**——`plantlayout`/`播种规划` 也是 `plant` 的别名 |
 | `chop` / `clearground` | 砍树 / 清单格 |
-| `collect` / `load` / `building` | 收机器产物 / 往机器放原料 / 一屋收放一轮 |
+| `load` | 收机器 / 往机器放料**一条过**（`item` 留空 = **只收不放**）｜⚠️ 老 op `collect`/`building` **2026-10-03 已删**（连函数/端点一起）|
 | `pond` / `pond_add` / `pond_feed` / `pond_collect` / `pond_fish` | 鱼塘：状态/放鱼/喂/领鱼籽/直钓 |
 | `animals` / `milk` / `pet` / `petwalk` | 摸动物+收 / 挤奶剪毛 / 摸猫狗 / 拟人摸（care 域 09-02 并入 farm）|
 | `喂水`/`碗` / `畜舍`/`这间` / `buy` / `doors` / `hay` / `statue` | 宠物水 / 这间屋动物 / 买动物 / 关门 / 加干草 / 祈福 |
@@ -79,10 +80,9 @@
 | `water` / `harvest`(15) / `scythe`(15) | `radius` | 浇水无参 / 收 / 镰刀收 |
 | `plot` | `x`(-1) `y`(-1) `radius`(15) `all_plots`(False) | 连通域规划（不传 x/y=以自己为心）|
 | `chop` | `area`("") —— 值写「几个数」：**4 个数=矩形两角 / 3 个数=圆心+半径** | 砍树（限定区域时会先走过去再找）|
-| `collect` / `load` | `machine_type`("") `location`("") ／ `item`(必填) | 收机器 / 往机器放料 |
-| `building` | `location`(必填) `item`("") `machine_type`("") | 一屋收放（`item` 留空=只收不放）|
+| `load` | `item`(必填) `machine_type`("") `location`("") `count`(0) `here`(False) | 收 / 放一条过；`here=True` = 只弄脚下这一间屋（原 `building` 的活法）；`item` 留空 = 只收不放 |
 | `place` / `break` | `name`,`x`,`y` ／ `x`,`y`(必填) `steps`(1) `radius`(0) | 同 `scene` 同名 op |
-| `pond_add`/`feed`/`collect`/`fish` | `x`(-1) `y`(-1)；`pond_add` 另有 `item`(必填) | 鱼塘四件事（不传坐标=唯一/最近那口）|
+| `pond_add` / `pond_feed` / `pond_collect` / `pond_fish` | `x`(-1) `y`(-1)；`pond_add` 另有 `item`(必填) | 鱼塘四件事（不传坐标=唯一/最近那口）。⚠️ **简写 `feed`/`collect`/`fish` 不是 op**，必须写全名 |
 | `buy` | `animal_type` `name` `building`("") | 买动物 |
 | `petwalk` | `include_petted`(False) | 拟人遛（默认跳过已摸过的）|
 | `hay` | `dry_run`(False) | 加干草（True=只看不加）|
@@ -120,14 +120,14 @@
 
 | op | 参数（括号内=默认） | 说明 |
 |---|---|---|
-| `go` | `mode`("rush") `start`(1) `target`(None) `ore`(None) `cycles`(5) `hp_threshold`(50) `food_sta` `food_hp` `resume`(True) | `mode=rush` 冲层（往更深敲到 `target`）/ `mode=farm` 刷矿（在电梯直达层反复刷指定 `ore`）|
+| `go` | `mode`("rush") `start`(1) `target`(None) `ore`(None) `cycles`(5) `hp_threshold`(**30**) `food_sta` `food_hp` `food_buff`(2026-10-03 新增) `resume`(True) | `mode=rush` 冲层（往更深敲到 `target`）/ `mode=farm` 刷矿（在电梯直达层反复刷指定 `ore`）。⚠️ `hp_threshold` **只是"血量低于它就不肯下矿"的出门线**，**不是吃食物的线**（吃的线是 `bomb_common.EAT_HP_PCT=60`）——**别拿它当吃的线调**。`food_buff` 点名要补的 buff（**不传也会自动补**：自动挑满包里带 buff 的那份）|
 | ↳ `ore` 取值 | `Copper`(铜,21层) / `Iron`(铁,41层) / `Gold`(金,71层) | ⚠️ **煤没有 ore 选项**——`farm` 铁层(41) 会顺手清尘埃精灵/蝙蝠，它们掉煤 |
 | `bomb_plan` | `radius`(14) `min_covered`(3) `top`(3) | 找"炸一下覆盖 ≥`min_covered` 块岩体"的锚点，给前 `top` 个 |
 | `bomb_place` | `x`,`y`（**必填**） | 在指定格放炸弹 |
 | `bomb_collect` | `max_items`(12) | 炸完收掉落 |
-| `bomb_mine` | `target`(0) `bomb`("Bomb") `min_covered`(3) `follow_host`(True) `lead`(2) `autodrop`(0) `one_floor`(False) | 全自动炸矿。`target=0` = **按当前层自适应**（在头骨矿洞另有语义）；`one_floor=True` = 逐层模式（同步、只跑一层返回摘要，不撤退）——**默认冲层模式是异步后台跑，推荐** |
+| `bomb_mine` | `target`(0) `bomb`("Bomb") `min_covered`(3) `follow_host`(True) `lead`(2) `autodrop`(0) `one_floor`(False) `food_hp` `food_sta` `food_buff` | 全自动炸矿。`target=0` = **按当前层自适应**（在头骨矿洞另有语义）；`one_floor=True` = 逐层模式（同步、只跑一层返回摘要，不撤退）——**默认冲层模式是异步后台跑，推荐**。吃食三件：`food_hp`/`food_sta` 点名要吃的，`food_buff` 点名补哪个 buff（**不传也会自动补**）|
 | ↳ `follow_host`/`lead` | True / 2 | host 在矿里就一起冲层，目标层 = host 层数 ± `lead` |
-| `bomb_volcano` | `bomb`("Bomb") `min_covered`(3) `hp_threshold`(30) `max_minutes`(None) `poll`(2.5) | 火山专用。⚠️ **要求 host 已在矿/火山里**才放行（火山特殊瓦片无法程序化换层）|
+| `bomb_volcano` | `bomb`("Bomb") `min_covered`(3) `hp_threshold`(30) `max_minutes`(None) `poll`(2.5) `food_hp` `food_sta` | 火山专用。⚠️ **要求 host 已在矿/火山里**才放行（火山特殊瓦片无法程序化换层）。⚠️ 火山**没有** `food_buff`（buff 那条线按恒 2026-10-03 拍板维持现状）|
 | `organize` | `disable`(False) `reset`(False) | 整理背包；`reset=True` 恢复默认 |
 
 **💣 `bomb` 三个取值**：`"Cherry Bomb"` 樱桃 / `"Bomb"` 黑 / `"Mega Bomb"` 超级。
@@ -165,7 +165,8 @@
 | `select`(物品名) | 选中背包物品拿手上 |
 | `sit(x,y[,face])` / `stand` / `seats`(radius) | 坐椅子（自动就位；`face=`=坐下朝向，只对部分座位生效）/ **起身**（坐着时用）/ 扫可坐物（✋=可改朝向）|
 | `pickup` / `pickup_scene` | 拿起家具 / 捡当前场景可拾取物 |
-| `berry` / `spot` / `moss` | 摇/摘 灌木与果树（浆果·茶叶·果子；⚠️果树摇完果子**掉地上**要再走上去捡） / 挖斑点蚯蚓 / 绿雨搜刮苔藓 |
+| `berry` / `spot` / `moss` / `walnut` | 摇/摘 灌木与果树（浆果·茶叶·果子；⚠️果树摇完果子**掉地上**要再走上去捡） / 挖斑点蚯蚓 / 绿雨搜刮苔藓 / **敲金核桃**（`walnut`：`radius`(0=默认范围) `max_count`(1) `dry_run`(False)）|
+| `garbage` | 翻垃圾桶（`loc`("") `pos`("") `wait`(1.0) `dry_run`(False)；`dry_run=True` 只报位置不翻）|
 | `rock` | 室外镐击（采石场/挖掘场/蚌矿场敲可破物：骨/黏土/蚌/矿点/宝石/煤/放射矿，只跳普通石；dig=false 只扫） |
 | `forge_help` | 锻造台附魔攻略（台子：本图 Mini-Forge 优先，没有才去火山 Caldera） |
 | `drop` / `furniture` / `decor` | 丢背包物品 / 扫家具 / **🪵 地板墙纸真值表**（这间屋哪些格能铺 + 现在铺的什么；地板点**地板格**、墙纸点**靠墙那圈墙格**，点错游戏静默不理）|
@@ -203,6 +204,7 @@
 | `click`(option/item/button/x/y) | 点菜单项（自适应）|
 | `key`(ok/esc/数字) | 按键盘 |
 | `advance` | **推进剧情/对话**（自动走剧情）|
+| `skip` | **整段跳过剧情/事件**（`skippable=true` 的事件才跳得动；无参。想一步一步走用 `advance`）|
 | `cancel` | 关当前弹窗/撤睡觉就绪 |
 | `shop` / `sell` / `bin` | 逛店 / 卖商店 / 投出货箱 |
 | `craft` / `recipes` / `craftables` | 合成 / 菜谱 / 配方 |
@@ -285,7 +287,7 @@
 > ⚠️ 改色**别用纯 `#000000`**（=默认木纹，会被识别成"未染色"）；要黑箱用暗灰 `#303030`。
 
 ### `daily(ops)` — 过日子
-`sleep`(睡觉) `settle`(确认过夜结算) `eat`(吃食物) `wear`(穿/脱衣物) `lie_bed`(躺床不过夜) `heartbeat`(心跳间隔) `pause`(后台不暂停) `peek`(看host在干嘛) `whiteboard`/`wb_read`/`wb_pin`/`wb_clear`(白板笔记) `appearance`(捏脸)
+`sleep`(睡觉) `settle`(确认过夜结算) `eat`(吃食物) `cook`(做饭) `wear`(穿/脱衣物) `lie_bed`(躺床不过夜) `heartbeat`(心跳间隔) `pause`(后台不暂停) `peek`(看host在干嘛) `whiteboard`/`wb_read`/`wb_pin`/`wb_clear`(白板笔记) `appearance`(捏脸)
 
 **📐 `daily` 参数速查**
 
@@ -305,7 +307,7 @@
 > ⚠️ 饰品需**战斗精通**，未解锁会被权威拦截（报"未解锁战斗精通"）。
 
 ### `map(ops)` — 导航 **跨图唯一走这个**
-`lookup`(查地点功能+出口) `query`(功能反查) `go`(走到目标,自动多段寻路/交通) `walk`(走到指定POI **或给x,y走同图坐标**) `walk_multi`(多段走位,=**闲逛**) `npc`(找NPC) `warp_safe`(紧急逃脱)
+`lookup`(查地点功能+出口) `query`(功能反查) `go`(走到目标,自动多段寻路/交通) `walk`(走到指定POI **或给x,y走同图坐标**) `walk_multi`(多段走位,=**闲逛**) `npc`(找NPC) `warp_safe`(紧急逃脱) `unlocks`(查存档解锁)
 
 **📐 `map` 参数速查**
 
@@ -318,6 +320,7 @@
 | `lookup` | `location`（必填） | 查某地点的功能+出口 |
 | `query` | `function`（必填） | 功能反查（"哪里能买到 X"）|
 | `warp_safe` | 无参 | 紧急逃脱（卡住时用）|
+| `unlocks` | 无参 | 查存档解锁：矿洞/巴士/下水道/姜岛/精通/**火山近路**…——**走捷径（尤其火山近路）前先查这个**，别硬走 |
 
 > 🚦 交通优先级：**图腾柱 > 矿车 > 走路**（玩家在农场且有对应图腾柱时自动用）。
 > ⚠️ 参数**必须放 `kw` 对象**，别拼进 ops 串里。
@@ -426,7 +429,8 @@
 | 开商店买东西 | `menu(ops="shop", place="皮埃尔商店")` |
 | 点菜单选项 | `menu(ops="click", option=1)` |
 | 推进剧情/对话 | `menu(ops="advance")` |
-| 翻箱找东西 | `storage(ops="scan")` → `storage(ops="take", …)` |
+| 整段跳过剧情/事件 | `menu(ops="skip")`（事件 `skippable=true` 才跳得动）|
+| 翻箱找东西 | `storage(ops="find", name="…")` → `storage(ops="take", …)` |
 | 去某大广场/跨图 | `map(ops="go", destination="Town")` |
 | 睡觉 / 蹭床 | `daily(ops="sleep")` |
 | 过夜结算进新一天 | `daily(ops="settle")` |
@@ -451,7 +455,7 @@
 | `which_role`（确认端口↔角色）| `check(what="role")`（🆕09-11 从顶层收编）|
 | `profile`（技能等级+职业分支）| `check(what="profile")`（🆕09-11 从顶层收编）|
 | `go_sleep` / `confirm_settlement` / `eat_item` / `set_appearance` / `wear` / `lie_bed` | `daily(ops="sleep"/"settle"/"eat"/"appearance"/"wear"/"lie_bed")` |
-| `scan_chests` / `chest_store` / `chest_take` | `storage(ops="scan"/"store"/"take")` |
+| `scan_chests` / `chest_store` / `chest_take` | `storage(ops="view"/"store"/"take")`（⚠️ 旧文档这里写过 `scan`，**`scan` 从来不是 op**，见上面 storage 那句）|
 | ~~`list_quests` / `quest_progress`~~（2026-09-01 已退役：任务/进度改 `menu(ops="journal"/"read")` 读 QuestLog 卡，卡上含每子目标 current/max；`menu(ops="know")` 查详情，原 quest 域 09-02 并入 menu） | 接单走板上 `menu click(button=accept…)`（accept_quest 已退役） |
 | `run_script` / `script_start` / `script_status` / `script_stop` / `async_config`（09-02 五合一；09-05 删 status、09-06 continue 取代 run/start） | `script(ops="continue"/"stop"/"async")` |
 | `session_status` / `session_set` / `session_export`（09-02 三合一，**10-01 起进 `settings`**） | `settings(ops="session_status" / "session_set" / "session_export", kw={setting,value})` |

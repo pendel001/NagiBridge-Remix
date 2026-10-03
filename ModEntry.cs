@@ -373,8 +373,10 @@ internal static class MasteryToastPatch
 [HarmonyPatch(typeof(Farmer), nameof(Farmer.doneEating))]
 internal static class DoneEatingPatch
 {
-    /// <summary>最近一次 `doneEating` 的 `Game1.ticks`（-1 = 本进程从没结算过）。</summary>
-    internal static int LastTick = -1;
+    /// <summary>最近一次 `doneEating` 的 `Game1.ticks`（-1 = 本进程从没结算过）。
+    /// ⚠️ `volatile`：这个值在**主线程**写（postfix）、在 `/eat` 的 **HTTP 线程**读 —— 不标易变的话
+    /// 读侧可能拿到旧值，表现就是"动画收尾那一帧读不到结算信号 ⇒ 假报没结算"（2026-10-03 真机 1 次）。</summary>
+    internal static volatile int LastTick = -1;
     /// <summary>最近一次结算的那件东西（诊断用；`/eat` 拿它核对"结算的是我这一口"）。</summary>
     internal static string LastItem = "";
 
@@ -12679,22 +12681,30 @@ public class ModEntry : Mod
         int waited = 0;
         bool settled = false;      // doneEating 真的跑过
         bool animationOver = false;
+        int animGoneAt = -1;       // 头一次看到"动画已经没了"的毫秒数（-1 = 还没看到）
         while (waited < settleMs)
         {
             System.Threading.Thread.Sleep(200);
             waited += 200;
-            // ① 权威信号：结算那一步跑过了（跨线程读一个 int，够用）
+            // ① 权威信号：结算那一步跑过了（volatile 读，跨线程不吃旧值）
             if (DoneEatingPatch.LastTick != eatTick0)
             {
                 settled = true;
                 break;
             }
-            // ② 动画已经没了却还没结算 ⇒ 被打断了，不用再等满 6s
+            // ② 动画已经没了却还没结算 ⇒ **先给 400ms 宽限，别当场判失败**。
+            //    🔴 2026-10-03 真机这一条 A 组（满值吃芝士）第一次跑假报 `eat_not_settled`、物品没扣，
+            //       紧接着同一格连吃 3 次**全过**（`settledMs` 2400/2600/2400）⇒ 不是信号坏，是**边界**：
+            //       动画收尾和 `doneEating` 是**同一帧里的两句话**
+            //       （`FarmerSprite: doneWithAnimation(); if (owner.isEating) owner.doneEating();`），
+            //       而我们 200ms 一次的采样点很容易正压在那条边界上 ⇒ 读到"动画没了 + 信号还没到"。
+            //       📌 通式：**"现象先到、权威信号后到"时，判失败前必须再等一小段**——
+            //       不然就变成概率性假失败（AI 会以为没吃上、白重吃，`eat_recovery` 还可能当"吃不上"直接撤）。
             var s = Snap();
             if (!s.eating && waited >= 600)
             {
-                animationOver = true;
-                break;
+                if (animGoneAt < 0) animGoneAt = waited;
+                if (waited - animGoneAt >= 400) { animationOver = true; break; }
             }
         }
 
@@ -12824,7 +12834,32 @@ public class ModEntry : Mod
         EnqueueMainThread(() =>
         {
             var farmer = Game1.player;
+            // 🔴 2026-10-03 真机逮到（我自己摆场时踩的）：`/give` 传**名字**（`"Wood"`/`"Stone"`）时
+            //    `ItemRegistry.Create` **不报错**，而是照 `allowNull:false` 造一个 **Error Item**
+            //    （`Name = "Error Item"`）——它塞得进背包 ⇒ 回包照旧 `ok:true, given:"Wood", count:999`
+            //    ⇒ **又一个假门**：我说"给了 999 根木头"，其实给了 999 个废品，还把 9 个格子占满了。
+            //    ⇒ 认 ID 真假：以 `ItemRegistry.Exists` 为准，再兜一层 Error Item 名字判定。
+            //    ⚠️ 现场核过的限定 ID：`(O)388` 木头 · `(O)390` 石头 · `(O)287` 炸弹 ·
+            //      `(O)286` 樱桃炸弹 · `(O)288` 超级炸弹 · `(O)226` 香辣鳗鱼 · `(O)395` 咖啡。
+            if (!ItemRegistry.Exists(itemId))
+            {
+                tcs.SetResult(new
+                {
+                    ok = false,
+                    requested = itemId,
+                    count,
+                    error = $"`{itemId}` 不是有效的物品 ID（这样造出来的是 **Error Item**）——"
+                          + "`id` 要用**限定 ID**，名字不认。"
+                          + "例：`(O)388`木头 / `(O)390`石头 / `(O)287`炸弹 / `(O)226`香辣鳗鱼 / `(O)395`咖啡"
+                });
+                return;
+            }
             var item = ItemRegistry.Create(itemId, count);
+            if (item == null || item.Name == "Error Item")
+            {
+                tcs.SetResult(new { ok = false, requested = itemId, count, error = $"`{itemId}` 造出来是 Error Item，没给" });
+                return;
+            }
             if (item is Tool tool && upgrade > 0)
                 tool.UpgradeLevel = upgrade;  // 作弊给升级工具
             // 🔴 2026-10-03 真机逮到（恒在沙漠那趟摆场时）：`addItemToInventory` 的返回值**原来没人看**
