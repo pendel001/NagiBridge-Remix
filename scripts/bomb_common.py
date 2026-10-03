@@ -2277,12 +2277,24 @@ class BombMiner(WeaponMixin):
         # 选炸弹 + 放
         self.select(bt)
         time.sleep(0.15)
+        n_before = self.count_bombs(bt)
         r = self.use_item()
         time.sleep(0.3)
         # ⚠️ 以 /use 返回 placed 为准：炸弹自动引爆快，surroundings 验证会因炸弹已爆而误报"没放到"（2026-08-08 实测）
         if isinstance(r, dict) and r.get("ok") and r.get("action") == "placed":
             return True, f"{bt} 放在 ({x},{y})"
-        err = (r or {}).get("error", "use 失败")
+        # 🔴 2026-10-03 深夜（恒的观察/猜测：「那个傻愣着是它**没往下炸**…**可能因为那个位置被挡了
+        #    放不了炸弹**」——他是对的，日志里正面写着 `连续放置失败，疑似卡死`，我先前赖给木乃伊是错的）：
+        #    原来这里只回一句 `use 失败`（`r.get("error", …)`），**把 `/use` 的原始回包丢了**
+        #    ⇒ 现场根本分不清是"目标格被怪/物挡"、"人没站到位"，还是"其实放上了、只是 action 不叫 placed"。
+        #    ⇒ 两条：① 把原始回包记进 msg（下次一眼看出原因）
+        #            ② **顺手数炸弹**：数量少了就说明炸弹真出包了 ⇒ 按"放出去了"算
+        #               （比抠 action 字符串可靠；`use 失败` 那条很可能就是这里误判）。
+        n_after = self.count_bombs(bt)
+        if n_after < n_before:
+            return True, (f"{bt} 放在 ({x},{y})（/use 没报 placed，但炸弹少了 {n_before - n_after} 颗 "
+                          f"⇒ 按「已放出」算；原始回包 {str(r)[:120]}）")
+        err = (r or {}).get("error") or (f"/use 回包 {str(r)[:160]} —— 炸弹数没变（{n_before}），**真没放出去**")
         return False, f"放炸弹失败: {err}"
 
     def wait_explosion(self, x, y, timeout=9.0):

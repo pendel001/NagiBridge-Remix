@@ -235,6 +235,15 @@ ck("…取的就是最低分那件（`cands[0]`）", "cands[0]" in bc)
 ck("…最低分 ≥40 时**一件都不丢**并如实报", "一件都不丢" in bc and "score >= 40" in bc)
 ck("…日志写明「全包最低分」", "全包最低分" in bc)
 
+print("⑮ 💣 「放不了炸弹」必须**自证**（恒：那个傻愣着是它没往下炸；可能位置被挡放不了）")
+# 现场：bomb4 那趟撤退原因就是 `连续放置失败，疑似卡死`，另有 `⚠️ 放炸弹失败: use 失败`——
+# 而原来 `place_bomb_at` 只回一句 `use 失败`，把 `/use` 原始回包**丢了**，现场看不出原因。
+_pb = block(bc, r"    def place_bomb_at\(", span=55)
+ck("…放之前后都数一遍炸弹（`n_before`/`n_after`）", "n_before = self.count_bombs" in _pb and "n_after = self.count_bombs" in _pb)
+ck("…炸弹数少了 ⇒ 按「已放出」算（不抠 action 字符串）", "n_after < n_before" in _pb and "已放出" in _pb)
+ck("…失败时把**原始回包**记进 msg（下次一眼看出为什么）", "原始回包" in _pb and "str(r)[:160]" in _pb)
+ck("…注释点明恒的观察 + 我先前赖木乃伊是错的", "没往下炸" in _pb and "木乃伊" in _pb)
+
 print()
 if fails:
     print(f"❌ {len(fails)} 条没过：")
