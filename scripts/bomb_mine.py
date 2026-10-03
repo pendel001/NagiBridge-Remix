@@ -28,7 +28,7 @@ os.environ.setdefault("NAGI_URL", "http://localhost:7843")
 os.environ.setdefault("NAGI_HOST_URL", "http://localhost:7842")
 
 from bomb_common import (BombMiner, log, is_mine_location, extract_mine_level,
-                         ManualChestFull, parse_food_list,
+                         ManualChestFull, DiedInMine, parse_food_list,
                          BOMB_RADIUS, backpack_plan, is_rock, drop_value, is_volcano)
 
 # ═══════════ 已移除：主动打怪（2026-08-09，按user要求移到协同模式） ═══════════
@@ -825,6 +825,10 @@ class BombMineBot(BombMiner):
 
         while level < target_floor:
             log(f"\n--- 💣 第 {level} 层 ---")
+            # 💀 死亡检测（权威信号 = `/state.player.lostOnDeath`，游戏自己的 `Farmer.itemsLostLastDeath`）。
+            #    恒 2026-10-03 深夜：炸矿途中人死了、掉了银河之锤，而脚本继续发动作**把死亡剧情顶掉**了
+            #    ⇒ 他没看到掉落清单。查到就 raise ⇒ `main()` 收工、**不再碰游戏**。
+            self.check_death(f"第 {level} 层")
             # 每层开打前看一遍 buff（按 buff id 对槽补，不是靠名单猜）
             self.maintain_buffs(threshold=30, want=getattr(self, "food_buff", "") or None)
 
@@ -1143,6 +1147,14 @@ def main():
         bot.guard_on()
     try:
         bot.run_rush(start, target, follow_host=bool(args.follow_host), max_floors=max_floors)
+    except DiedInMine as e:
+        # 💀 2026-10-03 深夜（恒：「脚本把游戏自己的**死掉剧情顶了**回到沙漠门口，所以我也没看到丢掉物品清单」）：
+        #    死了就**立刻停手** —— 这里**故意什么都不做**：不 retreat、不 warp、不发任何动作，
+        #    把游戏的死亡剧情/掉落清单**留给恒看**。（原来是一路继续发 /key /warp 把它顶掉。）
+        log(f"\n💀💀 **轮回在矿里死了**：{e}")
+        log("   ⚠️ 脚本就此停手，**不再发任何动作**（不 retreat / 不 warp）——")
+        log("      死亡剧情和掉落清单留给恒看；要捡回东西走游戏里的『失物招领』/ 复活流程。")
+        return
     finally:
         if not args.no_guard:
             bot.guard_off()

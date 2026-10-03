@@ -28,6 +28,15 @@ NAGI_URL = os.environ.get("NAGI_URL", "http://localhost:7843")
 HOST_URL = os.environ.get("NAGI_HOST_URL", "http://localhost:7842")
 
 
+class DiedInMine(RuntimeError):
+    """💀 轮回在矿里**死了**（判据 = 游戏自己的 `Farmer.itemsLostLastDeath`，见 `check_death`）。
+
+    为什么要单独一个异常：恒 2026-10-03 深夜现场 —— 炸矿途中人死了、掉了银河之锤，而脚本
+    **继续发 /key /warp 把游戏的死亡剧情顶掉了** ⇒ 他**没看到掉落清单**，也一直以为锤子是别的原因丢的。
+    ⇒ 死了就 raise，`bomb_mine.main()` 捕获后**什么都不做**（不 retreat/不 warp），把剧情留给恒看。
+    """
+
+
 class ManualChestFull(Exception):
     """开箱弹出满包领取菜单（战利品卡领取侧）→ 交 AI 手动处理（claim_swap/ok），脚本停下不撤退。
     恒 2026-08-23：满包领不走就停，不自动丢物。str(e)=战利品名列表。"""
@@ -985,12 +994,25 @@ class BombMiner(WeaponMixin):
             d["check_connectivity"] = True
         return self._post("/position", d)
 
-    def position_safe(self, x, y, exact=False, check_passable=False, check_connectivity=False):
+    def position_safe(self, x, y, exact=False, check_passable=True, check_connectivity=False):
         """position 前检查地图内 + 后验证位置（站位不可走被游戏传送就放弃，防反复重试）。
         exact=True 时要求精确落在 (x,y)（梯子/楼梯站位必须精确，差1格 confirm 无效）。
         check_passable=True（炸矿用）时 C# 拒"不可走格"——本方法读返回，被拒立即放弃，
         否则落地验证只见位置被弹就误判成功，把 AI 留在墙/孤岛格。
-        check_connectivity=True（炸矿用）时 C# 再校验墙圈连通域（防瞬移进隔区卡死）。"""
+        check_connectivity=True（炸矿用）时 C# 再校验墙圈连通域（防瞬移进隔区卡死）。
+
+        🔴🔴 2026-10-03 深夜：**默认从 `check_passable=False` 改成 `True`**。
+           起因（恒，第二次报）：「**入侵层的放梯，第一次总是传送到穿墙位置，第二次才合法**」；
+           当晚更重的一次是**人被传进墙里 ⇒ 怪围在外面进不来、guard 因为"贴不到脸"一刀不挥
+           ⇒ 撤退路上被打死**（真机：170 层那趟，guard 全程只挥 47 刀，最后 2 层 0 刀）。
+           病根是**默认不校验**：`/position` 的 `check_passable` 是 **opt-in**，
+           而炸矿这条路上 8 处调用（`find_safe_spot` 的落脚、放楼梯、贴近反击的邻格…）
+           **全都没显式开** ⇒ 算出来的"空位"只要在墙里就直接把人塞进去。
+           `find_safe_spot` 那处已单独补了 `/passable` 预筛；这里把**默认**改掉，堵住剩下所有入口。
+           ⚠️ 会因此被拒的都是"本来就不该站"的格（墙/水/岩石）—— 拒绝=**站在原地 + 如实报**
+           （宁报错别兜底），比"穿墙进去出不来"好得多。
+           真有"必须落在不可走格"的特例，调用方显式传 `check_passable=False` 就行。
+        """
         s = self.state()
         loc = s.get("location", {})
         w = loc.get("mapWidth", 100)
@@ -1806,10 +1828,23 @@ class BombMiner(WeaponMixin):
         return None, None, 0, 0
 
     def find_safe_spot(self, anchor, min_dist, radius=16, occupied=None, center=None,
-                       need_free_neighbor=False):
-        """找一个距 anchor 至少 min_dist 的可站格（放完炸弹躲远 / 换落脚点）。
+                       need_free_neighbor=False, check_passable=True):
+        """找一个距 anchor 至少 min_dist 的**可站**格（放完炸弹躲远 / 换落脚点）。
         - 只挑地图内格子（position 出界会被游戏弹回）＋ 永远排除当前层入口（防 confirm 误触入口梯子）
-        - need_free_neighbor=True 时要求该格至少有一个空的紧邻格（落脚后能放楼梯/走动）"""
+        - need_free_neighbor=True 时要求该格至少有一个空的紧邻格（落脚后能放楼梯/走动）
+
+        🔴 2026-10-03 恒（**第二次**报）：「**入侵层的放梯，第一次总是传送到穿墙位置，第二次才合法**」
+           —— 根因就在这儿：本函数原来**只避 `occupied`（石头/入口）**，**从来没查过"这格能不能站"**；
+           而它的调用方 `use_staircase`（"站在入口旁要先挪开"那两条）紧接着的 `/position`
+           **没开 `check_passable`** ⇒ 挑到墙里就**直接把人传进墙**。
+           第二次之所以"看起来合法"：`occupied`/anchor 变了 ⇒ 换了一格。
+           ⚠️ 同族问题恒 2026-09-20 就报过一次（用他的话记在 `safe_warp` 那儿：「入侵层插楼梯兜底，
+              还是会 warp 到墙外」）——那天只给 **warp** 那条加了**事后体检**（`fix_landing`），
+              **这条"选点"的路一直没查**。
+           ⇒ 现在：候选按"优先（够远）→ 兜底"排序，**逐个用 `/passable` 问 C#**（**只读、不挪人**），
+              返回第一个真能站的；一个都不行 ⇒ `None`（宁报错别兜底，人至少还在原地）。
+           `check_passable=False` 只留给"明知要落不可走格"的特例（当前没有调用方这么用）。
+        """
         if occupied is None or center is None:
             rocks, occ, ctr = self.scan_rocks(radius)
             if occupied is None:
@@ -1845,7 +1880,21 @@ class BombMiner(WeaponMixin):
                     fallback_d = d
                     fallback = (ax, ay)
         # 没有够远的格（小洞穴）→ 退而求其次，能站多远站多远
-        return best if best is not None else fallback
+        cands = []
+        for c in (best, fallback):
+            if c and c not in cands:
+                cands.append(c)
+        for c in cands:
+            if not check_passable:
+                return c
+            try:
+                if self._post("/passable", {"x": c[0], "y": c[1]}).get("passable"):
+                    return c
+            except Exception:
+                pass
+        if cands:
+            log(f"  ⚠️ 找不到能站的落脚点（{len(cands)} 个候选都被墙/水挡）—— 原地不动，不乱挪")
+        return None
 
     # ═══════════ 清路（敲挡路石头） ═══════════
 
@@ -2087,7 +2136,11 @@ class BombMiner(WeaponMixin):
             sx, sy, _, _ = self.find_stand_tile(cx, cy, set())
             if sx is None:
                 sx, sy = cx, cy
-            self.position(sx, sy)
+            # 🔴 2026-10-03：这里以前是裸 `self.position(...)`（**不校验可站性**）⇒ 站位算错就把人塞进墙。
+            #    改成走 `position_safe`（默认已开 `check_passable`），被拒就如实报、别硬挪。
+            if not self.position_safe(sx, sy):
+                log(f"  ⚠️ 开箱站位 ({sx},{sy}) 不可站（墙/水）—— 本箱跳过，不乱挪")
+                return False
             time.sleep(0.3)
             # 🔥 2026-09-07 恒：/interact 按"玩家**面向**的格子"触发，不面向目标=开不了箱（actionTriggered false）。
             #    find_stand_tile 只给站位不面向——position 后必须 face_toward(宝箱) 再 interact
@@ -2401,7 +2454,11 @@ class BombMiner(WeaponMixin):
         if walk_only:
             return True  # 走路没到位就不传，下轮再走
         # 远距离直接传（除非 walk_only 强制走路）
-        self.position(tx, ty)
+        # 🔴 2026-10-03：同样从裸 `position` 改成 `position_safe`（默认校验可站性）——
+        #    这是"走过去/传过去"的通用出口，穿墙事故有一半是它。
+        if not self.position_safe(tx, ty):
+            log(f"  ⚠️ 目标格 ({tx},{ty}) 不可站（墙/水）—— 不硬挪，交给调用方换目标")
+            return False
         return True
 
     def wait_arrival(self, target_map, target_x, target_y, timeout=30):
@@ -2427,6 +2484,30 @@ class BombMiner(WeaponMixin):
         except Exception:
             return False
         return self.wait_arrival(location, x, y, timeout)
+
+    def check_death(self, tag=""):
+        """💀 死亡检测：**游戏自己的权威信号**（`/state.player.lostOnDeath`）。
+
+        恒 2026-10-03 深夜现场：「因为脚本把游戏自己的**死掉剧情顶了**回到沙漠门口，所以我也没看到
+        丢掉物品清单」+「银河之锤应该是被打死才丢的，炸矿中途怎么会丢呢？」—— 反编译查到的信号：
+        `Farmer.itemsLostLastDeath`（`Farmer.cs:304`，由 `LoseItemsOnDeath` `:3272` 填）**就是**
+        "上一次死亡掉了哪些东西"的清单。⇒ 每层开头比一次：**变多了 = 我死了** ⇒ raise，
+        让 `main()` 收工时**什么都不做**（不 retreat/不 warp，把死亡剧情留给恒看）。
+        """
+        try:
+            s = self.state().get("player", {}) or {}
+            lost = list(s.get("lostOnDeath") or [])
+        except Exception:
+            return
+        seen = getattr(self, "_lost_seen", None)
+        if seen is None:
+            self._lost_seen = lost
+            return
+        if len(lost) > len(seen):
+            new = [x for x in lost if x not in seen]
+            self._lost_seen = lost
+            raise DiedInMine(f"{('（' + tag + '）') if tag else ''}"
+                             f"掉了 {len(new)} 件：{'、'.join(new) if new else '(详见游戏内清单)'}")
 
     def safe_warp(self, location, x=5, y=5):
         """warp 到 (location, x, y)，**并校正落点**。

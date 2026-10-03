@@ -111,6 +111,12 @@ print("②之三 🔴 失败路径**必须复位**：`isEating` 卡住 ⇒ CanMo
 # `doneEating` 再没跑过；下一个成功的吃才把它清掉。⇒ 失败分支自己复位，别把毒留在场上。
 ck("…没结算时调 `completelyStopAnimatingOrDoingAction()`（游戏自己的『停止一切动作』）",
    "completelyStopAnimatingOrDoingAction()" in eat)
+ck("…**并且清 `freezePause`**（`forceCanMove()`）—— 否则吃食失败会把人**冻 20 秒**",
+   "forceCanMove()" in eat and "freezePause" in eat)
+ck("…`freezePauseMs` 摆到 `/state.player` 上（「站着不动 + /tool 超时」一眼可查）",
+   "freezePauseMs = farmer.freezePause" in src)
+ck("…回执带 `freezeCleared` 且文案点明 20 秒冻结",
+   "freezeCleared" in eat and "20 秒" in eat)
 ck("…复位结果如实回包（`reset`）", "reset," in eat or "reset = true" in eat)
 ck("…回包文案点明『否则 guard 会卡门⑩』", "门⑩" in eat)
 

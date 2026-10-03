@@ -5812,6 +5812,21 @@ public class ModEntry : Mod
                 //    我在真机上白采了一轮样才定案（"看不见的状态 = 只能猜的状态"）。
                 isEating = farmer.isEating,
                 canMove = farmer.CanMove,
+                // 🧊🆕 2026-10-03 深夜：`freezePause`（毫秒）——**"迷之停顿"的那个数**。
+                //    `eatObject` 会把它设成 20000，而 `Farmer.Update` 每帧
+                //    `if (freezePause > 0) { CanMove = false; freezePause -= 毫秒; … }` ⇒ 这段时间**挥不动**。
+                //    成功吃一条游戏自己会 `doneEating() → forceCanMove()` 清掉；**失败那条**原来不清 ⇒ 冻 20 秒×重试次数。
+                //    ⇒ 摆到明面上：以后看到"站着不动 + /tool 超时"，直接读这个数就知道是不是它。
+                freezePauseMs = farmer.freezePause,
+                // 💀🆕 2026-10-03 深夜：**死亡的权威信号**。恒：「因为脚本把游戏自己的**死掉剧情顶了**
+                //    回到沙漠门口，所以我也没看到丢掉物品清单」；又：「银河之锤应该是被打死才丢的，
+                //    炸矿中途怎么会丢呢？」—— 查反编译：`Farmer.itemsLostLastDeath`（`Farmer.cs:304`）
+                //    是游戏自己记的"**上一次死亡掉了哪些东西**"（`LoseItemsOnDeath`，`:3272`）。
+                //    ⇒ 摆到 `/state` 上：① 掉了什么一眼可见 ② 脚本拿它当**"我死了"的判据** ⇒
+                //      **停手、别再发动作**（否则会把死亡剧情/清单顶掉，恒就永远看不到掉了啥）。
+                lostOnDeath = farmer.itemsLostLastDeath?.Select(i => i?.Name ?? "?").ToList()
+                              ?? new System.Collections.Generic.List<string>(),
+                deathCount = farmer.itemsLostLastDeath?.Count ?? 0,
                 fishing = farmer.CurrentTool is FishingRod rod ? new
                 {
                     isCasting = rod.isTimingCast,
@@ -12769,13 +12784,28 @@ public class ModEntry : Mod
                     }
                     // 🔴 **别把毒留在场上**（见方法头第二段）：动画被掐掉时 `isEating` 卡 true
                     //    ⇒ `CanMove=false` + guard 门⑩ 恒 10（这一趟再也不会挥刀）。
-                    bool reset = false;
+                    // 🔴🔴 2026-10-03 深夜**第二个现场**（恒：「现在这个**迷之停顿**又是在干嘛」）——
+                    //    比 `isEating` 卡住更狠的是 **`freezePause`**：`eatObject` 末尾会
+                    //      `freezePause = 20000; CanMove = false;`（反编译 `Farmer.cs:9145`），
+                    //    而 `Farmer.Update` **每一帧**都是
+                    //      `if (freezePause > 0) { CanMove = false; freezePause -= 毫秒; … }`
+                    //    ⇒ **整整 20 秒不能动**（挥击动画起不来 ⇒ `/tool` 等不到、客户端 10s 超时重发 ⇒
+                    //      "站着不动 + 每 10 秒一发 /tool"；恒看到的就是这个）。
+                    //    成功那条路游戏自己会 `doneEating() → forceCanMove()` 清掉，
+                    //    **失败这条路必须我们自己清** —— 否则脚本重试吃 3 次 = 冻 **~60 秒**。
+                    //    真机现场（炸矿那趟）：`⚠️ 自保想吃 Cheese … **没吃上**` 之后 1 分钟人不动。
+                    bool reset = false, freezeCleared = false;
                     try
                     {
-                        if (farmer.isEating || !farmer.CanMove)
+                        if (farmer.isEating || !farmer.CanMove || farmer.freezePause > 0)
                         {
                             farmer.completelyStopAnimatingOrDoingAction();
                             reset = true;
+                        }
+                        if (farmer.freezePause > 0)
+                        {
+                            farmer.forceCanMove();   // 游戏自己那发：清 freezePause + UsingTool + freezeControls
+                            freezeCleared = true;
                         }
                     }
                     catch { }
@@ -12785,12 +12815,14 @@ public class ModEntry : Mod
                         ate = obj2.Name,
                         action = "eat_not_settled",
                         reset,
+                        freezeCleared,
                         error = (animationOver
                             ? $"吃下去了但**没结算**（{waited}ms 内 `doneEating` 没跑）——多半是动画被下一步动作打断"
                               + "（边走边吃老毛病）"
                             : $"吃东西动画 {waited}ms 还没播完（=`doneEating` 一直没跑）—— 同上是被打断了")
                             + "；**物品没扣**，站稳了再吃一次"
                             + (reset ? "；**已顺手复位动作状态**（isEating/CanMove，否则 guard 会一直卡在门⑩）" : "")
+                            + (freezeCleared ? "；**已清掉 freezePause**（吃食留的 20 秒冻结，否则这一分钟挥不动）" : "")
                     });
                     return;
                 }

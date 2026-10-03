@@ -191,6 +191,22 @@ ck("…洞（MineShaft）单独走一条：**先真走一步**再 confirm（conf
 ck("…兜底 warp 的日志**如实**写「非原版：会跳过本层内容」", "非原版" in _tl and "跳过本层内容" in _tl)
 ck("…下游那句也如实（走梯子失败 ⇒ 跳过本层）", "跳过本层" in mr)
 
+print("⑪ 🚧 落脚点选点**必须查「能不能站」**（恒第二次报：入侵层放梯第一次传进墙）")
+# 恒 2026-10-03 原话：「我发现**入侵层的放梯，第一次总是传送到穿墙位置，第二次才合法**。
+#   这好像不是第一次发生了，麻烦你检查」（2026-09-20 他就报过同族，那天只给 warp 加了事后体检）。
+_fs = block(bc, r"    def find_safe_spot\(", span=95)
+ck("…`find_safe_spot` 会问 `/passable`（**只读、不挪人**）", '"/passable"' in _fs)
+ck("…候选按「优先 → 兜底」顺序**逐个**验", "for c in cands" in _fs and "cands.append(c)" in _fs)
+ck("…一个都不行 ⇒ `None`（宁报错别兜底）", "return None" in _fs)
+ck("…注释把恒**两次**报的现场都记着（2026-09-20 / 这次）", "2026-09-20" in _fs and "穿墙" in _fs)
+_ps = block(bc, r"    def position_safe\(", span=30)
+ck("…`position_safe` 的**默认**已改成 `check_passable=True`（堵住剩下所有入口）",
+   "check_passable=True, check_connectivity=False" in _ps)
+ck("…注释记着「人进墙 ⇒ guard 贴不到脸 ⇒ 撤退路上被打死」这条后果",
+   "guard" in _ps and "打死" in _ps)
+ck("…开箱站位 / 通用走过去 两处裸 `position` 也改了（`position_safe` + 不可站就报）",
+   'self.position(sx, sy)' not in bc and "开箱站位" in bc and "目标格" in bc)
+
 print()
 if fails:
     print(f"❌ {len(fails)} 条没过：")
