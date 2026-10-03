@@ -131,10 +131,20 @@ ck("…`MineBot.maintain_buffs()` 同上（同一份实现）",
    "return maintain_buffs_for(self, threshold=threshold, want=want)" in mr)
 ck("…`bomb_mine.py` 每层/每次尝试都维护 buff", code_only(bm).count("maintain_buffs(") >= 2)
 ck("…`mine_run.py` 冲层每层 + 刷矿每轮都维护 buff", code_only(mr).count("maintain_buffs(") >= 2)
-# ⚠️ 火山/协同**没有**这条线（MCP 指南明写「火山不补 buff」）—— 这里只**记录事实**，
-#    不钉成「必须有」：要不要给它们补上，是恒拍板的事（2026-10-03 报告里问了）。
-print(f"  ℹ️ 事实记录：bomb_volcano 里 `maintain_buffs` 出现 {code_only(bv).count('maintain_buffs(')} 次；"
-      f"bomb_escort 里 {code_only(be).count('maintain_buffs(')} 次（这两套目前都没有这条线）")
+
+print("⑦ 『不点名也自动补』（恒 2026-10-03 晚拍板：4 套统一到炸矿那套的口径）")
+_mrc = code_only(mr)
+ck("…`mine_run` 两处都是 `want=food_buff or None`（点名才限、不点名自动挑）",
+   _mrc.count("want=food_buff or None") >= 2)
+ck("…**没有** `if food_buff:` 把补 buff 关在门外（原来不点名时压根不补）",
+   not re.search(r"if food_buff:\s*\n\s*try:\s*\n\s*self\.maintain_buffs", _mrc))
+ck("…`bomb_mine` 那两处也是 `want=... or None`（本来就是自动补）",
+   code_only(bm).count('want=getattr(self, "food_buff", "") or None') >= 2)
+ck("…banner 要把『不点名=自动挑』说出来（别让日志看着像『没在补』）",
+   "不点名（自动挑带 buff 的那份）" in mr)
+# ⚠️ 火山/协同**没有**这条线 —— 恒 2026-10-03 晚拍板「都不接，维持现状」⇒ 这里只**记录事实**。
+print(f"  ℹ️ 恒拍板维持现状：bomb_volcano 里 `maintain_buffs` {code_only(bv).count('maintain_buffs(')} 次；"
+      f"bomb_escort 里 {code_only(be).count('maintain_buffs(')} 次（这两套不补 buff，MCP 指南已写明）")
 
 print()
 if fails:

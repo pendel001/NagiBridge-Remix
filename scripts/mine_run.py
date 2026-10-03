@@ -1118,7 +1118,11 @@ class MineBot(WeaponMixin):
         """🍽️ 补 buff —— 走**模块级** `maintain_buffs_for`（与炸矿脚本**同一份实现**，
         别再各写一遍；2026-09-20 那个"点名在炸矿脚本里是死的"就是这么来的）。
 
-        `want` = `food_buff` 点名（效果关键字）；点名了就只补那个效果，没有就不吃别的。"""
+        `want` = `food_buff` 点名（效果关键字）；点名了就只补那个效果，没有就不吃别的。
+        🔴 **恒 2026-10-03 晚拍板：不点名也自动补**（`want=None` ⇒ 挑包里**任意带 buff 的**，
+        该 buff 没挂/快过期才吃）——与 `bomb_mine`「每层都调」的口径统一。原来本文件是
+        `if food_buff:` 才调 ⇒ 不点名时**压根不补**，同一句「不点名才自动吃」在两套脚本里两个意思。
+        """
         return maintain_buffs_for(self, threshold=threshold, want=want)
 
     def auto_eat(self, hp_threshold=EAT_HP_PCT, sta_threshold=EAT_STA_PCT):
@@ -1581,7 +1585,7 @@ class MineBot(WeaponMixin):
         log(f"\n🏃 === 冲层模式: {start_level} → {target_floor}层 ===")
         log(f"  镐子: {self.pickaxe_name} (Lv.{self.pickaxe_level})"
             f" | 食物: 体力={food_sta or '无'} 回血={food_hp or '无'}"
-            f"{' 补buff=' + food_buff if food_buff else ''}")
+            f" | 补buff: {food_buff or '不点名（自动挑带 buff 的那份）'}")
         log(self.food_menu_line())
 
         # warp 到起始层（矿洞必须带坐标，不然被重定向）
@@ -1623,13 +1627,17 @@ class MineBot(WeaponMixin):
                     log(f"  ⚠️ 开宝箱失败: {e}")
 
             # ── 安全检查（原因串分开报，别再一律"状态不足"）──
-            # 🍽️ 2026-10-03：先补 buff（每层一遍；`food_buff` 点名了就只补那个效果）。
+            # 🍽️ 2026-10-03：先补 buff（每层一遍）。
+            #    🔴 **2026-10-03 晚恒拍板的口径**：「不点名也自动补」—— 原来这里是 `if food_buff:`
+            #       ⇒ 不点名时**压根不补**，而炸矿那两套（`bomb_mine` 每层都调）是**自动补**的
+            #       ⇒ 同一个「不点名才自动吃」在 4 套脚本里有两个意思（恒：「都差不多应该就ok了」
+            #       那趟核出来的唯一真分歧）。**统一成炸矿那套**：不点名 ⇒ `maintain_buffs_for`
+            #       自己挑包里任意带 buff 的（buff 没挂/快过期才吃，`min_gap` 自己节流）。
             #    ⚠️ 放在安全检查**之前**：补 buff 吃的那份也回血/回体力，先吃再判更接近真人。
-            if food_buff:
-                try:
-                    self.maintain_buffs(threshold=30, want=food_buff)
-                except Exception as e:
-                    log(f"  ⚠️ 补 buff 出错（继续）: {e}")
+            try:
+                self.maintain_buffs(threshold=30, want=food_buff or None)
+            except Exception as e:
+                log(f"  ⚠️ 补 buff 出错（继续）: {e}")
             why = self.unsafe_reason(sta_threshold)
             if why:
                 if self.eat_if_needed(food_sta, food_hp, EAT_HP, sta_threshold):
@@ -1849,7 +1857,7 @@ class MineBot(WeaponMixin):
         log(f"  目标层: {floor} | 循环 {cycles} 次"
             f" | 镐子: {self.pickaxe_name} (Lv.{self.pickaxe_level})"
             f" | 食物: {food_sta or '无'} / {food_hp or '无'}"
-            f"{' 补buff=' + food_buff if food_buff else ''}")
+            f" | 补buff: {food_buff or '不点名（自动挑带 buff 的那份）'}")
 
         total_rocks = 0
         total_pickups = 0
@@ -1867,12 +1875,13 @@ class MineBot(WeaponMixin):
             self._rock_count = 0
             time.sleep(1.0)
 
-            # 🍽️ 2026-10-03：每轮开打前补 buff（`food_buff` 点名了就只补那个效果）
-            if food_buff:
-                try:
-                    self.maintain_buffs(threshold=30, want=food_buff)
-                except Exception as e:
-                    log(f"  ⚠️ 补 buff 出错（继续）: {e}")
+            # 🍽️ 2026-10-03：每轮开打前补 buff。
+            #    🔴 与冲层那条同一口径（**恒 2026-10-03 晚拍板**）：**不点名也自动补** ——
+            #       原来 `if food_buff:` ⇒ 不点名时压根不补，跟炸矿那两套不一致。
+            try:
+                self.maintain_buffs(threshold=30, want=food_buff or None)
+            except Exception as e:
+                log(f"  ⚠️ 补 buff 出错（继续）: {e}")
 
             # 被动回击：贴脸怪还手（任何怪）
             self.combat_check(loc)
