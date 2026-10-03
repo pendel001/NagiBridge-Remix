@@ -149,6 +149,13 @@ ck("…走完**正好在目标格** ⇒ **不多补** position（不重复动作
 ck("…走完**没站到**目标格 ⇒ **一定补一发 position 到 (19,20)**（恒要的 100% 兜底）",
    ("/position", 19, 20) in _c_off, str(_c_off))
 
+
+print("⑥ 两条线的相对大小：**吃必须高于撤**（否则那条吃食路径是死的）")
+import bomb_common  # noqa: E402
+ck("…HP：吃 60% > 撤 RETREAT_HP_ABS=35 绝对值（约 19%）",
+   bomb_common.EAT_HP_PCT == 60 and bomb_common.EAT_HP_PCT > 35, bomb_common.EAT_HP_PCT)
+ck("…体力：吃 30% > 撤 15%（原来吃 10% < 撤 15% ⇒ 永远轮不到吃，2026-10-03 恒一问才照出来）",
+   bomb_common.EAT_STA_PCT == 30 and bomb_common.EAT_STA_PCT > 15, bomb_common.EAT_STA_PCT)
 print()
 if fails:
     print(f"❌ {len(fails)} 条没过：")

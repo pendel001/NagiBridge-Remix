@@ -24,7 +24,7 @@
   --cycles        刷矿循环次数（farm 模式，默认 5）
   --resume / --no-resume   是否从已到达最深恢复（rush默认resume）
   --hp-threshold  吃/兜底线：血量低于此 % 吃食物（默认 30，与 argparse 一致）
-  --sta-threshold 体力低于此 % 吃食物（默认 10，与 argparse 一致）
+  --sta-threshold 体力低于此 % 吃食物（默认 EAT_STA_PCT=30；⚠️ 必须**高于**体力撤退线 15%，否则永远轮不到吃）
   ⚠️ 撤退线不在这两个阈值里：**撤退看 HP<20 绝对值**（恒 2026-09-19 拍板）
   ⚠️ 撤退时间：**24:30**（与 bomb 系列统一；原来这里是 24:00）
 
@@ -47,7 +47,7 @@ import requests
 # ⚔️ 2026-09-06 复用 bomb 的武器系统（WeaponMixin：选武器/类别/挥速自适应/锤子重砸）
 # 🎁 2026-09-07 复用 bomb 的开箱（BombMiner.open_treasure_chests，真机验证城镇 40 层能开）
 from bomb_common import (WeaponMixin, BombMiner, ManualChestFull,
-                         parse_food_list, pick_food_by_priority, EAT_HP_PCT)
+                         parse_food_list, pick_food_by_priority, EAT_HP_PCT, EAT_STA_PCT)
 
 # ── 常量 ──
 
@@ -1065,7 +1065,7 @@ class MineBot(WeaponMixin):
 
     # ── 进食 ──
 
-    def auto_eat(self, hp_threshold=EAT_HP_PCT, sta_threshold=15):
+    def auto_eat(self, hp_threshold=EAT_HP_PCT, sta_threshold=EAT_STA_PCT):
         """自动扫背包找吃的，不依赖外部参数。⚠️ 2026-09-06 按需求挑食：
         血低→挑回血(healthRecovered>0)的（奶酪/沙拉，绝不拿纯体力咖啡保命）；
         体力低→挑回体力(edibleValue>0)的；都低→回血优先。"""
@@ -1440,7 +1440,7 @@ class MineBot(WeaponMixin):
     # ═══════════════════════════════════════════════════════════════
 
     def run_rush(self, start_level, target_floor, food_sta, food_hp,
-                 hp_threshold=50, sta_threshold=10, resume=True):
+                 hp_threshold=50, sta_threshold=EAT_STA_PCT, resume=True):
         """冲层模式：从 start_level 一路下到 target_floor
 
         resume=True 时，如果 start_level 是默认值1，则从进度记录的已到达最深恢复
@@ -1722,7 +1722,7 @@ class MineBot(WeaponMixin):
     # ═══════════════════════════════════════════════════════════════
 
     def run_farm(self, ore_type, cycles, food_sta, food_hp,
-                 hp_threshold=50, sta_threshold=20):
+                 hp_threshold=50, sta_threshold=EAT_STA_PCT):
         """刷矿模式：在指定层反复刷特定矿石"""
         # 矿石 ↔ 层数映射
         ORE_FLOORS = {
@@ -1872,7 +1872,7 @@ def main():
                         #    裸 `%` 会让 `--help` 直接抛 `ValueError: incomplete format`
                         #    （2026-09-20 发现：三个脚本都有，没人跑 --help 所以一直没暴露）
                         help="血量低于此百分比时撤退（默认 30）——吃食物阈值固定 60%%")
-    parser.add_argument("--sta-threshold", type=int, default=10,
+    parser.add_argument("--sta-threshold", type=int, default=EAT_STA_PCT,
                         help="体力低于此百分比时吃食物（默认 20）")
     parser.add_argument("--food-sta", type=str, default=None,
                         help="体力食物（**逗号分隔、靠前的先吃**，如 '沙拉,面包'）。单个名字照旧")

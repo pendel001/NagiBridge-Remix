@@ -58,6 +58,13 @@ HAMMER_SPECIAL_COOLDOWN = 6.0
 #    ⇒ 吃的线**固定**在这个常量上，`hp_threshold` 形参从此只管出门/撤退那两条（**参数保留但不再影响吃**）。
 EAT_HP_PCT = 60
 
+# ⚡ **吃食物的体力线**（与上面 HP 线对称）。原来是 10%，而"体力该撤了"的线是 **15%**
+#    （`mine_run.unsafe_reason(sta_threshold=15)`）⇒ **吃在撤之后 = 这条吃食路径是死的**
+#    （体力掉到 15% 人已经撤了，永远轮不到 10%）。2026-10-03 恒一问"体力线是多少"才照出来 ——
+#    同族病：**两条线的相对大小没人核过**。⇒ 提到 30%（稳稳在撤退线之上）。
+#    ⚠️ 以后动这两条线，先核"**吃 < 撤** 才成立"（吃必须**高于**撤）。
+EAT_STA_PCT = 30
+
 # 协同模式只在路径上炸这些高价值矿（不浪费炸弹炸普通石头）
 HIGH_VALUE_ORES = {
     "Iridium Node", "Gem Node", "Diamond Node", "Gold Node",
@@ -888,7 +895,7 @@ class BombMiner(WeaponMixin):
         保留它只为不打断老调用方；真判据一律看 unsafe_reason()。"""
         return self.unsafe_reason() is None
 
-    def eat_if_needed(self, hp_threshold=40, sta_threshold=10, food_hp=None, food_sta=None):
+    def eat_if_needed(self, hp_threshold=40, sta_threshold=EAT_STA_PCT, food_hp=None, food_sta=None):
         """按需进食。`food_hp`/`food_sta` 传**列表（靠前的先吃）**或逗号串；空 = 不点名。
 
         🕐 2026-09-20 恒「自定义吃食」的三条规矩（拍板原话见 CHANGELOG）：
