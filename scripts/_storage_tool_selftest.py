@@ -237,8 +237,9 @@ try:
         ck("…每轮都走过去（第一发前 1 次 + 重试 3 次）",
            len(_WALKED) == 1 + M._REACH_ROUNDS, str(_WALKED))
         ck("…回执**点名那口箱够不着** + 给下一步", "够不着" in out and "(58,14)" in out, out)
-        ck("🚫 而且**明说不是箱里没有**（`（箱子没有；storage find 搜搜）` 这句一个字都不许出现）",
-           "（箱子没有" not in out and "是那几口箱够不着" in out, out)
+        ck("🚫 而且**把两件事实都摆出来**（「够得着的箱里没有」＋「还有 N 口够不着没翻」）——"
+           "2026-10-03 真机拿不存在的名字试闸时逮到：原来写「是那几口箱够不着」= **在断言东西一定在**",
+           "（箱子没有" not in out and "够得着的箱里没有" in out and "够不着" in out, out)
 
         # ③ **老 DLL**：回包连 `tooFar` 键都没有 ⇒ **一下都不多打**，行为与改前逐字相同。
         M.api = FakeChestApi(no_toofar=True)

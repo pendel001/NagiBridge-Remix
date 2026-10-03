@@ -18069,7 +18069,9 @@ def storage_take(items: str = "", x: int = -1, y: int = -1, name: str = "", coun
                                        for it in _left]})
             if not _r2.get("ok"):
                 break
-            if _w2:
+            if _w2 and (not _extra_walks or _extra_walks[-1] != _w2):
+                # ⚠️ 2026-10-03 真机：几轮重试都走到同一个走不到的落点时，同一句「走位没到…」会**连着印两遍**
+                #    （每轮一行）⇒ 只留**连续重复**的一行（跨轮的不同事实照旧各留一行）。
                 _extra_walks.append(_w2)
             r = _merge_take_results(r, _r2)
             _rounds += 1
@@ -18082,9 +18084,13 @@ def storage_take(items: str = "", x: int = -1, y: int = -1, name: str = "", coun
             taken = it.get("taken", 0)
             if taken <= 0:
                 _tf_any = r.get("tooFar") or []
+                # ⚠️ 2026-10-03 真机（拿不存在的名字试闸）逮到：这里原来写「**是那几口箱够不着**，不是箱里没有」
+                #    —— 那是**在断言"东西一定在"**，可我们并不知道。箱子里真没有时，AI 会被这句话
+                #    指去满屋走位找。改成**把两件事实都摆出来**（够得着的箱里没有 ＋ 还有 N 口够不着没翻）。
                 lines.append(f"  ⚠️ 「{itn}」没取到"
-                             + ("（**是那几口箱够不着**，不是箱里没有——走过去再取一次）" if _tf_any
-                                else "（箱子没有；storage find 搜搜）"))
+                             + (f"（**够得着的箱里没有**；另有 {len(_tf_any)} 口箱**够不着**没翻 —— "
+                                f"走过去再取，或先 `storage(ops=\"find\", kw={{\"item\": \"{itn}\"}})` 搜搜）"
+                                if _tf_any else "（箱子没有；storage find 搜搜）"))
                 continue
             any_taken = True
             srcs = it.get("from", [])
@@ -18098,8 +18104,7 @@ def storage_take(items: str = "", x: int = -1, y: int = -1, name: str = "", coun
         _note = _reach_leftover_note(r.get("tooFar"), "取")
         if not any_taken:
             if _note:
-                lines.append("  ⚠️ 一件都没取到 —— **不是箱子里没有，是那些箱子够不着**"
-                             "（一次只够得着 4 格内的箱）")
+                lines.append("  ⚠️ 一件都没取到 —— 够得着的箱里没有，另有一些箱**够不着**没翻（见下）")
             else:
                 lines.append("  什么都没取到（可能背包满了——先清背包/再找）")
         if _note:
@@ -18379,8 +18384,8 @@ def storage_store(what: str = "", items: str = "", target: str = "", keepTools: 
                                 default=dflt, clear_all=False, counts=None)
             if not _r2.get("ok"):
                 break
-            if _w2:
-                _extra_walks.append(_w2)
+            if _w2 and (not _extra_walks or _extra_walks[-1] != _w2):
+                _extra_walks.append(_w2)   # 同上：连续重复的走位失败只留一行
             r = _merge_store_results(r, _r2)
             _rounds += 1
 
