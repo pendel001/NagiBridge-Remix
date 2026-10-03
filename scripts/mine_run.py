@@ -1330,58 +1330,68 @@ class MineBot(WeaponMixin):
 
     # ── 梯子 ──
 
-    def take_ladder(self, lx, ly, lname, location):
-        """走到梯子旁，下楼（直接传梯子上按 confirm）"""
+    def _wait_descend(self, polls=8):
+        """轮询层号有没有变；变了就把进度记上并返回 True（顺带打那句老日志，别让下游认不出来）。"""
+        for _ in range(polls):
+            s = self.state()
+            new_loc = s.get("location", {}).get("name", "")
+            new_level = extract_mine_level(new_loc)
+            if new_level and new_level != self.mine_level:
+                jumped = new_level - self.mine_level
+                log(f"  ✅ 下到第 {new_level} 层！" + (f"（跳了 {jumped} 层）" if jumped > 1 else ""))
+                self.mine_level = new_level
+                self._rock_count = 0
+                update_progress(new_level)
+                return True
+            time.sleep(0.3)
+        return False
+
+    def take_ladder(self, lx, ly, lname, location, tries=3):
+        """走到梯子旁，下楼（把位置摆到梯子格上按 confirm）。
+
+        🔴 2026-10-03 真机（恒：「我这儿看着每次都是踩梯子 confirm 下去的」—— **他是对的**）：
+          头骨矿洞那趟 `--start 121 --target 124` 三层**全**走兜底 warp，我据此说过"沙漠里没在真下楼"。
+          当晚用探针把三件事实测出来，结论掰回来了：
+            ① **镇矿井 27 层**：传送到梯子格 ✅ → 不按键不下（3s）→ `confirm` **0.65s 下楼** ✅
+            ② **头骨 121 层**（同一段代码、同一步）：第一次 `confirm` **12s 纹丝不动** ❌；
+               紧接着**同一个位置再按一次，0.83s 就下去了** ✅
+            ③ 再用真脚本连跑三层：**121 ✅ / 122 ✅ / 123 ❌** ⇒ 1/3 失败
+          ⇒ **不是"沙漠不能下楼"，是 `confirm` 偶尔不生效**（被怪打断/那一帧没吃到…），
+            而老代码**一次不成就直接上非原版 warp**（`/warp UndergroundMine{n}`）——
+            那会**跳过整层内容**（真机那趟"敲碎 0 块矿石"就是这么来的）。
+          ⇒ 现在**同一个位置重按 confirm（默认 3 次 × 2.4s）**，三次都不成才兜底，且日志**如实**说明非原版。
+          📌 通式：**偶发不生效的动作要重试，别一次不成就换"作弊路"**。
+        """
         log(f"  🪜 走向 {lname} ({lx},{ly})...")
+        # 洞（MineShaft）跟梯子**不是一回事**：洞要"踩/跳进去"，confirm 对它没用。
+        # 真机证据：203r 那趟 121 层 `/ladder` 只给了 shaft（`走向 MineShaft (11,13)`），confirm 两次都没动静。
+        is_shaft = (lname or "").strip().lower() in ("mineshaft", "shaft", "洞")
 
-        # 矿洞内直接传梯子上，外面用 /walk_to
-        if is_mine_location(location):
-            self.mine_teleport(lx, ly)
-        else:
-            self.safe_walk_to(lx, ly, location, timeout=30)
-
-        time.sleep(0.3)
-
-        # 按 confirm（右键/动作键）下楼
-        self._post("/key", {"key": "confirm", "count": 1})
-        time.sleep(0.5)
-
-        # 检查是否下楼成功
-        for _ in range(10):
-            s = self.state()
-            new_loc = s.get("location", {}).get("name", "")
-            new_level = extract_mine_level(new_loc)
-            if new_level and new_level != self.mine_level:
-                if new_level > self.mine_level:
-                    log(f"  ✅ 下到第 {new_level} 层！（跳了 {new_level - self.mine_level} 层）")
-                else:
-                    log(f"  ✅ 到达第 {new_level} 层")
-                self.mine_level = new_level
-                self._rock_count = 0
-                update_progress(new_level)
-                return True
+        for attempt in range(1, tries + 1):
+            # 矿洞内直接把位置摆到梯子格上，矿井外用 /walk_to 走过去
+            if is_mine_location(location):
+                self.mine_teleport(lx, ly)
+            else:
+                self.safe_walk_to(lx, ly, location, timeout=30)
             time.sleep(0.3)
 
-        # 没反应？尝试用方向键下楼
-        log("  ⚠️ interact 没反应，试 confirm...")
-        try:
+            if is_shaft:
+                # 洞：得**真走一步**踩上去（原版是踩上去触发）；confirm 顺手也按一下，两种都试不亏
+                try:
+                    self.walk_to_coord(location, lx, ly)
+                    time.sleep(0.4)
+                except Exception:
+                    pass
             self._post("/key", {"key": "confirm", "count": 1})
-            time.sleep(0.5)
-        except Exception:
-            pass
 
-        for _ in range(5):
-            s = self.state()
-            new_loc = s.get("location", {}).get("name", "")
-            new_level = extract_mine_level(new_loc)
-            if new_level and new_level != self.mine_level:
-                self.mine_level = new_level
-                self._rock_count = 0
-                update_progress(new_level)
+            if self._wait_descend(8):
+                if attempt > 1:
+                    log(f"  （第 {attempt} 次 confirm 才成 —— 就是「偶发不生效」，不是矿不对）")
                 return True
-            time.sleep(0.3)
+            if attempt < tries:
+                log(f"  ↻ confirm 没反应（{attempt}/{tries}）—— 同一个位置再试一次")
 
-        log("  ⚠️ 下梯子失败，用 warp 保底")
+        log("  ⚠️ 下梯子失败（三次 confirm 都没动）—— 用 warp 保底（**非原版：会跳过本层内容**）")
         return False
 
     # ── 战斗主循环（每敲完几块石头调用） ──
@@ -1680,8 +1690,8 @@ class MineBot(WeaponMixin):
                     consecutive_empty = 0
                     continue
                 else:
-                    # 梯子下不去，换 warp
-                    log("  走梯子失败，warp 保底")
+                    # 梯子下不去，换 warp（⚠️ 非原版：会跳过本层内容，所以 take_ladder 已经先重试过 3 次）
+                    log("  走梯子失败，warp 保底（**非原版**：跳过本层）")
                     next_level = level + 1
                     if not self.safe_warp(f"UndergroundMine{next_level}", x=5, y=5):
                         log(f"  ❌ warp 到 {next_level} 也失败，撤退")

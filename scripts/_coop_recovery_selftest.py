@@ -172,6 +172,25 @@ ck("…显式 start>121 会**如实说明**那是直接 warp 跳层（非原版�
 # ✅ 真机验过（2026-10-03 晚）：`mine_run --mode rush --start 121 --target 124` 在头骨矿洞跑出
 #    `起点 121 → 终点 124，通过 3 层`（日志 `_live/_v203r_skull121.log`）。
 
+print("⑩ 🪜 下楼偶发不生效 ⇒ **同一个位置重按 confirm**，别一次不成就上非原版 warp（恒 2026-10-03 当场质疑）")
+# 现场（`_live/_v203s_ladder_town27.log` / `_v203s_skull_scan.log` / `_v203s_skull_ladder2.log`
+#      / `_v203s_skull_rerun.log`，四份都在）：
+#   ① 镇矿井 27 层：传送到梯子格 ✅ → 不按键不下（3s）→ confirm **0.65s 下楼** ✅
+#   ② 头骨 121 层（同一段代码、同一步）：第一次 confirm **12s 纹丝不动** ❌；紧接着**再按一次 0.83s 就成了** ✅
+#   ③ 真脚本连跑三层：**121 ✅ / 122 ✅ / 123 ❌** ⇒ 1/3 失败
+#   ⇒ 老代码一次不成就 `/warp UndergroundMine{n}` 兜底 = **非原版**、还会**跳过整层内容**
+#     （203r 那趟"敲碎 0 块矿石"就是这么来的）。**恒看到的"每次都是踩梯子 confirm 下去的"才是常态。**
+_tl = block(mr, r"    def take_ladder\(", span=55)
+ck("…有重试（`tries=3` + `for attempt in range(1, tries + 1)`）",
+   "tries=3" in _tl and "for attempt in range(1, tries + 1)" in _tl)
+ck("…每一轮都**重新摆位置**再按 confirm（位置别只摆一次）",
+   "self.mine_teleport(lx, ly)" in _tl and '"/key", {"key": "confirm"' in _tl)
+ck("…轮询抽成 `_wait_descend`（两段重复的轮询合一）", "_wait_descend" in _tl and "def _wait_descend" in mr)
+ck("…洞（MineShaft）单独走一条：**先真走一步**再 confirm（confirm 对洞没用）",
+   "is_shaft" in _tl and "walk_to_coord" in _tl)
+ck("…兜底 warp 的日志**如实**写「非原版：会跳过本层内容」", "非原版" in _tl and "跳过本层内容" in _tl)
+ck("…下游那句也如实（走梯子失败 ⇒ 跳过本层）", "跳过本层" in mr)
+
 print()
 if fails:
     print(f"❌ {len(fails)} 条没过：")
