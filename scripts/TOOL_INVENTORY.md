@@ -1,4 +1,18 @@
-# NagiBridge MCP 域工具速查手册（2026-08-22 重写 · keep-set **16** 个 · 09-02 合并 script 域 · 09-06 `--full` 退役 · 09-11 收编 advance_story/profile/which_role · **10-01 收编 session→settings、cabin→scene/farm/daily/check** · **10-03 `bomb_escort` 真删 / `farm collect`+`building` 删除（收放合一走 `load`）/ 协同会开箱且**有炸弹自动回炸矿** / 开箱记账（换层清空）**）
+# NagiBridge MCP 域工具速查手册（2026-08-22 重写 · keep-set **16** 个 · 09-02 合并 script 域 · 09-06 `--full` 退役 · 09-11 收编 advance_story/profile/which_role · **10-01 收编 session→settings、cabin→scene/farm/daily/check** · **10-03 `bomb_escort` 真删 / `farm collect`+`building` 删除（收放合一走 `load`）/ 协同会开箱且**有炸弹自动回炸矿** / 开箱记账（换层清空）** · **10-03 深夜 **重构**：按"**两套机制**"分开写 + 单列「候选退役」**）
+
+> ## 🧭 怎么读这份（2026-10-03 重构 · 恒：「**分开一套机制来写**」）
+> 项目里现在有**两套交互机制**，混着看就是一团 —— 这份手册因此按机制切：
+>
+> | 篇 | 是什么 | 谁该看 |
+> |---|---|---|
+> | **第一篇 · 新通用交互机制** | **`intent` 意图单子（主入口）+ `scene` 动作原语**。这套是后来引入的，目的是**替代**一批零散老 op —— **新活一律走这套** | 所有人；AI 日常首选 |
+> | **第二篇 · 🗑️ 候选退役清单** | 功能**已经被单子覆盖**的域 op（"上了单子的"）。逐条写「域 op ↔ 单子哪一项 ↔ 覆盖程度 ↔ **差在哪**」 | 「以后能退役哪些、干不干净、会不会漏」就看这篇 |
+> | **第三篇 · 域 op 明细**（原「二、13 个域入口」起） | 还没被替代的域 op 完整参数速查（老路，仍在用） | 要查某个域某个 op 的参数 |
+>
+> 三条**总闸门**（决定"什么能上单子"，`intent_menu._candidates`）：① 没有 `exec` 也没有 `subs` 的动词**不上单子**（所见即所得）
+> ② 菜单开着时只留 `menu_ok=True` 的 ③ 只有 `can() is True` 才上榜（算不出＝不上）
+> ⇒ **「单子上没有」≠「做不到」**，也可能只是"这一刻不适用"。
+
 
 > 域工具速查手册：AI 现在**默认只看到 16 个工具**（13 域入口 + 3 独立工具 `intent`/`screenshot`/`help`），
 > 其余旧独立工具**全部收进域入口**（函数还在，只是 AI 不再直调）。
@@ -20,7 +34,119 @@
 
 ---
 
-## ⚙️ 二、13 个域入口（ops 列表）
+# 🆕 第一篇 · 新通用交互机制（`intent` 单子 + `scene` 原语）
+
+> 这一篇讲的是**我们引入的那套通用交互**：`intent` 是**主入口**（"看单子 → 敲编号"），
+> `scene` 是它下面的**动作原语**（单子每一行最终都落到这些原语 + 少数脚本上）。
+> **新活一律走这套**；第三篇那些域 op 里，凡是**已经被这套覆盖**的，都收进第二篇当退役候选。
+
+## 1.1 `intent` —— 意图单子（**首选入口**）
+- `intent(ops="show", n=20)` 看这一刻能做的事（一行一件；`←` 后面是**理由**）
+- `intent(ops="do", rows="1")` 敲编号（`1,4` 多选；`1=1,4=4` 各做多少）
+- `intent(ops="at", x=…, y=…)` **指哪打哪**：把该格**所有** `target="tile"` 的动词列出来（**绕过权重排序、无损**）
+- `intent(ops="help")` 玩法细则
+- 三条总闸门 + 「`0 做点别的…（at x,y 指哪打哪）」这条逃生口，见本文件顶部说明。
+- 代码锚点：单子本体 `scripts/intent_menu.py`（`VERBS` **3035–3182** / `PENDING` **3192–3234** /
+  `_candidates()` **3300** / `_render_level()` **3539** / `render_at()` **4012** / `do_row()` **3896**）；
+  执行桥 `scripts/nagi_mcp_server.py`（`intent()` **24026** / `_im_run()` **23649** / `_im_ctx()` **23071**）。
+
+## 1.2 `scene` 原语（单子下面的**最小动作单位**——留在这套机制里，不退役）
+| op | 干嘛的 | 为什么算"原语" |
+|---|---|---|
+| `at(tile_x,tile_y)` | 点指定格 | `at x,y` 逃生口 & 几乎每个 `_exec_*` 内部都打它 |
+| `front` / `interact` | 点面前的东西 | 同上（多数脚本"走到 → 交互"里的那一发） |
+| `use(name)` | 挥工具 | 工具类动作的底座 |
+| `face(dir)` / `select(name)` | 转身 / 选中物品拿手上 | 上面几个的前置动作 |
+| `seats` / `furniture` / `decor` / `rock` / `maze`·`maze_seg`·`maze_walk` / `forge_help` | 扫可坐物 / 扫家具 / 地板墙纸真值表 / 室外镐击 / 迷宫视图·走法 / 锻造攻略 | **视图·判据·攻略**类，不是"被替代的对象" |
+| `place` / `break` / `drop` | 放（地板/墙纸）/ 拆敲 / 丢背包物 | 动作，但**单子没有对应行**（放地板墙纸是恒拍板后置）⇒ 留 |
+
+## 1.3 单子项 → 底层（照代码抄，方便将来改一处时知道牵动谁）
+| 单子文案 | 底层落到哪 |
+|---|---|
+| `捡 地上的东西` | `pickup_scene` 脚本（=`scene ops=pickup_scene`）|
+| `收 成熟作物` | `harvest_crops()`（=`farm ops=harvest`）|
+| `收 已好的机器` | `load_machines(item="", here=True)`（=`farm ops=load`，**只收不放**）|
+| `摸 猫狗` / `摸 还没摸的动物` | `_pet_pets_natural()`（=`farm pet`）/ `pet_walk` 脚本（=`farm petwalk`）|
+| `放牧（开棚门）` / `关棚门` | `_doors_flip_all` → `/toggle_doors`（=`farm ops=doors`；**单子带方向、会收敛**）|
+| `确认结算` / `领取` | `confirm_settlement()`（=`daily settle`）/ `/menu/click{button:mainButton}` |
+| `推进对话` / `跳过整段` / `选 「…」` | `advance_story()` / `skip_event()`（=`menu advance`/`skip`）/ `/menu/click{option}` |
+| `卖…` / `买…` / `砸晶球` / `投出货箱…` | `/sell_to_shop`（=`menu sell`）/ `/menu/click{item,quantity}` / `process_geodes`（=`menu geodes`）/ `sell_to_bin`（=`menu bin`）|
+| `收 蟹笼` | `_crab_collect()`（=`fish ops=crab_collect`）|
+| `摇 浆果丛`/`摘 茶叶`/`摇 金核桃`/`摇 果树` | `berry_run` 脚本（=`scene ops=berry`）⚠️ 见 2.4 的"金核桃"灰区 |
+| `挖 远古斑点` / `刮 苔藓` / `淘 金` / `翻垃圾桶` | `spot_run` / `moss_run` / `_pan_run` / `trash_run`（=`scene ops=spot`/`moss`/`pan`/`garbage`）|
+| `挤奶 / 剪毛` / `铺 干草` | `milk_shear()`（=`farm milk`）/ `feed_hay()` 脚本（=`farm hay`）|
+| `躺一下` | `lie_rest` 脚本（⚠️ **与 `daily ops=lie_bed` 不是同一实现**，见 2.4）|
+| `吃` / `看` / `坐` / `起身` / `关掉界面` | `/select`+`/eat`（=`daily eat`）/ 右键读书（=`menu read_book`）/ `sit()` / `stand()` / `cancel()` |
+| `重铸饰品` / `买 Joja 可乐 (75g)` | `/select`+`/interact` —— **没有对应域 op**（单子独有）|
+| `箱子…` / `箱子里…` / `存…` | `/chest_open`+`/chest_take`+`/store` / `/menu/click{action:claim,slot}` / `/store` |
+
+---
+
+# 🗑️ 第二篇 · 候选退役清单（"已经上了单子的" op）
+
+> **判据 = 单子那一行与域 op 落到同一个函数**（不是"看起来像"）。
+> 「✅ 完全等价」= 退役后**功能不减**；「🟡 部分」= 先看「差在哪」那一列（详细的都在 2.4）；
+> 「🚫」= **单子把行撤了/故意不给**，域 op 是**唯一入口**，**千万别退役**。
+
+## 2.1 ✅ 完全等价（12 条，退役后功能不减）
+| 域 op | 单子里的项 |
+|---|---|
+| `scene ops=stand` | `起身` |
+| `scene ops=berry` | `摇 浆果丛`＋`摘 茶叶`＋`摇 金核桃(bush)`＋`摇 果树(摘果子)` |
+| `scene ops=spot` | `挖 远古斑点` |
+| `fish ops=crab_collect` | `收 蟹笼` |
+| `farm ops=milk` | `挤奶 / 剪毛` |
+| `farm ops=pet` | `摸 猫狗` |
+| `farm ops=petwalk` | `摸 还没摸的动物` |
+| `farm ops=harvest` | `收 成熟作物`（`radius` 单子固定 25）|
+| `daily ops=settle` | `确认结算` |
+| `menu ops=advance` | `推进对话` |
+| `menu ops=skip` | `跳过整段` |
+| `menu ops=geode` / `geodes` | `砸晶球`（带数量层）|
+
+## 2.2 🟡 部分覆盖（15 条，"差在哪"见 2.3）
+| 域 op | 单子里的项 | 差在哪（一句）|
+|---|---|---|
+| `scene ops=sit` | `坐` | 单子不给 `face`（坐下朝向）|
+| `scene ops=pickup_scene` | `捡 地上的东西` | 单子 `max_items` 固定 30；不能"只捡某一件" |
+| `scene ops=moss` | `刮 苔藓` | 不给 `radius`/`target_max`/`rounds`/`dry_run` |
+| `scene ops=pan` | `淘 金` | 不给 `dry_run`/`radius`/`timeout` |
+| `scene ops=garbage` | `翻垃圾桶` | 不给 `loc`/`pos`/`wait`/`dry_run` |
+| `farm ops=hay` | `铺 干草` | 不给 `dry_run` |
+| `farm ops=animals` | `摸 还没摸的动物` | 单子只到"摸"；**收产物**那条不在单子上 |
+| `farm ops=doors` | `放牧（开棚门）`＋`关棚门` | ⚠️ **单子更强**（带方向＋收敛到目标态；域 op 是无方向翻转）|
+| `farm ops=load` | `收 已好的机器` | 🔴 **单子恒 `item=""`+`here=True`** ⇒ **"给机器上料 / 跨屋收放"单子做不到** |
+| `daily ops=eat` | `吃` | 点名的 `name`/`item_name` 只在"低值全列"那一刻等价 |
+| `daily ops=lie_bed` | `躺一下` | ⚠️ **两条不同实现**（单子走 `lie_rest` 且自动挑床主；域 op 走 `approach_bed` 且 `who` 必填）|
+| `menu ops=cancel` | `关掉界面` | `cancel()` 还管"撤睡觉就绪"那条特殊分支 |
+| `menu ops=click(option)` | `选 「…」` | 单子只覆盖 `option` 与 `button=mainButton`；`item`/`slot`/`x,y`/`right`/`real`/`action=discard` 都不在单子上 |
+| `menu ops=sell` / `bin` / `read_book` | `卖…` / `投出货箱…` / `看` | 单子一次一摞（不能多选）/ 没有 `sell_all` / 只能读**手持**那本 |
+| `storage ops=view` / `take` / `store` | `看（走过去开箱）` / `取` / `存` | ⚠️ **`view` 甚至不是一回事**（单子那行是**画面通道** `/chest_open`，`storage view` 是**数据清单** `/scan_chests`）；`take/store` 的 `items`/`target`/`count`/`all` 单子都给不了 |
+
+## 2.3 🚫 反向缺口 —— **千万别退役**（域 op 在，单子**没有行**）
+| 域 op | 为什么单子没有 |
+|---|---|
+| `daily ops=wear` | 单子那行 **2026-10-02 撤掉**（`intent_menu.py:3133–3136`，恒拍板：权重 38 太低会常驻）|
+| `daily ops=sleep` | **故意不上**（`nagi_mcp_server.py:23696`：`who` 是"去哪儿"不是"点哪格"）|
+| `scene ops=pickup`（搬家具） | 单子「搬走」**2026-10-02 撤掉**（`intent_menu.py:3092–3097`）|
+
+## 2.4 🔍 遗漏检查（"部分覆盖"里**会真丢能力**的）
+| 域 op | 单子做不到的 | 影响 / 建议 |
+|---|---|---|
+| 🔴 `farm ops=load` | `item`（放什么料）/`machine_type`/`location`（不传 `here` ⇒ 全图·跨屋） | **"给机器上料"整件事单子做不到**（放料＝规划，`intent_menu.py:3051–3058` 恒拍板不上单）⇒ **要么留着，要么在单子上补一条"上料"目录行**（`PENDING:3232` 的 P2 设计稿正是这么写的）|
+| 🔴 `storage ops=store/take` | `what`/`items` 只存指定几样、`target` 指定哪只箱、`keepTools=False`、`all=True`；`count`、按坐标取 | 单子只能"眼前这只箱、挑列表里的整摞" ⇒ 批量/定点这两族留着 |
+| 🔴 `storage ops=view` | 看**第 N 只箱**、按名字/色/坐标点名、**不开菜单**读清单 | 单子那行会**真的把箱子打开**（画面通道）|
+| 🟡 `scene ops=walnut` | **整条可能没被覆盖**：单子「摇 金核桃」走的是 `berry_run`（bush 那类），`walnut_run()` 是**另一个脚本**（`radius`/`max_count`/`dry_run`） | **不确定** ⇒ 建议姜岛真机各跑一次比对后再决定能不能退役 |
+| 🟡 其余"部分" | 都是**参数维度**丢失（`face`/`dry_run`/`radius`/`count`/多选/点名） | 影响小；要退役就在单子上补参数，或接受"够用" |
+
+> **一句话结论**：单子已覆盖 **30 条**域 op（12 完全 + 15 部分 + 3 反向缺口不能退役）。
+> **最值得先收敛的一撮**＝`scene` 那 8 条 + `farm` 那 6 条（与单子行**同一实现**，退役后功能不减）；
+> **唯一会真的削减能力**的是 `farm load` 的"上料/跨屋"与 `storage store/take/view` 的批量·定点参数。
+
+---
+
+## ⚙️ 三、13 个域入口（ops 列表）　*（= 第三篇：还没被替代的域 op 明细）*
+
 
 > 🗜️ **2026-10-01 撤下顶层两个域**（**函数没删**，只是 AI 不再直调；逐 op 的替代路见 `domain_selftest._SUBSUMED_DOMAINS`）：
 > **`cabin`** → `cook`→`daily cook` · `sleep`→`daily sleep` · `statue`→`farm statue` ·
@@ -384,7 +510,7 @@
 
 ---
 
-## 🛠️ 三、3 个独立工具（无域等价物，直接调）
+## 🛠️ 四、3 个独立工具（无域等价物，直接调）
 
 | 工具 | 干嘛的 |
 |---|---|
@@ -405,7 +531,7 @@
 
 ---
 
-## 🎯 四、常用场景速查（"我想… → 调…"）
+## 🎯 五、常用场景速查（"我想… → 调…"）
 
 | 我想干嘛 | 调用 |
 |---|---|
@@ -444,7 +570,7 @@
 
 ---
 
-## 🔄 五、旧工具 → 域形式 对照（AI 不用记旧名了）
+## 🔄 六、旧工具 → 域形式 对照（AI 不用记旧名了）
 
 | 旧独立工具 | 现在这样调 |
 |---|---|
@@ -470,6 +596,6 @@
 
 ---
 
-## 💡 六、一句提醒
+## 💡 七、一句提醒
 - **AI 全程走域工具**，原始端点（/state /interact /click /position）AI 不会直调，只是文案里的坐标/动作提示。
 - 手机前端若**直调被隐藏的旧工具名**（`walk_to`/`go_sleep`/`menu_click`…）会报不存在 → 改走域形式。⚠️ 服务端**无 `--full`/`NAGI_FULL_TOOLS` 全量回退**（2026-09-06 退役，见本文件顶部），传了也不生效。

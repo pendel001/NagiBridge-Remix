@@ -7259,7 +7259,16 @@ public class ModEntry : Mod
         var nearbyMonsters = loc.characters
             .OfType<Monster>()
             .Where(m => InScope(m.TilePoint.X, m.TilePoint.Y))
-            .Select(m => new { name = m.Name, x = m.TilePoint.X, y = m.TilePoint.Y, health = m.Health, maxHealth = m.MaxHealth })
+            .Select(m => new { name = m.Name, x = m.TilePoint.X, y = m.TilePoint.Y, health = m.Health, maxHealth = m.MaxHealth,
+                // 🧟 **木乃伊的尸体形态**（恒 2026-10-03 深夜：「对木乃伊的尸体形态发生了贴脸的无限追击」）。
+                //    反编译 `Mummy.decompiled.cs:50`：`takeDamage` 第一句就是
+                //      `if (reviveTimer.Value > 0) { if (isBomb) { Health = 0; …; return 999; } return -1; }`
+                //    ⇒ 尸体形态下**普通武器恒 -1（一点伤害都没有）**，只有**炸弹**能清掉；
+                //      或者打倒那一刀用带 `CrusaderEnchantment` 的武器 ⇒ 直接消灭、不进尸体形态。
+                //    ⚠️ **光看 health 认不出来**：进尸体形态时游戏把它 `Health = MaxHealth` 重置了
+                //      （`:95`）⇒ 在我们眼里它跟满血木乃伊一模一样 —— 这就是"贴脸无限追击"的病根。
+                //    权威信号 = `Mummy.reviveTimer.Value > 0`（`NetInt`，10 秒倒计时，到 0 复活）。
+                reviving = m is Mummy mu && mu.reviveTimer.Value > 0 })
             .ToList();
 
         var nearbyFarmers = Game1.getOnlineFarmers()
@@ -22687,6 +22696,15 @@ public class ModEntry : Mod
             && (guardWeapon == null
                 || !guardWeapon.hasEnchantmentOfType<StardewValley.Enchantments.BugKillerEnchantment>()))
             return false;
+        // 🧟 **木乃伊的尸体形态**（恒 2026-10-03 深夜：「对木乃伊的尸体形态发生了贴脸的无限追击…能跳过吗？」）
+        //    `Mummy.takeDamage`（反编译 `Mummy.decompiled.cs:50`）第一句：
+        //      `if (reviveTimer.Value > 0) { if (isBomb) { Health = 0; …; return 999; } return -1; }`
+        //    ⇒ 尸体形态下**普通武器恒 -1**（挥多少下都白挥），**只有炸弹能清**；
+        //      想一刀消灭得用带 `CrusaderEnchantment` 的武器（那是"打倒那一刀"就生效，不是打尸体）。
+        //    ⚠️ 别拿 `Health` 当判据：进尸体形态时 `Health` 被重设成 `MaxHealth`（`:95`）⇒ 认不出来。
+        //    ⇒ 和"装壳的岩蟹/沙漠甲虫"同族：**打得动才当目标**。要彻底清掉尸体得 AI 自己丢炸弹
+        //      （炸矿脚本本来就在炸，爆炸顺手就把尸体清了）。
+        if (m is Mummy mummy && mummy.reviveTimer.Value > 0) return false;
         return true;
     }
 

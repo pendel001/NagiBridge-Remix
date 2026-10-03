@@ -736,13 +736,26 @@ class MineBot(WeaponMixin):
         return [(x, y, name) for _, x, y, name in items]
 
     def nearby_monsters(self, radius=6):
-        """扫 surroundings 找怪物，按距离排序"""
+        """扫 surroundings 找怪物，按距离排序。
+
+        🧟 2026-10-03（恒：「对木乃伊的尸体形态发生了贴脸的无限追击」）：**尸体形态一律不当目标** ——
+        `Mummy.takeDamage` 对普通武器 `return -1`（零伤害），只有炸弹/十字军附魔能清；而且进尸体形态时
+        游戏把 `Health` 重置成 `maxHealth` ⇒ **光看血量认不出来**，只能靠 C# 报的 `reviving`
+        （权威信号 = `Mummy.reviveTimer.Value > 0`）。不跳过 = 追着绷带堆砍到复活。
+        """
         data = self.surroundings(SCAN_RADIUS)
         cx, cy = data["center"]["x"], data["center"]["y"]
         monsters = []
+        skipped = 0
         for m in data.get("monsters", []):
+            if m.get("reviving"):
+                skipped += 1
+                continue
             dist = abs(m["x"] - cx) + abs(m["y"] - cy)
             monsters.append((m["name"], m["x"], m["y"], m["health"], dist))
+        if skipped and not getattr(self, "_logged_reviving", False):
+            self._logged_reviving = True
+            log(f"  🧟 跳过 {skipped} 个木乃伊**尸体形态**（普通武器打不动，只有炸弹/十字军附魔能清）")
         monsters.sort(key=lambda m: m[4])
         return monsters
 

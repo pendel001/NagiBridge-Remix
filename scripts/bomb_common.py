@@ -2491,7 +2491,16 @@ class BombMiner(WeaponMixin):
         data = self.surroundings(radius)
         cx, cy = data.get("center", {}).get("x", 0), data.get("center", {}).get("y", 0)
         out = []
+        skipped_reviving = 0
         for m in data.get("monsters", []):
+            # 🧟 **木乃伊的尸体形态**（恒 2026-10-03 深夜：「对木乃伊的尸体形态发生了贴脸的无限追击」）：
+            #    `Mummy.takeDamage` 对普通武器 `return -1`（一点伤害都没有），只有炸弹/十字军附魔能清。
+            #    ⚠️ **只能靠 `reviving` 认**——进尸体形态时游戏把 `Health` 重置成 `maxHealth`
+            #    （反编译 `Mummy.decompiled.cs:95`）⇒ 光看血量会当成满血木乃伊 ⇒ 追着砍到天荒地老。
+            #    不当目标 = 不追、不挥（**要清它得靠炸弹**，炸矿脚本的爆炸顺手就清了）。
+            if m.get("reviving"):
+                skipped_reviving += 1
+                continue
             d = abs(m["x"] - cx) + abs(m["y"] - cy)
             if around:
                 d2 = abs(m["x"] - around[0]) + abs(m["y"] - around[1])
@@ -2499,6 +2508,9 @@ class BombMiner(WeaponMixin):
                     continue
             out.append((m["name"], m["x"], m["y"], m.get("health", 1),
                         m.get("maxHealth", 1), d))
+        if skipped_reviving and not getattr(self, "_logged_reviving", False):
+            self._logged_reviving = True
+            log(f"  🧟 跳过 {skipped_reviving} 个木乃伊**尸体形态**（普通武器打不动，只有炸弹/十字军附魔能清）")
         out.sort(key=lambda m: m[5])
         return out
 
