@@ -2330,7 +2330,9 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
                 _hint = "、".join(_map_enum[:4])
                 if len(_map_enum) > 4:
                     _hint += f" 等{len(_map_enum)}项"
-                _hint += " 以交互"
+                # ⚠️ 2026-10-04 恒：「**「以交互」字眼不要了**」——我本意只是想把"站哪格、怎么用"
+                #    告知清楚，而 POI 名 + 坐标本身就把"站哪"说完了（怎么用各域 op 自己会教）。
+                #    ⇒ 尾缀删掉；**别再加回来**。
             elif len(_map_enum) == 1:
                 # 单条=完整显示（节日图等一条长指引，砍掉括号就丢了关键信息）
                 _hint = _map_enum[0]
@@ -3378,6 +3380,14 @@ _MACHINE_NON_PRODUCER = frozenset({
     "Garden Pot", "Anvil", "Stone Junimo",
 })
 
+# 🛠 2026-10-04 恒：「**室内的话我打算是这样，不怎么需要堆叠的功能道具和设备区分开，
+#    新列一行"工作台：迷你锻造台（x,y)；铁砧(x,y)"吧**」
+#    ⇒ 这两件是**功能道具/工作台**（开菜单给你办事），不是"有产出要收"的设备 ——
+#      它们本来在 `_MACHINE_NON_PRODUCER` 里被过滤掉、**一行都没有**（真机实锤：轮回小屋
+#      `Cabin(29,23)` 的迷你锻造台一直没被报过，恒就是照这个提的）⇒ 单独一行带坐标。
+#    ⚠️ 名字以 `/machines` 的 `type` 为准（内部名），显示名优先用游戏的 `typeDisplay`。
+_WORKBENCH_TYPES = frozenset({"Mini-Forge", "Anvil"})
+
 # 🧰 本图箱子/设备：**次次切图扫一次**（不是常驻，也不是每天一次）——见 `_scene_kit_hint`。
 _SCENE_KIT_SEEN = {"loc": None}
 
@@ -3455,8 +3465,11 @@ def _scene_kit_hint(loc_name: str = "") -> str:
         return ""                      # 同一张图不重报（切图才报）
     try:
         chests = list((api._ai_get("/scan_chests") or {}).get("chests") or [])
-        machines = [m for m in ((api._ai_get("/machines") or {}).get("machines") or [])
-                    if (m.get("type") or "") not in _MACHINE_NON_PRODUCER]
+        _all_m = list((api._ai_get("/machines") or {}).get("machines") or [])
+        # 🛠 工作台（迷你锻造台/铁砧）**先挑出来**——它们在 `_MACHINE_NON_PRODUCER` 里，
+        #    下面那行会把它们滤掉（恒 2026-10-04：「新列一行"工作台：迷你锻造台(x,y)…"」）。
+        benches = [m for m in _all_m if (m.get("type") or "") in _WORKBENCH_TYPES]
+        machines = [m for m in _all_m if (m.get("type") or "") not in _MACHINE_NON_PRODUCER]
     except Exception:
         return ""                      # 读不到就不报，**也不消费**（下一条指令会重试）
     _SCENE_KIT_SEEN["loc"] = loc_name
@@ -3494,6 +3507,13 @@ def _scene_kit_hint(loc_name: str = "") -> str:
         kinds = " ".join(f"{disp.get(k) or MACHINE_CN.get(k, k)}×{v}" for k, v in top)
         tail = f" 等{len(agg)}种" if len(agg) > len(top) else ""
         parts.append(f"机×{len(machines)}" + (f"(就绪{ready})" if ready else "") + f": {kinds}{tail}")
+    # 🛠 工作台：**带坐标**（就 1~2 件，坐标不会爆 token；恒要的就是"在哪一格"）
+    if benches:
+        _bn = []
+        for m in benches[:4]:
+            _d = m.get("typeDisplay") or MACHINE_CN.get(m.get("type") or "", m.get("type") or "?")
+            _bn.append(f"{_d}({m.get('x')},{m.get('y')})")
+        parts.append("工作台: " + "、".join(_bn))
 
     return ("🧰 本图 " + " · ".join(parts)) if parts else ""
 
