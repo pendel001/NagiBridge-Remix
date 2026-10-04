@@ -205,6 +205,12 @@ class Ctx:
     #       这一层**不认菜单名、不打 HTTP**（同 `menu_claim`/`menu_exit`/`shop` 的形状）。
     #    ⚠️ `description` = 详细页那段正文（老 DLL 没这一栏 ⇒ 空串，回执少印一栏、不编）。
     quests: dict = field(default_factory=dict)
+    # 🧬 2026-10-04 恒（B 批）：「升级职业的**没有叉叉，不能关掉**」+「把那行撤掉，换成**真选项**」。
+    #    `{}` = 这一刻不是"职业选择屏"（普通升级 C# 自己会点 OK）；有值时：
+    #      `{"skill":"钓鱼","level":10,"left":{"id":8,"name":"垂钓者"},"right":{…}}`
+    #    ⚠️ **由服务器算好递进来**（`_im_levelup`，**零额外 HTTP** —— 就在 `/state.activeMenu.levelUp`
+    #       里，跟状态条那条引导同一份）；这一层不认菜单名、不编职业名。
+    levelup: dict = field(default_factory=dict)
     # 📋 **开着的菜单里摊出来的东西**（2026-10-01 · P-menus）。
     #    ⚠️ **由服务器挑好递进来**（`_im_menu_data`），这一层**不自己打 `/menu`、也不认菜单名**
     #       —— 跟 `menu_exit`/`shop`/`caps` 同一个形状：判据只有一处，消费侧只管用。
@@ -2880,13 +2886,18 @@ SKIP_V = Verb("skip_event", "跳过整段", 74, _skip_can, _skip_reason, _skip_s
 # ⚠️ 执行走 `/menu/click {option: N}`（就是状态条一直在教 AI 的那条路），
 #    **不自己发明按键**（`confirm` 选不了选项，那是老坑）。
 def _menu_options(ctx) -> list:
-    """这一刻能选的答案（没有就空）——**两档**，都从服务器递进来的 `menu_data` 拿：
+    """这一刻能选的答案（没有就空）——**三档**（前两档从服务器递进来的 `menu_data` 拿）：
 
     · 💬 **对话选项**（`dialogue.options`）：`index` 就是 C# 点选项用的号（位次即答案号）；
     · 🗿 **图标选择题**（`choose.options`，2026-10-04 恒：「矮人国王雕像是有选项的，
       **按理来说要套一层选择题**」）：那屏 `responses` 是 null、**只能按坐标点** ⇒
-      每条带 `kind="choose"` + 自己的 `x/y`（真机那屏还有两个空文本诱饵，服务器已经滤掉）。
-    ⚠️ 两档**共用这一张表**（单子上都印成「选 「…」」）——判据只有一处，执行侧按 `kind` 分岔。
+      每条带 `kind="choose"` + 自己的 `x/y`（真机那屏还有两个空文本诱饵，服务器已经滤掉）；
+    · 🧬 **升级选职业**（`ctx.levelup`，2026-10-04 恒 B 批：「升级职业的**没有叉叉，不能关掉**」
+      +「把那行撤掉，换成**真选项**」）：那一刻这屏**没有别的出路**，两个分支就是全部能做的事
+      ⇒ 跟对话选项同一个形状（`kind="levelup"`，`side` = 左/右，执行走 `menu levelup_choose`）。
+      ⚠️ 它**不在 `menu_data` 里**（那屏的 `offered` 在 `/state.activeMenu`），所以是唯一
+        从 `ctx.levelup` 取的一档 —— 判据仍只有一处（服务器 `_im_levelup`）。
+    ⚠️ 三档**共用这一张表**（单子上都印成「选 …」）——执行侧按 `kind` 分岔，别再各写一套。
     """
     md = ctx.menu_data or {}
     out = [o for o in ((md.get("dialogue") or {}).get("options") or [])
@@ -2894,15 +2905,28 @@ def _menu_options(ctx) -> list:
     for o in ((md.get("choose") or {}).get("options") or []):
         if isinstance(o, dict) and o.get("text"):
             out.append(dict(o, kind="choose"))
+    for _side in ("left", "right"):
+        _o = (ctx.levelup or {}).get(_side) or {}
+        if _o.get("name"):
+            out.append({"kind": "levelup", "side": _side, "index": None,
+                        "id": _o.get("id"), "text": _o.get("name")})
     return out
 
 
 def _option_can(ctx, t):
-    return CAN_YES if (isinstance(t, dict) and t.get("index") is not None) else CAN_NO
+    if not isinstance(t, dict):
+        return CAN_NO
+    # 🧬 职业分支**没有位次号**（那屏不是 responses）—— 判据是"服务器给了这个 side"。
+    if t.get("kind") == "levelup":
+        return CAN_YES if t.get("side") in ("left", "right") else CAN_NO
+    return CAN_YES if t.get("index") is not None else CAN_NO
 
 
 def _option_show(ctx, t):
     txt = t.get("text") or "?"
+    # 🧬 职业分支印「选 垂钓者」（**不加书名号**：那不是一句台词，是一个职业名）。
+    if t.get("kind") == "levelup":
+        return f"选 {txt}"
     # ⚠️ 两条选项**一字不差**时会撞车（同一个桶键 ⇒ 并成一行，而执行器只发一个答案）。
     #    真出现时补个位次区分 —— 只在撞车时才付这个字数（同 `_eat_show` 那条星级前缀的理由）。
     same = [o for o in _menu_options(ctx) if (o.get("text") or "") == (t.get("text") or "")]
@@ -2915,7 +2939,14 @@ def _option_reason(ctx, t):
     （而那个 1/2 其实是"第几个答案／共几个"，只有对话那档才有位次的含义）。
     ⇒ 不再印位次，只印**总数**（真事实、且跟行号不冲突）。
     位次只在两条选项**一字不差**时才补 —— 那时不补就分不开（见 `_option_show`）。
+    🧬 职业分支那档要说的是**代价**（恒那句"选了就定了"是这类决策的关键信息）。
     """
+    if t.get("kind") == "levelup":
+        lu = ctx.levelup or {}
+        other = "right" if t.get("side") == "left" else "left"
+        alt = (lu.get(other) or {}).get("name") or "?"
+        return (f"{lu.get('skill') or '技能'} Lv{lu.get('level')} 分支 · **选了就定了**（不可逆）"
+                f"｜另一个是「{alt}」")
     n = len(_menu_options(ctx))
     return f"共 {n} 个选项，敲哪个就选哪个" if n > 1 else "唯一的选项"
 
@@ -2931,6 +2962,11 @@ def _exec_option(ctx, targets, run):
     """
     t = targets[0] if targets else {}
     txt = t.get("text") or "?"
+    # 🧬 升级选职业（2026-10-04 恒 B 批）：那屏 `responses` 是 null、点也点不动
+    #    （`LevelUpMenu.receiveLeftClick` 空），只有 `menu levelup_choose` 一条路。
+    if t.get("kind") == "levelup":
+        r = run("levelup_choose", {"side": t.get("side")})
+        return _receipt_from_helper("选职业", f"「{txt}」", r)
     if t.get("kind") == "choose":
         r = run("menu_icon", {"x": t.get("x"), "y": t.get("y"), "key": t.get("key")})
         return _receipt_from_helper("选", f"「{txt}」", r)
@@ -4972,7 +5008,7 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
              doors: dict = None, chores: dict = None, clint_open: bool = False,
              hay: dict = None, pick: dict = None,
              ponds: dict = None, statue: dict = None, tank: dict = None,
-             quests: dict = None) -> Ctx:
+             quests: dict = None, levelup: dict = None) -> Ctx:
     """把 `/state`(**full**) + `/surroundings`(+`/machines`/`/scan_chests`) 拼成 Ctx。
 
     ⚠️ 只搬运，**不补默认值**：缺什么就让它缺着（`can()` 遇到缺失自然回 假/？）。
@@ -5073,6 +5109,9 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
                # 📜 「领取奖励」那行的账（同上：`_im_quests` 只在 QuestLog 开着时读一次 `/menu`，
                #    这一层不认菜单名、也不自己问任务）。
                quests=quests or {},
+               # 🧬 「选职业」那两行的账（同上：`_im_levelup` 从 `/state.activeMenu.levelUp` 拿，
+               #    这一层不认菜单名、也不编职业名）。
+               levelup=levelup or {},
                sitting=bool(((seats or {}).get("me") or {}).get("sitting")),
                worn=(worn or {}),
                pets=pets,

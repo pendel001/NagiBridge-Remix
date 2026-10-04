@@ -481,7 +481,47 @@ def _close_hint(menu: str, content_on_sheet: bool = False) -> str:
         #    信件正文现在**就印在单子抬头**（`_im_head` 的 📧 那几行）⇒ 那句是白指一条路
         #    （跟 `dialoguebox` 那次同一个理由）。
         return "menu advance 或 menu click(button=ok) 收掉"
-    return "menu read 看内容 → menu click(button=upperRightCloseButton) 关掉（认不出的菜单照这个试）"
+    # ═══════════════════════════════════════════════════════════════════════════════
+    # 🧭 2026-10-04（恒「**动手做B**」）：**别再把 `upperRightCloseButton` 当成通用兜底。**
+    #
+    # 起因：恒「通用兜底不存在的问题好像遇到过，赞同，**这个真是很不好通用**」——
+    #   这五类菜单**压根没有那个按钮**（反编译逐个核过 `grep upperRightCloseButton`）：
+    #     `MuseumMenu` / `TailoringMenu` / `ForgeMenu` / `AnimalQueryMenu` / `NumberSelectionMenu`
+    #   ⇒ 照那句点就是 `⚠️ Button 'upperRightCloseButton' not found`
+    #     （跟 2026-09-12 DialogueBox 那次**同一个形状**，那次只修了 DialogueBox 那一支）。
+    #
+    # ⚠️ 判据**不写名单**：出口那一行（`_menu_exit_of` → 「关掉界面」）对这几屏本来就在，
+    #   而它走 `cancel()`（ESC + `/menu_close` 强制退 + **回读**）⇒ 比点按钮更硬，也更诚实。
+    #   ⇒ 这里**只点明"这屏的正事"**（能点名的都有真 op：`menu donate` / `menu number` /
+    #     `menu forge`），**一个按钮名都不再点**。
+    if "museummenu" in m:
+        return ("🏛️ 博物馆捐赠屏：正事是**把可捐的矿物/古物捐掉** → `menu donate`"
+                "（它自己走到柜台、把可捐的一件件放好）；收掉走上面那行「关掉界面」"
+                "（这屏**没有**右上角关闭键）")
+    if "numberselectionmenu" in m:
+        return ("🔢 数量框：填数 → `menu number value=N`（要按确认就 `confirm=true`）；"
+                "收掉走上面那行「关掉界面」（这屏**没有**右上角关闭键）")
+    if "forgemenu" in m:
+        # ⚠️ 点名 `menu forge` 是**真路**：真机验过"Mini-Forge 点开的就是 `ForgeMenu`"，
+        #    而 `forge()` 见到 `type == "ForgeMenu"` **直接用已经开着的台子**（不另开、不走位）。
+        #    参数（左/右槽放什么）在这屏里 ⇒ 用 `menu read` 看（`read_menu` 有 ForgeMenu 分支）。
+        return ("🔨 锻造台屏：正事是**在台子上做那件事**（组合戒指/附魔/幻化）→ `menu read` 看这屏"
+                "左右槽放了什么，再用 `menu forge item1=… item2=… mode=…`（它**直接用已经开着的台子**）；"
+                "收掉走上面那行「关掉界面」（这屏**没有**右上角关闭键）")
+    if "tailoringmenu" in m:
+        return ("🧵 缝纫机屏：正事是**把线轴+布料放进去做成衣服/染色**（点这屏里的槽）；"
+                "收掉走上面那行「关掉界面」（这屏**没有**右上角关闭键）")
+    if "animalquerymenu" in m:
+        return ("🐄 动物查询屏：看这头动物的资料（这屏有几个自己的按钮）；"
+                "收掉走上面那行「关掉界面」（这屏**没有**右上角关闭键）")
+    # 🧬 升级屏（**不给出口行**，见 `_NO_MENU_EXIT` 里那段账）：这里把两条真路说清。
+    if "levelupmenu" in m:
+        return ("🧬 升级屏：**没有关闭键、ESC 也被游戏吞掉**（关了明晚还会再弹、而且技能等级没定）"
+                "—— 职业选择那档走单子上那两行「选 …」（= `menu levelup_choose side=left/right`）；"
+                "普通升级 C# 会自己点 OK，**不用动它**（几秒后还没动就 `menu click(button=ok)`）")
+    # 通用兜底：**不再点任何按钮名**，只指那条一定成立的路（上面那行「关掉界面」）。
+    return ("这屏的正文用 `menu read` 看；**收掉它走上面那行「关掉界面」**"
+            "（有些界面没有右上角关闭键，而那一行两种都收得掉，还会回读关没关）")
 
 
 # 🚪 单子上的「界面出口」（2026-10-01 恒：消灭"菜单态一屏空、还建议你用被闸门挡住的
@@ -505,6 +545,16 @@ _NO_MENU_EXIT = (
     #    （我那条"关不掉就如实说"的验收用例用的正是 `ShippingMenu`）。
     #    它有自己的行：「确认结算」（`intent_menu._settle_can`）。
     "shipping",
+    # 🧬 **升级屏**（2026-10-04 恒：「升级职业的**没有叉叉，不能关掉**的吧」——对）：
+    #    反编译两处合起来说明"关掉"这条路是**假的**：
+    #      · `LevelUpMenu.receiveKeyPress` 在 `isProfessionChooser` 时**把 ESC/menuButton 整个吞掉**
+    #        （`LevelUpMenu.cs:653`）⇒ 游戏里压根没有关闭路径；
+    #      · 那天结算又照 `player.newLevels` 重铺菜单（`Game1.cs:9126-9132`），而摘等级的只有
+    #        `okButtonClicked()` ⇒ 我们那行就算强行 `exitThisMenu`，也是**明晚再弹、职业没定**。
+    #    ⇒ 撤掉「关掉界面」；职业选择那档改由**单子上那两行「选 …」**干活（`Ctx.levelup`）。
+    #    ⚠️ 普通升级不在这条上犯难：C# 自己调 `lum.okButtonClicked()`（`ModEntry.cs:2051`，
+    #       条件 `!isProfessionChooser && informationUp`）。
+    "levelupmenu",
 )
 
 
@@ -3270,6 +3320,53 @@ def _menu_claim_now() -> str:
 
 def _menu_claim_label_placeholder():
     return None
+
+
+def _im_levelup_pick(side: str) -> str:
+    """🧬 选职业分支（单子那两行「选 …」的执行侧）→ 一句话。
+
+    ⚠️ **必须回读**：现成 op `_menu_levelup_choose` 的原话是 C# 的
+       `{ok:true, name, chosen}` —— 那是**发射后不管**（`/levelup_choose` 只负责调
+       `LevelUpMenu` 的公共成员）。按本项目的老账（`ok:true` ≠ 事真发生了），这里补两把尺子：
+         ① `/profile.professions` 里**出现了那个 id**（游戏自己的职业表）；
+         ② 那屏不再是"职业选择"（`/state.activeMenu.levelUp.isProfessionChooser` 为假 / 菜单关了）。
+       两把都对才 ✅；只对一把 ⇒ 如实说"看到了一半，自己核对"。
+    """
+    try:
+        st = api.state(light=True)
+        am = (st.get("activeMenu") or {})
+        lu = am.get("levelUp") or {}
+        off = lu.get("offered") or []
+        if (am.get("type") or "") != "LevelUpMenu" or not lu.get("isProfessionChooser"):
+            return "❌ 这一刻没有「职业选择」屏（是不是已经选完了？先 `show` 看一眼）"
+        idx = 0 if side == "left" else (1 if side == "right" else -1)
+        if idx < 0 or len(off) <= idx:
+            return f"❌ side 只认 left/right（{side!r} 不对，或那屏的两个分支还没就绪）"
+        want = off[idx].get("id")
+        name = off[idx].get("name") or "?"
+        r = api._ai_post("/levelup_choose", {"side": side}) or {}
+        if not r.get("ok"):
+            return f"❌ 没选上：{r.get('error') or r}"
+        time.sleep(0.4)
+        # ① 游戏自己的职业表（**AI 那一端**：`_ai_get` 打的就是 7843，见 CHANGELOG 163 ③）
+        try:
+            profs = (api._ai_get("/profile") or {}).get("professions") or []
+        except Exception:
+            profs = None
+        # ② 那屏还在不在"等我选"
+        try:
+            lu2 = (((api.state(light=True) or {}).get("activeMenu") or {}).get("levelUp") or {})
+            still = bool(lu2.get("isProfessionChooser"))
+        except Exception:
+            still = None
+        if profs is not None and want in profs and still is False:
+            return f"✅ 选了「{name}」（id {want}）—— `/profile` 里已经有它、那屏也不等你了"
+        if profs is not None and want in profs:
+            return f"✅ 选了「{name}」（id {want}）—— `/profile` 里已经有它了"
+        return (f"⚠️ 点了 side={side}（{name}，id {want}），可**回读没对上**："
+                f"`/profile.professions`={profs}、那屏还在等吗={still} —— 自己核对一眼")
+    except Exception as e:
+        return f"❌ 选职业出错：{type(e).__name__}: {e}"
 
 
 def _npcs_hint(state: dict, loc_name: str = "") -> str:
@@ -23818,6 +23915,32 @@ def _im_claim_quests() -> str:
     return "\n".join(lines)
 
 
+def _im_levelup(state: dict) -> dict:
+    """🧬 「升级选职业」那两行的账 —— 恒 2026-10-04：「升级职业的**没有叉叉，不能关掉**的吧」
+    +「把那行撤掉，换成**真选项**（`menu levelup_choose` 左右二选一）」。
+
+    → `{}`（不是职业选择屏 / 两个分支还没就绪 / 老 DLL 没这个键）或
+      `{"skill":"钓鱼","level":10,"left":{"id":8,"name":"垂钓者"},"right":{…}}`。
+
+    ⚠️ **零额外 HTTP**：数据就在 `/state.activeMenu.levelUp` 里（跟状态条那条引导
+       `_menu_advice` **同一份**——判据只有一处）；这一层**不编职业名**，`offered` 是游戏给的。
+    ⚠️ **只认 `isProfessionChooser`**：普通升级那屏 C# 自己会点 OK（`ModEntry.cs:2051`），
+       不该长出行来（长了就是"劝 AI 去动一个会自己走完的屏"）。
+    """
+    am = (state or {}).get("activeMenu") or {}
+    if (am.get("type") or "") != "LevelUpMenu":
+        return {}
+    lu = am.get("levelUp") or {}
+    if not lu.get("isProfessionChooser"):
+        return {}
+    off = lu.get("offered") or []
+    if len(off) < 2:
+        return {}
+    return {"skill": lu.get("skillName") or "技能", "level": lu.get("level"),
+            "left": {"id": off[0].get("id"), "name": off[0].get("name") or "?"},
+            "right": {"id": off[1].get("id"), "name": off[1].get("name") or "?"}}
+
+
 def _im_ctx():
     """一次把单子要的世界快照凑齐。
 
@@ -23915,6 +24038,9 @@ def _im_ctx():
                                 #    QuestLog 开着时**多打一发 `/menu`（卡片明细只在那份里，
                                 #    `/state.activeMenu` 没有）—— 平时一次都不多花。
                                 quests=_im_quests(state, raw=_RAW_MENU),
+                                # 🧬 「选职业」那两行的账（2026-10-04 恒「换成真选项」）：
+                                #    **零额外 HTTP** —— 就在 `/state.activeMenu.levelUp` 里。
+                                levelup=_im_levelup(state),
                                 worn=worn)
 
 
@@ -24992,6 +25118,10 @@ def _im_run(op, args):
         #    ⚠️ 走 `helpers`（回**一句话**）：判据是"那张卡的钱还在不在"，
         #       不是把 `/menu/click` 那几发原始 dict 摊给 AI 看。
         "quest_claim": lambda: _im_claim_quests(),
+        # 🧬 2026-10-04 恒「换成真选项（menu levelup_choose 左右二选一）」：单子那两行按下去走这里。
+        #    ⚠️ 别直接调 `_menu_levelup_choose`：它的回话是 C# 的**发射后不管**（`{ok:true,…}`）。
+        #       `_im_levelup_pick` 会补两把回读尺子（游戏自己的职业表 + 那屏还在不在等你选）。
+        "levelup_choose": lambda: _im_levelup_pick(str(args.get("side") or "")),
         "skip": lambda: skip_event(),
         # 🧾 确认过夜结算（2026-10-01）：结算屏（ShippingMenu）上「确认结算」按下去走这里。
         "settle": lambda: confirm_settlement(),

@@ -4012,6 +4012,125 @@ def main():
     res.append(ok("📜 老 DLL：回执**少印描述那一栏** + 明说「重启游戏后补上」（不编、也不装作有）",
                   "收集 100 块骨头" not in _txt_old and "重启游戏后补上" in _txt_old, _txt_old[:200]))
 
+    # ㉖ 203z补14 🧭🧬 **B 批**（恒 2026-10-04「动手做B」）：两件事一起验。
+    #
+    #  B① 「`upperRightCloseButton` 当通用兜底」这个形状**整类杀掉** —— 恒原话：
+    #      「通用兜底不存在的问题好像遇到过，赞同，**这个真是很不好通用**」。
+    #      病根：`MuseumMenu`/`TailoringMenu`/`ForgeMenu`/`AnimalQueryMenu`/`NumberSelectionMenu`
+    #      **压根没有那个按钮**（反编译逐个核过）⇒ 照那句点 = `Button … not found`。
+    #  B② 升级屏：恒「**没有叉叉，不能关掉**」⇒ 撤掉「关掉界面」那行，换成**真选项**
+    #      （两个职业分支各一行，走 `menu levelup_choose`）。
+    _all_menus = ("QuestLog", "PrizeTicketMenu", "SpecialOrdersBoard", "JunimoNoteMenu",
+                  "CarpenterMenu", "Billboard", "ItemListMenu", "ShippingMenu",
+                  "MasteryTrackerMenu", "StorageContainer", "MuseumMenu", "TailoringMenu",
+                  "ForgeMenu", "AnimalQueryMenu", "NumberSelectionMenu", "LevelUpMenu",
+                  "GameMenu", "ReadyCheckDialog", "ChooseFromIconsMenu", "LetterViewerMenu",
+                  "SomeMenuWeHaveNeverSeen")
+    _named = [t for t in _all_menus
+              if "upperRightCloseButton" in M._close_hint(t)]
+    res.append(ok("🧭 任何菜单的提示**都不再点名 `upperRightCloseButton`**（那一屏可能压根没有它）",
+                  _named == [], _named))
+    res.append(ok("🧭 认不出的菜单 ⇒ 指向那行**一定成立**的出口（「关掉界面」），不再指按钮",
+                  "关掉界面" in M._close_hint("SomeMenuWeHaveNeverSeen"),
+                  M._close_hint("SomeMenuWeHaveNeverSeen")))
+    res.append(ok("🧭 博物馆屏 ⇒ 点明正事 `menu donate`（那条路是真的：C# 自己走柜台）",
+                  "menu donate" in M._close_hint("MuseumMenu"), M._close_hint("MuseumMenu")))
+    res.append(ok("🧭 锻造台屏 ⇒ 点明 `menu forge`（真机核过：Mini-Forge 点开的就是 ForgeMenu，"
+                  "`forge()` 见到它**直接用已经开着的台子**）",
+                  "menu forge" in M._close_hint("ForgeMenu") and "menu read" in M._close_hint("ForgeMenu"),
+                  M._close_hint("ForgeMenu")))
+    res.append(ok("🧭 数量框 ⇒ 点明 `menu number`；缝纫机/动物查询没有现成 op ⇒ 只说出口",
+                  "menu number" in M._close_hint("NumberSelectionMenu")
+                  and "menu number" not in M._close_hint("TailoringMenu")
+                  and "关掉界面" in M._close_hint("TailoringMenu"),
+                  M._close_hint("TailoringMenu")))
+    res.append(ok("🧬 升级屏**不给出口行**（`_menu_exit_of` 空串），别的菜单一个字没动",
+                  M._menu_exit_of("LevelUpMenu") == "" and M._menu_exit_of("ItemListMenu") == "关掉界面"
+                  and M._menu_exit_of("PrizeTicketMenu") == "关掉界面",
+                  (M._menu_exit_of("LevelUpMenu"), M._menu_exit_of("ItemListMenu"))))
+    res.append(ok("🧬 升级屏的提示说清两条真路（没有关闭键 / 走 `menu levelup_choose`）",
+                  "没有关闭键" in M._close_hint("LevelUpMenu")
+                  and "levelup_choose" in M._close_hint("LevelUpMenu"),
+                  M._close_hint("LevelUpMenu")))
+    # 账本：只有**职业选择**那档才长行；普通升级（C# 自会点 OK）不长行。
+    _LU = {"isProfessionChooser": True, "skillName": "钓鱼", "level": 10,
+           "offered": [{"id": 8, "name": "垂钓者"}, {"id": 9, "name": "海盗"}]}
+    res.append(ok("🧬 职业选择屏 ⇒ 账里有左右两个分支",
+                  M._im_levelup(dict(STATE, activeMenu={"type": "LevelUpMenu", "levelUp": _LU}))
+                  == {"skill": "钓鱼", "level": 10,
+                      "left": {"id": 8, "name": "垂钓者"}, "right": {"id": 9, "name": "海盗"}}))
+    res.append(ok("🧬 普通升级（`isProfessionChooser=False`）⇒ **不给行**（那是会自己走完的屏）",
+                  M._im_levelup(dict(STATE, activeMenu={"type": "LevelUpMenu", "levelUp": dict(
+                      _LU, isProfessionChooser=False)})) == {}))
+    res.append(ok("🧬 老 DLL / 别的菜单 ⇒ 空账（不猜、不炸）",
+                  M._im_levelup(dict(STATE, activeMenu={"type": "LevelUpMenu"})) == {}
+                  and M._im_levelup(dict(STATE, activeMenu={"type": "QuestLog"})) == {}))
+    _stub(menu="LevelUpMenu", menu_extra={"levelUp": _LU})
+    _ctx_lu = M._im_ctx()
+    _sheet_lu = _IM.render_menu(_ctx_lu, n=20)
+    res.append(ok("🧬 端到端：单子上就是那两行「选 …」，**没有「关掉界面」**（撤得干净）",
+                  "选 垂钓者" in _sheet_lu and "选 海盗" in _sheet_lu and "关掉界面" not in _sheet_lu,
+                  _sheet_lu.splitlines()[:3]))
+    res.append(ok("🧬 理由栏写清代价（**选了就定了**）+ 另一个分支叫什么",
+                  "选了就定了" in _sheet_lu and "没有关闭键" in _sheet_lu, _sheet_lu))
+    res.append(ok("🧬 这一档**零额外 HTTP**（`levelUp` 就在 `/state.activeMenu` 里）",
+                  len([c for c in CALLS if c[1] == "/menu"]) <= 1,
+                  [c for c in CALLS if c[1] == "/menu"]))
+    # 执行侧：`do_row` → `levelup_choose side=left` + **两把回读尺子**
+    _og_lu, _op_lu = api._ai_get, api._ai_post
+    _LU_ST = {"picked": False}
+
+    def _g_lu(ep, params=None):
+        if ep == "/state":
+            d = dict(_og_lu(ep, params) or {})
+            d["activeMenu"] = {"type": "LevelUpMenu",
+                               "levelUp": dict(_LU, isProfessionChooser=not _LU_ST["picked"])}
+            return d
+        if ep == "/profile":
+            return {"ok": True, "professions": ([0, 3, 8] if _LU_ST["picked"] else [0, 3])}
+        return _og_lu(ep, params)
+
+    def _p_lu(ep, data=None):
+        if ep == "/levelup_choose":
+            CALLS.append(("POST", ep, data))
+            _LU_ST["picked"] = (data or {}).get("side") == "left"
+            return {"ok": True, "name": "垂钓者", "chosen": 8}
+        return _op_lu(ep, data)
+
+    api._ai_get, api._ai_post = _g_lu, _p_lu
+    try:
+        _r_lu = M._im_run("levelup_choose", {"side": "left"})
+    finally:
+        api._ai_get, api._ai_post = _og_lu, _op_lu
+    res.append(ok("🧬 敲下去 ⇒ 发的是 `side=left`，而且**回读对上**才报 ✅（`/profile` 里有 id 8）",
+                  _r_lu.get("st") == "yes" and "垂钓者" in (_r_lu.get("text") or "")
+                  and any(c[1] == "/levelup_choose" and c[2].get("side") == "left" for c in CALLS),
+                  _r_lu))
+    _og2, _op2 = api._ai_get, api._ai_post
+    _LU_ST2 = {"picked": False}
+
+    def _g_lu2(ep, params=None):
+        if ep == "/state":
+            d = dict(_og2(ep, params) or {})
+            d["activeMenu"] = {"type": "LevelUpMenu", "levelUp": dict(_LU)}
+            return d
+        if ep == "/profile":
+            return {"ok": True, "professions": [0, 3]}          # 永远不出现 id 8
+        return _og2(ep, params)
+
+    def _p_lu2(ep, data=None):
+        if ep == "/levelup_choose":
+            return {"ok": True, "name": "垂钓者", "chosen": 8}   # C# 说成了，可职业表没变
+        return _op2(ep, data)
+
+    api._ai_get, api._ai_post = _g_lu2, _p_lu2
+    try:
+        _r_lu2 = M._im_run("levelup_choose", {"side": "left"})
+    finally:
+        api._ai_get, api._ai_post = _og2, _op2
+    res.append(ok("🧬🔴 C# 回 `ok:true` 而**职业表里没有它** ⇒ 不许报 ✅（那正是「发射后不管」的账）",
+                  _r_lu2.get("st") != "yes" and "没对上" in (_r_lu2.get("text") or ""), _r_lu2))
+
     print(f"\n{sum(res)}/{len(res)} 过")
     return all(res)
 
