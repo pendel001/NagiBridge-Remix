@@ -332,15 +332,16 @@ class Ctx:
     #    ⚠️ **由服务器算好递进来**（`_im_ponds` → `_fetch_fish_ponds()`，跟晨报/`farm ops=pond`
     #       同一份）—— 这一层不打 HTTP、也不自己算"哪座塘有货"。
     ponds: dict = field(default_factory=dict)
-    # 🐟 **这一刻"能不能往鱼缸里放东西"**（2026-10-04 恒：「开完鱼缸以后，理应也可以指导 AI
-    #    『背包还有什么东西能够手持放进鱼缸』吧」）。
-    #    `{}` = **算不出来 / 不该给行**（本图没有鱼缸 / 老 DLL 没有 `/tank` / 这一刻一件都放不进）；
-    #    有值形如 `{"x": 44, "y": 23, "name": "豪华鱼缸",
-    #               "items": [{slotIndex,name,displayName,itemId,stack,category,isHat,room}, …],
-    #               "full": […收是收但满了…], "capacity": {…}, "counts": {…}}`。
+    # 🐟 **这一刻"每一口能动的鱼缸"的账**（2026-10-04 恒：「开完鱼缸以后，理应也可以指导 AI
+    #    『背包还有什么东西能够手持放进鱼缸』吧」，随后把整条链子定成"包办"）。
+    #    **按键是坐标**：`{"44,23": {…}, "41,29": {…}}` —— 一口缸一份账，
+    #    `ctx.tank_at(x, y)` 按**被点的那一行**取。
+    #    ⚠️ 原来只存"离我最近的那一口"⇒ 屋里两口缸时，**点开大缸那行看到的是豪华缸的内容**
+    #       （子行坐标却是大缸的）= 两条错答案混在一屏，按下去就是"按 A 缸的判断动 B 缸"。
+    #       2026-10-04 真机当场照到，已改。
     #    ⚠️ **由服务器算好递进来**（`_im_tank` → C# `/tank`，判据是**游戏自己的**
-    #       `CanBeDeposited`/`HasRoomForThisItem`）—— 这一层是纯函数：不打 HTTP，
-    #       也**不许自己抄 `Data/AquariumFish` 或那 14 个装饰 ID**（名单会烂，本项目老病）。
+    #       `CanBeDeposited`/`HasRoomForThisItem`/`GetCategoryFromItem`/`CatchWearHat`）——
+    #       这一层是纯函数：不打 HTTP，也**不许自己抄 `Data/AquariumFish` 或那 14 个装饰 ID**。
     tank: dict = field(default_factory=dict)
 
     def zh_of(self, name: str) -> str:
@@ -352,6 +353,16 @@ class Ctx:
 
     def tile(self, x: int, y: int):
         return self.tiles.get((x, y))
+
+    def tank_at(self, x, y):
+        """🐟 **这一格那口缸**的账（键 = `"x,y"`）。
+
+        ⚠️ **必须按坐标取**（见 `Ctx.tank` 那段）：屋里两口缸时，"最近那口"是**另一个问题的答案**。
+        取不到（这版 DLL 没有 `/tank`、或那口缸没被问到）⇒ `None` ⇒ 那一行退回"开 家具"。
+        """
+        if not isinstance(x, int) or not isinstance(y, int):
+            return None
+        return (self.tank or {}).get(f"{x},{y}")
 
     # ⚠️ 这里原来有个 `around()` =「当前格 + 四邻」，**已删**（2026-09-27 恒纠正）。
     #    我第一版自己把「当前场景」偷偷缩成四邻（怕选项爆炸），结果 AI 站自家屋中间
@@ -1054,29 +1065,29 @@ def _tank_item_zh(it) -> str:
     return f"{nm}" + (f"×{st}" if st > 1 else "") + f"（{inner}）"
 
 
-def _tank_name(ctx) -> str:
-    return (ctx.tank or {}).get("name") or "鱼缸"
+def _tank_name(tk) -> str:
+    return (tk or {}).get("name") or "鱼缸"
 
 
-def _tank_inside(ctx) -> list:
-    return (ctx.tank or {}).get("inside") or []
+def _tank_inside(tk) -> list:
+    return (tk or {}).get("inside") or []
 
 
-def _tank_inv(ctx) -> list:
-    return (ctx.tank or {}).get("inventory") or []
+def _tank_inv(tk) -> list:
+    return (tk or {}).get("inventory") or []
 
 
-def _tank_addable(ctx) -> list:
-    return [i for i in _tank_inv(ctx) if i.get("room")]
+def _tank_addable(tk) -> list:
+    return [i for i in _tank_inv(tk) if i.get("room")]
 
 
-def _tank_blocked(ctx) -> list:
-    return [i for i in _tank_inv(ctx) if not i.get("room")]
+def _tank_blocked(tk) -> list:
+    return [i for i in _tank_inv(tk) if not i.get("room")]
 
 
-def _tank_cap_line(ctx) -> str:
+def _tank_cap_line(tk) -> str:
     """容量那一行（**游戏口径**：`capacity`/`counts`/`hatsAllowed` 全是 C# `/tank` 给的）。"""
-    tk = ctx.tank or {}
+    tk = tk or {}
     cap, cnt = tk.get("capacity") or {}, tk.get("counts") or {}
     bits = []
     for k in ("Swim", "Ground", "Decoration"):
@@ -1092,17 +1103,29 @@ def _tank_cap_line(ctx) -> str:
 
 
 def _tank_tile_can(ctx, t):
-    """这三行只对**鱼缸那一格**成立（顶层候选里不该出现"取走/添加"这种没目标的空行）。"""
-    return CAN_YES if _furn_kind((t or {}).get("furniture")) == "tank" else CAN_NO
+    """这三个动作只对**点的那一格那口缸**成立 —— 顶层候选里不该出现"取走/添加"这种没目标的空行。"""
+    if _furn_kind((t or {}).get("furniture")) != "tank":
+        return CAN_NO
+    return CAN_YES if ctx.tank_at((t or {}).get("x"), (t or {}).get("y")) else CAN_NO
 
 
 def _tank_reason_take(ctx, t):
-    ins = _tank_inside(ctx)
-    return "里面：" + "、".join(_tank_item_zh(i) for i in ins[:6]) + ("…" if len(ins) > 6 else "")
+    tk = ctx.tank_at((t or {}).get("x"), (t or {}).get("y")) or {}
+    ins = _tank_inside(tk)
+    txt = "里面：" + "、".join(_tank_item_zh(i) for i in ins[:6]) + ("…" if len(ins) > 6 else "")
+    # ⚠️ **戴帽子那几只单独再点一次名**：缸里东西多的时候上面那截会被 `…` 截掉，
+    #    而"谁戴着哪顶帽子"正是恒要的那条信息（2026-10-04 真机：海胆排在第 8 个，
+    #    第一屏那一行里根本看不见它）。
+    hats = [i for i in ins if i.get("wornHat")]
+    if hats:
+        txt += " ｜ 戴着帽子：" + "、".join(
+            f"{i.get('displayName') or i.get('name')}（{i.get('wornHat')}）" for i in hats[:3])
+    return txt
 
 
 def _tank_reason_add(ctx, t):
-    add, blk = _tank_addable(ctx), _tank_blocked(ctx)
+    tk = ctx.tank_at((t or {}).get("x"), (t or {}).get("y")) or {}
+    add, blk = _tank_addable(tk), _tank_blocked(tk)
     bits = []
     if add:
         bits.append("能放：" + "、".join(_tank_item_zh(i) for i in add[:4])
@@ -1120,39 +1143,40 @@ def _tank_reason_add(ctx, t):
 
 def _tank_flow(ctx, tile) -> "Level":
     """🐟 鱼缸那一屏（恒 ①：取走 / 添加 / 算了）。→ `Level` / `None`（没行可出）。"""
-    ins, add, blk = _tank_inside(ctx), _tank_addable(ctx), _tank_blocked(ctx)
-    if not (ctx.tank or {}):
-        return None                       # 读不到 `/tank`（老 DLL）⇒ 这行退回原来的"开 家具"
+    tk = ctx.tank_at((tile or {}).get("x"), (tile or {}).get("y"))
+    if not tk:
+        return None                       # 读不到这口缸（老 DLL / 没问到）⇒ 退回"开 家具"
+    ins, add, blk = _tank_inside(tk), _tank_addable(tk), _tank_blocked(tk)
     rows = []
     base = dict(tile or {})
     if ins:
         # ⚠️ 标签**不写尾巴那个 `…`** —— 目录行的省略号由渲染层统一加（写了会变成「取走……」）。
-        rows.append(Row(TANK_TAKE_V, [dict(base)], "取走", _tank_reason_take(ctx, None), 0,
-                        level=_tank_take_level(ctx, base)))
+        rows.append(Row(TANK_TAKE_V, [dict(base)], "取走", _tank_reason_take(ctx, base), 0,
+                        level=_tank_take_level(ctx, base, tk)))
     if add or blk:
-        rows.append(Row(TANK_ADD_V, [dict(base)], "添加鱼或装饰", _tank_reason_add(ctx, None), 0,
-                        level=_tank_add_level(ctx, base)))
+        rows.append(Row(TANK_ADD_V, [dict(base)], "添加鱼或装饰", _tank_reason_add(ctx, base), 0,
+                        level=_tank_add_level(ctx, base, tk)))
     if not rows:
         return None
-    return Level(rows, title=f"{_tank_name(ctx)} · 里面 {len(ins)} 件 · {_tank_cap_line(ctx)}")
+    return Level(rows, title=f"{_tank_name(tk)} · 里面 {len(ins)} 件 · {_tank_cap_line(tk)}")
 
 
-def _tank_take_level(ctx, tile) -> "Level":
+def _tank_take_level(ctx, tile, tk) -> "Level":
     rows = []
-    for i in _tank_inside(ctx):
+    for i in _tank_inside(tk):
         rows.append(Row(TANK_TAKE_V, [dict(tile, tank_item=dict(i))],
                         f"取 {_tank_item_zh(i)}", "取出来进背包（走缸的界面，价 0）", 0))
-    return Level(rows, title=f"从{_tank_name(ctx)}里取哪一件？（一次一件）")
+    return Level(rows, title=f"从{_tank_name(tk)}里取哪一件？（一次一件）")
 
 
-def _tank_add_level(ctx, tile) -> "Level":
+def _tank_add_level(ctx, tile, tk) -> "Level":
     """「往缸里放什么」那层：有位的直接放；满了的**再开一层选换掉哪件**（恒 ②）。"""
     rows = []
-    for i in _tank_addable(ctx):
+    for i in _tank_addable(tk):
         rows.append(Row(TANK_ADD_V, [dict(tile, tank_item=dict(i))],
                         f"放 {_tank_item_zh(i)}", "有位，直接放（手持 + 右键缸本体）", 0))
     dups = []
-    for i in _tank_blocked(ctx):
+    for i in _tank_blocked(tk):
         if i.get("block") == "duplicate":
             # ⚠️ **不给它一行**：宽缸那档是"同一种不能放第二个"，**取出任何东西都救不了**
             #    ⇒ 给一层"要替换哪件"就是**假门**（按了必不成）；给自己一行也是"按了不成"。
@@ -1165,7 +1189,7 @@ def _tank_add_level(ctx, tile) -> "Level":
         rows.append(Row(TANK_ADD_V, [dict(tile, tank_item=dict(i))],
                         f"放 {_tank_item_zh(i)}", "这一类满了 ⇒ 点开选**换掉缸里哪一件**", 0,
                         level=lv))
-    title = f"往{_tank_name(ctx)}里放什么？（一次一件）"
+    title = f"往{_tank_name(tk)}里放什么？（一次一件）"
     if dups:
         title += " · 缸里已有同款、放不进的：" + "、".join(dups[:3]) + "（宽缸每种各 1）"
     return Level(rows, title=title)
@@ -1199,13 +1223,13 @@ def _tank_swap_level(ctx, tile, add_item) -> "Level":
                              f"（换上：{add_item.get('displayName') or add_item.get('name')}）")
 
 
-def _tank_find(ctx, want_id, want_name, where):
-    """从**新鲜**的 `ctx.tank` 里找回那一件（`where` = "inside"/"inventory"）。
+def _tank_find(tk, want_id, want_name, where):
+    """从**新鲜**的那口缸的账里找回那一件（`where` = "inside"/"inventory"）。
 
     ⚠️ 单子的号**不跨屏**，但世界会动（那件可能已经被取走/放进去了）⇒ 执行前按 **itemId**
        在**现在的**账里再找一遍；找不到就**如实说**（别拿渲染时那份旧字典硬做）。
     """
-    src = _tank_inside(ctx) if where == "inside" else _tank_inv(ctx)
+    src = _tank_inside(tk) if where == "inside" else _tank_inv(tk)
     for i in src:
         if want_id and (i.get("itemId") or "") == want_id:
             return i
@@ -1214,24 +1238,39 @@ def _tank_find(ctx, want_id, want_name, where):
     return None
 
 
+def _tank_of(ctx, targets):
+    """这一行的目标 = **哪一格那口缸** → `(x, y, tk)`；取不到回 `(None, None, None)`。
+
+    ⚠️ 坐标**从行上取**（`targets[0]`），账**按坐标查** —— 这两件事必须同源，
+       否则就是"按 A 缸的判断动 B 缸"（2026-10-04 真机照到的那个形状错误）。
+    """
+    t0 = (targets or [{}])[0] or {}
+    x, y = t0.get("x"), t0.get("y")
+    return x, y, ctx.tank_at(x, y)
+
+
 def _exec_tank_take(ctx, targets, run):
-    tk = ctx.tank or {}
+    x, y, tk = _tank_of(ctx, targets)
+    if not tk:
+        return "⏳ 读不到这一格的鱼缸账（单子是**上一次**看的）—— 敲 `show` 重开一张"
     t0 = (targets or [{}])[0]
     stale = (t0.get("tank_item") or {})
-    it = _tank_find(ctx, stale.get("itemId"), stale.get("displayName") or stale.get("name"), "inside")
+    it = _tank_find(tk, stale.get("itemId"), stale.get("displayName") or stale.get("name"), "inside")
     if it is None:
         return "⏳ 缸里已经没有这一件了（单子是**上一次**看的）—— 敲 `show` 重开一张"
-    r = run("tank_take", {"x": tk.get("x"), "y": tk.get("y"),
+    r = run("tank_take", {"x": x, "y": y,
                           "item": it.get("displayName") or it.get("name") or "",
                           "item_id": it.get("itemId") or ""})
-    return _receipt_from_helper("取", f"{it.get('displayName') or it.get('name')} 出{_tank_name(ctx)}", r)
+    return _receipt_from_helper("取", f"{it.get('displayName') or it.get('name')} 出{_tank_name(tk)}", r)
 
 
 def _exec_tank_add(ctx, targets, run):
-    tk = ctx.tank or {}
+    x, y, tk = _tank_of(ctx, targets)
+    if not tk:
+        return "⏳ 读不到这一格的鱼缸账（单子是**上一次**看的）—— 敲 `show` 重开一张"
     t0 = (targets or [{}])[0]
     stale = (t0.get("tank_item") or {})
-    it = _tank_find(ctx, stale.get("itemId"), stale.get("displayName") or stale.get("name"),
+    it = _tank_find(tk, stale.get("itemId"), stale.get("displayName") or stale.get("name"),
                     "inventory")
     if it is None:
         return "⏳ 背包里已经没有这一件了（单子是**上一次**看的）—— 敲 `show` 重开一张"
@@ -1242,25 +1281,27 @@ def _exec_tank_add(ctx, targets, run):
                     f"（宽缸每种各 1）—— 换别的种类才放得进")
         return ("⏳ 这一刻这一类**已经满了**（你手上那张单子是上一次看的）—— 敲 `show` 重开一张，"
                 "它会给你「要与哪种进行替换？」那一层")
-    r = run("tank_add", {"x": tk.get("x"), "y": tk.get("y"),
+    r = run("tank_add", {"x": x, "y": y,
                          "item": it.get("displayName") or it.get("name") or "",
                          "item_id": it.get("itemId") or ""})
-    return _receipt_from_helper("放", f"{it.get('displayName') or it.get('name')} 进{_tank_name(ctx)}", r)
+    return _receipt_from_helper("放", f"{it.get('displayName') or it.get('name')} 进{_tank_name(tk)}", r)
 
 
 def _exec_tank_swap(ctx, targets, run):
-    tk = ctx.tank or {}
+    x, y, tk = _tank_of(ctx, targets)
+    if not tk:
+        return "⏳ 读不到这一格的鱼缸账（单子是**上一次**看的）—— 敲 `show` 重开一张"
     t0 = (targets or [{}])[0]
     sa, st = (t0.get("tank_add") or {}), (t0.get("tank_take") or {})
-    add_it = _tank_find(ctx, sa.get("itemId"), sa.get("displayName") or sa.get("name"), "inventory")
-    take_it = _tank_find(ctx, st.get("itemId"), st.get("displayName") or st.get("name"), "inside")
+    add_it = _tank_find(tk, sa.get("itemId"), sa.get("displayName") or sa.get("name"), "inventory")
+    take_it = _tank_find(tk, st.get("itemId"), st.get("displayName") or st.get("name"), "inside")
     if add_it is None:
         return "⏳ 要放的那件**已经不在背包里**了（单子是上一次看的）—— 敲 `show` 重开一张"
     if take_it is None:
         return "⏳ 要换出来的那件**已经不在缸里**了（单子是上一次看的）—— 敲 `show` 重开一张"
     nm_a = add_it.get("displayName") or add_it.get("name") or "?"
     nm_t = take_it.get("displayName") or take_it.get("name") or "?"
-    r = run("tank_swap", {"x": tk.get("x"), "y": tk.get("y"),
+    r = run("tank_swap", {"x": x, "y": y,
                           "item": nm_a, "item_id": add_it.get("itemId") or "",
                           "take": nm_t, "take_id": take_it.get("itemId") or ""})
     return _receipt_from_helper("换", f"{nm_a} ⇄ {nm_t}（缸里）", r)

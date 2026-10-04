@@ -318,8 +318,19 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
             #    · 一个 list ⇒ **逐发取**（"放之前 / 放之后"要两份不同的事实 —— 成功判据正是这个对比）。
             if tank is None:
                 return {}
+            _tx = int(((params or {}).get("x")) or -1)
+            _ty = int(((params or {}).get("y")) or -1)
             if isinstance(tank, list):
-                _tk_payload = tank.pop(0) if tank else {}
+                # ⚠️ **按坐标认那一份**（多口缸的用例必需）：`/tank` 本来就是"这一格那口缸"的账，
+                #    桩要是按"第几发"发，多口缸的夹具就会跟真实顺序错位（2026-10-04 自验里
+                #    照出过：点大缸那行拿到的是豪华缸的账 —— 那是**夹具**的错，不是产品的）。
+                _hit = next((t for t in tank if isinstance(t, dict)
+                             and t.get("x") == _tx and t.get("y") == _ty), None)
+                if _hit is not None:
+                    tank.remove(_hit)        # 逐发取（前后对比要两份不同的）
+                    _tk_payload = _hit
+                else:
+                    _tk_payload = tank.pop(0) if tank else {}
             else:
                 _tk_payload = tank
             _TANK_DEPOSITABLE.clear()
@@ -2899,15 +2910,39 @@ def main():
                   (_tk_old, [c for c in CALLS if c[1] == "/tank"])))
     res.append(ok("🐟 老 DLL ⇒ 鱼缸那行**照旧是「开 家具」动作行**（`_furn_subs` 回 None）",
                   _IM._furn_subs(_Ctx(tank={}), [_TK_TILE]) is None))
-    # ② 闸门过了 ⇒ 账里把**缸里的账 + 背包的账**都带出来（取走那半也要它）
+    # ② 闸门过了 ⇒ 账里把**缸里的账 + 背包的账**都带出来（取走那半也要它）——**按键是坐标**
     _stub(caps=_TK_CAPS, furniture=_TK_FURN, tank=_TK)
     _tk_on = M._im_tank({"player": {"x": 40, "y": 23}}, _TK_FURN, _TK_CAPS)
-    res.append(ok("🐟 有缸 ⇒ 账里 x/y/name/inside/inventory 齐（**不再只看「有没有位」**）",
-                  _tk_on.get("x") == 44 and _tk_on.get("name") == "豪华鱼缸"
-                  and len(_tk_on["inside"]) == 3 and len(_tk_on["inventory"]) == 4, _tk_on))
-    res.append(ok("🐟 缸里/背包都空 ⇒ 退回**最近那口**（流程自己会判成没行可出）",
-                  M._im_tank({"player": {"x": 40, "y": 23}}, _TK_FURN,
-                             _TK_CAPS) is not None))
+    res.append(ok("🐟 有缸 ⇒ 账按键是坐标（`\"44,23\"`），里面 x/y/name/inside/inventory 齐",
+                  "44,23" in _tk_on and _tk_on["44,23"].get("x") == 44
+                  and _tk_on["44,23"].get("name") == "豪华鱼缸"
+                  and len(_tk_on["44,23"]["inside"]) == 3
+                  and len(_tk_on["44,23"]["inventory"]) == 4, list(_tk_on.keys())))
+    # ②b 🆕 2026-10-04 真机抓到的**形状错误**：屋里两口缸，点开 B 缸那行**看到的是 A 缸的内容**
+    #     （原来这一层只算"离我最近的那口"）⇒ 现在**一口缸一份账**，按被点的那一行取。
+    _TK2_FURN = {"ok": True, "count": 2, "furniture": [
+        dict(_TK_FURN["furniture"][0]),
+        {"name": "大鱼缸", "x": 41, "y": 29, "width": 4, "height": 3,
+         "isFishTank": True, "isStorage": True, "heldCount": 7, "furnitureType": 9}]}
+    _TK_B = dict(_TK, x=41, y=29, name="大鱼缸",
+                 inside=[{"index": 0, "name": "Stonefish", "displayName": "石头鱼",
+                          "itemId": "(O)158", "stack": 1, "category": "Ground", "isHat": False,
+                          "isCreature": True, "canWearHat": False, "wornHat": None}],
+                 inventory=[dict(_TK_ITEM)], invTotal=8,
+                 capacity={"Swim": 3, "Ground": 3, "Decoration": -1},
+                 counts={"Swim": 3, "Ground": 1, "Decoration": 3}, hatsAllowed=0, hatsInside=0)
+    _stub(caps=_TK_CAPS, furniture=_TK2_FURN, tank=[dict(_TK), dict(_TK_B)])
+    _c_two = _Ctx(tank=M._im_tank({"player": {"x": 41, "y": 30}}, _TK2_FURN, _TK_CAPS),
+                  px=41, py=30)
+    _lv_two = _IM._tank_flow(_c_two, {"x": 41, "y": 29})
+    res.append(ok("🐟 两口缸：点**大缸**那行 ⇒ 标题/里面说的必须是**大缸**（不许串到最近那口）",
+                  _lv_two is not None and "大鱼缸" in _lv_two.title
+                  and "3 件" in _lv_two.title and "豪华鱼缸" not in _lv_two.title,
+                  (None if _lv_two is None else _lv_two.title)))
+    _lv_two_a = _IM._tank_flow(_c_two, {"x": 44, "y": 23})
+    res.append(ok("🐟 两口缸：点**豪华缸**那行 ⇒ 说的是豪华缸（各按各的坐标取）",
+                  _lv_two_a is not None and "豪华鱼缸" in _lv_two_a.title, 
+                  (None if _lv_two_a is None else _lv_two_a.title)))
     # ③ 本图没缸 ⇒ `{}`，且**一发 `/tank` 都不打**
     _stub(caps=_TK_CAPS, furniture=FURNITURE, tank=_TK)
     res.append(ok("🐟 本图没有鱼缸 ⇒ 账为空 **且一次 `/tank` 都不打**",
@@ -2924,6 +2959,16 @@ def main():
                   "游鱼 4/4" in _lv1.title and "帽子 1/1" in _lv1.title, _lv1.title))
     res.append(ok("🐟 「取走…」的理由栏**逐件列缸里的**，**戴了帽子的用括号标出来**（恒 ①）",
                   "海胆（底层生物·戴「草帽」）" in _lv1.rows[0].reason, _lv1.rows[0].reason))
+    # ⚠️ 截断也不许把"谁戴着帽子"截掉（真机：海胆排第 8 个，前 6 个的截断里看不见它）
+    _c_hat = _Ctx(tank={"44,23": dict(_TK, inside=([{"index": i, "displayName": f"鱼{i}",
+                                                   "itemId": f"(O){i}", "stack": 1,
+                                                   "category": "Swim", "isHat": False,
+                                                   "wornHat": None} for i in range(8)]
+                                                  + [dict(_TK_INSIDE[1])]))})
+    _hat_reason = _IM._tank_reason_take(_c_hat, _TK_TILE)
+    res.append(ok("🐟 缸里东西多、上面那截被 `…` 截断时 ⇒ **戴帽子的那几只仍单独点名**",
+                  "戴着帽子：" in _hat_reason and "水手" not in _hat_reason
+                  and "海胆（草帽）" in _hat_reason, _hat_reason))
     res.append(ok("🐟 「添加…」的理由栏列**能放的**与**满了的**（满了的会说会问换哪一件）",
                   "能放：海胆（底层生物）、海草×3（装饰）" in _lv1.rows[1].reason
                   and "满了：金枪鱼×2（游鱼）" in _lv1.rows[1].reason, _lv1.rows[1].reason))
@@ -3041,9 +3086,11 @@ def main():
     _stub(caps=_TK_CAPS, furniture=_TK_FURN, tank=_TK)
     _ctx_tk = M._im_ctx()
     _sheet_tk = _IM.render_menu(_ctx_tk, n=40)
-    res.append(ok("🐟 端到端：`_im_ctx()` 把账递进 Ctx（`ctx.tank.inside` 就是那份）",
-                  _ctx_tk.tank.get("x") == 44 and len(_ctx_tk.tank.get("inside") or []) == 3,
-                  _ctx_tk.tank))
+    res.append(ok("🐟 端到端：`_im_ctx()` 把账递进 Ctx（按键是坐标，`ctx.tank_at` 取那一口）",
+                  _ctx_tk.tank_at(44, 23) is not None
+                  and _ctx_tk.tank_at(44, 23).get("x") == 44
+                  and len(_ctx_tk.tank_at(44, 23).get("inside") or []) == 3,
+                  list(_ctx_tk.tank.keys())))
     res.append(ok("🐟 端到端：单子上鱼缸那行是**目录行**（句尾 `…`），不再只是「开」",
                   "开 豪华鱼缸…" in _sheet_tk, _sheet_tk[-600:]))
     # ⑭ 回执那几行（开 家具 那条路仍用它）—— 纯排版，直接喂账

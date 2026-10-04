@@ -23570,29 +23570,28 @@ def _im_tank(state: dict, furniture: dict, caps: dict) -> dict:
              and isinstance(f.get("x"), int) and isinstance(f.get("y"), int)]
     if not tanks:
         return {}
+    # ⚠️⚠️ **按坐标逐口报，不是"只报最近那一口"** —— 2026-10-04 真机当场抓到的形状错误：
+    #    屋里有两口缸，单子上两行各指一口；可这一层原来只算"离我最近的那口"
+    #    ⇒ **点开大缸那一行，看到的是豪华缸的内容/容量**（子行的坐标却是大缸的）
+    #    = 两条错答案混在一屏上，按下去就是"按 A 缸的判断动 B 缸"。
+    #    现在每口缸各一份账，`Ctx.tank_at(x,y)` 按**被点的那一行**取。
+    #    ⚠️ 一口一发 `/tank`（本机 HTTP，几毫秒）；`[:6]` 只是防"满屋子缸"把 intent show 拖长。
+    out = {}
     p = (state or {}).get("player") or {}
     px, py = int(p.get("x") or 0), int(p.get("y") or 0)
     tanks.sort(key=lambda f: abs(f["x"] - px) + abs(f["y"] - py))
-    # ⚠️ **要的是"这一口缸的全部事实"，不再是"有没有位可放"** —— 恒 2026-10-04 把鱼缸改成了
-    #    「取走 / 添加 / 满缸时替换」那条**包办**流程（`_tank_flow`），而"取走"只要求 `inside` 非空。
-    #    ⇒ 先把"里面或背包里有东西"的那口缸找出来；全都没有就退回**最近那口**（流程自己会
-    #      判成"没行可出"⇒ `FURN_V` 退回原来的"开 家具"动作行）。
-    fallback = None
-    for t in tanks[:3]:
+    for t in tanks[:6]:
         d = _tank_probe(t["x"], t["y"], caps)
         if not d:
             continue
-        got = {"x": t["x"], "y": t["y"], "name": d.get("name") or t.get("name") or "鱼缸",
-               "width": d.get("width"), "capacity": d.get("capacity") or {},
-               "counts": d.get("counts") or {}, "hatsAllowed": int(d.get("hatsAllowed") or 0),
-               "hatsInside": int(d.get("hatsInside") or 0),
-               "inside": d.get("inside") or [], "inventory": d.get("inventory") or [],
-               "invTotal": int(d.get("invTotal") or 0)}
-        if fallback is None:
-            fallback = got
-        if got["inside"] or got["inventory"]:
-            return got
-    return fallback or {}
+        out[f"{t['x']},{t['y']}"] = {
+            "x": t["x"], "y": t["y"], "name": d.get("name") or t.get("name") or "鱼缸",
+            "width": d.get("width"), "capacity": d.get("capacity") or {},
+            "counts": d.get("counts") or {}, "hatsAllowed": int(d.get("hatsAllowed") or 0),
+            "hatsInside": int(d.get("hatsInside") or 0),
+            "inside": d.get("inside") or [], "inventory": d.get("inventory") or [],
+            "invTotal": int(d.get("invTotal") or 0)}
+    return out
 
 
 def _im_ctx():
