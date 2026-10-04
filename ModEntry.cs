@@ -2994,6 +2994,7 @@ public class ModEntry : Mod
                 "/interact" => HandleInteract(ctx),
                 "/furniture_pickup" => HandleFurniturePickup(ctx),
                 "/furniture" => HandleFurniture(ctx),
+                "/tank" => HandleTank(ctx),   // 🐟 鱼缸投放真值表（问游戏自己：背包里哪些能手持放进去）
                 "/decor" => HandleDecor(),   // 🪵 地板/墙纸真值表（哪些格能铺 + 现在铺的什么）
                 "/sittable" => HandleSittable(ctx),   // 🪑 诊断：附近可坐物(家具椅子+地图座椅 MapSeat)
                 "/passable" => HandlePassable(ctx),
@@ -3293,6 +3294,10 @@ public class ModEntry : Mod
                 //       真机上「投出货箱」照 `sellable` 列了 14 件，其中 6 件根本进不去。
                 //    ⚠️ 这是**schema 陈述**（"会不会吐这个字段"），不是游戏规则陈述 ⇒ 符合上面那条规矩。
                 ["state_shippable"] = true,
+                // 🐟 /tank（鱼缸投放真值表）：`capacity`/`hatsAllowed`/`counts`/`inside`/`inventory`/`held`。
+                //    ⚠️ 消费侧（`_im_furn_interact` 鱼缸那半）**必须**先看这一位 —— 老 DLL 上该端点不存在，
+                //       没有这一位就会拿 404/空字典当"这口缸什么都放不进"报出去（静默假话）。
+                ["tank"] = true,
             }
         };
     }
@@ -4101,6 +4106,170 @@ public class ModEntry : Mod
                     heldCount = (f as StardewValley.Objects.StorageFurniture)?.heldItems.Count(i => i != null) ?? 0
                 }).ToList();
                 tcs.SetResult(new { ok = true, location = loc.Name, count = list.Count, furniture = list });
+            }
+            catch (Exception ex)
+            {
+                tcs.SetResult(new { ok = false, error = ex.Message });
+            }
+        });
+        return tcs.Task.GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// GET /tank?x=&y= — 🐟 **这口缸收不收背包里这些东西**（恒 2026-10-04：「开完鱼缸以后，
+    /// 理应也可以指导 AI『背包还有什么东西能够手持放进鱼缸』吧」）。
+    ///
+    /// ⚠️ 判据**一条都不在这儿写** —— 全部调**场上这口缸实例**上游戏自己的方法（反编译 `decomp/c1615`，
+    ///    `StardewValley.Objects/FishTankFurniture.cs`）：
+    ///   · `CanBeDeposited` `:270-309` 只认三类，**其余（工具/武器/靴/戒/衣服/家具/大件工艺品）永远 false**：
+    ///       ① `(TR)FrogEgg`（青蛙蛋；`GetCategoryFromItem` `:148-151` 把它归 **Ground**）
+    ///       ② **普通物件**（`Utility.IsNormalObjectAtParentSheetIndex(item, item.ItemId)`）
+    ///          且 **`Data/AquariumFish` 里查得到 `item.ItemId`**
+    ///          （⚠️ 按 **ItemId** 查、不是 QualifiedItemId —— 那张表的 key 就是物件号，如 `397` 海胆、
+    ///           `128` 金枪鱼，见 `Summit.cs:756-766` 的 `ItemRegistry.GetData("(O)" + key)`）
+    ///          **或**命中那 14 个硬编码装饰 `{152,393,390,117,166,832,109,709,392,394,167,789,330,797}`
+    ///       ③ `Hat` —— 且 **缸里"能戴帽的生物"数 > 已放的帽子数**（`TankFish.CanWearHat()` =
+    ///          该表第 8 字段 `field_hatOffset` `TankFish.cs:47,444`）⇒ **真正的门在这儿，不在容量**
+    ///   · `GetCategoryFromItem` `:141-166`：第 1 字段 ∈ {`crawl`,`ground`,`front_crawl`,`static`} ⇒ Ground，
+    ///       其余命中 ⇒ Swim，没命中 ⇒ Decoration。
+    ///   · `GetCapacityForCategory` `:117-139`：Swim `=宽-1`；Ground `=宽-1`（`(F)JungleTank` 再 +1）；
+    ///       Decoration **宽≤2 ⇒ 1 件**、否则 **-1 = "每种各 1"**（同一种放第二个才被拒）。
+    ///   · `HasRoomForThisItem` `:168-207`：Hat 容量当 999（真门在上面那条）；`-1` 那档按 **QualifiedItemId** 查重；
+    ///       其余按**类别**数数（⇒ 容量**按类别**、**不按鱼种**：同一种鱼放两条没问题，直到那一类满）。
+    ///       ⚠️ 数数用的是 `GetCategoryFromItem` ⇒ **帽子在游戏眼里算 Decoration**（窄缸里一顶帽子就吃掉那唯一
+    ///          一个装饰位），所以 `counts` 是"游戏口径"，跟 `hatsInside` 分开报。
+    ///
+    /// ⚠️ 恒真机撞到的「无法再放入同类型的东西」= **装饰重复**（宽缸每种各 1），**不是**"每条鱼限 3 条"。
+    /// ⚠️ 为什么这段**必须在 C#**、不许 Python 抄一份表：`Data/AquariumFish` 是压缩资产，
+    ///    且 `CanBeDeposited` 还牵着 `TankFish.CanWearHat()` 与那 14 个硬编码 id —— 抄一份就是
+    ///    "第二份会漂的判据"（本项目老病）。Python 只负责排版（`_im_furn_interact` / `_im_tank_put`）。
+    /// </summary>
+    private object HandleTank(HttpListenerContext ctx)
+    {
+        var qs = ctx.Request.QueryString;
+        if (!int.TryParse(qs["x"], out var tx) || !int.TryParse(qs["y"], out var ty))
+            return new { ok = false, error = "用法：/tank?x=&y=（鱼缸占的那一格家具格）" };
+
+        if (!Context.IsWorldReady)
+            throw new InvalidOperationException("World not ready");
+
+        var tcs = new TaskCompletionSource<object>();
+        EnqueueMainThread(() =>
+        {
+            try
+            {
+                var loc = Game1.player.currentLocation;
+                int cx = tx * 64 + 32, cy = ty * 64 + 32;   // 命中判据照抄 TryFurnitureInteract：格心落在家具 bbox 里
+                StardewValley.Objects.FishTankFurniture? tank = null;
+                foreach (var f in loc.furniture)
+                {
+                    if (f is not StardewValley.Objects.FishTankFurniture ft) continue;
+                    if (ft.GetBoundingBox().Contains(cx, cy)
+                        || ((int)ft.TileLocation.X == tx && (int)ft.TileLocation.Y == ty))
+                    { tank = ft; break; }
+                }
+                if (tank == null)
+                {
+                    tcs.SetResult(new { ok = false, error = $"({tx},{ty}) 上没有鱼缸（这一格的格心不落在任何鱼缸的 bbox 里）" });
+                    return;
+                }
+
+                var kinds = typeof(StardewValley.Objects.FishTankFurniture.FishTankCategories);
+                string CatOf(Item i)
+                {
+                    try { return tank.GetCategoryFromItem(i).ToString(); } catch { return "?"; }
+                }
+
+                // ── 容量（游戏自己算）+ 缸里的账 ──
+                var capacity = new Dictionary<string, int>();
+                foreach (StardewValley.Objects.FishTankFurniture.FishTankCategories c in Enum.GetValues(kinds))
+                {
+                    if (c == StardewValley.Objects.FishTankFurniture.FishTankCategories.None) continue;
+                    capacity[c.ToString()] = tank.GetCapacityForCategory(c);
+                }
+                int hatsAllowed = tank.tankFish.Count(tf => tf.CanWearHat());
+
+                var counts = new Dictionary<string, int> { ["Swim"] = 0, ["Ground"] = 0, ["Decoration"] = 0 };
+                var inside = new List<object>();
+                int hatsInside = 0, nullSlots = 0;
+                foreach (var i in tank.heldItems)          // ⚠️ 槽位可能有 null（`StorageFurniture.ClearNulls`）
+                {
+                    if (i == null) { nullSlots++; continue; }
+                    var cat = CatOf(i);
+                    if (counts.ContainsKey(cat)) counts[cat]++;
+                    bool isHat = i is StardewValley.Objects.Hat;
+                    if (isHat) hatsInside++;
+                    inside.Add(new
+                    {
+                        name = i.Name,
+                        displayName = SafeDisplayName(i),
+                        itemId = i.QualifiedItemId,
+                        stack = i.Stack,
+                        category = cat,
+                        isHat
+                    });
+                }
+
+                // ── 背包：**只报游戏允许的**（`invTotal - inventory.Count` 就是"压根不在清单里"的件数）──
+                var farmer = Game1.player;
+                var invList = new List<object>();
+                int invTotal = 0;
+                for (int slot = 0; slot < farmer.Items.Count; slot++)
+                {
+                    var it = farmer.Items[slot];
+                    if (it == null) continue;
+                    invTotal++;
+                    bool can;
+                    try { can = tank.CanBeDeposited(it); } catch { can = false; }
+                    if (!can) continue;
+                    bool room;
+                    try { room = tank.HasRoomForThisItem(it); } catch { room = false; }
+                    invList.Add(new
+                    {
+                        slotIndex = slot,
+                        name = it.Name,
+                        displayName = SafeDisplayName(it),
+                        itemId = it.QualifiedItemId,
+                        stack = it.Stack,
+                        category = CatOf(it),
+                        isHat = it is StardewValley.Objects.Hat,
+                        room
+                    });
+                }
+
+                // ── 手上那件（AI 要"手持 + 右键"，回读才有意义）──
+                var hi = farmer.CurrentItem;
+                object? heldInfo = null;
+                if (hi != null)
+                {
+                    bool hcan, hroom;
+                    try { hcan = tank.CanBeDeposited(hi); } catch { hcan = false; }
+                    try { hroom = hcan && tank.HasRoomForThisItem(hi); } catch { hroom = false; }
+                    heldInfo = new
+                    {
+                        name = hi.Name, displayName = SafeDisplayName(hi),
+                        itemId = hi.QualifiedItemId, can = hcan, room = hroom
+                    };
+                }
+
+                tcs.SetResult(new
+                {
+                    ok = true,
+                    x = tx,
+                    y = ty,
+                    name = SafeDisplayName(tank),
+                    itemId = tank.QualifiedItemId,
+                    width = tank.getTilesWide(),
+                    capacity,
+                    hatsAllowed,
+                    counts,
+                    hatsInside,
+                    nullSlots,
+                    inside,
+                    invTotal,
+                    inventory = invList,
+                    held = heldInfo
+                });
             }
             catch (Exception ex)
             {

@@ -332,6 +332,16 @@ class Ctx:
     #    ⚠️ **由服务器算好递进来**（`_im_ponds` → `_fetch_fish_ponds()`，跟晨报/`farm ops=pond`
     #       同一份）—— 这一层不打 HTTP、也不自己算"哪座塘有货"。
     ponds: dict = field(default_factory=dict)
+    # 🐟 **这一刻"能不能往鱼缸里放东西"**（2026-10-04 恒：「开完鱼缸以后，理应也可以指导 AI
+    #    『背包还有什么东西能够手持放进鱼缸』吧」）。
+    #    `{}` = **算不出来 / 不该给行**（本图没有鱼缸 / 老 DLL 没有 `/tank` / 这一刻一件都放不进）；
+    #    有值形如 `{"x": 44, "y": 23, "name": "豪华鱼缸",
+    #               "items": [{slotIndex,name,displayName,itemId,stack,category,isHat,room}, …],
+    #               "full": […收是收但满了…], "capacity": {…}, "counts": {…}}`。
+    #    ⚠️ **由服务器算好递进来**（`_im_tank` → C# `/tank`，判据是**游戏自己的**
+    #       `CanBeDeposited`/`HasRoomForThisItem`）—— 这一层是纯函数：不打 HTTP，
+    #       也**不许自己抄 `Data/AquariumFish` 或那 14 个装饰 ID**（名单会烂，本项目老病）。
+    tank: dict = field(default_factory=dict)
 
     def zh_of(self, name: str) -> str:
         return (self.zh or {}).get(name) or name
@@ -979,6 +989,103 @@ def _exec_furn(ctx, targets, run):
 _FURN_LABEL = {"tv": "电视", "tank": "鱼缸", "store": "梳妆柜"}
 FURN_V = Verb("furn", "开 家具", 70, _furn_can, _furn_reason, _furn_show, "tile",
               exec=_exec_furn, group="家具")
+
+
+# 🐟 2026-10-04 恒：「开完鱼缸以后，理应也可以指导 AI『背包还有什么东西能够手持放进鱼缸』吧」
+#    ⇒ 单子上要有**那扇门**：`开 家具` 那行只负责"看里面有什么"，**放**是另一件事。
+#    判据全在服务器的 `_im_tank`（问 C# `/tank` = **游戏自己的** `CanBeDeposited` /
+#    `HasRoomForThisItem`）—— 这一层纯消费：不打 HTTP、**不抄 `Data/AquariumFish`、
+#    也不抄那 14 个装饰 ID**（名单会烂，本项目老病）。
+#    ⚠️ 形状跟「坐」一模一样：**只有一件可放**时直接给动作行（`tank_put`），
+#       **两件以上**才合成目录行（`tank_pick`，点开才是"放哪一件"）—— 不多点那一层。
+#    ⚠️ **菜单开着时这两行不出现**：放东西要 `手持 + 右键缸本体`，而这一刻缸的菜单正开着
+#       （`menu_ok=False` 的默认档 ⇒ 单子的菜单闸门会整行挡掉）。回执里那句「先关掉界面」
+#       就是给这一刻用的 —— 别在这儿偷偷给它开绿灯（那会变成"按了不成"的假门）。
+_TANK_CAT_ZH = {"Swim": "游鱼", "Ground": "底层生物", "Decoration": "装饰"}
+
+
+def _tank_cat_zh(it):
+    """这一件在缸里算哪一类 —— **用游戏 `GetCategoryFromItem` 的原话**（服务器递进来的）。"""
+    if (it or {}).get("isHat"):
+        return "帽子"
+    c = (it or {}).get("category") or "?"
+    return _TANK_CAT_ZH.get(c, c)
+
+
+def _tank_ok(ctx):
+    """这一刻**真放得进**的那几件（`room=True`）—— 空 = 这两行都不该出现。"""
+    return [i for i in ((ctx.tank or {}).get("items") or []) if i.get("room")]
+
+
+def _tank_name(ctx):
+    return (ctx.tank or {}).get("name") or "鱼缸"
+
+
+def _tank_can(ctx, t):
+    return CAN_YES if _tank_ok(ctx) else CAN_NO
+
+
+def _tank_pick_can(ctx, t):
+    return CAN_YES if len(_tank_ok(ctx)) >= 2 else CAN_NO
+
+
+def _tank_one_can(ctx, t):
+    return CAN_YES if len(_tank_ok(ctx)) == 1 else CAN_NO
+
+
+def _tank_reason(ctx, t):
+    items = _tank_ok(ctx)
+    names = "、".join((i.get("displayName") or i.get("name") or "?") for i in items[:3])
+    full = len((ctx.tank or {}).get("full") or [])
+    extra = f" · 另有 {full} 件收是收、但满了" if full else ""
+    return f"背包这 {len(items)} 件放得进（{names}）{extra}"
+
+
+def _tank_show(ctx, t):
+    return f"放东西进{_tank_name(ctx)}"
+
+
+def _tank_one_show(ctx, t):
+    items = _tank_ok(ctx)
+    if not items:
+        return "放 东西 进鱼缸"
+    return f"放 {items[0].get('displayName') or items[0].get('name') or '?'} 进{_tank_name(ctx)}"
+
+
+def _tank_pick_count(ctx, targets):
+    n = len(_tank_ok(ctx))
+    return f"{n} 件" if n else None
+
+
+def _tank_pick_subs(ctx, targets):
+    items = _tank_ok(ctx)
+    if not items:
+        return None
+    rows = []
+    for i in items:
+        st = int(i.get("stack") or 1)
+        nm = i.get("displayName") or i.get("name") or "?"
+        rows.append(Row(TANK_ONE_V, [i],
+                        f"放 {nm}" + (f"（背包 {st} 件，一次一件）" if st > 1 else ""),
+                        f"{_tank_cat_zh(i)}，缸里还有位", 0))
+    return Level(rows, title="放哪一件进鱼缸？（一次一件）")
+
+
+def _exec_tank(ctx, targets, run):
+    tk = ctx.tank or {}
+    it = (targets[0] if targets else None) or (next(iter(_tank_ok(ctx)), {}) or {})
+    nm = it.get("displayName") or it.get("name") or "?"
+    r = run("tank_put", {"x": tk.get("x"), "y": tk.get("y"),
+                         "item": nm, "item_id": it.get("itemId") or ""})
+    return _receipt_from_helper("放", f"{nm} 进{_tank_name(ctx)}", r)
+
+
+# ⚠️ 键的分工同「坐」：`tank_put` 是**真干活那行**（一件可放时它自己上单子；
+#    ≥2 件时它只活在第二层）—— 脚本/钉子/文档认的是它；目录行另起 `tank_pick`。
+TANK_ONE_V = Verb("tank_put", "放 鱼缸", 22, _tank_one_can, _tank_reason, _tank_one_show, "world",
+                  exec=_exec_tank, group="家具")
+TANK_PICK_V = Verb("tank_pick", "放东西进鱼缸", 22, _tank_pick_can, _tank_reason, _tank_show,
+                   "world", subs=_tank_pick_subs, count=_tank_pick_count, group="家具")
 
 
 # 🪑 「起身」（2026-10-01）—— **坐着时的唯一出路**。
@@ -3435,7 +3542,11 @@ VERBS: list = [
     SIT_ONE_V,
     SIT_PICK_V,
     # 🐟💄📺 2026-10-04 恒：「鱼缸梳妆柜和电视……只是没接到单子上」⇒ 上单（见上面那段的账）
-    FURN_V,    # 🪑 起身：**坐着才出现**（见上面 `_stand_can` 那段）——它是「坐」的**出口**，
+    FURN_V,
+    # 🐟 2026-10-04 恒：「开完鱼缸以后，理应也可以指导 AI『背包还有什么东西能够手持放进鱼缸』吧」
+    #    ⇒ 放东西也得有门（同「坐」的形状：一件走 `tank_put`、≥2 件走 `tank_pick` 目录行）。
+    TANK_ONE_V,
+    TANK_PICK_V,    # 🪑 起身：**坐着才出现**（见上面 `_stand_can` 那段）——它是「坐」的**出口**，
     #    没有它，单子就把 AI 留在一个自己不给路的状态里。
     # ⚠️ 权重贴着 `sit`(70) 下面一点：同一个"姿势"家族，坐/起 该挨着看。
     #    压不过 收放(88)/箱子(80) 是对的 —— 坐着不影响收放（`_mwork_can` 不看坐姿）。
@@ -4582,7 +4693,7 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
              menu_data: dict = None, reforge: dict = None, mwork: dict = None,
              doors: dict = None, chores: dict = None, clint_open: bool = False,
              hay: dict = None, pick: dict = None,
-             ponds: dict = None, statue: dict = None) -> Ctx:
+             ponds: dict = None, statue: dict = None, tank: dict = None) -> Ctx:
     """把 `/state`(**full**) + `/surroundings`(+`/machines`/`/scan_chests`) 拼成 Ctx。
 
     ⚠️ 只搬运，**不补默认值**：缺什么就让它缺着（`can()` 遇到缺失自然回 假/？）。
@@ -4677,6 +4788,9 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
                # 🗿🐟 2026-10-04 那两行的账（同上：`_im_statue` / `_im_ponds` 算好递进来 ——
                #    这一层不认"哪些雕像算数"，也不自己问鱼塘）。
                statue=statue or {}, ponds=ponds or {},
+               # 🐟 「放 … 进鱼缸」那两行的账（同上：`_im_tank` → C# `/tank` —— 这一层
+               #    不认"游戏收什么"，也不自己问背包）。
+               tank=tank or {},
                sitting=bool(((seats or {}).get("me") or {}).get("sitting")),
                worn=(worn or {}),
                pets=pets,

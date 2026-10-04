@@ -175,7 +175,8 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
           silo=None, troughs=None, trough_filled=0, trough_raise=False,
           surr_tiles=None, trash_cans=None, cola=None, npcs=None, nuts=None,
           trash_checked=None, pet_bowls=None, passable_ret=None, ai_xy=None,
-          statues=(), blessed=None, ponds=None, buffs=None, map_size=None, hat=None):
+          statues=(), blessed=None, ponds=None, buffs=None, map_size=None, hat=None,
+          furniture=None, tank=None):
     CALLS.clear()
     WALK_CALLS.clear()
     # 🚶 "我"站哪格：默认照 `STATE`（(12,12)），用例要"人已经站在棚门口"就传 `ai_xy=`。
@@ -293,6 +294,17 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
             return {"ok": True, "count": crab_ready, "location": "Farm",
                     "pots": [{"x": 20 + i, "y": 21, "readyForHarvest": True,
                               "bait": "鱼饵"} for i in range(int(crab_ready))]}
+        if ep == "/tank":
+            # 🐟 `/tank`（2026-10-04 新端点）真回包形状。三种给法：
+            #    · `tank=None`（默认）⇒ **没有这个端点**（老 DLL 的形状；`caps` 那道闸门本来就
+            #      不让 `_tank_probe` 打出来，这儿再兜一层）；
+            #    · 一个 dict ⇒ 每次回同一份；
+            #    · 一个 list ⇒ **逐发取**（"放之前 / 放之后"要两份不同的事实 —— 成功判据正是这个对比）。
+            if tank is None:
+                return {}
+            if isinstance(tank, list):
+                return tank.pop(0) if tank else {}
+            return tank
         if ep == "/silo":
             # 🌾 `/silo` 真回包形状（`silo_status()` 读的就是这几个键）
             return ({"ok": True, "noSilo": True} if silo is None and troughs is not None
@@ -329,7 +341,7 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
             "/machines": {"machines": MACHINES if machines is None else machines},
             "/scan_chests": {"chests": CHESTS if chests is None else chests},
             "/sittable": SEATS,
-            "/furniture": FURNITURE,
+            "/furniture": (FURNITURE if furniture is None else furniture),
             "/animals": _animals_fixture,
             "/worn": WORN,
             # 🚪🐄 农场建筑（`/farm_buildings` 的真回包形状）：`type` = `Data/Buildings` 的键。
@@ -2775,6 +2787,119 @@ def main():
     _pd_txt2 = _exec_pd(_Ctx(ponds=_pd_on), [{}], lambda k, a: _seq.pop(0))
     res.append(ok("🐟 一座没领到 ⇒ 正文里带**它自己那句 ⚠️**（不许整批报成功）",
                   "产出没领到" in _pd_txt2, _pd_txt2[:220]))
+
+    # 🐟 放 鱼缸（2026-10-04 恒：「开完鱼缸以后，理应也可以指导 AI『背包还有什么东西能够手持
+    #    放进鱼缸』吧」）。⚠️ 判据**全在 C# `/tank`**（游戏自己的 `CanBeDeposited`/
+    #    `HasRoomForThisItem`）⇒ 这里验的是**接线**：caps 闸门 / 只报 room=True / 两条 verb 互斥 /
+    #    exec 的参数 / **只认"缸里多了"**的前后对比。
+    _TK_ITEM = {"slotIndex": 3, "name": "Sea Urchin", "displayName": "海胆", "itemId": "(O)397",
+                "stack": 1, "category": "Ground", "isHat": False, "room": True}
+    _TK_ITEM2 = {"slotIndex": 5, "name": "Seaweed", "displayName": "海草", "itemId": "(O)152",
+                 "stack": 3, "category": "Decoration", "isHat": False, "room": True}
+    _TK_FULL = {"slotIndex": 4, "name": "Tuna", "displayName": "金枪鱼", "itemId": "(O)130",
+                "stack": 2, "category": "Swim", "isHat": False, "room": False}
+    _TK_INSIDE = [{"name": "Tuna", "displayName": "金枪鱼", "itemId": "(O)130",
+                   "stack": 1, "category": "Swim", "isHat": False}]
+    _TK = {"ok": True, "x": 44, "y": 23, "name": "豪华鱼缸", "itemId": "(F)DeluxeFishTank",
+           "width": 5, "capacity": {"Swim": 4, "Ground": 4, "Decoration": -1},
+           "hatsAllowed": 1, "counts": {"Swim": 4, "Ground": 1, "Decoration": 0}, "hatsInside": 0,
+           "inside": list(_TK_INSIDE), "invTotal": 6,
+           "inventory": [dict(_TK_ITEM), dict(_TK_ITEM2), dict(_TK_FULL)], "held": None}
+    _TK_FURN = {"ok": True, "count": 1,
+                "furniture": [{"name": "豪华鱼缸", "x": 44, "y": 23, "width": 5, "height": 3,
+                               "isFishTank": True, "isStorage": True, "heldCount": 1,
+                               "furnitureType": 9}]}
+    _TK_CAPS = {"tank": True, "forage": True}
+    # ① 便宜闸门：caps 里没有这一位（**老 DLL 的形状**）⇒ 账为空**且一发 `/tank` 都不打**
+    _stub(caps={"forage": True}, furniture=_TK_FURN, tank=_TK)
+    _tk_old = M._im_tank({"player": {"x": 12, "y": 12}}, _TK_FURN, {"forage": True})
+    res.append(ok("🐟 caps 没有 `tank`（老 DLL）⇒ 账为空 **且一次 `/tank` 都不打**",
+                  _tk_old == {} and not [c for c in CALLS if c[1] == "/tank"],
+                  (_tk_old, [c for c in CALLS if c[1] == "/tank"])))
+    # ② 闸门过了 ⇒ 取值，**只报 `room=True` 的那两件**，满的那件进 `full`（不上单子）
+    _stub(caps=_TK_CAPS, furniture=_TK_FURN, tank=_TK)
+    _tk_on = M._im_tank({"player": {"x": 40, "y": 23}}, _TK_FURN, _TK_CAPS)
+    res.append(ok("🐟 有缸 + 有可放的 ⇒ 账里 x/y/name/items 齐（`items` **只有 room=True**）",
+                  _tk_on.get("x") == 44 and _tk_on.get("name") == "豪华鱼缸"
+                  and [i["itemId"] for i in _tk_on["items"]] == ["(O)397", "(O)152"]
+                  and [i["itemId"] for i in _tk_on["full"]] == ["(O)130"], _tk_on))
+    # ③ 一件都放不进 ⇒ `{}`（那两行都不出现；"收是收但满了"只在**回执**里说）
+    _stub(caps=_TK_CAPS, furniture=_TK_FURN, tank=dict(_TK, inventory=[dict(_TK_FULL)]))
+    res.append(ok("🐟 一件都放不进（全满）⇒ 账为空（按了不成的东西**不许上单子**）",
+                  M._im_tank({"player": {"x": 40, "y": 23}}, _TK_FURN, _TK_CAPS) == {}))
+    # ④ 本图没缸 ⇒ `{}`，且**一发 `/tank` 都不打**
+    _stub(caps=_TK_CAPS, furniture=FURNITURE, tank=_TK)
+    res.append(ok("🐟 本图没有鱼缸 ⇒ 账为空 **且一次 `/tank` 都不打**",
+                  M._im_tank({"player": {"x": 12, "y": 12}}, FURNITURE, _TK_CAPS) == {}
+                  and not [c for c in CALLS if c[1] == "/tank"]))
+    # ⑤ 两条 verb **互斥**（同「坐」的形状）：一件 ⇒ 动作行；≥2 件 ⇒ 目录行
+    _IM = M.intent_menu
+    _c1 = _Ctx(tank={"x": 44, "y": 23, "name": "豪华鱼缸",
+                     "items": [dict(_TK_ITEM)], "full": [dict(_TK_FULL)]})
+    _c2 = _Ctx(tank={"x": 44, "y": 23, "name": "豪华鱼缸",
+                     "items": [dict(_TK_ITEM), dict(_TK_ITEM2)], "full": []})
+    res.append(ok("🐟 只有一件可放 ⇒ 直接给动作行（`tank_put`），**不多点一层**",
+                  _IM._tank_one_can(_c1, None) is True and _IM._tank_pick_can(_c1, None) is False
+                  and "海胆" in _IM._tank_one_show(_c1, None), _IM._tank_one_show(_c1, None)))
+    _tk_subs = _IM._tank_pick_subs(_c2, [None])
+    res.append(ok("🐟 两件以上 ⇒ 合成目录行（`tank_pick`），点开才是「放哪一件」",
+                  _IM._tank_one_can(_c2, None) is False and _IM._tank_pick_can(_c2, None) is True
+                  and _tk_subs is not None and len(_tk_subs.rows) == 2,
+                  (None if _tk_subs is None else [r.label for r in _tk_subs.rows])))
+    res.append(ok("🐟 没得放 / 本图没缸（`{}`）⇒ 两行都不出现（❌）",
+                  _IM._tank_can(_Ctx(tank={}), None) is False
+                  and _IM._tank_one_can(_Ctx(tank={}), None) is False
+                  and _IM._tank_pick_can(_Ctx(tank={}), None) is False))
+    # ⑥ exec 递出去的参数（缸坐标 + 那件的名字 **和** 限定 id）
+    _tk_calls = []
+    _tk_txt = _IM._exec_tank(_c1, [dict(_TK_ITEM)],
+                             lambda k, a: _tk_calls.append((k, a)) or
+                             {"ok": True, "st": "yes",
+                              "text": "✅ 放进去了 1 个「海胆」（缸里这件 1 → 2）"})
+    res.append(ok("🐟 exec 走 `tank_put`，参数 = 缸坐标 + 那件的名字/限定 id",
+                  _tk_calls == [("tank_put", {"x": 44, "y": 23, "item": "海胆",
+                                              "item_id": "(O)397"})], _tk_calls))
+    res.append(ok("🐟 回执**用它自己的话**（含「缸里这件 1 → 2」）",
+                  "1 → 2" in _tk_txt and _tk_txt.startswith("✅"), _tk_txt[:140]))
+    # ⑦ 执行器**只认"缸里多了"**：`/tank` 前后对比（`actionTriggered:true` 什么都不证明）
+    _TK_AFTER = dict(_TK, inventory=[dict(_TK_ITEM2)],
+                     inside=list(_TK_INSIDE) + [{"name": "Sea Urchin", "displayName": "海胆",
+                                                 "itemId": "(O)397", "stack": 1,
+                                                 "category": "Ground", "isHat": False}])
+    _stub(caps=_TK_CAPS, furniture=_TK_FURN, tank=[dict(_TK), dict(_TK_AFTER)],
+          inv=[{"slotIndex": 3, "name": "Sea Urchin", "displayName": "海胆", "itemId": "(O)397",
+                "stack": 1, "catNum": -4, "quality": 0, "sellable": True, "shippable": True}])
+    _txt_put_ok = M._im_tank_put(44, 23, "海胆", "(O)397")
+    res.append(ok("🐟 端到端：`/tank` 前后对比里这件 **0 → 1** ⇒ 才报 ✅（并且报的是人名，不是 `(O)397`）",
+                  _txt_put_ok.startswith("✅") and "0 → 1" in _txt_put_ok
+                  and "海胆" in _txt_put_ok, _txt_put_ok[:170]))
+    _stub(caps=_TK_CAPS, furniture=_TK_FURN, tank=[dict(_TK), dict(_TK)])
+    _txt_put_bad = M._im_tank_put(44, 23, "海胆", "(O)397")
+    res.append(ok("🐟 端到端：件数没变 ⇒ ⚠️（`actionTriggered:true` 什么都不证明）",
+                  _txt_put_bad.startswith("⚠️"), _txt_put_bad[:170]))
+    # ⑧ 端到端：`_im_ctx()` 把账递给单子 ⇒ 单子上真有那一行
+    _stub(caps=_TK_CAPS, furniture=_TK_FURN, tank=dict(_TK, inventory=[dict(_TK_ITEM)]))
+    _ctx_tk = M._im_ctx()
+    _sheet_tk = _IM.render_menu(_ctx_tk, n=40)
+    res.append(ok("🐟 端到端：`_im_ctx()` 把账递进 Ctx（`ctx.tank` 就是那份）",
+                  _ctx_tk.tank.get("x") == 44 and _ctx_tk.tank.get("name") == "豪华鱼缸",
+                  _ctx_tk.tank))
+    res.append(ok("🐟 端到端：单子上有「放 海胆 进豪华鱼缸」那一行（**看单子就够**）",
+                  "放 海胆 进豪华鱼缸" in _sheet_tk, _sheet_tk[-500:]))
+    # ⑨ 回执那几行（**恒真正要的那句**："背包还有什么东西能够手持放进鱼缸"）—— 纯排版，直接喂账
+    _tk_txt_on = "\n".join(M._tank_lines(44, 23, dict(_TK), 5))
+    res.append(ok("🐟 回执**逐件列能放的**（名字+游戏分的类别）+ 满了的另说 + 压根不收的件数",
+                  "海胆" in _tk_txt_on and "底层生物" in _tk_txt_on and "海草" in _tk_txt_on
+                  and "金枪鱼" in _tk_txt_on and "压根不收" in _tk_txt_on, _tk_txt_on))
+    res.append(ok("🐟 回执给**放法**（先关界面 → 敲单子上那行 = 手持 + 右键缸本体）",
+                  "先关掉界面" in _tk_txt_on and "右键缸本体" in _tk_txt_on, _tk_txt_on))
+    res.append(ok("🐟 回执带容量（游戏口径：游鱼/底层/装饰 + 帽子位）",
+                  "游鱼 4/4" in _tk_txt_on and "底层生物 1/4" in _tk_txt_on
+                  and "帽子 0/1" in _tk_txt_on, _tk_txt_on))
+    _tk_txt_old = "\n".join(M._tank_lines(44, 23, {}, 5))
+    res.append(ok("🐟 老 DLL（读不到 `/tank`）⇒ 回执**明说读不出来**，不拿空表冒充「一件都放不进」",
+                  ("读不到" in _tk_txt_old or "没有 `/tank`" in _tk_txt_old)
+                  and "列不出" in _tk_txt_old and "重启游戏" in _tk_txt_old, _tk_txt_old))
     res.append(ok("⚖️ 193：`放牧（开棚门）` 70 → **84**（早晨跟摸动物一个档）",
                   _w("opendoors") == 84, _w("opendoors")))
     res.append(ok("⚖️ 193：`收 蟹笼` 68 → **72**（有货时可抬）", _w("crab") == 72, _w("crab")))

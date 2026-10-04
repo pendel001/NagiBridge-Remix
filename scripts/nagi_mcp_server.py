@@ -23547,6 +23547,47 @@ def _im_ponds(state: dict) -> dict:
     return {"ready": ready, "total": len(ponds or [])}
 
 
+def _im_tank(state: dict, furniture: dict, caps: dict) -> dict:
+    """🐟 「放 … 进鱼缸」那行的账 —— 恒 2026-10-04：「开完鱼缸以后，理应也可以指导 AI
+    『背包还有什么东西能够手持放进鱼缸』吧」。
+
+    形状：`{}` = **不给行**（老 DLL / 本图没缸 / 这一刻一件都放不进）；有值：
+      `{"x":44,"y":23,"name":"豪华鱼缸","items":[…room=True 的那几件…],
+        "full":[…收是收、但满了…],"capacity":{…},"counts":{…}}`（字段逐字来自 C# `/tank`）。
+
+    · **便宜闸门先过**：`caps["tank"]` 不为真 ⇒ **一次 HTTP 都不多打**
+      （同 `_im_shop` 只在商店开着时读 `/menu`）。
+    · 缸从**已经拿到的** `/furniture` 里认（`isFishTank` = C# 2026-10-04 新加的位；鱼缸的
+      `furnitureType` 是 9、跟普通装饰同号，**只能按类型判**）；按**离我近**排，取第一口
+      "还有位可放"的缸（多口缸时远的要等走近，同 `ponds`/`statue` 的规矩）。
+    · **只报 `room=True` 的**：一件都没有 ⇒ 整行不出现（待办语义）；"收是收但满了"那几件
+      由**回执**说（`_tank_lines`）—— 按了不成的东西**不许占单子上一行**。
+    """
+    if (caps or {}).get("tank") is not True:
+        return {}
+    tanks = [f for f in ((furniture or {}).get("furniture") or [])
+             if isinstance(f, dict) and f.get("isFishTank")
+             and isinstance(f.get("x"), int) and isinstance(f.get("y"), int)]
+    if not tanks:
+        return {}
+    p = (state or {}).get("player") or {}
+    px, py = int(p.get("x") or 0), int(p.get("y") or 0)
+    tanks.sort(key=lambda f: abs(f["x"] - px) + abs(f["y"] - py))
+    for t in tanks[:3]:        # 最多问 3 口：近的那口满了，还能往下一口放
+        d = _tank_probe(t["x"], t["y"])
+        if not d:
+            continue
+        allitems = d.get("inventory") or []
+        can = [i for i in allitems if i.get("room")]
+        if not can:
+            continue
+        return {"x": t["x"], "y": t["y"],
+                "name": d.get("name") or t.get("name") or "鱼缸",
+                "items": can, "full": [i for i in allitems if not i.get("room")],
+                "capacity": d.get("capacity") or {}, "counts": d.get("counts") or {}}
+    return {}
+
+
 def _im_ctx():
     """一次把单子要的世界快照凑齐。
 
@@ -23581,7 +23622,10 @@ def _im_ctx():
     _md = _im_menu_data(state)
     _shop = _im_shop(state)
     _content_shown = bool(_md) or bool((_shop or {}).get("items"))
-    return intent_menu.ctx_from(state, surr, machines, chests, caps=_im_caps(),
+    # 🔌 能力表**只读一次**：`_im_caps()` 每次都会打 `/status`（老话说得准："判据只有一处"），
+    #    而这一刻有两个消费方（`ctx.cap()` 和「放 鱼缸」那行的便宜闸门 `_im_tank`）。
+    _caps = _im_caps()
+    return intent_menu.ctx_from(state, surr, machines, chests, caps=_caps,
                                 seats=seats, furniture=furniture, animals=animals,
                                 shop=_shop, beds=_im_beds(state),
                                 menu_exit=_menu_exit_of(_mt),
@@ -23622,6 +23666,11 @@ def _im_ctx():
                                 # 🐟 「收 鱼塘产出」那行的账（同上：只在**农场**多打一发
                                 #    `/fish_pond`，跟晨报/`farm ops=pond` 共用 `_fetch_fish_ponds`）。
                                 ponds=_im_ponds(state),
+                                # 🐟 「放 … 进鱼缸」那两行的账（2026-10-04 恒：「开完鱼缸以后，
+                                #    理应也可以指导 AI『背包还有什么东西能够手持放进鱼缸』吧」）：
+                                #    缸从**已经拿到的** `/furniture` 里认；`caps["tank"]` 不为真
+                                #    ⇒ **一次 HTTP 都不多打**（老 DLL 上没有那个端点）。
+                                tank=_im_tank(state, furniture, _caps),
                                 worn=worn)
 
 
@@ -23750,7 +23799,22 @@ def _im_furn_interact(x, y, kind="", w=0):
         # 📺 电视开的是**对话**（`DialogueBox`），"里面"没有东西 —— 别印"里面是空的"（那是句废话）
         lines.append("   📺 电视：`menu read` 看今天播的（农务小贴士/明日天气/运势），推进用 `menu advance`")
         return {"ok": True, "text": "\n".join(lines), "menu": mt}
-    if items:
+    # 🐟 **鱼缸**：里面的东西改从 `/tank` 报（**带类别** —— 那是游戏 `GetCategoryFromItem` 的原话），
+    #    顺带报"背包里哪几件放得进"（恒 2026-10-04 那句）。
+    tk = _tank_probe(x, y) if kind == "tank" else {}
+    if tk:
+        ins = tk.get("inside") or []
+        if ins:
+            _bits = []
+            for i in ins[:12]:
+                _st = int(i.get("stack") or 1)
+                _bits.append((i.get("displayName") or i.get("name") or "?")
+                             + (f"×{_st}" if _st > 1 else "")
+                             + f"（{intent_menu._tank_cat_zh(i)}）")
+            lines.append(f"   📦 里面 {len(ins)} 样（取 = `menu click(item=名字)`）：" + "、".join(_bits))
+        else:
+            lines.append("   📦 里面是空的")
+    elif items:
         lines.append(f"   📦 里面 {len(items)} 样（取 = `menu click(item=名字)`）：" + "、".join(items))
     else:
         lines.append("   📦 里面是空的")
@@ -23759,19 +23823,176 @@ def _im_furn_interact(x, y, kind="", w=0):
                      + ("、".join(put) + " → `menu sell(name=名字)`" if put
                         else "你包里现在没有这类东西"))
     elif kind == "tank":
-        # 🐟 2026-10-04 反编译实据（`FishTankFurniture.GetCapacityForCategory` `:117-139`）：
-        #    容量**按缸宽 W 算**（不是固定 3 条）：游鱼 = W-1、底层生物 = W-1（`(F)JungleTank` +1）、
-        #    装饰 = 窄缸(W≤2) 只 1 件、宽缸"**每种各 1**"（重复同一种装饰会被拒 —— 恒真机撞到的
-        #    「无法再放入同类型的东西」就是这条，不是"每种鱼限 3 条"）。**按类别算、不按鱼种算**。
-        #    能放：`Data/AquariumFish` 那批（鱼 + 海胆[可戴帽，靠该表第 8 字段] + 青蛙蛋 `(TR)FrogEgg`）
-        #    + 14 个硬编码装饰 ID；**菜单里放不进**（`ShopId="FishTank"` 没注册 `categoriesToSellHere`
-        #    ⇒ 背包格永远不高亮）⇒ 只能手持 + 右键本体，一次一件。
-        _w = int(w or 0)
-        _cap = max(0, _w - 1)
-        lines.append(f"   ➕ 放不进菜单 ⇒ **手持 + 右键它本体（一次一件）**；容量（按缸宽 {_w} 算）："
-                     f"游鱼 {_cap} 条 · 底层生物 {_cap} 条（丛林缸+1）· 装饰每种各 1"
-                     f"；能放 = 游戏 `Data/AquariumFish` 那批（鱼/海胆可戴帽/青蛙蛋）+ 14 种装饰")
+        lines.extend(_tank_lines(x, y, tk, w))
     return {"ok": True, "text": "\n".join(lines), "menu": mt}
+
+
+def _tank_probe(x, y):
+    """🐟 问游戏这口缸的**投放真值表**（`GET /tank`）—— 读不到就回 `{}`（**不编**）。
+
+    ⚠️ 先看 `caps["tank"]`：老 DLL 上这个端点不存在，硬打会拿到 404 的 HTML
+       （`requests.json()` 直接炸），而**炸掉被 `except` 吞成"什么都放不进"就是静默假话**。
+    ⚠️ 走 `api._ai_get`（**显式钉 AI 端口**）——缸里的东西/背包都是"我的"。
+    """
+    if _im_caps().get("tank") is not True:
+        return {}
+    try:
+        d = api._ai_get("/tank", {"x": int(x), "y": int(y)}) or {}
+    except Exception:
+        return {}
+    return d if isinstance(d, dict) and d.get("ok") else {}
+
+
+def _tank_lines(x, y, tk, w) -> list:
+    """🐟 鱼缸回执里**"能放什么、怎么放"**那几行 —— 恒 2026-10-04 的那句就是冲这个来的。
+
+    ⚠️ 判据全在 C# `/tank`（游戏自己的 `CanBeDeposited`/`HasRoomForThisItem`）；这一层**只排版**
+       —— 绝不在这儿抄 `Data/AquariumFish` 或那 14 个装饰 ID（名单会烂，本项目老病）。
+    ⚠️ **没有 `tk`（老 DLL）时明说"读不到"**，别拿空表当"这口缸一件都放不进"——
+       这两种在屏上长得一样，可一个是"不知道"、一个是"确定的没有"。
+    """
+    if not tk:
+        return ["   ➕ **菜单里放不进**（`FishTank` 没注册可放类别）⇒ 只能**手持 + 右键缸本体**，一次一件"
+                + (f"（容量按缸宽 {int(w or 0)} 算：游鱼/底层生物各 = 宽-1，装饰宽缸每种各 1）"
+                   if w else "")
+                + "\n   ⚠️ 这版 DLL 没有 `/tank` 投放表 ⇒ **这一刻列不出背包里哪几件能放**（重启游戏后就有）"]
+    cap = tk.get("capacity") or {}
+    cnt = tk.get("counts") or {}
+    _zh, _order = intent_menu._TANK_CAT_ZH, ("Swim", "Ground", "Decoration")
+    bits = []
+    for k in _order:
+        c = cap.get(k)
+        if c is None:
+            continue
+        used = int(cnt.get(k) or 0)
+        bits.append(f"{_zh.get(k, k)} {used}/{int(c)}" if int(c) >= 0
+                    else f"{_zh.get(k, k)} {used} 件（宽缸**每种各 1**）")
+    ha, hi = int(tk.get("hatsAllowed") or 0), int(tk.get("hatsInside") or 0)
+    bits.append(f"帽子 {hi}/{ha}" if ha else "帽子 0（缸里没有可戴帽的生物）")
+    out = [f"   📊 容量（缸宽 {int(tk.get('width') or w or 0)}）：" + " · ".join(bits)]
+    inv_all = tk.get("inventory") or []
+    inv_total = int(tk.get("invTotal") or 0)
+    can, full = [i for i in inv_all if i.get("room")], [i for i in inv_all if not i.get("room")]
+    if can:
+        out.append(f"   🎒 背包 {inv_total} 件里，**游戏收这 {len(can)} 件**（手持 + 右键缸本体，一次一件）：")
+        for i in can[:8]:
+            st = int(i.get("stack") or 1)
+            out.append(f"      · {i.get('displayName') or i.get('name') or '?'}"
+                       + (f"×{st}" if st > 1 else "") + f"（{intent_menu._tank_cat_zh(i)}）")
+        if len(can) > 8:
+            out.append(f"      …另有 {len(can) - 8} 件")
+    else:
+        out.append(f"   🎒 背包 {inv_total} 件里**这一刻一件也放不进**"
+                   + ("（下面那几件游戏收、但对应那一类满了）" if full
+                      else "（游戏只收 鱼/海胆/青蛙蛋 + 海草珊瑚那类装饰 + 帽子）"))
+    if full:
+        out.append("      ⌛ 收是收、**这一类满了**：" + "、".join(
+            f"{i.get('displayName') or i.get('name') or '?'}（{intent_menu._tank_cat_zh(i)}）"
+            for i in full[:6]))
+    skipped = inv_total - len(inv_all)
+    if skipped > 0:
+        out.append(f"      （其余 {skipped} 件游戏**压根不收**：工具/武器/靴/戒指/衣服/家具/大件工艺品）")
+    h = tk.get("held") or {}
+    if h.get("can") and h.get("room"):
+        out.append(f"   ✋ 你**手上正拿着**「{h.get('displayName') or h.get('name')}」—— 直接右键缸本体就放进去了")
+    if can:
+        # ⚠️ 这一刻菜单**正开着**（不然不会走到这条回执）⇒ 必须说清"先关界面再敲那行" ——
+        #    单子的菜单闸门会把世界动作整行挡掉，不说这句 = 让人去撞一扇不存在的门。
+        out.append("   🖐 怎么放：**先关掉界面**（单子上有那行），再敲单子上「放 … 进鱼缸」那行"
+                   "（= 手持 + 右键缸本体 + **回读核实**）—— 菜单里点背包格恒无效")
+    return out
+
+
+def _im_tank_put(x, y, item="", item_id="") -> str:
+    """🐟 把那一件**手持 + 右键缸本体**放进鱼缸，**回读核实**。→ 一句话。
+
+    恒 2026-10-04：「开完鱼缸以后，理应也可以指导 AI『背包还有什么东西能够手持放进鱼缸』吧」
+    ⇒ 光在回执里说"能放"是不够的 —— 得有**一扇按了就成**的门（单子上的 `tank_put`/`tank_pick`）。
+
+    ⚠️ 手势走**游戏自己那条路**（`FishTankFurniture.checkForAction` `:220-268` 的持物分支）：
+       `select`（= `CurrentToolIndex` 指到那一格）→ 右键**缸本体**。
+       **菜单那条路永远放不进**（`ShopId="FishTank"` 没注册 `categoriesToSellHere`
+       ⇒ 背包格永远不高亮 ⇒ 点背包格恒无效）。所以这一刻**先把界面关掉**（单子上有那行）。
+    ⚠️ `/select` 与 `/interact` 都走 `api._ai_post`（**显式钉 AI 端口**）—— 这一层栽过
+       "打错进程就动到恒身上"（[[never-bare-import-stardew-api]]）。
+    ⚠️⚠️ **只认两件真事实**：`/tank` 前后对比里**这件在缸里的件数多了**才算成。
+       `/interact` 的 `actionTriggered:true` **什么都不证明**（铁砧那条账的同一个坑）。
+       没成时**分开说三种成因**，不糊成一句"失败了"。
+    """
+    _ensure_background()
+    try:
+        xi, yi = int(x), int(y)
+    except (TypeError, ValueError):
+        return f"❌ 缺鱼缸坐标（x={x} y={y}）—— 不敢瞎点"
+    key = (item_id or item or "").strip()
+    if not key:
+        return "❌ 缺 item（要放哪一件）"
+    before = _tank_probe(xi, yi)
+    if not before:
+        return "❌ 读不到这口缸（`/tank`）—— 这版 DLL 没那个端点（重启游戏后才有），不敢瞎放"
+
+    def _n_same(tk):
+        n = 0
+        for i in (tk.get("inside") or []):
+            if item_id and (i.get("itemId") or "") == item_id:
+                n += 1
+            elif (not item_id) and (i.get("displayName") or i.get("name")) == item:
+                n += 1
+        return n
+
+    n_before = _n_same(before)
+    # ① 先拿在手上（**回读 `ok`**，不是发射后不管）
+    sel = {}
+    for _try in range(2):
+        try:
+            sel = api._ai_post("/select", {"name": key}) or {}
+        except Exception as e:
+            return f"❌ 没拿起来「{item or key}」（{type(e).__name__}: {e}）"
+        if sel.get("ok"):
+            break
+        time.sleep(0.2)
+    if not sel.get("ok"):
+        return (f"❌ 没拿起来「{item or key}」（游戏回：{sel.get('error') or sel}）"
+                f"—— 手上没东西就别去点缸")
+    # ② 走到缸边 + 右键它本体
+    try:
+        navigation.walk_to(x=xi, y=yi)
+    except Exception as e:
+        return f"❌ 走不到鱼缸 ({xi},{yi})：{type(e).__name__}: {e}"
+    api._ai_post("/interact", {"x": xi, "y": yi})
+    time.sleep(0.8)
+    # ③ 回读：只认"缸里这一件多了"
+    after = _tank_probe(xi, yi)
+    if not after:
+        return "⚠️ 点了，但**读不回**这口缸 —— 进去没进去我不知道，自己再 `开 鱼缸` 看一眼"
+    n_after = _n_same(after)
+    if n_after > n_before:
+        left = _count_item(key)
+        # ⚠️ 报**我们手上那个人名**（`item`）而不是 `sel["selected"]` —— `/select` 回的是**我们递进去
+        #    的那个串**（传限定 id 就回 `(O)397`），它不含新信息；成功与否由上面那个件数说。
+        return (f"✅ 放进去了 1 个「{item or sel.get('selected') or key}」"
+                f"（缸里这件 {n_before} → {n_after}）"
+                + (f" · 背包还剩 {left} 件（**一次一件**，想都放就再来一次）" if left else ""))
+    why = ""
+    for i in (after.get("inventory") or []):
+        same = ((item_id and (i.get("itemId") or "") == item_id)
+                or ((not item_id) and (i.get("displayName") or i.get("name")) == item))
+        if same and not i.get("room"):
+            why = (f"这口缸的「{intent_menu._tank_cat_zh(i)}」已经满了"
+                   f"（容量 {(after.get('capacity') or {}).get(i.get('category'))}）")
+            break
+    if not why:
+        mt = ""
+        try:
+            mt = ((api._ai_get("/state") or {}).get("activeMenu") or {}).get("type") or ""
+        except Exception:
+            mt = ""
+        if mt:
+            why = (f"点开的是 `{mt}` 菜单 ⇒ 游戏**没把手上这件当可投放的**"
+                   f"（不是鱼/海胆/青蛙蛋/装饰/帽子）—— 单子上有「关掉界面」")
+        else:
+            why = "游戏什么都没做（手上没拿稳，或这件不在投放清单里）"
+    return f"⚠️ 没放进去：{why}"
 
 
 def _im_close_menu() -> str:
@@ -24130,11 +24351,16 @@ def _im_reforge(x, y, item) -> str:
 
 
 def _count_item(name: str) -> int:
-    """背包里某件（按内部名/显示名）的**总数**；读不到 → 0（回执里宁可少说，不编）。"""
+    """背包里某件（按内部名/显示名/**限定 id**）的**总数**；读不到 → 0（回执里宁可少说，不编）。
+
+    ⚠️ 2026-10-04 补 `itemId`：鱼缸那件要按 **`(O)397` 这种限定 id** 问
+       （重名多款的东西只有 id 分得开 —— 跟 `/select` 那条老账一个道理）。
+    """
     try:
         n = 0
         for i in ((api._ai_get("/state") or {}).get("inventory") or []):
-            if i.get("name") == name or i.get("displayName") == name:
+            if (i.get("name") == name or i.get("displayName") == name
+                    or i.get("itemId") == name):
                 n += int(i.get("stack") or 0)
         return n
     except Exception:
@@ -24240,6 +24466,11 @@ def _im_run(op, args):
         #    **自己帮读鱼缸/衣柜里有什么**返回 result」⇒ 走过去开 + 把里面的东西念出来。
         "furn": lambda: _im_furn_interact(args.get("x"), args.get("y"), args.get("kind") or "",
                                           args.get("w") or 0),
+        # 🐟 往鱼缸里放一件（2026-10-04 恒：开完鱼缸就该知道背包里能放什么 ⇒ 得有那扇门）。
+        #    ⚠️ 走 `helpers`（回**一句话**）：回执要的是"缸里件数变没变"（`/tank` 前后对比），
+        #       不是把几个端点的原始 dict 摊给 AI 看。
+        "tank_put": lambda: _im_tank_put(args.get("x"), args.get("y"),
+                                         args.get("item") or "", args.get("item_id") or ""),
         # 🪑 起身（2026-10-01）：单子上的「起身」按下去走这里。
         #    ⚠️ 调现成的 `stand()`（它自己轮询确认），**不另写一套**。
         #    ⚠️ 它外面裹着 `_with_state` —— 内嵌调用时那层会**自己闭嘴**（`_OPS_INNER["n"]`），
