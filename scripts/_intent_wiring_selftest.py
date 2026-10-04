@@ -2368,14 +2368,26 @@ def main():
     res.append(ok("💧 浇水行在册（权重 86：收 88 / 摸 87 之后，摸动物 84 之前）",
                   _w("water") == 86, _w("water")))
     _wc = M.intent_menu._water_can
-    res.append(ok("💧 有作物 + `watered=False` ⇒ 该浇",
-                  _wc(None, {"crop": "24", "cropName": "萝卜", "watered": False}) is True))
-    res.append(ok("💧 有作物 + `watered=True` ⇒ **不浇**",
-                  _wc(None, {"crop": "24", "watered": True}) is False))
-    res.append(ok("💧 没作物 ⇒ 不浇（`water_crops` 自己也不浇空地）",
-                  _wc(None, {"watered": False}) is False))
-    res.append(ok("💧 老 DLL 不报 `watered` ⇒ **MAYBE**（不给一行按了不成的）",
-                  _wc(None, {"crop": "24"}) is None))
+    # ⚠️⚠️ 2026-10-04 **真机逮到的洞**（恒种的 32 格上古水果田）：真机上"没浇过的格"
+    #    **根本没有 `watered` 键**（C# `ModEntry.cs:7314` = `if (watered) tile["watered"] = true;`
+    #    —— 只在为真时才写键）⇒ 我第一版"缺键 ⇒ MAYBE"让这一行**结构性永不出现**。
+    #    现在判据**照执行器 `water_crops.py:45` 那一行**写（缺键 = 没浇），所以下面的夹具
+    #    故意**不带 `watered` 键**（= 真机那份形状），不是"False"。
+    _D = {"terrain": "HoeDirt", "crop": "454", "cropName": "上古水果",
+          "harvestable": False, "cropScythe": False}
+    res.append(ok("💧 有作物 + **没浇过（真机那份形状：连 `watered` 键都没有）** ⇒ 该浇",
+                  _wc(None, dict(_D)) is True))
+    res.append(ok("💧 有作物 + `watered=true`（浇过了才有这个键）⇒ **不浇**",
+                  _wc(None, dict(_D, watered=True)) is False))
+    res.append(ok("💧 空地 / 没翻的地 ⇒ 不浇（执行器也不浇它们）",
+                  _wc(None, {"watered": False}) is False
+                  and _wc(None, {"terrain": "Grass", "crop": "454"}) is False))
+    res.append(ok("💧 **已成熟 ⇒ 不浇**（执行器显式跳过 ⇒ 印出来就是按了不成）",
+                  _wc(None, dict(_D, harvestable=True)) is False))
+    # 🔌 防漂移：判据那一行**必须跟执行器同一把尺**（源码对读，不靠记）
+    _wc_src = open(os.path.join(_here, "water_crops.py"), encoding="utf-8").read()
+    res.append(ok("💧 判据与执行器同源：`water_crops.find_unwatered` 也是 `not t.get(\"watered\")`",
+                  'not t.get("watered")' in _wc_src and 'terrain") == "HoeDirt"' in _wc_src))
     _w_call = {}
     _exec_w = M.intent_menu._exec_water
     try:
@@ -2413,22 +2425,68 @@ def main():
                                lambda k, a: _st_call.update(key=k, args=a) or "🗿 摸完雕像")
     res.append(ok("🗿 exec 打的 op 是**无参**的 `statue`（跟 `farm ops=statue` 同一个脚本）",
                   _st_call.get("key") == "statue" and _st_call.get("args") == {}, _st_call))
-    # 服务器那层：雕像**零额外 HTTP**（从已经拿到的 `surr` 扫 object 层 + 从 `state` 读那一位）
-    _stub(statues=[(20, 30, "Statue Of Blessings")], blessed=False)
+    # 服务器那层：雕像**零额外 HTTP**（从已经拿到的 `/machines` 认整图 + 从 `state` 读那一位）
+    # ⚠️ 2026-10-04 恒：「**改成当前图有就报**」⇒ 判据从 `/surroundings` 30 格窗口换成
+    #    `/machines`（整图 + 带 `location`）—— 真机站 (53,58)、雕像在 (74,16)（45 格）照样报。
+    _ST_ROW = {"type": "Statue Of Blessings", "x": 74, "y": 16, "location": "Farm"}
+    _stub(loc="Farm", machines=[_ST_ROW], blessed=False)
     _c_st = M._im_ctx()
-    res.append(ok("🗿 服务器那层：`/surroundings` 的 **object 层**认出雕像 + 读 `blessedByStatueToday`",
-                  _c_st.statue == {"names": ["Statue Of Blessings"], "used_today": False},
-                  _c_st.statue))
-    _stub(statues=[(20, 30, "Statue Of Blessings")], blessed=True)
+    res.append(ok("🗿 服务器那层：从 **`/machines`（整图）**认出雕像（远在图那一头也报）+ 读 `blessedByStatueToday`",
+                  _c_st.statue.get("names") == ["Statue Of Blessings"]
+                  and _c_st.statue.get("tiles") == [[74, 16]]
+                  and _c_st.statue.get("used_today") is False, _c_st.statue))
+    _stub(loc="Farm", machines=[dict(_ST_ROW, location="Big Shed")], blessed=False)
+    res.append(ok("🗿 **别的屋/别的图**的雕像不出这行（跨图走位执行器做不到 ⇒ 出了是假门）",
+                  M._im_ctx().statue == {}, M._im_ctx().statue))
+    _stub(loc="Farm", machines=[_ST_ROW], blessed=True)
     res.append(ok("🗿 服务器那层：`blessedByStatueToday=true` ⇒ `used_today=True` ⇒ 单子不给那行",
                   M._im_ctx().statue.get("used_today") is True, M._im_ctx().statue))
-    _stub(statues=[(20, 30, "Statue Of Blessings")])       # 老 DLL：**不吐这个键**
+    _stub(loc="Farm", machines=[_ST_ROW])       # 老 DLL：**不吐这个键**
     _c_old = M._im_ctx()
     res.append(ok("🗿 老 DLL（`/state.player` 没这个键）⇒ `used_today=None`（**不是 False**）",
                   _c_old.statue.get("used_today", "缺键") is None, _c_old.statue))
-    _stub()                                                # 场上没雕像
-    res.append(ok("🗿 服务器那层：场上没雕像 ⇒ 账为空 `{}`（那行不出现）",
+    _stub(loc="Farm")                           # 本图没有 Statue 类机器
+    res.append(ok("🗿 服务器那层：本图没有雕像 ⇒ 账为空 `{}`（那行不出现）",
                   M._im_ctx().statue == {}, M._im_ctx().statue))
+    # 🗿 理由栏要带坐标/距离（远的那座雕像：不说位置 AI 不知道要走多远）
+    _st_ctx_far = _Ctx(px=53, py=58, statue={"names": ["Statue Of Blessings"],
+                                             "tiles": [[74, 16]], "used_today": False})
+    _st_reason = M.intent_menu._statue_reason(_st_ctx_far, {})
+    res.append(ok("🗿 理由栏带 📍坐标 + 距离（远了也要让 AI 知道要走多久）",
+                  "(74,16)" in _st_reason and "42 格" in _st_reason, _st_reason))
+    # 🗿 执行器**同一把尺**：`blessing_statue.py` 也必须走 `/machines`（不是 /surroundings 30 格）
+    #    ⚠️ 查的是**调用形态**，不是"文件里出现过这个词"——它的注释里正解释着"以前扫 30 格窗口"。
+    _bs_src = open(os.path.join(_here, "blessing_statue.py"), encoding="utf-8").read()
+    _bs_calls_surr = ('get("/surroundings"' in _bs_src) or ('post("/surroundings"' in _bs_src)
+    res.append(ok("🗿 执行器换源了：`blessing_statue.py` 调 `/machines`（不再调 /surroundings），并带 `location` 过滤",
+                  'get("/machines")' in _bs_src and not _bs_calls_surr and "location" in _bs_src,
+                  "还在打 /surroundings" if _bs_calls_surr else ""))
+    # 🗿⛔ **假成功防线**（2026-10-04 真机当场抓到）：脚本"站在雕像**斜角** ⇒ interact 打空
+    #    （triggered=False、游戏那位还是 false）"却印「🗿 摸了…」；而单子那层（`_im_run` 的
+    #    helpers 档）是**看第一个字符**判成没成的 ⇒ 前面那句「🗿 雕像报告」把 ⚠️ 洗成了 ✅。
+    res.append(ok("🗿 成功判据 = `actionTriggered` + `facingTile` 就是雕像格（或游戏自己的 `blessedByStatueToday`）",
+                  "facingTile" in _bs_src and "actionTriggered" in _bs_src
+                  and "blessedByStatueToday" in _bs_src))
+    res.append(ok("🗿 站位要求**精确**（`exact=True`：差一格的斜角站位就是打空的根因，不许再放行）",
+                  "wait_arrive(px, py, timeout=20.0, exact=True)" in _bs_src))
+    _orig_rs = M._run_script
+    try:
+        M._run_script = lambda *a, **k: ("[statue] 📍 Farm | 找到雕像\n"
+                                         "[statue] ⚠️ 没摸到 Statue Of Blessings：站在斜角打空了")
+        _txt_bad = M.blessing_statue()
+        M._run_script = lambda *a, **k: ("[statue] 📍 Farm | 找到雕像\n"
+                                         "[statue] ✅ 摸到雕像 Statue Of Blessings（全程真走位）")
+        _txt_ok = M.blessing_statue()
+        M._run_script = lambda *a, **k: "[statue] ⚠️ 没摸到 Statue Of Blessings"
+        _r_st_bad = M._im_run("statue", {})
+    finally:
+        M._run_script = _orig_rs
+    res.append(ok("🗿 脚本报 ⚠️ ⇒ 工具文本**以 ⚠️ 起头**（`_im_run` 看首字符 ⇒ 回执不会印 ✅）",
+                  str(_txt_bad).lstrip().startswith("⚠️"), str(_txt_bad)[:60]))
+    res.append(ok("🗿 脚本报 ✅ ⇒ 不糊 ⚠️（正常成功照旧）",
+                  not str(_txt_ok).lstrip().startswith("⚠️") and "✅" in str(_txt_ok)))
+    res.append(ok('🗿 端到端：没摸到时 `_im_run("statue")` **不是 yes**（单子不会印 ✅）',
+                  isinstance(_r_st_bad, dict) and _r_st_bad.get("st") != "yes", _r_st_bad))
 
     # 🐟 收 鱼塘产出
     res.append(ok("🐟 收鱼塘产出行在册（权重 82：压在 箱子 80 之上、摸动物 84 之下 —— 它是真动作）",

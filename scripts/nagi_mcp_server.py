@@ -9274,7 +9274,21 @@ def blessing_statue() -> str:
     用法：下矿前先摸，拿到好祝福再放心炸矿。
     """
     out = _run_script("blessing_statue", [], timeout=60)
-    return _with_state(f"🗿 雕像报告：\n{out[:500]}")
+    body = (out or "").strip()
+    # ⚠️⚠️ 2026-10-04 真机抓到的**假成功**：脚本里"站在雕像**斜角** ⇒ `/interact` 打空
+    #    （`triggered=False`、游戏那位还是 false）"却照样印「🗿 摸了…」，而单子那层
+    #    （`_im_run` 的 helpers 档）是**看第一个字符**判成没成的 ⇒ 前面糊一句「🗿 雕像报告」
+    #    就把 ⚠️ 洗成了 ✅。⇒ **把脚本自己的判决行提到最前**（判据只用它自己的话，一个字不编）：
+    #    找 `[statue] ✅/⚠️/❌` 那一行；**没有判决行**（崩了/被超时掐断）⇒ 按 ⚠️ 起头
+    #    （保守方向：宁可难看，不许骗人 —— 同 `_im_run` 那段"认错的方向只会让 ✅ 变少"）。
+    verdict = ""
+    for ln in body.splitlines():
+        s = ln.strip()
+        if s.startswith("[statue] ") and s[len("[statue] "):len("[statue] ") + 1] in ("✅", "⚠️", "❌"):
+            verdict = s[len("[statue] "):]
+            break
+    head = "" if verdict.startswith("✅") else "⚠️ "
+    return _with_state(f"{head}🗿 雕像报告：\n{body[:600]}")
 
 
 @mcp.tool()
@@ -23165,33 +23179,47 @@ def _im_chores(state: dict, surr: dict, animals: dict) -> dict:
     return out
 
 
-def _im_statue(state: dict, surr: dict) -> dict:
-    """🗿 「摸 雕像」那行的账 —— 2026-10-04 恒拍板 (b)。
+def _im_statue(state: dict, surr: dict, machines: list = None) -> dict:
+    """🗿 「摸 雕像」那行的账 —— 2026-10-04 恒拍板 (b) + 「**当前图有就报，有就摸**」。
 
-    形状：`{}` = **本场景没有雕像**（那行不出现）；有值时
-      `{"names": ["Statue Of Blessings"], "used_today": False|True|None}`。
+    形状：`{}` = **本图没有雕像**（那行不出现）；有值时
+      `{"names": ["Statue Of Blessings"], "tiles": [[74,16]], "used_today": False|True|None}`。
 
-    - **场上有雕像**：扫 `/surroundings` 的 `object` 名里含 `Statue` 的格 ——
-      ⚠️ **跟 `blessing_statue.py` 同一个判据**（它是这套动作**唯一的执行器**，扫的就是这一条）。
-      别在这儿另立名单（名单会烂，本项目的老病）；**更别扫家具层**（`(F)` 开头的装饰雕像摸不出
-      增益，当年 `_cabin_enum` 就栽在这：enum 报「雕像 1 座」而脚本回「没找到雕像」，两边打架）。
-      半径也**跟着脚本用 30**（`/surroundings` 的上限就是 30 —— 传更大是**静默落回 10**）。
+    - **本图有没有雕像**：走**已经拿到的** `/machines`（`_im_ctx` 本来就打这一发）——
+      ⚠️ 2026-10-04 恒：「**改成当前图有就报**」：原先扫 `/surroundings radius 30`，
+      人一站远（真机：站 (53,58) 而雕像在 (74,16)）那行就**不出现**，可"这一天该摸一次"这件事
+      跟"我此刻站哪"没关系。`/machines` 现场实测**整图**（离 45 格照样报，带 `location` 字段）
+      ⇒ **零额外 HTTP**、也不再有 30 格窗口这个假边界。
+      ⚠️ 只收 `location == 本图` 的（恒：「**当前图**有就报」）——别的屋/别的图的雕像不该出这行
+        （那要跨图走位，执行器做不到，出了就是假门）。
+      ⚠️ 判据只此一处：`Statue` 子串（`Statue Of Blessings` / `Statue Of The Dwarf King`…）。
+        **不扫家具层**（`(F)` 装饰雕像摸不出东西 —— 当年 `_cabin_enum` 正是栽在这）。
     - **今天摸过没**：`/state.player.blessedByStatueToday` = 游戏自己的
       `Farmer.hasBeenBlessedByStatueToday`（`Farmer.decompiled.cs:276`，每天在 `:3530` 重置）
       ⇒ **权威信号**。⚠️ 老 DLL 没这个键 ⇒ `None` = **不知道**（消费侧给 MAYBE）。
       ⚠️⚠️ **不许拿 `_statue_reminder` 的 `shown` 冒充它**：那个判的是"今天提醒过没"，
-         而且**调它本人就把当天那次提醒吃掉了**（副作用，见 `nagi_mcp_server.py:4580` 那片）。
+         而且**调它本人就把当天那次提醒吃掉了**（副作用，见 `nagi_mcp_server.py` 那片）。
     """
     try:
-        names = []
-        for t in ((surr or {}).get("tiles") or []):
-            obj = (t or {}).get("object") or ""
-            if "Statue" in obj and obj not in names:
-                names.append(obj)
+        loc = (state or {}).get("location") or {}
+        here = loc.get("name") if isinstance(loc, dict) else loc
+        names, tiles = [], []
+        for m in (machines or []):
+            ty = str((m or {}).get("type") or "")
+            if "Statue" not in ty:
+                continue
+            if here and (m or {}).get("location") and (m or {}).get("location") != here:
+                continue          # 别的图/别的屋的雕像：不归这行（走出去了也做不到）
+            if ty not in names:
+                names.append(ty)
+            x, y = (m or {}).get("x"), (m or {}).get("y")
+            if isinstance(x, int) and isinstance(y, int) and [x, y] not in tiles:
+                tiles.append([x, y])
         if not names:
             return {}
         used = ((state or {}).get("player") or {}).get("blessedByStatueToday")
-        return {"names": names, "used_today": (None if used is None else bool(used))}
+        return {"names": names, "tiles": tiles,
+                "used_today": (None if used is None else bool(used))}
     except Exception:
         return {}
 
@@ -23291,10 +23319,10 @@ def _im_ctx():
                                 # 🌿 「捡 地上的东西」那行的账（判据 = `pickup_scene.scan_pickables()`，
                                 #    恒 2026-10-01：「复用原来的捡蛋工具」）。
                                 pick=_im_pick(state, surr),
-                                # 🗿 「摸 雕像」那行的账（2026-10-04 恒拍板 (b)）：
-                                #    **一场一发都不用多打** —— 雕像从已经拿到的 `surr` 里扫，
-                                #    "今天摸过没"从已经拿到的 `state` 里读。
-                                statue=_im_statue(state, surr),
+                                # 🗿 「摸 雕像」那行的账（2026-10-04 恒拍板 (b) + 「当前图有就报」）：
+                                #    **一场一发都不用多打** —— 雕像从已经拿到的 `/machines` 里认
+                                #    （整图、带 location），"今天摸过没"从已经拿到的 `state` 里读。
+                                statue=_im_statue(state, surr, machines),
                                 # 🐟 「收 鱼塘产出」那行的账（同上：只在**农场**多打一发
                                 #    `/fish_pond`，跟晨报/`farm ops=pond` 共用 `_fetch_fish_ponds`）。
                                 ponds=_im_ponds(state),

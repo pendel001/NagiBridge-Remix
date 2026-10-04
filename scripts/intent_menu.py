@@ -469,21 +469,29 @@ def _harvest_show(ctx, t):
 # ⇒ 行为**现成**（`water_crops()`：只浇"有作物且没浇过"的格、壶空了自己走去水边真打水、晚10点后不浇），
 #    这里只做一件事：把它接上单子（**聚合行** —— 一片一次浇完，不用给矩形/半径）。
 def _water_can(ctx, t):
-    """💧 这一格**有作物且没浇过**才算。
+    """💧 这一格**有作物且没浇过**才算 —— 判据**跟执行器同一把尺**（照抄它那一行）。
 
-    ⚠️ 判据走**瓦片 payload 本身**的 `watered`（C# `/surroundings` 对 HoeDirt 报的那个），
-       **不走 `ctx.cap("watered")`**：`caps` 是 DLL 自报的字段表（`/status.caps`），加一个字段要重编 C#；
-       而"这一格报没报 watered"直接看得出来（同 `_harvest_can` 用 `harvestable` 的口径）。
-       `watered` 缺键 = **这版 DLL 不报** ⇒ MAYBE（宁缺勿编：不给一行按了不成的）。
+    ⚠️⚠️ 2026-10-04 **真机逮到的洞**（恒种了一块上古水果田给我测：32 格全干、就在 30 格内，
+        可单子上**一条浇水都没有**）：C# 写这个键的约定是
+        `if (watered) tile["watered"] = true;`（`ModEntry.cs:7314`）——**只在"浇过"时才写键**。
+        我第一版把它当成"缺键 = 这版 DLL 不报 ⇒ MAYBE"，而**没浇过的格恰恰都没有这个键**
+        ⇒ `can()` 恒不返回 True ⇒ **「浇水」那行结构性永远不会出现**。
+        两处独立证据：① 真机该格 payload = `{passable, terrain:HoeDirt, crop:454, cropPhase,
+        harvestable:false, cropName, cropScythe, cropRegrow}` —— **没有 `watered` 键**；
+        ② `water_crops.py:45`（唯一执行器）读的就是 `not t.get("watered")`（**缺键 = 没浇**）。
+    ⇒ 判据**照执行器那一行写**（`terrain==HoeDirt` + 有作物 + `not watered` + 跳过已成熟），
+      这样"单子印的 N 格"与"脚本真会浇的 N 格"**是同一批**（否则又是一次假承诺）。
+      📌 通式：**"只在为真时才写键"的字段（C# 那一族的约定）不许当"缺键=不知道"读** ——
+        先看执行器怎么读它；`Ctx.caps` 那段讲的正是这个坑。
     """
     if not t:
         return CAN_NO
-    if t.get("crop") is None:
-        return CAN_NO                      # 没作物：浇了也没用（`water_crops` 本身也不浇空地/没翻的地）
-    w = t.get("watered")
-    if w is None:
-        return CAN_MAYBE
-    return CAN_YES if w is False else CAN_NO
+    if t.get("terrain") != "HoeDirt" or t.get("crop") is None:
+        return CAN_NO          # 没翻的地/空地：浇了也没用（脚本也不浇它们）
+    if t.get("harvestable"):
+        return CAN_NO          # 已成熟 ⇒ 脚本显式跳过（先收），印出来就是假承诺
+    # ⚠️ **缺键 = 没浇**（`ModEntry.cs:7314` 只在为真时才写键；执行器读的也是 `not watered`）
+    return CAN_YES if not t.get("watered") else CAN_NO
 
 
 def _water_reason(ctx, t):
@@ -1068,10 +1076,18 @@ def _statue_show(ctx, t):
 def _statue_reason(ctx, t):
     s = ctx.statue or {}
     names = "、".join(s.get("names") or [])
+    # 📍 带上坐标/距离：2026-10-04 恒「当前图有就报」之后，雕像**可能在图的那一头**（真机 45 格）——
+    #    不说位置，AI 就不知道这一按要走多远（同"竹筒倒豆"那条：必要信息要主动给）。
+    tiles = s.get("tiles") or []
+    where = ""
+    if tiles:
+        tx, ty = tiles[0]
+        d = max(abs(tx - (ctx.px or 0)), abs(ty - (ctx.py or 0)))
+        where = f"｜📍({tx},{ty}) 约 {d} 格"
     if s.get("used_today") is None:
         # ⚠️ **读不到就直说读不到**（别印"今天还没摸过"——那是替游戏回答）。
-        return f"{names} · ⚠️ 这版 mod 报不出「今天摸过没」"
-    return f"{names} · 今天还没摸过（摸一次给祝福，每天一次）"
+        return f"{names}{where} · ⚠️ 这版 mod 报不出「今天摸过没」"
+    return f"{names}{where} · 今天还没摸过（摸一次给祝福，每天一次）"
 
 
 def _exec_statue(ctx, targets, run):

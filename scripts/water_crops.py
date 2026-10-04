@@ -86,7 +86,10 @@ def equip_watering_can():
 def _water_rect(x1, y1, x2, y2):
     """对一块矩形调 /tool_area 蓄力浇水（基础壶逐格挥壶 / 升级壶蓄力覆盖）。
     ⚠️ 走位+蓄力可能很久（基础壶逐格挥壶），必须长超时——10s 会把蓄力截断。
-    补漏由 ModEntry 自动做（取余补站位蓄力补，不直接改地块）。
+    ⚠️⚠️ 2026-10-04 更正上一版的假话：这里原先写"补漏…**不直接改地块**"——**是错的**。
+       `ModEntry.PatchMissingOnMain` 的水分支就是 `wdirt.state.Value = 1`（不挥壶/不费水/不走位），
+       恒 09-23 真机就抓到过（"浇了一会儿咔嚓一下全改了、人不浇了"）。回包里的 `patches`
+       就是它补了几格 ⇒ 现在**哪怕 0 也印出来**（静默的 0 和"没做"外面分不出来）。
     返回 dict：{ok, text, out_of_water}——`out_of_water=True` = 浇到一半壶空了、C# **已停手报缺**
     （剩下没浇的格子还在，打水后拿同一块矩形重发即可：矩形过滤只挑"还没浇的"，天然幂等）。"""
     try:
@@ -101,9 +104,18 @@ def _water_rect(x1, y1, x2, y2):
                 "text": f"  ❌ tool_area 浇水失败: {r.get('error', r)}"}
     patches = r.get("patches", 0)
     still = r.get("still_missing") or []
-    s = f"  ✅ tool_area 蓄力浇 ({x1},{y1})-({x2},{y2})"
-    if patches:
-        s += f"，取余补站位自动补 {patches} 格"
+    # 🔍 2026-10-04 恒真机盯着看：「**只挥了一次壶就浇完水了**」—— 而我上一轮说"2 个锚点"是**看
+    #    代码推的、没量**。C# 的回包里本来就有 `swings`（每个锚点释放一次）＋ `result.results` 里
+    #    每条 `charge_release`（各带 `tiles`）⇒ **把这两个数一律印出来**，别再让"挥了几次"靠猜。
+    #    ⚠️ 同时也印 `patches`（**哪怕 0 也印**）：那是"不挥壶不费水直接写湿地块"的补漏格数，
+    #    上一轮它=0 时我一句话都没印 —— 静默的 0 和"没做"外面分不出来。
+    _swings = r.get("swings")
+    _rel = [x for x in (((r.get("result") or {}).get("results")) or [])
+            if isinstance(x, dict) and x.get("action") == "charge_release"]
+    s = f"  ✅ tool_area 蓄力浇 ({x1},{y1})-({x2},{y2})｜挥壶 {_swings} 次"
+    if _rel:
+        s += "（" + "、".join(f"{x.get('tiles')}格/power{x.get('power')}" for x in _rel) + "）"
+    s += f"｜补漏直写 {patches} 格"
     if still:
         s += f"，仍漏 {len(still)} 格"
         for m in still[:3]:
