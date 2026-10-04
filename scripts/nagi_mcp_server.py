@@ -23703,7 +23703,7 @@ def _im_sell(name):
     return api._ai_post("/sell_to_shop", {"name": name})
 
 
-def _im_furn_interact(x, y, kind=""):
+def _im_furn_interact(x, y, kind="", w=0):
     """🐟💄📺 走过去开一件家具（电视/梳妆柜/鱼缸），**顺手把里面的东西念出来**。
 
     恒 2026-10-04：「交互的时候**自己帮读鱼缸/衣柜里有什么**返回 result，**可以放什么进去**和接线选项」。
@@ -23759,7 +23759,18 @@ def _im_furn_interact(x, y, kind=""):
                      + ("、".join(put) + " → `menu sell(name=名字)`" if put
                         else "你包里现在没有这类东西"))
     elif kind == "tank":
-        lines.append("   ➕ **鱼缸放鱼/装饰：菜单里放不进去** —— 把它拿在手上，对着鱼缸 `scene at` 右键")
+        # 🐟 2026-10-04 反编译实据（`FishTankFurniture.GetCapacityForCategory` `:117-139`）：
+        #    容量**按缸宽 W 算**（不是固定 3 条）：游鱼 = W-1、底层生物 = W-1（`(F)JungleTank` +1）、
+        #    装饰 = 窄缸(W≤2) 只 1 件、宽缸"**每种各 1**"（重复同一种装饰会被拒 —— 恒真机撞到的
+        #    「无法再放入同类型的东西」就是这条，不是"每种鱼限 3 条"）。**按类别算、不按鱼种算**。
+        #    能放：`Data/AquariumFish` 那批（鱼 + 海胆[可戴帽，靠该表第 8 字段] + 青蛙蛋 `(TR)FrogEgg`）
+        #    + 14 个硬编码装饰 ID；**菜单里放不进**（`ShopId="FishTank"` 没注册 `categoriesToSellHere`
+        #    ⇒ 背包格永远不高亮）⇒ 只能手持 + 右键本体，一次一件。
+        _w = int(w or 0)
+        _cap = max(0, _w - 1)
+        lines.append(f"   ➕ 放不进菜单 ⇒ **手持 + 右键它本体（一次一件）**；容量（按缸宽 {_w} 算）："
+                     f"游鱼 {_cap} 条 · 底层生物 {_cap} 条（丛林缸+1）· 装饰每种各 1"
+                     f"；能放 = 游戏 `Data/AquariumFish` 那批（鱼/海胆可戴帽/青蛙蛋）+ 14 种装饰")
     return {"ok": True, "text": "\n".join(lines), "menu": mt}
 
 
@@ -24227,7 +24238,8 @@ def _im_run(op, args):
         "sit": lambda: sit(args.get("x"), args.get("y"), args.get("face")),
         # 🐟💄📺 2026-10-04 恒：「鱼缸梳妆柜和电视……只是没接到单子上」＋「交互的时候
         #    **自己帮读鱼缸/衣柜里有什么**返回 result」⇒ 走过去开 + 把里面的东西念出来。
-        "furn": lambda: _im_furn_interact(args.get("x"), args.get("y"), args.get("kind") or ""),
+        "furn": lambda: _im_furn_interact(args.get("x"), args.get("y"), args.get("kind") or "",
+                                          args.get("w") or 0),
         # 🪑 起身（2026-10-01）：单子上的「起身」按下去走这里。
         #    ⚠️ 调现成的 `stand()`（它自己轮询确认），**不另写一套**。
         #    ⚠️ 它外面裹着 `_with_state` —— 内嵌调用时那层会**自己闭嘴**（`_OPS_INNER["n"]`），

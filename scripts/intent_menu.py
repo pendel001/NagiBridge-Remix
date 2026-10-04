@@ -971,7 +971,8 @@ def _furn_reason(ctx, t):
 def _exec_furn(ctx, targets, run):
     f = (targets[0].get("furniture") or {})
     # `kind` 递过去 ⇒ 回执才能按"梳妆柜/鱼缸"分别说清**放东西**那半（鱼缸菜单里放不进去）
-    r = run("furn", {"x": f.get("x"), "y": f.get("y"), "kind": _furn_kind(f)})
+    r = run("furn", {"x": f.get("x"), "y": f.get("y"), "kind": _furn_kind(f),
+                     "w": int(f.get("width") or 0)})
     return _receipt_from_helper("开", f.get("name") or "家具", r)
 
 
