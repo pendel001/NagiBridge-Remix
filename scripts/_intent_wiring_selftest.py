@@ -2318,6 +2318,30 @@ def main():
     res.append(ok("⚖️ 193：`收 成熟作物` 85 → **88**（做完就不播了 ⇒ 往前挪）", _w("harvest") == 88,
                   _w("harvest")))
     res.append(ok("⚖️ 193：`摸 猫狗` 83 → **87**", _w("pets") == 87, _w("pets")))
+
+    # 💧 2026-10-04 恒拍板上单：浇水（「浇没湿的有作物格子，不用圈地」）
+    #    判据走**瓦片自己的 `watered`**（不走 caps：加字段要重编 C#），缺键 = MAYBE（宁缺勿编）。
+    res.append(ok("💧 浇水行在册（权重 86：收 88 / 摸 87 之后，摸动物 84 之前）",
+                  _w("water") == 86, _w("water")))
+    _wc = M.intent_menu._water_can
+    res.append(ok("💧 有作物 + `watered=False` ⇒ 该浇",
+                  _wc(None, {"crop": "24", "cropName": "萝卜", "watered": False}) is True))
+    res.append(ok("💧 有作物 + `watered=True` ⇒ **不浇**",
+                  _wc(None, {"crop": "24", "watered": True}) is False))
+    res.append(ok("💧 没作物 ⇒ 不浇（`water_crops` 自己也不浇空地）",
+                  _wc(None, {"watered": False}) is False))
+    res.append(ok("💧 老 DLL 不报 `watered` ⇒ **MAYBE**（不给一行按了不成的）",
+                  _wc(None, {"crop": "24"}) is None))
+    _w_call = {}
+    _exec_w = M.intent_menu._exec_water
+    try:
+        _orig_run = M.intent_menu.__dict__.get("_im_run")
+        M.intent_menu._exec_water(None, [{"crop": "24"}],
+                                  lambda k, a: _w_call.update(key=k, args=a) or "🌱 浇完了（桩）")
+    finally:
+        pass
+    res.append(ok("💧 exec 打的 op 是**无参**的 `water`（端点不吃半径/坐标，传了会被静默丢）",
+                  _w_call.get("key") == "water" and _w_call.get("args") == {}, _w_call))
     res.append(ok("⚖️ 193：`放牧（开棚门）` 70 → **84**（早晨跟摸动物一个档）",
                   _w("opendoors") == 84, _w("opendoors")))
     res.append(ok("⚖️ 193：`收 蟹笼` 68 → **72**（有货时可抬）", _w("crab") == 72, _w("crab")))

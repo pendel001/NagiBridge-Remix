@@ -448,6 +448,36 @@ def _harvest_show(ctx, t):
     return f"收 {t.get('cropName') or '作物'}"
 
 
+# ═══════════ 💧 浇水（2026-10-04 恒拍板上单） ═══════════
+# 恒：「**浇水肯定是浇没湿的有作物格子**，这个**不用圈地**也可以做，而且前期洒水器没到会经常做。」
+# ⇒ 行为**现成**（`water_crops()`：只浇"有作物且没浇过"的格、壶空了自己走去水边真打水、晚10点后不浇），
+#    这里只做一件事：把它接上单子（**聚合行** —— 一片一次浇完，不用给矩形/半径）。
+def _water_can(ctx, t):
+    """💧 这一格**有作物且没浇过**才算。
+
+    ⚠️ 判据走**瓦片 payload 本身**的 `watered`（C# `/surroundings` 对 HoeDirt 报的那个），
+       **不走 `ctx.cap("watered")`**：`caps` 是 DLL 自报的字段表（`/status.caps`），加一个字段要重编 C#；
+       而"这一格报没报 watered"直接看得出来（同 `_harvest_can` 用 `harvestable` 的口径）。
+       `watered` 缺键 = **这版 DLL 不报** ⇒ MAYBE（宁缺勿编：不给一行按了不成的）。
+    """
+    if not t:
+        return CAN_NO
+    if t.get("crop") is None:
+        return CAN_NO                      # 没作物：浇了也没用（`water_crops` 本身也不浇空地/没翻的地）
+    w = t.get("watered")
+    if w is None:
+        return CAN_MAYBE
+    return CAN_YES if w is False else CAN_NO
+
+
+def _water_reason(ctx, t):
+    return f"{t.get('cropName') or '作物'} 该浇水了"
+
+
+def _water_show(ctx, t):
+    return f"浇 {t.get('cropName') or '作物'}"
+
+
 # ⛔ `_dig_can`/`_dig_reason`/`_dig_show`/`_exec_dig` 2026-09-29 **整套删掉**了
 #    （不是注释掉）—— 留着当死代码，下一个人只会看见"哦这儿有个现成的锄"又接回去。
 #    为什么删见 `VERBS` 里那段 ⛔ 注释（恒：**"能用但不划算"的路 = 走偏的路**）。
@@ -965,6 +995,28 @@ def _exec_harvest(ctx, targets, run):
     r = run("harvest_crops", {"radius": 25})
     return _receipt_from_helper("收作物", "半径 25 内", r,
                                 planned=f"{len(targets)} 格熟的")
+
+
+def _water_reason_many(ctx, targets):
+    """💧 聚合行理由：`萝卜×3、土豆×2`（跟收作物同一口径 —— 别只报「N 格」，那看不出种了啥）。"""
+    cnt = {}
+    for t in targets:
+        nm = t.get("cropName") or "作物"
+        cnt[nm] = cnt.get(nm, 0) + 1
+    return "、".join(f"{k}×{v}" for k, v in sorted(cnt.items(), key=lambda x: -x[1]))
+
+
+def _exec_water(ctx, targets, run):
+    """💧 浇水——走 farm 域的 `water_crops()`。
+
+    端点语义（`nagi_mcp_server.py:6733`）：**只浇"有作物且没浇过"的格**（空地/没翻的地不碰）；
+    壶空了自己**走去水边真打水**再回来接着浇；**晚 10 点后不浇**（明天再说）；浇完报"还剩几格"。
+    ⚠️ 它是**同步**的（一簇几十格可能要走近一分钟）——回执是"浇完了"，不是 job 号。
+    ⚠️ 端点**无参**（`def water_crops()`）⇒ 这里也别传半径/坐标，传了是白传（会被静默丢掉）。
+    """
+    r = run("water", {})
+    return _receipt_from_helper("浇水", "当前图上有作物的干格", r,
+                                planned=f"{len(targets)} 格该浇")
 
 
 def _held_name(slot) -> str:
@@ -3107,6 +3159,11 @@ VERBS: list = [
     Verb("harvest", "收 成熟作物", 88, _harvest_can, _harvest_reason, _harvest_show, "tile",
          exec=_exec_harvest, merge=True, batch=True,          # `harvest_crops` 是半径批量
          reason_many=_harvest_reason_many),
+    # 💧 2026-10-04 恒拍板上单：「浇水肯定是浇没湿的有作物格子，不用圈地也可以做，前期经常做」
+    #    ⇒ **聚合行**（同一片一次浇完）；判据是瓦片自己的 `watered`；exec 走无参的 `water_crops()`。
+    Verb("water", "浇水", 86, _water_can, _water_reason, _water_show, "tile",
+         exec=_exec_water, merge=True, batch=True,
+         reason_many=_water_reason_many),
     # ⛔ **「锄」2026-09-29 摘掉了，别再往上加**（恒拍板，理由比"它没用"重要得多）：
     #    > 「这种需要 AI 参与规划的行为，还是让它自己调我们的原路线吧。不然你给了它锄，
     #    >  它可能反而会觉得：哦，第一眼给我返回了这个。然后锄一大块地，全靠自己走位
