@@ -273,6 +273,11 @@ POI = {
     "矮人商店":          {"map": "Mine",        "pos": (43, 7), "wallet": "HasDwarvishTranslationGuide", "rock": True, "note": "🧱 矮人商店：炸开堵路石头+学会矮人语教程才开放。人站(43,7)朝上(0)正对矮人(43,6)，interact 买炸弹/矿石批发；wallet=钱包里 HasDwarvishTranslationGuide（学会矮人语教程，同 HasRustyKey 等钥匙检测源）；rock=先炸开 Mine(27,8) 的 (BC)78 堵路石才能走到（未炸→隐藏/拦，炸掉不再生）（2026-08-23 恒带路+AI现场检测）"},
     "探险家公会(外)":    {"map": "Mountain",     "pos": (76, 9), "note": "Mountain侧公会门口"},
     "探险家公会(内)":    {"map": "AdventureGuild","pos": (6, 12),"note": "买武器、接怪物任务"},
+    # 🗿 2026-10-04 恒：「**马龙这里要暴露的坐标有三个**：一个是吉尔、一个是马龙柜台、
+    #     一个是墙上的讨伐清单」——三个都真机验过（站 `pos` 朝上 interact 就成）：
+    "探险家公会(马龙柜台)": {"map": "AdventureGuild", "pos": (5, 13), "note": "🧔 马龙柜台：站(5,13)朝上交互(5,12)→ShopMenu 38 样（武器/靴子）。瓦片 Action=`AdventureShop`"},
+    "探险家公会(吉尔)":     {"map": "AdventureGuild", "pos": (11, 13),"note": "🛏️ 吉尔（躺床上）：站(11,13)朝上交互(11,12)→他说的话；**讨伐奖励没领完时会弹 ItemGrabMenu**（`AdventureGuild.gil()`；没得领就说一句'等你有了能让我刮目相看的东西'）"},
+    "探险家公会(讨伐清单)": {"map": "AdventureGuild", "pos": (8, 11), "note": "📜 墙上讨伐清单：站(8,11)朝上交互(8,10)→LetterViewerMenu，**正文我们包办读**（单子上直接印全表：各怪 x/目标 + `*`=已达标）；瓦片索引 1306"},
 
     # ── 深山 ──
     "温泉(门口)":        {"map": "Railroad",    "pos": (10, 57),"note": "♨️ 浴场入口在Railroad(10,57)，推门进 BathHouse_Entry(5,9)（一键开门）"},
@@ -554,6 +559,10 @@ POI_FACE = {
     "蜗牛教授":          {"face": 0},                      # 站(8,8)面向互动
     # 商店柜台（pos=站位，柜台在面前一格，朝上）
     "皮埃尔商店(柜台)":  {"face": 0, "stand": (4, 19)},    # 站(4,19)朝上，柜台(4,18)
+    # 🗿 2026-10-04 真机验过的公会三个点位（都朝上、stand 就是 POI 的 pos）
+    "探险家公会(马龙柜台)": {"face": 0, "stand": (5, 13)},
+    "探险家公会(吉尔)":     {"face": 0, "stand": (11, 13)},
+    "探险家公会(讨伐清单)": {"face": 0, "stand": (8, 11)},
     "皮埃尔商店(背包升级)": {"face": 0, "stand": (7, 19)}, # 🎒 站(7,19)朝上交互(7,18) BuyBackpack（2026-08-18 /scan 实测）
     "皮埃尔商店(优选交付箱)": {"face": 0, "stand": (19, 29)}, # 🧺 站(19,29)朝上交互(19,28)放金星菜进箱(接Pierre订单才显示)（2026-08-22 恒带路,坐标待确认）
     "沙漠钓鱼点":      {"face": 2, "stand": (9, 10)},   # 🎣 站(9,10)朝下钓(9,11)水面（沙漠节 DesertFestival 同坐标，2026-08-18 实测）
@@ -1009,6 +1018,23 @@ SHOP_HOURS = {
     "SandyHouse": "9:00-23:00",
     "ScienceHouse": "9:00-17:00",
     "AdventureGuild": "14:00-24:00（需先杀怪解锁）",
+}
+
+
+# 🏠 室内图清单（2026-10-04 恒：「**所有室内的 poi（柜台等）都列出来给 ai 的，室外就算了**」）
+#    用途：`🗺️ 可:` 那一行——**在室内图**改成"把这张图 `POI` 表里的条目全列出来（带坐标 + 以交互）"，
+#    室外图照旧用 `MAP_FEATURES`（街上兴趣点太多太碎，全列等于刷屏）。
+#    ⚠️ **显式清单**（宁缺勿滥）：不在表里的图 = 行为一字不变；发现哪张室内图漏了就往这儿加。
+INDOOR_MAPS = {
+    # 商店/公共建筑
+    "SeedShop", "Hospital", "Saloon", "Blacksmith", "ArchaeologyHouse", "ScienceHouse",
+    "AnimalShop", "FishShop", "SandyHouse", "AdventureGuild", "MovieTheater",
+    "CommunityCenter", "ManorHouse", "WizardHouse", "WizardHouseBasement", "Club",
+    "Trailer", "Tent", "IslandFieldOffice", "IslandHut", "IslandFarmHouse",
+    "VolcanoDungeon5", "FarmCave", "Cellar", "Greenhouse", "Shed",
+    "BathHouse_Entry", "BathHouse_MensLocker", "BathHouse_WomensLocker", "BathHouse_Pool",
+    # 农场动物建筑室内（名字 = `/state` 报的室内名）
+    "Barn", "Big Barn", "Deluxe Barn", "Coop", "Big Coop", "Deluxe Coop",
 }
 
 

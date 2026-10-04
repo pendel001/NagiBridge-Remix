@@ -175,7 +175,7 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
           silo=None, troughs=None, trough_filled=0, trough_raise=False,
           surr_tiles=None, trash_cans=None, cola=None, npcs=None, nuts=None,
           trash_checked=None, pet_bowls=None, passable_ret=None, ai_xy=None,
-          statues=(), blessed=None, ponds=None, buffs=None, map_size=None):
+          statues=(), blessed=None, ponds=None, buffs=None, map_size=None, hat=None):
     CALLS.clear()
     WALK_CALLS.clear()
     # 🚶 "我"站哪格：默认照 `STATE`（(12,12)），用例要"人已经站在棚门口"就传 `ai_xy=`。
@@ -224,6 +224,10 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
     # 🌿 六件"顺手活"（P1 那批）的料：`/state.player.orePan` + 追加的采集格
     if ore_pan is not None:
         state = dict(state, player=dict(state.get("player") or {}, orePan=ore_pan))
+    if hat is not None:
+        # 🥇 2026-10-04：淘金那半"锅戴在头上"的判据读的是 **`/state.player.hat`**（不是一个
+        #    `orePan` 里的字段）⇒ 夹具得能单独塞它，不然这条用例测的是空气。
+        state = dict(state, player=dict(state.get("player") or {}, hat=hat))
     if money is not None:
         # 💰 用例要"买不起/砸不起"就传 money=0（`_geode_can` 用 `ctx.money` 判 25g/颗）
         state = dict(state, player=dict(state.get("player") or {}, money=money))
@@ -1926,7 +1930,7 @@ def main():
     #    ⇒ 新加的"只扫周围"当场把它滤掉，两条老用例假红（自验逮到）。
     _T_SPOT = {"x": 14, "y": 14, "objId": "(O)590", "object": "Artifact Spot"}
     _T_MOSS = {"x": 23, "y": 9, "terrain": "Tree:1", "moss": True}
-    _PAN = {"hasGlint": True, "x": 33, "y": 36, "hasPan": True, "panUpgrade": 1}
+    _PAN = {"hasGlint": True, "x": 33, "y": 36, "hasPan": True, "panInHand": True, "panUpgrade": 1}
     _MOO = {"animals": [{"name": "牛牛", "type": "White Cow", "x": 11, "y": 14, "productReady": True},
                         {"name": "羊羊", "type": "Goat", "x": 12, "y": 14, "productReady": True},
                         {"name": "毛毛", "type": "Sheep", "x": 13, "y": 14, "productReady": True},
@@ -1934,13 +1938,14 @@ def main():
                         {"name": "空牛", "type": "White Cow", "x": 15, "y": 14, "productReady": False}]}
 
     def _chores(chore_tiles=None, crab_ready=0, ore_pan=None, animals=None, weather=0,
-                hoe=True, season="spring", day=16, trash_cans=None, cola=None, nuts=None):
+                hoe=True, season="spring", day=16, trash_cans=None, cola=None, nuts=None,
+                hat=None):
         # ⚠️ 日期默认 **春 16**（浆果窗口内）—— 浆果那笔账现在**只在浆果季**才给
         #    （见下面 `_BERRY_WINDOWS` 那两条用例：2026-10-02 恒「现在是夏天，不会有的」）。
         # ⚠️ 走**真路径** `_im_ctx()`（不是手搓 state/surr 递给 `_im_chores`）——
         #    第一版手搓，`api.has_item`/`api._ai_get("/crab_pots")` 两个口子**没桩到**
         #    ⇒ "没带锄头"那条假红、蟹笼那笔账也拿不到（自验当场逮到）。
-        _stub(chore_tiles=chore_tiles, crab_ready=crab_ready, ore_pan=ore_pan,
+        _stub(chore_tiles=chore_tiles, crab_ready=crab_ready, ore_pan=ore_pan, hat=hat,
               chore_animals=(animals if animals is not None else []),
               trash_cans=trash_cans, cola=cola, nuts=nuts,
               time_dict={"timeOfDay": 900, "season": season, "dayOfMonth": day,
@@ -2266,11 +2271,20 @@ def main():
     res.append(ok("🌿 **没带锄头** ⇒ 斑点/姜那笔账不给（`spot_run` 没锄头不挖）",
                   "spot" not in _ch4 and _ch4.get("berry") == 1, _ch4))
     res.append(ok("🦀 蟹笼只数 `readyForHarvest` 的（回包字段）", _ch.get("crab") == 4, _ch))
-    res.append(ok("🪙 淘金看 `/state.player.orePan`（`hasGlint`+`hasPan`），坐标一起递",
-                  (_ch.get("pan") or {}).get("x") == 33, _ch.get("pan")))
-    res.append(ok("🪙 没闪光点 / 没铜锅 ⇒ 不给这笔账",
-                  "pan" not in _chores(ore_pan={"hasGlint": False, "hasPan": True})
-                  and "pan" not in _chores(ore_pan={"hasGlint": True, "hasPan": False})))
+    # 🥇 2026-10-04 恒：「**淘金检查确保一下只有手上有各种级别的陶盘（或者头上…）才报**」
+    #    ⇒ 判据从 `hasPan`（背包里有）收紧成 **在手 / 戴头上**；理由栏那截照抄服务器给的 `how`
+    #      （原来写死「铜锅在手」，锅在背包里时是假话）。
+    res.append(ok("🪙 淘金：**锅在手** ⇒ 给这笔账，坐标 + `how` 一起递",
+                  (_ch.get("pan") or {}).get("x") == 33
+                  and (_ch.get("pan") or {}).get("how") == "在手", _ch.get("pan")))
+    res.append(ok("🪙 **锅只在背包里**（`hasPan` 真但没在手）⇒ 不给（恒：只有在手/头上才报）",
+                  "pan" not in _chores(ore_pan={"hasGlint": True, "hasPan": True})))
+    res.append(ok("🪙 **锅戴头上** ⇒ 也给，且 `how=戴头上`",
+                  (_chores(ore_pan={"hasGlint": True, "hasPan": True},
+                           hat="Copper Pan").get("pan") or {}).get("how") == "戴头上"))
+    res.append(ok("🪙 没闪光点 ⇒ 不给这笔账",
+                  "pan" not in _chores(ore_pan={"hasGlint": False, "hasPan": True,
+                                                "panInHand": True})))
     res.append(ok("🐮🐑 只数 **productReady** 的牛·山羊/绵羊（猪不算、没货的不算）",
                   _ch.get("milk") == 2 and _ch.get("shear") == 1, _ch))
     res.append(ok("🌿 什么都没推出来 ⇒ **空账**（那 6 行全不出现）", _chores() == {}, _chores()))
@@ -2328,10 +2342,16 @@ def main():
                          chore_animals=_MOO["animals"], inv=_HOE,
                          time_dict={"timeOfDay": 900, "season": "spring", "dayOfMonth": 16,
                                     "weather": 0})
-    for _lab in ("摇 浆果丛", "挖 远古斑点", "刮 苔藓", "收 蟹笼", "淘 金", "挤奶 / 剪毛"):
+    for _lab in ("摇 浆果丛", "挖 远古斑点", "收 蟹笼", "淘 金", "挤奶 / 剪毛"):
         res.append(ok(f"🌿 单子上出现「{_lab}」", _lab in _L, (_L, _Ltxt[:200])))
+    # 🌿 2026-10-04 恒：「**农场里面的苔藓可以不用报，除非特地只读** —— 有的玩家会特地培养
+    #    等苔藓扩散，我不建议刮家里的」⇒ **那行撤了**（账照算、`scene ops=moss dry_run` 那条只读口还在）。
+    res.append(ok("🌿 恒拍板撤行 ⇒ **单子上没有「刮 苔藓」**（哪怕图上真扫到苔藓）",
+                  "刮 苔藓" not in _L, (_L, _Ltxt[:200])))
+    res.append(ok("🌿 但**账还在**（`chores['moss']` 照算：可采集那条/只读口还要用）",
+                  (_ch.get("moss") or 0) >= 1, _ch.get("moss")))
     _L0, _ = _labels2(inv=_HOE, time_dict={"timeOfDay": 900, "season": "summer", "weather": 0})
-    res.append(ok("🌿 一件都推不出来 ⇒ **6 行全不出现**（宁缺勿编）",
+    res.append(ok("🌿 一件都推不出来 ⇒ **这几行全不出现**（宁缺勿编）",
                   not [x for x in _L0 if x in ("摇 浆果丛", "挖 远古斑点", "刮 苔藓",
                                                "收 蟹笼", "淘 金", "挤奶 / 剪毛")], _L0))
     # 🗑️ 垃圾桶那两行（`_labels2` 在这儿才定义 ⇒ 断言放这儿）
@@ -2756,9 +2776,9 @@ def main():
     res.append(ok("⚖️ 193：`放牧（开棚门）` 70 → **84**（早晨跟摸动物一个档）",
                   _w("opendoors") == 84, _w("opendoors")))
     res.append(ok("⚖️ 193：`收 蟹笼` 68 → **72**（有货时可抬）", _w("crab") == 72, _w("crab")))
-    res.append(ok("⚖️ 其余别跟着动（关棚门仍 70 / 浆果 66 / 斑点 64 / 挤奶 62 / 淘金 60 / 苔藓 58）",
-                  (_w("doors"), _w("berry"), _w("spot"), _w("milk"), _w("pan"), _w("moss"))
-                  == (70, 66, 64, 62, 60, 58)))
+    res.append(ok("⚖️ 其余别跟着动（关棚门仍 70 / 浆果 66 / 斑点 64 / 挤奶 62 / 淘金 60）",
+                  (_w("doors"), _w("berry"), _w("spot"), _w("milk"), _w("pan"))
+                  == (70, 66, 64, 62, 60)))
 
     # 🏪 克林特营业中：**现成两份数据**（休息日表 + SHOP_HOURS 前导时段），别编新表
     _stub(time_dict={"timeOfDay": 1000, "season": "summer", "dayOfMonth": 6, "weather": 0})

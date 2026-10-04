@@ -852,6 +852,76 @@ def _exec_sit(ctx, targets, run):
     return _receipt_from_helper("坐", s.get("name") or f"({s.get('x')},{s.get('y')})", r)
 
 
+# 🪑 2026-10-04 恒：「**把坐合成一下**，这些 4-8（胡桃木椅子/红色餐椅/stool tall/stool/乡村椅）
+#    做**同一个选项的第二层选择题**」⇒ 顶层只留一行「坐…（N 处）」，点开才是各把椅子/凳子。
+#    ⚠️ 结构跟 `BIN`/`BIN_V` 那一对**同构**：
+#      · 顶层 `SIT_PICK_V`（`world` 目录行，**key 仍是 `sit`** —— 脚本/钉子/文档引的是键）
+#      · 子层 `SIT_ONE_V`（`tile`，真正干活的）**不进 `VERBS`** ⇒ 它不会自己在顶层长出一行
+#        （`_candidates` 只遍历 `VERBS`）。
+#    ⚠️ 为什么以前是"一把椅子一行"：`_candidates` 按 `show()` 分桶，同名座位会并成一行、
+#       不同名就各占一行 —— 恒屋里五把不同名的椅子 = 五行，把单子前面挤满了。
+def _sit_seats(ctx):
+    """图里**现在真坐得下**的座位（`/sittable` 挂在格子上的 `seat`）——离我近的在前。"""
+    if ctx.sitting:
+        return []                      # 坐着时不给（要先 `scene stand` 起身）
+    out = [t for t in ctx.tiles.values() if _sit_can(ctx, t) is True]
+    out.sort(key=lambda t: _dist(ctx, t))
+    return out
+
+
+def _sit_name_count(ctx):
+    """图里有**几种**座位名（"胡桃木椅子/红色餐椅/stool" 各算一种）。"""
+    return len({(t.get("seat") or {}).get("name") for t in _sit_seats(ctx)})
+
+
+def _sit_one_can(ctx, t):
+    """🪑 **只有一种座位**时，照旧直接给「坐 木椅」那一行（省一次点击）。
+
+    ⚠️ 两种以上才合成目录行（恒 2026-10-04：「把坐合成一下…做同一个选项的第二层选择题」
+       —— 他屋里五把不同名的椅子，原来是五行把单子前面挤满）。**一种座位还分两层就是白加一次点击**。
+    """
+    if _sit_can(ctx, t) is not True:
+        return CAN_NO
+    return CAN_YES if _sit_name_count(ctx) <= 1 else CAN_NO
+
+
+def _sit_pick_can(ctx, t):
+    return CAN_YES if _sit_name_count(ctx) >= 2 else CAN_NO
+
+
+def _sit_pick_reason(ctx, t):
+    seats = _sit_seats(ctx)
+    if not seats:
+        return ""
+    s = seats[0].get("seat") or {}
+    return (f"{len(seats)} 处能坐 · 最近 {s.get('name') or '座位'}"
+            f"({s.get('x')},{s.get('y')})")
+
+
+def _sit_pick_count(ctx, targets):
+    n = len(_sit_seats(ctx))
+    return f"{n} 处" if n else None
+
+
+def _sit_pick_subs(ctx, targets):
+    seats = _sit_seats(ctx)
+    if not seats:
+        return None
+    rows = [Row(SIT_ONE_V, [t], _sit_show(ctx, t), _sit_reason(ctx, t), 0)
+            for t in seats]
+    return Level(rows, title="坐哪儿？（一次坐一张）")
+
+
+SIT_ONE_V = Verb("sit", "坐", 26, _sit_one_can, _sit_reason, _sit_show, "tile",
+                 exec=_exec_sit, group="家具")
+# ⚠️ 键的分工：**`sit` 仍是"那行真正干活的"**（一种座位名时它直接上单子；≥2 种时它只活在第二层）
+#    —— 脚本/钉子/文档引的一直是 `sit`，别把键挪走（`_VERB_BY_KEY["sit"]` 好几处在用）。
+#    目录行另起一个键 `sit_pick`。
+SIT_PICK_V = Verb("sit_pick", "坐", 26, _sit_pick_can, _sit_pick_reason,
+                  lambda c, t: "坐", "world",
+                  subs=_sit_pick_subs, count=_sit_pick_count, group="家具")
+
+
 # 🪑 「起身」（2026-10-01）—— **坐着时的唯一出路**。
 #
 # ⚠️ 缺口是这么来的：`_sit_can` 见 `ctx.sitting` 就回 `CAN_NO`（坐着不该再给「坐」，
@@ -2557,11 +2627,16 @@ def _bin_count(ctx, targets):
 
 
 def _bin_subs(ctx, targets):
-    rows = [Row(BIN_V, [t], f"投 {_name_with_q(t)}", "可卖", 0)
+    # 🗑 2026-10-04 恒：「**投一件不实用。一般这格的堆叠全投。然后报一下这些物品的数量**」
+    #    ⇒ 两处都按他的话改：① 行上**直接印数量**（`×N`）——`/sell` 本来就是**整摞走**
+    #    （C# `HandleSell` 把 `item.Stack` 整个塞进出货箱，`ModEntry.cs:12531`），
+    #    旧文案「敲一件投一件」既不准确、也让人以为只投 1 个；② 标题写明**整摞**。
+    rows = [Row(BIN_V, [t], f"投 {_name_with_q(t)}",
+                f"×{int(t.get('stack') or 1)} 可卖", 0)
             for t in _bin_items(ctx)]
     if not rows:
         return None
-    return Level(rows, title="🗑 投哪几件进出货箱？（敲一件投一件 · 要全投走 `menu ops=bin`）")
+    return Level(rows, title="🗑 投哪几件进出货箱？（**每样整摞全投** · 要全投走 `menu ops=bin`）")
 
 
 def _exec_bin(ctx, targets, run):
@@ -3126,12 +3201,12 @@ SPOT_V = Verb("spot", "挖 远古斑点", 64,
               lambda c, t: "挖 远古斑点", "world",
               exec=lambda c, t, run: _exec_chore(c, t, run, "spot", "挖斑点"))
 # 3) 刮 苔藓（`scene ops="moss"` → `moss_run`；**只有绿雨天或 `settings moss on` 才有账**）
-MOSS_V = Verb("moss", "刮 苔藓", 58,
-              lambda c, t: CAN_YES if _chore_n(c, "moss") else CAN_NO,
-              lambda c, t: (f"本图 {_chore_n(c, 'moss')} 处苔藓（长苔藓树/苔藓杂草块）"
-                            f" · 出 Moss · 敲了自己扫图刮，不用给半径"),
-              lambda c, t: "刮 苔藓", "world",
-              exec=lambda c, t, run: _exec_chore(c, t, run, "moss", "刮苔藓"))
+# 🌿 2026-10-04 恒：「**农场里面的苔藓可以不用报，除非特地只读** —— 因为有的玩家会特地培养
+#    等苔藓扩散，**我不建议刮家里的**」⇒ 「刮 苔藓」那行**从单子上撤掉**（定义删掉，别留死代码；
+#    `VERBS` 里也不再列它）。
+#    ⚠️ **能力一条没删**：要读就走 `scene ops=moss kw={"dry_run":True}`（只列不刮，
+#    `moss_run.py:316`）—— 那正是他说的"特地只读"的口子；`Ctx.chores["moss"]` 那笔账也照旧算
+#    （`_forage_summary` 的"🌿 可采集"还在用它）。
 # 4) 收 蟹笼（`fish ops="crab_collect"`；只算 `readyForHarvest` 的那几个）
 CRAB_V = Verb("crab", "收 蟹笼", 72,
               lambda c, t: CAN_YES if _chore_n(c, "crab") else CAN_NO,
@@ -3139,13 +3214,16 @@ CRAB_V = Verb("crab", "收 蟹笼", 72,
                             f" · 收完笼是空的 —— 想继续抓得再放饵（`fish ops=\"crab_bait\"`）"),
               lambda c, t: "收 蟹笼", "world",
               exec=lambda c, t, run: _exec_chore(c, t, run, "crab", "收蟹笼"))
-# 5) 淘 金（`scene ops="pan"` → `_pan_run`；账里带闪光点坐标 + 铜锅在手）
+# 5) 淘 金（`scene ops="pan"` → `_pan_run`；账里带闪光点坐标 + 锅**在手/戴头上**——
+#    ⚠️ 2026-10-04 恒：「只有手上有各种级别的陶盘（或者头上…）才报」⇒ 判据在服务器
+#    `_im_chores`（`panInHand` / 帽子栏名字带盘），这一层的理由栏照抄它给的 `how`，**别再写死"在手"**。
 PAN_V = Verb("pan", "淘 金", 60,
              lambda c, t: CAN_YES if (c.chores or {}).get("pan") else CAN_NO,
-             lambda c, t: ("水下闪光点 ({x},{y}) · 铜锅在手 · 淘完**回到出发那岸**"
+             lambda c, t: ("水下闪光点 ({x},{y}) · 锅{how} · 淘完**回到出发那岸**"
                            " · 敲了自己走过去淘，不用给坐标").format(
                                x=(c.chores.get("pan") or {}).get("x"),
-                               y=(c.chores.get("pan") or {}).get("y")),
+                               y=(c.chores.get("pan") or {}).get("y"),
+                               how=(c.chores.get("pan") or {}).get("how") or "在手"),
              lambda c, t: "淘 金", "world",
              exec=lambda c, t, run: _exec_chore(c, t, run, "pan", "淘金"))
 # 6) 挤奶 / 剪毛（`farm ops="milk"`；只算 **本图** `productReady` 的牛·山羊/绵羊）
@@ -3293,9 +3371,10 @@ VERBS: list = [
     #    理由：坐下是"歇一下/等人/看景"的活，**很少是这一刻的最优解**；而它按格发号，
     #    有椅子就容易挤进第一屏。**没座位就不会出现**（判据是逐格的 `_sit_can`，
     #    夹具/真机里没有 seat 格 → 这行压根不存在），所以压低不会"藏掉该做的事"。
-    Verb("sit",     "坐",     26, _sit_can,     _sit_reason,     _sit_show,     "tile",
-         exec=_exec_sit, group="家具"),
-    # 🪑 起身：**坐着才出现**（见上面 `_stand_can` 那段）——它是「坐」的**出口**，
+    # 🪑 2026-10-04 恒：「把坐合成一下」⇒ **两种以上座位**才合成顶层这一行目录行（点开才是各把椅子）；
+    #    **只有一种**时走 `SIT_ONE_V`（直接给「坐 木椅」，不多点一层）。见上面那段的账。
+    SIT_ONE_V,
+    SIT_PICK_V,    # 🪑 起身：**坐着才出现**（见上面 `_stand_can` 那段）——它是「坐」的**出口**，
     #    没有它，单子就把 AI 留在一个自己不给路的状态里。
     # ⚠️ 权重贴着 `sit`(70) 下面一点：同一个"姿势"家族，坐/起 该挨着看。
     #    压不过 收放(88)/箱子(80) 是对的 —— 坐着不影响收放（`_mwork_can` 不看坐姿）。
@@ -3410,7 +3489,7 @@ VERBS: list = [
     OPEN_DOORS_V, CLOSE_DOORS_V,
     # 🌿 2026-10-01 恒「接吧」：P1 那批**空参行**（早就有的 6 个 op，一直没上单子）。
     #    判据全在 `Ctx.chores`（服务器算好的账）；执行只调现成 op —— 见上面那一段的账。
-    BERRY_V, SPOT_V, MOSS_V, CRAB_V, PAN_V, MILK_V,
+    BERRY_V, SPOT_V, CRAB_V, PAN_V, MILK_V,
     # 🎓 2026-10-02 恒「补一下缺门」：菜单里的一次性正事（精通碑领取）也要有行。
     _CLAIM_V,
     # 🗑️ 2026-10-02 恒「捡垃圾可以上」：**翻垃圾桶**（账 = `Ctx.chores["garbage"]`，
@@ -3827,7 +3906,7 @@ def _render_level(ctx: Ctx, lv: Level, n: int = 5) -> str:
             else:
                 _more = (f"背包另有 {n_t - 1} 件" if r.verb.target == "inv"
                          else f"附近另有 {n_t - 1} 格")
-                _once = "一次做一格"
+                _once = "一次只做其中一个"
             tail = " · ".join(x for x in (loc, _more, r.reason, _once) if x)
             lines.append(f" {r.no}  {disp}   ← {tail}")
             continue
@@ -5384,7 +5463,22 @@ def _selftest():
     sm = render_menu(ctxs, n=40)
     sline = next((l for l in sm.splitlines() if "坐 木椅" in l), "")
     ok.append(("🪑 两把同名椅子**不印 `坐 木椅 ×2`**（人只能坐一张）", "×" not in sline))
-    ok.append(("🪑 说清只坐一张", "一次做一格" in sline))
+    ok.append(("🪑 说清只坐一张", "一次只做其中一个" in sline))
+    # 🪑 2026-10-04 恒：「**把坐合成一下**……做**同一个选项的第二层选择题**」——
+    #    两种以上座位名 ⇒ 顶层只留一行目录行「坐…（N 处）」，点开才是各把椅子。
+    #    （只有一种时不合成、照样直接给那一行 —— 见 `_sit_one_can` 的注释。）
+    ctxd = _fixture()
+    ctxd.tiles[(16, 13)] = {"terrain": "Wood", "seat": {
+        "kind": "furniture", "name": "红色餐椅", "x": 16, "y": 13, "capacity": 1, "free": 1}}
+    reset_menu()
+    dm = render_menu(ctxd, n=40)
+    ok.append(("🪑 两种座位名 ⇒ 顶层合成**一行目录行**（句尾 `…`）",
+               "坐…" in dm and "坐 木椅" not in dm and "坐 红色餐椅" not in dm))
+    ok.append(("🪑 目录行报「几处能坐」", "处" in dm))
+    _dno = next((r.no for r in _LAST_ROWS if r.verb.key == "sit_pick"), None)
+    _dsub = do_row(str(_dno), lambda *a, **k: {}, ctxd) if _dno else ""
+    ok.append(("🪑 点开 ⇒ 第二层把**各把椅子**都列出来",
+               "坐 木椅" in _dsub and "坐 红色餐椅" in _dsub))
     # 反面闸：**真会全做**的动词（捡/收机器）照旧要印 `×N` —— 别一刀切。
     ok.append(("🌿 反面：捡**照旧**印 `×N`（它真的一片全捡）", "捡 地上的东西 ×3" in top2))
     # ⛔ **「锄」不许回来**（2026-09-29 恒：「LLM 有多条路可以走的时候，就有走偏的可能」）。

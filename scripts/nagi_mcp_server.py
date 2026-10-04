@@ -2137,7 +2137,14 @@ def _mailbox_line(data: dict) -> str:
     # 📬 封数 + **是哪些信**（合并进来的那半）——恒 2026-09-25：「跟新邮件一起，不用多做一条」
     _who = "、".join(unread[:4]) + ("…" if len(unread) > 4 else "")
     _head = f"📬 有新的来信（{len(unread)} 封：{_who}）"
-    if (data.get("location") or {}).get("name") == mloc:
+    # 📬 2026-10-04 恒：「**到了镇子上，就不要再报来信了**」——邮箱在农场，人在镇上/矿里/海边
+    #    看到这条只会被支回去跑一趟腿（状态条是"这一刻该干什么"，不是"存档里还有什么没干"）。
+    #    ⇒ **只有邮箱真在脚下这张图**（+ 自己家屋里：出门就到，说了不算跑腿）才报；
+    #     别的地图一律闭嘴。下面那条"邮箱在 Farm(x,y) 走过去"的远程分支**只剩家屋里会走到**。
+    _loc_now = (data.get("location") or {}).get("name") or ""
+    if _loc_now and _loc_now != mloc and _loc_now not in ("FarmHouse", "Cabin"):
+        return ""
+    if _loc_now == mloc:
         p = data.get("player") or {}
         try:
             if abs(int(p.get("x")) - mx) + abs(int(p.get("y")) - my) <= 2:
@@ -2297,12 +2304,34 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
         # 🚧 门禁（2026-09-23 恒：春2日 AI 一到 Mountain 就被告知"能去探险家公会和矿井"，
         #    可矿井第 5 天才开、公会也没开门）：拿不准能不能去的一律摘掉。
         #    判据表 `locations.MAP_FEATURE_GATES`；**读不到不藏**（见 `map_feature_hidden`）。
+        # 🏠 2026-10-04 恒：「**所有室内的 poi（柜台等）都列出来给 ai 的，室外就算了**」
+        #    ⇒ **室内图**把 `locations.POI` 里属于这张图的条目**全列**（名字+坐标，尾挂一次「以交互」）；
+        #      室外图照旧走 `MAP_FEATURES`（街上 POI 太多太碎，全列 = 刷屏）。
+        #    ⚠️ 排序照旧"离我近的在前"（跟节日 POI 那条一致）；坐标查不到的条目**不印**（宁缺勿编）。
+        _all_poi = False
+        if _map_enum and loc_name in getattr(locations, "INDOOR_MAPS", ()):
+            _poi_here = []
+            for _pn, _pv in (locations.POI or {}).items():
+                _ppos = (_pv or {}).get("pos") or ()
+                if (_pv or {}).get("map") != loc_name or len(_ppos) != 2:
+                    continue
+                _poi_here.append((_pn, int(_ppos[0]), int(_ppos[1])))
+            if _poi_here:
+                _poi_here.sort(key=lambda t: abs(t[1] - x) + abs(t[2] - y))
+                _map_enum = [f"{n}({px},{py})" for n, px, py in _poi_here]
+                _all_poi = True
         if _map_enum:
             _hidden = map_feature_hidden(loc_name)
             if _hidden:
                 _map_enum = [f for f in _map_enum if f.split("(")[0].strip() not in _hidden]
         if _map_enum and not _sitting_now and loc_name not in ("Farm", "FarmHouse", "Cabin", "Backwoods", "Tunnel", "Mine", "SkullCave"):
-            if len(_map_enum) == 1:
+            if _all_poi:
+                # 坐标已经在条目里了 ⇒ **不能再 `split("(")`**（那会把 `(4,19)` 砍掉）
+                _hint = "、".join(_map_enum[:4])
+                if len(_map_enum) > 4:
+                    _hint += f" 等{len(_map_enum)}项"
+                _hint += " 以交互"
+            elif len(_map_enum) == 1:
                 # 单条=完整显示（节日图等一条长指引，砍掉括号就丢了关键信息）
                 _hint = _map_enum[0]
             else:
@@ -2572,7 +2601,13 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
     #    金核桃只在姜岛变化才报。持久货币换天不重置基线 → 只在真变化时出现。（/state 尚无这两字段时 p.get=Null，自动静默）
     try:
         _qi = p.get("qiGems"); _wal = p.get("walnuts")
-        if _qi is not None and (_delta_show("qi", _qi) or loc_name == "QiNutRoom"):
+        # 💎 2026-10-04 恒：「**齐钻也是。只报每天的详细版状态条第一下、获取时候报、
+        #    进核桃房打开商店菜单时报**，平时不用报」⇒ 三个口子（原来"在核桃房就每发都报"太吵）：
+        #      ① `full` = 每天那第一发完整版状态条；② `_delta_show` = 数量变了（刚拿到/刚花掉）；
+        #      ③ 核桃房**且商店菜单开着**（那一刻齐钻是钱，平时它既不是动作面也不是余额）。
+        if _qi is not None and (full or _delta_show("qi", _qi)
+                                or (loc_name == "QiNutRoom"
+                                    and str(((data.get("activeMenu") or {}).get("type") or "")).lower().startswith("shop"))):
             lines.append(f"💎 齐钻 {_qi}")
         if _wal is not None and _delta_show("walnut", _wal) and loc_name.startswith("Island"):
             lines.append(f"🌰 金核桃 {_wal}")
@@ -2592,7 +2627,12 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
     #     升级完成早晨的 📢 是一次性的，错过就靠这个状态字段随时发现）
     try:
         _tu = p.get("toolUpgrading")
-        if _tu and _tu != _TU_REMIND["last"]:
+        # 🔧 2026-10-04 恒：「确保一下升级工具那个**铱垃圾桶**的播报是**每天报第一次 + town 上常报**。
+        #    要是在所有地方报，太烦了」——原来只有"名字变了才报一次"（`_TU_REMIND`），
+        #    于是人在矿里/海边也会被念一句"去铁匠铺领"（跑一趟 20 格）。
+        #    ⇒ 三个口子：① `full`（每天第一发）② **在镇上**（克林特就在那儿，随时能领，常报）
+        #      ③ 名字变了（刚升好 / 换了个东西在升）。
+        if _tu and (full or loc_name == "Town" or _tu != _TU_REMIND["last"]):
             _TU_REMIND["last"] = _tu
             lines.append(f"🔧 铁匠铺有「{_tu}」待取（升级好了，去克林特那领：map walk 铁匠铺(柜台) 再 scene interact）")
     except Exception:
@@ -3268,11 +3308,16 @@ def _npcs_hint(state: dict, loc_name: str = "") -> str:
         return ""
     _now = time.time()
     _ = _now          # （节流去掉了：见下面那段"为什么最后没上节流"）
+    # 👥 2026-10-04 恒：「**npc 的交互，教一次就好**，执行 find_npc 或者切换地图时可以再附带
+    #    工具命令，**常驻的话太长了**」⇒ 名单照常每拍给（它是"这一刻图里有人"的事实），
+    #    但那截 `→ 搭话 social(...) / 送礼 social(...)` 的**教学**只在**换图后第一次**给。
+    #    （`_NPC_HINT_SEEN["loc"]` 就是上个图名；进屋/出屋也算换图 ⇒ 会再教一次，这是有意的。）
+    _teach = (_NPC_HINT_SEEN.get("loc") != loc_name)
     _NPC_HINT_SEEN.update(loc=loc_name, names=list(names), ts=_now)
     return (f"👥 本图 NPC：{'、'.join(names[:6])}" + ("…" if len(names) > 6 else "")
-            + "　→ 搭话 `social(ops=\"chat\", kw={\"name\":\"…\"})` / 送礼 "
-              "`social(ops=\"gift\", kw={\"name\":\"…\",\"item\":\"…\"})`"
-              "（送礼每 NPC **每周最多 2 次、每天 1 次**）")
+            + ("　→ 搭话 `social(ops=\"chat\", kw={\"name\":\"…\"})` / 送礼 "
+               "`social(ops=\"gift\", kw={\"name\":\"…\",\"item\":\"…\"})`"
+               "（送礼每 NPC **每周最多 2 次、每天 1 次**）" if _teach else ""))
 
 
 def _shipbin_hint(loc_name: str = "") -> str:
@@ -10094,7 +10139,18 @@ def settings_status() -> str:
     # 🖱️ 2026-10-04 恒「失焦暂停可以退役了」⇒ 这行撤掉（AI 不需要知道、也不会去动它；
     #    真要查那一下走底层 `/set_pause`）。
     lines.append("  🔧 退役工具: " + (", ".join(sorted(_retired_tools)) if _retired_tools else "无"))
-    lines.append("💡 一次性工具（捏脸等）用完 settings retire 退役；settings reactivate 召回")
+    # 💡 2026-10-04 恒：「**我们捏脸工具应该早就不退役了**（因为幻觉神龛的事），后来换成了
+    #    拦掉"捏脸菜单打开时之外的所有捏脸调用"来处理 ⇒ 退役工具和一次性工具这两行
+    #    我印象中可能为假，请检查」——查清了，两行各对一半：
+    #      · 「退役工具」那行**是真的**：它印的就是 `_retired_tools`（真的会拦调用，见
+    #        `character_customize` 里那道门 + `settings retire/reactivate`）。
+    #      · 「一次性工具（**捏脸**等）」那半是**错的**：自动退役的从来是 **`character_customize`**
+    #        （起名/喜好，一次性），而 **`set_appearance`（捏脸）2026-08-31 起就不退役了** ——
+    #        它由 C# `/appearance` 硬门禁拦（只在捏脸菜单开着时可用，幻觉神龛照样改造型）。
+    #        ⇒ 文案改成点名 `character_customize`，别再把"捏脸"三个字挂上去（那正是恒记忆里的假）。
+    lines.append("💡 一次性工具 = `character_customize`（起名/喜好，用完自动退役；"
+                 "要改走 settings reactivate 召回）。**捏脸 `set_appearance` 不在此列** ——"
+                 "它由 C# 拦「只在捏脸菜单开着时可用」")
     return _with_state("\n".join(lines))
 
 
@@ -23242,8 +23298,19 @@ def _im_chores(state: dict, surr: dict, animals: dict) -> dict:
         _ore = ((state or {}).get("player") or {}).get("orePan") or {}
     except Exception:
         _ore = {}
-    if _ore.get("hasGlint") and _ore.get("hasPan"):
-        out["pan"] = {"x": _ore.get("x"), "y": _ore.get("y")}
+    # 🥇 2026-10-04 恒：「**淘金检查确保一下只有手上有各种级别的陶盘（或者头上，陶盘可以放帽子栏）才报**」
+    #    ⇒ 判据从"背包里有锅"(`hasPan`) 收紧成 **在手 / 戴头上** 两种"立刻能淘"的状态。
+    #    ⚠️ 为什么收：旧判据下**锅躺在背包里**也会给这行，而理由栏却硬写「铜锅在手」（假话，
+    #      真机在镇上那条就是这么印的）；而且拟人上"手里没锅却能淘"本来就不对。
+    #    ⚠️ 头上那半是**按名字判**的（`/state.player.hat`）：锅能戴帽栏，戴上后名字仍带
+    #      `Pan`/`淘盘`。真机我只验过"在手"那半（没条件把锅戴上）——若哪天戴上了它不报，加 C# 字段。
+    if _ore.get("hasGlint"):
+        _pl = ((state or {}).get("player") or {})
+        _hat = str(_pl.get("hat") or "")
+        _how = ("在手" if _ore.get("panInHand")
+                else ("戴头上" if any(k in _hat for k in ("Pan", "淘盘", "盘")) else ""))
+        if _how:
+            out["pan"] = {"x": _ore.get("x"), "y": _ore.get("y"), "how": _how}
     # ── 🐮🐑 本图能挤能剪（`/animals` 的 productReady）──
     _a = (animals or {}).get("animals") or []
     _milk = sum(1 for a in _a if (a or {}).get("productReady")

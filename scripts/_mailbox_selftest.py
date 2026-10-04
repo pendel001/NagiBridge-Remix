@@ -98,9 +98,15 @@ try:
             return {}
     M.api = FakeApiObj()
     _fresh_mail_cache()
-    l = M._mailbox_line({"location": {"name": "Beach"}, "player": {"x": 1, "y": 1}, "mailbox": MB})
+    l = M._mailbox_line({**CABIN, "mailbox": MB})   # 家里（出门就到）⇒ 照旧报，走"邮箱在 Farm(…)走过去"那条
     ck("邮件只取**标题**，正文一个字都不许进状态条",
        "robinKitchenLetter" in l and "亲爱的农夫" not in l and len(l) < 200, l[:120])
+    # 📬 2026-10-04 恒：「**到了镇子上，就不要再报来信了**」——邮箱在农场，人在外面看到这条
+    #    只会被支回去跑一趟腿 ⇒ **只有邮箱真在脚下这张图（或自家屋里）才报**。
+    ck("📬 镇子上 / 海滩 / 矿里 ⇒ **一行都不念**（恒：到了镇上就别报来信了）",
+       all(M._mailbox_line({"location": {"name": _lc}, "player": {"x": 1, "y": 1},
+                            "mailbox": MB}) == ""
+           for _lc in ("Town", "Beach", "Mine", "Desert")), l[:120])
     M.api = FakeApi(unread=[])
     _fresh_mail_cache()
     l = M._mailbox_line({**CABIN, "mailbox": MB})
