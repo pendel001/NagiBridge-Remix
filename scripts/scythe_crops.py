@@ -13,6 +13,18 @@
 （C# 那边读 `ItemRegistry` + `Crop.GetHarvestMethod()` / `Crop.RegrowsAfterHarvest()`）。
 判据一律问游戏、别在消费侧猜——同 `Object.isForage()` 替三张名单那条规矩。
 
+🌾 2026-10-04 恒拍板（**这份脚本 = 唯一的收获口，别再删**）：
+   「镰刀的口应该是用来**普通镰刀金镰刀收小麦苋菜**那些的！！」＋
+   「按理来说，确实也可以**合**……**镰刀作物自动切换成镰刀去收**。**没有镰刀就跳过**，
+    等手摘的作物都摘完了**然后报**。」
+   ⇒ 现在按游戏报的 `cropScythe` **分两类各走各的**（`main()` 里那段注释有完整口径）：
+     · **镰刀作物**（小麦/苋菜/水稻/芋头/纤维…）→ **自动换最好的那把镰刀**收（普通/金/铱都行）
+     · **背包里没有镰刀** → **跳过**它们并记账，手摘作物照收，收完**如实报**「跳过 N 株镰刀作物：…」
+     · **手摘作物**（蒜/西瓜…）→ 只有"已领耕种精通 + 有**铱**镰刀"才用镰刀扫
+       （⚠️ 普通/金镰刀会把它们**打掉不产物** ⇒ 一律手摘）
+   📌 MCP 侧那个独立的 `scythe_crops()` 口 2026-10-04 已删（能力搬到这里）；
+      **本脚本一个字节没删**，`harvest_crops` 就在跑它。删它 = 小麦苋菜没人收。
+
 用法:
   python scythe_crops.py                  # 收当前地图成熟作物（带镰刀）
   python scythe_crops.py --radius 20      # 扫描半径
@@ -362,19 +374,34 @@ def main():
         log("❌ 游戏未就绪")
         sys.exit(1)
 
-    scythe = find_scythe()
-    if not scythe:
-        log("❌ 背包里没有镰刀")
-        sys.exit(1)
-    log(f"⚒️ 用 {scythe}")
-
+    # 🌾 2026-10-04 恒拍板：**没镰刀不许整个退出** —— 只跳镰刀作物，手摘照收，收完如实报（见下）。
+    scythe = find_scythe()          # 铱>金>铜>普通
     loc, mature, growing = scan_mature()
+    if scythe:
+        log(f"⚒️ 背包里的镰刀：{scythe}")
+    else:
+        log("ℹ️ 背包里没有镰刀 —— 镰刀作物这趟会跳过（手摘作物照收）")
     grow_sum = " ".join(f"{k}×{v}" for k, v in sorted(growing.items(), key=lambda x: -x[1]))
     log(f"📍 {loc} | 成熟 {len(mature)} 株 | 生长中: {grow_sum or '无'}")
     for m in mature[:15]:
         tag = "🔪" if m["scythe"] else "🤚"
         log(f"  {tag} {m['name']} ({m['x']},{m['y']})")
     scythe_only = [m for m in mature if m["scythe"]]
+    hand_only = [m for m in mature if not m["scythe"]]
+    # 🌾 2026-10-04 恒拍板：**合成一个口，按作物类别自动切换** ——
+    #    · **镰刀作物**（游戏报的 `cropScythe=True`：小麦/苋菜/水稻/芋头/纤维…）→ **自动换镰刀去收**
+    #      （任何镰刀都行：普通/金/铱，`find_scythe()` 挑最好的那把）；**没有镰刀 ⇒ 跳过它们**（记账），
+    #      手摘作物照收，收完在结果里**如实报**（恒：「没有镰刀就跳过，等手摘的作物都摘完了然后报」）。
+    #    · **手摘作物**（蒜/西瓜…）→ 只有"**已领耕种精通 + 背包里有铱镰刀**"才用镰刀扫
+    #      （`--scythe` 由服务器侧判精通传进来）；⚠️ **普通/金镰刀会把它们打掉、不产物** ⇒ 一律手摘。
+    have_iridium = bool(scythe) and scythe.startswith("Iridium")
+    scythe_targets = list(scythe_only) if scythe else []
+    skip_no_scythe = [] if scythe else list(scythe_only)
+    if args.scythe and have_iridium:
+        scythe_targets += hand_only        # 精通 + 铱镰刀 ⇒ 手摘作物也一并扫掉
+        hand_targets = []
+    else:
+        hand_targets = list(hand_only)
     if args.dry_run:
         return
     if not mature:
@@ -391,30 +418,28 @@ def main():
     #   （精通门禁由服务器侧 `_mastery_claimed("farming")` 判——读游戏自己的 `mastery_0` 统计——
     #     用 `--scythe` 传进来。）
     # ⚠️ **挥舞站位待恒校准**：现在沿用 `harvest.py` 的老约定（站作物**上方一格**、面朝下）。
-    use_scythe = bool(args.scythe) and bool(scythe)
-    if use_scythe:
-        post("/select", {"name": scythe})
-        log(f"🔪 挥镰刀（{scythe}）")
-    else:
-        # 手摘：选中一件**工具**使 ActiveObject=null（空手），否则按下去是"用手上的东西"
-        post("/select", {"name": "Pickaxe"})
-        log("🤚 手摘" + ("（没走镰刀：未领耕种精通 或 背包没有铱镰刀）" if not args.scythe else ""))
-        # 🎓 2026-09-16：`cropScythe` 是**游戏自己报的**（`Crop.GetHarvestMethod()` 抄的，
-        #    不是本地表的猜测）。它在这儿只干一件事：**如实说"这几株空手够不着"**——
-        #    小麦/水稻/芋头这类必须有镰刀，手摘只会把它们**打掉**（不产物的那种）。
-        if scythe_only:
-            log(f"⚠️ 其中 {len(scythe_only)} 株是**镰刀作物**（{'、'.join(sorted({m['name'] for m in scythe_only}))}），"
-                f"手摘收不了——要么去领耕种精通拿铱镰刀，要么背包里带把普通镰刀。")
-    time.sleep(0.25)
+    time.sleep(0)
 
     cur_loc = get("/state").get("location", {}).get("name", loc)
-    done = 0
+    done_scythe = 0
+    done_hand = 0
     skipped = 0
 
-    if use_scythe:
-        done, skipped = _harvest_scythe_area(cur_loc, mature)
-    else:
-        for m in mature:
+    if scythe_targets:
+        post("/select", {"name": scythe})
+        log(f"🔪 挥镰刀（{scythe}）收 {len(scythe_targets)} 株")
+        time.sleep(0.25)
+        done_scythe, _sk = _harvest_scythe_area(cur_loc, scythe_targets)
+        skipped += _sk
+
+    if hand_targets:
+        # 手摘：选中一件**工具**使 ActiveObject=null（空手），否则按下去是"用手上的东西"
+        post("/select", {"name": "Pickaxe"})
+        log(f"🤚 手摘 {len(hand_targets)} 株"
+            + ("" if (args.scythe and have_iridium)
+               else "（没走镰刀扫：未领耕种精通 或 背包里没有铱镰刀）"))
+        time.sleep(0.25)
+        for m in hand_targets:
             tx, ty = m["x"], m["y"]
             # ⚠️ 2026-09-16 恒真机抓到**洒水器被刨**：原来固定站 `(tx, ty-1)`（作物上方一格），
             #    可**洒水器恰恰夹在作物中间**（"中级洒水器布局"）——那个"上方格"往往就是洒水器格，
@@ -433,11 +458,26 @@ def main():
             time.sleep(0.1)
             post("/key", {"key": "confirm"})     # 收获不走 checkAction，要 pressActionButton
             time.sleep(0.35)
-            done += 1
-            if done % 10 == 0:
-                log(f"  …已收 {done}/{len(mature)}")
-        log(f"🌾 收获结果: {done}/{len(mature)} 株（手摘·逐个走位）"
-            + (f"，{skipped} 株四邻站不住被跳过" if skipped else ""))
+            done_hand += 1
+            if done_hand % 10 == 0:
+                log(f"  …已手摘 {done_hand}/{len(hand_targets)}")
+
+    total_done = done_scythe + done_hand
+    if done_scythe and done_hand:
+        how = f"镰刀 {done_scythe} / 手摘 {done_hand}"
+    elif done_scythe:
+        how = "镰刀"
+    else:
+        how = "手摘·逐个走位"
+    log(f"🌾 收获结果: {total_done}/{len(mature)} 株（{how}）"
+        + (f"，{skipped} 株四邻站不住被跳过" if skipped else ""))
+    if skip_no_scythe:
+        _cnt = {}
+        for m in skip_no_scythe:
+            _cnt[m["name"]] = _cnt.get(m["name"], 0) + 1
+        log(f"⚠️ 跳过 {len(skip_no_scythe)} 株**镰刀作物**（背包里没有镰刀）："
+            + "、".join(f"{k}×{v}" for k, v in sorted(_cnt.items()))
+            + " —— 带把镰刀（普通就行）再来一趟就能收。")
 
     # 捡掉落（镰刀作物/手摘不进的产物会掉地上）
     time.sleep(0.5)
