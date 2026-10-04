@@ -1172,13 +1172,27 @@ def _tank_add_level(ctx, tile) -> "Level":
 
 
 def _tank_swap_level(ctx, tile, add_item) -> "Level":
-    """「鱼缸里这种类别满了，要与哪种进行替换？」—— 恒 ② 那一层。"""
-    rows = []
+    """「鱼缸里这种类别满了，要与哪种进行替换？」—— 恒 ② 那一层。
+
+    ⚠️ **同款合并**：缸里三条一样的大海参只该占**一行**（`/menu/click` 按名字取的本来就是
+       "第一个同名的"，分成三行等于假装能挑具体哪一条 —— 2026-10-04 真机上是
+       `1 大海参 / 2 大海参 / 4 大海参` 三行同名）。合并时把件数写进标签。
+    """
+    rows, seen = [], {}
     for rw in (add_item.get("replaceWith") or []):
+        key = rw.get("itemId") or rw.get("displayName") or rw.get("name")
+        if key in seen:
+            seen[key] += 1
+            continue
+        seen[key] = 1
         rows.append(Row(TANK_SWAP_V, [dict(tile, tank_add=dict(add_item), tank_take=dict(rw))],
                         f"{rw.get('displayName') or rw.get('name') or '?'}",
                         f"用它换出「{rw.get('displayName') or rw.get('name')}」"
                         f"（取 → 收界面 → 放，**全包办**）", 0))
+    for r in rows:
+        key = (r.targets[0].get("tank_take") or {}).get("itemId")
+        if seen.get(key, 1) > 1:
+            r.label = f"{r.label}×{seen[key]}"
     if not rows:
         return None
     return Level(rows, title=f"{_tank_cat_zh(add_item)}满了：要与**哪一种进行替换**？"
