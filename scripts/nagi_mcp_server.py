@@ -23574,7 +23574,7 @@ def _im_tank(state: dict, furniture: dict, caps: dict) -> dict:
     px, py = int(p.get("x") or 0), int(p.get("y") or 0)
     tanks.sort(key=lambda f: abs(f["x"] - px) + abs(f["y"] - py))
     for t in tanks[:3]:        # 最多问 3 口：近的那口满了，还能往下一口放
-        d = _tank_probe(t["x"], t["y"])
+        d = _tank_probe(t["x"], t["y"], caps)
         if not d:
             continue
         allitems = d.get("inventory") or []
@@ -23827,14 +23827,16 @@ def _im_furn_interact(x, y, kind="", w=0):
     return {"ok": True, "text": "\n".join(lines), "menu": mt}
 
 
-def _tank_probe(x, y):
+def _tank_probe(x, y, caps=None):
     """🐟 问游戏这口缸的**投放真值表**（`GET /tank`）—— 读不到就回 `{}`（**不编**）。
 
     ⚠️ 先看 `caps["tank"]`：老 DLL 上这个端点不存在，硬打会拿到 404 的 HTML
        （`requests.json()` 直接炸），而**炸掉被 `except` 吞成"什么都放不进"就是静默假话**。
+       `caps` 可以不传（自己问 `_im_caps()`）—— 但**调用方手里已经有一份时必须递进来**：
+       `_im_caps()` 每次都真打一发 `/status`，多口缸逐个问就会白花好几发。
     ⚠️ 走 `api._ai_get`（**显式钉 AI 端口**）——缸里的东西/背包都是"我的"。
     """
-    if _im_caps().get("tank") is not True:
+    if (caps if caps is not None else _im_caps()).get("tank") is not True:
         return {}
     try:
         d = api._ai_get("/tank", {"x": int(x), "y": int(y)}) or {}
@@ -23927,7 +23929,8 @@ def _im_tank_put(x, y, item="", item_id="") -> str:
     key = (item_id or item or "").strip()
     if not key:
         return "❌ 缺 item（要放哪一件）"
-    before = _tank_probe(xi, yi)
+    _caps = _im_caps()          # 只问一次：前后两发 `/tank` 共用这一份能力表
+    before = _tank_probe(xi, yi, _caps)
     if not before:
         return "❌ 读不到这口缸（`/tank`）—— 这版 DLL 没那个端点（重启游戏后才有），不敢瞎放"
 
@@ -23962,7 +23965,7 @@ def _im_tank_put(x, y, item="", item_id="") -> str:
     api._ai_post("/interact", {"x": xi, "y": yi})
     time.sleep(0.8)
     # ③ 回读：只认"缸里这一件多了"
-    after = _tank_probe(xi, yi)
+    after = _tank_probe(xi, yi, _caps)
     if not after:
         return "⚠️ 点了，但**读不回**这口缸 —— 进去没进去我不知道，自己再 `开 鱼缸` 看一眼"
     n_after = _n_same(after)
