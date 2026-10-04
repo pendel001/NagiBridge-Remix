@@ -4089,7 +4089,16 @@ public class ModEntry : Mod
                     height = f.getTilesHigh(),
                     furnitureType = f.furniture_type.Value,
                     isPassable = f.isPassable(),
-                    isTV = f is StardewValley.Objects.TV
+                    isTV = f is StardewValley.Objects.TV,
+                    // 🐟💄 2026-10-04 恒：「鱼缸梳妆柜和电视我们都**验过交互**了，能读能放，
+                    //    **只是没接到单子上**」⇒ 把"这件是容器/是鱼缸/里面积了几件"报出来。
+                    // ⚠️ **必须按 CLR 类型判**：`furniture_type` 里 `"dresser"→4` 有映射，而 `"fishtank"`
+                    //    **没有**（`Furniture.cs:1723-1749` 落到 `_ => 9`）⇒ 跟普通装饰同号、认不出来。
+                    // ⚠️ 顺序：先判鱼缸（子类）再判 StorageFurniture（父类）。
+                    // ⚠️ 槽位可能有 null（`StorageFurniture.ClearNulls` `:123-126`）⇒ 计数按非空算。
+                    isFishTank = f is StardewValley.Objects.FishTankFurniture,
+                    isStorage = f is StardewValley.Objects.StorageFurniture,
+                    heldCount = (f as StardewValley.Objects.StorageFurniture)?.heldItems.Count(i => i != null) ?? 0
                 }).ToList();
                 tcs.SetResult(new { ok = true, location = loc.Name, count = list.Count, furniture = list });
             }
@@ -6414,7 +6423,10 @@ public class ModEntry : Mod
         if (!Context.IsWorldReady)
             throw new InvalidOperationException("World not ready");
         var farmer = Game1.player;
-        return new { ok = true, left = farmer.leftRing?.Name, right = farmer.rightRing?.Name };
+        // 🔴 2026-10-04 修：`farmer.leftRing?.Name` 拿到的是 **NetRef 自己的 `Name`**
+        //    （`NetFields.AddField` 会把它写成 `"…: leftRing"`，`AbstractNetSerializable.cs:82`）
+        //    ⇒ 这个端点以前回的是**字段名**而不是戒指名。正解 `.Value?.Name`。
+        return new { ok = true, left = farmer.leftRing?.Value?.Name, right = farmer.rightRing?.Value?.Name };
     }
 
     /// <summary>
@@ -7111,7 +7123,14 @@ public class ModEntry : Mod
                 string? fruitName = null;        // 🍎 那是什么果子（DisplayName）
                 string? fertStr = null;   // 化肥 item ID 字符串（SDV1.6 HoeDirt.fertilizer 是 NetString，如 "368"/"(O)368"）— 撒化肥/检测兜底用
 
-                if (loc.terrainFeatures.TryGetValue(tileVec, out var tf))
+                // 🍵 2026-10-04 恒：「**室内有花盆作物的话，作物怎么报它就怎么报**」——
+                //    花盆的泥**不在 `loc.terrainFeatures`**（住在 `IndoorPot.hoeDirt.Value`，
+                //    反编译 `IndoorPot.cs:12-24`）⇒ **把盆里那份当成这一格的"地形"喂给下面同一支读法**：
+                //    零分叉 —— 作物名/阶段/可收/浇没浇/化肥，全都不用学第二套字段名（消费侧只认一套）。
+                if (!loc.terrainFeatures.TryGetValue(tileVec, out var tf)
+                    && potObj?.hoeDirt?.Value is HoeDirt _potDirt)
+                    tf = _potDirt;
+                if (tf != null)
                 {
                     terrainName = tf.GetType().Name;
                     if (tf is HoeDirt dirt)
@@ -7969,10 +7988,29 @@ public class ModEntry : Mod
     ///    （两边不同尺 = 熟了的作物白浇，还多耗水多跑腿）；`/surroundings` 的 `harvestable` 用的也是
     ///    游戏自己的 `dirt.readyForHarvest()`，所以三处是同一个判据。
     /// </summary>
+    /// <summary>
+    /// 🍵 2026-10-04：这一格的 `HoeDirt` —— **先看地形，再看花盆里那份**。
+    ///
+    /// 恒的口径：「**室内有花盆作物的话，作物怎么报它就怎么报。种植和浇水的时候，可耕地怎么处理它就怎么处理**」。
+    /// 真身：花盆（`(BC)62` → `IndoorPot`，`Object.cs:6839-6841`）的泥**不住在 `loc.terrainFeatures`**，
+    /// 它住在 `IndoorPot.hoeDirt`（`NetRef<HoeDirt>`，反编译 `IndoorPot.cs:12-24`；转发见
+    /// `IndoorPot.performToolAction` `:193-212`）⇒ **三处判据（选目标 / 查漏 / 验收）走这一个入口**，
+    /// 免得三把尺各长一样。
+    /// ⚠️ **只用于浇水/收获那条路** —— **别拿它进 `till`**：锄头会把盆里的作物锄掉
+    ///    （`Hoe.cs:67-85` → `IndoorPot.performToolAction` → `HoeDirt.cs:758` `crop.hitWithHoe`）。
+    /// </summary>
+    private static HoeDirt? DirtAt(GameLocation loc, Vector2 v)
+    {
+        if (loc.terrainFeatures.TryGetValue(v, out var tf) && tf is HoeDirt d) return d;
+        if (loc.objects.TryGetValue(v, out var o) && o is IndoorPot pot) return pot.hoeDirt?.Value;
+        return null;
+    }
+
     private static bool IsWaterTarget(GameLocation loc, int x, int y)
     {
-        return loc.terrainFeatures.TryGetValue(new Vector2(x, y), out var tf) && tf is HoeDirt dirt
-            && dirt.crop != null && dirt.state.Value == 0 && !dirt.readyForHarvest();
+        // 🍵 2026-10-04 恒：「可耕地怎么处理它就怎么处理」⇒ 改走 `DirtAt`（花盆里的作物也进目标表）
+        var dirt = DirtAt(loc, new Vector2(x, y));
+        return dirt != null && dirt.crop != null && dirt.state.Value == 0 && !dirt.readyForHarvest();
     }
 
     /// <summary>
@@ -19375,8 +19413,9 @@ public class ModEntry : Mod
                     }
                     else
                     {
-                        isMissing = loc.terrainFeatures.TryGetValue(vec, out var tf) && tf is HoeDirt dirt
-                            && dirt.crop != null && dirt.state.Value == 0;
+                        // 🍵 2026-10-04：走 `DirtAt` ⇒ 花盆也算（同一把尺）
+                        var _dw = DirtAt(loc, vec);
+                        isMissing = _dw != null && _dw.crop != null && _dw.state.Value == 0;
                     }
                     if (isMissing)
                         // 🩹 2026-09-23：`MissingReason` 数的是**四邻挡路**——那是**锄地**的口径
@@ -19439,7 +19478,11 @@ public class ModEntry : Mod
         var loc = Game1.currentLocation;
         var vec = new Vector2(tx, ty);
         if (operation == "water")
-            return loc.terrainFeatures.TryGetValue(vec, out var tf) && tf is HoeDirt d && (d.crop == null || d.state.Value == 1);
+        {
+            // 🍵 2026-10-04：走 `DirtAt`（花盆里的泥也算这一格的"地"）
+            var d = DirtAt(loc, vec);
+            return d != null && (d.crop == null || d.state.Value == 1);
+        }
         return loc.terrainFeatures.ContainsKey(vec) && loc.terrainFeatures[vec] is HoeDirt;
     }
 
