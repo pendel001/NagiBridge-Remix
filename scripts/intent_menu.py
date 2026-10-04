@@ -914,7 +914,7 @@ def _pets_reason(ctx, t):
 
 def _exec_pets(ctx, targets, run):
     who = "、".join(p.get("name") or "宠物" for p in ctx.pets)
-    r = run("pet_pets", {})
+    r = run("pets", {})   # 🔀 2026-10-04：键从 `pet_pets`（退役作弊函数的旧名）改成 `pets`，见 runner 里的注释
     return _receipt_from_helper("摸猫狗", who, r)
 
 
@@ -2550,8 +2550,11 @@ REFORGE_V = Verb("reforge", "重铸饰品", 76, _reforge_can, _reforge_reason, _
 #    容器那边分成了 `chest` / `chest_take` 两个对象，是因为顶层扫的是"图上的格子"（`tile`）
 #    而子层的目标是"这个容器"。买卖没有"格子"：它在 **world** 这一档（问的是"现在这个处境"），
 #    顶层和子层指向的是同一个东西 ⇒ 一个对象就够，分成两个反而多一处会漂的重复。
-BUY_V = Verb("buy", "买", 72, _buy_can, _buy_reason, lambda c, t: "买", "world",
+BUY_V = Verb("buy", "买 动物（玛妮柜台）", 72, _buy_can, _buy_reason, lambda c, t: "买动物", "world",
              subs=_buy_subs, count=_buy_count, exec_multi=_exec_buy_multi, menu_ok=True)
+# ⚠️ 2026-10-04 恒：「**买动物叫 buy 会不会被误会？本质是玛妮柜台的一个分支服务**」——
+#    原来 label 就是光秃秃一个「买」，跟"通用购买"撞脸（`buy_animal` 本身也确实只能走玛妮柜台那条）。
+#    ⇒ label 点明对象与地点；**键仍是 `buy`**（脚本/钉子/文案引用的是键，不是 label）。
 SELL_V = Verb("sell", "卖", 74, _sell_can, _sell_reason, lambda c, t: "卖", "world",
               subs=_sell_subs, count=_sell_count, exec_multi=_exec_sell_multi, menu_ok=True)
 
@@ -3060,8 +3063,8 @@ VERBS: list = [
     #    `wasPetToday` 就在 `/animals` 里 ⇒ "今天摸过没"**问得到**（PENDING 里那句是旧的）。
     Verb("pet",     "摸 还没摸的动物", 84, _pet_can,  _pet_reason,  _pet_show,  "world",
          exec=_exec_pet),
-    Verb("pet_pets", "摸 猫狗",      87, _pets_can, _pets_reason, _pets_show, "world",
-         exec=_exec_pets),
+    Verb("pets", "摸 猫狗",      87, _pets_can, _pets_reason, _pets_show, "world",
+         exec=_exec_pets),   # 🔀 2026-10-04 改名（旧键 `pet_pets` = 已退役作弊函数的残留名）
     # 🪑 坐 / 🛋 搬家具（逐格）——2026-09-29 接线
     # ⚠️ `batch=False`：`_exec_sit` 只吃 `targets[0]`（人只能坐一张）
     #    ⇒ 街上两张长椅时**不许印 `坐 现代长椅 ×2`**（那是"两张都要坐"）。
@@ -4819,7 +4822,7 @@ def _selftest():
     #    参与全局排序**（恒原话「**坐可以放在不靠上的位置**」；不选"全局权重序"是因为那样会把组打散、
     #    组头就骗人了）。这几条**钉 B**：`坐`(26) 沉到块的位置（`看 古书` 40 之后）。
     #    ⚠️ 这几条会**第一个红**地拦下"再动排序口径"的人 —— 改它们＝改口径，得先问恒。
-    _grp = _fixture()          # 设备 = mwork 88 / chest 80 · 家具 = sit 26 · 未分组 = pick 90 / harvest 88 / pet_pets 87 / pet 84 / read 40
+    _grp = _fixture()          # 设备 = mwork 88 / chest 80 · 家具 = sit 26 · 未分组 = pick 90 / harvest 88 / pets 87 / pet 84 / read 40
     reset_menu()
     render_menu(_grp, n=40)
     _gkeys = [r.verb.key for r in _LAST_ROWS]
@@ -4828,8 +4831,8 @@ def _selftest():
                _gkeys[:1] == ["pick"]))
     ok.append(("🗂 197B：接着是**设备块整块**（组内 88→80）",
                _gkeys[1:3] == ["mwork", "chest"]))
-    ok.append(("🗂 197B：然后按权重轮到未分组行（harvest 88 → pet_pets 87 → pet 84 → read 40）",
-               _gkeys[3:7] == ["harvest", "pet_pets", "pet", "read"]))
+    ok.append(("🗂 197B：然后按权重轮到未分组行（harvest 88 → pets 87 → pet 84 → read 40）",
+               _gkeys[3:7] == ["harvest", "pets", "pet", "read"]))
     ok.append(("🗂 197B：**家具块（坐 26）沉到它自己该在的位置**（`看 古书` 40 之后，全屏最后）",
                _gkeys[-1] == "sit" and _gw[-1] == 26))
     ok.append(("🗂 197B：口径 B 下**组是连续的**（设备那两条挨着 ⇒ 组头一块只印一次、不骗人）",
@@ -5194,7 +5197,7 @@ def _selftest():
     render_menu(ctx, n=40)
     calls.clear()
     do_row(_no_of("摸 猫狗"), act_run, ctx)
-    ok.append(("摸猫狗 走 `pet_pets`", any(c[0] == "pet_pets" for c in calls)))
+    ok.append(("摸猫狗 走 `pets`", any(c[0] == "pets" for c in calls)))
 
     # ⚠️ 已经坐着 ⇒ **不该再给「坐」**（要先 scene stand 起身）
     sitctx = _fixture()

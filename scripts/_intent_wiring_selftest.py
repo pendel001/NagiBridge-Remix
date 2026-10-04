@@ -587,9 +587,12 @@ def main():
     #    （捡 90 / 摸 84 / 箱子 80 …）⇒ 不放大就**根本看不到那两行**，测试会假红。
     _stub(shop=True)
     out = M.intent(ops="show", kw={"n": 40})
-    res.append(ok("商店开着 ⇒ 单子上有「买…」", "买…" in out))
+    # ⚠️ 2026-10-04：**按 verb.key 判**，别按 label 文本判 —— label 会随口径改名
+    #    （「买」→「买 动物（玛妮柜台）」），按文本找的钉子一改名就红/StopIteration（这次两处都这么红的）。
+    res.append(ok("商店开着 ⇒ 单子上有「买 动物（玛妮柜台）…」",
+                  any(r.verb.key == "buy" for r in M.intent_menu._LAST_ROWS)))
     res.append(ok("商店开着 ⇒ 单子上有「卖…」（背包有这家收的）", "卖…" in out))
-    buy_no = next(r.no for r in M.intent_menu._LAST_ROWS if (r.label or "") == "买")
+    buy_no = next(r.no for r in M.intent_menu._LAST_ROWS if r.verb.key == "buy")
     shelf = M.intent(ops="do", kw={"code": str(buy_no)})
     res.append(ok("点开「买」→ 出货架（名/价/库存都在）",
                   "草莓种子" in shelf and "100g" in shelf and "剩 5" in shelf))
@@ -705,7 +708,7 @@ def main():
                   ctx.menu_hint == M._close_hint("ShopMenu")))
     _so = M.intent(ops="show", kw={"n": 40})
     res.append(ok("🚪 商店开着 ⇒ 「关掉界面」跟 买/卖 **同屏**",
-                  "关掉界面" in _so and "买…" in _so))
+                  "关掉界面" in _so and any(r.verb.key == "buy" for r in M.intent_menu._LAST_ROWS)))
     # 捏人页：**不给**出口行，改印原话（按 ok = 不可逆定型，劝它就关等于害它）
     _stub(menu="CharacterCustomization")
     ctx = M._im_ctx()
@@ -2310,7 +2313,7 @@ def main():
 
     res.append(ok("⚖️ 193：`收 成熟作物` 85 → **88**（做完就不播了 ⇒ 往前挪）", _w("harvest") == 88,
                   _w("harvest")))
-    res.append(ok("⚖️ 193：`摸 猫狗` 83 → **87**", _w("pet_pets") == 87, _w("pet_pets")))
+    res.append(ok("⚖️ 193：`摸 猫狗` 83 → **87**", _w("pets") == 87, _w("pets")))
     res.append(ok("⚖️ 193：`放牧（开棚门）` 70 → **84**（早晨跟摸动物一个档）",
                   _w("opendoors") == 84, _w("opendoors")))
     res.append(ok("⚖️ 193：`收 蟹笼` 68 → **72**（有货时可抬）", _w("crab") == 72, _w("crab")))

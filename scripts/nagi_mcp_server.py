@@ -9217,17 +9217,14 @@ def pet_walk(include_petted: bool = False) -> str:
     return _with_state(f"🐾 摸动物报告：\n{out[:600]}")
 
 
-@mcp.tool()
-def scythe_crops(radius: int = 15) -> str:
-    """🌾 镰刀收获模式：选最好镰刀 → /harvest 收当前地图成熟作物 → 捡地面掉落
-    手摘作物（蒜/西瓜）直接进背包；镰刀作物（小麦/水稻/芋头/纤维）掉落地上要走过去捡。
-    会按作物种类报名字（小麦/杨桃/菠萝…）。
-
-    Args:
-        radius: 收获半径（默认15）
-    """
-    out = _run_script("scythe_crops", [f"--radius", str(radius)], timeout=180)
-    return _with_state(f"🌾 镰刀收获报告：\n{out[:600]}")
+# ⛔ **`scythe_crops()`（裸镰刀收获）2026-10-04 删除** —— 恒口径：
+#    「water、harvest/scythe **可上单**，而且后者**合并成一个工具**：没有铱镰刀和耕种精通时手摘，
+#      有则走镰刀。我记得我们本来就是这么设计的？」
+#    ✅ 属实：`harvest_crops(radius)` 本来就是**同一个脚本 + 同一个 radius 参数**，只是多了一层
+#    "已领耕种精通 → 加 `--scythe`"的判断（见 L7967-7970）⇒ 裸镰刀那个口**完全冗余**。
+#    留着它的害处跟 `collect_machines` 同型：**"留着的口"和"已定的口径"混着看**，AI 会以为要自己选工具。
+#    ⚠️ **脚本 `scythe_crops.py` 一个字节没动**（`harvest_crops` 就在跑它，`_ASYNC_TOOLS` 里那行是
+#    **脚本名**、也要留着）。要恢复这个 MCP 口先问恒。
 
 
 @mcp.tool()
@@ -11467,7 +11464,11 @@ def farm(ops: str = "", kw: dict | None = None) -> str:
         "plantlayout": _farm_plant, "播种规划": _farm_plant,
         "water": water_crops, "浇": water_crops,
         "harvest": harvest_crops, "收": harvest_crops,
-        "scythe": scythe_crops,
+        "scythe": harvest_crops,   # 🔀 2026-10-04 恒拍板**合并**：单子上只有「收 成熟作物」一行，而
+                                   #    `harvest_crops` 本来就是两条路（已领耕种精通 + 包里有铱镰刀 → 挥镰刀，
+                                   #    否则 → 手摘，见 L7953 那段）⇒ `scythe` 留成**别名**。
+                                   #    留着独立的 `scythe_crops` = 让 AI 以为"要自己判断用哪种"。
+                                   #    （恒：「后者合并成一个工具：没有铱镰刀和耕种精通时手摘，有则走镰刀」）
         "fertilize": apply_fertilizer, "化肥": apply_fertilizer,
         "clear": _farm_clear, "清": _farm_clear,
         "plot": plot_plan, "规划": plot_plan,
@@ -12828,6 +12829,10 @@ def daily(ops: str = "", kw: dict | None = None) -> str:
         "eat": eat_item, "吃": eat_item,
         "wear": wear, "穿": wear, "穿戴": wear, "脱": wear,
         "lie_bed": lie_bed, "躺": lie_bed, "躺床": lie_bed,
+        # ⏱️/🖱️ 2026-10-04 恒拍板：**这两条是配置，不是动作** —— 已归到"配置类"，不再当候选动作露给 AI：
+        #   · `heartbeat`（心跳间隔）：真身已搬进 `settings` 域（见 `_SETTINGS_DISPATCH`）；这里留**别名**。
+        #   · `pause`（失焦暂停开关）：恒「AI 又不会知道去抢时间，没有什么暴露的意义」⇒ 保留底层 setter，
+        #     但不进任何指南的"可调动作"表（`settings status` 里只读印出来）。
         "heartbeat": set_heartbeat_interval, "心跳": set_heartbeat_interval,
         "pause": set_pause, "暂停": set_pause,
         "peek": peek_player, "看恒": peek_player,
@@ -16926,6 +16931,16 @@ _SETTINGS_DISPATCH = {
     "session_status": _session_status, "会话状态": _session_status, "会话缓冲": _session_status,
     "session_set": _session_set, "会话设置": _session_set,
     "session_export": _session_exportop, "导出会话": _session_exportop,
+    # ⏱️ 2026-10-04 恒：「心跳间隔的时间设置，我以为是放 setting 域会比较好」—— 它是**配置**，
+    #    不是"过日子"的动作 ⇒ 搬到 settings（真身 = `set_heartbeat_interval`，`settings status` 一直在印它）。
+    #    ⚠️ `daily ops=heartbeat` **保留成别名**（不删）：老文案/老习惯还会从那儿调，
+    #       反正落到同一个函数（一处真相）。它**不上 intent 单子**（是恒的阅读口味，不是 AI 的动作）。
+    # ⚠️ **必须用 lambda 延迟解析**：`_SETTINGS_DISPATCH` 在**模块导入时**就求值，而
+    #    `set_heartbeat_interval` 定义在它后面（L17613）⇒ 直接写函数名 = `NameError`，
+    #    38 个 selftest 会一起红（2026-10-04 现场踩过：整包 import 失败）。
+    "heartbeat": lambda minutes=5: set_heartbeat_interval(minutes),
+    "心跳": lambda minutes=5: set_heartbeat_interval(minutes),
+    "心跳间隔": lambda minutes=5: set_heartbeat_interval(minutes),
 }
 
 
@@ -16933,7 +16948,7 @@ _SETTINGS_DISPATCH = {
 _DOMAIN_GUIDES = {
 "intent": "🎯 意图选项单（**先看单子、再敲编号**）：`intent(ops=\"show\")` 看这一刻能做的事（一行一件，`←` 后面是理由）；`intent(ops=\"do\", kw={\"code\":\"1\"})` 敲第 1 行；`intent(ops=\"at\", kw={\"x\":12,\"y\":30})` 指哪打哪（逃生口，问「这一格能做什么」）。敲法：`1` 一行 · `1,4` **多选**（选哪些，顺序无所谓）· `1=2,4=7` **各多少**（号=数量，配对，顺序也无所谓）· `0` = 这些都不是（子层里 = 返回上一层）。⚠️**目录行句尾带 `…`**（点开还有下一层，顶层只报个数不发号）；**号是当场发的、不跨屏** —— 敲之前先 `show` 看一眼当前那一屏，别记着上一屏的号去敲。⚠️单子上**出现的那条，按了就成**；没出现 = 这一刻算不出来（不是「不行」）。覆盖：收机器 / 开箱子（取·存）/ **箱子里…**（容器界面**开着**时，箱内容**直接摊成一行行「取」**——那儿有格号，同名不同星的两摞也点得准；不用再 `menu read` 自己解析）/ **存…**（同一个界面里往这只箱子放东西：跟箱子**关着**时同一套「选哪几样 → 各多少」；放进去屏幕上是**当场看得见**的）/ 吃 / 看书（**背包里没拿手上的也算**）/ 捡 / 收作物 / 坐·**起身** / 摸动物 / 摸猫狗 / **放牧（开棚门）**（早上 06:00–15:00 且不下雨/非冬天，站在农场上时）/ **关棚门**（≥17:00 或 <06:00，同条件） **买·卖**（只在商店 menu 开着时才出现）/ **推进对话**（有对话框或剧情在播时）/ **确认结算**（过夜结算屏 ShippingMenu）/ **投出货箱**（站在农场 + 背包里有投得进去的）/ **关掉界面**（任何界面开着时的出口）。⚠️**要规划的那些农活不在单子上**（锄地/播种/施肥/清场/砍树）—— 它们得按矩形/布局算落点、还要挑蓄力站位，走 `farm` 域（`farm ops=till, kw={x1,y1,x2,y2,layout}` 这种），**单子上一格一格敲比它慢得多、还更费体力**。挖蚯蚓/远古斑点走 `scene ops=spot`（一次全挖）。⚠️**搬家具（搬走）2026-10-02 也撤出单子了**（恒：家居装饰场景专用、优先级极低）—— 走现成的域工具 `scene(ops=\"furniture\")` 看清单 / `scene(ops=\"pickup\", kw={\"tile_x\":X,\"tile_y\":Y})` 搬起。⚠️**穿戴（穿/脱）2026-10-02 也撤出单子了**（恒：权重最低 ⇒ 空场景里常驻）—— 走 `daily(ops=\"wear\", kw={\"name\": 内部名})` 或 `kw={\"slot\": \"hat\"}`。⚠️**买**是两层（选哪几样 → 各多少）；**卖**只有一层（选哪几摞 → 敲了就卖，**整摞走**——游戏单击就是卖整摞，别试 `1=2` 那种写法，那一层不收数量）。",
 "check": "查询域，what=...：status(完整状态) backpack(逐格价值/星级) worn(穿戴) machines(全场机器清单) mine(下矿进度) silo(干草) mastery(精通) buildings(木匠建筑) quest(开任务日志) chests(当前图箱) storage(箱子网络) look(环视周围) profile(我的技能等级+职业分支,如是否 Luremaster 蟹笼免饵) role(端口↔角色确认:我是谁/恒是谁) ready(就绪握手实况:卡在就绪框时查,两侧都读才看得出死锁在哪头)。⚠️查概览用 status，查逐格用 backpack，别都调浪费 token。📌profile/role 一律走 check（不叫 profile()/which_role()）。📐这个域的参数叫 **what**，**不是 ops**。带参的只有两个: chests(chest=N 看第N个箱) / look(radius=10 环视半径)；其余(status/backpack/worn/machines/mine/silo/mastery/buildings/quest/ready/storage/profile/role)**全无参**。⚠️查概览用 status、查逐格用 backpack，别都调一遍浪费 token。",
-"farm": "农活域(🌱必走，别手动挥工具组合，用域 ops)：till(锄地) plant(种,跳过已种;带 layout 就按洒水器布局种) water(浇,自动跳雨+水壶没水先装满) harvest(收) scythe(镰刀收蒜/花/茶) fertilize(化肥) clear(清杂草石树桩;坐标同 till，也可 `radius=N` 走**圆形**；**会自动往外多清 2 格**——田边的杂草会长进田里把作物顶掉，不用自己放大) plot(连通域规划) plan(方形规划,纯算格) chop(砍树)。⚠️**锄地/播种各只有一个实现**：锄地=`till`（`hoe`/`布局锄`/`tillfield`/`蓄力锄` 都是它的别名）、播种=`plant`（`sow`/`plantlayout`/`播种规划` 都是它的别名）；⛔ 没有 `till_plant`——要锄+种写 `ops=\"till plant\"`。 clearground(清单格) load(收放机器:**拟人走过去逐台**、收放一条过;`item` 留空=只收不放) break(拆/敲同scene,镐子敲可破物/翻已耕地) place(放置/播种同scene) pond/pond_add/pond_feed/pond_collect/pond_fish(鱼塘)。⚠️漏格DLL自动补；**缺的格会被点名「被什么挡着」**（🌿草/杂草/🪨石头/🪵树枝→**先 `clear` 清一遍再 till/plant**；🏗️洒水器/箱子等设施→⛔别清、那是规划该绕开的格）——草占着地格时锄头是锄不出 HoeDirt 的，别对着「缺失N格」发呆。只在 Farm/温室/姜岛。带参 op(plant 的 seed_name、till/clear 的 x/y/rows、fertilize 的 fertilizer_name、place 的 name、load 的 item/machine_type/here、pond_add 的 item)→ kw={'参数名':值}。🐄动物: animals(摸+收) 喂水/碗(宠物水,🌧️雨天自动跳过——雨会把碗填满) milk(挤奶剪毛) doors(开关畜棚鸡舍门,别名 放牧/开关门/棚门——**翻转端点**:先走到棚门口再翻,回执逐栋报执行后的门态,要反着来再敲一次) buy(买动物,豁免建议) hay(干草) pet(猫狗) petwalk(拟人摸) 畜舍/这间(这间屋动物) statue(祈福)——⚠️farm water=浇地,动物水用 喂水; farm load=机器收放,这屋动物用 畜舍。📐参数键名: till/clear/plant/fertilize 都是 x,y(**必填**),rows,length,direction（till/plant 也可用 x1,y1,x2,y2 直接给矩形两角）；plant 另有 seed_name,layout,direct,trellis；harvest/scythe=radius；plot=x,y,radius,all_plots；chop=area(**值写几个数**：4 个数=矩形两角 / 3 个数=圆心+半径，逗号空格都认)；collect=machine_type,location；load=item,machine_type,location,count,here；place=name,x,y；break=x,y,steps,radius；pond_add=item+x,y（pond_feed/collect/fish 只要 x,y）；buy=animal_type,name,building；petwalk=include_petted；hay=dry_run。⚠️direction 只认 horizontal(默认)/vertical 两个值,别写'横'/'竖'。💡大田洒水器布局(可选,纯自动化建议)：要按洒水器留格/留走道就 plan→till→plant 三件套——plan(x1,y1,x2,y2,layout=0,hoe_level=-1,trellis=False) **纯算格不动机器**先看要锄/种哪些; till(x1,y1,x2,y2,layout=0) 按布局锄; plant(x1,y1,x2,y2,seed_name,**layout**) 按布局种（layout=0 整块/1 初级十字/2 高级/3 铱；direct=True 瞬移快、默认走位拟人）。想一次说完就 `ops=\"till plant\"`（**一份 kw 共用**，锄地会自动点名忽略 seed_name）。**layout 四档**: 0=标准整块(不预留洒水器,锄法蛇形逐格走位,任何锄头等级都行) 1=初级(十字稀疏,每台覆盖上下左右4格;锄法=精确锄每台4格,**与锄头等级无关**) 2=高级(优质,田宽高先裁成**3的倍数**,每3×3中心1台覆盖8格,整块蓄力锄) 3=铱(裁成**5的倍数**,每5×5中心1台覆盖24格;⚠️爬架作物不适用)。hoe_level: 0→1格 1→3线 2→5线 3→3×3 4→6×3,-1=自动读手持。trellis=True=爬架作物(啤酒花/青豆/葡萄,不可通过格)⇒自动**种2留1**留走道让AI能进田浇收。只管种不摆洒水器就直接 plant,不用 plan 那套。⚠️已知限制: layout 0/2/3 碰上金/铱锄(hoe_level>=3)会报**0处锄地站位**并自打一行'落点未实测校准,暂不规划蓄力站位'——**那是刻意不猜不是出错**; layout 1 不吃蓄力站位不受影响。",
+"farm": "农活域(🌱必走，别手动挥工具组合，用域 ops)：till(锄地) plant(种,跳过已种;带 layout 就按洒水器布局种) water(浇,自动跳雨+水壶没水先装满) harvest(收：**自己选镰刀/手摘**——已领耕种精通+有铱镰刀挥镰刀，否则手摘) fertilize(化肥) clear(清杂草石树桩;坐标同 till，也可 `radius=N` 走**圆形**；**会自动往外多清 2 格**——田边的杂草会长进田里把作物顶掉，不用自己放大) plot(连通域规划) plan(方形规划,纯算格) chop(砍树)。⚠️**锄地/播种各只有一个实现**：锄地=`till`（`hoe`/`布局锄`/`tillfield`/`蓄力锄` 都是它的别名）、播种=`plant`（`sow`/`plantlayout`/`播种规划` 都是它的别名）；⛔ 没有 `till_plant`——要锄+种写 `ops=\"till plant\"`。 clearground(清单格) load(收放机器:**拟人走过去逐台**、收放一条过;`item` 留空=只收不放) break(拆/敲同scene,镐子敲可破物/翻已耕地) place(放置/播种同scene) pond/pond_add/pond_feed/pond_collect/pond_fish(鱼塘)。⚠️漏格DLL自动补；**缺的格会被点名「被什么挡着」**（🌿草/杂草/🪨石头/🪵树枝→**先 `clear` 清一遍再 till/plant**；🏗️洒水器/箱子等设施→⛔别清、那是规划该绕开的格）——草占着地格时锄头是锄不出 HoeDirt 的，别对着「缺失N格」发呆。只在 Farm/温室/姜岛。带参 op(plant 的 seed_name、till/clear 的 x/y/rows、fertilize 的 fertilizer_name、place 的 name、load 的 item/machine_type/here、pond_add 的 item)→ kw={'参数名':值}。🐄动物: animals(摸+收) 喂水/碗(宠物水,🌧️雨天自动跳过——雨会把碗填满) milk(挤奶剪毛) doors(开关畜棚鸡舍门,别名 放牧/开关门/棚门——**翻转端点**:先走到棚门口再翻,回执逐栋报执行后的门态,要反着来再敲一次) buy(买动物,豁免建议) hay(干草) pet(猫狗) petwalk(拟人摸) 畜舍/这间(这间屋动物) statue(祈福)——⚠️farm water=浇地,动物水用 喂水; farm load=机器收放,这屋动物用 畜舍。📐参数键名: till/clear/plant/fertilize 都是 x,y(**必填**),rows,length,direction（till/plant 也可用 x1,y1,x2,y2 直接给矩形两角）；plant 另有 seed_name,layout,direct,trellis；harvest=radius；plot=x,y,radius,all_plots；chop=area(**值写几个数**：4 个数=矩形两角 / 3 个数=圆心+半径，逗号空格都认)；collect=machine_type,location；load=item,machine_type,location,count,here；place=name,x,y；break=x,y,steps,radius；pond_add=item+x,y（pond_feed/collect/fish 只要 x,y）；buy=animal_type,name,building；petwalk=include_petted；hay=dry_run。⚠️direction 只认 horizontal(默认)/vertical 两个值,别写'横'/'竖'。💡大田洒水器布局(可选,纯自动化建议)：要按洒水器留格/留走道就 plan→till→plant 三件套——plan(x1,y1,x2,y2,layout=0,hoe_level=-1,trellis=False) **纯算格不动机器**先看要锄/种哪些; till(x1,y1,x2,y2,layout=0) 按布局锄; plant(x1,y1,x2,y2,seed_name,**layout**) 按布局种（layout=0 整块/1 初级十字/2 高级/3 铱；direct=True 瞬移快、默认走位拟人）。想一次说完就 `ops=\"till plant\"`（**一份 kw 共用**，锄地会自动点名忽略 seed_name）。**layout 四档**: 0=标准整块(不预留洒水器,锄法蛇形逐格走位,任何锄头等级都行) 1=初级(十字稀疏,每台覆盖上下左右4格;锄法=精确锄每台4格,**与锄头等级无关**) 2=高级(优质,田宽高先裁成**3的倍数**,每3×3中心1台覆盖8格,整块蓄力锄) 3=铱(裁成**5的倍数**,每5×5中心1台覆盖24格;⚠️爬架作物不适用)。hoe_level: 0→1格 1→3线 2→5线 3→3×3 4→6×3,-1=自动读手持。trellis=True=爬架作物(啤酒花/青豆/葡萄,不可通过格)⇒自动**种2留1**留走道让AI能进田浇收。只管种不摆洒水器就直接 plant,不用 plan 那套。⚠️已知限制: layout 0/2/3 碰上金/铱锄(hoe_level>=3)会报**0处锄地站位**并自打一行'落点未实测校准,暂不规划蓄力站位'——**那是刻意不猜不是出错**; layout 1 不吃蓄力站位不受影响。",
 "mine": "下矿域(⚒️ 矿井/头骨/火山)：go(去挖矿:mode=rush冲层/farm刷矿,start起始层,target目标层,ore,cycles圈数) progress(进度) bomb_status/bomb_plan/bomb_place/bomb_collect/bomb_ladder/bomb_retreat(单步炸,**都要 bomb_ 前缀**) bomb_mine(自动) bomb_volcano(火山) organize(整理背包)。🔁**刷矿=mode=go(mode=farm)**：定点刷指定矿→ore=Copper铜(21层)/Iron铁(41层)/Gold金(71层)；**煤靠 farm 铁层(41)顺手清尘埃精灵/蝙蝠掉**（不是 ore 选项，跑 auto 内部刷）。🏃下矿=mode=go(mode=rush,start可选≤电梯上限+5倍数,target默认120)。⚠️无镐/血低硬拦；梯子 /ladder+confirm。⚔️贴身(3×3)自卫=游戏自己每 tick 挥刀(go/bomb_mine/bomb_volcano 三个脚本都自开自关,**只转向不移动**;手上是锤子且冷却好了会重砸6×6)；2格外的怪仍靠脚本扫描,别站桩。🍽️**自定义吃食**：go/bomb_mine/bomb_volcano 都可传 food_hp/food_sta=**逗号分隔、靠前的先吃**(如 food_hp=「奶酪,鱼肉卷」)。血低只看 food_hp、体力低只看 food_sta(**两张表分开别混**)。点名=**白名单**——只在这几样里挑、**吃完了也不吃别的**(恒 2026-10-03)，目的是**防止自动挑把你留着卖的吃了**(山羊奶酪最典型)；一个字都没点名才自动挑(自动挑**不吃带效果的**)。🍽️food_buff=点名「去吃带这个效果的那份」(效果关键字如 运气/钓鱼，判据=游戏报的 foodBuffs)；每层开打前看该 buff 没挂/快过期就吃；**不传也会自动补**（自动挑包里带 buff 的那份——恒 2026-10-03 晚拍板「不点名也自动补」，与炸矿那套统一）。⚠️food_buff **只有 go/bomb_mine 有**（火山不补 buff，别指望它；恒 2026-10-03 拍板维持现状）。⚠️bomb_mine 没炸弹+host在同矿井→自动转【内部】协同(跟随host+帮忙敲矿/打怪)不撤退出矿(🗑️ 独立脚本 `bomb_escort` 2026-10-03 恒拍板**已真删**，协同就是这里内联的；**沙漠这档只能被动起**——恒 2026-10-03 拍板「不需要主动起」，别再开这个口)；**协同期间又拿到炸弹会自动回炸矿模式**(2026-10-03，照火山那套『同一循环里重估炸弹』；包里还有别的类型会先换类型再决定要不要交棒)；bomb_retreat 结束协同+停脚本+脱离矿井回门口(随时可结束)。⚠️接「深处的危险」重置电梯→起始层动态从1起(内置脚本自动读，不暴露工具)；刷矿目标层不可直达会上报，需先冲层带回或改浅层。📐带参速查: go(mode=rush冲层/farm刷矿, start起始层, target目标层, ore=Copper铜/Iron铁/Gold金, cycles圈数, hp_threshold, food_sta, food_hp, food_buff, resume) bomb_plan(radius,min_covered,top) bomb_place(x,y **必填**) bomb_collect(max_items) bomb_mine(target,bomb,min_covered,follow_host,lead,autodrop,one_floor,food_hp,food_sta) bomb_volcano(bomb,min_covered,hp_threshold,max_minutes,poll,food_hp,food_sta) organize(disable,reset)。💣bomb 三个取值 'Cherry Bomb'樱桃/'Bomb'黑/'Mega Bomb'超级——**点名的包里没有就按 黑>超级>樱桃 自动换成有的**(不会误报没炸弹)；范围 樱桃=边长7十字 / 黑=11x11方块 / 超级=15x15方块，⚠️黑和超级**会炸伤自己**(实测黑掉3血)。⚠️bomb_volcano **要求 host 已在矿/火山里**才放行(火山瓦片没法程序化换层)。⚠️bomb_mine one_floor=True=逐层模式(同步,只跑一层出摘要,不撤退)；**默认冲层模式=异步后台跑,推荐**。💡出发前占位物：提前放1个可堆叠物(铱矿/铱锭/五彩碎片)在包，满包时同种战利品自动堆叠吸附、少触发满包停；别拿银河之魂这类带死亡会丢的稀有物当占位。",
 # 🏠 2026-10-01：`"cabin"` 这条**删掉了** —— 整个域撤出顶层（恒：能收就收）。
 #    它每个 op 的新家：cook→**daily**（做饭是吃的上游）· sleep→daily · statue→farm ·
@@ -23684,7 +23699,11 @@ def _im_run(op, args):
         "pet_animals": lambda: _pet_animals_in_building(),
         # ⚠️ 调**底层那个不带状态条**的（`pet_pet()` 外面裹了 `_with_state`）——
         #    回执里再嵌一条状态条 = 一屏两张条，反而看不清「这次到底干了啥」。
-        "pet_pets": lambda: _pet_pets_natural(),
+        # 🔀 2026-10-04 恒：「摸猫狗留一个就行了」。这个键原来叫 `pet_pets` —— 那是 2026-08-16 退役的
+        #    **作弊一条龙**的函数名（作弊本体早没了，名字留在 runner 上）⇒ 文档里 `farm pet`(摸猫狗) 与
+        #    `farm petwalk`(拟人摸牲畜) 并列、单子键又叫 `pet_pets`，看着像"还有一条不拟人的摸法"。
+        #    **其实两条都走 `_pet_pets_natural()`（自然走位）**。⇒ 更名 `pets`，清掉误导性的旧名。
+        "pets": lambda: _pet_pets_natural(),
         "pickup_scene": lambda: pickup_scene(),
         # 🌾 收作物：走 farm 域的**拟人**那条（`scythe_crops` 脚本，自己选镰刀 + 逐个走位）。
         #    ⚠️ **不是** C# 的 `/harvest`（那条隔空批量、产物直进包，恒 2026-09-17 否掉过）。
