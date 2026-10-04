@@ -520,6 +520,17 @@ class BombMineBot(BombMiner):
         except Exception:
             pass
 
+        # 🚃 顺手捡煤（恒 2026-10-04：「会掉一堆煤。本来我们也是要做顺手捡煤才去测这个玩意儿。」）：
+        #    煤炭矿车**不是 object** —— 它是 `Buildings` 层索引 194 的一格地图瓦片
+        #    （反编译 `MineShaft.checkAction` `case 194:`：开箱音 + 索引 194→195 + 掉煤 382 + 矿车计数 -1）。
+        #    所以 `/surroundings`/`/dump_tile` 都看不见它，只能靠 `/tile_props?scan=TileIndex`。
+        #    只在**刚进这层**顺手看一眼（不占主循环节奏）；有怪贴脸或太远会自动放弃（见 loot_coal_carts）。
+        if not no_collect:
+            try:
+                self.loot_coal_carts()
+            except Exception as e:                                # noqa: BLE001
+                log(f"  ⚠️ 顺手捡煤出岔子（不影响炸矿）：{e}")
+
         for attempt in range(MAX_FLOOR_ATTEMPTS):
             # buff 维护（按游戏报的 buff id 对槽；点名 food_buff 就只补点名那个）
             self.maintain_buffs(threshold=30, want=getattr(self, "food_buff", "") or None)

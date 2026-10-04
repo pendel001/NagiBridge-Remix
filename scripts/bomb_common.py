@@ -2434,6 +2434,114 @@ class BombMiner(WeaponMixin):
         except Exception:
             return False
 
+    # ═══════════ 🚃 煤炭矿车（顺手捡煤） ═══════════
+
+    COAL_CART_TILE = "194"   # Buildings 层原始索引；开过会 +1 变 195（反编译 checkAction case 194）
+
+    def find_coal_carts(self):
+        """🚃 本层**还没开过**的煤炭矿车坐标 [(x,y)]。
+        （恒 2026-10-04：「会掉一堆煤。本来我们也是要做顺手捡煤才去测这个玩意儿。」）
+
+        它**不是 object** —— 反编译 `MineShaft.checkAction`（`MineShaft.decompiled.cs:3097`）：
+            `case 194:` → 播开箱音 + `Buildings.Tiles[..].TileIndex++`（194→195，开过就变）
+                        + `createRadialDebris(this, 382, x, y, 6, …, item:true)`（**382 = 煤**，撒在周围一圈）
+                        + `updateMineLevelData(2, -1)`（煤炭矿车计数 -1）
+        ⇒ `/surroundings`（只看 objects）、`/dump_tile`（四层）、`/tile_props?scan=Action`（只看属性）
+          **统统看不见它** —— 只有"读原始瓦片索引"这一条路：
+          `?scan=TileIndex&layer=Buildings&value=194`（2026-10-04 为这件事新加的档）。
+        ⚠️ 旧 DLL 没有这一档 ⇒ 会报 ok=false；这里**如实报"读不了"**，绝不假装"本层没矿车"。
+        """
+        try:
+            r = self._get("/tile_props", {"scan": "TileIndex", "layer": "Buildings",
+                                          "value": self.COAL_CART_TILE})
+        except Exception as e:                                    # noqa: BLE001
+            log(f"  ⚠️ 煤炭矿车名单读失败：{e}")
+            return []
+        if not r.get("ok"):
+            log(f"  ⚠️ 这个 DLL 还读不了煤炭矿车（{r.get('error') or '没有 scan=TileIndex 这一档'}）")
+            return []
+        # ⚠️ **能力标记**：老 DLL 也收 `scan=TileIndex`，但它会去**属性表**里找一个叫 "TileIndex" 的属性
+        #    ⇒ 静默回 `count:0`，跟"本层真没矿车"长得一模一样。⇒ 只认 `byIndex=true`，
+        #    没有这个标记就**如实说读不了**（宁报错，不给"今天没煤"这种假平静）。
+        if r.get("byIndex") is not True:
+            log("  ⚠️ 这个 DLL 不支持 `scan=TileIndex`（回包没有 byIndex=true）"
+                "—— 别当成本层没矿车（要开档才会带上新 DLL）")
+            return []
+        return [(h.get("x"), h.get("y")) for h in (r.get("hits") or []) if h.get("x") is not None]
+
+    def collect_coal_near(self, cx, cy, radius=8, max_walks=6):
+        """踩掉矿车周围撒出来的煤（掉落有磁性，走上去自动拾取）。返回走了几处。"""
+        try:
+            d = self.debris()
+        except Exception:                                         # noqa: BLE001
+            return 0
+        tiles = [(it.get("x", 0), it.get("y", 0)) for it in d.get("debris", [])
+                 if any(k in (it.get("itemName") or "") for k in ("煤", "Coal"))
+                 and max(abs(it.get("x", 0) - cx), abs(it.get("y", 0) - cy)) <= radius]
+        if not tiles:
+            return 0
+        loc = self.my_location()
+        walked = 0
+        for (x, y) in tiles[:max_walks]:
+            if self.inventory_free_slots() <= 0:
+                log("  🎒 背包满了，煤先不捡")
+                break
+            try:
+                self.natural_walk(x, y, loc, walk_only=True)
+                time.sleep(0.25)
+                walked += 1
+            except Exception:                                     # noqa: BLE001
+                pass
+        if walked:
+            log(f"  ⚫ 去踩了 {walked} 处煤掉落")
+        return walked
+
+    def loot_coal_carts(self, max_dist=10, max_n=4):
+        """🚃 顺手捡煤：开掉附近的煤炭矿车 + 踩掉出来的煤。返回开了几辆。
+
+        「顺手」的三条自律（恒的定位就是顺路，不值得为它冒险/绕路）：
+          · **4 格内有怪就不开**（不为一车煤挨打）
+          · 只开 `max_dist` 格内的（远的留给下一趟/不去）
+          · 开完**回读名单验真** —— 开过的会从 194 变 195，那是权威判据，
+            不是"我点了所以开了"（`/interact` 回 ok 也可能什么都没发生）
+        """
+        carts = self.find_coal_carts()
+        if not carts:
+            return 0
+        s = self.state()
+        px = s.get("player", {}).get("x", 0)
+        py = s.get("player", {}).get("y", 0)
+        near = sorted((c for c in carts if max(abs(c[0] - px), abs(c[1] - py)) <= max_dist),
+                      key=lambda c: abs(c[0] - px) + abs(c[1] - py))
+        if not near:
+            log(f"  🚃 本层 {len(carts)} 辆煤炭矿车都在 {max_dist} 格以外 —— 不绕路")
+            return 0
+        log(f"  🚃 本层 {len(carts)} 辆煤炭矿车，附近 {len(near)} 辆，顺手开")
+        opened = 0
+        for (cx, cy) in near[:max_n]:
+            if self.nearby_monsters(4):
+                log("  🚃 有怪贴脸，剩下几辆不开了")
+                break
+            _rocks, occupied, _c = self.scan_rocks(14)
+            sx, sy, _dx, _dy = self.find_stand_tile(cx, cy, occupied)
+            if sx is None or not self.position_safe(sx, sy):
+                log(f"  🚃 矿车 ({cx},{cy}) 旁边没落脚点，跳过")
+                continue
+            time.sleep(0.25)
+            self.face_toward(cx, cy)
+            r = self._post("/interact", {"x": cx, "y": cy})
+            time.sleep(0.4)
+            left = len(self.find_coal_carts())
+            if left < len(carts) - opened:
+                log(f"  ✅ 开了煤炭矿车 ({cx},{cy})（本层还剩 {left} 辆）")
+                opened += 1
+            else:
+                log(f"  ⚠️ 点了 ({cx},{cy}) 的矿车但名单没变（还剩 {left} 辆）"
+                    f"—— 交互没生效：{r}")
+                continue
+            self.collect_coal_near(cx, cy)
+        return opened
+
     def collect_drops(self, max_items=10, radius=14):
         """按价值排序捡地上掉落（走过去自动拾取）。返回捡了多少。"""
         d = self.debris()

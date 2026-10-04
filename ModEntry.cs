@@ -16031,6 +16031,17 @@ public class ModEntry : Mod
                 // ── 模式一：全图扫某个属性 ──
                 if (!string.IsNullOrEmpty(scan))
                 {
+                    // 🚃 2026-10-04（恒：「会掉一堆煤。本来我们也是要做顺手捡煤才去测这个玩意儿」）：
+                    //    `scan=TileIndex` = 读**原始瓦片索引**（不是属性）。为什么必须有这一档：
+                    //    头骨矿洞的**煤炭矿车根本不是 object** —— 它是 `Buildings` 层**索引 194** 的一格地图瓦片。
+                    //    反编译 `MineShaft.checkAction`（`MineShaft.decompiled.cs:3097`）：
+                    //      `case 194:` → 播开箱音 + `Buildings.Tiles[..].TileIndex++`（194→195，开过就变）
+                    //      + `Game1.createRadialDebris(this, 382, x, y, 6, resource:false, -1, item:true)`
+                    //        （**382 = 煤**）+ `updateMineLevelData(2, -1)`（矿车计数 -1）。
+                    //    ⇒ 所以 `/surroundings`（只看 objects）、`/dump_tile`（四层）、`/tile_props?scan=Action`
+                    //      （只看属性）**统统看不见它**。`value=194` = 未开的矿车（195 = 已开）——
+                    //      这就是"顺手捡煤"要找的那张名单，也是"捡过没有"的权威判据。
+                    bool byIndex = scan.Equals("TileIndex", StringComparison.OrdinalIgnoreCase);
                     var hits = new List<object>();
                     foreach (var ln in layerNames)
                     {
@@ -16040,18 +16051,39 @@ public class ModEntry : Mod
                         for (int x = 0; x < layer.LayerWidth; x++)
                             for (int y = 0; y < layer.LayerHeight; y++)
                             {
-                                var v = TileProp(loc, ln, x, y, scan);
+                                string? v;
+                                string? sheet = null;
+                                if (byIndex)
+                                {
+                                    var t = layer.Tiles[x, y];
+                                    if (t == null) continue;
+                                    v = t.TileIndex.ToString();
+                                    try { sheet = t.TileSheet?.Id; } catch { }
+                                }
+                                else
+                                {
+                                    v = TileProp(loc, ln, x, y, scan);
+                                }
                                 if (v == null) continue;
                                 if (!string.IsNullOrEmpty(scanValue) && v != scanValue) continue;
-                                hits.Add(new { layer = ln, x, y, value = v });
+                                if (byIndex) hits.Add(new { layer = ln, x, y, value = v, sheet });
+                                else hits.Add(new { layer = ln, x, y, value = v });
                             }
                     }
-                    tcs.SetResult(new { ok = true, location = loc.Name, scan, matchValue = scanValue, count = hits.Count, hits });
+                    // ⚠️ `byIndex` 是**能力标记**：老 DLL 也认 `scan=TileIndex` 这个参数，只是会去属性表里找
+                    //    一个叫 "TileIndex" 的属性 ⇒ 静默回 `count:0`（跟"本层真没矿车"长得一模一样）。
+                    //    消费侧（`bomb_common.find_coal_carts`）**必须**拿这个标记当门，不许只看 count。
+                    tcs.SetResult(new { ok = true, location = loc.Name, scan, matchValue = scanValue,
+                                        byIndex, count = hits.Count, hits });
                     return;
                 }
 
                 // ── 模式二：单格全属性 ──
                 var tiles = new Dictionary<string, object?>();
+                // 🚃 2026-10-04：每层的**原始瓦片索引**（不是属性）。加它的原因同上：
+                //    矿车（Buildings=194/195）、梯子（173）、竖井（174）、电梯（112）、祝祭雕像（284）
+                //    这些都是"地图上画着的东西"，看属性一律是空 —— 只有索引能认。
+                var layerTiles = new Dictionary<string, object?>();
                 foreach (var ln in layerNames)
                 {
                     var props = new Dictionary<string, string>();
@@ -16067,6 +16099,8 @@ public class ModEntry : Mod
                                 foreach (var kv in t.Properties) props[kv.Key] = kv.Value?.ToString() ?? "";
                             if (t.TileIndexProperties != null)
                                 foreach (var kv in t.TileIndexProperties) idxProps[kv.Key] = kv.Value?.ToString() ?? "";
+                            try { layerTiles[ln] = new { tileIndex = t.TileIndex, sheet = t.TileSheet?.Id }; }
+                            catch { }
                         }
                     }
                     if (props.Count > 0 || idxProps.Count > 0)
@@ -16087,6 +16121,7 @@ public class ModEntry : Mod
                     x = px, y = py,
                     w = mw, h = mh,
                     tiles,                 // 只有真有属性的层才会出现
+                    layerTiles,            // 每层原始索引（2026-10-04 加：矿车/梯子/装饰只能从这儿看）
                     mapProperties = mapProps,
                 });
             }
