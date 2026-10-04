@@ -1685,6 +1685,15 @@ class MineBot(WeaponMixin):
                     retreat_reason = why
                     break
 
+            # 🚃 顺手捡煤（恒 2026-10-04：「**接**」）：煤炭矿车是 `Buildings` 层索引 194 的地图瓦片
+            #    （不是 object，反编译 `MineShaft.checkAction` `case 194`）⇒ 每层进来顺手都点掉。
+            #    恒的定位：「只是点击一下的事，position+interact 一秒钟…没有白捡的不捡的理由」
+            #    ⇒ 没有怪门/距离门/点完不等；`loot_coal_carts` 在 `WeaponMixin` 里（两个脚本共用）。
+            try:
+                self.loot_coal_carts()
+            except Exception as e:                                # noqa: BLE001
+                log(f"  ⚠️ 顺手捡煤出岔子（不影响下矿）：{e}")
+
             # ── 先扫一眼有没有现成梯子 ──
             ladder = self.detect_ladder(loc_name, brute=False)
             if ladder == "ALREADY_DOWN":
