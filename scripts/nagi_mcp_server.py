@@ -23915,6 +23915,76 @@ def _tank_lines(x, y, tk, w, howto=True) -> list:
     return out
 
 
+def _tank_go(x, y, tries=2) -> str:
+    """🐟 走到缸边、**面朝它**、确认"相邻"再动手 → `""`（就位）/ 一句实话。
+
+    ⚠️ 恒 2026-10-04 亲眼看到的：「**一开始我还见到你隔空放不成功，后来走过去才成功**」——
+       根因就是这一层原来只 `navigation.walk_to(x, y)` 然后**立刻** `/interact {x, y}`：
+         · **不看走位回执** —— `_walk_to_coord` 对**站不住的目标格**（家具那格自己当然站不住）
+           会落在**最近的能站格**并如实印「已到 (x,y) 附近，实际站在 (px,py)」，而我们把那句**扔了**；
+         · **不转身** —— 真人/`stardew_api.interact_machine` 都是"站到正交邻格 + 面朝它"才动手。
+       ⇒ 落在别处/朝向不对时那一发就是**打空**（值得庆幸的是这一层一直把打空如实报出来，
+          所以恒看到的是"不成功"，而不是假成功）。
+    ⚠️ 判据**照抄 `interact_machine`**（四个邻格逐个试 + 转身 + `px+fdx==mx and py+fdy==my`），
+       但坐标/朝向全走 `_ai_`（**显式钉 AI 端口**）—— 这一层栽过"打错进程动到恒身上"。
+    """
+    def _here():
+        try:
+            p = ((api._ai_get("/state") or {}).get("player")) or {}
+            # ⚠️⚠️ **方向 0（朝上）是合法值** —— 曾经写成 `int(p.get("facingDirection") or 2)`
+            #     ⇒ 朝上被读成朝下，**站在目标下方**（最常见的接近方向）永远判成"没就位"，
+            #    只有换到左右邻格（朝向 1/3）才碰巧过 —— 这就是恒 2026-10-04 看到的
+            #    「一开始隔空放不成功，后来走过去才成功」的真身（不是距离问题，是**朝向 0 被 or 吃掉**）。
+            _fd = p.get("facingDirection")
+            return int(p.get("x")), int(p.get("y")), (2 if _fd is None else int(_fd))
+        except Exception:
+            return None, None, None
+
+    def _facing_ok(px, py, fd):
+        fdx, fdy = [(0, -1), (1, 0), (0, 1), (-1, 0)][max(0, min(3, fd))]
+        return (px + fdx, py + fdy) == (int(x), int(y))
+
+    px, py, fd = _here()
+    if px is None:
+        return "❌ 读不到我在哪 —— 不敢瞎点"
+    for _try in range(max(1, int(tries))):
+        for tx, ty in [(int(x), int(y)), (int(x), int(y) + 1), (int(x), int(y) - 1),
+                       (int(x) - 1, int(y)), (int(x) + 1, int(y))]:
+            px, py, fd = _here()
+            if px is None:
+                return "❌ 走到一半读不到我在哪 —— 不敢瞎点"
+            if max(abs(px - int(x)), abs(py - int(y))) > 3:
+                # 还远着 ⇒ 先往缸那一格走（走不到的落点由 `walk_to` 自己就近修正）
+                try:
+                    navigation.walk_to(x=tx, y=ty)
+                except Exception as e:
+                    return f"❌ 走不到鱼缸 ({x},{y})：{type(e).__name__}: {e}"
+                px, py, fd = _here()
+                if px is None:
+                    return "❌ 走完读不到我在哪 —— 不敢瞎点"
+            if (px, py) == (int(x), int(y)) or abs(px - int(x)) + abs(py - int(y)) == 1:
+                d = _face_dir(px, py, int(x), int(y))
+                api._ai_post("/face", {"direction": d})
+                time.sleep(0.18)
+                px2, py2, fd2 = _here()
+                if px2 is None:
+                    return "❌ 转身后读不到我在哪 —— 不敢瞎点"
+                if (px2, py2) == (int(x), int(y)) or _facing_ok(px2, py2, fd2):
+                    return ""
+        time.sleep(0.2)
+    px, py, _fd = _here()
+    return (f"⚠️ 没能站到鱼缸 ({x},{y}) 正旁边（现在 ({px},{py})）"
+            f"—— 换个角度再来一次（这一发**什么都没做**，别当成放/取成功）")
+
+
+def _face_dir(px, py, tx, ty) -> int:
+    """从我这格朝目标格的脸向（游戏口径：0上 1右 2下 3左）——跟执行器同一套算法。"""
+    dx, dy = int(tx) - int(px), int(ty) - int(py)
+    if abs(dx) > abs(dy):
+        return 1 if dx > 0 else 3
+    return 2 if dy > 0 else 0
+
+
 def _im_menu_type() -> str:
     """这一刻开着什么界面（`/state.activeMenu.type`）。**读不到回 `"?"`** = 不知道（别当成"没开"）。"""
     try:
@@ -23992,10 +24062,9 @@ def _im_tank_open(x, y, caps=None) -> str:
         err = _im_tank_free_hand(caps)
         if err:
             return err
-    try:
-        navigation.walk_to(x=int(x), y=int(y))
-    except Exception as e:
-        return f"❌ 走不到鱼缸 ({x},{y})：{type(e).__name__}: {e}"
+    _go = _tank_go(x, y)
+    if _go:
+        return _go
     api._ai_post("/interact", {"x": int(x), "y": int(y)})
     time.sleep(0.7)
     mt2 = _im_menu_type()
@@ -24114,11 +24183,10 @@ def _im_tank_add(x, y, item="", item_id="") -> str:
     if not sel.get("ok"):
         return (f"❌ 没拿起来「{item or key}」（游戏回：{sel.get('error') or sel}）"
                 f"—— 手上没东西就别去点缸")
-    # ③ 走到缸边 + 右键它本体
-    try:
-        navigation.walk_to(x=xi, y=yi)
-    except Exception as e:
-        return f"❌ 走不到鱼缸 ({xi},{yi})：{type(e).__name__}: {e}"
+    # ③ 走到缸边 + **面朝它**（相邻才算就位 —— 恒 2026-10-04 亲眼看到的"隔空放不成功"就是这步原来缺失）
+    _go = _tank_go(xi, yi)
+    if _go:
+        return _go
     api._ai_post("/interact", {"x": xi, "y": yi})
     time.sleep(0.8)
     # ④ 回读：只认"缸里这一件多了"

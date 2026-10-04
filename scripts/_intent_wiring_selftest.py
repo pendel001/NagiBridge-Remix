@@ -46,6 +46,10 @@ _HELD = [""]
 #    用它决定"右键缸 = 把手上的放进去"还是"开界面"（判据就是**游戏自己的那份清单**，
 #    不是我编的名单；工具不在里面 ⇒ 拿工具右键 = 稳开界面）。
 _TANK_DEPOSITABLE = set()
+# 🧍 "我"朝哪边（游戏口径 0上 1右 2下 3左）—— `/face` 写它，`/state.player.facingDirection` 读它。
+#    鱼缸那两条包办路现在会**先转身、确认相邻**才动手（恒 2026-10-04：「一开始隔空放不成功，
+#    后来走过去才成功」）⇒ 桩不演这一格，那两条路会恒停在"没就位"。
+_FACE = [2]
 #    —— C# 的 4 格闸判的就是这个位置，桩不挪人就等于"人站在原地遥控翻门"（真机上翻不动）。
 AI_POS = [12, 12]
 # 🚪 C# 侧 `ReachTiles` 的口径（`ModEntry.cs`）：与门格的**切比雪夫**距离 ≤ 4。
@@ -195,6 +199,7 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
     CALLS.clear()
     WALK_CALLS.clear()
     _HELD[0] = ""          # 手上默认空着（照 `STATE.player.currentItem` 那条夹具也不动它）
+    _FACE[0] = 2           # 朝向默认"朝下"（用例要验"站到位但朝向不对 ⇒ 先转身"时自己设）
     # 🚶 "我"站哪格：默认照 `STATE`（(12,12)），用例要"人已经站在棚门口"就传 `ai_xy=`。
     if ai_xy is None:
         _p0 = STATE.get("player") or {}
@@ -362,7 +367,8 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
             # 🚶 "我"的坐标**每次现读 `AI_POS`**（走位那一发的桩会挪它）——
             #    写死成夹具 (12,12) 的话，C# 那 4 格闸在桩里就成了"永远够不着/永远够得着"。
             return dict(state, player=dict(state.get("player") or {},
-                                           x=AI_POS[0], y=AI_POS[1]))
+                                           x=AI_POS[0], y=AI_POS[1],
+                                           facingDirection=_FACE[0]))
         return {
             # 🆕 2026-09-30：新 DLL 会带 `caps`（能力位）；`caps=None` = **老 DLL 的形状**（只有 build）。
             "/status": ({"ok": True, "build": build} if caps is None
@@ -386,6 +392,18 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
         }.get(ep, {})
     def p(ep, data=None):
         CALLS.append(("POST", ep, data))
+        if ep == "/face":
+            # 🧍 转身：桩照游戏口径记下来（`/state.player.facingDirection` 读它）——
+            #    鱼缸那两条路要"面朝它"才算就位。
+            # ⚠️⚠️ **别写 `x or 2`** —— 方向 **0（朝上）是合法值**，`or` 会把它变成 2（朝下）
+            #    ⇒ 桩里"转身朝上"永远记成朝下，`_tank_go` 就永远"没就位"（2026-10-04 现场踩到，
+            #    红了一屏才知道是桩的锅）。
+            _dir = (data or {}).get("direction")
+            try:
+                _FACE[0] = 2 if _dir is None else int(_dir)
+            except (TypeError, ValueError):
+                _FACE[0] = 2
+            return {"ok": True, "direction": _FACE[0]}
         if ep == "/menu_close":
             # 🚪 关界面（`cancel()` 的第二发）：**桩要把"界面真关了"这件事演出来** ——
             #    否则 `_im_tank_close`（"收掉了没"是**回读**`/state.activeMenu` 判的）在桩上
@@ -3019,7 +3037,8 @@ def main():
                           inventory=[dict(_TK_ITEM), dict(_TK_ITEM2), dict(_TK_FULL)])
     #    ⚠️ 三发（`_tank_probe` 在"开界面"那条路上**还会问一次手上拿着什么**）：
     #       ① 动手前的账 ② 开界面前那次（判"手上这件放不放得进"）③ 动手后的账。
-    _stub(caps=_TK_CAPS, furniture=_TK_FURN, tank=[dict(_TK), dict(_TK), dict(_TK_AFTER_TAKE)])
+    _stub(caps=_TK_CAPS, furniture=_TK_FURN, tank=[dict(_TK), dict(_TK), dict(_TK_AFTER_TAKE)],
+          ai_xy=(44, 24))
     _txt_take = M._im_tank_take(44, 23, "海胆", "(O)397")
     _opened = [c for c in CALLS if c[1] == "/interact"]
     res.append(ok("🐟 取：界面没开 ⇒ **先走过去开出来**（`/interact`），再点货架",
@@ -3032,6 +3051,24 @@ def main():
     _txt_take_bad = M._im_tank_take(44, 23, "海胆", "(O)397")
     res.append(ok("🐟 取：件数没变 ⇒ ⚠️（`ok:true` 什么都不证明）",
                   _txt_take_bad.startswith("⚠️"), _txt_take_bad[:120]))
+    # ⑩d 🧍 恒 2026-10-04 亲眼看到的：「**一开始我还见到你隔空放不成功，后来走过去才成功**」
+    #     —— 原来那两条路只 `walk_to(x,y)` 然后立刻 `/interact`：**不看走位回执、也不转身**
+    #     （`walk_to` 对"站不住的目标格"会落在最近的能站格并如实说"已到附近，实际站在…"，
+    #      而我们把那句扔了）⇒ 落在别处时那一发就打空。现在照 `interact_machine` 的判据：
+    #     站到正交邻格 + **面朝它** 才算就位。
+    _stub(caps=_TK_CAPS, furniture=_TK_FURN, tank=[dict(_TK), dict(_TK)],
+          ai_xy=(44, 28))                                 # 站在 5 格外、走位桩不动人
+    _txt_far = M._im_tank_take(44, 23, "海胆", "(O)397")
+    res.append(ok("🧍 站不到正旁边 ⇒ **明说「这一发什么都没做」**，且**一发 `/interact` 都不打**（不隔空点）",
+                  _txt_far.startswith("⚠️") and "什么都没做" in _txt_far
+                  and not [c for c in CALLS if c[1] == "/interact"],
+                  (_txt_far[:120], [c[1] for c in CALLS if c[0] == "POST"])))
+    _stub(caps=_TK_CAPS, furniture=_TK_FURN, tank=[dict(_TK), dict(_TK), dict(_TK_AFTER_TAKE)],
+          ai_xy=(44, 24))                                 # 相邻，但默认朝下（不对着缸）
+    _txt_near = M._im_tank_take(44, 23, "海胆", "(O)397")
+    res.append(ok("🧍 站到正旁边但**朝向不对** ⇒ 先 `/face` 转身再动手，照常取（1 → 0）",
+                  any(c[1] == "/face" for c in CALLS)
+                  and _txt_near.startswith("✅") and "1 → 0" in _txt_near, _txt_near[:120]))
     # ⑩c 2026-10-04 **真机当场撞到的**：放完那一刻**手上还拿着刚放进去的那件** ⇒ 再取的时候
     #     右键只会把它又放回去、界面开不出来（真机原话：`❌ 手上正拿着「石头」—— 它放得进这口缸`）。
     #     ⇒ `_im_tank_open` 现在会**自己换手**（挑一件 `(T)` 开头的工具 —— 工具 `CanBeDeposited`
@@ -3040,6 +3077,7 @@ def main():
                                      "can": True, "room": True})
     _stub(caps=_TK_CAPS, furniture=_TK_FURN, tank=[dict(_TK_HELD_STONE), dict(_TK_HELD_STONE),
                                                    dict(_TK_AFTER_TAKE)],
+          ai_xy=(44, 24),
           inv=[{"slotIndex": 1, "name": "Hoe", "displayName": "锄头", "itemId": "(T)Hoe",
                 "stack": 1, "catNum": -99, "quality": 0, "sellable": False, "shippable": False},
                {"slotIndex": 3, "name": "Stone", "displayName": "石头", "itemId": "(O)390",
@@ -3052,6 +3090,7 @@ def main():
                   (_sel_calls, _txt_take2[:120])))
     _stub(caps=_TK_CAPS, furniture=_TK_FURN,
           tank=[dict(_TK_HELD_STONE), dict(_TK_HELD_STONE), dict(_TK_HELD_STONE)],
+          ai_xy=(44, 24),
           inv=[{"slotIndex": 3, "name": "Stone", "displayName": "石头", "itemId": "(O)390",
                 "stack": 39, "catNum": -15, "quality": 0, "sellable": True, "shippable": True}])
     _txt_take3 = M._im_tank_take(44, 23, "海胆", "(O)397")
@@ -3063,7 +3102,7 @@ def main():
          "category": "Ground", "isHat": False, "isCreature": True, "canWearHat": False,
          "wornHat": None}])
     _stub(caps=_TK_CAPS, furniture=_TK_FURN, tank=[dict(_TK), dict(_TK_AFTER_ADD)],
-          menu="ShopMenu",
+          menu="ShopMenu", ai_xy=(44, 24),
           inv=[{"slotIndex": 3, "name": "Sea Urchin", "displayName": "海胆", "itemId": "(O)397",
                 "stack": 1, "catNum": -4, "quality": 0, "sellable": True, "shippable": True}])
     _txt_add = M._im_tank_add(44, 23, "海胆", "(O)397")
@@ -3073,12 +3112,13 @@ def main():
                   and "1 → 2" in _txt_add, _txt_add[:220]))
     # ⑫ 替换 = **包办三步**（取 → 收界面 → 放），任一步没成就停在那儿
     _stub(caps=_TK_CAPS, furniture=_TK_FURN, tank=[dict(_TK), dict(_TK_AFTER_TAKE)],
-          menu="ShopMenu")
+          menu="ShopMenu", ai_xy=(44, 24))
     _txt_swap_bad = M._im_tank_swap(44, 23, "杨桃", "(O)90", "海胆", "(O)397")
     res.append(ok("🐟 替换：取成了、放没成 ⇒ **如实说「取出来了、新的没放进去」**（不许报整段成功）",
                   "① ✅" in _txt_swap_bad and "没放进去" in _txt_swap_bad
                   and "没放进去" in _txt_swap_bad, _txt_swap_bad[:220]))
-    _stub(caps=_TK_CAPS, furniture=_TK_FURN, tank=[dict(_TK), dict(_TK)], menu="ShopMenu")
+    _stub(caps=_TK_CAPS, furniture=_TK_FURN, tank=[dict(_TK), dict(_TK)], menu="ShopMenu",
+          ai_xy=(44, 24))
     _txt_swap_fail = M._im_tank_swap(44, 23, "杨桃", "(O)90", "海胆", "(O)397")
     res.append(ok("🐟 替换：**取都没成 ⇒ 不往下做**（缸里没腾出位，放也是白放）",
                   "不往下做" in _txt_swap_fail, _txt_swap_fail[:200]))
