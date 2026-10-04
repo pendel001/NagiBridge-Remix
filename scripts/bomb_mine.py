@@ -654,19 +654,58 @@ class BombMineBot(BombMiner):
                     def _density(r):
                         return sum(1 for q in far_rocks
                                    if max(abs(q[0] - r[0]), abs(q[1] - r[1])) <= 3)
-                    outside = [r for r in far_rocks
-                               if max(abs(r[0] - px), abs(r[1] - py)) > 12]
-                    if outside:
-                        outside.sort(key=lambda r: (-_density(r), abs(r[0] - px) + abs(r[1] - py)))
-                        target_x, target_y = outside[0]
+                    # 🆕 2026-10-04 恒（现场日志连报「🚶 无炸点，换片地儿探索到 (14,38)」×4 =
+                    #    **同一个坐标反复走**）：目标是"当前坐标 + 周边岩体"算出来的**确定值**，而
+                    #    `natural_walk(walk_only=True)` **走不到也返回 True**（bomb_common 里那句
+                    #    "走路没到位就不传，下轮再走"）⇒ 人没挪窝 ⇒ 下一轮算出**一模一样的目标**
+                    #    ⇒ 原地空转到 `explore_count>=6` 才跳关（恒看到的就是这一串重复行）。
+                    #    ⇒ 两条补丁：
+                    #      ① 本层记下"走过但人没动"的目标，候选里**剔掉**（`self._explore_tried[层]`）
+                    #      ② 走完**回读坐标验真**——走位被墙/断崖/怪挡住时它自己不会报错
+                    self._explore_tried = getattr(self, "_explore_tried", {})
+                    tried = self._explore_tried.setdefault(level, set())
+                    if explore_count == 1:
+                        tried.clear()          # 每趟进这一层重新记（别让上次的账卡住这次）
+                    fresh = [r for r in far_rocks if r not in tried]
+                    if not fresh:
+                        log(f"  🚷 本层 {len(tried)} 个探索目标全走不到（人还在 ({px},{py})）→ 不磨了，按下不去处理")
+                        target = None
                     else:
-                        far_rocks.sort(key=lambda r: -(abs(r[0] - px) + abs(r[1] - py)))
-                        target_x, target_y = far_rocks[0]
+                        outside = [r for r in fresh
+                                   if max(abs(r[0] - px), abs(r[1] - py)) > 12]
+                        if outside:
+                            outside.sort(key=lambda r: (-_density(r), abs(r[0] - px) + abs(r[1] - py)))
+                            target = outside[0]
+                        else:
+                            fresh.sort(key=lambda r: -(abs(r[0] - px) + abs(r[1] - py)))
+                            target = fresh[0]
                 else:
-                    target_x, target_y = 20, 20  # 没石头走向层中心（可通行由导航处理）
-                log(f"  🚶 无炸点，换片地儿探索到 ({target_x},{target_y})")
+                    target = (20, 20)  # 没石头走向层中心（可通行由导航处理）
+
+                if target is None:
+                    # 本层所有探索目标都试过且都没走到 ⇒ 走"没梯子"的保底路（造楼梯/作弊楼梯）
+                    log("  🔍 探索目标全走不到 → 造楼梯跳关")
+                    if self.craft_staircase() and self.use_staircase():
+                        return "DONE", self.my_mine_level()
+                    log("  🧨 造楼梯失败，作弊给石头")
+                    if self.cheat_staircase() and self.use_staircase():
+                        return "DONE", self.my_mine_level()
+                    return None, "没梯子也没楼梯材料"
+
+                target_x, target_y = target
+                log(f"  🚶 无炸点，换片地儿探索到 ({target_x},{target_y})"
+                    + (f"（本层已试过 {len(tried)} 个目标）" if tried else ""))
                 self.natural_walk(target_x, target_y, self.my_location(), walk_only=True)  # 纯走路（walk_only=False 会 position 传送出界）
                 time.sleep(0.3)
+                # 🔎 回读验真：人到底动了没有
+                try:
+                    p2 = self.state().get("player", {})
+                    if (p2.get("x"), p2.get("y")) == (px, py):
+                        tried.add((target_x, target_y))
+                        log(f"  ⚠️ 走向 ({target_x},{target_y}) 后人还在 ({px},{py})"
+                            f"—— 走位没生效（墙/断崖/被怪堵？），记下这个目标，下轮换一个")
+                except Exception:
+                    pass
                 continue  # 到目标区后重新找锚点
 
             ax, ay, covered, _ = anchor

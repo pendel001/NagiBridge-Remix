@@ -1454,7 +1454,7 @@ class MineBot(WeaponMixin):
             if self.weapon_name:
                 self.select(self.weapon_name)
                 time.sleep(0.1)
-                self.use_tool()
+                self.use_tool(self.weapon_name)   # ✅ 点名（同 bomb_common.use_tool：guard 会抢手持槽）
                 time.sleep(0.35)
                 self.select("Pickaxe")
             else:

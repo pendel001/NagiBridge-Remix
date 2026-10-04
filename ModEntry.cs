@@ -650,6 +650,11 @@ public class ModEntry : Mod
     /// `DoDamage` ⇒ 当帧换回 = 把 6 帧横扫砍成 1 帧，**只中正前方一格、对角彻底打不到**。
     /// 所以攒在这里，等 `UsingTool` 落回 false 的下一 tick 再还。</summary>
     private int _guardPendingRestore = -1;
+    /// <summary>🔴 2026-10-04：借出去的那一刀用的是**哪个槽**（还债时必须核对，见 `GuardTick` ②）。
+    /// 现场：脚本 `/select` 好镐子 → 我们在同一拍把槽写回 `prev`（=脚本开打前的**炸弹**槽）
+    /// ⇒ 脚本接着 `/tool {}`（name 默认 current）时手上是炸弹 ⇒ `CurrentTool == null`
+    /// ⇒ 老代码那条路**一个回包都没有** ⇒ 脚本等 10s 超时重试 ⇒ 人站着被怪啃 53 秒（恒「打怪愣住」）。</summary>
+    private int _guardPendingRestoreSlot = -1;
     private double _guardLastReportMs = -99999;  // 上次播报的游戏毫秒（防洪）
     private string _guardLastTarget = "";        // 最近一次的目标 "墓碑(12,34)"
 
@@ -1134,6 +1139,7 @@ public class ModEntry : Mod
         _guardNoWeapon = false;
         _guardSwings = 0;
         _guardPendingRestore = -1;
+        _guardPendingRestoreSlot = -1;
         _guardLastReportMs = -99999;
         _guardLastTarget = "";
         _guardBlock = -1;
@@ -3351,6 +3357,34 @@ public class ModEntry : Mod
         {
             var farmer = Game1.player;
 
+            // 🔴🔴 2026-10-04 真机逮到（恒「这轮也打怪愣住两次…刚刚 9:44 是跟史莱姆」）：
+            //    `name=current`（Python `use_tool()` 不点名时的默认）**而手上不是工具**时，
+            //    老代码一路掉到委托末尾 —— `if (WateringCan) … else if (CurrentTool != null) …`
+            //    **没有 else** ⇒ **一个回包都没有** ⇒ HTTP 请求永久挂起。
+            //    `Farmer.CurrentTool => CurrentItem as Tool`（`Farmer.cs:1745`）：手上是**炸弹/食物**
+            //    这类非工具物品时它就是 null。实机 A/B（同一时刻、同一状态）：
+            //      · `POST /tool {}`              手上 Mega Bomb → **14 秒收不到任何回包**（HTTP 000）
+            //      · `POST /tool {"name":"Pickaxe"}` → **0.008 秒** `{"ok":true,"tool":"Iridium Pickaxe"}`
+            //    ⇒ 点名那条路**能自救**（先把工具槽点上），只有"不点名 + 手上不是工具"才必须报错。
+            //    判据放在下面那段"点名"**之后**（见 ToolAction 里），别放在这里把能救的也挡了。
+            // 后果（`_v203w_stall_trace.log` + 游戏侧 `requests.log` 对读）：脚本 `requests` 超时 10s
+            //    → 重试 → 又挂 10s ⇒ **人站着 53 秒不动**（`canMove=True freeze=0 stationarySeconds=53`），
+            //    期间被 Iridium Bat/Bug/Big Slime 从 116 啃到 73 血。这就是"打怪愣住"。
+
+            // 🛡️ 兜底两件套（同 2026-09-25 /interact 那条教训：**排队动作抛异常时排空循环只 log**）：
+            //    异常 → 明确回包；任何"忘了回包"的分支 → finally 兜住。这条路上永远挂不住。
+            try { ToolAction(); }
+            catch (Exception ex)
+            {
+                tcs.TrySetResult(new { ok = false, error = $"工具动作抛异常：{ex.Message}", type = ex.GetType().Name });
+            }
+            finally
+            {
+                tcs.TrySetResult(new { ok = false, error = "内部错误：/tool 这条分支没有回包（不该发生）" });
+            }
+
+            void ToolAction()
+            {
             if (name != "current")
             {
                 var tools = farmer.Items.Where(i => i is Tool).Cast<Tool>().ToList();
@@ -3367,6 +3401,21 @@ public class ModEntry : Mod
                 }
 
                 farmer.CurrentToolIndex = farmer.Items.IndexOf(tool);
+            }
+
+            // 🔴 2026-10-04（见方法开头那段真机记录）：点名分支已经跑过，这里还 null 就**必须回包**，
+            //    否则 HTTP 永久挂起（老代码的坑）。把"手上是什么"也一并报出去，脚本一眼能对上。
+            if (farmer.CurrentTool == null)
+            {
+                tcs.SetResult(new
+                {
+                    ok = false,
+                    error = $"手上前槽不是工具（现在是「{farmer.CurrentItem?.Name ?? "空"}」）"
+                          + " ⇒ 请点名：name=<工具名>（如 Pickaxe / 武器名），别依赖 current",
+                    handItem = farmer.CurrentItem?.Name,
+                    handItemId = farmer.CurrentItem?.QualifiedItemId
+                });
+                return;
             }
 
             if (farmer.CurrentTool is WateringCan wc)
@@ -3452,6 +3501,7 @@ public class ModEntry : Mod
                     }
                 }
             }
+            }   // ← ToolAction() 结束（外层那个 try/finally 兜底回包）
         });
 
         return tcs.Task.GetAwaiter().GetResult();
@@ -15715,6 +15765,51 @@ public class ModEntry : Mod
                     };
                 }
                 result["terrain"] = loc.terrainFeatures.TryGetValue(tv, out var tf) ? tf.GetType().Name : null;
+                // 🔎 2026-10-03 深夜（恒：「我找到了个矿工包。**看轮回面前**。」）——我们三处探针**都指不出那格是什么**：
+                //    `/surroundings` 连 object 都不给、`/dump_tile` 只回 `terrain:null`、`/passable.blocker` 也是 null。
+                //    病根：本方法原来只查 `objects` + `terrainFeatures`（外加 crop/tree/bush 特判）
+                //    ⇒ 住在**别的层**的东西（矿工包 / 煤炭矿车 / 大石堆 / 家具）在回包里**一个字都没有**。
+                //    ⇒ 现在把**所有能放东西的层**都 dump 一遍（报类名，命中就给出来）。
+                var otherLayers = new Dictionary<string, object?>();
+                try
+                {
+                    foreach (var f in loc.largeTerrainFeatures)
+                        if (f != null && f.Tile == tv) otherLayers["largeTerrainFeature"] = f.GetType().Name;
+                }
+                catch { }
+                try
+                {
+                    foreach (var rc in loc.resourceClumps)
+                        if (rc != null && rc.Tile == tv) otherLayers["resourceClump"] = rc.GetType().Name;
+                }
+                catch { }
+                try
+                {
+                    foreach (var fu in loc.furniture)
+                        if (fu != null && fu.TileLocation == tv)
+                            otherLayers["furniture"] = fu.GetType().Name + " / " + (fu.Name ?? "");
+                }
+                catch { }
+                if (otherLayers.Count > 0) result["otherLayers"] = otherLayers;
+                // 🚃 矿井特性计数：游戏自己记着**这层还剩几辆煤炭矿车**（`MineShaft.permanentMineChanges`）——
+                //    权威身份 = `MineShaft.mineFeature_coalCart = 2`（反编译 `MineShaft.cs:58 / :778 / :805`）。
+                //    恒 2026-10-03 现场：他跟那格交互**掉出了煤** ⇒ 那东西是**容器**，不是装饰。
+                if (loc is MineShaft _ms)
+                {
+                    try
+                    {
+                        if (MineShaft.permanentMineChanges.TryGetValue(_ms.mineLevel, out var _mi))
+                            result["mineFeatures"] = new
+                            {
+                                mineLevel = _ms.mineLevel,
+                                platformContainersLeft = _mi.platformContainersLeft,   // mineFeature_barrels = 0
+                                chestsLeft = _mi.chestsLeft,                           // mineFeature_chests  = 1
+                                coalCartsLeft = _mi.coalCartsLeft,                     // mineFeature_coalCart = 2
+                                elevator = _mi.elevator                                // mineFeature_elevator = 3
+                            };
+                    }
+                    catch { }
+                }
                 // 🫚 crop/forageCrop（2026-08-17）：姜=forageCrop 类型"2"，锄地出（hitWithHoe）
                 if (tf is HoeDirt _hd && _hd.crop != null)
                 {
@@ -22538,8 +22633,19 @@ public class ModEntry : Mod
         // ② 先还债：挥完那一刀后，等动画播完再把武器槽换回去（原因见 _guardPendingRestore）。
         if (_guardPendingRestore >= 0 && !farmer.UsingTool)
         {
-            try { farmer.CurrentToolIndex = _guardPendingRestore; } catch { }
+            // 🔴 2026-10-04 真机（恒「打怪愣住」）：**只还我们自己借的那次**。
+            //    老代码无条件写回 `prev` —— 而 `prev` 是"开打前脚本手里那个槽"，通常就是**炸弹**。
+            //    脚本在"借出→还回"这一拍里刚 `/select` 好的镐子会被我们抢回去 ⇒ 脚本接着
+            //    `/tool {}`（name 默认 current，见 bomb_common `use_tool()`）时手上是炸弹 ⇒
+            //    `Farmer.CurrentTool => CurrentItem as Tool`（`Farmer.cs:1745`）= null ⇒
+            //    老 `HandleTool` 那条路**不回包** ⇒ 脚本 10s 超时重试、无限循环 ⇒ 人站着挨打。
+            //    现在：槽已经被别人改过（脚本自己选的）⇒ **放弃还债**，绝不抢回。
+            if (farmer.CurrentToolIndex == _guardPendingRestoreSlot)
+            {
+                try { farmer.CurrentToolIndex = _guardPendingRestore; } catch { }
+            }
             _guardPendingRestore = -1;
+            _guardPendingRestoreSlot = -1;
         }
 
         if (!_guardOn) { _guardBlock = 2; return; }                  // ③
@@ -22704,6 +22810,7 @@ public class ModEntry : Mod
             //    有多个怪时会把 prev 重新记一遍 —— 但那时 CurrentToolIndex 已经是武器槽，
             //    等于"继续欠着换回同一个原位"，语义正确。
             _guardPendingRestore = prev;
+            _guardPendingRestoreSlot = slot;   // 🔴 还债时要核对"槽还是不是我们借的那个"，见 ②
         }
 
         // ⑪ 记账 + 上报。⚠️ 用 AddRecentEvent **不用 EnqueueAlert**：

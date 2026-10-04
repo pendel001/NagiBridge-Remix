@@ -741,11 +741,21 @@ class WeaponMixin:
                 self.weapon_class = "sword"
         return True
 
-    def weapon_special(self):
-        """触发当前武器特殊攻击（锤=右键重砸 Super Slam，直接砸不蓄力、有冷却）。
-        需要 ModEntry /tool {special:true}（重编译后可用）。返回是否 ok。"""
+    def weapon_special(self, name=None):
+        """触发武器特殊攻击（锤=右键重砸 Super Slam，直接砸不蓄力、有冷却）。
+        需要 ModEntry /tool {special:true}（重编译后可用）。返回是否 ok。
+
+        ⚠️ 2026-10-04（恒「打怪愣住」的根因之一）：**必须点名武器**。
+           `name=None` ⇒ `/tool {special:true}` 走 C# 的 `name="current"` 分支，那一支靠
+           "手上正好是武器"；而 C# 的 guard 会在同一拍把**手持槽**借走再还回（还回的是
+           "开打前脚本手里的槽" = 炸弹）⇒ 手上变成炸弹 ⇒ 老 `HandleTool` 对"手上不是工具"
+           **一个回包都不给**（HTTP 永久挂起）⇒ 脚本 10s 超时重试、人站着挨打。
+           点名走的是"**先把手持槽点成这把武器**"那条路（`name != "current"` 分支），guard 抢不走。"""
+        d = {"special": True}
+        if name:
+            d["name"] = name
         try:
-            r = self._post("/tool", {"special": True})
+            r = self._post("/tool", d)
             return r.get("ok", False)
         except Exception:
             return False
@@ -781,14 +791,14 @@ class WeaponMixin:
         if special and self.weapon_class == "hammer":
             if time.time() - self._last_special >= HAMMER_SPECIAL_COOLDOWN:
                 log("  🔨 锤子重砸！")
-                self.weapon_special()
+                self.weapon_special(self.weapon_name)   # 必须点名，见 weapon_special docstring
                 self._last_special = time.time()
                 time.sleep(0.8)   # 重砸动画+判定落地
             else:
-                self.use_tool()   # 冷却中 → 平砍
+                self.use_tool(self.weapon_name)   # 冷却中 → 平砍（点名，别靠 current）
                 time.sleep(self._swing_wait())
         else:
-            self.use_tool()
+            self.use_tool(self.weapon_name)
             time.sleep(self._swing_wait())
         self.select(self.bomb_type)
         return True
@@ -950,6 +960,9 @@ class BombMiner(WeaponMixin):
         base = self.host if host else self.base
         try:
             return requests.get(f"{base}{ep}", params=params, timeout=10).json()
+        except requests.exceptions.Timeout:
+            log(f"  ⏱️ GET {ep} 超时 10s 没有回包（mod 侧卡住？）params={params}")
+            return {}
         except Exception:
             return {}
 
@@ -957,6 +970,14 @@ class BombMiner(WeaponMixin):
         base = self.host if host else self.base
         try:
             return requests.post(f"{base}{ep}", json=data or {}, timeout=10).json()
+        except requests.exceptions.Timeout:
+            # ⏱️ 2026-10-04（恒「这轮也打怪愣住两次…刚刚 9:44 是跟史莱姆」）：
+            #    **超时原来是完全静默的**（`except Exception: return {}`）—— mod 那条分支不回包时，
+            #    脚本只看到"空回包"，然后 10s 一轮无限重试。现场：人站着不动 53 秒（游戏侧
+            #    `/state` 报 `canMove=True freeze=0 stationarySeconds=53`），被 Iridium Bat/Bug/
+            #    Big Slime 从 116 啃到 73 血，**日志里一个字都没有**。⇒ 现在必须吼出来。
+            log(f"  ⏱️ POST {ep} 超时 10s 没有回包（mod 侧卡住/这条分支没回包）data={data}")
+            return {}
         except Exception:
             return {}
 
@@ -982,6 +1003,11 @@ class BombMiner(WeaponMixin):
         return self._post("/use", {"force": force} if force else {})
 
     def use_tool(self, name=None):
+        """挥一次工具。⚠️ **能点名就点名**（2026-10-04 恒「打怪愣住」）：
+        不点名 = `/tool {}` ⇒ C# 走 `name="current"`，靠"手上正好是工具"；而 C# 的 guard
+        会在同一拍借走/还回**手持槽**（还回的是脚本开打前的炸弹）⇒ 手上是炸弹时
+        `Farmer.CurrentTool == null` ⇒ 老 `HandleTool` **不给回包** ⇒ 10s 超时无限重试。
+        点名（`name="Iridium Pickaxe"`）走的是"先把槽点成它"那条路，guard 抢不走。"""
         d = {}
         if name:
             d["name"] = name
@@ -1939,7 +1965,7 @@ class BombMiner(WeaponMixin):
             return False
         self.select(pick_name)
         for _ in range(max_swings):
-            self.use_tool()  # 用当前选中的镐子
+            self.use_tool(pick_name)  # ✅ 点名（别用 current：guard 会把槽抢回炸弹，见 use_tool）
             time.sleep(0.45)
             if not self.rock_at(x, y):
                 self.select(self.bomb_type)
