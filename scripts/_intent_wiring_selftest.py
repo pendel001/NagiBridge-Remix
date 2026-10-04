@@ -569,7 +569,14 @@ def main():
     at = M.intent(ops="at", kw={"x": 13, "y": 12})
     res.append(ok("at 指到野莓 → 出「捡」", "捡" in at))
     at2 = M.intent(ops="at", kw={"x": 99, "y": 99})
-    res.append(ok("at 指到空 → 如实说没有，**不编**", "什么都没有" in at2 and "附近" not in at2))
+    # 🔴 2026-10-04 真机改口径：原来要求「什么都没说」——可那句话是**对世界的断言**，
+    #    而 `tile` 表根本不含建筑层/水/雕像（真机：出货箱/鱼塘/脚下那格全报"什么都没有"，
+    #    雕像还印「这里没有它能做的动作」而单子上明明有「摸 雕像」）。
+    #    ⇒ 钉子改成：**说清是我这儿没账** + **不许再断言"那里什么都没有"** + 指路 `show`。
+    res.append(ok("at 指到没账的格 → 说「没有这一格的账」，**不编**也不给附近",
+                  "没有这一格的账" in at2 and "附近" not in at2))
+    res.append(ok("🔴 at 没账时**不许**再断言「那里什么都没有」（那是说世界的）",
+                  "什么都没有" not in at2 and "show" in at2))
     res.append(ok("at 缺坐标 → 报错 + 说清要什么",
                   "❌" in M.intent(ops="at", kw={})))
 
@@ -611,9 +618,18 @@ def main():
     _stub(shop=True)
     out = M.intent(ops="show", kw={"n": 40})
     # ⚠️ 2026-10-04：**按 verb.key 判**，别按 label 文本判 —— label 会随口径改名
-    #    （「买」→「买 动物（玛妮柜台）」），按文本找的钉子一改名就红/StopIteration（这次两处都这么红的）。
-    res.append(ok("商店开着 ⇒ 单子上有「买 动物（玛妮柜台）…」",
+    #    （上一版把它改成「买 动物（玛妮柜台）」，按文本找的钉子一改名就红/StopIteration）。
+    res.append(ok("商店开着 ⇒ 单子上有「买…」目录行",
                   any(r.verb.key == "buy" for r in M.intent_menu._LAST_ROWS)))
+    # 🔴 2026-10-04 **真机抓的误导**（`intent_menu.render_menu` 在皮埃尔种子店印出
+    #    「2 买动物… ← 55 样 · 钱包 2364712g」，55 样＝**种子**）：这行的 `buy` 是
+    #    **商店货架**（`_buy_can` 判 `ctx.shop`），买动物是 `farm(ops="buy")` —— 两码事。
+    #    ⚠️ 钉子钉的是**"这行不许提动物"**这个事实，不是某个具体措辞（措辞可以再改）。
+    _buy_row = next(r for r in M.intent_menu._LAST_ROWS if r.verb.key == "buy")
+    res.append(ok("🔴 商店货架那行**不许自称「买动物」**（买动物是 `farm buy`，另一条路）",
+                  "动物" not in (_buy_row.label or "") and "买动物" not in out))
+    res.append(ok("商店开着 ⇒ 那行是**目录行**（句尾 `…`，点开才有号）",
+                  "买…" in out))
     res.append(ok("商店开着 ⇒ 单子上有「卖…」（背包有这家收的）", "卖…" in out))
     buy_no = next(r.no for r in M.intent_menu._LAST_ROWS if r.verb.key == "buy")
     shelf = M.intent(ops="do", kw={"code": str(buy_no)})
@@ -809,6 +825,61 @@ def main():
                   M._close_hint("ShippingMenu") in _msg2))
     _r2 = M._im_run("close_menu", {})
     res.append(ok("🚪 关不掉 ⇒ `_im_run` 判成 ⚠️（不是 ✅）", _r2.get("st") == "maybe"))
+
+    # 🚪 2026-10-04 **真机抓的假成功**：`menu click(button=close)` 的 C# 是发射后不管，
+    #    而游戏的关闭分支带 `readyToClose()` 闸门（`ShopMenu` = `heldItem==null &&
+    #    animations.Count==0`）⇒ **紧接着 `menu sell` 敲 close 会静默无效**（成交动画约 0.7s），
+    #    回执却写「🖱️ 已点击（button）」。真机三步：点 close「成功」→ 菜单还开着 → `map go` 被闸门挡。
+    #    ⇒ 钉子：没关成必须**回读 + 等一拍重敲**；还关不掉就如实说。
+    #    ⚠️⚠️ **换掉的 `api.state`/`api.menu_click` 必须收尾还原**：第一版忘了还原，
+    #       后面所有用例都读到我这几个桩 ⇒ 一次红 20+ 条（470/495）。打桩是全局的。
+    _stub()
+    _orig_state, _orig_mc = api.state, api.menu_click
+    M._ensure_background = lambda *a, **k: None
+    _cl = {"n": 0, "clicks": 0}
+
+    def _cmc(**kw):
+        _cl["clicks"] += 1
+        return {"ok": True, "clicked": "button"}
+
+    api.menu_click = _cmc
+
+    def _cstate(*a, **k):
+        # 动手前=ShopMenu；点过第 1 下之后还在（动画没散）；重敲之后=关上了。
+        # ⚠️ 按键**点击数**判，别按"读了几次 state"判 —— 函数里还有别的 `/state` 消费者。
+        return dict(STATE, activeMenu=({"type": "ShopMenu"} if _cl["clicks"] <= 1 else None))
+
+    api.state = _cstate
+    _m1 = M.menu_click(button="close")
+    res.append(ok("🚪 `click(close)` 头一下没关上 ⇒ **自动重敲 + 回读**，报「界面已关」",
+                  "界面已关" in _m1 and _cl["clicks"] == 2, f"clicks={_cl['clicks']}"))
+
+    # 连敲都关不掉（ShippingMenu 那种"要点 ok 才算完"的）⇒ **不许谎报**，照搬 `_close_hint`
+    _cl2 = {"clicks": 0}
+
+    def _cmc2(**kw):
+        _cl2["clicks"] += 1
+        return {"ok": True, "clicked": "button"}
+
+    api.menu_click = _cmc2
+    api.state = lambda *a, **k: dict(STATE, activeMenu={"type": "ShippingMenu"})
+    _m2 = M.menu_click(button="close")
+    res.append(ok("🚪 `click(close)` 连敲 3 次都关不掉 ⇒ 如实说「还开着」+ `_close_hint` 原话",
+                  "还开着" in _m2 and M._close_hint("ShippingMenu") in _m2
+                  and _cl2["clicks"] == 3, f"clicks={_cl2['clicks']}"))
+    # ⚠️ 非"关"意的按钮**不许**多打那两次（点 ok/翻页本来就不该回读，回读=白烧一遍）
+    _cl3 = {"clicks": 0}
+
+    def _cmc3(**kw):
+        _cl3["clicks"] += 1
+        return {"ok": True, "clicked": "button", "quantity": None}
+
+    api.menu_click = _cmc3
+    _m3 = M.menu_click(button="ok")
+    res.append(ok("🚪 非关闭类按钮 ⇒ **不多敲**（ok 就打一下）", _cl3["clicks"] == 1))
+    # 收尾：把这一节换掉的桩**还原**（别漏给别人）
+    api.state, api.menu_click = _orig_state, _orig_mc
+    _stub()
 
     # ⑪ 👕 穿戴（2026-10-01）—— 接线 + **对着 C# 源码核槽名表**。
     #

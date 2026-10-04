@@ -418,7 +418,7 @@
 | `eat` | T3 副作用 | item_name | ✅ | `session_log:340` |
 | `heartbeat` | T3 副作用 | minutes | ✅ | `session_log:692` |
 | `lie_bed` | T3 副作用 | who | ✅ | `session_log:1448` |
-| `pause` | T3 副作用 | out_of_focus | ✅ | `session_log:342` |
+| `pause` | ~~T3 副作用~~ | out_of_focus | 🗑️ 2026-10-04 退役（恒「失焦暂停可以退役了」）| 原 `session_log:342`；op 已撤 → AI 够不着 |
 | `peek` | T2 摆场 |  | ✅ | `session_log:1411` |
 | `settle` | T3 副作用 |  | ⏭ 没条件测 | `session_log:687` 要正在弹着的过夜结算菜单（且停在汇总页） |
 | `sleep` ⇄`cabin:sleep` | T3 副作用 | who | ✅ | `session_log:1545` |
@@ -431,7 +431,7 @@
 | `吃` ≡`eat` | T3 副作用 |  | ✅ | ← 同 `daily:eat`〔eat_item〕 |
 | `心跳` ≡`heartbeat` | T3 副作用 |  | ✅ | ← 同 `daily:heartbeat`〔set_heartbeat_interval〕 |
 | `捏脸` ≡`appearance` ⇄`settings:appearance` | T3 副作用 |  | ⏭ 没条件测 | ← 同 `settings:appearance`〔set_appearance〕 |
-| `暂停` ≡`pause` | T3 副作用 |  | ✅ | ← 同 `daily:pause`〔set_pause〕 |
+| `暂停` ≡~~`pause`~~ | ~~T3 副作用~~ |  | 🗑️ 2026-10-04 退役 | ← 原 `daily:pause`〔set_pause〕，op 已撤 |
 | `清白板` ≡`wb_clear` | T3 副作用 |  | ✅ | ← 同 `daily:wb_clear`〔whiteboard_clear〕 |
 | `白板` ≡`whiteboard` | T3 副作用 |  | ✅ | ← 同 `daily:whiteboard`〔whiteboard_write〕 |
 | `看恒` ≡`peek` | T2 摆场 |  | ✅ | ← 同 `daily:peek`〔peek_player〕 |

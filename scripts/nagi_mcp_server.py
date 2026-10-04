@@ -10091,7 +10091,8 @@ def settings_status() -> str:
     lines.append(f"  🧠 会话 max_turns: {SESSION_CFG['max_turns']}")
     lines.append(f"  📤 会话导出(md): {SESSION_CFG['export_format']}"
                  f"（jsonl = 只写实时全量档案、不另存 md）")
-    lines.append(f"  🖱️ 失焦暂停: 关（后台完整运行）")
+    # 🖱️ 2026-10-04 恒「失焦暂停可以退役了」⇒ 这行撤掉（AI 不需要知道、也不会去动它；
+    #    真要查那一下走底层 `/set_pause`）。
     lines.append("  🔧 退役工具: " + (", ".join(sorted(_retired_tools)) if _retired_tools else "无"))
     lines.append("💡 一次性工具（捏脸等）用完 settings retire 退役；settings reactivate 召回")
     return _with_state("\n".join(lines))
@@ -12949,12 +12950,14 @@ def daily(ops: str = "", kw: dict | None = None) -> str:
         "eat": eat_item, "吃": eat_item,
         "wear": wear, "穿": wear, "穿戴": wear, "脱": wear,
         "lie_bed": lie_bed, "躺": lie_bed, "躺床": lie_bed,
-        # ⏱️/🖱️ 2026-10-04 恒拍板：**这两条是配置，不是动作** —— 已归到"配置类"，不再当候选动作露给 AI：
+        # ⏱️/🖱️ 2026-10-04 恒拍板：**这两条是配置，不是动作** —— 已归到"配置类"：
         #   · `heartbeat`（心跳间隔）：真身已搬进 `settings` 域（见 `_SETTINGS_DISPATCH`）；这里留**别名**。
-        #   · `pause`（失焦暂停开关）：恒「AI 又不会知道去抢时间，没有什么暴露的意义」⇒ 保留底层 setter，
-        #     但不进任何指南的"可调动作"表（`settings status` 里只读印出来）。
+        #   · `pause`（失焦暂停开关）：**2026-10-04 恒「失焦暂停可以退役了」⇒ 整个 op 撤掉**（连别名都不留）：
+        #     它唯一的作用是"AI 的窗口在后台也照跑"，而**服务器每条会动菜单/锻造/吃东西的路
+        #     都自己 `_ensure_background()` 打过了**（`set_pause(False)`）—— AI 没有任何理由去动它。
+        #     ⇒ `set_pause()` 函数 + C# `/set_pause` 端点**留着**（内部要用、也是排查口），
+        #       但**AI 够不着**（`domain_selftest._KNOWN_SUBSUMED` 里记了这笔账，免得当成"断档"误报）。
         "heartbeat": set_heartbeat_interval, "心跳": set_heartbeat_interval,
-        "pause": set_pause, "暂停": set_pause,
         "peek": peek_player, "看恒": peek_player,
         "whiteboard": whiteboard_write, "白板": whiteboard_write, "写白板": whiteboard_write,
         "wb_read": whiteboard_read, "看白板": whiteboard_read,
@@ -17080,7 +17083,7 @@ _DOMAIN_GUIDES = {
 "scene": "场景交互域(点东西/工具/转身/捡/坐)：at(tile_x,tile_y)(点指定格/柜台) interact(点面前) use(挥工具) face(转向0上1右2下3左) select(拿手上) sit(x,y[,face])(**坐椅子**:自动走到座位旁再坐,上不了会明确报错;状态条「🪑 可交互：sit(x,y)」给坐标;可选 face=坐下朝向0上1右2下3左,**只对「朝向来自坐下那刻面朝方向」的座位生效**(反编译:stool 类/opposite 长椅/名字带Stool的家具),其它写死——吃不吃由端点回的 face 字段说了算,不生效会在回报里点名) stand(**起身**:坐着时用,没坐着明确报错,带动画+轮询确认) seats(radius=12)(扫附近能坐的椅子/长凳/沙发,✋=可改朝向) pickup(拿起家具) pickup_scene(捡当前场景物,**只扫你周围方形±30格**) berry(摇/摘 灌木与果树：浆果·茶叶·果子——果树摇完果子**掉地上**要再走上去捡) spot(挖蚯蚓点) moss(绿雨搜苔藓) rock(室外镐击:敲当前图可破物,采石场/挖掘场/蚌矿场跳普通石,dig/dry,battle-free) garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物:一种 name+count / 多种 items=逗号分隔) decor(🪵地板/墙纸真值表:这间屋哪些格能铺+现在铺的什么,**铺前先查这**) furniture(扫家具) place(放置/播种:name=物品名,x/y=目标格→箱子/树种/蟹笼落地或种下,只放可放置物;🪵**地板/墙纸是特例**——只能点在**地板格**(地板)/**靠墙那圈墙格**(墙纸)上,点错游戏**静默不理**;点错时回报会直接告诉你「这格其实是墙不是地板」并给出能铺的格) break(拆/敲:x,y=目标格,steps=挥击次,radius=方圆→镐子敲石头/翻已耕地,跳过箱子/容器格) maze(迷宫视图r半径,gx/gy目标格→ASCII棋盘#墙.可走P自己G目标) maze_seg(走法链gx,gy目标→拆直走廊列表+拼「左/右上/下走到(x,y)」多段链,AI按段walk_to) maze_walk(走迷宫 waypoints=「x,y x,y…」依次walk_to;⚠️**它其实是通用多段走位,主门牌已挪到 `map walk_multi/闲逛`**(闲逛遛弯/绕人转圈/泳池绕圈游),此处保留旧名为兼容) pan(淘金/淘盘:本图水下闪光点→岸边走位面水→铜锅淘金收掉落) front/rummage(分别是interact/garbage的别名)。📌**坐着想起来：scene stand**（别拿 at 猜一个够得着的格子——那条路会静静失败）。📐带参速查(键名必须=下面这些,**写错会被静默丢掉、不报错**): at(tile_x,tile_y) **⚠️是 tile_x/tile_y 不是 x/y** / pickup(tile_x,tile_y **同 at 用 tile_**) / use(name) / face(direction 0上1右2下3左) / select(name) / sit(x,y,face) / seats(radius=12) / pickup_scene(max_items=30) / moss(radius,target_max,rounds,dry_run) / rock(dig,radius,max_break,break_stone) / garbage(loc,pos,wait,dry_run) / pan(dry_run,radius,timeout) / drop(name,count,items=多种一起丢) / place(name,x,y) / decor(无参) / break(x,y,steps,radius) / maze(radius,gx,gy) / maze_seg(gx,gy,radius) / maze_walk(waypoints,location,max_wait,max_seg)。kw={'参数名':值}。",
 "menu": "菜单/界面域(开→看→点)：read(看菜单) advance(推进剧情/对话,一句句) **skip(整段跳过剧情/事件,事件 skippable=true 才跳得动)** click(option/item/button/xy 点;action=claim领/action=discard丢桶腾格;slot=序号领指定格) key(ok/esc/数字按键) cancel(关弹窗/撤就绪) shop(逛店) sell(卖商店) bin(投出货箱) craft(合成) recipes(菜谱) craftables(配方) forge(锻造) geode/geodes(砸晶球) customize(捏人) bundle(献祭缺口·**只读存档不走路**) bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读消耗品:书/秘密纸条/日记残页,统一走右键读 name=物品名) levelup_choose(技能升级职业选择 5/10级:不带参读左右选项,side=left/right 或 profession=职业id 定分支;普通升级自会确认OK) number(数量输入:展览会兑换台/转盘押注 NumberSelectionMenu) minigame(赌场小游戏点按钮 action=hit/stand/bet10/…) minigame_state(读牌面/转盘) display_fill(农展台放满 items='钻石,山羊奶酪') display_takeback(收好) journal(开任务日志→menu read 读卡,翻页=click(button=forward/back),领奖励=click(button=rewardBox)) know(查特别订单详情/知识库SPECIAL_ORDERS,如menu know 岛屿食材)。📐参数键名: click=option,button,x,y,item,right,quantity,action,real,slot,category(**action=claim领 / discard丢桶腾格**;button 用按钮名 ok/upperRightCloseButton/forward/back/rewardBox/mainButton) / key=key,count,hold / number=value,confirm / shop=place,want / sell=name(**多选隔逗号/分号,中英文都行;别用空格**),count(-1=全卖;**sell_all=True 一次卖完这家店收的,不收的一根不动**) / bin=name,sell_all / craft=item_name,count / forge=item1,item2,mode,target / geodes=count / customize=name,farmname,favorite / bundle=area / bundle_kb=query / read_book=name / levelup_choose=side,profession(**不带参=只读当前左右选项**,供配 check(what=profile) 分析后再决定) / minigame=action,x,y / display_fill=items。⚠️cook(做饭)**不在 menu，在 `daily` 域**（`daily ops=cook`；`cabin` 2026-10-01 已撤出顶层、够不着了）。🚫满包接鱼/领箱:**click action=discard 丢桶腾格(回收返金)+action=claim 领取(或用 slot 领指定格;不想要直接 button=ok 关掉)**。🧾关闭菜单一律 click(button=upperRightCloseButton)（ItemGrabMenu/交付容器用 button=ok 确认才关）；订单交付容器(QuestContainerMenu)=点背包对应物品格(见slots的坐标)→放进→点 button=ok 结算；任务日志领钱=点击已完成的有钱任务卡后 click(button=rewardBox)；兑奖机兑换=click(button=mainButton)；特别订单领奖链=日志领钱(上面)→社区板旁领奖箱(60,93)拿兑奖券→刘易斯家兑奖机(mainButton)兑换。",
 "storage": "箱子域：view(看箱,box=N看单箱全清单) store(存:what/items限定存哪些,名可带xN数量只存那N份,留空=归位只存已有同类堆,target指定箱/**全存腾空间=all=True——`all` 是参数不是物品名,别写 items=\"all\"**/**工具(镐斧锄壶镰竿)不能丢不能卖,但点名就能存进箱子借人: items=\"十字镐\"**) take(取:x,y+name单箱 或 items批量) find(模糊查哪箱有某物) default(设/清默认箱 clear=清) tag(改名,可带color改色)。📐参数键名(view=box / store=what,items,target,keepTools默认True,all / take=items 或 x+y+name+count默认999 / find=name / default=x,y,clear / tag=tag,target**必填**,color)。🤖存取统一走位：store/take都会先走到相关箱旁(批量只走到第一个),不区分拟人/原子,别靠编号逐箱翻。⭐每个箱子前自动带【类目标签】(内容过半归类):矿/古物/鱼/种子/作物/农产/建材/料理/装备——AI按标签定位箱,找东西用find。⚠️改色别染纯#000000(=默认木纹,识别成未染色);要黑箱用暗灰#303030。",
-"daily": "过日子域：sleep(睡觉) eat(吃食物回血体力,name/item_name) **cook(做饭 — 2026-10-01 从 cabin 收编进来；会先走到厨房，走不过去就明确报错)** wear(穿/脱衣物,name/slot/hand) lie_bed(躺床不过夜) settle(确认过夜结算) heartbeat(心跳间隔,minutes) pause(后台不暂停,out_of_focus) peek(看恒干嘛) whiteboard(写白板,content) wb_read/wb_pin/wb_clear。📐参数键名: sleep/lie_bed=who eat=name,item_name **cook=recipe_name(必填;食谱用英文原名),count(默认1)** wear=name,slot,hand(**hand 仅戒指**:1/left 或 2/right,或传「要换掉的那枚戒指名」自动找手) heartbeat=minutes pause=out_of_focus whiteboard/wb_pin=content appearance=hair,hair_color,skin,shirt,pants,hat,acc,eye_color,pants_color；settle/peek/wb_read/wb_clear 无参。kw={'参数名':值}。📌sleep/lie_bed 的 who **必填**（名字随存档变，现读现传）：传自己名字=睡自己床；传别人名字=睡那个人的床(一起睡+🌹彩蛋)。⚠️名字写错会报错并列出可选名(不会默默睡成别人的床)。**传对名字就不用先回家**——不在那栋屋会自动走过去(map_go跨图→门口→推门→床边，全程走)。lie_bed 只躺不睡，想离开随时 walk_to 走离床格即可。🏝️**在姜岛是另一套**：岛上共用一间小屋(大通铺)，没有「谁的床」——who 传**正躺在床上的别人**=挤他那张(姜岛版爬床彩蛋)；否则(传自己/那人还没躺)=随便挑一张空床安静睡。⚠️睡别人床/协作前先 check(what=\"role\") 确认端口↔角色（端口按启动顺序分配，重启可能翻转，认错角色=挪了恒的人）。",
+"daily": "过日子域：sleep(睡觉) eat(吃食物回血体力,name/item_name) **cook(做饭 — 2026-10-01 从 cabin 收编进来；会先走到厨房，走不过去就明确报错)** wear(穿/脱衣物,name/slot/hand) lie_bed(躺床不过夜) settle(确认过夜结算) heartbeat(心跳间隔,minutes) peek(看恒干嘛) whiteboard(写白板,content) wb_read/wb_pin/wb_clear。📐参数键名: sleep/lie_bed=who eat=name,item_name **cook=recipe_name(必填;食谱用英文原名),count(默认1)** wear=name,slot,hand(**hand 仅戒指**:1/left 或 2/right,或传「要换掉的那枚戒指名」自动找手) heartbeat=minutes whiteboard/wb_pin=content appearance=hair,hair_color,skin,shirt,pants,hat,acc,eye_color,pants_color；settle/peek/wb_read/wb_clear 无参。kw={'参数名':值}。📌sleep/lie_bed 的 who **必填**（名字随存档变，现读现传）：传自己名字=睡自己床；传别人名字=睡那个人的床(一起睡+🌹彩蛋)。⚠️名字写错会报错并列出可选名(不会默默睡成别人的床)。**传对名字就不用先回家**——不在那栋屋会自动走过去(map_go跨图→门口→推门→床边，全程走)。lie_bed 只躺不睡，想离开随时 walk_to 走离床格即可。🏝️**在姜岛是另一套**：岛上共用一间小屋(大通铺)，没有「谁的床」——who 传**正躺在床上的别人**=挤他那张(姜岛版爬床彩蛋)；否则(传自己/那人还没躺)=随便挑一张空床安静睡。⚠️睡别人床/协作前先 check(what=\"role\") 确认端口↔角色（端口按启动顺序分配，重启可能翻转，认错角色=挪了恒的人）。",
 "map": "导航域(🗺️跨图唯一入口)：lookup(查地点功能+出口) query(功能反查) go(走到目标/多段寻路+交通) walk(走到POI **或给x,y走同图坐标**) walk_multi(多段走位:喂一串坐标依次走) npc(找NPC) warp_safe(紧急逃脱) unlocks(查存档解锁:矿洞/巴士/下水道/姜岛/精通/**火山近路**——走捷径前先查)。⚠️出口走出口前一格；交通图腾柱>矿车>走路。📐参数全放kw对象(**别拼进ops串**,键名: go=destination地点名/POI 或 npc=NPC名(二选一)、walk=poi_name 或 x+y(二选一,坐标=只走同图;跨图用go)、walk_multi=waypoints(\"x,y x,y …\"空格/分号分隔),location,max_wait,max_seg、npc=name、lookup=location、query=function、warp_safe 无参、unlocks 无参)。⚠️walk 到 POI 会**自动应用结构化站位+朝向**(水池朝右/柜台朝上),但交互仍要 AI 自己 scene at/interact 触发。🫧walk_multi 别名 **闲逛/多段走**（旧名 festival/scene 的 maze_walk/走迷宫 仍可用）：正事=万灵节迷宫按段走；**活人感**=闲逛遛弯·绕着人转圈示好·浴场泳池绕圈游。",
 "festival": "节日域(🎪)：today(今天节日) next(下一个) go(去) info(实况) interact(互动) answer(应答) shop(节日商店) eggs(找蛋) egg_note(纸条) egg_run(捡蛋) dance(跳舞邀请) strength(力量测试 delay=毫秒) ice_fish(冰雪节冰钓自动化) help(玩法) prep(备战) poi(限定点) maze(迷宫坐标奇偶年) maze_walk(走迷宫 waypoints=「x,y x,y…」依次walk_to;⚠️**通用多段走位已搬到 `map walk_multi/闲逛`**,此处保留旧名兼容) strength(力量测试,delay=毫秒) display_fill/display_takeback(农展台放满/收好)。📐参数键名: interact=name answer=answer egg_run/egg_note=route dance=target strength=delay maze_walk=waypoints,location,max_wait,max_seg display_fill=items；today/next/go/info/shop/eggs/help/prep/poi/maze/ice_fish/display_takeback 无参。",
 "fish": "钓鱼域(🎣)：go(去钓 location=) info(查某地鱼) spots(钓点) bobber(浮漂样式) rod(鱼竿:看/上饵钓具 item=名) crab(蟹笼总览) crab_water(找水) crab_place(放笼) crab_bait(放饵) crab_collect(收笼) crab_diag(诊断笼/定位挂饵) crab_retract(回收笼/清搁浅 location=可选)。⚠️**crab_bait/crab_collect/crab_retract 不带坐标 = 处理「当前图**全部**」的笼**(不是附近几个;一天真机在海滩 32 只被一次收光)——只想动一只就传 x+y。📐参数键名: go=location(None=**就地钓**,须自己已站到水边;指定 Beach/Mountain/Forest/Town=先 map_go 走真实路径到校准钓点再钓,不是warp,**就这四个,填别的名字(如River)会当场报错**),max_casts(0=不限),no_sleep(True) / info=location / bobber=style(默认dice) / rod=action+item / crab_place=count+radius+bait / crab_bait=bait / crab_water=radius / crab_diag=location / crab_retract=x+y+location。⚠️鱼塘在 farm 域不在 fish。带参 op(go 的 location、rod 的 item、crab 的 count)→ kw={'参数名':值}。🧬**挂饵前先 check(what=\"profile\")**：若是 Luremaster(职业11) 蟹笼免饵，crab_bait/crab_place 挂饵是空操作，别浪费。",
@@ -17759,11 +17762,13 @@ def set_heartbeat_interval(minutes: int = 5) -> str:
 
 @mcp.tool()
 def set_pause(out_of_focus: bool = False) -> str:
-    """🖱️ 设置"失焦暂停"（后台运行模式）
+    """🖱️ 设置"失焦暂停"（后台运行模式）—— **2026-10-04 起已退役，AI 够不着**。
+
+    ⚠️ 留着这函数只为两件事：① `_ensure_background()` 内部要用它（每条会动菜单/锻造/
+       吃东西的路都自己打过 `set_pause(False)`，AI 不需要知道有这么个开关）；
+       ② 排查时能直接调（C# `/set_pause` 端点也还在）。**别再把它接回任何域 op**。
     out_of_focus=False（默认）→ AI 窗口在后台也完整运行（走位/菜单/锻造/吃东西都行，
     不抢 user 的前台焦点）。True → 还原默认（后台窗口暂停）。
-    菜单/锻造/吃东西工具会自动开后台模式，一般不用手动调；
-    想让 AI 长期保持后台在线（自主行动）时调用一次 False 即可。
     """
     try:
         r = api.set_pause(out_of_focus)
@@ -20563,6 +20568,22 @@ def menu_click(option: int = -1, button: str = "", x: int = -1, y: int = -1, ite
                 _cust_gate = True
                 if not _look_verified:
                     return _with_state(f"🚫 捏人未核对：先 settings ops=confirm_look（请{_host_name()}参谋 + screenshot 截图确认满意）→ 再点 ok。ok 后不可逆！")
+        # 🚪 2026-10-04 真机抓的**假成功**（恒：「菜单交互类多去试试」时撞出来的）：
+        #    `menu click(button=close)` 在 C# 侧是**发射后不管**（点完就回 ok），而游戏那边
+        #    `IClickableMenu.receiveLeftClick` 的关闭分支**带 `readyToClose()` 闸门**
+        #    （`ShopMenu.readyToClose()` = `heldItem == null && animations.Count == 0`）。
+        #    真机复现：紧接着 `menu sell` 敲 close —— 卖东西的碎屑动画还在放 ⇒ X 点了
+        #    **一点动静都没有**，回执却是「🖱️ 已点击（button）」；下一句 `map go` 当场被
+        #    菜单闸门挡回来（「现在开着 ShopMenu 菜单…先别做」）。隔几秒再敲同一条就关上了。
+        #    ⇒ 带"关"意的按钮**必须回读**：没关成就等动画散（实测约 0.7s）重敲，重敲还不关
+        #    就**如实说没关**（铁律：不许嘴上说成功）并照搬 `_close_hint` 指路。
+        _close_btn = (button or "").lower() in ("close", "upperrightclosebutton")
+        _mt_before = ""
+        if _close_btn:
+            try:
+                _mt_before = ((api.state().get("activeMenu") or {}).get("type") or "")
+            except Exception:
+                _mt_before = ""
         data = {}
         if option >= 0: data["option"] = option
         if button: data["button"] = button
@@ -20594,8 +20615,21 @@ def menu_click(option: int = -1, button: str = "", x: int = -1, y: int = -1, ite
             # 触发点=点下去的结果（起了小游戏），不是匹配选项文字——游戏里只有秋收钓鱼会启动 FishingGame。
             # 最多等 ~3s 让小游戏注册（只确认"确实开了"，不用于判断时机）。fair_fishing.py 开头还会自查 minigame。
             # ⚠️ 2026-08-28 实测小游戏 ~1.5s 才注册，1.2s 窗会漏 → 提到 3s（纯确认触发，非轮询时机）。
+            # 🔥 2026-10-04 **把"是不是秋收节"这道闸提到循环外**（恒：「我想快一点点结束了」——
+            #    顺手量到的）：原来**每次 `menu click` 都空转 10 圈**（`time.sleep(0.3)` ×10 = **3 秒**、
+            #    外加 10 次 `/state` HTTP），哪怕这天根本不是秋收节、这点的是个对话选项。
+            #    真机实测：点一下 close 要 3s 才回话，就是这么来的。
+            #    ⇒ 先读一次状态判"有没有可能"（秋16 / 已在 `fishingGame` 图），不是就直接跳过整段；
+            #      **是**的时候行为一字未改（照旧 3s 轮询 + `_is_fair` 双保险 + 阻塞跑完）。
             try:
-                for _ in range(10):
+                _t0 = api.state().get("time") or {}
+                _loc0 = (api.state().get("location") or {}).get("name", "") or ""
+                _maybe_fair = (str(_t0.get("season") or "").lower() == "fall"
+                               and int(_t0.get("dayOfMonth") or 0) == 16) or _loc0 == "fishingGame"
+            except Exception:
+                _maybe_fair = False
+            try:
+                for _ in range(10 if _maybe_fair else 0):
                     time.sleep(0.3)
                     if (api.state().get("player") or {}).get("minigame") == "FishingGame":
                         # ⚠️ 2026-08-28 恒：防跑错场景——`FishingGame` 是**秋收节专属** minigame(图 fishingGame)，
@@ -20627,6 +20661,27 @@ def menu_click(option: int = -1, button: str = "", x: int = -1, y: int = -1, ite
                     return _with_state(f"⚠️ 领取菜单第 {r.get('slot')} 格是空的，**没领到东西**"
                                        f"（换 slot=序号 或直接 quantity=999 全领）")
                 return _with_state(f"🖱️ 已领取「{_nm}」")
+            if _close_btn:
+                # 🚪 回读核实（理由见上面 `_close_btn` 那段注释）：最多 3 敲，中间让动画散掉。
+                _last = None
+                for _try in range(3):
+                    try:
+                        _last = (((api.state().get("activeMenu") or {}).get("type")) or "")
+                    except Exception:
+                        return _with_state(
+                            f"⚠️ 按了关闭键，但**没读回状态**，关没关我不知道"
+                            f"（原 {_mt_before or '?'}）—— 自己 `show` 一眼确认")
+                    if not _last:
+                        return _with_state(f"🚪 界面已关（原 {_mt_before or '?'}）")
+                    if _try < 2:
+                        time.sleep(0.8)          # ShopMenu 成交动画约 0.7s 自己散（`readyToClose()` 才会真）
+                        try:
+                            api.menu_click(button=button)
+                        except Exception:
+                            pass
+                return _with_state(
+                    f"⚠️ **还开着（{_last}）** —— 「{button}」连敲 3 次都没关上"
+                    f"（不是「点了就好」的那种界面）。这一刻该怎么走：\n   {_close_hint(_last)}")
             return _with_state(f"🖱️ 已点击（{r.get('clicked')}{extra}）")
         return _with_state(f"⚠️ {r.get('error', '点击失败')}")
     except Exception as e:
@@ -23561,27 +23616,36 @@ def _im_close_menu() -> str:
     ⚠️ 复用 `cancel()` 而不是在单子层另写一套：`ReadyCheckDialog` 那条特殊分支
        （强制关屏 + 撤 ready）只活在那里面。
     ⚠️ 回**一句话**（不是 dict）：`_im_run` 的 `helpers` 那档吃的就是文本，由它判档位。
+    🚪 2026-10-04 加**重敲一次**：真机撞出「紧接着 `menu sell` 敲关界面**关不上**」——
+       商店的成交碎屑动画还在放，`ShopMenu.readyToClose()`（= `heldItem==null &&
+       animations.Count==0`）为假 ⇒ 取消键被游戏静默吞掉（约 0.7s 后自己就散了）。
+       ⇒ 第一次没关成、且**读到了**菜单还在，就等 0.8s 再来一次；两次都关不掉才报"还开着"。
     """
     before = ""
     try:
         before = (((api._ai_get("/state") or {}).get("activeMenu") or {}).get("type") or "")
     except Exception:
         pass
-    try:
-        cancel()
-    except Exception as e:
-        return f"❌ 关界面出错：{type(e).__name__}: {e}"
     after = None
-    try:
-        after = (((api._ai_get("/state") or {}).get("activeMenu") or {}).get("type") or "")
-    except Exception:
-        pass                       # 读不到 = **不知道** ⇒ 下面不许谎报成功
-    if after == "":
-        return f"界面已关（原 {before or '?'}）"
+    for _try in range(2):
+        try:
+            cancel()
+        except Exception as e:
+            return f"❌ 关界面出错：{type(e).__name__}: {e}"
+        try:
+            after = (((api._ai_get("/state") or {}).get("activeMenu") or {}).get("type") or "")
+        except Exception:
+            after = None               # 读不到 = **不知道** ⇒ 下面不许谎报成功
+        if after == "":
+            return f"界面已关（原 {before or '?'}）"
+        if after is None:
+            break
+        if _try == 0:
+            time.sleep(0.8)            # 让成交动画散掉（`readyToClose()` 才会真）——见 docstring
     if after is None:
         return (f"⚠️ 按了取消键，但**没读回状态**，关没关我不知道（原 {before or '?'}）"
                 f"—— 自己 `show` 一眼确认")
-    return (f"⚠️ **还开着**（{after}）—— 取消键对它不管用。这一刻该怎么走：\n"
+    return (f"⚠️ **还开着**（{after}）—— 取消键对它不管用（连敲两次都没关掉）。这一刻该怎么走：\n"
             f"   {_close_hint(after)}")
 
 
