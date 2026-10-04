@@ -2466,8 +2466,9 @@ def main():
     _DK = {"type": "Statue Of The Dwarf King", "x": 5, "y": 4, "location": "SkullCave"}
     _stub(loc="SkullCave", machines=[_DK], blessed=True,
           buffs=[{"id": "dwarfStatue_3", "name": "矮人之王雕像"}])
-    res.append(ok("🗿 矮人国王：身上**还挂着 `dwarfStatue` buff** ⇒ 已用过（那行不给）",
-                  M._im_ctx().statue.get("used_today") is True, M._im_ctx().statue))
+    res.append(ok("🗿 矮人国王：身上**还挂着 `dwarfStatue` buff** ⇒ 已用过；"
+                  "**两类都用过 ⇒ 整段 `{}`**（连 `/machines` 都不看、更不扫 —— 恒：「没摸过才扫」）",
+                  M._im_ctx().statue == {}, M._im_ctx().statue))
     _stub(loc="SkullCave", machines=[_DK], blessed=True)     # 祝福那位 True、但**没有** dwarf buff
     _c_dk = M._im_ctx().statue
     res.append(ok("🗿 矮人国王：**祝福那位是 true 也照样给行**（它不吃那个门 —— 真机实证）",
@@ -2480,17 +2481,48 @@ def main():
                   _c_two.get("used_today") is False and len(_c_two.get("statues") or []) == 2, _c_two))
     # 🗿 换图兜底：`/machines` **不一定扫所有图**（真机实测：农场/`SkullCave` 能扫到、沙漠回 0 条）
     #    而恒 2026-10-04：「**雕像会到处摆的**」（一般摆入口层或家里）⇒ 本图**矩形扫**兜底。
+    #    ⚠️ 这一发要**领过耕种/采矿精通**才允许扫（恒：「没有对应的精通也不用扫」）⇒ 夹具给 farming 精通。
+    _MAST = [{"skill": "farming", "claimed": True}]
     _stub(loc="SkullCave", machines=[], statues=[(5, 4, "Statue Of The Dwarf King")],
-          map_size=(30, 20), blessed=False)
+          map_size=(30, 20), blessed=False, mastery=_MAST)
     M._STATUE_RECT_CACHE.update(key=None, ts=0.0, statues=[])
     _c_rect = M._im_ctx().statue
     res.append(ok("🗿 `/machines` 本图没有 ⇒ **矩形扫本图**兜底（雕像摆在家里/入口层也认）",
                   _c_rect.get("names") == ["Statue Of The Dwarf King"]
                   and _c_rect.get("tiles") == [[5, 4]], _c_rect))
-    res.append(ok("🗿 矩形扫的结果**带缓存**（`图名|天`，TTL 120s）——别每次 `show` 都扫一遍",
-                  M._STATUE_RECT_CACHE.get("key", "").startswith("SkullCave|")
+    res.append(ok("🗿 矩形扫的结果**缓存键只认图名**（恒：「**切换地图时才扫**」）",
+                  M._STATUE_RECT_CACHE.get("key") == "SkullCave"
                   and len(M._STATUE_RECT_CACHE.get("statues") or []) == 1,
                   M._STATUE_RECT_CACHE.get("key")))
+    # ⚠️ 同一张图**再来一次**：命中缓存 ⇒ 一发 HTTP 都不该多（数 `/surroundings`）
+    _n_before = len([c for c in CALLS if c[1] == "/surroundings"])
+    _c_cached = M._im_ctx().statue
+    _n_after = len([c for c in CALLS if c[1] == "/surroundings"])
+    res.append(ok("🗿 同图第二次 ⇒ **不发矩形扫**（缓存命中，`/surroundings` 只多那一发 radius=30 的）",
+                  _c_cached.get("tiles") == [[5, 4]] and (_n_after - _n_before) <= 1,
+                  f"surroundings 调用 +{_n_after - _n_before}"))
+    # ⛔ 恒：「**没有摸过这种雕像才扫**」——两类都用过 ⇒ **整段不扫**（也不出那行）
+    M._STATUE_RECT_CACHE.update(key=None, ts=0.0, statues=[])
+    _stub(loc="SkullCave", machines=[], statues=[(5, 4, "Statue Of The Dwarf King")],
+          map_size=(30, 20), blessed=True, buffs=[{"id": "dwarfStatue_3"}], mastery=_MAST)
+    _n0 = len([c for c in CALLS if c[1] == "/surroundings"])
+    _c_skip = M._im_ctx().statue
+    _n1 = len([c for c in CALLS if c[1] == "/surroundings"])
+    res.append(ok("⛔ 两类雕像都用过 ⇒ **不扫、也不出那行**（`/surroundings` 只有 `_im_ctx` 那一发 radius=30）",
+                  _c_skip == {} and (_n1 - _n0) <= 1 and M._STATUE_RECT_CACHE.get("key") is None,
+                  (_c_skip, f"surroundings +{_n1 - _n0}", M._STATUE_RECT_CACHE.get("key"))))
+    # ⛔ 恒：「没有对应的耕种/采矿精通也不用扫」——**但只在 `/mastery` 读成功时才敢拿它当闸门**
+    M._STATUE_RECT_CACHE.update(key=None, ts=0.0, statues=[])
+    _stub(loc="SkullCave", machines=[], statues=[(5, 4, "Statue Of The Dwarf King")],
+          map_size=(30, 20), blessed=False, mastery=[])       # 读成功、但一个精通都没领
+    _c_nomast = M._im_ctx().statue
+    res.append(ok("🗿 没领耕种/采矿精通 ⇒ **不扫**（那行不出现）",
+                  _c_nomast == {} and M._STATUE_RECT_CACHE.get("key") is None, _c_nomast))
+    # ⚠️ 同一条闸门**不许藏 `/machines` 已经命中的雕像**（主客精通可能不同）
+    _stub(loc="SkullCave", machines=[_DK], blessed=False, mastery=[])
+    _c_mach_nomast = M._im_ctx().statue
+    res.append(ok("🗿 没精通也**不许藏 `/machines` 命中的雕像**（那是恒摆的、看懂的人不一样）",
+                  _c_mach_nomast.get("names") == ["Statue Of The Dwarf King"], _c_mach_nomast))
     # ⛔ 理由栏**不许再印 `(1/2)`**（恒：会误导 —— 单子行号本身就是 1/2/3，两套编号打架）
     _r_opt = M.intent_menu._option_reason(_Ctx(menu_data={"choose": {"options": [
         {"index": 0, "text": "A", "key": "2", "x": 1, "y": 2},

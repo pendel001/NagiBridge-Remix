@@ -5436,15 +5436,29 @@ def _mastery_claimed(skill: str) -> bool:
     if _MASTERY_CACHE["claimed"] is not None and time.time() - _MASTERY_CACHE["ts"] < 30:
         return key in _MASTERY_CACHE["claimed"]
     claimed = set()
+    ok = False
     try:
         r = api.mastery()          # 已走 _ai_get（7843，AI 自己那份）
         for p in (r.get("plaques") or []):
             if p.get("claimed"):
                 claimed.add((p.get("skill") or "").lower())
+        ok = True                  # 🗿 读**成功**了（空集 = 真没领，不是"读不到"）
     except Exception:
         claimed = set()            # 读不到 → 不误伤
-    _MASTERY_CACHE = {"ts": time.time(), "claimed": claimed}
+        ok = False
+    _MASTERY_CACHE = {"ts": time.time(), "claimed": claimed, "ok": ok}
     return key in claimed
+
+
+def _mastery_read_ok() -> bool:
+    """🗿 `/mastery` **这一次读成功了没**？（`_mastery_claimed` 读不到时一律回 False ⇒
+    **拿它当闸门会把"读不到"当成"没领"**。雕像那条扫描闸门只敢在读成功时才用，见 `_im_statue`。）"""
+    try:
+        if time.time() - _MASTERY_CACHE.get("ts", 0.0) >= 30 or _MASTERY_CACHE.get("claimed") is None:
+            _mastery_claimed("farming")
+        return bool(_MASTERY_CACHE.get("ok"))
+    except Exception:
+        return False
 
 
 # 🔧 「这台机器放这件东西还要什么」——**问游戏**（C# 的 `/machine_reqs`，187 加的）。
@@ -23189,13 +23203,18 @@ def _im_chores(state: dict, surr: dict, animals: dict) -> dict:
     return out
 
 
-# 🗿 **本图雕像矩形扫的结果缓存**（`{key, ts, tiles}`；`key = "图名|天"`）。
-# 为什么要有它：`/machines` **不一定扫所有图**（2026-10-04 实测：农场/`SkullCave` 能扫到雕像，
-# 沙漠那张图回 0 条），而恒说「**雕像会到处摆的**」（一般摆入口层或家里）⇒ 光靠 `/machines`
-# 会漏图。矩形扫一次要 1~2 发（`/surroundings` rect，上限 4096 格）⇒ 给个短 TTL 缓存，
-# 免得每次 `intent show` 都扫一遍。**TTL 短**（默认 120s）是有意的：雕像被挪走/收起要能很快反映。
+# 🗿 **本图雕像矩形扫的结果缓存**（`{key, ts, statues}`；`key = 图名`）。
+# 恒 2026-10-04 的口径（原话）：「**切换地图时才扫，没有摸过这种雕像才扫，
+#   甚至没有对应的耕种/采矿精通也不用扫**（但是要检测精通吧，可做可不做）」⇒ 三条闸门：
+#   ① **切图才扫**：缓存键只认**图名**（不带天/不带时间）⇒ 同一张图里反复 `intent show`
+#      **一发都不再打**；走出去再回来 = 新的一轮（真机：`SkullCave` 一发 0.07s）。
+#      另给一个**宽松 TTL**（300s）兜"人一直待在同一张图、中途摆了/收了雕像"这种情形。
+#   ② **这类雕像没摸过才扫**：两类雕像的"今天还能不能摸"先算出来（祝福=那位、
+#      矮人=有没有 `dwarfStatue` buff），**都用过 ⇒ 整个 `_im_statue` 直接返回 `{}`**（不扫）。
+#   ③ **没对应精通就不用扫**：`/mastery` **读成功**且 farming/mining 都没领 ⇒ 跳过扫描
+#      （"可做可不做"，做了；⚠️ 见 `_im_statue` 里那条主客精通的注记）。
 _STATUE_RECT_CACHE = {"key": None, "ts": 0.0, "statues": []}
-_STATUE_RECT_TTL = 120.0
+_STATUE_RECT_TTL = 300.0
 
 
 def _scan_statues_rect(state: dict) -> list:
@@ -23216,7 +23235,7 @@ def _scan_statues_rect(state: dict) -> list:
         day = api.day_key()
     except Exception:
         day = ""
-    key = f"{name}|{day}"
+    key = f"{name}"          # ① 恒的"**切图才扫**"：键只认图名（不带天/时间）
     now = time.time()
     if _STATUE_RECT_CACHE.get("key") == key and (now - _STATUE_RECT_CACHE.get("ts", 0.0)) < _STATUE_RECT_TTL:
         return list(_STATUE_RECT_CACHE.get("statues") or [])
@@ -23280,15 +23299,38 @@ def _im_statue(state: dict, surr: dict, machines: list = None) -> dict:
         _buffs = [str((b or {}).get("id") or "") for b in (_pl.get("buffs") or [])]
         _dwarf_used = any("dwarfStatue" in b for b in _buffs)
         _blessed = _pl.get("blessedByStatueToday")
+        # ② 恒：「**没有摸过这种雕像才扫**」——先把"两类雕像各自还能不能摸"算出来（**不花 HTTP**）：
+        #      · 祝福雕像：`blessedByStatueToday is not True`（`None` = 老 DLL **算"可能没摸"**，
+        #        宁可多扫一次，也别把"读不到"当成"摸过了"）；
+        #      · 矮人国王：身上**没有** `dwarfStatue` buff（恒：这 buff 持续一整天 ⇒ 实际每天一次）。
+        #    **两类都用过 ⇒ 直接 `{}`**（那行本来就不该出现，一次 HTTP 都不打）。
+        _want = []
+        if _blessed is not True:
+            _want.append("Blessings")
+        if not _dwarf_used:
+            _want.append("Dwarf King")
+        if not _want:
+            return {}
+        # ③ 恒：「**甚至没有对应的耕种/采矿精通也不用扫**」（可做可不做 —— 我做了）。
+        #    ⚠️ 它**只管"要不要扫"这一步**（见下面 `_do_scan`）——**不许**拿它去藏
+        #       `/machines` 已经命中的雕像：`/mastery` 读的是**AI(轮回)自己那份**，
+        #       而雕像多半是**恒**摆的（他领了精通、轮回未必）⇒ 拿它当总门 = 藏掉真东西。
+        #    ⚠️ 也只在 `/mastery` **读成功**时才敢用（读失败时 `_mastery_claimed` 一律回 False，
+        #       拿它当门 = "读不到"被当成"没领"）。
+        try:
+            _do_scan = (not _mastery_read_ok()) or _mastery_claimed("farming") or _mastery_claimed("mining")
+        except Exception:
+            _do_scan = True        # 判不出来 ⇒ 扫（宁可多扫一发，别漏真雕像）
         # 雕像来自**两个源**（判据同一个：`Statue` 子串 + `location == 本图`）：
         #   ① `/machines`（**已经拿到的那份**，零额外 HTTP）——它扫得到的图直接命中；
-        #   ② **本图整图矩形扫**（`_scan_statues_rect`，带 120s 缓存）——补 `/machines` 扫不到的图。
+        #   ② **本图整图矩形扫**（`_scan_statues_rect`，**切图才扫** + 300s 兜底）——补扫不到的图，
+        #      且要过 ③ 的精通闸门。
         #   ⚠️ 为什么要 ②：恒 2026-10-04「**雕像会到处摆的**」（一般摆入口层/家里），而实测
         #      `/machines` 在沙漠回 0 条 ⇒ 只靠它 = **有些图上的雕像永远不出现**。
-        #   ⚠️ ②**只在 ① 本图没找到时**才跑（省调用）；只要有一座雕像在场就不再多扫。
+        #   ⚠️ ②**只在 ① 本图没找到时**才跑（省调用）。
         _cand = [m for m in (machines or []) if "Statue" in str((m or {}).get("type") or "")
                  and (not here or not (m or {}).get("location") or (m or {}).get("location") == here)]
-        if not _cand:
+        if not _cand and _do_scan:
             _cand = _scan_statues_rect(state)
         entries = []
         for m in _cand:
