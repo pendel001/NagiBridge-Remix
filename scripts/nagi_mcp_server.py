@@ -466,6 +466,16 @@ def _close_hint(menu: str, content_on_sheet: bool = False) -> str:
             return ("货架**就在单子上**（「买…」那几行）→ 买完 "
                     "menu click(button=upperRightCloseButton) 关掉")
         return "menu read 看商品 → menu click(button=upperRightCloseButton) 关掉"
+    # 🗿 图标选择题（2026-10-04 恒：「矮人国王雕像是有选项的，**按理来说要套一层选择题**」）。
+    #    ⚠️ 它**没有右上角关闭键**（跟 DialogueBox 同族）⇒ 老兜底那句
+    #       「menu click(button=upperRightCloseButton)」在这是**假门**；而且那屏的选项
+    #       现在**就摊在单子上**（「选 「…」」那几行）⇒ 再叫它 `menu read` 是白烧一次。
+    if "choosefromicons" in m:
+        if content_on_sheet:
+            return ("选项**就在单子上**（那几行「选 「…」」）→ 挑一个敲号；"
+                    "不想选就敲「关掉界面」（ESC 收掉这屏，没有右上角关闭键）")
+        return ("menu read 看选项 → menu click(x=…, y=…) 点那个图标"
+                "（这屏**没有右上角关闭键**；别照通用兜底点）")
     if "letterviewer" in m or "dialogue" in m:
         # ⚠️ 2026-10-01（P-menus 第四刀）：**去掉了开头的「menu read 看内容」** ——
         #    信件正文现在**就印在单子抬头**（`_im_head` 的 📧 那几行）⇒ 那句是白指一条路
@@ -23203,23 +23213,52 @@ def _im_statue(state: dict, surr: dict, machines: list = None) -> dict:
     try:
         loc = (state or {}).get("location") or {}
         here = loc.get("name") if isinstance(loc, dict) else loc
-        names, tiles = [], []
+        # 🗿 **每座雕像"现在还能不能摸"各有各的门**（2026-10-04 反编译 + 真机双向核实）：
+        #   · `Statue Of Blessings` ⇒ `Farmer.hasBeenBlessedByStatueToday`（每天重置）；
+        #   · `Statue Of The Dwarf King` ⇒ **游戏自己的条件是"身上没有 `dwarfStatue` buff"**
+        #     （反编译 `Object.checkForAction`：
+        #        `case "(BC)StatueOfTheDwarfKing": … else if
+        #         (!who.hasBuffWithNameContainingString("dwarfStatue"))
+        #             Game1.activeClickableMenu = new ChooseFromIconsMenu("dwarfStatue");`
+        #      ）⇒ 它**是 buff 门、不是"每天一次"**（buff 过期就又能摸）。
+        #   ⚠️⚠️ 真机实证（我踩过）：先摸了**祝福**雕像 ⇒ `blessedByStatueToday=True`，
+        #      可矮人国王**照样弹菜单、照样给 buff**（`dwarfStatue_3`）⇒ **两者不是一个门**；
+        #      摸了摸过之后复摸 ⇒ `actionTriggered=true` 却**不弹菜单**（buff 还在）⇒ 门就是 buff。
+        #      ⇒ 拿 `blessedByStatueToday` 当所有雕像的门 = **祝福雕像一摸，矮人那行就白没了**。
+        _pl = (state or {}).get("player") or {}
+        _buffs = [str((b or {}).get("id") or "") for b in (_pl.get("buffs") or [])]
+        _dwarf_used = any("dwarfStatue" in b for b in _buffs)
+        _blessed = _pl.get("blessedByStatueToday")
+        entries = []
         for m in (machines or []):
             ty = str((m or {}).get("type") or "")
             if "Statue" not in ty:
                 continue
             if here and (m or {}).get("location") and (m or {}).get("location") != here:
                 continue          # 别的图/别的屋的雕像：不归这行（走出去了也做不到）
-            if ty not in names:
-                names.append(ty)
+            if "Dwarf King" in ty:
+                used = _dwarf_used
+            elif "Blessings" in ty:
+                used = None if _blessed is None else bool(_blessed)
+            else:
+                used = None       # 认不出的雕像：**不编**（消费侧给 MAYBE）
             x, y = (m or {}).get("x"), (m or {}).get("y")
-            if isinstance(x, int) and isinstance(y, int) and [x, y] not in tiles:
-                tiles.append([x, y])
-        if not names:
+            entries.append({"name": ty, "x": x, "y": y, "used_today": used})
+        if not entries:
             return {}
-        used = ((state or {}).get("player") or {}).get("blessedByStatueToday")
-        return {"names": names, "tiles": tiles,
-                "used_today": (None if used is None else bool(used))}
+        names = list(dict.fromkeys(e["name"] for e in entries))
+        tiles = []
+        for e in entries:
+            if isinstance(e["x"], int) and isinstance(e["y"], int) and [e["x"], e["y"]] not in tiles:
+                tiles.append([e["x"], e["y"]])
+        # 行级门：**只要还有一座没用**就给行（`False` = 有可摸）；全用过 ⇒ `True`；说不清 ⇒ `None`
+        if any(e["used_today"] is False for e in entries):
+            used_all = False
+        elif all(e["used_today"] is True for e in entries):
+            used_all = True
+        else:
+            used_all = None
+        return {"names": names, "tiles": tiles, "statues": entries, "used_today": used_all}
     except Exception:
         return {}
 
@@ -23916,6 +23955,9 @@ def _im_run(op, args):
         #    ⚠️ 走 `helpers`（回一句话）而不是 `raw_ops`：回执要"点了哪个 + 成没成"，
         #       不是把 C# 那坨 `{clicked:"response", option, key, method}` 摊给 AI 看。
         "menu_option": lambda: _im_menu_option(args.get("option"), args.get("real")),
+        # 🗿 图标选择题（2026-10-04 · 矮人国王雕像那屏）：**按坐标点** —— 那屏 `responses` 是 null，
+        #    `option=N` 对它没用。判据（哪些图标是真选项）在 `_im_menu_data` 算好递进来。
+        "menu_icon": lambda: _im_menu_icon(args.get("x"), args.get("y"), args.get("key")),
         # 🪨 砸晶球（2026-10-01）：单子「砸 晶球…」填完数量按下去走这里。
         #    ⚠️ 调现成的 `process_geodes(count)` —— 它自己会 `_require_counter` **走到克林特柜台前**
         #       （拟人那条），不另写一套；缺钱/没晶球它会把自己的话回出来。
@@ -24048,6 +24090,69 @@ def _im_menu_take(slot):
     return api._ai_post("/menu/click", {"action": "claim", "slot": slot})
 
 
+def _im_menu_icon(x, y, key=None):
+    """🗿 点**图标选择题**里那个选项（`/menu/click {x, y}`）→ 一句话（**带回读 + 硬证据**）。
+
+    2026-10-04 恒：「矮人国王雕像是有选项的，按理来说要套一层选择题。」
+    真机那屏（`ChooseFromIconsMenu`）的实况：`responses: null`、选项是 `buttons[].hoverText`
+    + 各自的 `x/y` ⇒ **只能按坐标点**（`option=N` 那条路对它没用）。
+    ⚠️ 用 `/menu/click`（不是裸 `/click`）：C# 那条路有"挪不挪真人鼠标"的自动判断，
+       而名单现在是空的（`_MENUS_READING_REAL_MOUSE`）⇒ 不会拽走恒的光标（2026-09-25 的账）。
+    ⚠️⚠️ **读回要轮询**（2026-10-04 真机当场抓到的**假警报**）：点完 0.6s 那一屏**还开着**、
+       我还按"这一屏没变"报了 ⚠️ —— 可 1 秒后菜单已经关了、buff 也挂上了（`dwarfStatue_3`）。
+       ⇒ 成功的样子是"**菜单关了 或 这一屏换了 或 buff 表变了**"，给 2.5 秒慢慢等。
+    ⚠️ `key`（= 那个图标的 `name`，真机 "2"/"3"）是**硬证据**：选对时游戏挂的 buff id 形如
+       `dwarfStatue_<key>` ⇒ 回执据此说"点的就是那个"，而不是"我点了某个坐标"。
+    """
+    if not (isinstance(x, int) and isinstance(y, int)):
+        return "❌ 缺坐标（图标那屏没有 responses，只能按坐标点）"
+
+    def _snap():
+        try:
+            r = api._ai_get("/menu") or {}
+            return (bool(r.get("open")), r.get("type"),
+                    tuple(sorted(((b.get("hoverText") or "").strip()
+                                  for b in (r.get("buttons") or [])))))
+        except Exception:
+            return None
+
+    def _buffs():
+        try:
+            return sorted(((b.get("id") or "") for b in
+                           (((api._ai_get("/state") or {}).get("player") or {}).get("buffs") or [])))
+        except Exception:
+            return []
+
+    before, b0 = _snap(), _buffs()
+    try:
+        r = api._ai_post("/menu/click", {"x": x, "y": y}) or {}
+    except Exception as e:
+        return f"❌ 点不了：{type(e).__name__}: {e}"
+    if not r.get("ok"):
+        return f"❌ 没点上：{r.get('error') or r}"
+    # 轮询等它落地（成功 = 菜单关了 / 这屏换了 / buff 表多了东西）
+    after, b1 = _snap(), _buffs()
+    deadline = time.time() + 2.5
+    while (time.time() < deadline and after is not None and before == after
+           and sorted(set(b1) - set(b0)) == []):
+        time.sleep(0.3)
+        after, b1 = _snap(), _buffs()
+    new_buffs = sorted(set(b1) - set(b0))
+    # 🔎 硬证据：新 buff 里有没有 `<key>` 那一条（真机：icon "3" ⇒ `dwarfStatue_3`）
+    hit_key = bool(key) and any(str(key) in nb for nb in new_buffs)
+    if hit_key:
+        return f"✅ 选了「{key}」号图标（点了 ({x},{y})）—— 游戏挂上新 buff：{'、'.join(new_buffs)}"
+    if after is not None and not after[0]:
+        return (f"✅ 点了 ({x},{y})：选项屏已收起"
+                + (f"；新 buff：{'、'.join(new_buffs)}" if new_buffs else "（⚠️ 没看到新 buff，自己核对一下）"))
+    if new_buffs:
+        return f"✅ 点了 ({x},{y})：新 buff {'、'.join(new_buffs)}（那屏还开着：{after[1] if after else '?'}）"
+    if before is not None and after == before and after[0]:
+        return (f"⚠️ 点了 ({x},{y})，可这一屏**一个字没变**（多半没点中图标）——"
+                f"`/menu` 还报 {after[1]} 开着")
+    return f"⚠️ 点了 ({x},{y})，但**看不出结果**（菜单态 {after}）——别当成了，自己看一眼"
+
+
 def _im_menu_option(option, real=None):
     """🗳 点某个**对话选项**（`/menu/click {option: N[, real]}`）→ 一句话（供 `_receipt_from_helper`）。
 
@@ -24160,6 +24265,33 @@ def _im_menu_data(state: dict) -> dict:
         raw = api._ai_get("/menu") or {}
     except Exception:
         return {}
+    # 🗿 **选择题菜单**（2026-10-04 恒：「**矮人国王雕像是有选项的，按理来说要套一层选择题**」）。
+    #    真机（`SkullCave` (5,4) `Statue Of The Dwarf King`，我站 (5,5) 朝上 interact）那一屏：
+    #      `type: ChooseFromIconsMenu` · `isChoice: true` · **`responses: null`**
+    #      `buttons: [{field:"icons", name:"2", hoverText:"找到煤炭的几率更高。", (504,394)},
+    #                 {field:"icons", name:"3", hoverText:"炸弹无法对你造成伤害。", (776,394)},
+    #                 {field:"iconFronts", name:"", hoverText:"", (388,325)},
+    #                 {field:"iconFronts", name:"", hoverText:"", (660,325)}]`
+    #    ⇒ 三条判据（都是真机抄的，不是推的）：
+    #      ① 内容**只在 `/menu` 里**（`/state.activeMenu` 没有 buttons）⇒ 这一档必须多打一发；
+    #      ② **空 `hoverText` 的是诱饵**（`iconFronts` 那两条是装饰/空位）⇒ 不过滤就会给 AI 一行
+    #         「选 「」」（点了不知道点啥）。**只认有文本的**；
+    #      ③ 那屏**没有 `responses`** ⇒ `option=N` 那条路对它没用，**只能按坐标点**
+    #         （`menu click(x=…, y=…)` → C# `receiveLeftClick(x,y)`，见 `ModEntry.cs:15213`）。
+    if "choosefromicons" in mt.lower():
+        opts = []
+        for b in (raw.get("buttons") or []):
+            ht = (b.get("hoverText") or "").strip()
+            if not ht:
+                continue                                   # ② 诱饵（空文本）一律不要
+            opts.append({"index": len(opts), "text": ht,
+                         # `key` = 那个图标的 `name`（真机是 "2"/"3"）——**回来能验**：
+                         # 选完之后游戏挂的 buff id 是 `dwarfStatue_<key>`（真机实测：
+                         # 点 `name:"3"` ⇒ buff `dwarfStatue_3`）⇒ 消费侧据此确认"点的就是那个"。
+                         "key": b.get("name"), "x": b.get("x"), "y": b.get("y")})
+        if not opts:
+            return {}
+        return {"choose": {"options": opts}}
     # 📧 信件（2026-10-01 · P-menus 第四刀）：**只有 `/menu` 有**（`/state.activeMenu` 里
     #    压根没有 letterTitle/letterBody —— 真机核过）⇒ 这一档必须多打一次。
     if "letterviewer" in (raw.get("type") or mt).lower():

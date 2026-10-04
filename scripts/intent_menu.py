@@ -1076,7 +1076,7 @@ def _statue_show(ctx, t):
 def _statue_reason(ctx, t):
     s = ctx.statue or {}
     names = "、".join(s.get("names") or [])
-    # 📍 带上坐标/距离：2026-10-04 恒「当前图有就报」之后，雕像**可能在图的那一头**（真机 45 格）——
+    # 📍 带上坐标/距离：2026-10-04 恒「当前图有就报」之后，雕像**可能在图的那一头**（真机 42 格）——
     #    不说位置，AI 就不知道这一按要走多远（同"竹筒倒豆"那条：必要信息要主动给）。
     tiles = s.get("tiles") or []
     where = ""
@@ -1084,6 +1084,17 @@ def _statue_reason(ctx, t):
         tx, ty = tiles[0]
         d = max(abs(tx - (ctx.px or 0)), abs(ty - (ctx.py or 0)))
         where = f"｜📍({tx},{ty}) 约 {d} 格"
+    # 🗿 多座雕像时**逐座说清**还能不能摸（各有各的门：祝福=今天摸过没；矮人国王=身上有没有
+    #    `dwarfStatue` buff —— 反编译实据，见 `_im_statue`）——
+    #    ⚠️ 只说一个行级结论会把"哪座还能摸"藏起来（AI 想摸矮人那座就不知道行不行）。
+    st = s.get("statues") or []
+    if len(st) > 1:
+        bits = []
+        for e in st:
+            u = e.get("used_today")
+            mark = "✅还能摸" if u is False else ("❌已用过" if u is True else "？读不到")
+            bits.append(f"{e.get('name')}({e.get('x')},{e.get('y')}) {mark}")
+        return "；".join(bits)
     if s.get("used_today") is None:
         # ⚠️ **读不到就直说读不到**（别印"今天还没摸过"——那是替游戏回答）。
         return f"{names}{where} · ⚠️ 这版 mod 报不出「今天摸过没」"
@@ -2356,9 +2367,21 @@ SKIP_V = Verb("skip_event", "跳过整段", 74, _skip_can, _skip_reason, _skip_s
 # ⚠️ 执行走 `/menu/click {option: N}`（就是状态条一直在教 AI 的那条路），
 #    **不自己发明按键**（`confirm` 选不了选项，那是老坑）。
 def _menu_options(ctx) -> list:
-    """这一刻能选的答案（没有就空）。"""
-    opts = ((ctx.menu_data or {}).get("dialogue") or {}).get("options") or []
-    return [o for o in opts if isinstance(o, dict) and o.get("index") is not None]
+    """这一刻能选的答案（没有就空）——**两档**，都从服务器递进来的 `menu_data` 拿：
+
+    · 💬 **对话选项**（`dialogue.options`）：`index` 就是 C# 点选项用的号（位次即答案号）；
+    · 🗿 **图标选择题**（`choose.options`，2026-10-04 恒：「矮人国王雕像是有选项的，
+      **按理来说要套一层选择题**」）：那屏 `responses` 是 null、**只能按坐标点** ⇒
+      每条带 `kind="choose"` + 自己的 `x/y`（真机那屏还有两个空文本诱饵，服务器已经滤掉）。
+    ⚠️ 两档**共用这一张表**（单子上都印成「选 「…」」）——判据只有一处，执行侧按 `kind` 分岔。
+    """
+    md = ctx.menu_data or {}
+    out = [o for o in ((md.get("dialogue") or {}).get("options") or [])
+           if isinstance(o, dict) and o.get("index") is not None]
+    for o in ((md.get("choose") or {}).get("options") or []):
+        if isinstance(o, dict) and o.get("text"):
+            out.append(dict(o, kind="choose"))
+    return out
 
 
 def _option_can(ctx, t):
@@ -2383,9 +2406,15 @@ def _exec_option(ctx, targets, run):
 
     ⚠️ 别在这儿替它下结论，也别自己拼"键发出去了"那种话（本项目的老账：
        `ok:true` ≠ 事真发生了）。
+    ⚠️ 两档走**两条路**（判据在服务器算好递进来的 `kind` 上，这一层不认菜单类型）：
+       · 💬 对话选项 ⇒ `menu_option {option: N[, real]}`（`real` 判据 = `_question_needs_real`）；
+       · 🗿 图标选择题 ⇒ `menu_icon {x, y}`（那屏没有 responses，只能按坐标点）。
     """
     t = targets[0] if targets else {}
     txt = t.get("text") or "?"
+    if t.get("kind") == "choose":
+        r = run("menu_icon", {"x": t.get("x"), "y": t.get("y"), "key": t.get("key")})
+        return _receipt_from_helper("选", f"「{txt}」", r)
     # 🗳 「要不要 real=true」由**服务器**算好递进来（判据 `_question_needs_real`）——
     #    这一层**不自己认框种类**（猜错就是静默点空，真机 2026-10-01 当场照过一次）。
     _d = (ctx.menu_data or {}).get("dialogue") or {}

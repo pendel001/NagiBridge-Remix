@@ -175,7 +175,7 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
           silo=None, troughs=None, trough_filled=0, trough_raise=False,
           surr_tiles=None, trash_cans=None, cola=None, npcs=None, nuts=None,
           trash_checked=None, pet_bowls=None, passable_ret=None, ai_xy=None,
-          statues=(), blessed=None, ponds=None):
+          statues=(), blessed=None, ponds=None, buffs=None):
     CALLS.clear()
     WALK_CALLS.clear()
     # 🚶 "我"站哪格：默认照 `STATE`（(12,12)），用例要"人已经站在棚门口"就传 `ai_xy=`。
@@ -223,11 +223,15 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
         # 💰 用例要"买不起/砸不起"就传 money=0（`_geode_can` 用 `ctx.money` 判 25g/颗）
         state = dict(state, player=dict(state.get("player") or {}, money=money))
     if blessed is not None:
-        # 🗿 2026-10-04：`/state.player.blessedByStatueToday`（**游戏自己的**"今天摸过雕像没"，
+        # 🗿 2026-10-04：`/state.player.blessedByStatueToday`（**游戏自己的**"今天摸过祝福雕像没"，
         #    `Farmer.hasBeenBlessedByStatueToday`）。`blessed=None`（默认）⇒ **不吐这个键**
-        #    = **老 DLL 的形状** ⇒ "键在不在"就是"这版报不报得出"的判据（同 `trash_checked`）。
+        #    = **老 DLL 的形状**（同 `trash_checked`）。
         state = dict(state, player=dict(state.get("player") or {},
                                         blessedByStatueToday=blessed))
+    if buffs is not None:
+        # 🗿 矮人国王雕像的门是 **buff**（`dwarfStatue`），不是"每天一次"（反编译实据）⇒
+        #    用例要能喂 buff 表（`[{"id": "dwarfStatue_3", …}]`）。
+        state = dict(state, player=dict(state.get("player") or {}, buffs=buffs))
     if chore_animals is None:
         _animals_fixture = ANIMALS
     elif isinstance(chore_animals, list):
@@ -2448,6 +2452,91 @@ def main():
     _stub(loc="Farm")                           # 本图没有 Statue 类机器
     res.append(ok("🗿 服务器那层：本图没有雕像 ⇒ 账为空 `{}`（那行不出现）",
                   M._im_ctx().statue == {}, M._im_ctx().statue))
+    # 🗿⚠️ **两座雕像的门不是一个**（2026-10-04 反编译 `Object.checkForAction` + 真机双向核实）：
+    #    · 祝福雕像 ⇒ `Farmer.hasBeenBlessedByStatueToday`；
+    #    · 矮人国王 ⇒ `!who.hasBuffWithNameContainingString("dwarfStatue")` —— **buff 门、
+    #      不是"每天一次"**（buff 过期就又能摸）。
+    #    真机实证：先摸祝福（那位=True）之后矮人国王**照样弹菜单给 buff**；
+    #    ⇒ 拿祝福那位去拦矮人 = **白拦**（会把还能摸的那行藏掉）。
+    _DK = {"type": "Statue Of The Dwarf King", "x": 5, "y": 4, "location": "SkullCave"}
+    _stub(loc="SkullCave", machines=[_DK], blessed=True,
+          buffs=[{"id": "dwarfStatue_3", "name": "矮人之王雕像"}])
+    res.append(ok("🗿 矮人国王：身上**还挂着 `dwarfStatue` buff** ⇒ 已用过（那行不给）",
+                  M._im_ctx().statue.get("used_today") is True, M._im_ctx().statue))
+    _stub(loc="SkullCave", machines=[_DK], blessed=True)     # 祝福那位 True、但**没有** dwarf buff
+    _c_dk = M._im_ctx().statue
+    res.append(ok("🗿 矮人国王：**祝福那位是 true 也照样给行**（它不吃那个门 —— 真机实证）",
+                  _c_dk.get("used_today") is False, _c_dk))
+    _stub(loc="SkullCave", machines=[_DK, {"type": "Statue Of Blessings", "x": 7, "y": 7,
+                                           "location": "SkullCave"}],
+          blessed=False, buffs=[{"id": "dwarfStatue_3"}])
+    _c_two = M._im_ctx().statue
+    res.append(ok("🗿 两座同图：**只要还有一座能摸就给行**（矮人用过、祝福没过 ⇒ `used_today=False`）",
+                  _c_two.get("used_today") is False and len(_c_two.get("statues") or []) == 2, _c_two))
+    # 🗿 **图标选择题**（矮人国王雕像那屏，2026-10-04 恒：「按理来说要套一层选择题」）
+    #    真机那屏（`SkullCave` (5,4)，我站 (5,5) 朝上）：`responses: null`、
+    #    2 个真有文字的图标 + **2 个空文本诱饵**（`iconFronts`）。
+    _ICON = {"ok": True, "open": True, "type": "ChooseFromIconsMenu", "isChoice": True,
+             "responses": None,
+             "buttons": [{"field": "icons", "name": "2", "hoverText": "找到煤炭的几率更高。",
+                          "x": 504, "y": 394},
+                         {"field": "icons", "name": "3", "hoverText": "炸弹无法对你造成伤害。",
+                          "x": 776, "y": 394},
+                         {"field": "iconFronts", "name": "", "hoverText": "", "x": 388, "y": 325},
+                         {"field": "iconFronts", "name": "", "hoverText": "", "x": 660, "y": 325}]}
+    _stub(menu="ChooseFromIconsMenu", menu_raw=_ICON)
+    _md = M._im_menu_data(dict(STATE, activeMenu={"type": "ChooseFromIconsMenu"}))
+    _opts = ((_md.get("choose") or {}).get("options")) or []
+    res.append(ok("🗿 图标菜单摊成数据：**只认有文字的图标**（诱饵滤掉）",
+                  [o["text"] for o in _opts] == ["找到煤炭的几率更高。", "炸弹无法对你造成伤害。"],
+                  _md))
+    res.append(ok("🗿 每条带 `key`（图标 name）+ 坐标 —— 回来能验「点的就是那个」",
+                  bool(_opts) and _opts[1].get("key") == "3"
+                  and (_opts[1].get("x"), _opts[1].get("y")) == (776, 394), _opts[:1]))
+    _ictx = _Ctx(menu_data=_md)
+    _irows = M.intent_menu._menu_options(_ictx)
+    res.append(ok("🗿 单子那层：两条都成行、且标了 `kind=choose`（执行侧据此分岔）",
+                  len(_irows) == 2 and all(r.get("kind") == "choose" for r in _irows), _irows))
+    _icall = {}
+    M.intent_menu._exec_option(_ictx, [_irows[1]], lambda k, a: _icall.update(key=k, args=a) or "✅ 选了")
+    res.append(ok("🗿 敲下去走 `menu_icon{x,y,key}`（那屏没有 responses，`option=N` 对它没用）",
+                  _icall.get("key") == "menu_icon"
+                  and _icall.get("args") == {"x": 776, "y": 394, "key": "3"}, _icall))
+    res.append(ok("🗿 提示语：选项摊成行 ⇒ **不再叫它 `menu read`**，并说清没有右上角关闭键",
+                  "menu read" not in M._close_hint("ChooseFromIconsMenu", content_on_sheet=True)
+                  and "关掉界面" in M._close_hint("ChooseFromIconsMenu", content_on_sheet=True),
+                  M._close_hint("ChooseFromIconsMenu", content_on_sheet=True)))
+    res.append(ok("🗿 摊不出来（老 DLL / 读不到）⇒ **退回** `menu read`（那是真路）",
+                  "menu read" in M._close_hint("ChooseFromIconsMenu", content_on_sheet=False)))
+    # 🔎 点的回读：**必须轮询**（真机假警报：0.6s 时那屏还开着、1s 后已关且 buff 挂上，
+    #    我却按"这一屏没变"报了 ⚠️）⇒ 成功的样子 = 菜单关了 / 这屏换了 / buff 表多了东西。
+    _seq = {"n": 0}
+    _buf = [[]]
+
+    def _g2(ep, params=None):
+        if ep == "/menu":
+            _seq["n"] += 1
+            if _seq["n"] <= 2:
+                return dict(_ICON)
+            return {"ok": True, "open": False, "type": None, "buttons": []}
+        if ep == "/state":
+            return dict(STATE, player=dict(STATE.get("player") or {}, buffs=_buf[0]))
+        return {}
+
+    def _p2(ep, data=None):
+        if ep == "/menu/click":
+            _buf[0] = [{"id": "dwarfStatue_3", "name": "矮人之王雕像"}]
+            return {"ok": True, "clicked": "position", "x": (data or {}).get("x"), "y": (data or {}).get("y")}
+        return {"ok": True}
+
+    _og, _op = M.api._ai_get, M.api._ai_post
+    M.api._ai_get, M.api._ai_post = _g2, _p2
+    try:
+        _msg_icon = M._im_menu_icon(776, 394, "3")
+    finally:
+        M.api._ai_get, M.api._ai_post = _og, _op
+    res.append(ok("🗿 点图标：**等它落地再判**（0.6s 那下没变不算失败）+ 用 buff id 说清点了哪个",
+                  "✅" in _msg_icon and "dwarfStatue_3" in _msg_icon, _msg_icon))
     # 🗿 理由栏要带坐标/距离（远的那座雕像：不说位置 AI 不知道要走多远）
     _st_ctx_far = _Ctx(px=53, py=58, statue={"names": ["Statue Of Blessings"],
                                              "tiles": [[74, 16]], "used_today": False})

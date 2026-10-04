@@ -114,13 +114,26 @@ def wait_arrive(tx, ty, timeout=20.0, exact=False):
     return False, f"{timeout:.0f}s 没到（停在 ({x},{y})，目标 ({tx},{ty}){'，要精确' if exact else ''}）"
 
 
+def _buffs():
+    try:
+        return [str((b or {}).get("id") or "")
+                for b in ((get("/state").get("player") or {}).get("buffs") or [])]
+    except Exception:
+        return []
+
+
 def touch(sx, sy, name):
     """走到雕像**正旁那一格** → 面向它 → 交互 → **回读游戏那一位**。
 
     站点候选：下(朝上0) / 上(朝下2) / 右(朝左3) / 左(朝右1) —— 每个都要求**精确站位**。
-    成功判据（照"按了就成"的规矩，**不许拿"我发过请求"当成功**）：
-      · `actionTriggered=true` **且** `facingTile` 就是雕像那一格；**或**
-      ·（新 DLL）`/state.player.blessedByStatueToday` 变成 `true` —— **游戏自己说的**。
+    ⚠️⚠️ **两座雕像的门不是一个**（2026-10-04 反编译 `Object.checkForAction` + 真机双向核实）：
+      · `Statue Of Blessings` ⇒ `Farmer.hasBeenBlessedByStatueToday`（每天重置）；
+      · `Statue Of The Dwarf King` ⇒ **"身上没有 `dwarfStatue` buff"**
+        （`else if (!who.hasBuffWithNameContainingString("dwarfStatue")) 弹 ChooseFromIconsMenu`）
+        ⇒ **buff 门**、不是"每天一次"（buff 过期就又能摸）。
+      真机实证：先摸了祝福雕像（`blessedByStatueToday=True`）之后，矮人国王**照样弹菜单给 buff**；
+      摸过之后复摸 ⇒ `triggered=true` 却**不弹菜单**（buff 还在）。
+      ⇒ 拿 `blessedByStatueToday` 拦矮人国王 = **白拦**（这正是我上一版写的错）。
     返回 (ok, teleported, why)。
     """
     here = ""
@@ -131,10 +144,14 @@ def touch(sx, sy, name):
         b0 = (st0.get("player") or {}).get("blessedByStatueToday")
     except Exception:
         pass
-    # ⚠️⚠️ 2026-10-04 真机（第二次同族假成功）：**"游戏那位本来就是 true"不许算成功** ——
-    #    那说明**今天已经有人摸过**（单子那行的门禁就是 `used_today is not True`，正常轮不到），
-    #    这一发其实什么都没做。成功必须是"**我这下把它从 false 变成 true**"或 `hit`。
-    if b0 is True:
+    _is_dwarf = ("Dwarf King" in (name or "")) or ("矮人" in (name or ""))
+    if _is_dwarf:
+        if any("dwarfStatue" in b for b in _buffs()):
+            return False, False, ("已经用过了（身上还挂着 `dwarfStatue` buff —— "
+                                  "游戏的门就是这个 buff，不是「每天一次」）")
+    elif b0 is True:
+        # ⚠️⚠️ 2026-10-04 真机（第二次同族假成功）：**"游戏那位本来就是 true"不许算成功** ——
+        #    那说明今天已经摸过（单子那行的门禁就是它），这一发其实什么都没做。
         return False, False, "今天已经摸过了（`blessedByStatueToday` 本来就是 true）—— 这一下没触发，不报成功"
     cands = [((sx, sy + 1), 0), ((sx, sy - 1), 2), ((sx + 1, sy), 3), ((sx - 1, sy), 1)]
     why = "四个站位都没站到"
@@ -159,20 +176,32 @@ def touch(sx, sy, name):
         r = post("/interact", {})
         ft = r.get("facingTile") or {}
         hit = bool(r.get("actionTriggered")) and ft.get("x") == sx and ft.get("y") == sy
+        time.sleep(0.8)
         blessed = None
         try:
             blessed = (get("/state").get("player") or {}).get("blessedByStatueToday")
         except Exception:
             pass
+        menu_open = False
+        try:
+            menu_open = bool((get("/menu") or {}).get("open"))
+        except Exception:
+            pass
+        dwarf_new = (not _is_dwarf) or any("dwarfStatue" in b for b in _buffs())
         log(f"  🗿 站 ({px},{py}) 朝 {face_dir} → interact：triggered={r.get('actionTriggered')} "
             f"facing=({ft.get('x')},{ft.get('y')}) object={r.get('object')} "
-            f"blessedByStatueToday={blessed}")
-        if hit or blessed is True:
+            f"blessedByStatueToday={blessed} 菜单={menu_open} dwarfBuff={dwarf_new}")
+        # ✅ 成功 = **打中那格**（`hit`）**且**有游戏侧的证据：
+        #    祝福雕像 ⇒ 那位翻 true；矮人国王 ⇒ **弹了菜单**或 buff 挂上（它不走那位）。
+        if _is_dwarf:
+            if hit and (menu_open or dwarf_new):
+                return True, False, f"站 ({px},{py}) 朝 {face_dir}，弹菜单={menu_open}、dwarfBuff={dwarf_new}"
+        elif hit or blessed is True:
             return True, False, f"站 ({px},{py}) 朝 {face_dir}，游戏那位={blessed}"
         # ⚠️ 打空了就**换下一个站位**，绝不在这儿报成功（真机：斜角站位 ⇒ triggered=False）
-        why = (f"站在 ({px},{py}) 朝 {face_dir} 打空了"
+        why = (f"站在 ({px},{py}) 朝 {face_dir} 打空了/没反应"
                f"（triggered={r.get('actionTriggered')}，facing=({ft.get('x')},{ft.get('y')})，"
-               f"游戏那位还是 {blessed}）")
+               f"菜单={menu_open}，游戏那位还是 {blessed}）")
     # 兜底：真走位都不成 ⇒ 落到雕像正下方（**如实报**，不偷偷干）—— 同 pet_walk 的口径
     try:
         px, py = sx, sy + 1
@@ -190,6 +219,15 @@ def touch(sx, sy, name):
             pass
         log(f"  ⚠️ 走位没成功 ⇒ 用 `/position` 落到 ({px},{py}) 再摸（**这一下不是拟人**，如实报）"
             f"：triggered={r.get('actionTriggered')} blessedByStatueToday={blessed}")
+        # ⚠️ 判据跟主路**同一套**（矮人国王不看那位、看菜单/`dwarfStatue` buff）
+        if _is_dwarf:
+            _mo = False
+            try:
+                _mo = bool((get("/menu") or {}).get("open"))
+            except Exception:
+                pass
+            _db = any("dwarfStatue" in b for b in _buffs())
+            return (hit and (_mo or _db)), True, f"/position 兜底落到 ({px},{py})，菜单={_mo} dwarfBuff={_db}"
         return (hit or blessed is True), True, f"/position 兜底落到 ({px},{py})，游戏那位={blessed}"
     except Exception as e:
         return False, False, f"连兜底落点都失败：{e}（{why}）"
@@ -231,39 +269,25 @@ def main():
         return
     log(f"✅ 摸到雕像 {name}（{why}{'｜含一次 /position 兜底' if teleported else '｜全程真走位'}）")
 
-    # 选效果：读菜单图标选项，优先免疫炸弹（"无法对你造成伤害"）
+    # 🗿 **选择题交给单子**（2026-10-04 恒：「矮人国王雕像是有选项的，**按理来说要套一层选择题**」）
+    #    ⇒ 这一层**不再替 AI 挑**（老行为是"优先炸弹免疫/梯子，否则第一个"——那是替 AI 做决定；
+    #      而且这屏真机有一半是**空文本诱饵**（`iconFronts`），挑错了外面看不出来）。
+    #    现在：**把选项原样报出来 + 菜单留着**，`intent show` 会把它摊成「选 「…」」那几行
+    #    （那是这套系统里唯一该做决定的地方）。
     try:
         m = get("/menu")
         if m and m.get("open") and m.get("type") == "ChooseFromIconsMenu":
-            icons = [b for b in (m.get("buttons") or []) if b.get("hoverText")]
-            for b in icons:
-                log(f"  选项: {b.get('hoverText')} @ ({b.get('x')},{b.get('y')})")
-            # 优先免疫炸弹
-            pick = None
-            for b in icons:
-                ht = (b.get("hoverText") or "")
-                if "无法对你造成伤害" in ht or "炸弹" in ht:
-                    pick = b
-                    break
-            if pick is None:
-                # 其次找梯子/竖井
-                for b in icons:
-                    if "梯子" in (b.get("hoverText") or ""):
-                        pick = b
-                        break
-            if pick is None and icons:
-                pick = icons[0]
-            if pick:
-                # ⚠️ 2026-09-26：原来没带 `no_move` ⇒ `/click` 会先 `setMousePosition` **拽走恒的光标**
-                #   （恒：「献祭那个强切前台+鼠标漂移」—— 拽光标 + 他正好在点 ⇒ 点到游戏窗口 ⇒ 窗口被顶到最前）。
-                #   `ChooseFromIconsMenu` 不在"真读 Game1.getMouseX"的名单里（decomp grep 实查）⇒ 不用挪光标。
-                post("/click", {"x": pick["x"], "y": pick["y"], "no_move": True})
-                time.sleep(1.0)
-                log(f"✅ 选了: {pick.get('hoverText')}")
-            else:
-                log("  ⚠️ 没找到可选项")
+            icons = [b for b in (m.get("buttons") or []) if (b.get("hoverText") or "").strip()]
+            log(f"  🗿 弹了选项菜单（{m.get('type')}）—— **这一步交给单子**，我没替你选")
+            for i, b in enumerate(icons, 1):
+                log(f"     {i}. 「{(b.get('hoverText') or '').strip()}」")
+            if not icons:
+                log("     ⚠️ 一个带文字的图标都没有（全是诱饵）—— 那只能关掉界面")
+            log("  🔎 下一步：`intent show` → 敲「选 「…」」那一行的号（这屏没有右上角关闭键）")
+        elif m and m.get("open"):
+            log(f"  ℹ️ 还开着别的界面（{m.get('type')}）—— 我没动它")
     except Exception as e:
-        log(f"  ⚠️ 选效果失败: {e}")
+        log(f"  ⚠️ 读菜单失败: {e}")
 
 
 if __name__ == "__main__":

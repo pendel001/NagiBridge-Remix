@@ -18980,7 +18980,10 @@ public class ModEntry : Mod
 
     /// <summary>
     /// ⚠️ /water_area 已删除（2026-08-15 恒：直接改 dirt.state 是作弊，会误导 AI）。
-    /// 浇水一律 tool_area 蓄力 + 逐锚点/余数兜底（position+DoFunction 真浇），无直接改地块路径。
+    /// 浇水一律 tool_area 蓄力 + 逐锚点（`position`/`DoFunction` 真浇）——
+    /// 🚫 **2026-10-04 恒拍板：水的"补漏直写"也删了**（原来 `PatchMissingOnMain` 的水分支仍是
+    ///    `wdirt.state.Value = 1`，恒两次抓到"咔嚓一下全改了"）⇒ 现在水的漏格**只报不改**
+    ///    （`still_missing` 回给 Python，让它打水/换锚点再浇）。锄地那条补漏仍在（造土没有别的路）。
     /// </summary>
 
     /// <summary>
@@ -19229,7 +19232,7 @@ public class ModEntry : Mod
             //    不挥壶、不费水、不走位。补漏的定位是"把游戏该做却漏掉的零星几格补上"（2026-09-03 恒：调体力），
             //    **不是"替 AI 把没水可浇的地全浇了"**。壶空时该做的事是**如实报剩多少格**，
             //    让 Python 去打水、回来拿同一块矩形再浇一遍（矩形过滤只挑"还没浇的"，幂等）。
-            if (completed && !_toolAreaOutOfWater && (operation == "till" || operation == "water"))
+            if (completed && !_toolAreaOutOfWater && operation == "till")
             {
                 for (int round = 0; round < 4; round++)
                 {
@@ -19484,11 +19487,20 @@ public class ModEntry : Mod
                 }
                 else // water
                 {
-                    if (loc.terrainFeatures.TryGetValue(vec, out var wtf) && wtf is HoeDirt wdirt)
-                    {
-                        wdirt.state.Value = 1;
-                        patched = true;
-                    }
+                    // 🚫🚫 **2026-10-04 恒拍板：水的补漏直写整段删掉**（原代码是
+                    //   `if (loc.terrainFeatures.TryGetValue(vec, out var wtf) && wtf is HoeDirt wdirt)
+                    //        { wdirt.state.Value = 1; patched = true; }`）。
+                    //   为什么删：
+                    //     ① **它是"作弊"观感的唯一来源**：不挥壶、不费水、不走位，直接改地块
+                    //        —— 恒 09-23 真机抓到过（"浇了一会儿**咔嚓一下全改了**、人不浇了"），
+                    //        2026-10-04 又问了一次"什么时候又变成了作弊瞬间改整片浇水"。
+                    //     ② **判据本身也不该由它来兜**：`water` 的漏格要么是**锚点几何**没盖到
+                    //        （那就该修几何 / 换锚点再浇一次），要么是**壶空了**（`_toolAreaOutOfWater`
+                    //        ⇒ Python 去打水、拿同一块矩形重浇，天然幂等）。
+                    //     ③ 脚本那层早就写好了"还剩几格没浇上"的**如实报**（`still_missing`）。
+                    //   ⇒ 现在水的漏格**只报不改**：`still_missing` 原样回给 Python。
+                    //   锄地那条**留着**（`terrainFeatures[vec] = new HoeDirt()`）：造土没有别的路，
+                    //   且它有两道门（Diggable + IsTileBlockedBy，见上面那段）。
                 }
             }
             catch (Exception) { }
