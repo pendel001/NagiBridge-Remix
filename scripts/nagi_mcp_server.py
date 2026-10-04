@@ -23320,15 +23320,27 @@ def _im_chores(state: dict, surr: dict, animals: dict) -> dict:
         _ore = {}
     # 🥇 2026-10-04 恒：「**淘金检查确保一下只有手上有各种级别的陶盘（或者头上，陶盘可以放帽子栏）才报**」
     #    ⇒ 判据从"背包里有锅"(`hasPan`) 收紧成 **在手 / 戴头上** 两种"立刻能淘"的状态。
-    #    ⚠️ 为什么收：旧判据下**锅躺在背包里**也会给这行，而理由栏却硬写「铜锅在手」（假话，
-    #      真机在镇上那条就是这么印的）；而且拟人上"手里没锅却能淘"本来就不对。
-    #    ⚠️ 头上那半是**按名字判**的（`/state.player.hat`）：锅能戴帽栏，戴上后名字仍带
-    #      `Pan`/`淘盘`。真机我只验过"在手"那半（没条件把锅戴上）——若哪天戴上了它不报，加 C# 字段。
+    #    ✅ **"戴头上"是真机坐实的**（恒两张截图 + `/worn` 一手数据）：轮回头上那个就是锅，
+    #       `/worn` 回 `hat: "Copper Pan"` —— 原版确实能把锅戴进帽子栏。
+    #    ⚠️⚠️ **我上一版读的是 `/state.player.hat`，而 `/state` 压根没有这个键** ⇒ 判据永远 None
+    #       （假绿灯：写了个永远为假的检测）。**正确来源是现成的 `GET /worn`**（`HandleWorn`，
+    #       `ModEntry.cs:6872`，报 hat/shirt/pants/boots/rings/trinket）。
+    #       ⇒ 只有"有闪光点但没拿在手上"这种少见情形才去问一次（常态零额外 HTTP）。
+    #    ⚠️ 判据用**名字**（`Pan/淘盘/盘`）而不是 `is Pan`：`Farmer.hat` 是 `NetRef<Hat>`
+    #       （`Farmer.cs:508`），戴进去的那件在游戏侧是个 Hat（名字仍是 "Copper Pan"）
+    #       ⇒ 按类型判会漏，按名字判才对。恒平时那顶「Forager's Hat」不含这些字，不会误报。
     if _ore.get("hasGlint"):
-        _pl = ((state or {}).get("player") or {})
-        _hat = str(_pl.get("hat") or "")
-        _how = ("在手" if _ore.get("panInHand")
-                else ("戴头上" if any(k in _hat for k in ("Pan", "淘盘", "盘")) else ""))
+        _how = ""
+        if _ore.get("panInHand"):
+            _how = "在手"
+        else:
+            try:
+                _worn = (api._ai_get("/worn") or {}).get("worn") or {}
+                _hat = str(_worn.get("hat") or "")
+            except Exception:
+                _hat = ""
+            if _hat and any(k in _hat for k in ("Pan", "淘盘", "盘")):
+                _how = "戴头上"
         if _how:
             out["pan"] = {"x": _ore.get("x"), "y": _ore.get("y"), "how": _how}
     # ── 🐮🐑 本图能挤能剪（`/animals` 的 productReady）──

@@ -224,10 +224,7 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
     # 🌿 六件"顺手活"（P1 那批）的料：`/state.player.orePan` + 追加的采集格
     if ore_pan is not None:
         state = dict(state, player=dict(state.get("player") or {}, orePan=ore_pan))
-    if hat is not None:
-        # 🥇 2026-10-04：淘金那半"锅戴在头上"的判据读的是 **`/state.player.hat`**（不是一个
-        #    `orePan` 里的字段）⇒ 夹具得能单独塞它，不然这条用例测的是空气。
-        state = dict(state, player=dict(state.get("player") or {}, hat=hat))
+    # 🥇 2026-10-04：`hat=` 这个参数由上面 `_ai_get` 的 `/worn` 分支消费（**不再塞进 player**）。
     if money is not None:
         # 💰 用例要"买不起/砸不起"就传 money=0（`_geode_can` 用 `ctx.money` 判 25g/颗）
         state = dict(state, player=dict(state.get("player") or {}, money=money))
@@ -286,6 +283,11 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
             if pet_bowls is not None:
                 _r["bowls"] = _bl
             return _r
+        if ep == "/worn" and hat is not None:
+            # 🥇 2026-10-04：只有用例**显式**传 `hat=` 时才改这一格；**形状照 `WORN` 那本真夹具**
+            #    （`{"worn": {shirt/pants/hat/boots/…}}`）——别另造一个精简形状，
+            #    否则会罩住下面 `"/worn": WORN` 那条、把「拼进 ctx」的用例打红（第一版就这么红的）。
+            return {"ok": True, "worn": {**((WORN or {}).get("worn") or {}), "hat": hat}}
         if ep == "/crab_pots":
             # 🦀 真回包形状：`{ok, count, location, pots:[{...readyForHarvest...}]}`
             return {"ok": True, "count": crab_ready, "location": "Farm",
