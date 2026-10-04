@@ -316,6 +316,22 @@ class Ctx:
     health: int = 0
     max_health: int = 0
     max_stamina: int = 0
+    # 🗿 **这一刻"能不能去摸雕像"**（2026-10-04 恒拍板 (b)：单子上要有摸雕像那行）。
+    #    `{}` = **本场景没有雕像**（那行不出现 —— 待办语义，同「捡」那行）。
+    #    有值时形如 `{"names": ["Statue Of Blessings"], "used_today": False}`：
+    #      · `names` = 雕像的**游戏内部名**（不编中文译名：那是会烂的名单）；
+    #      · `used_today` = **今天摸过没**，`None` = **这版 DLL 报不出来**（消费侧给 MAYBE）。
+    #    ⚠️ **由服务器算好递进来**（`_im_statue`：`/surroundings` 的 object 层 + `/state.player.
+    #       blessedByStatueToday`）—— 这一层是**纯函数**，`can()` 不许打 HTTP（同 `caps`/`doors`/
+    #       `chores`），也**不许自己抄一份"哪些雕像算数"**：那个判据只有一处（`blessing_statue.py`
+    #       扫的也是它，脚本是唯一的执行器）。
+    statue: dict = field(default_factory=dict)
+    # 🐟 **鱼塘里等着领的产出**（2026-10-04 恒：鱼塘产出也上单子）。
+    #    `{}` = 不该给行（**不在农场** / 读不到 —— 两者在这一层都没行可出）；
+    #    有值形如 `{"ready": [{"x": 12, "y": 30, "output": "鲑鱼子"}], "total": 3}`。
+    #    ⚠️ **由服务器算好递进来**（`_im_ponds` → `_fetch_fish_ponds()`，跟晨报/`farm ops=pond`
+    #       同一份）—— 这一层不打 HTTP、也不自己算"哪座塘有货"。
+    ponds: dict = field(default_factory=dict)
 
     def zh_of(self, name: str) -> str:
         return (self.zh or {}).get(name) or name
@@ -1017,6 +1033,100 @@ def _exec_water(ctx, targets, run):
     r = run("water", {})
     return _receipt_from_helper("浇水", "当前图上有作物的干格", r,
                                 planned=f"{len(targets)} 格该浇")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 🗿 摸雕像 / 🐟 收鱼塘产出 —— 2026-10-04 接线
+# ═══════════════════════════════════════════════════════════════════
+# 两条都是**情境行**（`target="world"`）：问的是"这一刻这个处境下有没有这件事"，
+# 不指某一格 —— 同 `摸 猫狗` / `摸 还没摸的动物`。
+#   · 🗿 **雕像**：场上有没有（`ctx.statue`）＋ 今天摸过没（`used_today`）。
+#     ⚠️ 判据的**作者**是游戏自己（`Farmer.hasBeenBlessedByStatueToday`，每天重置）——
+#        恒 2026-10-04 拍板 (b)：**别拿提醒器的 `shown` 冒充它**（那个一调就把当天提醒吃掉）。
+#        老 DLL 没这个字段 ⇒ `None` ⇒ **MAYBE**（宁可不给"按了就成"的假承诺）。
+#   · 🐟 **鱼塘**：产出就绪的塘（`ctx.ponds["ready"]`，`output` 非空）。
+#     执行是**逐塘**（每座塘一个坐标、走过去交互），所以 `batch=True` 印 `×N` 是**真承诺**。
+
+def _statue_can(ctx, t):
+    """🗿 摸雕像：**场上有雕像** 且 **今天还没摸过**。
+
+    三档（跟全表一套）：没有雕像 ⇒ ❌；`used_today is None`（老 DLL）⇒ **MAYBE**；
+    没摸过 ⇒ ✅；摸过了 ⇒ ❌（那行的意义就是"今天这一次"，摸完就该消失）。
+    """
+    s = ctx.statue or {}
+    if not s.get("names"):
+        return CAN_NO
+    if s.get("used_today") is True:
+        return CAN_NO
+    return CAN_MAYBE if s.get("used_today") is None else CAN_YES
+
+
+def _statue_show(ctx, t):
+    return "摸 雕像"
+
+
+def _statue_reason(ctx, t):
+    s = ctx.statue or {}
+    names = "、".join(s.get("names") or [])
+    if s.get("used_today") is None:
+        # ⚠️ **读不到就直说读不到**（别印"今天还没摸过"——那是替游戏回答）。
+        return f"{names} · ⚠️ 这版 mod 报不出「今天摸过没」"
+    return f"{names} · 今天还没摸过（摸一次给祝福，每天一次）"
+
+
+def _exec_statue(ctx, targets, run):
+    """🗿 走现成的 `blessing_statue`（它自己找雕像 → 走过去 → 交互 → 弹选项就选）。
+
+    ⚠️ 回执**用它自己的话**（`_receipt_from_helper`）—— 那里面连"选了哪个祝福"都是它报的，
+       这一层重拼一遍就是把它那层复核丢掉。
+    """
+    names = "、".join((ctx.statue or {}).get("names") or [])
+    r = run("statue", {})
+    return _receipt_from_helper("摸雕像", names, r)
+
+
+def _pond_can(ctx, t):
+    """🐟 收鱼塘产出：**有塘且那座塘有产出**才给行（`{}` = 不在农场/读不到 ⇒ 没行）。"""
+    return CAN_YES if (ctx.ponds or {}).get("ready") else CAN_NO
+
+
+def _pond_show(ctx, t):
+    return "收 鱼塘产出"
+
+
+def _pond_reason(ctx, t):
+    """理由 = **产出是什么** + **哪几座塘**（AI 要知道这一按会走哪几处）。"""
+    ready = (ctx.ponds or {}).get("ready") or []
+    cnt = {}
+    for p in ready:
+        k = p.get("output") or "产出"
+        cnt[k] = cnt.get(k, 0) + 1
+    outs = "、".join(f"{k}×{v}" for k, v in sorted(cnt.items(), key=lambda x: -x[1]))
+    where = "、".join(f"({p.get('x')},{p.get('y')})" for p in ready)
+    total = (ctx.ponds or {}).get("total")
+    extra = f"（本档 {total} 座塘）" if isinstance(total, int) and total > len(ready) else ""
+    return f"{outs} · 塘 {where}{extra}"
+
+
+def _exec_pond(ctx, targets, run):
+    """🐟 **逐塘**领产出：每座一个坐标 → `pond_collect`（走位 + 交互 + **回读产出没了没**）。
+
+    ⚠️ 逐条报（同「取/存」那两条的规矩）：**不许整批报成功**，也不许把计划数当结果数 ——
+       成了几座由每一发自己的回读来说（`_pond_collect` 的 ✅/⚠️ 就是它的回读结论）。
+    ⚠️ 它**不另写 HTTP**：走位那一套在 `_pond_do_interact` 里（只有一处）。
+    """
+    ready = (ctx.ponds or {}).get("ready") or []
+    lines, ok_n = [], 0
+    for p in ready:
+        out = p.get("output") or "产出"
+        r = run("pond_collect", {"x": p.get("x"), "y": p.get("y")}) or {}
+        st = r.get("st") or ("yes" if r.get("ok") else "no")
+        if st == "yes":
+            ok_n += 1
+        # ⚠️ 它自己的话**原样带出来**（多行压成一行只为省屏，一个字都没删）。
+        txt = " ".join(str(r.get("text") or r.get("error") or r).split())
+        lines.append(f"  · ({p.get('x')},{p.get('y')}) {out} —— {_MARK.get(st, '❌')} {txt}")
+    return render_receipt("收鱼塘产出", f"{len(ready)} 座", ok_n > 0, note="\n".join(lines))
 
 
 def _held_name(slot) -> str:
@@ -3164,6 +3274,19 @@ VERBS: list = [
     Verb("water", "浇水", 86, _water_can, _water_reason, _water_show, "tile",
          exec=_exec_water, merge=True, batch=True,
          reason_many=_water_reason_many),
+    # 🐟 2026-10-04 恒：鱼塘产出上单（`ponds` = 服务器递进来的"哪几座塘有货"）。
+    #    **情境行**（`world`）：塘不在 `/surroundings` 的瓦片上（是 Building），逐格目标凑不出来；
+    #    执行走 `pond_collect` **逐塘**（每座一个坐标）⇒ `batch=True` 印 `×N` 是真承诺。
+    #    权重 82：压在 箱子(80) 之上、摸动物(84)/浇水(86) 之下 —— 它是**真动作**（不是目录行），
+    #    而且**只在有货时出现**，不会常驻占位。
+    Verb("pond", "收 鱼塘产出", 82, _pond_can, _pond_reason, _pond_show, "world",
+         exec=_exec_pond),
+    # 🗿 2026-10-04 恒拍板 (b)：摸雕像上单（判据 = 场上有雕像 + **游戏自己的**
+    #    `blessedByStatueToday`，见上面 `_statue_can` 那段）。
+    #    权重 56：**顺手活那一档的最低**（苔藓 58 之下、吃 50 之上）—— 它一天只有一次、
+    #    摸完当天就消失，所以**不该挤掉农活**；但也不埋进"还有 N 项"里（下矿前值得看一眼）。
+    Verb("statue", "摸 雕像", 56, _statue_can, _statue_reason, _statue_show, "world",
+         exec=_exec_statue),
     # ⛔ **「锄」2026-09-29 摘掉了，别再往上加**（恒拍板，理由比"它没用"重要得多）：
     #    > 「这种需要 AI 参与规划的行为，还是让它自己调我们的原路线吧。不然你给了它锄，
     #    >  它可能反而会觉得：哦，第一眼给我返回了这个。然后锄一大块地，全靠自己走位
@@ -4245,7 +4368,8 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
              menu_exit: str = "", menu_hint: str = "", menu_claim: str = "", worn: dict = None,
              menu_data: dict = None, reforge: dict = None, mwork: dict = None,
              doors: dict = None, chores: dict = None, clint_open: bool = False,
-             hay: dict = None, pick: dict = None) -> Ctx:
+             hay: dict = None, pick: dict = None,
+             ponds: dict = None, statue: dict = None) -> Ctx:
     """把 `/state`(**full**) + `/surroundings`(+`/machines`/`/scan_chests`) 拼成 Ctx。
 
     ⚠️ 只搬运，**不补默认值**：缺什么就让它缺着（`can()` 遇到缺失自然回 假/？）。
@@ -4337,6 +4461,9 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
                hay=hay or {},
                # 🎁 地上可捡清单（同上：`pickup_scene.scan_pickables()` 那份）。
                pick=pick or {},
+               # 🗿🐟 2026-10-04 那两行的账（同上：`_im_statue` / `_im_ponds` 算好递进来 ——
+               #    这一层不认"哪些雕像算数"，也不自己问鱼塘）。
+               statue=statue or {}, ponds=ponds or {},
                sitting=bool(((seats or {}).get("me") or {}).get("sitting")),
                worn=(worn or {}),
                pets=pets,

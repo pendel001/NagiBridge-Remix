@@ -414,12 +414,23 @@ def _grab_is_take(m: dict) -> bool:
     return not m.get("gift")
 
 
-def _close_hint(menu: str) -> str:
+def _close_hint(menu: str, content_on_sheet: bool = False) -> str:
     """「这个菜单该怎么处理掉」——**按类型给**，别一刀切。
 
     ⚠️ 2026-09-12 真机踩的坑：闸门原先一律让 AI `menu click(button=upperRightCloseButton)`，
        可那是 `IClickableMenu` 的成员，**DialogueBox 上根本没这个按钮** ⇒ 照抄只会得到
        `⚠️ Button 'upperRightCloseButton' not found`（恒提的第三个问题）。
+
+    📄 `content_on_sheet`（2026-10-04 · 恒的**「read 包办」**口径）：
+      > 「**菜单类型已知、内容我们读得到**的 ⇒ 内容**摊在单子上**，
+      >   别叫 AI 再 `menu read` 一遍；**参数确实只有菜单里才有、我们又读不到**的 ⇒ 保留那句 read。」
+
+      ⇒ 判据是「**这一刻那份内容到底摊没摊出来**」，**不是**菜单类型本身（类型只决定摊不摊得出来）——
+        所以调用方必须把**事实**传进来（`_im_ctx` 拿 `_im_menu_data`/`_im_shop` 的实际结果算），
+        这一层**不许自己照菜单名猜一句"应该摊了吧"**（那就是第二份会漂的判据）。
+      ⚠️ 摊不了的两种情况都退回**老文案**（叫它去 read，那是**真路**）：
+        ① 这版 DLL 读不出内容（`/menu` 报错/空回包）；
+        ② 这种菜单的内容**本来就不在摊的那几档里**（如 `ShippingMenu` 的发货清单）。
     """
     m = (menu or "").lower()
     # 🎭 2026-09-22：捏人页**不是障碍**，是"这局的正事本身" —— 绝不能劝 AI 去关它。
@@ -443,8 +454,17 @@ def _close_hint(menu: str) -> str:
         return ("有选项走 menu click(option=N) 选；纯对话用 menu advance 推掉"
                 "（DialogueBox 没有右上角关闭键）")
     if "itemgrabmenu" in m or "questcontainer" in m or "shipping" in m:
+        if content_on_sheet and "shipping" not in m:
+            # ✅ **read 包办**：箱里的东西已经成了单子上的行（「箱子里…」「取 …」）
+            #    ⇒ 再叫它 `menu read` 一遍是白烧一次调用（而且会把"该敲哪个号"搅浑）。
+            return ("内容**就在单子上**（「箱子里…」那几行）→ 取完 "
+                    "menu click(button=ok) 确认关掉（交付类要点 ok 才算完）")
         return "menu read 看内容 → menu click(button=ok) 确认关掉（交付/结算类要点 ok 才算完）"
     if "shopmenu" in m:
+        if content_on_sheet:
+            # ✅ **read 包办**：货架已经成了单子上的行（「买 动物…」点开就是货）
+            return ("货架**就在单子上**（「买…」那几行）→ 买完 "
+                    "menu click(button=upperRightCloseButton) 关掉")
         return "menu read 看商品 → menu click(button=upperRightCloseButton) 关掉"
     if "letterviewer" in m or "dialogue" in m:
         # ⚠️ 2026-10-01（P-menus 第四刀）：**去掉了开头的「menu read 看内容」** ——
@@ -23145,6 +23165,64 @@ def _im_chores(state: dict, surr: dict, animals: dict) -> dict:
     return out
 
 
+def _im_statue(state: dict, surr: dict) -> dict:
+    """🗿 「摸 雕像」那行的账 —— 2026-10-04 恒拍板 (b)。
+
+    形状：`{}` = **本场景没有雕像**（那行不出现）；有值时
+      `{"names": ["Statue Of Blessings"], "used_today": False|True|None}`。
+
+    - **场上有雕像**：扫 `/surroundings` 的 `object` 名里含 `Statue` 的格 ——
+      ⚠️ **跟 `blessing_statue.py` 同一个判据**（它是这套动作**唯一的执行器**，扫的就是这一条）。
+      别在这儿另立名单（名单会烂，本项目的老病）；**更别扫家具层**（`(F)` 开头的装饰雕像摸不出
+      增益，当年 `_cabin_enum` 就栽在这：enum 报「雕像 1 座」而脚本回「没找到雕像」，两边打架）。
+      半径也**跟着脚本用 30**（`/surroundings` 的上限就是 30 —— 传更大是**静默落回 10**）。
+    - **今天摸过没**：`/state.player.blessedByStatueToday` = 游戏自己的
+      `Farmer.hasBeenBlessedByStatueToday`（`Farmer.decompiled.cs:276`，每天在 `:3530` 重置）
+      ⇒ **权威信号**。⚠️ 老 DLL 没这个键 ⇒ `None` = **不知道**（消费侧给 MAYBE）。
+      ⚠️⚠️ **不许拿 `_statue_reminder` 的 `shown` 冒充它**：那个判的是"今天提醒过没"，
+         而且**调它本人就把当天那次提醒吃掉了**（副作用，见 `nagi_mcp_server.py:4580` 那片）。
+    """
+    try:
+        names = []
+        for t in ((surr or {}).get("tiles") or []):
+            obj = (t or {}).get("object") or ""
+            if "Statue" in obj and obj not in names:
+                names.append(obj)
+        if not names:
+            return {}
+        used = ((state or {}).get("player") or {}).get("blessedByStatueToday")
+        return {"names": names, "used_today": (None if used is None else bool(used))}
+    except Exception:
+        return {}
+
+
+def _im_ponds(state: dict) -> dict:
+    """🐟 「收 鱼塘产出」那行的账 —— 2026-10-04 恒：鱼塘产出也上单子。
+
+    形状：`{}` = **不该给行**（不在农场 / 读不到）；有值
+      `{"ready": [{"x": 12, "y": 30, "output": "鲑鱼子"}], "total": 3}`。
+
+    - 判据是**现成的** `_fetch_fish_ponds()`（`/fish_pond action=list`，`output` 非空 = 有产出等着领）
+      —— 跟晨报 / `farm ops=pond` 同一份，这一层**不另算一套**。
+    - ⚠️ 鱼塘**只可能建在农场**（建造规则），而领产出那套走位（`_pond_do_interact`）本来就写死
+      走 `Farm` ⇒ **不在农场时一次都不多打**（省一发 HTTP，也不会给一行按了不成的）。
+    - `total` 一起带出去：理由栏能说清「本档 N 座塘、这一刻有几座有货」
+      （比只报"有货几座"多给一个可审计的面）。
+    """
+    loc = (state or {}).get("location") or {}
+    if (loc.get("name") if isinstance(loc, dict) else loc) != "Farm":
+        return {}
+    try:
+        ponds = _fetch_fish_ponds()
+    except Exception:
+        return {}
+    ready = [{"x": p.get("x"), "y": p.get("y"), "output": p.get("output")}
+             for p in (ponds or [])
+             if (p or {}).get("output")
+             and isinstance((p or {}).get("x"), int) and isinstance((p or {}).get("y"), int)]
+    return {"ready": ready, "total": len(ponds or [])}
+
+
 def _im_ctx():
     """一次把单子要的世界快照凑齐。
 
@@ -23172,16 +23250,24 @@ def _im_ctx():
     #    只有那一处认菜单类型）。⚠️ 菜单没开时两个都是空串 ⇒ 单子层不给出口行、
     #    也不印菜单提示（老行为一字不动）。
     _mt = ((state or {}).get("activeMenu") or {}).get("type") or ""
+    # 📄 **read 包办**（2026-10-04 恒的口径，见 `_close_hint` 的 docstring）：
+    #    「先 `menu read`」那句话该不该留，判据是**这一刻那份内容到底摊没摊出来** ——
+    #    所以这里把 `_im_menu_data`/`_im_shop` 的**实际结果**先算出来，再把事实递下去。
+    #    ⚠️ **不是**照菜单名猜（类型只能决定"摊不摊得出来"，不能证明"摊成了"）。
+    _md = _im_menu_data(state)
+    _shop = _im_shop(state)
+    _content_shown = bool(_md) or bool((_shop or {}).get("items"))
     return intent_menu.ctx_from(state, surr, machines, chests, caps=_im_caps(),
                                 seats=seats, furniture=furniture, animals=animals,
-                                shop=_im_shop(state), beds=_im_beds(state),
+                                shop=_shop, beds=_im_beds(state),
                                 menu_exit=_menu_exit_of(_mt),
         menu_claim=_menu_claim_label((state or {}).get("activeMenu") or {}),
-                                menu_hint=(_close_hint(_mt) if _mt else ""),
+                                menu_hint=(_close_hint(_mt, content_on_sheet=_content_shown)
+                                           if _mt else ""),
                                 # 📋 菜单里的东西（2026-10-01 · P-menus）：**只有菜单开着时
                                 #    才多打一次 `/menu`**，没菜单时一个字都不多花
                                 #    （`_im_menu_data` 进去就先看 `activeMenu`）。
-                                menu_data=_im_menu_data(state),
+                                menu_data=_md,
                                 # 🔨 铁砧能不能重铸（2026-10-01：恒问的铱锭/精通那三条）。
                                 #    ⚠️ 先过一遍便宜的闸门（精通/本图有铁砧/背包有饰品）再问游戏，
                                 #       平时**一次都不多花**（同 `_im_shop` 只在商店开着时读 `/menu`）。
@@ -23205,6 +23291,13 @@ def _im_ctx():
                                 # 🌿 「捡 地上的东西」那行的账（判据 = `pickup_scene.scan_pickables()`，
                                 #    恒 2026-10-01：「复用原来的捡蛋工具」）。
                                 pick=_im_pick(state, surr),
+                                # 🗿 「摸 雕像」那行的账（2026-10-04 恒拍板 (b)）：
+                                #    **一场一发都不用多打** —— 雕像从已经拿到的 `surr` 里扫，
+                                #    "今天摸过没"从已经拿到的 `state` 里读。
+                                statue=_im_statue(state, surr),
+                                # 🐟 「收 鱼塘产出」那行的账（同上：只在**农场**多打一发
+                                #    `/fish_pond`，跟晨报/`farm ops=pond` 共用 `_fetch_fish_ponds`）。
+                                ponds=_im_ponds(state),
                                 worn=worn)
 
 
@@ -23845,6 +23938,16 @@ def _im_run(op, args):
         # 🌾 铺 干草（2026-10-01 恒：「支持上单子」）：调现成的 `feed_hay()`（筒仓→背包→逐格走过去铺）。
         #    ⚠️ 它也是**同步长活**（逐格走位铺），跟 `milk` 同一条账。
         "hay": lambda: feed_hay(),
+        # 🗿 摸 雕像（2026-10-04 单子那行按下去走这里）：调现成的 `blessing_statue()` ——
+        #    它自己找雕像 / 走过去 / `/interact` / 弹了选项就选（优先免疫炸弹）。这一层不另写一套。
+        "statue": lambda: blessing_statue(),
+        # 🐟 收 鱼塘产出（同上）：**逐塘**来一发 —— 坐标由单子那一层从账里带过来
+        #    （`_exec_pond` 一座一发），调现成的 `_pond_collect(x, y)`：它会走到塘边、`/interact`、
+        #    **再回读产出没了没**。坐标不是整数就退回 `-1`（端点自己的"第一座"语义，**不猜坐标**）。
+        #    ⚠️ 判 `isinstance` 而不是 `args.get("x") or -1`：**0 是合法坐标**（`or` 会把它吃掉）。
+        "pond_collect": lambda: _pond_collect(
+            args["x"] if isinstance(args.get("x"), int) else -1,
+            args["y"] if isinstance(args.get("y"), int) else -1),
     }
     # 🛒 买卖走**裸端点**（回 dict，回执要逐条报数字），只是外面多两道闸门。
     raw_ops = {

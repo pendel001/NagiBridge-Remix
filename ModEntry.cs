@@ -5877,6 +5877,14 @@ public class ModEntry : Mod
                 lostOnDeath = farmer.itemsLostLastDeath?.Select(i => i?.Name ?? "?").ToList()
                               ?? new System.Collections.Generic.List<string>(),
                 deathCount = farmer.itemsLostLastDeath?.Count ?? 0,
+                // 🗿 2026-10-04（恒拍板 (b)：「摸过/没有可摸就不提示」要**真的**）：
+                //    雕像"今天摸过没"的**权威信号** = `Farmer.hasBeenBlessedByStatueToday`
+                //    （反编译 `Farmer.decompiled.cs:276` 一个 `public bool`，`:3530` 在新的一天重置）。
+                //    ⚠️ 这个口以前**没有**，单子那行只能拿"今天提醒过没"（`_statue_reminder` 的 `shown`）
+                //      冒充 —— 那判的是"提醒过"不是"摸过"，而且调用它本人会把当天提醒**吃掉**
+                //      （置 `shown=True`，不可逆）⇒ 单子**绝不能**拿它当判据（`nagi_mcp_server.py:4580` 记着这条）。
+                //    ℹ️ 名字是游戏自己的：祝福雕像 / 矮人国王雕像发祝福走同一套逻辑，都置这个位。
+                blessedByStatueToday = farmer.hasBeenBlessedByStatueToday,
                 fishing = farmer.CurrentTool is FishingRod rod ? new
                 {
                     isCasting = rod.isTimingCast,

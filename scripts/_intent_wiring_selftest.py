@@ -174,7 +174,8 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
           chore_tiles=None, crab_ready=0, ore_pan=None, chore_animals=None, money=None,
           silo=None, troughs=None, trough_filled=0, trough_raise=False,
           surr_tiles=None, trash_cans=None, cola=None, npcs=None, nuts=None,
-          trash_checked=None, pet_bowls=None, passable_ret=None, ai_xy=None):
+          trash_checked=None, pet_bowls=None, passable_ret=None, ai_xy=None,
+          statues=(), blessed=None, ponds=None):
     CALLS.clear()
     WALK_CALLS.clear()
     # 🚶 "我"站哪格：默认照 `STATE`（(12,12)），用例要"人已经站在棚门口"就传 `ai_xy=`。
@@ -221,6 +222,12 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
     if money is not None:
         # 💰 用例要"买不起/砸不起"就传 money=0（`_geode_can` 用 `ctx.money` 判 25g/颗）
         state = dict(state, player=dict(state.get("player") or {}, money=money))
+    if blessed is not None:
+        # 🗿 2026-10-04：`/state.player.blessedByStatueToday`（**游戏自己的**"今天摸过雕像没"，
+        #    `Farmer.hasBeenBlessedByStatueToday`）。`blessed=None`（默认）⇒ **不吐这个键**
+        #    = **老 DLL 的形状** ⇒ "键在不在"就是"这版报不报得出"的判据（同 `trash_checked`）。
+        state = dict(state, player=dict(state.get("player") or {},
+                                        blessedByStatueToday=blessed))
     if chore_animals is None:
         _animals_fixture = ANIMALS
     elif isinstance(chore_animals, list):
@@ -232,6 +239,9 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
     # ⚠️ `surr_tiles=[]` = "这一带**一件可捡的都没有**"（验「捡」那行不出现）
     _tiles_fixture = ((list(SURR.get("tiles") or []) if surr_tiles is None else list(surr_tiles))
                       + list(chore_tiles or []))
+    # 🗿 雕像（2026-10-04）：`object` 名里含 `Statue` 的格 —— 判据跟 `blessing_statue.py` 同源
+    #    （`(x, y, 内部名)` 三元组，题面照真机那份 `Statue Of Blessings` 写）。
+    _tiles_fixture += [{"x": x, "y": y, "object": nm} for x, y, nm in (statues or ())]
 
     def g(ep, params=None):
         CALLS.append(("GET", ep, params))
@@ -373,6 +383,10 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
                                 for s in _skip]}
         if ep == "/interact":              # 交互（真机形状：ok 恒真、actionTriggered 才是真话）
             return {"ok": True, "actionTriggered": True, "object": "Anvil"}
+        if ep == "/fish_pond":
+            # 🐟 鱼塘（`/fish_pond action=list` 的真回包形状：`{ok, ponds:[…]}`）——
+            #    `output` 非空 = 有产出等着领（`_im_ponds` 就认这一个字段）。
+            return {"ok": True, "ponds": list(ponds or [])}
         return {"ok": True,
                 "taken": (data or {}).get("count", 1),
                 "stored": [{"item": (data or {}).get("name"),
@@ -704,11 +718,37 @@ def main():
     _stub(shop=True)
     ctx = M._im_ctx()
     res.append(ok("🚪 `_im_ctx` 把**出口标题**递进 ctx", ctx.menu_exit == "关掉界面"))
-    res.append(ok("🚪 `_im_ctx` 把 `_close_hint` 的**原话**递进 ctx",
-                  ctx.menu_hint == M._close_hint("ShopMenu")))
+    res.append(ok("🚪 `_im_ctx` 把 `_close_hint` 的**原话**递进 ctx（同一次调用、同一个 `content_on_sheet`）",
+                  ctx.menu_hint == M._close_hint("ShopMenu", content_on_sheet=True), ctx.menu_hint))
     _so = M.intent(ops="show", kw={"n": 40})
     res.append(ok("🚪 商店开着 ⇒ 「关掉界面」跟 买/卖 **同屏**",
                   "关掉界面" in _so and any(r.verb.key == "buy" for r in M.intent_menu._LAST_ROWS)))
+    # 📄 **read 包办**（2026-10-04 恒的口径，写死在 `_close_hint` 的 docstring 里）：
+    #    「**菜单类型已知、内容我们读得到**的 ⇒ 内容摊在单子上，别叫 AI 再 `menu read` 一遍；
+    #      **参数确实只有菜单里才有、我们又读不到**的 ⇒ 保留那句 read（那是真路）。」
+    #    ⚠️ 判据是**这一刻那份内容到底摊没摊出来**（事实），不是菜单类型（类型只决定摊不摊得出来）。
+    #    ⚠️ 这几条**自带 `_stub`**：别插在上面那段"`_stub(shop=True)` → 逐条验"的中间，
+    #       否则会把那个桩冲掉、后面依赖它的用例集体假红（2026-10-04 现场踩过）。
+    _stub(shop=True)
+    _h_shop = M._im_ctx().menu_hint
+    res.append(ok("📄 商店货架**摊成了** ⇒ 提示语里**不再**叫它 `menu read`（白烧一次调用）",
+                  "menu read" not in _h_shop and "就在单子上" in _h_shop, _h_shop))
+    res.append(ok("📄 读不到货架（老 DLL / `/menu` 报错）⇒ **退回叫它 read**（不许拍胸脯说摊好了）",
+                  "menu read" in M._close_hint("ShopMenu", content_on_sheet=False)))
+    res.append(ok("📄 容器同理：摊成了不提 read / 没摊成照旧提",
+                  "menu read" not in M._close_hint("ItemGrabMenu", content_on_sheet=True)
+                  and "menu read" in M._close_hint("ItemGrabMenu", content_on_sheet=False)))
+    res.append(ok("📄 `ShippingMenu` **永远保留** read（发货清单本来就不在那几档里，摊不出来）",
+                  "menu read" in M._close_hint("ShippingMenu", content_on_sheet=True)))
+    # 端到端：开着一只**能取的**箱子 ⇒ 提示语不提 read；同一种菜单但 `/menu` 读不出来 ⇒ 提
+    _stub(menu="ItemGrabMenu", menu_raw=MENU_BOX)
+    _hbox = M._im_ctx().menu_hint
+    res.append(ok("📄 端到端：开箱且内容读到了 ⇒ 提示语不提 read",
+                  "menu read" not in _hbox and "就在单子上" in _hbox, _hbox))
+    _stub(menu="ItemGrabMenu", menu_get_raises=True)
+    _hbox2 = M._im_ctx().menu_hint
+    res.append(ok("📄 端到端：同一种菜单但 `/menu` 读不出来 ⇒ **退回 read**（宁可叫它读，不假装）",
+                  "menu read" in _hbox2, _hbox2))
     # 捏人页：**不给**出口行，改印原话（按 ok = 不可逆定型，劝它就关等于害它）
     _stub(menu="CharacterCustomization")
     ctx = M._im_ctx()
@@ -1145,8 +1185,12 @@ def main():
                   "存…" not in M.intent(ops="show", kw={"n": 40})))
     _stub(menu="ItemGrabMenu", menu_raw=dict(MENU_BOX, items=[], containerAt=_at13))
     _se = M.intent(ops="show", kw={"n": 40})
+    # ⚠️ 判据走 **`verb.key`**，不是屏上的字：2026-10-04「read 包办」给这族的提示语
+    #    （`_close_hint`）里**本来就会写「箱子里…」**（它指的正是那几行）⇒ 拿字面量判
+    #    「箱子里不在屏上」会把**提示语**误当成**行**（这条当场假红过一次）。
+    _se_keys = {r.verb.key for r in M.intent_menu._LAST_ROWS}
     res.append(ok("📥 **空箱子**照样给「存…」（开一只空箱正是要塞东西那一刻）",
-                  "存…" in _se and "箱子里" not in _se))
+                  "menu_store" in _se_keys and "menu_box" not in _se_keys, sorted(_se_keys)))
     _stub(menu="ItemGrabMenu", menu_raw=dict(MENU_BOX, containerAt={"x": 14, "y": 14}),
           chests=[dict(CHESTS[0], x=14, y=14, freeSlots=0, used=36, items=[])])
     res.append(ok("📥 容器满了 ⇒ **不给**「存…」（出路是同屏的「箱子里…」）",
@@ -2342,6 +2386,92 @@ def main():
         pass
     res.append(ok("💧 exec 打的 op 是**无参**的 `water`（端点不吃半径/坐标，传了会被静默丢）",
                   _w_call.get("key") == "water" and _w_call.get("args") == {}, _w_call))
+
+    # 🗿🐟 2026-10-04：**摸雕像**（恒拍板 (b)）+ **收鱼塘产出** 上单
+    #    🗿 的"今天摸过没"**只能**来自 `/state.player.blessedByStatueToday`
+    #       （游戏自己的 `Farmer.hasBeenBlessedByStatueToday`，每天重置）——
+    #       老 DLL 没这个键 ⇒ MAYBE（宁缺勿编）；**绝不许**拿 `_statue_reminder` 的 shown 冒充
+    #       （那个一调就把当天提醒吃掉，是"提醒过没"不是"摸过没"）。
+    _Ctx = M.intent_menu.Ctx
+    res.append(ok("🗿 摸雕像行在册（权重 56 = 顺手活那档最低：苔藓 58 之下、吃 50 之上）",
+                  _w("statue") == 56, _w("statue")))
+    _st_can = M.intent_menu._statue_can
+    res.append(ok("🗿 场上有雕像 + 今天没摸过 ⇒ ✅",
+                  _st_can(_Ctx(statue={"names": ["Statue Of Blessings"],
+                                       "used_today": False}), {}) is True))
+    res.append(ok("🗿 今天摸过了 ⇒ ❌（摸完当天那行就该消失，不然是催着重摸）",
+                  _st_can(_Ctx(statue={"names": ["Statue Of Blessings"],
+                                       "used_today": True}), {}) is False))
+    res.append(ok("🗿 老 DLL 报不出「今天摸过没」⇒ **MAYBE**（不替游戏说「还没摸」）",
+                  _st_can(_Ctx(statue={"names": ["Statue Of Blessings"],
+                                       "used_today": None}), {}) is None))
+    res.append(ok("🗿 场上没雕像 ⇒ ❌（`{}` = 那行不出现）",
+                  _st_can(_Ctx(statue={}), {}) is False))
+    _st_call = {}
+    M.intent_menu._exec_statue(_Ctx(statue={"names": ["Statue Of Blessings"],
+                                           "used_today": False}), [{}],
+                               lambda k, a: _st_call.update(key=k, args=a) or "🗿 摸完雕像")
+    res.append(ok("🗿 exec 打的 op 是**无参**的 `statue`（跟 `farm ops=statue` 同一个脚本）",
+                  _st_call.get("key") == "statue" and _st_call.get("args") == {}, _st_call))
+    # 服务器那层：雕像**零额外 HTTP**（从已经拿到的 `surr` 扫 object 层 + 从 `state` 读那一位）
+    _stub(statues=[(20, 30, "Statue Of Blessings")], blessed=False)
+    _c_st = M._im_ctx()
+    res.append(ok("🗿 服务器那层：`/surroundings` 的 **object 层**认出雕像 + 读 `blessedByStatueToday`",
+                  _c_st.statue == {"names": ["Statue Of Blessings"], "used_today": False},
+                  _c_st.statue))
+    _stub(statues=[(20, 30, "Statue Of Blessings")], blessed=True)
+    res.append(ok("🗿 服务器那层：`blessedByStatueToday=true` ⇒ `used_today=True` ⇒ 单子不给那行",
+                  M._im_ctx().statue.get("used_today") is True, M._im_ctx().statue))
+    _stub(statues=[(20, 30, "Statue Of Blessings")])       # 老 DLL：**不吐这个键**
+    _c_old = M._im_ctx()
+    res.append(ok("🗿 老 DLL（`/state.player` 没这个键）⇒ `used_today=None`（**不是 False**）",
+                  _c_old.statue.get("used_today", "缺键") is None, _c_old.statue))
+    _stub()                                                # 场上没雕像
+    res.append(ok("🗿 服务器那层：场上没雕像 ⇒ 账为空 `{}`（那行不出现）",
+                  M._im_ctx().statue == {}, M._im_ctx().statue))
+
+    # 🐟 收 鱼塘产出
+    res.append(ok("🐟 收鱼塘产出行在册（权重 82：压在 箱子 80 之上、摸动物 84 之下 —— 它是真动作）",
+                  _w("pond") == 82, _w("pond")))
+    _pd_can = M.intent_menu._pond_can
+    _PD = {"ready": [{"x": 12, "y": 30, "output": "鲑鱼子"}], "total": 2}
+    res.append(ok("🐟 有座塘有产出 ⇒ ✅", _pd_can(_Ctx(ponds=_PD), {}) is True))
+    res.append(ok("🐟 有塘但都没产出 / 不在农场（`{}`）⇒ ❌（那行不出现）",
+                  _pd_can(_Ctx(ponds={"ready": [], "total": 3}), {}) is False
+                  and _pd_can(_Ctx(ponds={}), {}) is False))
+    # 服务器那层：**不在农场一发都不多打**（鱼塘只建在农场，领产出的走位也写死走 Farm）
+    _stub(loc="FarmHouse", ponds=[{"x": 12, "y": 30, "output": "鲑鱼子"}])
+    _pd_off = M._im_ponds({"location": {"name": "FarmHouse"}})
+    res.append(ok("🐟 不在农场 ⇒ 账为空 **且一发 `/fish_pond` 都不打**",
+                  _pd_off == {} and not [c for c in CALLS if c[1] == "/fish_pond"],
+                  (_pd_off, [c for c in CALLS if c[1] == "/fish_pond"])))
+    _stub(loc="Farm", ponds=[{"x": 12, "y": 30, "output": "鲑鱼子"},
+                             {"x": 40, "y": 30},                    # 没产出 ⇒ 不进账
+                             {"x": 44, "y": 30, "output": "蚌"}])
+    _pd_on = M._im_ponds({"location": {"name": "Farm"}})
+    res.append(ok("🐟 农场：只列**有产出的**塘，`total` 报全档塘数（3 座里 2 座有货）",
+                  [p["output"] for p in _pd_on["ready"]] == ["鲑鱼子", "蚌"]
+                  and _pd_on["total"] == 3, _pd_on))
+    _stub(loc="Farm", ponds=[{"x": 12, "y": 30, "output": "鲑鱼子"},
+                             {"x": 44, "y": 30, "output": "蚌"}])
+    res.append(ok("🐟 端到端：`_im_ctx()` 把账递给单子（`ctx.ponds` 就是那份）",
+                  len(M._im_ctx().ponds.get("ready") or []) == 2, M._im_ctx().ponds))
+    _pd_calls = []
+    _exec_pd = M.intent_menu._exec_pond
+    _pd_txt = _exec_pd(_Ctx(ponds=_pd_on), [{}],
+                       lambda k, a: _pd_calls.append((k, a)) or
+                       {"ok": True, "st": "yes",
+                        "text": "🐟 交互鱼塘: triggered=True ✅ 已领产出（背包收下）"})
+    res.append(ok("🐟 exec **逐塘**各一发 `pond_collect`（坐标是那座塘自己的）",
+                  _pd_calls == [("pond_collect", {"x": 12, "y": 30}),
+                                ("pond_collect", {"x": 44, "y": 30})], _pd_calls))
+    res.append(ok("🐟 回执**逐条报**（两座各一行、带它自己的话）",
+                  _pd_txt.count("·") >= 2 and "已领产出" in _pd_txt, _pd_txt[:200]))
+    _seq = [{"ok": True, "st": "yes", "text": "✅ 已领产出（背包收下）"},
+            {"ok": False, "st": "maybe", "text": "⚠️ 产出没领到（可能背包满了）"}]
+    _pd_txt2 = _exec_pd(_Ctx(ponds=_pd_on), [{}], lambda k, a: _seq.pop(0))
+    res.append(ok("🐟 一座没领到 ⇒ 正文里带**它自己那句 ⚠️**（不许整批报成功）",
+                  "产出没领到" in _pd_txt2, _pd_txt2[:220]))
     res.append(ok("⚖️ 193：`放牧（开棚门）` 70 → **84**（早晨跟摸动物一个档）",
                   _w("opendoors") == 84, _w("opendoors")))
     res.append(ok("⚖️ 193：`收 蟹笼` 68 → **72**（有货时可抬）", _w("crab") == 72, _w("crab")))
