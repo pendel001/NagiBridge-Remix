@@ -4189,11 +4189,63 @@ public class ModEntry : Mod
                 }
                 int hatsAllowed = tank.tankFish.Count(tf => tf.CanWearHat());
 
+                // ── 🎩 "谁戴着哪顶帽子"（恒 2026-10-04：「海胆要是有帽子用括号标注」）──
+                //    配对规则**照抄 `TankFish.Draw` 的那两层计数**（`TankFish.cs:390-440`）：
+                //      · `num15` = 在这只之前**能戴帽的生物**有几只（`if (item == this) break`）；
+                //      · 然后数 `heldItems` 里的帽子（`num16`），`num16 == num15` 的那顶就是**它的**帽子。
+                //    ⇒ **第 j 只能戴帽的生物 戴 heldItems 里第 j 顶帽子**（都由"缸里的顺序"决定）。
+                //    ⚠️ `tankFish` 的顺序 == `heldItems` 里"生物"那一批的顺序（`UpdateFish` 就是按 `heldItems` 建的）；
+                //       两个数**对不上就不配对**（宁缺勿编，见下面的 `pairOk`）。
+                //    ⚠️ "是不是生物"用的是 `UpdateFish` 那把尺子（`:377-391`）：青蛙蛋，或
+                //       **普通物件且 `Data/AquariumFish` 里有它** —— 那 14 个装饰 id 不在表里 ⇒ 不算生物。
+                var aquarium = tank.GetAquariumData();
+                bool IsCreature(Item it)
+                {
+                    try
+                    {
+                        if (it == null) return false;
+                        if (it.QualifiedItemId == "(TR)FrogEgg") return true;
+                        return Utility.IsNormalObjectAtParentSheetIndex(it, it.ItemId)
+                               && aquarium.ContainsKey(it.ItemId);
+                    }
+                    catch { return false; }
+                }
+                var idxCreature = new List<int>();      // heldItems 里"生物"的下标
+                var idxHat = new List<int>();           // heldItems 里"帽子"的下标
+                for (int i = 0; i < tank.heldItems.Count; i++)
+                {
+                    var h = tank.heldItems[i];
+                    if (h == null) continue;
+                    if (h is StardewValley.Objects.Hat) idxHat.Add(i);
+                    else if (IsCreature(h)) idxCreature.Add(i);
+                }
+                bool pairOk = tank.tankFish.Count == idxCreature.Count;
+                var wornHat = new Dictionary<int, string>();      // heldItems 下标(生物) → 帽子名
+                var canWearAt = new HashSet<int>();
+                if (pairOk)
+                {
+                    int ci = 0, j = 0;
+                    foreach (var tf in tank.tankFish)
+                    {
+                        if (tf.CanWearHat())
+                        {
+                            canWearAt.Add(idxCreature[ci]);
+                            if (j < idxHat.Count)
+                            {
+                                wornHat[idxCreature[ci]] = SafeDisplayName(tank.heldItems[idxHat[j]]);
+                                j++;
+                            }
+                        }
+                        ci++;
+                    }
+                }
+
                 var counts = new Dictionary<string, int> { ["Swim"] = 0, ["Ground"] = 0, ["Decoration"] = 0 };
                 var inside = new List<object>();
-                int hatsInside = 0, nullSlots = 0;
+                int hatsInside = 0, nullSlots = 0, heldSeq = -1;
                 foreach (var i in tank.heldItems)          // ⚠️ 槽位可能有 null（`StorageFurniture.ClearNulls`）
                 {
+                    heldSeq++;
                     if (i == null) { nullSlots++; continue; }
                     var cat = CatOf(i);
                     if (counts.ContainsKey(cat)) counts[cat]++;
@@ -4201,16 +4253,29 @@ public class ModEntry : Mod
                     if (isHat) hatsInside++;
                     inside.Add(new
                     {
+                        index = heldSeq,                 // heldItems 里的位次（配对/替换都用它认）
                         name = i.Name,
                         displayName = SafeDisplayName(i),
                         itemId = i.QualifiedItemId,
                         stack = i.Stack,
                         category = cat,
-                        isHat
+                        isHat,
+                        isCreature = !isHat && IsCreature(i),
+                        canWearHat = canWearAt.Contains(heldSeq),
+                        wornHat = wornHat.TryGetValue(heldSeq, out var wh) ? wh : null
                     });
                 }
 
                 // ── 背包：**只报游戏允许的**（`invTotal - inventory.Count` 就是"压根不在清单里"的件数）──
+                //    ⚠️ 满了的那几件**也要报**（恒 2026-10-04 的 ② 要用它做"要与哪种进行替换？"那一层）——
+                //       所以每件带 `block`（**为什么放不进**）和 `replace_with`（**取出哪几件就能腾出位**）。
+                //       `block` 的两档是**游戏判据反推**、不是我编的：
+                //         · `duplicate`  = `GetCapacityForCategory < 0`（宽缸装饰那档"每种各 1"）
+                //            ⇒ 只会因为"**同一种已经在里面**"而 false，**取出任何东西都救不了**（换一种才行）；
+                //         · `category_full` = 其余（按类别数满 / 帽子位满）⇒ **取出同类一件就腾出位**。
+                //       ⚠️ 帽子要单独走一档：`GetCategoryFromItem(hat)` 回 Decoration、宽缸那档是 -1，
+                //          照着判会说成 `duplicate`，可帽子的真门是 `CanBeDeposited` 里的**帽子位数**
+                //          （`HasRoomForThisItem` 对 Hat 直接当 999）⇒ 取出缸里任一顶帽子就能放。
                 var farmer = Game1.player;
                 var invList = new List<object>();
                 int invTotal = 0;
@@ -4224,6 +4289,36 @@ public class ModEntry : Mod
                     if (!can) continue;
                     bool room;
                     try { room = tank.HasRoomForThisItem(it); } catch { room = false; }
+                    var cat = CatOf(it);
+                    bool isHat = it is StardewValley.Objects.Hat;
+                    string block = "";
+                    var replaceWith = new List<object>();
+                    if (!room)
+                    {
+                        int capHere = -2;
+                        try { capHere = tank.GetCapacityForCategory(tank.GetCategoryFromItem(it)); } catch { }
+                        block = (!isHat && capHere < 0) ? "duplicate" : "category_full";
+                        if (block == "category_full")
+                        {
+                            for (int hi2 = 0; hi2 < tank.heldItems.Count; hi2++)
+                            {
+                                var hh = tank.heldItems[hi2];
+                                if (hh == null) continue;
+                                if (isHat)
+                                {
+                                    if (hh is not StardewValley.Objects.Hat) continue;
+                                }
+                                else if (CatOf(hh) != cat) continue;
+                                replaceWith.Add(new
+                                {
+                                    index = hi2,
+                                    name = hh.Name,
+                                    displayName = SafeDisplayName(hh),
+                                    itemId = hh.QualifiedItemId
+                                });
+                            }
+                        }
+                    }
                     invList.Add(new
                     {
                         slotIndex = slot,
@@ -4231,9 +4326,11 @@ public class ModEntry : Mod
                         displayName = SafeDisplayName(it),
                         itemId = it.QualifiedItemId,
                         stack = it.Stack,
-                        category = CatOf(it),
-                        isHat = it is StardewValley.Objects.Hat,
-                        room
+                        category = cat,
+                        isHat,
+                        room,
+                        block,
+                        replaceWith
                     });
                 }
 

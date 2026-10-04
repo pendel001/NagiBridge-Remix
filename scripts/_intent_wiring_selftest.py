@@ -20,6 +20,13 @@ import nagi_mcp_server as M          # noqa: E402  （import 安全：不起线�
 import stardew_api as api            # noqa: E402
 
 CALLS = []
+# ⚠️ 有几处用例会**临时**把网络层换成替身（`api.key` / `api.ensure_roles` / `M._menu_close`），
+#    而且**不会自己还原** ⇒ 后面的用例会静默变成"什么都没发生"（2026-10-04 真被这个坑到：
+#    鱼缸那条"收界面"的路在桩里恒收不掉、报「还是 ShopMenu」，查了半天才发现是**上游用例的替身**
+#    一直挂着）。留一份原装，每个 `_stub()` 都还原一次（用例要替身就在 `_stub` 之后自己再换）。
+_ORIG_API_KEY = api.key
+_ORIG_ENSURE_ROLES = api.ensure_roles
+_ORIG_MENU_CLOSE = M._menu_close
 
 # 🚪🐄 门那条路的桩状态（`_stub` 每次按 `farm_buildings=` / `doors_open=` 重算）：
 #    `DOOR_STATES` = **逐扇门**一张表 `[{building, doorX, doorY, open}]`（同名两栋各自成行）；
@@ -30,7 +37,15 @@ CALLS = []
 #      · **只翻玩家 `ReachTiles` 格内**的门，够不着/不在农场/没门坐标的一律进 `skipped`。
 #    ⇒ 少了"够得着"这层，`_doors_flip_all` 的 `left`/「没翻成」那条路**根本测不到**（假绿）。
 DOOR_STATES = []
-# 🚶 "我"在桩里站哪格：`_stub(ai_xy=…)` 给初值；**走位成功会把人挪过去**（`M._walk_and_wait` 的桩）
+# 🖐 "手上拿着什么"的桩状态（`/select` 写它）：`/interact` 落在**鱼缸那一格**时，
+#    游戏是"手持可投放物 ⇒ 放进去；空手 ⇒ 开菜单"（`FishTankFurniture.checkForAction` `:235`）
+#    ⇒ 桩得知道手上有没有东西，否则「取（要先开菜单）」和「放（必须先把菜单收掉）」两条路
+#    在自验里会互相踩（这正是 2026-10-04 那两条假红的原因）。
+_HELD = [""]
+# 🐟 最近一次 `/tank` 回包里"**游戏收的**"那些 id（`inventory[].itemId`）—— `/interact` 那个桩
+#    用它决定"右键缸 = 把手上的放进去"还是"开界面"（判据就是**游戏自己的那份清单**，
+#    不是我编的名单；工具不在里面 ⇒ 拿工具右键 = 稳开界面）。
+_TANK_DEPOSITABLE = set()
 #    —— C# 的 4 格闸判的就是这个位置，桩不挪人就等于"人站在原地遥控翻门"（真机上翻不动）。
 AI_POS = [12, 12]
 # 🚪 C# 侧 `ReachTiles` 的口径（`ModEntry.cs`）：与门格的**切比雪夫**距离 ≤ 4。
@@ -179,6 +194,7 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
           furniture=None, tank=None):
     CALLS.clear()
     WALK_CALLS.clear()
+    _HELD[0] = ""          # 手上默认空着（照 `STATE.player.currentItem` 那条夹具也不动它）
     # 🚶 "我"站哪格：默认照 `STATE`（(12,12)），用例要"人已经站在棚门口"就传 `ai_xy=`。
     if ai_xy is None:
         _p0 = STATE.get("player") or {}
@@ -303,8 +319,12 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
             if tank is None:
                 return {}
             if isinstance(tank, list):
-                return tank.pop(0) if tank else {}
-            return tank
+                _tk_payload = tank.pop(0) if tank else {}
+            else:
+                _tk_payload = tank
+            _TANK_DEPOSITABLE.clear()
+            _TANK_DEPOSITABLE.update(i.get("itemId") for i in (_tk_payload.get("inventory") or []))
+            return _tk_payload
         if ep == "/silo":
             # 🌾 `/silo` 真回包形状（`silo_status()` 读的就是这几个键）
             return ({"ok": True, "noSilo": True} if silo is None and troughs is not None
@@ -355,6 +375,34 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
         }.get(ep, {})
     def p(ep, data=None):
         CALLS.append(("POST", ep, data))
+        if ep == "/menu_close":
+            # 🚪 关界面（`cancel()` 的第二发）：**桩要把"界面真关了"这件事演出来** ——
+            #    否则 `_im_tank_close`（"收掉了没"是**回读**`/state.activeMenu` 判的）在桩上
+            #    永远收不掉，「取 → 收界面 → 放」那条包办路**在自验里根本走不通**（假红）。
+            state["activeMenu"] = None
+            return {"ok": True, "closed": True}
+        if ep == "/key":
+            # 取消键那一发也照演出"界面关了"（`cancel()` 是 escape + menu_close 两发）
+            if str((data or {}).get("key") or "").lower() in ("cancel", "escape", "esc"):
+                state["activeMenu"] = None
+            return {"ok": True, "key": (data or {}).get("key")}
+        if ep == "/select":
+            # 🖐 记一笔"手上拿着什么" —— `/interact` 那个桩要用它决定"开菜单还是把东西放进去"
+            #    （游戏 `FishTankFurniture.checkForAction` `:235`：手持可投放物 ⇒ **放**，否则开菜单）。
+            _HELD[0] = str((data or {}).get("name") or "")
+        if ep == "/interact":
+            # 🐟 交互**鱼缸那一格**：手上空着才开菜单（手持可投放物就是"放进去了"，不开）。
+            #    ⚠️ 只对**夹具里真有鱼缸的那一格**这么演 —— 别的 `/interact`（雕像/铁砧…）
+            #       照旧什么都不改（那会让另外几十条用例假红）。
+            _ix = (data or {}).get("x")
+            _iy = (data or {}).get("y")
+            _is_tank = any((f or {}).get("isFishTank") and f.get("x") == _ix and f.get("y") == _iy
+                           for f in ((FURNITURE if furniture is None else furniture)
+                                     .get("furniture") or []))
+            if _is_tank and _HELD[0] not in _TANK_DEPOSITABLE:
+                # 手上空着、或拿的是"游戏不收的"东西（工具…）⇒ 游戏开界面；
+                # 拿的是"游戏收的"⇒ 那就**放进去了**，不开界面（`FishTankFurniture.cs:235`）。
+                state["activeMenu"] = {"type": "ShopMenu"}
         if ep == "/passable":
             # 🚶🐄 `/passable` 真回包：`{ok, passable, x, y, location, blocker}` ——
             #    `passable_ret=None` ⇒ 走通用兜底（**没有 `passable` 键** = 老 DLL 的形状）
@@ -420,6 +468,12 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
                             "count": (data or {}).get("count", 1)}]}
 
     api._ai_get, api._ai_post = g, p
+    # 🔁 把上游用例可能留下的**网络层替身**还原成原装（见 `_ORIG_API_KEY` 那段注释）：
+    #    凡是要验"真调用了端点"的用例，都必须从这里出发。
+    if _ORIG_API_KEY is not None:
+        api.key = _ORIG_API_KEY
+        api.ensure_roles = _ORIG_ENSURE_ROLES
+        M._menu_close = _ORIG_MENU_CLOSE
     # 🚫🚫 **出口全部封死**（2026-10-01：这个文件原来会**打到真机**）——
     #    真凶是 `_walk_to_chest`（`_im_chest_op` 里那条"走到箱子边"）：它走 `api.state()`（`_get`，
     #    **没桩** ⇒ 读的是**真游戏的当前图**）+ `navigation._walk_and_wait`（**真走位**），
@@ -2788,114 +2842,219 @@ def main():
     res.append(ok("🐟 一座没领到 ⇒ 正文里带**它自己那句 ⚠️**（不许整批报成功）",
                   "产出没领到" in _pd_txt2, _pd_txt2[:220]))
 
-    # 🐟 放 鱼缸（2026-10-04 恒：「开完鱼缸以后，理应也可以指导 AI『背包还有什么东西能够手持
-    #    放进鱼缸』吧」）。⚠️ 判据**全在 C# `/tank`**（游戏自己的 `CanBeDeposited`/
-    #    `HasRoomForThisItem`）⇒ 这里验的是**接线**：caps 闸门 / 只报 room=True / 两条 verb 互斥 /
-    #    exec 的参数 / **只认"缸里多了"**的前后对比。
+    # 🐟 鱼缸那条**包办**路（2026-10-04 恒亲自定的形状：「①列鱼缸里有的，海胆要是有帽子用括号
+    #    标注；列背包里可以放入的列表类别。1.取走 2.添加鱼或装饰 3.算了；②如果选 2 → 选想放的
+    #    东西但是满了，再做一级选项『鱼缸里这种类别满了，要与哪种进行替换？』…
+    #    **包办这个取→关闭菜单→手持放的替换过程**」）。
+    #    ⚠️ 判据**全在 C# `/tank`** ⇒ 这里验的是**接线**：caps 闸门 / 三层的形状 /
+    #       「假门不许给」（同款装饰不给替换层）/ exec 的参数 / **只认件数变化**的回读 /
+    #       "包办"那三步（取 → 收界面 → 放）。
+    _TK_HAT = {"displayName": "草帽", "itemId": "(H)8", "stack": 1, "category": "Decoration",
+               "isHat": True}
+    _TK_INSIDE = [
+        {"index": 0, "name": "Tuna", "displayName": "金枪鱼", "itemId": "(O)130", "stack": 1,
+         "category": "Swim", "isHat": False, "isCreature": True, "canWearHat": False,
+         "wornHat": None},
+        {"index": 1, "name": "Sea Urchin", "displayName": "海胆", "itemId": "(O)397", "stack": 1,
+         "category": "Ground", "isHat": False, "isCreature": True, "canWearHat": True,
+         "wornHat": "草帽"},
+        {"index": 2, "name": "Seaweed", "displayName": "海草", "itemId": "(O)152", "stack": 1,
+         "category": "Decoration", "isHat": False, "isCreature": False, "canWearHat": False,
+         "wornHat": None},
+    ]
     _TK_ITEM = {"slotIndex": 3, "name": "Sea Urchin", "displayName": "海胆", "itemId": "(O)397",
-                "stack": 1, "category": "Ground", "isHat": False, "room": True}
+                "stack": 1, "category": "Ground", "isHat": False, "room": True, "block": "",
+                "replaceWith": []}
     _TK_ITEM2 = {"slotIndex": 5, "name": "Seaweed", "displayName": "海草", "itemId": "(O)152",
-                 "stack": 3, "category": "Decoration", "isHat": False, "room": True}
+                 "stack": 3, "category": "Decoration", "isHat": False, "room": True, "block": "",
+                 "replaceWith": []}
+    # 满了、但**能靠取出腾位**（游鱼 4/4）⇒ 该进「要与哪种进行替换？」那层
     _TK_FULL = {"slotIndex": 4, "name": "Tuna", "displayName": "金枪鱼", "itemId": "(O)130",
-                "stack": 2, "category": "Swim", "isHat": False, "room": False}
-    _TK_INSIDE = [{"name": "Tuna", "displayName": "金枪鱼", "itemId": "(O)130",
-                   "stack": 1, "category": "Swim", "isHat": False}]
+                "stack": 2, "category": "Swim", "isHat": False, "room": False,
+                "block": "category_full",
+                "replaceWith": [{"index": 0, "name": "Tuna", "displayName": "金枪鱼",
+                                 "itemId": "(O)130"}]}
+    # 满了、但**取出任何东西都救不了**（宽缸里已有同款装饰）⇒ **不许给替换层**（那是假门）
+    _TK_DUP = {"slotIndex": 6, "name": "Seaweed", "displayName": "海草", "itemId": "(O)152",
+               "stack": 1, "category": "Decoration", "isHat": False, "room": False,
+               "block": "duplicate", "replaceWith": []}
     _TK = {"ok": True, "x": 44, "y": 23, "name": "豪华鱼缸", "itemId": "(F)DeluxeFishTank",
            "width": 5, "capacity": {"Swim": 4, "Ground": 4, "Decoration": -1},
-           "hatsAllowed": 1, "counts": {"Swim": 4, "Ground": 1, "Decoration": 0}, "hatsInside": 0,
-           "inside": list(_TK_INSIDE), "invTotal": 6,
-           "inventory": [dict(_TK_ITEM), dict(_TK_ITEM2), dict(_TK_FULL)], "held": None}
+           "hatsAllowed": 1, "counts": {"Swim": 4, "Ground": 1, "Decoration": 2},
+           "hatsInside": 1, "inside": [dict(i) for i in _TK_INSIDE], "invTotal": 8,
+           "inventory": [dict(_TK_ITEM), dict(_TK_ITEM2), dict(_TK_FULL), dict(_TK_DUP)],
+           "held": None}
     _TK_FURN = {"ok": True, "count": 1,
                 "furniture": [{"name": "豪华鱼缸", "x": 44, "y": 23, "width": 5, "height": 3,
-                               "isFishTank": True, "isStorage": True, "heldCount": 1,
+                               "isFishTank": True, "isStorage": True, "heldCount": 3,
                                "furnitureType": 9}]}
     _TK_CAPS = {"tank": True, "forage": True}
+    _IM = M.intent_menu
+    _TK_TILE = {"x": 44, "y": 23, "furniture": dict(_TK_FURN["furniture"][0])}
     # ① 便宜闸门：caps 里没有这一位（**老 DLL 的形状**）⇒ 账为空**且一发 `/tank` 都不打**
     _stub(caps={"forage": True}, furniture=_TK_FURN, tank=_TK)
     _tk_old = M._im_tank({"player": {"x": 12, "y": 12}}, _TK_FURN, {"forage": True})
     res.append(ok("🐟 caps 没有 `tank`（老 DLL）⇒ 账为空 **且一次 `/tank` 都不打**",
                   _tk_old == {} and not [c for c in CALLS if c[1] == "/tank"],
                   (_tk_old, [c for c in CALLS if c[1] == "/tank"])))
-    # ② 闸门过了 ⇒ 取值，**只报 `room=True` 的那两件**，满的那件进 `full`（不上单子）
+    res.append(ok("🐟 老 DLL ⇒ 鱼缸那行**照旧是「开 家具」动作行**（`_furn_subs` 回 None）",
+                  _IM._furn_subs(_Ctx(tank={}), [_TK_TILE]) is None))
+    # ② 闸门过了 ⇒ 账里把**缸里的账 + 背包的账**都带出来（取走那半也要它）
     _stub(caps=_TK_CAPS, furniture=_TK_FURN, tank=_TK)
     _tk_on = M._im_tank({"player": {"x": 40, "y": 23}}, _TK_FURN, _TK_CAPS)
-    res.append(ok("🐟 有缸 + 有可放的 ⇒ 账里 x/y/name/items 齐（`items` **只有 room=True**）",
+    res.append(ok("🐟 有缸 ⇒ 账里 x/y/name/inside/inventory 齐（**不再只看「有没有位」**）",
                   _tk_on.get("x") == 44 and _tk_on.get("name") == "豪华鱼缸"
-                  and [i["itemId"] for i in _tk_on["items"]] == ["(O)397", "(O)152"]
-                  and [i["itemId"] for i in _tk_on["full"]] == ["(O)130"], _tk_on))
-    # ③ 一件都放不进 ⇒ `{}`（那两行都不出现；"收是收但满了"只在**回执**里说）
-    _stub(caps=_TK_CAPS, furniture=_TK_FURN, tank=dict(_TK, inventory=[dict(_TK_FULL)]))
-    res.append(ok("🐟 一件都放不进（全满）⇒ 账为空（按了不成的东西**不许上单子**）",
-                  M._im_tank({"player": {"x": 40, "y": 23}}, _TK_FURN, _TK_CAPS) == {}))
-    # ④ 本图没缸 ⇒ `{}`，且**一发 `/tank` 都不打**
+                  and len(_tk_on["inside"]) == 3 and len(_tk_on["inventory"]) == 4, _tk_on))
+    res.append(ok("🐟 缸里/背包都空 ⇒ 退回**最近那口**（流程自己会判成没行可出）",
+                  M._im_tank({"player": {"x": 40, "y": 23}}, _TK_FURN,
+                             _TK_CAPS) is not None))
+    # ③ 本图没缸 ⇒ `{}`，且**一发 `/tank` 都不打**
     _stub(caps=_TK_CAPS, furniture=FURNITURE, tank=_TK)
     res.append(ok("🐟 本图没有鱼缸 ⇒ 账为空 **且一次 `/tank` 都不打**",
                   M._im_tank({"player": {"x": 12, "y": 12}}, FURNITURE, _TK_CAPS) == {}
                   and not [c for c in CALLS if c[1] == "/tank"]))
-    # ⑤ 两条 verb **互斥**（同「坐」的形状）：一件 ⇒ 动作行；≥2 件 ⇒ 目录行
-    _IM = M.intent_menu
-    _c1 = _Ctx(tank={"x": 44, "y": 23, "name": "豪华鱼缸",
-                     "items": [dict(_TK_ITEM)], "full": [dict(_TK_FULL)]})
-    _c2 = _Ctx(tank={"x": 44, "y": 23, "name": "豪华鱼缸",
-                     "items": [dict(_TK_ITEM), dict(_TK_ITEM2)], "full": []})
-    res.append(ok("🐟 只有一件可放 ⇒ 直接给动作行（`tank_put`），**不多点一层**",
-                  _IM._tank_one_can(_c1, None) is True and _IM._tank_pick_can(_c1, None) is False
-                  and "海胆" in _IM._tank_one_show(_c1, None), _IM._tank_one_show(_c1, None)))
-    _tk_subs = _IM._tank_pick_subs(_c2, [None])
-    res.append(ok("🐟 两件以上 ⇒ 合成目录行（`tank_pick`），点开才是「放哪一件」",
-                  _IM._tank_one_can(_c2, None) is False and _IM._tank_pick_can(_c2, None) is True
-                  and _tk_subs is not None and len(_tk_subs.rows) == 2,
-                  (None if _tk_subs is None else [r.label for r in _tk_subs.rows])))
-    res.append(ok("🐟 没得放 / 本图没缸（`{}`）⇒ 两行都不出现（❌）",
-                  _IM._tank_can(_Ctx(tank={}), None) is False
-                  and _IM._tank_one_can(_Ctx(tank={}), None) is False
-                  and _IM._tank_pick_can(_Ctx(tank={}), None) is False))
-    # ⑥ exec 递出去的参数（缸坐标 + 那件的名字 **和** 限定 id）
+    # ④ 第一层（恒 ①）：取走… / 添加鱼或装饰…，**理由栏就是那两张单子**
+    _stub(caps=_TK_CAPS, furniture=_TK_FURN, tank=_TK)
+    _c_tk = _Ctx(tank=M._im_tank({"player": {"x": 40, "y": 23}}, _TK_FURN, _TK_CAPS), px=44, py=24)
+    _lv1 = _IM._tank_flow(_c_tk, _TK_TILE)
+    res.append(ok("🐟 第一层 = 取走 / 添加鱼或装饰（恒 ① 那两个动作；尾巴那个 `…` 由渲染层统一加）",
+                  _lv1 is not None and [r.label for r in _lv1.rows] == ["取走", "添加鱼或装饰"],
+                  (None if _lv1 is None else [r.label for r in _lv1.rows])))
+    res.append(ok("🐟 标题带游戏口径的容量（游鱼/底层/装饰 + 帽子位）",
+                  "游鱼 4/4" in _lv1.title and "帽子 1/1" in _lv1.title, _lv1.title))
+    res.append(ok("🐟 「取走…」的理由栏**逐件列缸里的**，**戴了帽子的用括号标出来**（恒 ①）",
+                  "海胆（底层生物·戴「草帽」）" in _lv1.rows[0].reason, _lv1.rows[0].reason))
+    res.append(ok("🐟 「添加…」的理由栏列**能放的**与**满了的**（满了的会说会问换哪一件）",
+                  "能放：海胆（底层生物）、海草×3（装饰）" in _lv1.rows[1].reason
+                  and "满了：金枪鱼×2（游鱼）" in _lv1.rows[1].reason, _lv1.rows[1].reason))
+    # ⑤ 第二层（取走）：里面每件一行
+    _lv_take = _lv1.rows[0].level
+    res.append(ok("🐟 「取走…」点开 = 缸里**每件一行**",
+                  _lv_take is not None and len(_lv_take.rows) == 3
+                  and "取 金枪鱼（游鱼）" == _lv_take.rows[0].label,
+                  (None if _lv_take is None else [r.label for r in _lv_take.rows])))
+    # ⑥ 第二层（添加）：有位的直接放；满的**再开一层**（恒 ②）；同款装饰**不给替换层**（假门）
+    _lv_add = _lv1.rows[1].level
+    _labels = [r.label for r in _lv_add.rows]
+    res.append(ok("🐟 「添加…」点开：只有**游戏收的**那几件（海胆/海草/金枪鱼），满的也列（它要问换哪件）",
+                  _labels == ["放 海胆（底层生物）", "放 海草×3（装饰）", "放 金枪鱼×2（游鱼）"],
+                  _labels))
+    res.append(ok("🐟 有位的 ⇒ **动作行**（按了就成）；满的 ⇒ **目录行**（点开选换哪件）",
+                  _lv_add.rows[0].level is None and _lv_add.rows[1].level is None
+                  and _lv_add.rows[2].level is not None))
+    res.append(ok("🐟 ⛔ 宽缸里**已有同款**装饰 ⇒ **不给替换层**（取出来也救不了 = 假门），只在标题里说清",
+                  all(r.label != "放 海草（装饰）" for r in _lv_add.rows)
+                  and "已有同款、放不进的" in _lv_add.title, _lv_add.title))
+    # ⑦ 第三层（恒 ②）：要与哪种进行替换？—— 候选 = 缸里同类的那些
+    _lv_swap = _lv_add.rows[2].level
+    res.append(ok("🐟 满的那件点开 = 「要与哪种进行替换？」＋候选 = 缸里**同类**的那件",
+                  _lv_swap is not None and [r.label for r in _lv_swap.rows] == ["金枪鱼"],
+                  (None if _lv_swap is None else [r.label for r in _lv_swap.rows])))
+    # ⑧ exec 递出去的参数（三条各一份）
     _tk_calls = []
-    _tk_txt = _IM._exec_tank(_c1, [dict(_TK_ITEM)],
-                             lambda k, a: _tk_calls.append((k, a)) or
-                             {"ok": True, "st": "yes",
-                              "text": "✅ 放进去了 1 个「海胆」（缸里这件 1 → 2）"})
-    res.append(ok("🐟 exec 走 `tank_put`，参数 = 缸坐标 + 那件的名字/限定 id",
-                  _tk_calls == [("tank_put", {"x": 44, "y": 23, "item": "海胆",
-                                              "item_id": "(O)397"})], _tk_calls))
-    res.append(ok("🐟 回执**用它自己的话**（含「缸里这件 1 → 2」）",
-                  "1 → 2" in _tk_txt and _tk_txt.startswith("✅"), _tk_txt[:140]))
-    # ⑦ 执行器**只认"缸里多了"**：`/tank` 前后对比（`actionTriggered:true` 什么都不证明）
-    _TK_AFTER = dict(_TK, inventory=[dict(_TK_ITEM2)],
-                     inside=list(_TK_INSIDE) + [{"name": "Sea Urchin", "displayName": "海胆",
-                                                 "itemId": "(O)397", "stack": 1,
-                                                 "category": "Ground", "isHat": False}])
-    _stub(caps=_TK_CAPS, furniture=_TK_FURN, tank=[dict(_TK), dict(_TK_AFTER)],
+    _run_fake = lambda k, a: (_tk_calls.append((k, a)) or
+                              {"ok": True, "st": "yes", "text": "✅ 干完了（自验桩）"})
+    _IM._exec_tank_take(_c_tk, [dict(_TK_TILE, tank_item=dict(_TK_INSIDE[1]))], _run_fake)
+    _IM._exec_tank_add(_c_tk, [dict(_TK_TILE, tank_item=dict(_TK_ITEM))], _run_fake)
+    _IM._exec_tank_swap(_c_tk, [dict(_TK_TILE, tank_add=dict(_TK_FULL),
+                                    tank_take=dict(_TK_INSIDE[0]))], _run_fake)
+    res.append(ok("🐟 三条 exec 各发一发：`tank_take` / `tank_add` / `tank_swap`（参数带缸坐标 + 两件的 id）",
+                  _tk_calls == [
+                      ("tank_take", {"x": 44, "y": 23, "item": "海胆", "item_id": "(O)397"}),
+                      ("tank_add", {"x": 44, "y": 23, "item": "海胆", "item_id": "(O)397"}),
+                      ("tank_swap", {"x": 44, "y": 23, "item": "金枪鱼", "item_id": "(O)130",
+                                     "take": "金枪鱼", "take_id": "(O)130"})], _tk_calls))
+    # ⑨ 号不跨屏：渲染时那件已经不在新鲜 ctx 里 ⇒ 如实说 ⏳（不拿旧字典硬做）
+    _stale = _IM._exec_tank_take(_Ctx(tank=dict(_TK, inside=[])),
+                                 [dict(_TK_TILE, tank_item=dict(_TK_INSIDE[1]))], _run_fake)
+    res.append(ok("🐟 执行前按 **itemId 在新鲜账里**再找一遍：找不到 ⇒ ⏳（不硬做）",
+                  str(_stale).startswith("⏳"), str(_stale)[:80]))
+    # ⑩ 取：**必须先把界面开出来**（没开就去开），并且只认"缸里这件少了一个"
+    _TK_AFTER_TAKE = dict(_TK, inside=[dict(_TK_INSIDE[0]), dict(_TK_INSIDE[2])],
+                          inventory=[dict(_TK_ITEM), dict(_TK_ITEM2), dict(_TK_FULL)])
+    #    ⚠️ 三发（`_tank_probe` 在"开界面"那条路上**还会问一次手上拿着什么**）：
+    #       ① 动手前的账 ② 开界面前那次（判"手上这件放不放得进"）③ 动手后的账。
+    _stub(caps=_TK_CAPS, furniture=_TK_FURN, tank=[dict(_TK), dict(_TK), dict(_TK_AFTER_TAKE)])
+    _txt_take = M._im_tank_take(44, 23, "海胆", "(O)397")
+    _opened = [c for c in CALLS if c[1] == "/interact"]
+    res.append(ok("🐟 取：界面没开 ⇒ **先走过去开出来**（`/interact`），再点货架",
+                  len(_opened) == 1 and any(c[1] == "/menu/click" for c in CALLS),
+                  [c for c in CALLS if c[1] in ("/interact", "/menu/click")]))
+    res.append(ok("🐟 取：**只认「缸里这件少了一个」** ⇒ 1 → 0 才报 ✅（并带现在的账）",
+                  _txt_take.startswith("✅") and "1 → 0" in _txt_take
+                  and "📦 里面" in _txt_take, _txt_take[:220]))
+    _stub(caps=_TK_CAPS, furniture=_TK_FURN, tank=[dict(_TK), dict(_TK), dict(_TK)])
+    _txt_take_bad = M._im_tank_take(44, 23, "海胆", "(O)397")
+    res.append(ok("🐟 取：件数没变 ⇒ ⚠️（`ok:true` 什么都不证明）",
+                  _txt_take_bad.startswith("⚠️"), _txt_take_bad[:120]))
+    # ⑩c 2026-10-04 **真机当场撞到的**：放完那一刻**手上还拿着刚放进去的那件** ⇒ 再取的时候
+    #     右键只会把它又放回去、界面开不出来（真机原话：`❌ 手上正拿着「石头」—— 它放得进这口缸`）。
+    #     ⇒ `_im_tank_open` 现在会**自己换手**（挑一件 `(T)` 开头的工具 —— 工具 `CanBeDeposited`
+    #     恒 false，反编译 `:280-283`），这就是恒那条「取 → 关菜单 → 手持放」链子的收口。
+    _TK_HELD_STONE = dict(_TK, held={"name": "Stone", "displayName": "石头", "itemId": "(O)390",
+                                     "can": True, "room": True})
+    _stub(caps=_TK_CAPS, furniture=_TK_FURN, tank=[dict(_TK_HELD_STONE), dict(_TK_HELD_STONE),
+                                                   dict(_TK_AFTER_TAKE)],
+          inv=[{"slotIndex": 1, "name": "Hoe", "displayName": "锄头", "itemId": "(T)Hoe",
+                "stack": 1, "catNum": -99, "quality": 0, "sellable": False, "shippable": False},
+               {"slotIndex": 3, "name": "Stone", "displayName": "石头", "itemId": "(O)390",
+                "stack": 39, "catNum": -15, "quality": 0, "sellable": True, "shippable": True}])
+    _txt_take2 = M._im_tank_take(44, 23, "海胆", "(O)397")
+    _sel_calls = [c[2] for c in CALLS if c[1] == "/select"]
+    res.append(ok("🐟 取：手上拿着**放得进缸**的东西 ⇒ 先换手到工具（`(T)`），再开界面取",
+                  _sel_calls and _sel_calls[0].get("name") == "(T)Hoe"
+                  and _txt_take2.startswith("✅") and "1 → 0" in _txt_take2,
+                  (_sel_calls, _txt_take2[:120])))
+    _stub(caps=_TK_CAPS, furniture=_TK_FURN,
+          tank=[dict(_TK_HELD_STONE), dict(_TK_HELD_STONE), dict(_TK_HELD_STONE)],
+          inv=[{"slotIndex": 3, "name": "Stone", "displayName": "石头", "itemId": "(O)390",
+                "stack": 39, "catNum": -15, "quality": 0, "sellable": True, "shippable": True}])
+    _txt_take3 = M._im_tank_take(44, 23, "海胆", "(O)397")
+    res.append(ok("🐟 取：手上放得进、背包里**又没有工具**可换 ⇒ **明说换不了**（不硬试、不瞎点）",
+                  "没有工具" in _txt_take3, _txt_take3[:140]))
+    # ⑪ 放：**必须先把界面收掉**（恒那句「关菜单才能放」就是这条包办的）
+    _TK_AFTER_ADD = dict(_TK, inside=[dict(i) for i in _TK_INSIDE] + [
+        {"index": 9, "name": "Sea Urchin", "displayName": "海胆", "itemId": "(O)397", "stack": 1,
+         "category": "Ground", "isHat": False, "isCreature": True, "canWearHat": False,
+         "wornHat": None}])
+    _stub(caps=_TK_CAPS, furniture=_TK_FURN, tank=[dict(_TK), dict(_TK_AFTER_ADD)],
+          menu="ShopMenu",
           inv=[{"slotIndex": 3, "name": "Sea Urchin", "displayName": "海胆", "itemId": "(O)397",
                 "stack": 1, "catNum": -4, "quality": 0, "sellable": True, "shippable": True}])
-    _txt_put_ok = M._im_tank_put(44, 23, "海胆", "(O)397")
-    res.append(ok("🐟 端到端：`/tank` 前后对比里这件 **0 → 1** ⇒ 才报 ✅（并且报的是人名，不是 `(O)397`）",
-                  _txt_put_ok.startswith("✅") and "0 → 1" in _txt_put_ok
-                  and "海胆" in _txt_put_ok, _txt_put_ok[:170]))
-    _stub(caps=_TK_CAPS, furniture=_TK_FURN, tank=[dict(_TK), dict(_TK)])
-    _txt_put_bad = M._im_tank_put(44, 23, "海胆", "(O)397")
-    res.append(ok("🐟 端到端：件数没变 ⇒ ⚠️（`actionTriggered:true` 什么都不证明）",
-                  _txt_put_bad.startswith("⚠️"), _txt_put_bad[:170]))
-    # ⑧ 端到端：`_im_ctx()` 把账递给单子 ⇒ 单子上真有那一行
-    _stub(caps=_TK_CAPS, furniture=_TK_FURN, tank=dict(_TK, inventory=[dict(_TK_ITEM)]))
+    _txt_add = M._im_tank_add(44, 23, "海胆", "(O)397")
+    res.append(ok("🐟 放：界面开着 ⇒ **先收掉再手持+右键**（恒那句「关菜单才能放」是这条包办的）",
+                  _txt_add.startswith("✅") and "先把缸的界面收掉了" in _txt_add
+                  and any(c[1] == "/select" for c in CALLS)
+                  and "1 → 2" in _txt_add, _txt_add[:220]))
+    # ⑫ 替换 = **包办三步**（取 → 收界面 → 放），任一步没成就停在那儿
+    _stub(caps=_TK_CAPS, furniture=_TK_FURN, tank=[dict(_TK), dict(_TK_AFTER_TAKE)],
+          menu="ShopMenu")
+    _txt_swap_bad = M._im_tank_swap(44, 23, "杨桃", "(O)90", "海胆", "(O)397")
+    res.append(ok("🐟 替换：取成了、放没成 ⇒ **如实说「取出来了、新的没放进去」**（不许报整段成功）",
+                  "① ✅" in _txt_swap_bad and "没放进去" in _txt_swap_bad
+                  and "没放进去" in _txt_swap_bad, _txt_swap_bad[:220]))
+    _stub(caps=_TK_CAPS, furniture=_TK_FURN, tank=[dict(_TK), dict(_TK)], menu="ShopMenu")
+    _txt_swap_fail = M._im_tank_swap(44, 23, "杨桃", "(O)90", "海胆", "(O)397")
+    res.append(ok("🐟 替换：**取都没成 ⇒ 不往下做**（缸里没腾出位，放也是白放）",
+                  "不往下做" in _txt_swap_fail, _txt_swap_fail[:200]))
+    # ⑬ 端到端：`_im_ctx()` → 单子上那一行是**目录行**（点开才是取走/添加）
+    _stub(caps=_TK_CAPS, furniture=_TK_FURN, tank=_TK)
     _ctx_tk = M._im_ctx()
     _sheet_tk = _IM.render_menu(_ctx_tk, n=40)
-    res.append(ok("🐟 端到端：`_im_ctx()` 把账递进 Ctx（`ctx.tank` 就是那份）",
-                  _ctx_tk.tank.get("x") == 44 and _ctx_tk.tank.get("name") == "豪华鱼缸",
+    res.append(ok("🐟 端到端：`_im_ctx()` 把账递进 Ctx（`ctx.tank.inside` 就是那份）",
+                  _ctx_tk.tank.get("x") == 44 and len(_ctx_tk.tank.get("inside") or []) == 3,
                   _ctx_tk.tank))
-    res.append(ok("🐟 端到端：单子上有「放 海胆 进豪华鱼缸」那一行（**看单子就够**）",
-                  "放 海胆 进豪华鱼缸" in _sheet_tk, _sheet_tk[-500:]))
-    # ⑨ 回执那几行（**恒真正要的那句**："背包还有什么东西能够手持放进鱼缸"）—— 纯排版，直接喂账
+    res.append(ok("🐟 端到端：单子上鱼缸那行是**目录行**（句尾 `…`），不再只是「开」",
+                  "开 豪华鱼缸…" in _sheet_tk, _sheet_tk[-600:]))
+    # ⑭ 回执那几行（开 家具 那条路仍用它）—— 纯排版，直接喂账
     _tk_txt_on = "\n".join(M._tank_lines(44, 23, dict(_TK), 5))
-    res.append(ok("🐟 回执**逐件列能放的**（名字+游戏分的类别）+ 满了的另说 + 压根不收的件数",
+    res.append(ok("🐟 回执**逐件列能放的**（名字+游戏分的类别）+ 满了的说清**为什么** + 压根不收的件数",
                   "海胆" in _tk_txt_on and "底层生物" in _tk_txt_on and "海草" in _tk_txt_on
-                  and "金枪鱼" in _tk_txt_on and "压根不收" in _tk_txt_on, _tk_txt_on))
-    res.append(ok("🐟 回执给**放法**（先关界面 → 敲单子上那行 = 手持 + 右键缸本体）",
-                  "先关掉界面" in _tk_txt_on and "右键缸本体" in _tk_txt_on, _tk_txt_on))
-    res.append(ok("🐟 回执带容量（游戏口径：游鱼/底层/装饰 + 帽子位）",
-                  "游鱼 4/4" in _tk_txt_on and "底层生物 1/4" in _tk_txt_on
-                  and "帽子 0/1" in _tk_txt_on, _tk_txt_on))
+                  and "金枪鱼" in _tk_txt_on and "取出同类一件就能换" in _tk_txt_on
+                  and "缸里已有同款" in _tk_txt_on and "压根不收" in _tk_txt_on, _tk_txt_on))
+    res.append(ok("🐟 回执给**放法**（先关界面 → 手持 + 右键缸本体）；`howto=False` 时**不提那句过期话**",
+                  "先关掉界面" in _tk_txt_on and "右键缸本体" in _tk_txt_on
+                  and "先关掉界面" not in "\n".join(M._tank_lines(44, 23, dict(_TK), 5, howto=False))))
     _tk_txt_old = "\n".join(M._tank_lines(44, 23, {}, 5))
     res.append(ok("🐟 老 DLL（读不到 `/tank`）⇒ 回执**明说读不出来**，不拿空表冒充「一件都放不进」",
                   ("读不到" in _tk_txt_old or "没有 `/tank`" in _tk_txt_old)
