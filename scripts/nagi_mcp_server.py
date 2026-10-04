@@ -23594,6 +23594,230 @@ def _im_tank(state: dict, furniture: dict, caps: dict) -> dict:
     return out
 
 
+# 📄 「这份 `/menu` **还没读过**」的哨兵（不是 `None`：`None`/`{}` 都是**读过了**的合法结果）。
+#    `_im_ctx` 里两处消费方（`_im_menu_data` 摊开 / `_im_quests` 领奖的账）**共用一发** HTTP。
+_UNFETCHED = object()
+
+
+def _im_quests(state: dict, raw=_UNFETCHED) -> dict:
+    """📜 任务日志里**已完成、有钱、还没领**的任务 → `{"items":[…],"n":N,"sum":G,"reward_box":{…},"page":P}` / `{}`。
+
+    恒 2026-10-04（这一批的原始口径）：
+      > 「已完成的任务**打个括号在清单上标注**，完全可以交给我们**一件领取**，
+      >   再**一条条返回**领取结算的任务**详细页面明细**（比如：合计结算 n 项，xxx g。
+      >   任务名字 1 · 详细页里的任务描述 · 3500g；任务 2 · 描述 · 300g）」
+
+    ⇒ 这一层**只读账**（谁可领、各多少钱、卡在哪一格），动手在 `_im_claim_quests`。
+
+    ⚠️ **判据全是游戏自己给的**（`/menu` 里那几张卡）：
+       `completed`（= `ShouldDisplayAsComplete()`）+ `money > 0`（= `GetMoneyReward()`）
+       + 有可点的 `x/y`。**不在这儿另判一套**（本项目老病：同一件事写两遍必漂）。
+    ⚠️ 只在 **QuestLog 开着**时多打这一发 `/menu`（卡片明细只在那份里，`/state.activeMenu`
+       没有）—— 跟 `_im_shop`/`_im_tank` 同一个形状：**平时一次都不多花**。
+    ⚠️ `page` = `questPage`（**-1 = 还在列表页；≥0 = 停在那一张的详情页**，值就是 `items[].index`）。
+       领奖那两步（点卡 → 点 rewardBox）靠它决定"要不要先点卡"：`questPage != -1` 时
+       **点卡只会退回列表**（`QuestLog.cs:453` 那张卡的选择分支前面写着 `if (questPage == -1)`）。
+    ⚠️ 老 DLL 没有 `description`/`questPage` ⇒ 分别是空串/-1：**回执少印一栏、多花一次点击**，
+       不是"没得领"（不许把它折叠成"没这回事"）。
+    ⚠️ `raw` = 调用方**已经读过**的那份 `/menu`（`_im_ctx` 里 `_im_menu_data` 和这一处
+       **共用一发**：同一屏打两次同样的 HTTP 是本项目的白烧老病）。`_UNFETCHED` = 自己读。
+    """
+    mt = ((state or {}).get("activeMenu") or {}).get("type") or ""
+    if mt != "QuestLog":
+        return {}
+    if raw is _UNFETCHED:
+        try:
+            raw = api._ai_get("/menu") or {}
+        except Exception:
+            return {}
+    raw = raw or {}
+    items = []
+    for c in (raw.get("items") or []):
+        if not isinstance(c, dict):
+            continue
+        if not c.get("completed"):
+            continue
+        m = c.get("money")
+        if not isinstance(m, int) or m <= 0:            # ⚠️ `money` 缺失/为 0 ⇒ 领不到钱
+            continue
+        if c.get("x") is None or c.get("y") is None:
+            continue
+        items.append({"index": c.get("index"), "name": (c.get("name") or "?"),
+                      "description": (c.get("description") or ""),
+                      "money": m, "x": c.get("x"), "y": c.get("y"),
+                      "source": c.get("source") or ""})
+    if not items:
+        return {}
+    out = {"items": items, "n": len(items), "sum": sum(i["money"] for i in items),
+           "page": raw.get("questPage") if isinstance(raw.get("questPage"), int) else None}
+    rb = next((b for b in (raw.get("buttons") or []) if b.get("name") == "rewardBox"), None)
+    if isinstance(rb, dict) and isinstance(rb.get("x"), int) and isinstance(rb.get("y"), int):
+        out["reward_box"] = {"x": rb["x"], "y": rb["y"]}
+    return out
+
+
+def _im_quests_line(name: str, desc: str, money: int) -> str:
+    """回执里那一条任务的明细（恒给的形状：**名字 · 详细页里的描述 · 金额**）。
+
+    ⚠️ 描述可能很长（详细页那一段是整段正文）⇒ 截到 60 字（那是个**明细栏**，不是正文；
+       要看全的走 `menu read`/点卡）。描述读不到（老 DLL）时**少印一栏**，不编。
+    """
+    d = " ".join((desc or "").split())
+    if len(d) > 80:
+        d = d[:80] + "…"
+    return f"   · {name}" + (f" ｜ {d}" if d else "") + f" ｜ {money}g"
+
+
+def _im_claim_quests() -> str:
+    """💰 **一键领完**任务日志里所有「已完成 + 有钱」的奖励，**逐条回明细** → 一句话。
+
+    恒 2026-10-04：「**完全可以交给我们一件领取**，再一条条返回…明细」。
+
+    === 为什么是"循环再读"而不是"照单子那份快照逐项点" ===
+    下单那一刻的 `items[]` 是**快照**，而领一次奖会改变列表本身：`Quest.OnMoneyRewardClaimed()`
+    把 `moneyReward` 置 0 并 `destroy = true`（`Quest.cs:727-731`），游戏下次重排列表时
+    **把这一条摘掉**（`QuestLog.cs:230-241` 就是那个 `RemoveAt`）⇒ 后面的卡**下标整体前移**。
+    照快照点 = 点空（甚至点到别人头上）。所以每一轮都**重新读 `/menu`**、只认"此刻还钱>0"的卡。
+
+    === 两步手势（判据来自 `QuestLog.cs` 反编译）===
+      ①**点那张卡**（`questLogButtons[i].containsPoint`）——但只有列表页才吃这一下
+        （`if (questPage == -1)`），停在某张详情页时**这一下是"退回列表"**（`exitQuestPage`）
+        ⇒ 所以 `questPage` 告诉我们该点一下还是两下；
+      ②**点 `rewardBox`**（`_shownQuest.ShouldDisplayAsComplete() && HasMoneyReward()`
+        + `rewardBox.containsPoint(x, y + num)`）。
+    成功**只看游戏自己的账**：再读一次 `/menu`，那张卡的钱变成 0（或整条没了）才算成。
+    """
+    def _menu() -> dict:
+        try:
+            return api._ai_get("/menu") or {}
+        except Exception:
+            return {}
+
+    def _wallet():
+        try:
+            return ((api._ai_get("/state") or {}).get("player") or {}).get("money")
+        except Exception:
+            return None
+
+    def _click_xy(x, y):
+        try:
+            api._ai_post("/menu/click", {"x": int(x), "y": int(y)})
+            return True
+        except Exception:
+            return False
+
+    def _claimable(raw: dict) -> list:
+        return [c for c in (raw.get("items") or [])
+                if isinstance(c, dict) and c.get("completed")
+                and isinstance(c.get("money"), int) and c.get("money") > 0
+                and isinstance(c.get("x"), int) and isinstance(c.get("y"), int)]
+
+    def _still_there(raw: dict, want: dict):
+        """那张卡**还欠着钱**吗 → `True`（欠着）/ `False`（不欠了 = 领到了）/ `None`（**看不出来**）。
+
+        ⚠️⚠️ `None` 这一档**不能折叠成 `False`**：菜单被点没了、或者 `/menu` 读不回来时，
+           按"不欠钱"算就是**谎报领取成功**（本项目最老的那种病）。看不出来就说不出来。
+        """
+        if (raw.get("type") or "") != "QuestLog":
+            return None
+        for c in (raw.get("items") or []):
+            if isinstance(c, dict) and c.get("index") == want.get("index") \
+                    and c.get("name") == want.get("name"):
+                return bool(isinstance(c.get("money"), int) and c.get("money") > 0)
+        # 列表重排过（下标变了）⇒ 退回按名字找
+        for c in (raw.get("items") or []):
+            if isinstance(c, dict) and c.get("name") == want.get("name"):
+                return bool(isinstance(c.get("money"), int) and c.get("money") > 0)
+        return False                       # 整条都没了 = 已经不在列表上（领过/消失了）
+
+    def _page_clicks(open_idx, want_idx):
+        """要弄开 `want_idx` 那张卡的详情页 ⇒ **点几下卡**（判据 = "现在哪张卡的详情页开着"）。
+
+        反编译实锤（`QuestLog.cs:453/492/515`，**两页的行为完全不同**）：
+          · **列表页**（`questPage == -1`）点卡 ⇒ 选中它（`questPage = i`，`:460`）；
+            点**别处** ⇒ `exitThisMenu()`（`:487`）—— **整个日志关掉**；
+          · **详情页**（`questPage != -1`）点卡/点别处 ⇒ `exitQuestPage()`（`:517`）—— **退回列表**；
+            点 rewardBox 且这张卡"完成+有钱" ⇒ 给钱（`:492`）。
+        ⇒ 0 下（已经在它上面）/ 1 下（列表页）/ 2 下（停在**别人**的详情页：先退回列表、再选中）。
+        """
+        if want_idx is not None and open_idx == want_idx:
+            return 0
+        return 1 if open_idx is None else 2
+
+    w0 = _wallet()
+    got, fail = [], []
+    # 🧭 **"现在哪张卡的详情页开着"**（`None` = 列表页）。
+    #    ⚠️ 新 DLL 每轮用现读的 `questPage` 纠正；**老 DLL 读不到时，这本账就是唯一的状态源** ——
+    #       它记的是**我们自己点出来的**结果，所以可信；真正不知道的只有"进这条路之前
+    #       玩家/AI 手工点到哪张卡了"，那时先当列表页（多发一下），最坏是**如实报没领到**。
+    open_idx = None
+    for _round in range(6):                # 本档顶多几条；6 轮是"别卡死"的闸
+        raw = _menu()
+        cards = _claimable(raw)
+        if not cards:
+            break
+        c = cards[0]
+        name, amt = c.get("name") or "?", int(c.get("money") or 0)
+        pg = raw.get("questPage")
+        if isinstance(pg, int):            # 新 DLL：现读的真值说了算
+            open_idx = None if pg == -1 else pg
+        rb = next((b for b in (raw.get("buttons") or []) if b.get("name") == "rewardBox"), None)
+        if not (isinstance(rb, dict) and isinstance(rb.get("x"), int) and isinstance(rb.get("y"), int)):
+            fail.append((name, amt, "这一屏没有可点的 rewardBox（钱还没到能领的时候？）"))
+            break
+        # 点 rewardBox。⚠️ 三档落点：按钮自己的中心，以及 ±48 ——
+        # `QuestLog.cs:491` 那个 `num = -48`（限时任务 + 名字宽过一半）会让**能点到的点**
+        # 偏离 `bounds.Center`；三档都**靠回读判**，所以多试两下没有副作用
+        # （点空只把详情页退回列表；列表页点空会关掉日志 —— 那一条下面按 `None` 如实报）。
+        verdict, why = None, "点了卡和 rewardBox（三档落点），钱**一分没动** ⇒ 没领到"
+        for dy in (0, 48, -48):
+            n = _page_clicks(open_idx, c.get("index"))
+            for _ in range(n):
+                _click_xy(c["x"], c["y"]); time.sleep(0.32)
+                open_idx = c.get("index") if open_idx is None else None   # 列表→它 / 别人→列表
+            _click_xy(rb["x"], rb["y"] + dy)
+            for _ in range(6):                          # 等钱结算（游戏是同步加，网络同步要几拍）
+                time.sleep(0.15)
+                verdict = _still_there(_menu(), c)
+                if verdict is False:                    # ← 只有"不欠了"才算成
+                    break
+            if verdict is False:
+                break                                   # 领到了：详情页**还开着**（领奖不关页）
+            open_idx = None                             # 这一发点空了 ⇒ 页被退回列表（或整个日志关了）
+            if verdict is None:
+                why = ("点了之后**读不回菜单**（`/menu` 说它不在 QuestLog 了）"
+                       "⇒ 领没领**不知道**，自己看一眼")
+                break
+        if verdict is False:
+            got.append((name, c.get("description") or "", amt))
+        else:
+            fail.append((name, amt, why))
+            break                                       # 别死循环（剩下的留给人看）
+    w1 = _wallet()
+    if not got and not fail:
+        return "⚠️ 这会儿没有可领的任务奖励了（列表变了？先 `show` 看一眼）"
+    # ⚠️⚠️ 开头那个记号**必须跟"到底领到几项"一致**：`_im_run` 判成没成**只看首字符**
+    #    （`❌`→没成 · `⚠️`→存疑 · 其余→成）⇒ 一项都没领到时若照旧印 `💰 合计结算 0 项`，
+    #    回执头一行就是 **`✅ 领取奖励`**，正文却写着"没领到"—— 同一屏自己打自己（本项目的活标本）。
+    mark = "💰" if (got and not fail) else ("⚠️" if got else "❌")
+    head = f"{mark} 合计结算 {len(got)} 项，{sum(a for _, _, a in got)}g"
+    if isinstance(w0, int) and isinstance(w1, int):
+        head += f"（钱包 {w0} → {w1}）"
+    lines = [head] + [_im_quests_line(n, d, a) for n, d, a in got]
+    for n, a, why in fail:
+        # ⚠️ 文案**不替 `why` 下结论**：`why` 自己会说是"没领到"还是"读不回来、不知道"
+        #    （把"没核实"写成"没领到"是另一种谎 —— 钱可能已经到手了）。
+        lines.append(f"   ❌ {n}（{a}g）—— {why}")
+    if got and not fail:
+        # ⚠️ 一轮最多 6 条（防死循环）⇒ 还剩就**如实说**，别让"合计 6 项"看着像"全领完了"。
+        left = len(_claimable(_menu()))
+        if left:
+            lines.append(f"   ⚠️ 还剩 {left} 条没领（一轮最多 6 条）—— 再敲一次这一行就行")
+    if got and not any(d for _, d, _ in got):
+        lines.append("   ⚠️ 这版 Mod 还没报「任务描述」（`GetDescription()` 那一栏）—— 重启游戏后补上")
+    return "\n".join(lines)
+
+
 def _im_ctx():
     """一次把单子要的世界快照凑齐。
 
@@ -23625,7 +23849,17 @@ def _im_ctx():
     #    「先 `menu read`」那句话该不该留，判据是**这一刻那份内容到底摊没摊出来** ——
     #    所以这里把 `_im_menu_data`/`_im_shop` 的**实际结果**先算出来，再把事实递下去。
     #    ⚠️ **不是**照菜单名猜（类型只能决定"摊不摊得出来"，不能证明"摊成了"）。
-    _md = _im_menu_data(state)
+    #    ⚠️ 这一发 `/menu` **两处共用**（下面 `_im_menu_data` 摊开 + `_im_quests` 领奖的账）——
+    #       同一屏打两次同样的 HTTP 是本项目的白烧老病；`None` = 读失败（让它们照旧各自失败一次，
+    #       行为与改前一字不差），`{}` = 真读到了但内容为空（**这两者不能混**）。
+    _RAW_MENU = _UNFETCHED
+    if _mt and "dialoguebox" not in _mt.lower():
+        try:
+            _RAW_MENU = api._ai_get("/menu") or {}
+        except Exception:
+            # 读失败 ⇒ 传哨兵：两处各自照旧再试一次（**行为与"没这层共用"时一字不差**）
+            _RAW_MENU = _UNFETCHED
+    _md = _im_menu_data(state, raw=_RAW_MENU)
     _shop = _im_shop(state)
     _content_shown = bool(_md) or bool((_shop or {}).get("items"))
     # 🔌 能力表**只读一次**：`_im_caps()` 每次都会打 `/status`（老话说得准："判据只有一处"），
@@ -23677,6 +23911,10 @@ def _im_ctx():
                                 #    缸从**已经拿到的** `/furniture` 里认；`caps["tank"]` 不为真
                                 #    ⇒ **一次 HTTP 都不多打**（老 DLL 上没有那个端点）。
                                 tank=_im_tank(state, furniture, _caps),
+                                # 📜 「领取奖励」那行的账（2026-10-04 恒「先做领奖」）：**只在
+                                #    QuestLog 开着时**多打一发 `/menu`（卡片明细只在那份里，
+                                #    `/state.activeMenu` 没有）—— 平时一次都不多花。
+                                quests=_im_quests(state, raw=_RAW_MENU),
                                 worn=worn)
 
 
@@ -24749,6 +24987,11 @@ def _im_run(op, args):
         #       没事件时 `skipEvent()` 会退化成"按 ESC 关菜单"（另一件事），
         #       而 `skip_event()` 会把这种情况如实报出来。
         "menu_claim": lambda: _menu_claim_now(),
+        # 📜 2026-10-04 恒「先做领奖」：任务日志里"已完成 + 有钱"的任务**一键领完**，
+        #    回执按恒给的形状逐条报（名字 · 详细页描述 · 金额）。
+        #    ⚠️ 走 `helpers`（回**一句话**）：判据是"那张卡的钱还在不在"，
+        #       不是把 `/menu/click` 那几发原始 dict 摊给 AI 看。
+        "quest_claim": lambda: _im_claim_quests(),
         "skip": lambda: skip_event(),
         # 🧾 确认过夜结算（2026-10-01）：结算屏（ShippingMenu）上「确认结算」按下去走这里。
         "settle": lambda: confirm_settlement(),
@@ -25051,7 +25294,7 @@ def _im_menu_option(option, real=None):
     return f"✅ 第 {_n} 个答案已经发出去了{_how}，这一屏已经过去了"
 
 
-def _im_menu_data(state: dict) -> dict:
+def _im_menu_data(state: dict, raw=_UNFETCHED) -> dict:
     """📋 **开着的菜单里能摊到单子上的东西**（2026-10-01 · P-menus）→ dict（没有 = `{}`）。
 
     现在摊**两种**（都在这儿判，`intent_menu` 只管照着数据出行为）：
@@ -25095,10 +25338,12 @@ def _im_menu_data(state: dict) -> dict:
                              #    是回读那一步把它抓住的）。
                              "real": _question_needs_real(am),
                              "options": opts}}
-    try:
-        raw = api._ai_get("/menu") or {}
-    except Exception:
-        return {}
+    if raw is _UNFETCHED:
+        try:
+            raw = api._ai_get("/menu") or {}
+        except Exception:
+            return {}
+    raw = raw or {}
     # 🗿 **选择题菜单**（2026-10-04 恒：「**矮人国王雕像是有选项的，按理来说要套一层选择题**」）。
     #    真机（`SkullCave` (5,4) `Statue Of The Dwarf King`，我站 (5,5) 朝上 interact）那一屏：
     #      `type: ChooseFromIconsMenu` · `isChoice: true` · **`responses: null`**

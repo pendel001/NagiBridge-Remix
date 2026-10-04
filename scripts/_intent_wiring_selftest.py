@@ -3835,6 +3835,183 @@ def main():
     res.append(ok("😴 pet_walk：循环里也认游戏那句（`sleep_dialogue()`）+ 收掉对话框（别留堵塞）",
                   "def sleep_dialogue" in _pw and "close_dialogue()" in _pw, None))
 
+    # ㉕ 203z补13 📜 **任务日志「领取奖励」**（恒 2026-10-04：「**已完成的任务打个括号在清单上标注**，
+    #     完全可以交给我们**一件领取**，再**一条条返回**领取结算的任务详细页面明细（合计结算 n 项，
+    #     xxx g。任务名字 1 · 详细页里的任务描述 · 3500g；…）」）。
+    #    判据**全是游戏自己的卡**（`completed` + `money>0`）；成不成**只看那张卡的钱变没变**。
+    class _QL:
+        """🧪 **QuestLog 的小模型** —— 判定顺序照反编译那份 `receiveLeftClick` 抄：
+
+          ①`questPage != -1` 且点在 rewardBox 上（游戏比的是 `containsPoint(x, y + num)`）⇒ 给钱；
+          ②`questPage != -1` 且点别处 ⇒ `exitQuestPage()`（**退回列表**，`questPage = -1`）；
+          ③`questPage == -1` 且点在卡上 ⇒ 选中（`questPage = i`）。
+
+        ⚠️ `num` 那 48px 偏移也照抄（`offset=`）—— 不抄就验不了"三档落点真的救得回来"。
+        ⚠️ 这层模型**故意能撒谎**（`nopay=` / `vanish=`）：失败与"读不回来"两条路必须有样本，
+           否则"钱没动却印 ✅"这种病永远照不出来。
+        """
+
+        def __init__(self, cards, rb=(640, 700), offset=0, vanish=False, page=-1, no_page=False):
+            # ⚠️ `index` **按列表位次重编**（照 C# 那份 `for (int i = 0; …) index = i`）——
+            #    游戏里 `index` 与 `questPage` 用的是**同一个下标**；夹具不重编就会造出
+            #    "index=1 却排在第 0 位"这种现实中不存在的形状（第一版就这么把自验打红的）。
+            self.cards = [dict(c, index=i) for i, c in enumerate(cards)]
+            self.rb, self.offset, self.page = rb, offset, page
+            self.vanish = vanish            # 领到钱之后菜单自己关掉（验"读不回来不许算成"）
+            self.no_page = no_page          # 老 DLL：`/menu` 里压根没有 `questPage` 这一栏
+            self.wallet = 2364712
+            self.open = True
+            self.clicks = []
+
+        def menu(self):
+            if not self.open:
+                return {"ok": True, "open": False, "type": ""}
+            out = {"ok": True, "open": True, "type": "QuestLog",
+                   "items": [dict(c) for c in self.cards],
+                   "buttons": [{"name": "rewardBox", "x": self.rb[0], "y": self.rb[1]}]}
+            if not self.no_page:
+                out["questPage"] = self.page
+            return out
+
+        def click(self, d):
+            x, y = d.get("x"), d.get("y")
+            if x is None or y is None:
+                return
+            self.clicks.append((x, y))
+            if self.page != -1 and 0 <= self.page < len(self.cards):
+                if abs(x - self.rb[0]) <= 6 and abs(y + self.offset - self.rb[1]) <= 6:
+                    c = self.cards[self.page]
+                    if c.get("completed") and (c.get("money") or 0) > 0:
+                        self.wallet += int(c["money"]); c["money"] = 0
+                        if self.vanish:
+                            self.open = False
+                        return
+                self.page = -1              # ② 点空 ⇒ 退回列表
+                return
+            for i, c in enumerate(self.cards):      # ③ 选中那张卡
+                if abs(x - c["x"]) <= 4 and abs(y - c["y"]) <= 4:
+                    self.page = i
+                    return
+
+    def _ql_run(ql, fn):
+        """把 `/menu` `/state` `/menu/click` 接到上面那个小模型上（其余端点照旧走桩）。"""
+        _og, _op = api._ai_get, api._ai_post
+
+        def _g(ep, params=None):
+            if ep == "/menu":
+                CALLS.append(("GET", ep, params)); return ql.menu()
+            if ep == "/state":
+                d = dict(_og(ep, params) or {})
+                d["player"] = dict(d.get("player") or {}, money=ql.wallet)
+                d["activeMenu"] = ({"type": "QuestLog"} if ql.open else None)
+                return d
+            return _og(ep, params)
+
+        def _p(ep, data=None):
+            if ep == "/menu/click":
+                CALLS.append(("POST", ep, data)); ql.click(data or {}); return {"ok": True}
+            return _op(ep, data)
+
+        api._ai_get, api._ai_post = _g, _p
+        try:
+            return fn()
+        finally:
+            api._ai_get, api._ai_post = _og, _op
+
+    # 真机那份卡片形状（2026-10-04 只读抓的；`description` = 新 DLL 才有的详细页正文）
+    _QC = [
+        {"index": 0, "source": "questLog", "name": "海莉的蛋糕竞走赛", "description": "带一个巧克力蛋糕。",
+         "completed": False, "money": 0, "x": 640, "y": 167},
+        {"index": 1, "source": "specialOrders", "name": "历史的碎片",
+         "description": "收集 100 块骨头。把骨头放在博物馆柜台的投递箱里。",
+         "completed": True, "money": 3500, "x": 640, "y": 257},
+        {"index": 2, "source": "questLog", "name": "士兵的星星",
+         "description": "肯特想送一个杨桃给妻子当结婚纪念礼物。",
+         "completed": True, "money": 300, "x": 640, "y": 347},
+    ]
+    _stub(menu="QuestLog")
+    _ql1 = _QL(_QC)
+    _ctx_q = _ql_run(_ql1, lambda: M._im_ctx())
+    _sheet_q = _IM.render_menu(_ctx_q, n=40)
+    res.append(ok("📜 端到端：日志开着 + 两条可领 ⇒ 单子上真有「领 2 项奖励」",
+                  "领 2 项奖励" in _sheet_q,
+                  [x for x in _sheet_q.splitlines() if "奖励" in x]))
+    res.append(ok("📜 账目只有**游戏自己认的**那两条（未完成/没钱那张不进账）",
+                  (_ctx_q.quests or {}).get("n") == 2 and (_ctx_q.quests or {}).get("sum") == 3800,
+                  _ctx_q.quests))
+    res.append(ok("📜 理由栏就是恒要的**括号标注**（合计 + 逐条 名字·金额）",
+                  "合计 3800g（历史的碎片 3500g、士兵的星星 300g）" in _sheet_q,
+                  [x for x in _sheet_q.splitlines() if "合计" in x]))
+    res.append(ok("📜🔴 那一发 `/menu` **只有一发**（摊开菜单内容 + 领奖的账**共用同一份**）",
+                  len([c for c in CALLS if c[1] == "/menu"]) == 1,
+                  [c for c in CALLS if c[1] == "/menu"]))
+    # 非 QuestLog 的菜单 ⇒ 不添乱、也不多打（账是空的，`/menu` 仍只有摊开那一发）
+    _stub(menu="ItemListMenu")
+    _ctx_ni = M._im_ctx()
+    res.append(ok("📜 别的菜单开着 ⇒ 账是空的（不认菜单名的反面：**不该出现就不出现**）",
+                  not (_ctx_ni.quests or {}),
+                  len([c for c in CALLS if c[1] == "/menu"])))
+    # 一件领取：两条**一次敲完**，钱包 +3800，回执是恒给的形状
+    _ql2 = _QL(_QC)
+    _r_q = _ql_run(_ql2, lambda: M._im_run("quest_claim", {}))
+    _txt_q = _r_q.get("text") or ""
+    res.append(ok("📜 端到端：敲一下**两条都领到**、钱包 +3800（判据=游戏自己的账）",
+                  _r_q.get("st") == "yes" and _ql2.wallet == 2364712 + 3800,
+                  (_r_q.get("st"), _ql2.wallet)))
+    res.append(ok("📜 回执 = 恒给的形状：**合计结算 n 项** + 每条「名字 ｜ 详细页描述 ｜ 金额」",
+                  "合计结算 2 项，3800g" in _txt_q
+                  and "· 历史的碎片 ｜ 收集 100 块骨头。把骨头放在博物馆柜台的投递箱里。 ｜ 3500g" in _txt_q
+                  and "· 士兵的星星 ｜ 肯特想送一个杨桃给妻子当结婚纪念礼物。 ｜ 300g" in _txt_q,
+                  _txt_q))
+    res.append(ok("📜 两条卡的钱都归了 0（不是「点了就算」）",
+                  all((c.get("money") or 0) == 0 for c in _ql2.cards[1:]),
+                  [c.get("money") for c in _ql2.cards]))
+    # 🔴 钱没动 ⇒ **不许印 💰**（`_im_run` 判成没成只看首字符）
+    _ql3 = _QL(_QC, offset=999)
+    _r_bad = _ql_run(_ql3, lambda: M._im_run("quest_claim", {}))
+    _txt_bad = _r_bad.get("text") or ""
+    res.append(ok("📜🔴 三档落点钱都没动 ⇒ 回执**以 ❌ 开头**（一项没成时不许印「💰 合计结算 0 项」）",
+                  _r_bad.get("st") == "no" and _txt_bad.lstrip().startswith("❌"), _txt_bad[:160]))
+    res.append(ok("📜🔴 而且如实说「钱一分没动 ⇒ 没领到」+ 钱包一分没动",
+                  "一分没动" in _txt_bad and _ql3.wallet == 2364712, _ql3.wallet))
+    # 48px 偏移（`num=-48`：限时任务 + 名字宽过一半 ⇒ 能点到的点在 bounds.Center 之外）
+    _ql4 = _QL(_QC, offset=-48)
+    _r_off = _ql_run(_ql4, lambda: M._im_run("quest_claim", {}))
+    res.append(ok("📜 限时+长名那 48px 偏移 ⇒ **第三档落点救回来**（仍然真领到，不是靠运气）",
+                  _r_off.get("st") == "yes" and _ql4.wallet == 2364712 + 3800
+                  and any(abs(y - (_ql4.rb[1] + 48)) <= 6 for _x, y in _ql4.clicks),
+                  _ql4.clicks[:6]))
+    # 详情页停在**别人**那张卡上（`questPage != -1`）⇒ 点一下只是退回列表，得点两下
+    _ql5 = _QL(_QC, page=0)
+    _r_pg = _ql_run(_ql5, lambda: M._im_run("quest_claim", {}))
+    _clicks_on_cards = [1 for x, y in _ql5.clicks if abs(x - 640) <= 4 and abs(y - 257) <= 4]
+    res.append(ok("📜 停在别人的详情页 ⇒ `_page_clicks` 算出来是**点两下**（先退回列表再选中）",
+                  _r_pg.get("st") == "yes" and _ql5.wallet == 2364712 + 3800
+                  and len(_clicks_on_cards) >= 2, _ql5.clicks[:6]))
+    # 领到钱之后菜单自己关了 ⇒ **读不回来 ≠ 领到了**（钱可能已到手，不许报成功也不许报"没领到"）
+    _ql6 = _QL([_QC[1]], vanish=True)
+    _r_van = _ql_run(_ql6, lambda: M._im_run("quest_claim", {}))
+    _txt_van = _r_van.get("text") or ""
+    res.append(ok("📜🔴 点完读不回菜单 ⇒ **不算成功**（`st != yes`）、且措辞是「不知道」不是「没领到」",
+                  _r_van.get("st") != "yes" and "不知道" in _txt_van and "没领到" not in _txt_van,
+                  _txt_van[:200]))
+    # 老 DLL：卡片没有 `description`、`/menu` 没有 `questPage`
+    _QC_OLD = [{k: v for k, v in c.items() if k != "description"}
+               for c in _QC]
+    _stub(menu="QuestLog")
+    _ql7 = _QL(_QC_OLD)
+    _ctx_old = _ql_run(_ql7, lambda: M._im_ctx())
+    _sheet_old = _IM.render_menu(_ctx_old, n=40)
+    res.append(ok("📜 老 DLL（没描述）⇒ 那一行**照样在**（不许把「读不到描述」折叠成「没得领」）",
+                  "领 2 项奖励" in _sheet_old, [x for x in _sheet_old.splitlines() if "奖励" in x]))
+    _ql8 = _QL(_QC_OLD, no_page=True)
+    _r_old = _ql_run(_ql8, lambda: M._im_run("quest_claim", {}))
+    _txt_old = _r_old.get("text") or ""
+    res.append(ok("📜 老 DLL：领奖照样成（`questPage` 缺 ⇒ 退化成「点多一下」，回读仍判得准）",
+                  _r_old.get("st") == "yes" and _ql8.wallet == 2364712 + 3800, _ql8.wallet))
+    res.append(ok("📜 老 DLL：回执**少印描述那一栏** + 明说「重启游戏后补上」（不编、也不装作有）",
+                  "收集 100 块骨头" not in _txt_old and "重启游戏后补上" in _txt_old, _txt_old[:200]))
+
     print(f"\n{sum(res)}/{len(res)} 过")
     return all(res)
 

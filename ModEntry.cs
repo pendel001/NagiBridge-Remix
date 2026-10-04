@@ -13662,6 +13662,11 @@ public class ModEntry : Mod
                 object? shippingCategories = null;
                 int shippingCurrentPage = -1;   // 🧾 ShippingMenu 当前展开类目（-1=收拢看五大项小计）
                 object? mastery = null;   // 🎓 MasteryTrackerMenu（精通石碑/中央基座，2026-09-16）
+                // 📜 QuestLog 现在停在**哪一页**（-1 = 还在列表；≥0 = 那张卡的详情页，值就是
+                //    `pages[currentPage]` 里的下标 = `items[].index`）。⚠️ 这个数决定"下一步该点卡
+                //    还是直接点 rewardBox"：`questPage != -1` 时**点卡只会退回列表**（`QuestLog.cs:453`），
+                //    所以领奖那条路没有它就是靠"点两下碰运气"。2026-10-04 恒「先做领奖」时加。
+                int questPageVal = -1;
 
                 if (menu is DialogueBox db)
                 {
@@ -14196,6 +14201,8 @@ public class ModEntry : Mod
                         {
                             int cur = 0;
                             try { cur = (int)(ql.GetType().GetField("currentPage", qlFlags)?.GetValue(ql) ?? 0); } catch { }
+                            // 📜 同一个反射拿到"现在是不是停在某张卡的详情页"（字段是 `protected int questPage`）
+                            try { questPageVal = (int)(ql.GetType().GetField("questPage", qlFlags)?.GetValue(ql) ?? -1); } catch { questPageVal = -1; }
                             if (cur >= 0 && cur < pagesVal.Count && pagesVal[cur] is System.Collections.IList pq)
                             {
                                 var cards = new List<object>();
@@ -14206,6 +14213,11 @@ public class ModEntry : Mod
                                     if (q == null || cc == null) continue;
                                     string nm = "?", src = "?";
                                     bool done = false; int money = 0;
+                                    // 📝 2026-10-04 恒：「**再一条条返回领取结算的任务详细页面明细**（名字 · 详细页里的
+                                    //    任务描述 · 金额）」—— 那段正文只有游戏自己有（`QuestLog.cs:637` 详细页画的
+                                    //    就是 `_shownQuest.GetDescription()`），Python 侧**抄不到**（`/quest_list` 那份
+                                    //    对特别订单只给本地化 key `[Lewis_Text]`）⇒ 在这一层取真字符串，两端同源。
+                                    string qdesc = "";
                                     // 🎯 2026-09-01 恒拍板：菜单为唯一权威 → 每张卡顺带读子目标进度(同一批游戏对象已拿到)，
                                     //    使 menu read(QuestLog) 就能看"做了几/做满没"，遂退役 list_quests(原始dump)+quest_progress。
                                     //    objectives=特别订单子目标；progress=常规任务进度(复用 ReflectField，同 /quest_progress 逻辑)。
@@ -14218,6 +14230,10 @@ public class ModEntry : Mod
                                         {
                                             nm = so.GetName(); src = "specialOrders"; done = so.ShouldDisplayAsComplete(); money = so.GetMoneyReward();
                                             daysLeft = so.GetDaysLeft();
+                                            // 📝 详细页那段正文（`SpecialOrder.GetDescription()` 已经把
+                                            //    `[Key]` 换成真文本、`%farm` 之类也替换过了）——**单独 try**：
+                                            //    它抛了不该把这张卡的 name/money 也一起丢掉。
+                                            try { qdesc = so.GetDescription() ?? ""; } catch { }
                                             var objList = new List<object>();
                                             if (so.objectives != null)
                                             {
@@ -14245,6 +14261,7 @@ public class ModEntry : Mod
                                         {
                                             nm = quest.questTitle; src = "questLog"; done = quest.completed.Value; money = quest.moneyReward.Value;
                                             daysLeft = quest.daysLeft.Value;
+                                            try { qdesc = quest.GetDescription() ?? ""; } catch { }   // 📝 同特别订单那条
                                             var qobj = (object)quest;
                                             progress = new
                                             {
@@ -14258,7 +14275,7 @@ public class ModEntry : Mod
                                         }
                                     }
                                     catch { }
-                                    cards.Add(new { index = i, source = src, name = nm, completed = done, money, x = cc.bounds.Center.X, y = cc.bounds.Center.Y, objectives, progress, daysLeft });
+                                    cards.Add(new { index = i, source = src, name = nm, description = qdesc, completed = done, money, x = cc.bounds.Center.X, y = cc.bounds.Center.Y, objectives, progress, daysLeft });
                                 }
                                 if (cards.Count > 0) grabItems = cards;
                             }
@@ -14633,7 +14650,9 @@ public class ModEntry : Mod
                     listTotal, listPage, listPageSize,
                     shipping, shippingTotal, shippingCurrentTab,
                     shippingCategories, shippingCurrentPage,
-                    mastery   // 🎓 MasteryTrackerMenu 内容（2026-09-16）
+                    mastery,   // 🎓 MasteryTrackerMenu 内容（2026-09-16）
+                    // 📜 QuestLog 停在列表还是某张卡的详情页（-1 = 列表；≥0 = 那张卡的下标）
+                    questPage = questPageVal
                 });
             }
             catch (Exception ex)

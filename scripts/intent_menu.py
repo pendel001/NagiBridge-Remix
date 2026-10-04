@@ -197,6 +197,14 @@ class Ctx:
     #    `menu_claim` = 服务器算好的**那一行的标题**（`""` = 这个菜单没有可领的）。
     #    判据在服务器（`/state.activeMenu.mastery.canClaim`，跟抬头那句话**同源**），这一层只消费。
     menu_claim: str = ""
+    # 📜 2026-10-04 恒：「**先做领奖**」——任务日志里"已完成、有钱、还没领"的任务。
+    #    `{}` = 没开日志 / 这一刻一条都没有（⇒ 整行不出现）；有值时：
+    #      `{"items":[{"index","name","description","money","x","y","source"}],
+    #        "n":N, "sum":G, "reward_box":{"x","y"}, "page":P}`
+    #    ⚠️ **由服务器算好递进来**（`_im_quests` → 只在 QuestLog 开着时读一次 `/menu`）：
+    #       这一层**不认菜单名、不打 HTTP**（同 `menu_claim`/`menu_exit`/`shop` 的形状）。
+    #    ⚠️ `description` = 详细页那段正文（老 DLL 没这一栏 ⇒ 空串，回执少印一栏、不编）。
+    quests: dict = field(default_factory=dict)
     # 📋 **开着的菜单里摊出来的东西**（2026-10-01 · P-menus）。
     #    ⚠️ **由服务器挑好递进来**（`_im_menu_data`），这一层**不自己打 `/menu`、也不认菜单名**
     #       —— 跟 `menu_exit`/`shop`/`caps` 同一个形状：判据只有一处，消费侧只管用。
@@ -2554,6 +2562,46 @@ _CLAIM_V = Verb("menu_claim", "领取", 78,
                 menu_ok=True)
 
 
+# 📜 「领取奖励」（**任务日志里的一次性正事**）—— 恒 2026-10-04：
+#    「已完成的任务**打个括号在清单上标注**，完全可以交给我们**一件领取**，
+#      再**一条条返回**领取结算的任务详细页面明细（合计结算 n 项，xxx g。
+#      任务名字 1 · 详细页里的任务描述 · 3500g；任务 2 · 描述 · 300g）」
+# ⚠️ 判据**全在服务器**（`Ctx.quests`＝卡片上游戏自己的 `completed` + `money>0`），
+#    这一层**不认菜单名**（同 `menu_claim`/`menu_exit`：认两遍早晚漂）。
+# ⚠️ 权重 78（跟精通碑那条同档）：**日志开着的那一刻，领奖就是正事**，压在「关掉界面」(30) 之上。
+# ⚠️ 「一件领取」= **一行**；逐条明细走**回执**（`_im_claim_quests` 的原话）——
+#    不摊成 N 行：恒要的正是"别一条条点"，摊开就是把它往"一条条敲"上引。
+def _quest_items(ctx) -> list:
+    return [i for i in ((ctx.quests or {}).get("items") or []) if isinstance(i, dict)]
+
+
+def _quest_claim_can(ctx, t):
+    return CAN_YES if _quest_items(ctx) else CAN_NO
+
+
+def _quest_claim_show(ctx, t):
+    n = len(_quest_items(ctx))
+    return f"领 {n} 项奖励" if n else "领取奖励"
+
+
+def _quest_claim_reason(ctx, t):
+    """理由栏 = **已完成的任务（括号标注）** —— 恒原话：「打个括号在清单上标注」。"""
+    items = _quest_items(ctx)
+    if not items:
+        return ""
+    bit = "、".join(f"{i.get('name') or '?'} {int(i.get('money') or 0)}g" for i in items[:3])
+    if len(items) > 3:
+        bit += f"…（共 {len(items)} 项）"
+    return (f"合计 {int((ctx.quests or {}).get('sum') or 0)}g（{bit}）"
+            f" · 敲了**一次全领**，逐条明细在回执里")
+
+
+QUEST_CLAIM_V = Verb("quest_claim", "领取奖励", 78, _quest_claim_can, _quest_claim_reason,
+                     _quest_claim_show, "world",
+                     exec=lambda c, t, run: _receipt_from_helper("领取奖励", "", run("quest_claim", {})),
+                     menu_ok=True)
+
+
 # ═══════════════════════════════════════════════════════════════════
 # 📋 菜单摊开：**开着的容器菜单里有什么**（2026-10-01 · P-menus 第一刀）
 # ═══════════════════════════════════════════════════════════════════
@@ -3891,6 +3939,9 @@ VERBS: list = [
     BERRY_V, SPOT_V, CRAB_V, PAN_V, MILK_V,
     # 🎓 2026-10-02 恒「补一下缺门」：菜单里的一次性正事（精通碑领取）也要有行。
     _CLAIM_V,
+    # 📜 2026-10-04 恒「先做领奖」：**任务日志里的一件领取**（已完成+有钱的任务，一次全领、
+    #    回执逐条报 名字·详细页描述·金额）。判据 = `Ctx.quests`（服务器只在日志开着时读 `/menu`）。
+    QUEST_CLAIM_V,
     # 🗑️ 2026-10-02 恒「捡垃圾可以上」：**翻垃圾桶**（账 = `Ctx.chores["garbage"]`，
     #    判据是服务器那侧的 `_trash_cans_here()`，跟状态条那条提示共用一份）。
     TRASH_V,
@@ -4920,7 +4971,8 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
              menu_data: dict = None, reforge: dict = None, mwork: dict = None,
              doors: dict = None, chores: dict = None, clint_open: bool = False,
              hay: dict = None, pick: dict = None,
-             ponds: dict = None, statue: dict = None, tank: dict = None) -> Ctx:
+             ponds: dict = None, statue: dict = None, tank: dict = None,
+             quests: dict = None) -> Ctx:
     """把 `/state`(**full**) + `/surroundings`(+`/machines`/`/scan_chests`) 拼成 Ctx。
 
     ⚠️ 只搬运，**不补默认值**：缺什么就让它缺着（`can()` 遇到缺失自然回 假/？）。
@@ -5018,6 +5070,9 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
                # 🐟 「放 … 进鱼缸」那两行的账（同上：`_im_tank` → C# `/tank` —— 这一层
                #    不认"游戏收什么"，也不自己问背包）。
                tank=tank or {},
+               # 📜 「领取奖励」那行的账（同上：`_im_quests` 只在 QuestLog 开着时读一次 `/menu`，
+               #    这一层不认菜单名、也不自己问任务）。
+               quests=quests or {},
                sitting=bool(((seats or {}).get("me") or {}).get("sitting")),
                worn=(worn or {}),
                pets=pets,
