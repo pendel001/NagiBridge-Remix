@@ -23703,6 +23703,66 @@ def _im_sell(name):
     return api._ai_post("/sell_to_shop", {"name": name})
 
 
+def _im_furn_interact(x, y, kind=""):
+    """🐟💄📺 走过去开一件家具（电视/梳妆柜/鱼缸），**顺手把里面的东西念出来**。
+
+    恒 2026-10-04：「交互的时候**自己帮读鱼缸/衣柜里有什么**返回 result，**可以放什么进去**和接线选项」。
+
+    · 梳妆柜/鱼缸开的都是 **`ShopMenu`**（`StorageFurniture.ShowShopMenu` `:151-169`，
+      `GetShopMenuContext()` 回 `"Dresser"`/`"FishTank"`）⇒ **里面的东西就是货架**
+      （`/menu` 的 `shopItems`，单价恒 0）⇒ 这里列 `名字×数量`。
+    · **取** = `menu click(item=名字)`（点货架 = 拿出来，`ShopMenu.receiveLeftClick` 的 forSaleButtons 分支）。
+    · **放**：
+        - **梳妆柜** = `menu sell(name=…)` —— 但**只收 帽/衣/裤/靴 四类**
+          （`ShopMenu.cs:481-516` 的 `categoriesToSellHere`；别的件点了**静默无效**，所以这句必须说出来）。
+        - **鱼缸** = 菜单里**放不进去**（`FishTank` 的 `categoriesToSellHere` 是**空**的，
+          所有东西都"不高亮" ⇒ 点背包格恒无效）⇒ 只能**手持鱼/帽/装饰 + 右键它本体**
+          （`FishTankFurniture.checkForAction` `:220` 的持物分支）。
+    · **电视**开的是 TV 的菜单，同一条路，把菜单类型报回去就够。
+    """
+    _ensure_background()
+    try:
+        ok = api.interact_machine(int(x), int(y))
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    time.sleep(0.7)                      # 家具那扇门要等 mutex（`mutex.RequestLock` 是下一 tick 才开）
+    try:
+        m = ((api._ai_get("/state") or {}).get("activeMenu")) or {}
+    except Exception:
+        m = {}
+    mt = (m.get("type") or "")
+    lines = [f"走到 ({x},{y}) 交互{'成功' if ok else '（没够着，硬试了一下）'} · 菜单：{mt or '没开'}"]
+    if not mt:
+        lines.append("   ⚠️ 没开出菜单 —— 可能没站到位/被挡着；换个角度再来一次")
+        return {"ok": False, "text": "\n".join(lines)}
+    # 里面的东西（ShopMenu 的货架 = 容器的 heldItems）+ **能放什么**（`sellableHere` = 游戏自己算的
+    # "背包里这家收的"，梳妆柜只认 帽/衣/裤/靴 ⇒ 这个字段就是恒要的"可以放什么进去"，别自己编表）
+    items, put = [], []
+    try:
+        md = api._ai_get("/menu") or {}
+        for g in (md.get("shopItems") or [])[:12]:
+            nm = g.get("displayName") or g.get("name") or "?"
+            items.append(f"{nm}×{int(g.get('stock') or 1)}")
+        put = [str(v) for v in (md.get("sellableHere") or [])][:8]
+    except Exception:
+        pass
+    if kind == "tv":
+        # 📺 电视开的是**对话**（`DialogueBox`），"里面"没有东西 —— 别印"里面是空的"（那是句废话）
+        lines.append("   📺 电视：`menu read` 看今天播的（农务小贴士/明日天气/运势），推进用 `menu advance`")
+        return {"ok": True, "text": "\n".join(lines), "menu": mt}
+    if items:
+        lines.append(f"   📦 里面 {len(items)} 样（取 = `menu click(item=名字)`）：" + "、".join(items))
+    else:
+        lines.append("   📦 里面是空的")
+    if kind == "store":
+        lines.append("   ➕ 能放进去的（**梳妆柜只收 帽/衣/裤/靴**）："
+                     + ("、".join(put) + " → `menu sell(name=名字)`" if put
+                        else "你包里现在没有这类东西"))
+    elif kind == "tank":
+        lines.append("   ➕ **鱼缸放鱼/装饰：菜单里放不进去** —— 把它拿在手上，对着鱼缸 `scene at` 右键")
+    return {"ok": True, "text": "\n".join(lines), "menu": mt}
+
+
 def _im_close_menu() -> str:
     """🚪 关掉当前界面 —— 走现成的 `cancel()`，**然后回读核实**。→ 一句话。
 
@@ -24165,6 +24225,9 @@ def _im_run(op, args):
     args = dict(args or {})
     helpers = {
         "sit": lambda: sit(args.get("x"), args.get("y"), args.get("face")),
+        # 🐟💄📺 2026-10-04 恒：「鱼缸梳妆柜和电视……只是没接到单子上」＋「交互的时候
+        #    **自己帮读鱼缸/衣柜里有什么**返回 result」⇒ 走过去开 + 把里面的东西念出来。
+        "furn": lambda: _im_furn_interact(args.get("x"), args.get("y"), args.get("kind") or ""),
         # 🪑 起身（2026-10-01）：单子上的「起身」按下去走这里。
         #    ⚠️ 调现成的 `stand()`（它自己轮询确认），**不另写一套**。
         #    ⚠️ 它外面裹着 `_with_state` —— 内嵌调用时那层会**自己闭嘴**（`_OPS_INNER["n"]`），

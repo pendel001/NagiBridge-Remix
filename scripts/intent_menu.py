@@ -913,13 +913,71 @@ def _sit_pick_subs(ctx, targets):
 
 
 SIT_ONE_V = Verb("sit", "坐", 26, _sit_one_can, _sit_reason, _sit_show, "tile",
-                 exec=_exec_sit, group="家具")
-# ⚠️ 键的分工：**`sit` 仍是"那行真正干活的"**（一种座位名时它直接上单子；≥2 种时它只活在第二层）
+                 exec=_exec_sit, group="家具")# ⚠️ 键的分工：**`sit` 仍是"那行真正干活的"**（一种座位名时它直接上单子；≥2 种时它只活在第二层）
 #    —— 脚本/钉子/文档引的一直是 `sit`，别把键挪走（`_VERB_BY_KEY["sit"]` 好几处在用）。
 #    目录行另起一个键 `sit_pick`。
 SIT_PICK_V = Verb("sit_pick", "坐", 26, _sit_pick_can, _sit_pick_reason,
                   lambda c, t: "坐", "world",
                   subs=_sit_pick_subs, count=_sit_pick_count, group="家具")
+
+
+# 🐟💄📺 2026-10-04 恒：「鱼缸梳妆柜和电视……**只是没接到单子上**」＋「交互的时候**自己帮读
+#    鱼缸/衣柜里有什么**返回 result，可以放什么进去和接线选项」。
+#    数据**早就到了**这一层（`ctx.tiles[(x,y)]["furniture"]`，`/furniture` 给的
+#    `isTV`/`isStorage`/`isFishTank`/`heldCount` —— 后两个是 2026-10-04 新加的 C# 字段，
+#    没有它们鱼缸压根认不出：它的 `furnitureType` 是 9、跟普通装饰同号）⇒
+#    这里只补"长一行 + 走过去开 + 把里面的东西念出来"。
+def _furn_kind(f):
+    """这件家具属于哪一类 —— **只认 C# 给的布尔**，别按名字猜（恒：「名单会烂」）。"""
+    if (f or {}).get("isFishTank"):
+        return "tank"
+    if (f or {}).get("isStorage"):
+        return "store"
+    if (f or {}).get("isTV"):
+        return "tv"
+    return ""
+
+
+def _furn_here(ctx):
+    """本图能开的家具（电视/梳妆柜/鱼缸）——离我近的在前。"""
+    out = [t for t in ctx.tiles.values() if _furn_kind(t.get("furniture"))]
+    out.sort(key=lambda t: _dist(ctx, t))
+    return out
+
+
+def _furn_can(ctx, t):
+    return CAN_YES if _furn_kind((t or {}).get("furniture")) else CAN_NO
+
+
+def _furn_show(ctx, t):
+    f = t.get("furniture") or {}
+    k = _furn_kind(f)
+    return f"{'看' if k == 'tv' else '开'} {f.get('name') or _FURN_LABEL.get(k, '家具')}"
+
+
+def _furn_reason(ctx, t):
+    f = t.get("furniture") or {}
+    k = _furn_kind(f)
+    # ⚠️ **别在这儿写坐标** —— `_where()` 已经在尾巴前面印了 `(x,y)`（第一版重复成 `(39,23) (39,23)`）
+    bits = []
+    if k in ("tank", "store"):
+        n = int(f.get("heldCount") or 0)
+        bits.append(f"里面 {n} 件" if n else "里面是空的")
+    elif k == "tv":
+        bits.append("看农务小贴士/明日天气")
+    return " · ".join(bits)
+
+
+def _exec_furn(ctx, targets, run):
+    f = (targets[0].get("furniture") or {})
+    # `kind` 递过去 ⇒ 回执才能按"梳妆柜/鱼缸"分别说清**放东西**那半（鱼缸菜单里放不进去）
+    r = run("furn", {"x": f.get("x"), "y": f.get("y"), "kind": _furn_kind(f)})
+    return _receipt_from_helper("开", f.get("name") or "家具", r)
+
+
+_FURN_LABEL = {"tv": "电视", "tank": "鱼缸", "store": "梳妆柜"}
+FURN_V = Verb("furn", "开 家具", 70, _furn_can, _furn_reason, _furn_show, "tile",
+              exec=_exec_furn, group="家具")
 
 
 # 🪑 「起身」（2026-10-01）—— **坐着时的唯一出路**。
@@ -3374,7 +3432,9 @@ VERBS: list = [
     # 🪑 2026-10-04 恒：「把坐合成一下」⇒ **两种以上座位**才合成顶层这一行目录行（点开才是各把椅子）；
     #    **只有一种**时走 `SIT_ONE_V`（直接给「坐 木椅」，不多点一层）。见上面那段的账。
     SIT_ONE_V,
-    SIT_PICK_V,    # 🪑 起身：**坐着才出现**（见上面 `_stand_can` 那段）——它是「坐」的**出口**，
+    SIT_PICK_V,
+    # 🐟💄📺 2026-10-04 恒：「鱼缸梳妆柜和电视……只是没接到单子上」⇒ 上单（见上面那段的账）
+    FURN_V,    # 🪑 起身：**坐着才出现**（见上面 `_stand_can` 那段）——它是「坐」的**出口**，
     #    没有它，单子就把 AI 留在一个自己不给路的状态里。
     # ⚠️ 权重贴着 `sit`(70) 下面一点：同一个"姿势"家族，坐/起 该挨着看。
     #    压不过 收放(88)/箱子(80) 是对的 —— 坐着不影响收放（`_mwork_can` 不看坐姿）。
