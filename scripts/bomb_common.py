@@ -3137,62 +3137,16 @@ class BombMiner(WeaponMixin):
         """（兼容壳）老调用方不用改——内部已升级为四级撤退链。"""
         return self.retreat(reason)
 
-    def touch_skull_statue(self):
-        """头骨矿洞入口（沙漠）摸雕像：加竖井概率（下矿前调用）。
-        雕像位置每存档不同——动态扫描找含 Statue 的对象，不写死坐标。"""
-        try:
-            if not self.safe_warp("Desert", 8, 6):
-                log("  ⚠️ 传不到沙漠，跳过摸雕像")
-                return False
-            time.sleep(0.4)
-            d = self.surroundings(30)
-            statues = [(t["x"], t["y"], t.get("object", ""))
-                       for t in d.get("tiles", []) if "Statue" in (t.get("object") or "")]
-            if not statues:
-                log("  🗿 沙漠没扫到雕像（可能没摆/在别处）")
-                return False
-            x, y, name = statues[0]
-            log(f"  🗿 摸雕像 {name} ({x},{y})")
-            # 站雕像旁边（下方→右→左→上）→ 面向雕像 → 交互
-            stood = False
-            for dx, dy, f in ((0, 1, 0), (1, 0, 3), (-1, 0, 1), (0, -1, 2)):
-                if self.position_safe(x + dx, y + dy):
-                    self.face(f)
-                    time.sleep(0.3)
-                    stood = True
-                    break
-            if not stood:
-                log("  ⚠️ 雕像旁站不上，跳过")
-                return False
-            self._post("/interact", {})
-            time.sleep(1.0)
-            # 选效果：优先竖井/梯子（加竖井概率），其次免疫炸弹，再随便选
-            try:
-                m = self._get("/menu")
-                if m and m.get("open") and m.get("type") == "ChooseFromIconsMenu":
-                    icons = [b for b in (m.get("buttons") or []) if b.get("hoverText")]
-                    pick = None
-                    for kw in ("竖井", "梯子", "运气", "速度", "炸弹", "无法对你造成伤害"):
-                        for b in icons:
-                            if kw in (b.get("hoverText") or ""):
-                                pick = b
-                                break
-                        if pick:
-                            break
-                    if pick is None and icons:
-                        pick = icons[0]
-                    if pick:
-                        # ⚠️ 2026-09-26：同上——有菜单时 /click 一样会先 `setMousePosition` 拽光标。
-                        #   ChooseFromIconsMenu **不在**"真读 Game1.getMouseX"的名单里
-                        #   （decomp grep 实查）⇒ 传进去的 x,y 就够，不用挪光标。
-                        self._post("/click", {"x": pick["x"], "y": pick["y"], "no_move": True})
-                        time.sleep(0.8)
-                        log(f"  🗿 选效果: {pick.get('hoverText')}")
-            except Exception:
-                pass
-            return True
-        except Exception:
-            return False
+    # ⛔🗿 **`touch_skull_statue()` 2026-10-04 真删**（恒：「**挖矿脚本里的可以删了。我以为已经删了。
+    #    因为它从来没有触发过而且在之前导致过无法异步续层的问题。**」）
+    #    · 全仓**零调用点**（`grep -n touch_skull_statue` 只剩定义本身）⇒ 死代码；
+    #    · 它那套是"warp 沙漠 (8,6) → `/surroundings` 找雕像 → `/position` 站旁边 →
+    #      `/interact` → **自己按关键词挑图标**（竖井/梯子/运气…否则第一个）" ——
+    #      ① 自动挑 = 替 AI 做决定（且那屏真机有**空文本诱饵**）；
+    #      ② 头骨矿洞里它那条 warp 正是"**没法原地异步续层**"的老病根。
+    #    摸雕像现在**只有一条路**：`farm ops=statue`（= 单子那行「摸 雕像」）——
+    #    找雕像走 `/machines`（整图 + `location`）+ `blessing_statue.py`（精确站位、真走位），
+    #    弹了图标菜单**留给单子**（`intent` 的「选 「…」」行）。
 
     # ═══════════ 楼梯（99石头造，感染层跳关） ═══════════
 

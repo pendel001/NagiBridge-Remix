@@ -23189,6 +23189,56 @@ def _im_chores(state: dict, surr: dict, animals: dict) -> dict:
     return out
 
 
+# 🗿 **本图雕像矩形扫的结果缓存**（`{key, ts, tiles}`；`key = "图名|天"`）。
+# 为什么要有它：`/machines` **不一定扫所有图**（2026-10-04 实测：农场/`SkullCave` 能扫到雕像，
+# 沙漠那张图回 0 条），而恒说「**雕像会到处摆的**」（一般摆入口层或家里）⇒ 光靠 `/machines`
+# 会漏图。矩形扫一次要 1~2 发（`/surroundings` rect，上限 4096 格）⇒ 给个短 TTL 缓存，
+# 免得每次 `intent show` 都扫一遍。**TTL 短**（默认 120s）是有意的：雕像被挪走/收起要能很快反映。
+_STATUE_RECT_CACHE = {"key": None, "ts": 0.0, "statues": []}
+_STATUE_RECT_TTL = 120.0
+
+
+def _scan_statues_rect(state: dict) -> list:
+    """🗿 **本图整图**扫雕像（object 层）→ `[{type,x,y,location}]`（失败/超时回 `[]`）。
+
+    ⚠️ 判据只用一条：`object` 名里含 `Statue`（**别扫家具层**：`(F)` 装饰雕像摸不出东西 ——
+       当年 `cabin enum` 与 `blessing_statue` 打架就是扫错了层）。
+    ⚠️ `/surroundings` 的矩形模式**上限 4096 格**（超了明确报错、不是静默）⇒ 按地图宽切块。
+    ⚠️ 结果按 `图名|天` 缓存 120s（见 `_STATUE_RECT_CACHE` 那段）。
+    """
+    loc = (state or {}).get("location") or {}
+    name = loc.get("name") if isinstance(loc, dict) else loc
+    w = loc.get("mapWidth") if isinstance(loc, dict) else None
+    h = loc.get("mapHeight") if isinstance(loc, dict) else None
+    if not name or not isinstance(w, int) or not isinstance(h, int) or w <= 0 or h <= 0:
+        return []          # 读不到地图尺寸 ⇒ **不猜**（这条路的输入必须是真的）
+    try:
+        day = api.day_key()
+    except Exception:
+        day = ""
+    key = f"{name}|{day}"
+    now = time.time()
+    if _STATUE_RECT_CACHE.get("key") == key and (now - _STATUE_RECT_CACHE.get("ts", 0.0)) < _STATUE_RECT_TTL:
+        return list(_STATUE_RECT_CACHE.get("statues") or [])
+    per = max(1, 4096 // max(w, 1))          # 每块多少行（宽×行 ≤ 4096）
+    found, y = [], 0
+    while y < h:
+        y2 = min(y + per - 1, h - 1)
+        try:
+            d = api._ai_get("/surroundings", {"x1": 0, "y1": y, "x2": w - 1, "y2": y2}) or {}
+        except Exception:
+            return list(_STATUE_RECT_CACHE.get("statues") or []) if _STATUE_RECT_CACHE.get("key") == key else []
+        for t in (d.get("tiles") or []):
+            obj = (t or {}).get("object") or ""
+            if "Statue" in obj:
+                x, yy = (t or {}).get("x"), (t or {}).get("y")
+                if isinstance(x, int) and isinstance(yy, int):
+                    found.append({"type": obj, "x": x, "y": yy, "location": name})
+        y = y2 + 1
+    _STATUE_RECT_CACHE.update(key=key, ts=now, statues=list(found))
+    return found
+
+
 def _im_statue(state: dict, surr: dict, machines: list = None) -> dict:
     """🗿 「摸 雕像」那行的账 —— 2026-10-04 恒拍板 (b) + 「**当前图有就报，有就摸**」。
 
@@ -23220,7 +23270,8 @@ def _im_statue(state: dict, surr: dict, machines: list = None) -> dict:
         #        `case "(BC)StatueOfTheDwarfKing": … else if
         #         (!who.hasBuffWithNameContainingString("dwarfStatue"))
         #             Game1.activeClickableMenu = new ChooseFromIconsMenu("dwarfStatue");`
-        #      ）⇒ 它**是 buff 门、不是"每天一次"**（buff 过期就又能摸）。
+        #     ）⇒ 它**是 buff 门**（恒 2026-10-04：「**矮人雕像的话也是持续一整天的**」⇒ buff 挂着的
+        #     这一整天都不会再给菜单，**实际效果就是每天一次**；跨天 buff 自然没了 ⇒ 又能摸）。
         #   ⚠️⚠️ 真机实证（我踩过）：先摸了**祝福**雕像 ⇒ `blessedByStatueToday=True`，
         #      可矮人国王**照样弹菜单、照样给 buff**（`dwarfStatue_3`）⇒ **两者不是一个门**；
         #      摸了摸过之后复摸 ⇒ `actionTriggered=true` 却**不弹菜单**（buff 还在）⇒ 门就是 buff。
@@ -23229,8 +23280,18 @@ def _im_statue(state: dict, surr: dict, machines: list = None) -> dict:
         _buffs = [str((b or {}).get("id") or "") for b in (_pl.get("buffs") or [])]
         _dwarf_used = any("dwarfStatue" in b for b in _buffs)
         _blessed = _pl.get("blessedByStatueToday")
+        # 雕像来自**两个源**（判据同一个：`Statue` 子串 + `location == 本图`）：
+        #   ① `/machines`（**已经拿到的那份**，零额外 HTTP）——它扫得到的图直接命中；
+        #   ② **本图整图矩形扫**（`_scan_statues_rect`，带 120s 缓存）——补 `/machines` 扫不到的图。
+        #   ⚠️ 为什么要 ②：恒 2026-10-04「**雕像会到处摆的**」（一般摆入口层/家里），而实测
+        #      `/machines` 在沙漠回 0 条 ⇒ 只靠它 = **有些图上的雕像永远不出现**。
+        #   ⚠️ ②**只在 ① 本图没找到时**才跑（省调用）；只要有一座雕像在场就不再多扫。
+        _cand = [m for m in (machines or []) if "Statue" in str((m or {}).get("type") or "")
+                 and (not here or not (m or {}).get("location") or (m or {}).get("location") == here)]
+        if not _cand:
+            _cand = _scan_statues_rect(state)
         entries = []
-        for m in (machines or []):
+        for m in _cand:
             ty = str((m or {}).get("type") or "")
             if "Statue" not in ty:
                 continue

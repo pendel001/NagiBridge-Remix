@@ -175,7 +175,7 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
           silo=None, troughs=None, trough_filled=0, trough_raise=False,
           surr_tiles=None, trash_cans=None, cola=None, npcs=None, nuts=None,
           trash_checked=None, pet_bowls=None, passable_ret=None, ai_xy=None,
-          statues=(), blessed=None, ponds=None, buffs=None):
+          statues=(), blessed=None, ponds=None, buffs=None, map_size=None):
     CALLS.clear()
     WALK_CALLS.clear()
     # 🚶 "我"站哪格：默认照 `STATE`（(12,12)），用例要"人已经站在棚门口"就传 `ai_xy=`。
@@ -209,6 +209,11 @@ def _stub(build="2026-09-29 12:00:00 @abc1234", shop=False, menu_get_raises=Fals
     if loc is not None:
         # 🗺 换图（用例：砸晶球只在铁匠铺给那一行）
         state = dict(state, location={"name": loc, "uniqueName": loc})
+    if map_size is not None:
+        # 🗿 地图尺寸（`/state.location.mapWidth/mapHeight`）——**本图矩形扫雕像**要用它切块。
+        #    ⚠️ 必须放在 `loc` 之后（上面那句把 location **整个换掉**了 ⇒ 早写会被吃掉）。
+        state = dict(state, location=dict(state.get("location") or {},
+                                          mapWidth=map_size[0], mapHeight=map_size[1]))
     if npcs is not None:
         # 👥 `/state.npcs` 的真形状：**只有村民**（C# 侧已经滤掉宠物/马/怪物/祝尼魔，见 ModEntry
         #    5217），字段就 name/displayName/x/y —— **没有 `kind`**（宠物走另一个 `pets` 字段）。
@@ -2473,6 +2478,32 @@ def main():
     _c_two = M._im_ctx().statue
     res.append(ok("🗿 两座同图：**只要还有一座能摸就给行**（矮人用过、祝福没过 ⇒ `used_today=False`）",
                   _c_two.get("used_today") is False and len(_c_two.get("statues") or []) == 2, _c_two))
+    # 🗿 换图兜底：`/machines` **不一定扫所有图**（真机实测：农场/`SkullCave` 能扫到、沙漠回 0 条）
+    #    而恒 2026-10-04：「**雕像会到处摆的**」（一般摆入口层或家里）⇒ 本图**矩形扫**兜底。
+    _stub(loc="SkullCave", machines=[], statues=[(5, 4, "Statue Of The Dwarf King")],
+          map_size=(30, 20), blessed=False)
+    M._STATUE_RECT_CACHE.update(key=None, ts=0.0, statues=[])
+    _c_rect = M._im_ctx().statue
+    res.append(ok("🗿 `/machines` 本图没有 ⇒ **矩形扫本图**兜底（雕像摆在家里/入口层也认）",
+                  _c_rect.get("names") == ["Statue Of The Dwarf King"]
+                  and _c_rect.get("tiles") == [[5, 4]], _c_rect))
+    res.append(ok("🗿 矩形扫的结果**带缓存**（`图名|天`，TTL 120s）——别每次 `show` 都扫一遍",
+                  M._STATUE_RECT_CACHE.get("key", "").startswith("SkullCave|")
+                  and len(M._STATUE_RECT_CACHE.get("statues") or []) == 1,
+                  M._STATUE_RECT_CACHE.get("key")))
+    # ⛔ 理由栏**不许再印 `(1/2)`**（恒：会误导 —— 单子行号本身就是 1/2/3，两套编号打架）
+    _r_opt = M.intent_menu._option_reason(_Ctx(menu_data={"choose": {"options": [
+        {"index": 0, "text": "A", "key": "2", "x": 1, "y": 2},
+        {"index": 1, "text": "B", "key": "3", "x": 3, "y": 4}]}}), {})
+    res.append(ok("🗿 选项理由**只说总数**、不再印会跟行号打架的 `(1/2)`",
+                  "共 2 个选项" in _r_opt and "/2" not in _r_opt and "1/2" not in _r_opt, _r_opt))
+    # ⛔🗿 挖矿脚本里那条 `touch_skull_statue()`（自动挑 + warp 沙漠 ⇒ 老病根）**真删**
+    _bc_src = open(os.path.join(_here, "bomb_common.py"), encoding="utf-8").read()
+    res.append(ok("⛔ 挖矿脚本的 `touch_skull_statue()` 真删了（含**调用点**：全仓零引用）",
+                  "def touch_skull_statue" not in _bc_src
+                  and not [ln for ln in _bc_src.splitlines()
+                           if "touch_skull_statue(" in ln and not ln.strip().startswith("#")],
+                  [ln.strip()[:60] for ln in _bc_src.splitlines() if "touch_skull_statue(" in ln][:3]))
     # 🗿 **图标选择题**（矮人国王雕像那屏，2026-10-04 恒：「按理来说要套一层选择题」）
     #    真机那屏（`SkullCave` (5,4)，我站 (5,5) 朝上）：`responses: null`、
     #    2 个真有文字的图标 + **2 个空文本诱饵**（`iconFronts`）。
