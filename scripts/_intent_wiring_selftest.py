@@ -1670,8 +1670,12 @@ def main():
         _rc3 = M.intent(ops="do", kw={"code": str(_no_of("放牧（开棚门）"))})
     finally:
         M._im_run = _orig_im_run
+    # ⚠️ 2026-10-04：第一趟现在**带 `want`**（域 op 也要方向/目标态 ⇒ 判据 `_doors_bad` 由服务器算好递回来，
+    #    单子这边不再自己写一份 lambda）。断言跟着改成"`want` 在、`only` 不在"。
     res.append(ok("🚪 收敛：第一趟**不带 `only`**（全量逐栋走一遍，`walk=True`）",
-                  bool(_run_log) and _run_log[0] == ("doors", {"walk": True}), _run_log))
+                  bool(_run_log) and _run_log[0][0] == "doors"
+                  and _run_log[0][1].get("walk") is True and "only" not in _run_log[0][1]
+                  and _run_log[0][1].get("want") in ("open", "close"), _run_log))
     _only2 = (_run_log[1][1].get("only") if len(_run_log) > 1 else None)
     res.append(ok("🚪 收敛：第二发**只带没到位的那一扇门的坐标**（`only`）——"
                   "**不许**再翻全部（那会把刚翻好的两栋翻回去）",

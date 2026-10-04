@@ -2735,17 +2735,19 @@ def _doors_exec(ctx, targets, run, want: bool):
     verm, tgt = ("开棚门", "全开") if want else ("关棚门", "全关")
     # 🚪 「关棚门」带上**意图**：服务器那侧会先问游戏"外面还有动物吗"——
     #    有（或判不出来）就**报错、不翻**（恒 2026-10-01：「还有在棚外的话报错不关」）。
-    _args = {"walk": True}
-    if not want:
-        _args["want"] = "close"
+    _args = {"walk": True, "want": "open" if want else "close"}
     r = run("doors", _args) or {}
     _d = (r.get("doors") if isinstance(r, dict) else None) or {}
     _ents = (r.get("entries") if isinstance(r, dict) else None) or []
     if not _ents:
         # 老 DLL / 老形状（没有 `entries`）⇒ 退回"名字→态"那份（**没有门坐标**，也就没法点名收敛）
         _ents = [{"name": k, "state": v} for k, v in _d.items()]
-    _tgt_ok = (lambda st: st is True) if want else (lambda st: st is False)
-    _bad = [e for e in _ents if not _tgt_ok(e.get("state"))]
+    # 🚪 目标态判据**用服务器递过来的 `bad`**（`_doors_bad` 一处，2026-10-04 收成一份）——
+    #    老形状没有这个键时才退回本地这份等价的 lambda（只为兼容，别在这边长出第二套判据）。
+    _bad = (r.get("bad") if isinstance(r, dict) else None)
+    if not isinstance(_bad, list):
+        _tgt_ok = (lambda st: st is True) if want else (lambda st: st is False)
+        _bad = [e for e in _ents if not _tgt_ok(e.get("state"))]
     if _bad and all(isinstance(e.get("x"), int) and isinstance(e.get("y"), int) for e in _bad):
         r2 = run("doors", {"walk": True,
                            "only": [{"x": e["x"], "y": e["y"]} for e in _bad]}) or {}

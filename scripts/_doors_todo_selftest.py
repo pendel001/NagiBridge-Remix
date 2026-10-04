@@ -209,6 +209,27 @@ def main():
     res.append(ck("🧩 接线上：19:00 在矿里 ⇒ **没有**那句（别在矿里喊他回去关门）",
                   "去把棚门关了" not in M._build_state_strip(dict(_d3), full=False, morning="")))
 
+    # ⑤ 🚪 2026-10-04 恒：「这条要求**同步给原工具方向翻转信息**」——域 op 也要能带目标态。
+    #    判据只许有一份（`_doors_bad`）：域 op 的收敛 + 单子那两行都从它出。
+    _E = [{"name": "Deluxe Coop", "state": True, "x": 1, "y": 2},
+          {"name": "Deluxe Barn", "state": False, "x": 3, "y": 4}]
+    res.append(ck("🚪 `_doors_bad`：要「全开」⇒ 只报那扇 False 的",
+                  [e["name"] for e in M._doors_bad(_E, True)] == ["Deluxe Barn"]))
+    res.append(ck("🚪 `_doors_bad`：要「全关」⇒ 只报那扇 True 的",
+                  [e["name"] for e in M._doors_bad(_E, False)] == ["Deluxe Coop"]))
+    res.append(ck("🚪 `_doors_bad`：门态读不到（None）⇒ **算没到位**，不假装达成",
+                  [e["name"] for e in M._doors_bad([{"name": "X", "state": None}], True)] == ["X"]))
+    res.append(ck("🚪 域 op `doors(want=...)` 存在且带收敛口径（不是只有单子那条）",
+                  "want=\"open\"" in io.open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                         "nagi_mcp_server.py"),
+                                             encoding="utf-8").read()
+                  or "want_open" in io.open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                         "nagi_mcp_server.py"),
+                                            encoding="utf-8").read()))
+    _im = M._im_doors_op({"walk": False, "want": "open"})
+    res.append(ck("🚪 `_im_doors_op` 把目标态判据**递出去**（回包里有 `bad`）",
+                  isinstance(_im, dict) and isinstance(_im.get("bad"), list)))
+
     print(f"\n{sum(res)}/{len(res)} 过")
     return all(res)
 
