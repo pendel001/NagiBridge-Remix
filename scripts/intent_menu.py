@@ -1362,7 +1362,9 @@ def _cc_bundles(ctx) -> list:
 
 
 def _cc_workable(ctx) -> list:
-    """**手上现在就能捧上东西**的包（`give` 非空）—— 单子只列这些（按了不成的别占行）。"""
+    """**手上现在就能捧上东西**的包（`give` 非空）—— 单子只列这些（按了不成的别占行）。
+    ⚠️ `give` 由服务器给，而服务器那份**已经把"已完成的包"滤掉了**（真机 2026-10-05：
+    整包完成时游戏把每一格都标成已放，旧口径会继续报「还差 4 件」+ 4 行按了不成的「捧上 …」）。"""
     return [b for b in _cc_bundles(ctx) if b.get("give")]
 
 
@@ -1371,14 +1373,19 @@ def _cc_give_all(ctx) -> int:
 
 
 def _cc_missing_line(b) -> str:
+    """「这一包还能填什么」——⚠️ 措辞必须跟**游戏的口径**一致：完成看**格数**
+    （`numberOfIngredientSlots`，填满就算成），不是"每样材料都交齐"。
+    写成「还差 N 件（必须给）」就是**劝人做不需要的事**（真机 2026-10-05 恒当场点破）。"""
     miss = b.get("missing") or []
     if not miss:
         return ""
     bit = "、".join(f"{m.get('name') or '?'}" + (f"×{m.get('need')}" if (m.get("need") or 1) > 1 else "")
                     for m in miss[:4])
     if len(miss) > 4:
-        bit += f"…（共 {len(miss)} 件）"
-    return f"还差：{bit}"
+        bit += f"…（共 {len(miss)} 样）"
+    slots = b.get("slots")
+    tail = f"**这一包 {slots} 格 · 填满就算成**（不必每样都交）" if slots else "填满就算成"
+    return f"还能填：{bit} ｜ {tail}"
 
 
 def _cc_can(ctx, t):
@@ -1478,6 +1485,29 @@ def _cc_flow(ctx, targets):
 
 CC_V = Verb("cc", "献祭板", 74, _cc_can, _cc_reason, _cc_show, "world",
             subs=_cc_flow, menu_ok=True)
+
+
+# 🎁 「领 收集包奖励」—— 恒 2026-10-05 真机：「**然后有奖励可以领**」。
+#    它是列表页上游戏自己的**礼物按钮**（`presentButton` → `openRewardsMenu()` → 一个 ItemGrabMenu）：
+#    以前那个按钮**不在我们的按钮表里** ⇒ AI 眼里根本没有"领奖励"这条路（缺门）。
+#    ⚠️ 判据 = 服务器从 `/menu.buttons` 里认出了 `presentButton`（有它 = 本间真有奖可领）。
+#    ⚠️ 权重 80：那一刻它就是**正事**（跟精通碑/任务日志那两条"领取"同一档）。
+def _cc_gift_can(ctx, t):
+    return CAN_YES if (ctx.cc or {}).get("gift") else CAN_NO
+
+
+def _cc_gift_show(ctx, t):
+    return "领 收集包奖励"
+
+
+def _cc_gift_reason(ctx, t):
+    return "本间有已完成收集包的奖励 · 点游戏自己的礼物按钮，开出来照「箱子里…」一件件取"
+
+
+CC_GIFT_V = Verb("cc_gift", "领 收集包奖励", 80, _cc_gift_can, _cc_gift_reason,
+                 _cc_gift_show, "world",
+                 exec=lambda c, t, run: _exec_chore(c, t, run, "cc_gift", "领"),
+                 menu_ok=True)
 # ⚠️ 子层那两个动词**必须在 exec 函数之后**建（`exec=` 是**定义时求值**的）——
 #    写在前面就是 NameError（这一批我自己踩了一次，import 当场炸）。
 CC_OFFER_V = Verb("cc_offer", "捧上", 0, lambda c, t: CAN_YES, None,
@@ -4146,6 +4176,9 @@ VERBS: list = [
     # 🏛️ 2026-10-04 恒「动A」：**献祭板**（一件件捧上槽位；只在板子开着 + 这版 DLL 报得出
     #    "能捧上什么" 时出现 —— 判据见 `_cc_can` 那段）。
     CC_V,
+    # 🎁 2026-10-05 恒真机「然后有奖励可以领」：**领本间已完成的收集包奖励**
+    #    （列表页那个礼物按钮；判据 = 服务器从 `/menu.buttons` 认出了 `presentButton`）。
+    CC_GIFT_V,
 ]
 
 

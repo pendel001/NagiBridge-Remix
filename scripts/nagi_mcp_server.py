@@ -24017,6 +24017,8 @@ def _im_cc(state: dict, raw=_UNFETCHED) -> dict:
                    if isinstance(g, dict) and not g.get("completed")]
         row = {"index": idx, "complete": bool(b.get("complete")),
                "name": labels.get(int(idx)) if idx is not None else None,
+               # 🏛️ 这一包**要填满几格**（游戏口径；完成看格数、不是"每样都交齐"）
+               "slots": b.get("slots"),
                "missing": missing, "give": list(give or [])}
         if i < len(bounds) and isinstance(bounds[i], dict):
             bb = bounds[i]
@@ -24031,6 +24033,10 @@ def _im_cc(state: dict, raw=_UNFETCHED) -> dict:
     if donatables is not None:
         new_fields = True
     _wa = cc.get("whichArea")
+    # 🎁 列表页那个**礼物按钮**（`presentButton`）在不在 —— 它在 = 本间有**已完成收集包的奖励**可领
+    #    （游戏自己那个按钮，`JunimoNoteMenu.cs:579` → `openRewardsMenu()`）。
+    gift = next((b for b in (raw.get("buttons") or [])
+                 if isinstance(b, dict) and b.get("name") == "presentButton"), None)
     return {"area": (rooms.get(int(_wa)) if isinstance(_wa, int) else None)
                     or cc.get("areaName") or f"第{_wa}间",
             "which_area": _wa,
@@ -24041,13 +24047,23 @@ def _im_cc(state: dict, raw=_UNFETCHED) -> dict:
             "donatables": list(donatables or []),
             "partial": cc.get("partial"),
             "held": cc.get("heldItem"),
+            "gift": gift,          # 有值 = 本间有奖可领（那一行的坐标就在里面）
             "new_fields": bool(new_fields)}
 
 
 def _im_cc_bundle_name(cc: dict, idx) -> str:
+    """这一包叫什么 —— ⚠️ `/menu` 的 `characterCust.bundles[]` **只有全局包号、没有名字**
+    （名字在 `/bundles` 的 `Bundle.label` 里）⇒ 这儿要**回查一次** `/bundles`：
+    否则回执会印成「收集包#19」（真机 2026-10-05 第 5 件那条就是）——**对着 AI 说编号不是人话**。"""
     for b in (cc or {}).get("bundles") or []:
-        if b.get("index") == idx:
-            return b.get("name") or f"收集包#{idx}"
+        if isinstance(b, dict) and b.get("index") == idx and b.get("name"):
+            return b["name"]
+    try:
+        labels, _rooms = _bundle_maps()
+        if idx in labels:
+            return labels[idx]
+    except Exception:
+        pass
     return f"收集包#{idx}"
 
 
@@ -24136,12 +24152,21 @@ def _im_cc_offer(item_id: str, name: str) -> str:
         err = _im_cc_open(tgt)
         if err:
             return err
-        raw0 = _im_cc_menu()
-        cc0 = (raw0.get("characterCust") or {})
-        want = next((d for d in (cc0.get("donatables") or [])
-                     if isinstance(d, dict) and (d.get("id") == item_id or d.get("name") == name)), None)
+        # ⚠️⚠️ 2026-10-05 真机抓到的 **race**：`specificBundlePage` / `currentBundleIndex` 是
+        #    `setUpBundleSpecificPage` **立刻**置的，而 `ingredientSlots`（以及靠它算出来的
+        #    `donatables`）要等游戏**下一拍**才建出来 ⇒ 翻完页马上读 = "翻到了、可这一件捧不上去"
+        #    （第 5 件枫糖浆就是这么卡的）。⇒ **轮询到这一页的清单真出来为止**（最多 ~1.2s）。
+        for _ in range(8):
+            raw0 = _im_cc_menu()
+            cc0 = (raw0.get("characterCust") or {})
+            want = next((d for d in (cc0.get("donatables") or [])
+                         if isinstance(d, dict) and (d.get("id") == item_id or d.get("name") == name)), None)
+            if want is not None:
+                break
+            time.sleep(0.15)
         if want is None:
-            return f"❌ 翻到「{_im_cc_bundle_name(cc0, tgt)}」了，可游戏说**这一件捧不上去**（先 `show` 看一眼）"
+            return (f"❌ 翻到「{_im_cc_bundle_name(cc0, tgt)}」了，可这一页的槽位清单一直没建出来"
+                    f"（`donatables` 空）—— 先 `show` 看一眼，别硬敲")
     bname = _im_cc_bundle_name(cc0, cc0.get("currentBundleIndex"))
     si, ti = want.get("slot"), want.get("toSlot")
     inv = cc0.get("inventorySlots") or []
@@ -24210,6 +24235,35 @@ def _im_cc_back() -> str:
         return "✅ 回到本间的收集包列表了"
     return (f"⚠️ 点了返回，可游戏还说在详情页（specific={cc.get('specificBundlePage')}）"
             f"—— 手上还拿着东西时它不让你退，先把那件捧上去或放回包里")
+
+
+def _im_cc_reward() -> str:
+    """🎁 领本间**已完成收集包的奖励**（列表页那个礼物按钮）→ 一句话。
+
+    走游戏自己的按钮（`presentButton` → `openRewardsMenu()` → 一个 `ItemGrabMenu`）——
+    **不隔空发东西**；领完那个 `ItemGrabMenu` 会开在眼前，里面的东西照**容器那条流程**拿
+    （`箱子里…` / `取 …` 那几行）。
+    ⚠️ 判据 = 事后菜单**真的变成** `ItemGrabMenu`（`ok:true` 不算）。
+    """
+    try:
+        before = ((api._ai_get("/state") or {}).get("activeMenu") or {}).get("type") or ""
+        rb = None
+        raw = _im_cc_menu()
+        rb = next((b for b in (raw.get("buttons") or [])
+                   if isinstance(b, dict) and b.get("name") == "presentButton"), None)
+        if not rb:
+            return "⚠️ 这一刻这块板子上**没有礼物按钮**（这一间没有待领的收集包奖励）"
+        api._ai_post("/menu/click", {"x": int(rb.get("x")), "y": int(rb.get("y"))})
+        for _ in range(8):
+            time.sleep(0.15)
+            after = ((api._ai_get("/state") or {}).get("activeMenu") or {}).get("type") or ""
+            if after and after != before:
+                return (f"🎁 奖励单开出来了（{after}）—— 里面的东西**照「箱子里…」那几行取**"
+                        f"（一次拿一件，拿完 `关掉界面`）")
+        return (f"⚠️ 点了礼物按钮，可**菜单没变**（还是 {before or '没有菜单'}）—— 自己看一眼，"
+                f"别当成领到了")
+    except Exception as e:
+        return f"❌ 领收集包奖励出错：{type(e).__name__}: {e}"
 
 
 def _im_ctx():
@@ -25405,6 +25459,9 @@ def _im_run(op, args):
                               or f"✅ 翻开「{args.get('name') or args.get('index')}」了"
                                  f"（能捧上什么见新单子）"),
         "cc_back": lambda: _im_cc_back(),
+        # 🎁 2026-10-05 恒真机「然后有奖励可以领」：点献祭板那个**礼物按钮**开奖励单
+        #    （判据 = 菜单真变成 ItemGrabMenu；ok:true 不算）。
+        "cc_gift": lambda: _im_cc_reward(),
         "skip": lambda: skip_event(),
         # 🧾 确认过夜结算（2026-10-01）：结算屏（ShippingMenu）上「确认结算」按下去走这里。
         "settle": lambda: confirm_settlement(),

@@ -14388,6 +14388,9 @@ public class ModEntry : Mod
                                     ingInfos.Add(new { id, name, count = stack, quality, completed = ingDone, category = cat });
                                 }
                             bundleInfos.Add(new { index = bIndex, complete, ingredients = ingInfos,
+                                // 🏛️ 这一包**要填满几格**（游戏自己的 `numberOfIngredientSlots`）——
+                                //    完成判据是"格数"而不是"每样都交齐"，单子得按游戏的口径说话。
+                                slots = (int)(bt.GetField("numberOfIngredientSlots", jFlags)?.GetValue(b) ?? 0),
                                 // 🏛️ 2026-10-04：**这一包现在能捧上背包里哪几件**（判据见 `BundleCanGive`）——
                                 //    单子那两层靠它：列表页念"手上能捧上 N 件"，翻页后一件一行。
                                 canGive = BundleCanGive(b as Bundle) });
@@ -14634,7 +14637,12 @@ public class ModEntry : Mod
                     // 🆕 2026-08-18 任务板接取按钮（SpecialOrdersBoard）
                     "acceptLeftQuestButton", "acceptRightQuestButton",
                     // 🆕 2026-08-29 领奖按钮：QuestLog.rewardBox(点它=领完成+有钱任务的钱) / PrizeTicketMenu.mainButton(点它=消费1张兑奖券换奖)
-                    "rewardBox", "mainButton" })
+                    "rewardBox", "mainButton",
+                    // 🆕 2026-10-05（恒真机：「**然后有奖励可以领**」）：献祭板列表页那个**礼物按钮**
+                    //    （`JunimoNoteMenu.presentButton` → `openRewardsMenu()` → 一个 ItemGrabMenu 发本间
+                    //      已完成收集包的奖励，`JunimoNoteMenu.cs:579/1047-1054`）。以前不在这张表里
+                    //      ⇒ AI 眼里根本没有"领奖励"这条路。
+                    "presentButton" })
                 {
                     var field = menu.GetType().GetField(fieldName,
                         System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic |
@@ -15012,6 +15020,13 @@ public class ModEntry : Mod
     {
         var list = new List<object>();
         if (bundle?.ingredients == null) return list;
+        // ⚠️⚠️ 2026-10-05 真机抓到（恒：「**卡住是因为播放了一个收集完成的热气球小动画**」）：
+        //    **已完成的包一件都别再劝**。游戏的完成判据是 `numberOfIngredientSlots`（**格数**，
+        //    `checkIfBundleIsComplete` 数的是"格子被填了几个"），不是"每样材料都交齐" ——
+        //    异国情调采集 9 样只要填满 5 格就成；那一刻游戏把 `bundles[bundleIndex][i]` **全部**
+        //    置 true（`JunimoNoteMenu.cs:1088-1091`）⇒ 旧口径会对着"已经完成的包"继续报
+        //    「还差 4 件」并列出 4 行**按了不成**的「捧上 …」（假门）。
+        if (bundle.complete) return list;
         var bag = Game1.player.Items;
         for (int gi = 0; gi < bundle.ingredients.Count; gi++)
         {
