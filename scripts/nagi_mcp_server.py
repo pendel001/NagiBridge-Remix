@@ -13590,6 +13590,56 @@ def _qi_chain_card_hint(cname: str) -> str:
     return ""
 
 
+# ── 🏬 镇上东北角那栋楼（前 Joja 超市 / 废弃超市 / 电影院）**现在是哪种形态** ──
+#    恒 2026-10-05：「这栋建筑的形态多次变化，路由到什么样的 poi，其它的就隐藏起来」
+#    判据 = **当场读 `Town (95,50)` 那一格**（Buildings 瓦片索引 + Action 属性）：
+#      · `Action: Theater_Entrance` + 瓦片 2245/2246        ⇒ 电影院
+#      · `Action: LockedDoorWarp … JojaMart …` + 1925/1926  ⇒ Joja 超市
+#      · 瓦片 2032/2033 且没有上面那条 Action               ⇒ 废弃超市（`Town.cs:290-302` 的 case 接管）
+#      · 别的 ⇒ **认不出**（那几行一个都不给；⛔ 绝不猜一种）
+#    ⛔ 硬教训（同日）：**同一个档、重开游戏前后读到的不一样**（先读到 1925+JojaMart，
+#       重开后同一次读变成 2245+Theater_Entrance）—— 地图覆盖 `ApplyMapOverride("Town-Theater")`
+#       （`Town.cs:574-590`）**可能晚于客户端进图** ⇒ **绝不跨请求缓存**。
+#       `_JOJA_FORM_MEMO_TTL` 只让**同一次渲染里**（逐个 POI 过 `_festival_poi_active`）不重复打
+#       同一发 HTTP；跨渲染一律重读（TTL 刻意压到 1 秒内）。
+_JOJA_DOOR = ("Town", 95, 50)
+_JOJA_FORM_MEMO_TTL = 0.8
+_joja_form_memo = {"ts": 0.0, "val": None}
+
+
+def _joja_form(fresh: bool = False) -> dict:
+    """那栋楼**此刻**的形态 → `{"form": "jojamart"|"theater"|"abandoned"|None, "tileIndex", "action", "why"}`。
+
+    ⚠️ `fresh=True` = 绕开"同一渲染内的去重"，钉子/验收用它（要不改不了桩）。
+    ⚠️ 认不出时 `form=None` **且 `why` 里带原话**（瓦片索引 + Action 文本）—— 宁可什么都不给，
+       也不猜一种形态（这个项目栽过"手抄表当判据"的账）。
+    """
+    _now = time.time()
+    if (not fresh) and _joja_form_memo["val"] and (_now - _joja_form_memo["ts"]) < _JOJA_FORM_MEMO_TTL:
+        return _joja_form_memo["val"]
+    val = {"form": None, "tileIndex": None, "action": "", "why": "读不到门那格"}
+    try:
+        _m, _x, _y = _JOJA_DOOR
+        r = api._get("/tile_props", params={"x": _x, "y": _y, "location": _m}) or {}
+        _lt = ((r.get("layerTiles") or {}).get("Buildings") or {})
+        _ti = _lt.get("tileIndex")
+        _act = str(((((r.get("tiles") or {}).get("Buildings") or {}).get("props") or {}).get("Action")) or "")
+        val = {"form": None, "tileIndex": _ti, "action": _act, "why": ""}
+        if "Theater_Entrance" in _act and _ti in (2245, 2246):
+            val["form"] = "theater"
+        elif "LockedDoorWarp" in _act and "JojaMart" in _act and _ti in (1925, 1926):
+            val["form"] = "jojamart"
+        elif _ti in (2032, 2033) and "JojaMart" not in _act:
+            val["form"] = "abandoned"
+        else:
+            val["why"] = ("门那格不是三种已知形态（瓦片 %s / Action %r）—— 不猜" % (_ti, _act))
+    except Exception as _e:
+        val = {"form": None, "tileIndex": None, "action": "",
+               "why": "读门那格出错：%s: %s" % (type(_e).__name__, _e)}
+    _joja_form_memo.update({"ts": _now, "val": val})
+    return val
+
+
 def _festival_poi_active(pname: str, p: dict) -> bool:
     """🎇 节日限定 POI 今天是否可见（2026-08-19 恒：非节日在 map/go_to 隐藏）。
     POI 的 map 是节日限定图且今天不在其生效日期 → False（隐藏）。普通 POI 恒 True；
@@ -13634,6 +13684,12 @@ def _festival_poi_active(pname: str, p: dict) -> bool:
         rk = (p or {}).get("rock")
         if rk:
             if _dwarf_rock_blocked():
+                return False
+        # 🏬 那栋楼的三形态门禁（2026-10-05 恒：「形态多次变化，路由到什么样的 poi，其它的就隐藏起来」）
+        #    POI 带 `joja_form` ⇒ **只放行当场读到的那种形态**；认不出（form=None）⇒ 三种全隐藏。
+        jf = (p or {}).get("joja_form")
+        if jf:
+            if _joja_form().get("form") != jf:
                 return False
         m = (p or {}).get("map", "")
         dates = _FESTIVAL_ONLY_MAPS.get(m)
@@ -24458,7 +24514,9 @@ def _im_cc_reward() -> str:
 def _im_cc_board(state: dict) -> dict:
     """🏛️ **世界侧**那行「看 献祭板（走过去）」的账 —— 恒 2026-10-05 定的三个条件：
 
-      ① **地点**：我在 CommunityCenter（板子只在那儿；Joja 路线的 AbandonedJojaMart 以后再说）
+      ① **地点**：我在 CommunityCenter，**或** 废弃 Joja 超市（`AbandonedJojaMart` —— 补25 接上：
+         第 6 区「遗失的收集包」的板子在那儿，`AbandonedJojaMart.cs:34-41 checkBundle()` ⇒
+         `new JunimoNoteMenu(6, bundles)`，**跟社区中心同一套** ⇒ 三条件照抄）
       ② **背包**：包里有"有哪个没做完的收集包要它"的东西 —— 判据是 `/state.inventory[].bundle`，
          而它是**游戏自己那把尺子**（`CommunityCenter.couldThisIngredienteBeUsedInABundle`，
          见 C# `CouldGoToBundle`；`InventoryMenu.cs:490` 拿它点亮原生高亮）⇒ 类别型需求也认得
@@ -24469,12 +24527,22 @@ def _im_cc_board(state: dict) -> dict:
     ⚠️ 老 DLL 没有 `bundle` 这一位 ⇒ ② 判不出来 ⇒ **那行不出现**（宁可不给，也不给一行按了白跑的）。
     """
     loc = ((state or {}).get("location") or {}).get("name") or ""
-    if loc != "CommunityCenter":
+    if loc not in ("CommunityCenter", "AbandonedJojaMart"):
         return {}
     inv = (state or {}).get("inventory") or []
     have = [i for i in inv if isinstance(i, dict) and i.get("bundle") is True]
     if not have:
         return {}
+    if loc == "AbandonedJojaMart":
+        # 🏚 废弃超市（第 6 区**遗失的收集包**）那一支（补25，恒 2026-10-05 拍板「A：一起做」）：
+        #    ③「板子还在不在」**不用另判** —— 这张图只在"废弃超市"形态存在；板子做完 ⇒ 那栋楼变
+        #    电影院 ⇒ 人不会再在这张图里（`_joja_form` 也会翻成 theater ⇒ 那几行自然隐藏）。
+        #    ⚠️ 板子坐标 **(8,8)** 是**推理**（`AbandonedJojaMart.cs:64` 过场 `removeTileAfterDelay(8, 8, …)`
+        #    拆的就是那块板子的 Buildings 瓦片），**没有真机样本**（恒的旧档已过这一站、新档走的是 Joja 路线）。
+        _bp = (locations.POI.get("废弃超市(收集包板子)") or {}).get("pos") or (8, 8)
+        _pl = (state or {}).get("player") or {}
+        return {"x": int(_bp[0]), "y": int(_bp[1]), "area": "遗失的收集包（废弃超市）",
+                "have": len(have), "pos": [int(_pl.get("x") or 0), int(_pl.get("y") or 0)]}
     try:
         pr = api._get("/progress") or {}
     except Exception:
@@ -24556,7 +24624,7 @@ def _im_cc_go(x, y) -> str:
             time.sleep(0.15)
             mt = (((api._ai_get("/state") or {}).get("activeMenu") or {}).get("type") or "")
             if mt == "JunimoNoteMenu":
-                return "🏛️ 献祭板开出来了（%d,%d）—— 单子上现在有那三层的入口" % (int(x), int(y))
+                return "🏛️ 收集包板子开出来了（%d,%d）—— 单子上现在有那三层的入口" % (int(x), int(y))
         return ("⚠️ 站到板前（%d,%d）也点了，可**板子没开** —— 要么这一间还没有板子、要么点空；"
                 "先 `show` 看一眼，别当成开好了" % (int(x), int(y)))
     except Exception as e:

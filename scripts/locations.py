@@ -151,10 +151,17 @@ POI = {
     "哈维房间(楼梯口)":   {"map": "Hospital",   "pos": (10, 3), "note": "⬆️ 哈维房间上楼口（医院内走廊）：走到最顶行 ⚠️**必须用 /move 走上去**（walk_to/position/interact 都不触发 warp！），/move(10,1) → HarveyRoom(6,12)。与塞巴地下室(下楼)对称（2026-09-10 恒带路+/move实测）"},
     "星之果实餐吧(门口)": {"map": "Town",       "pos": (45, 72),"note": "格斯餐吧门口"},
     "铁匠铺(门口)":       {"map": "Town",       "pos": (94, 82),"note": "升级工具/买矿石煤/开晶球"},
-    "电影院(门口)":       {"map": "Town",       "pos": (95, 51),"note": "🔒解锁前隐藏(需献祭完成+雷暴开门)前Joja超市大门(95,50)→电影院，看电影约会；献祭完成+雷暴开门后进(2026-08-16恒校准)"},
-    "电影院售票处":       {"map": "Town",       "pos": (98, 52),"note": "🔒解锁前隐藏(需献祭完成+雷暴开门)🎬 电影票1000g(社区中心献祭后解锁)；朝上交互(98,51)开ShopMenu买票，票可送人看电影(2026-08-16恒实测)"},
-    "电影院小卖部":       {"map": "MovieTheater","pos": (7, 7), "note": "🔒解锁前隐藏(需献祭完成+雷暴开门)🍿 电影院前台/零食柜台：**带NPC客人一起来才能买零食请他们吃**，独自来只提示(2026-08-16恒实测)；交互(7,6)"},
-    "电影院放映厅":       {"map": "MovieTheater","pos": (14, 4),"note": "🔒解锁前隐藏(需献祭完成+雷暴开门)🎬 放映厅入口(14,3)——进去看当前播放的电影；和邀请的NPC一起看涨好感(2026-08-16恒实测)"},
+    "电影院(门口)":       {"map": "Town",       "pos": (95, 51), "joja_form": "theater","note": "🔒解锁前隐藏(需献祭完成+雷暴开门)前Joja超市大门(95,50)→电影院，看电影约会；献祭完成+雷暴开门后进(2026-08-16恒校准)"},
+    "电影院售票处":       {"map": "Town",       "pos": (98, 52), "joja_form": "theater","note": "🔒解锁前隐藏(需献祭完成+雷暴开门)🎬 电影票1000g(社区中心献祭后解锁)；朝上交互(98,51)开ShopMenu买票，票可送人看电影(2026-08-16恒实测)"},
+    "电影院小卖部":       {"map": "MovieTheater","pos": (7, 7), "joja_form": "theater", "note": "🔒解锁前隐藏(需献祭完成+雷暴开门)🍿 电影院前台/零食柜台：**带NPC客人一起来才能买零食请他们吃**，独自来只提示(2026-08-16恒实测)；交互(7,6)"},
+    "电影院放映厅":       {"map": "MovieTheater","pos": (14, 4), "joja_form": "theater","note": "🔒解锁前隐藏(需献祭完成+雷暴开门)🎬 放映厅入口(14,3)——进去看当前播放的电影；和邀请的NPC一起看涨好感(2026-08-16恒实测)"},
+    # 🏬 那栋楼的三形态（恒 2026-10-05：「形态多次变化，路由到什么样的 poi，其它的就隐藏起来」）
+    #    ⚠️ 三形态**互斥**，`joja_form` 就是那道闸（判据 = `_joja_form()` **当场读** `Town(95,50)` 门那格）：
+    #       读到哪种 ⇒ 只放行那种的 POI，另两种一并隐藏；**认不出 ⇒ 三种全不给**（绝不猜）。
+    "Joja超市(门口)":     {"map": "Town",      "pos": (95, 51), "joja_form": "jojamart", "note": "🏬 Joja 超市门口（形态=Joja超市）。门格 (95,50)/(96,50) = 原生 `LockedDoorWarp 13 29 JojaMart 900 2300` ⇒ 落 **JojaMart(13,29)/(14,29)**，**营业 9:00-23:00**（门原生时段 900~2300；2026-10-05 真机读）。⚠️ 会员/**社区发展申请表是房主专属**（`JojaMart.cs:87 if (Game1.IsMasterGame)`，farmhand 只会听到 `_SecondPlayer` 那句）⇒ 我们不做那条线"},
+    "Joja超市(店内)":     {"map": "JojaMart",  "pos": (13, 29), "joja_form": "jojamart", "note": "🏬 Joja 超市店内：进来落点 (13,29)/(14,29)，出口瓦片 (13,30)/(14,30)→Town(95,51)/(96,51)（2026-10-05 真机读 warps）。柜台 Action 格 = **(10,24)/(10,25)** `JojaShop`、入会/申请表标牌 = **(21,25)** `JoinJoja`（真机扫 Action 得）——⚠️**柜台站立格没真机验过**（新档那支我们只在旧档跑），所以本 POI 只给「店内落点」，柜台坐标先记在 note 里"},
+    "废弃超市(门口)":     {"map": "Town",      "pos": (95, 51), "joja_form": "abandoned", "note": "🏚 废弃 Joja 超市门口（形态=废弃超市）：这两格由 `Town.cs:290-302` 的**瓦片 case 2000/2001/2032/2033** 接管 ⇒ `warpFarmer(\"AbandonedJojaMart\", 9, 13)`（**判据是瓦片不是 Action 文本**）"},
+    "废弃超市(收集包板子)":{"map": "AbandonedJojaMart", "pos": (8, 8), "joja_form": "abandoned", "note": "🏚 第 6 区**遗失的收集包**板子（跟社区中心同一套 `JunimoNoteMenu(6, bundles)`，`AbandonedJojaMart.cs:34-41`）⇒ 我们能捧、能献。⚠️坐标 (8,8) 是**推理**（`AbandonedJojaMart.cs:64` 过场拆的就是 (8,8) 的 Buildings 瓦片）**没有真机样本**；进来落点 (9,13)、出口 (9,14)→Town(96,51)（地图属性 `Warp: 9 14 Town 96 51`，真机实读）"},
     "书摊(马尔赛罗)":    {"map": "Town",       "pos": (110, 27),"note": "📚 马尔赛罗书摊(**⏳每季随机开张2天**,joja超市后小山坡,皮埃尔店右边悬崖有路线提示)：对话→[0]购买书籍/[1]回收书籍；卖技能书(星露谷年历8000/战斗季刊5000/怪物图鉴20000/风之道1·2/马术秘籍25000/草中窜/酱料女皇烹饪秘籍50000)。**可能开张日**见 calendar_data.BOOK_STALL_DATES；当天日历有热气球标志+左下角提示'书摊老板今天在镇上'(2026-08-16恒)"},
     # 🎇 以下夜市点位=节日限定(冬15-17)：BeachNightMarket 只在夜市加载，非夜市去不了/不在
     "夜市咖啡商人":      {"map": "BeachNightMarket","pos": (14, 38),"note": "☕ 夜市咖啡商人(🎇节日限定冬15-17)：对话→[是]=免费咖啡150g（每晚一次，2026-08-16恒实测）；夜市地图叫 BeachNightMarket 不是 Beach"},
@@ -231,7 +238,7 @@ POI = {
     "木匠商店(后门)":    {"map": "Mountain",    "pos": (8, 21),"note": "ScienceHouse后门出来在Mountain"},
     "铁匠铺(入口内)":    {"map": "Blacksmith",  "pos": (5, 19),"note": "铁匠铺入口处"},
     "铁匠铺(柜台)":      {"map": "Blacksmith",  "pos": (3, 15),"note": "克林特柜台：升级工具/买矿石煤铜铁金铱锭/开晶球 ✅"},
-    "电影院(门内)":      {"map": "MovieTheater","pos": (12, 12),"note": "电影院内部（待校准）"},
+    "电影院(门内)":      {"map": "MovieTheater","pos": (12, 12), "joja_form": "theater","note": "电影院内部（待校准）"},
 
     # ── 传送中转点 ──
     "中转(Town左下)":     {"map": "Town",       "pos": (1, 55), "note": "Town左下入口，到BusStop/森林/瀑布"},
@@ -527,6 +534,8 @@ POI_FACE = {
     "姜岛船坞(售票)":    {"face": 0, "stand": (4, 10)},   # 机子(4,9)，站位(4,10)朝上
     "电影院售票处":      {"face": 0, "stand": (98, 52)},  # 机子(98,51)，站位(98,52)朝上买电影票(2026-08-16恒实测)
     "电影院(门口)":      {"face": 0, "stand": (95, 51)},  # 门(95,50)在面前，站位(95,51)朝上
+    "Joja超市(门口)":    {"face": 0, "stand": (95, 51)},  # 🏬 同一扇门；形态=Joja超市（补25 门瓦片判据）
+    "废弃超市(门口)":    {"face": 0, "stand": (95, 51)},  # 🏚 同一扇门；形态=废弃超市（补25）
     "书摊(马尔赛罗)":    {"face": 0, "stand": (110, 27)}, # 书摊在面前(对话买/回收书)
     "社区布告栏(特别任务板)": {"face": 0, "stand": (62, 94)}, # 📋 站(62,94)朝上交互(62,93)开特别任务板(年1秋2后)（2026-08-22 AI现场检测）
     "社区布告栏(特别任务领奖箱)": {"face": 0, "stand": (60, 94)}, # 📬 站(60,94)朝上交互(60,93)领特别订单兑奖券(板左2格)（2026-08-29 AI现场实测）
@@ -707,6 +716,9 @@ MAP_LINKS = {
         {"tile": (101, 89), "target": "ArchaeologyHouse", "kind": "door", "note": "博物馆/图书馆门→(3,14)，捐矿物/古物"},
         {"tile": (35, 97), "target": "Sewer", "kind": "door", "note": "下水道口（需钥匙）→(16,11)，科罗布斯商店"},
         {"tile": (96, 50), "target": "MovieTheater", "kind": "door", "note": "电影院（前Joja超市）→(12,12)"},
+        # 🏬 同一栋楼的另两种形态（**互斥**；闸在 POI 层 `joja_form`，导航只在 POI 被放行时才会走到这儿）：
+        {"tile": (95, 50), "target": "JojaMart", "kind": "door", "note": "🏬 Joja超市门→(13,29)/(14,29)（原生 `LockedDoorWarp 13 29 JojaMart 900 2300`，2026-10-05 真机读）"},
+        {"tile": (96, 50), "target": "AbandonedJojaMart", "kind": "door", "note": "🏚 废弃超市门（同两格由 `Town.cs:290-302` 瓦片 case 接管 → `warpFarmer(9,13)`）；⚠️与 MovieTheater 共用 (96,50)——两形态互斥，`_REVERSE_DOORS` 只会中一个（同 Trailer/Trailer_Big 那条老账）"},
     ],
     # ── 山 ──
     "Mountain": [
@@ -839,6 +851,8 @@ MAP_LINKS = {
     "LeahHouse": [{"tile": None, "target": "Forest", "kind": "warp", "note": "🏠 莉亚小屋→森林（出口瓦片 (7,10)，落 Forest(104,33)）"}],
     "ArchaeologyHouse": [{"tile": None, "target": "Town", "kind": "warp", "note": "博物馆门口→镇"}],
     "MovieTheater": [{"tile": None, "target": "Town", "kind": "warp", "note": "电影院门口→镇"}],
+    "JojaMart": [{"tile": None, "target": "Town", "kind": "warp", "note": "🏬 Joja超市→镇（出口瓦片 (13,30)/(14,30)，落 Town(95,51)/(96,51)；2026-10-05 真机读 warps）"}],
+    "AbandonedJojaMart": [{"tile": None, "target": "Town", "kind": "warp", "note": "🏚 废弃超市→镇（地图属性 `Warp: 9 14 Town 96 51` ⇒ 站 (9,14)，落 Town(96,51)；2026-10-05 真机读地图属性）"}],
     "ScienceHouse": [{"tile": None, "target": "Mountain", "kind": "warp", "note": "木匠店门口→山"},
                      {"tile": (13, 23), "target": "SebastianRoom", "kind": "warp", "note": "⬇️ 地下室楼梯：站(13,22)面下 踩(13,23)warp→SebastianRoom(1,1)（另一格(12,23)同效）。⚠️是**走上去的 warp**不是门（2026-09-10 恒带路校准）"}],
     "SebastianRoom": [{"tile": (1, 0), "target": "ScienceHouse", "kind": "warp", "note": "⬆️ 地下室出来楼梯：站(1,1)面下 踩(1,0)warp→ScienceHouse(12,21)（2026-09-10 恒带路校准）"}],
@@ -1012,7 +1026,8 @@ SHOP_HOURS = {
     "Hospital": "9:00-15:00",
     "Saloon": "12:00-24:00",
     "Blacksmith": "9:00-16:00",
-    "ArchaeologyHouse": "9:00-18:00（周一休）",
+    "ArchaeologyHouse": "9:00-18:00（周一休）",   # ⚠️待核：门那格原生 `LockedDoorWarp 3 14 ArchaeologyHouse 800 1800` ⇒ 游戏里是 **8:00-18:00**（恒 2026-10-05 确认）；这张表还没改（补24 起记为待核）
+    "JojaMart": "9:00-23:00",                    # 🏬 门那格原生 `LockedDoorWarp 13 29 JojaMart 900 2300`（2026-10-05 真机读）
     "FishShop": "9:00-17:00",
     "AnimalShop": "9:00-16:00",
     "SandyHouse": "9:00-23:00",
@@ -1029,6 +1044,7 @@ INDOOR_MAPS = {
     # 商店/公共建筑
     "SeedShop", "Hospital", "Saloon", "Blacksmith", "ArchaeologyHouse", "ScienceHouse",
     "AnimalShop", "FishShop", "SandyHouse", "AdventureGuild", "MovieTheater",
+    "JojaMart", "AbandonedJojaMart",
     "CommunityCenter", "ManorHouse", "WizardHouse", "WizardHouseBasement", "Club",
     "Trailer", "Tent", "IslandFieldOffice", "IslandHut", "IslandFarmHouse",
     "VolcanoDungeon5", "FarmCave", "Cellar", "Greenhouse", "Shed",
@@ -1178,6 +1194,8 @@ BUILDING_DOORS = {
     "ManorHouse":      ("Town",     (59, 85)),   # 也在 (58,85)，双子门
     "ArchaeologyHouse":("Town",     (101, 89)),
     "MovieTheater":    ("Town",     (96, 50)),   # 前 Joja 超市；JojaMart 门是 (95,50)/(96,50) 同一扇
+    "JojaMart":        ("Town",     (95, 50)),   # 🏬 Joja超市（形态=Joja超市；门原生 LockedDoorWarp 13 29 JojaMart 900 2300）
+    "AbandonedJojaMart":("Town",    (96, 50)),   # 🏚 废弃超市（同一栋楼的废墟形态；⚠️与 MovieTheater 共用 (96,50)，两形态互斥）
     "Mine":            ("Mountain", (54, 5)),
     "AdventureGuild":  ("Mountain", (76, 8)),
     "ScienceHouse":    ("Mountain", (12, 25)),   # 也在 (8,20)（Maru 侧门）
@@ -1296,6 +1314,8 @@ ARRIVE = {
     "ManorHouse": (5, 11),
     "ArchaeologyHouse": (3, 14),
     "MovieTheater": (12, 12),
+    "JojaMart": (13, 29),          # 🏬 Joja超市进来落点（真机读：门 LockedDoorWarp 13 29/14 29）
+    "AbandonedJojaMart": (9, 13),  # 🏚 废弃超市落点（Town.cs:299 warpFarmer(9,13)；⚠️无真机样本）
     "ScienceHouse": (6, 24),
     "SebastianRoom": (1, 1),
     "FishShop": (5, 9),

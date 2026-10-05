@@ -1546,6 +1546,11 @@ def _cc_go_can(ctx, t):
 
 
 def _cc_go_show(ctx, t):
+    # 🏚 补25：废弃超市那间是**第 6 区「遗失的收集包」**（`AbandonedJojaMart`），
+    #    板子跟社区中心同一套 ⇒ 同一行、换个更准的说法（免得 AI 在废弃超市里找"献祭板"找不到）。
+    _a = str((ctx.cc_board or {}).get("area") or "")
+    if ("遗失" in _a) or ("废弃" in _a):
+        return "看 收集包板子（走过去）"
     return "看 献祭板（走过去）"
 
 

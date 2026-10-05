@@ -4608,6 +4608,104 @@ def main():
                   "⚠️ 只看**代码形状**：注释里引用旧写法不算「还在用」",
                   "ok = cat in (" not in _srv_src and "cat = item.get(\"catNum\")" not in _srv_src, ""))
 
+    # ───── 🏬 补25：那栋楼**三形态路由** + 中间形态的「遗失的收集包」板子 ─────
+    import inspect as _insp25
+    _ORIG_GET25 = M.api._get
+    _FIX25 = {"last": None, "r": {}}
+
+    def _fake_get25(ep, params=None):
+        _FIX25["last"] = (ep, dict(params or {}))
+        return _FIX25["r"]
+
+    def _set_form25(payload):
+        M._joja_form_memo.update({"ts": 0.0, "val": None})
+        _FIX25["r"] = payload
+
+    def _act25(ti, action):
+        return {"layerTiles": {"Buildings": {"tileIndex": ti}},
+                "tiles": {"Buildings": {"props": ({"Action": action} if action else {})}}}
+
+    try:
+        M.api._get = _fake_get25
+        _set_form25(_act25(2245, "Theater_Entrance"))
+        _jf_t = M._joja_form(fresh=True)
+        res.append(ok("🏬 形态判据：`Theater_Entrance` + 瓦片 2245/2246 ⇒ **电影院**",
+                      _jf_t.get("form") == "theater", _jf_t))
+        res.append(ok("🏬 形态判据**读的就是当场那一格** `Town(95,50)`（`/tile_props`）—— 不是缓存、也不是别的格",
+                      _FIX25["last"][0] == "/tile_props"
+                      and _FIX25["last"][1].get("x") == 95 and _FIX25["last"][1].get("y") == 50
+                      and _FIX25["last"][1].get("location") == "Town", _FIX25["last"]))
+        _set_form25(_act25(1925, "LockedDoorWarp 13 29 JojaMart 900 2300"))
+        res.append(ok("🏬 形态判据：`LockedDoorWarp … JojaMart` + 瓦片 1925/1926 ⇒ **Joja 超市**",
+                      M._joja_form(fresh=True).get("form") == "jojamart", ""))
+        _set_form25(_act25(2032, ""))
+        res.append(ok("🏬 形态判据：瓦片 2032/2033 且没有那条 Action ⇒ **废弃超市**",
+                      M._joja_form(fresh=True).get("form") == "abandoned", ""))
+        _set_form25(_act25(9999, ""))
+        _jf_u = M._joja_form(fresh=True)
+        res.append(ok("🏬 **认不出形态** ⇒ `form=None` 且 `why` 里带原话（⛔ 绝不猜一种）",
+                      _jf_u.get("form") is None and "不猜" in str(_jf_u.get("why")), _jf_u))
+        res.append(ok("🏬 源码形状钉：探针**每次都当场打 `/tile_props`**、带 `fresh` 逃生门、"
+                      "`_JOJA_FORM_MEMO_TTL ≤ 1 秒`（不许跨请求缓存 —— 同日'重开前后读到不同值'的教训）",
+                      "/tile_props" in _insp25.getsource(M._joja_form)
+                      and "fresh" in _insp25.getsource(M._joja_form)
+                      and float(M._JOJA_FORM_MEMO_TTL) <= 1.0, ""))
+        _set_form25(_act25(2245, "Theater_Entrance"))
+        res.append(ok("🏬 三形态闸：当场读到**电影院** ⇒ 电影院那几条 POI 放行",
+                      M._festival_poi_active("电影院(门口)", {"map": "Town", "joja_form": "theater"}) is True, ""))
+        res.append(ok("🏬 三形态闸：当场读到**电影院** ⇒ **Joja超市 / 废弃超市**那几条一并隐藏",
+                      M._festival_poi_active("Joja超市(门口)", {"map": "Town", "joja_form": "jojamart"}) is False
+                      and M._festival_poi_active("废弃超市(门口)", {"map": "Town", "joja_form": "abandoned"}) is False, ""))
+        _set_form25(_act25(1925, "LockedDoorWarp 13 29 JojaMart 900 2300"))
+        res.append(ok("🏬 三形态闸：当场读到 **Joja超市** ⇒ 只放行 Joja 那两条，电影院/废弃超市隐藏",
+                      M._festival_poi_active("Joja超市(店内)", {"map": "JojaMart", "joja_form": "jojamart"}) is True
+                      and M._festival_poi_active("电影院(门口)", {"map": "Town", "joja_form": "theater"}) is False, ""))
+        _set_form25(_act25(9999, ""))
+        res.append(ok("🏬 三形态闸：**认不出** ⇒ 三种形态的 POI **全都不给**（不猜、不蒙）",
+                      M._festival_poi_active("电影院(门口)", {"map": "Town", "joja_form": "theater"}) is False
+                      and M._festival_poi_active("Joja超市(门口)", {"map": "Town", "joja_form": "jojamart"}) is False
+                      and M._festival_poi_active("废弃超市(门口)", {"map": "Town", "joja_form": "abandoned"}) is False, ""))
+    finally:
+        M.api._get = _ORIG_GET25
+        M._joja_form_memo.update({"ts": 0.0, "val": None})
+    _P25 = M.locations.POI
+    res.append(ok("🏬 真表：三形态各自带对 `joja_form`（电影院 5 条 / Joja 2 条 / 废弃 2 条）",
+                  all((_P25.get(k) or {}).get("joja_form") == "theater" for k in
+                      ("电影院(门口)", "电影院售票处", "电影院小卖部", "电影院放映厅", "电影院(门内)"))
+                  and (_P25.get("Joja超市(门口)") or {}).get("joja_form") == "jojamart"
+                  and (_P25.get("Joja超市(店内)") or {}).get("joja_form") == "jojamart"
+                  and (_P25.get("废弃超市(门口)") or {}).get("joja_form") == "abandoned"
+                  and (_P25.get("废弃超市(收集包板子)") or {}).get("joja_form") == "abandoned", ""))
+    res.append(ok("🏬 真表：**三形态互斥**（`joja_form` 只有这三种值，没有第四种混进来）",
+                  {(_P25.get(k) or {}).get("joja_form") for k in _P25
+                   if (_P25.get(k) or {}).get("joja_form")} == {"theater", "jojamart", "abandoned"}, ""))
+    res.append(ok("🏬 真表：三种走法都进了导航表（BUILDING_DOORS 门格 + ARRIVE 落点 + MAP_LINKS 出口）",
+                  M.locations.BUILDING_DOORS.get("JojaMart") == ("Town", (95, 50))
+                  and M.locations.BUILDING_DOORS.get("AbandonedJojaMart") == ("Town", (96, 50))
+                  and M.locations.ARRIVE.get("JojaMart") == (13, 29)
+                  and M.locations.ARRIVE.get("AbandonedJojaMart") == (9, 13)
+                  and "JojaMart" in M.locations.MAP_LINKS
+                  and "AbandonedJojaMart" in M.locations.MAP_LINKS, ""))
+    _ab25 = M._im_cc_board({"location": {"name": "AbandonedJojaMart"},
+                            "inventory": [{"name": "木材", "bundle": True}],
+                            "player": {"x": 9, "y": 13}})
+    res.append(ok("🏚 废弃超市：包里有收集包要的 ⇒ 板子那行给到 **(8,8) + 遗失的收集包**（跟社区中心同一套 JunimoNoteMenu）",
+                  _ab25.get("x") == 8 and _ab25.get("y") == 8 and "遗失" in str(_ab25.get("area")), _ab25))
+    res.append(ok("🏚 废弃超市：包里没有它收的 ⇒ **不给行**",
+                  M._im_cc_board({"location": {"name": "AbandonedJojaMart"}, "inventory": [], "player": {}}) == {}, ""))
+    res.append(ok("🏚 地点闸没被带松：农场 / 博物馆 ⇒ 不给行",
+                  M._im_cc_board({"location": {"name": "Farm"}, "inventory": [{"bundle": True}]}) == {}
+                  and M._im_cc_board({"location": {"name": "ArchaeologyHouse"},
+                                      "inventory": [{"bundle": True}]}) == {}, ""))
+    _ctx_ab25 = M.intent_menu.ctx_from(state={"location": {"name": "AbandonedJojaMart"}, "player": {"x": 9, "y": 13}},
+                                       surr={}, cc_board={"x": 8, "y": 8,
+                                                          "area": "遗失的收集包（废弃超市）", "have": 1})
+    _ctx_cc25 = M.intent_menu.ctx_from(state={"location": {"name": "CommunityCenter"}, "player": {"x": 14, "y": 23}},
+                                       surr={}, cc_board={"x": 14, "y": 23, "area": "工艺室", "have": 2})
+    res.append(ok("🏚 单子那行：废弃超市里叫「**看 收集包板子（走过去）**」，社区中心里仍是「看 献祭板（走过去）」",
+                  M.intent_menu._cc_go_show(_ctx_ab25, None) == "看 收集包板子（走过去）"
+                  and M.intent_menu._cc_go_show(_ctx_cc25, None) == "看 献祭板（走过去）", ""))
+
     print(f"\n{sum(res)}/{len(res)} 过")
     return all(res)
 
