@@ -5889,6 +5889,13 @@ public class ModEntry : Mod
                         //       真机实测：**蜥怪的爪子探针回 `canPlace=true`**，可它一放就"弹红字、什么都不做"。
                         //    ⇒「重铸饰品」那一行的候选必须按这一位筛（非饰品恒 false）。
                         ["canReforge"] = CanReforgeTrinket(i),
+                        // 🏛️ 2026-10-05 恒：「很久之前我们做过对背包里的献祭项打标……后来原生的
+                        //    可献祭标记也探测过」⇒ **他记的没错，那把尺子在游戏里**：
+                        //    `CommunityCenter.couldThisIngredienteBeUsedInABundle(Object)` ——
+                        //    `InventoryMenu.cs:490` 正是拿它点亮原生高亮 `GameMenu.bundleItemHovered`。
+                        //    ⚠️ 它是**世界侧**判据：**不看板子开没开**、也不认类别号（`-4`=鱼 那种它自己认）
+                        //    ⇒ 「这间收的东西我包里有几件」这类问题终于能**问游戏**，不用我抄一份匹配。
+                        ["bundle"] = CouldGoToBundle(i),
                         ["stats"] = DescribeItemStats(i),
                         ["slotIndex"] = x.slotIdx   // 真实背包槽位（点坐标用这个，不是列表 index）
                     };
@@ -15028,7 +15035,33 @@ public class ModEntry : Mod
         // （2026-09-26 清空；加回来之前先读上面那段——多半该用 move_mouse=1 而不是往这里塞）
     };
 
-    /// <summary>🏛️ 献祭板：**这一包现在能捧上背包里哪几件**（2026-10-04 · 单子那两层用的判据）。</summary>
+    /// <summary>🏛️ 这件东西**有没有哪个没做完的收集包要它**（游戏自己那把尺子）。</summary>
+    /// <remarks>
+    /// ⚠️ 2026-10-05 恒：「**很久之前我们做过对背包里的献祭项打标**……后来**原生的可献祭标记
+    ///    也探测过**」——他记的没错，那把尺子就在游戏里：`InventoryMenu.cs:490`
+    ///      ```csharp
+    ///      if (item is Object o && Game1.RequireLocation&lt;CommunityCenter&gt;("CommunityCenter")
+    ///              .couldThisIngredienteBeUsedInABundle(o))
+    ///          GameMenu.bundleItemHovered = true;        // ← 原生"这件能献祭"的高亮
+    ///      ```
+    ///    ⇒ 这一位就是"献祭项打标"，而且比我当年按名字比更准（**类别型需求** `-4`=鱼/`-5`=蛋 它自己认）。
+    /// ⚠️ 只有 `StardewValley.Object` 才进包（工具/武器/家具/衣服都不是）⇒ 非 Object 恒 false，
+    ///    **别在消费侧编 id 名单**（本项目栽过：1.6 矿节点、`Jewels Of The Sea`）。
+    /// ⚠️ 抛异常（CC 不在世界里/读不到）⇒ 返回 **false**；消费侧若要分"读到没有"，
+    ///    靠**这一位在不在**（老 DLL 压根没有这个键）——别把"读不到"当"不能献祭"。
+    /// </remarks>
+    private static bool CouldGoToBundle(Item i)
+    {
+        try
+        {
+            if (i is not StardewValley.Object o) return false;
+            return Game1.RequireLocation<CommunityCenter>("CommunityCenter")
+                .couldThisIngredienteBeUsedInABundle(o);
+        }
+        catch { return false; }
+    }
+
+    /// <summary>🏛️ 献祭：**这一包现在能捧上背包里哪几件**（2026-10-04 · 单子那两层用的判据）。</summary>
     /// <remarks>
     /// 判据**全用游戏自己的两把尺子**（Python 那边**不许**重抄"id/类别/品质/数量"那套匹配）：
     ///   · `Bundle.IsValidItemForThisIngredientDescription(item, ing)` —— 对不对得上（游戏原函数；

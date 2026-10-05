@@ -24312,6 +24312,72 @@ def _im_cc_reward() -> str:
         return f"❌ 领收集包奖励出错：{type(e).__name__}: {e}"
 
 
+def _im_cc_board(state: dict) -> dict:
+    """🏛️ **世界侧**那行「看 献祭板（走过去）」的账 —— 恒 2026-10-05 定的三个条件：
+
+      ① **地点**：我在 CommunityCenter（板子只在那儿；Joja 路线的 AbandonedJojaMart 以后再说）
+      ② **背包**：包里有"有哪个没做完的收集包要它"的东西 —— 判据是 `/state.inventory[].bundle`，
+         而它是**游戏自己那把尺子**（`CommunityCenter.couldThisIngredienteBeUsedInABundle`，
+         见 C# `CouldGoToBundle`；`InventoryMenu.cs:490` 拿它点亮原生高亮）⇒ 类别型需求也认得
+      ③ **消失**：板子不在了（社区中心修好）⇒ `/progress` 的 `noteHere` 全 false ⇒ 那行不出现
+
+    → `{}`（不给行）或有值：`{"x","y","area","have","pos"}`（`have` = 包里有几件它收的）。
+    ⚠️ 便宜闸门先过（地点 + 背包），**两条都过才打 `/progress`**（那是个 HTTP）。
+    ⚠️ 老 DLL 没有 `bundle` 这一位 ⇒ ② 判不出来 ⇒ **那行不出现**（宁可不给，也不给一行按了白跑的）。
+    """
+    loc = ((state or {}).get("location") or {}).get("name") or ""
+    if loc != "CommunityCenter":
+        return {}
+    inv = (state or {}).get("inventory") or []
+    have = [i for i in inv if isinstance(i, dict) and i.get("bundle") is True]
+    if not have:
+        return {}
+    try:
+        pr = api._get("/progress") or {}
+    except Exception:
+        return {}
+    p = (state or {}).get("player") or {}
+    px, py = int(p.get("x") or 0), int(p.get("y") or 0)
+    cand = []
+    for a in (pr.get("areas") or []):
+        if not isinstance(a, dict) or not a.get("noteHere"):
+            continue
+        pos = a.get("notePos") or {}
+        x, y = pos.get("X", pos.get("x")), pos.get("Y", pos.get("y"))
+        if x is None or y is None:
+            continue
+        cand.append({"x": int(x), "y": int(y), "area": a.get("name") or ("第%s间" % a.get("n")),
+                     "d": abs(int(x) - px) + abs(int(y) - py)})
+    if not cand:
+        return {}
+    cand.sort(key=lambda c: c["d"])
+    best = cand[0]
+    return {"x": best["x"], "y": best["y"], "area": best["area"],
+            "have": len(have), "pos": [px, py]}
+
+
+def _im_cc_go(x, y) -> str:
+    """🏛️ 走到板子前 + 交互把板子开出来（单子那行「看 献祭板（走过去）」的执行侧）→ 一句话。
+
+    ⚠️ 就位判据照 `_tank_go`（"走到**正交邻格** + 面朝它"；那个名字带 tank 是历史遗留，逻辑通用）——
+       站远了隔空 `/interact` 会被游戏无视（09-25 那道"先走到跟前再点"的闸就是这么来的）。
+    ⚠️ 成不成看 `/state.activeMenu.type` **真的变成** `JunimoNoteMenu`（`ok:true` 不算）。
+    """
+    try:
+        step = _tank_go(x, y)
+        if step:
+            return step
+        api._ai_post("/interact", {"x": int(x), "y": int(y)})
+        for _ in range(8):
+            time.sleep(0.15)
+            mt = (((api._ai_get("/state") or {}).get("activeMenu") or {}).get("type") or "")
+            if mt == "JunimoNoteMenu":
+                return "🏛️ 献祭板开出来了（%d,%d）—— 单子上现在有那三层的入口" % (int(x), int(y))
+        return ("⚠️ 站到板前（%d,%d）也点了，可**板子没开** —— 要么这一间还没有板子、要么点空；"
+                "先 `show` 看一眼，别当成开好了" % (int(x), int(y)))
+    except Exception as e:
+        return "❌ 去献祭板出错：%s: %s" % (type(e).__name__, e)
+
 def _im_ctx():
     """一次把单子要的世界快照凑齐。
 
@@ -24415,6 +24481,10 @@ def _im_ctx():
                                 # 🏛️ 「献祭板」那两层的账（2026-10-04 恒「保留一件件捧上槽位的趣味感」）：
                                 #    只在献祭板开着时多打一发 `/bundles`（包名在那份里）。
                                 cc=_im_cc(state, raw=_RAW_MENU),
+                                # 🏛️ 世界侧那行「看 献祭板（走过去）」的账（恒 2026-10-05 三条件：
+                                #    地点 / 背包里真有它收的 / 板子还在）——**零额外 HTTP**（除了
+                                #    两条便宜闸门都过之后那一发 /progress）。
+                                cc_board=_im_cc_board(state),
                                 worn=worn)
 
 
@@ -25508,6 +25578,9 @@ def _im_run(op, args):
         # 🎁 2026-10-05 恒真机「然后有奖励可以领」：点献祭板那个**礼物按钮**开奖励单
         #    （判据 = 菜单真变成 ItemGrabMenu；ok:true 不算）。
         "cc_gift": lambda: _im_cc_reward(),
+        # 🏛️ 2026-10-05 恒三条件定的**世界侧入口**：走到板前 + 交互开板子（就位判据走 `_tank_go`，
+        #    成不成看 `/state.activeMenu.type` 真变成 JunimoNoteMenu）。
+        "cc_go": lambda: _im_cc_go(args.get("x"), args.get("y")),
         "skip": lambda: skip_event(),
         # 🧾 确认过夜结算（2026-10-01）：结算屏（ShippingMenu）上「确认结算」按下去走这里。
         "settle": lambda: confirm_settlement(),

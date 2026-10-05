@@ -223,6 +223,9 @@ class Ctx:
     #    ⚠️ **判据全在游戏**（`Bundle.IsValidItemForThisIngredientDescription` /
     #       `canAcceptThisItem` / `CanBePartiallyOrFullyDonated`）——这一层不认 id、不认类别号。
     cc: dict = field(default_factory=dict)
+    # 🏛️ 2026-10-05 恒三条件定的**世界侧入口**（_im_cc_board）：{} = 不给那行（不在社区中心 /
+    #    包里没有它收的 / 板子已不在）；有值 {x,y,area,have,pos} ⇒ 给一行「看 献祭板（走过去）」。
+    cc_board: dict = field(default_factory=dict)
     # 📋 **开着的菜单里摊出来的东西**（2026-10-01 · P-menus）。
     #    ⚠️ **由服务器挑好递进来**（`_im_menu_data`），这一层**不自己打 `/menu`、也不认菜单名**
     #       —— 跟 `menu_exit`/`shop`/`caps` 同一个形状：判据只有一处，消费侧只管用。
@@ -1440,14 +1443,28 @@ def _exec_cc_back(ctx, targets, run):
 
 
 def _cc_offer_rows(b) -> list:
-    """这一包里**手上能捧上的每一件**各一行（个数/需求数都印在理由栏里）。"""
-    rows = []
+    """这一包里**手上能捧上的每一件**各一行（个数/需求数都印在理由栏里）。
+
+    ⚠️ 同一件（同 `id` + 同背包格）**可能对上这一包的多个格子** —— 真机现成的例子：
+    「建筑」包要 **2 格木材 ×99**，于是一件 198 的木材会给出**两条 `give` 记录**
+    ⇒ 照记录直接出两行就是**两行一模一样的「捧上 木材」**（假装能挑哪一格；
+    跟 2026-10-04 鱼缸替换层"三行同名大海参"是同一个形状）。
+    ⇒ 按 `(id, 背包格)` **合并成一行**，在理由里写明「这一包要它 N 格（捧一次填一格）」。
+    """
+    groups = {}
     for g in (b.get("give") or []):
         if not isinstance(g, dict):
             continue
+        key = (g.get("id") or g.get("name") or "?", g.get("slot"))
+        groups.setdefault(key, []).append(g)
+    rows = []
+    for (fid, _slot), gs in groups.items():
+        g = gs[0]
         need = int(g.get("need") or 1)
+        n_slots = len(gs)
         why = (f"背包 ×{int(g.get('count') or 0)} · 这一格要「{g.get('want') or g.get('name')}」"
                + (f"×{need}" if need > 1 else "")
+               + (f" · **这一包要它 {n_slots} 格**（捧一次填一格）" if n_slots > 1 else "")
                + ("（一次就能填满）" if g.get("full") else "（先放一部分，凑齐了它自己算完成）"))
         rows.append(Row(CC_OFFER_V, [{"give": dict(g)}], f"捧上 {g.get('name') or '?'}", why, 0))
     return rows
@@ -1508,6 +1525,35 @@ CC_GIFT_V = Verb("cc_gift", "领 收集包奖励", 80, _cc_gift_can, _cc_gift_re
                  _cc_gift_show, "world",
                  exec=lambda c, t, run: _exec_chore(c, t, run, "cc_gift", "领"),
                  menu_ok=True)
+
+
+# 🏛️ 「看 献祭板（走过去）」—— **世界侧**入口（恒 2026-10-05 定的三条件：地点 / 背包 / 板子在）。
+#    ⚠️ `menu_ok` **故意不设**：它只在**没开菜单**时才该出现（板子没开），给了这个位
+#       就会在别的菜单开着时也劝 AI 去走位（那是菜单闸门要挡的事）。
+#    ⚠️ 判据全在服务器（`Ctx.cc_board` = `_im_cc_board`）：这一层不认地点名、也不认"包里有没有货"。
+def _cc_go_can(ctx, t):
+    if (ctx.cc or {}):            # 板子已经开着 ⇒ 该走的是那三层，不是这一行
+        return CAN_NO
+    return CAN_YES if (ctx.cc_board or {}) else CAN_NO
+
+
+def _cc_go_show(ctx, t):
+    return "看 献祭板（走过去）"
+
+
+def _cc_go_reason(ctx, t):
+    cb = ctx.cc_board or {}
+    area = cb.get("area") or "本间"
+    have = int(cb.get("have") or 0)
+    return (f"{area} 的板子还在 · 你包里有 {have} 件它收的"
+            f" · 走过去交互把板子开出来")
+
+
+CC_GO_V = Verb("cc_go", "看 献祭板", 74, _cc_go_can, _cc_go_reason, _cc_go_show, "world",
+               exec=lambda c, t, run: _receipt_from_helper(
+                   "看 献祭板", "",
+                   run("cc_go", {"x": (c.cc_board or {}).get("x"),
+                                 "y": (c.cc_board or {}).get("y")})))
 # ⚠️ 子层那两个动词**必须在 exec 函数之后**建（`exec=` 是**定义时求值**的）——
 #    写在前面就是 NameError（这一批我自己踩了一次，import 当场炸）。
 CC_OFFER_V = Verb("cc_offer", "捧上", 0, lambda c, t: CAN_YES, None,
@@ -4179,6 +4225,9 @@ VERBS: list = [
     # 🎁 2026-10-05 恒真机「然后有奖励可以领」：**领本间已完成的收集包奖励**
     #    （列表页那个礼物按钮；判据 = 服务器从 `/menu.buttons` 认出了 `presentButton`）。
     CC_GIFT_V,
+    # 🏛️ 2026-10-05 恒三条件（地点/背包/板子在）定的**世界侧入口**：
+    #    menu_ok=False（**故意**）—— 它只在没开菜单时才该出现，不然会劝 AI 开着菜单去走位。
+    CC_GO_V,
 ]
 
 
@@ -5201,7 +5250,8 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
              doors: dict = None, chores: dict = None, clint_open: bool = False,
              hay: dict = None, pick: dict = None,
              ponds: dict = None, statue: dict = None, tank: dict = None,
-             quests: dict = None, levelup: dict = None, cc: dict = None) -> Ctx:
+             quests: dict = None, levelup: dict = None, cc: dict = None,
+             cc_board: dict = None) -> Ctx:
     """把 `/state`(**full**) + `/surroundings`(+`/machines`/`/scan_chests`) 拼成 Ctx。
 
     ⚠️ 只搬运，**不补默认值**：缺什么就让它缺着（`can()` 遇到缺失自然回 假/？）。
@@ -5308,6 +5358,8 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
                # 🏛️ 献祭板那两层的账（同上：`_im_cc` 读 `/menu.characterCust` + `/bundles`，
                #    判据全在游戏那边 —— 这一层不认 id/类别/品质）。
                cc=cc or {},
+               # 🏛️ 世界侧入口那行的账（同上：_im_cc_board 算好递进来）。
+               cc_board=cc_board or {},
                sitting=bool(((seats or {}).get("me") or {}).get("sitting")),
                worn=(worn or {}),
                pets=pets,

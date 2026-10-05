@@ -4308,6 +4308,56 @@ def main():
     res.append(ok("🏛️ 翻开某一包：点它那块图标，判据 = 游戏自己的 `specific`+`current`",
                   _r_cc4.get("st") == "yes" and _c4.page == 6, _r_cc4.get("text")))
 
+    # 🏛️ 2026-10-05 恒三条件定的**世界侧入口**（「看 献祭板（走过去）」）——三条件各一枚钉子。
+    #    判据全在服务器（`_im_cc_board`）：地点 / 背包里有它收的 / 板子还在；这一层不认地点名。
+    _orig_get_ccb = M.api._get
+    _ccb_calls = {"n": 0}
+
+    def _ccb_get(ep, params=None):
+        if ep == "/progress":
+            _ccb_calls["n"] += 1
+            return {"areas": [{"name": "工艺室", "noteHere": True, "notePos": {"X": 14, "Y": 23}},
+                              {"name": "鱼缸", "noteHere": True, "notePos": {"X": 40, "Y": 10}}]}
+        return _orig_get_ccb(ep, params)
+
+    def _ccb_state(loc, items, x=13, y=23):
+        return {"location": {"name": loc}, "player": {"x": x, "y": y}, "inventory": items}
+
+    try:
+        M.api._get = _ccb_get
+        _ccb_calls["n"] = 0
+        _b1 = M._im_cc_board(_ccb_state("Farm", [{"name": "木材", "bundle": True}]))
+        res.append(ok("🏛️🚪 ①地点：不在社区中心 ⇒ 不给那行（**连 `/progress` 都不打**）",
+                      _b1 == {} and _ccb_calls["n"] == 0,
+                      f"{_b1} calls={_ccb_calls['n']}"))
+        _ccb_calls["n"] = 0
+        _b2 = M._im_cc_board(_ccb_state("CommunityCenter", [{"name": "木材", "bundle": False}]))
+        res.append(ok("🏛️🚪 ②背包：在社区中心但包里**没有它收的** ⇒ 不给那行（也不打 `/progress`）",
+                      _b2 == {} and _ccb_calls["n"] == 0,
+                      f"{_b2} calls={_ccb_calls['n']}"))
+        _b3 = M._im_cc_board(_ccb_state("CommunityCenter",
+                                        [{"name": "木材", "bundle": True},
+                                         {"name": "鲤鱼", "bundle": True}]))
+        res.append(ok("🏛️🚪 三条齐 ⇒ 给行，挑**最近那块板子**、报「包里有几件」",
+                      _b3.get("x") == 14 and _b3.get("y") == 23 and _b3.get("area") == "工艺室"
+                      and _b3.get("have") == 2, _b3))
+        M.api._get = lambda ep, params=None: ({"areas": [{"name": "工艺室", "noteHere": False}]}
+                                              if ep == "/progress" else _orig_get_ccb(ep, params))
+        _b4 = M._im_cc_board(_ccb_state("CommunityCenter", [{"name": "木材", "bundle": True}]))
+        res.append(ok("🏛️🚪 ③消失：社区中心修好（noteHere 全 false）⇒ 那行不出现", _b4 == {}, _b4))
+        M.api._get = _ccb_get
+        _ctx_go = M.intent_menu.ctx_from(state=_ccb_state("CommunityCenter", []), surr={}, cc_board=_b3)
+        _ctx_no = M.intent_menu.ctx_from(state=_ccb_state("CommunityCenter", []), surr={}, cc_board={})
+        _ctx_open = M.intent_menu.ctx_from(state=_ccb_state("CommunityCenter", []), surr={}, cc_board=_b3,
+                                          cc={"bundles": [], "specific": False, "new_fields": True})
+        res.append(ok("🏛️🚪 单子：三条件齐才出那行；**板子已开着**或没账都不出",
+                      M.intent_menu._cc_go_can(_ctx_go, None) == M.intent_menu.CAN_YES
+                      and M.intent_menu._cc_go_show(_ctx_go, None) == "看 献祭板（走过去）"
+                      and M.intent_menu._cc_go_can(_ctx_no, None) == M.intent_menu.CAN_NO
+                      and M.intent_menu._cc_go_can(_ctx_open, None) == M.intent_menu.CAN_NO))
+    finally:
+        M.api._get = _orig_get_ccb
+
     print(f"\n{sum(res)}/{len(res)} 过")
     return all(res)
 
