@@ -211,6 +211,18 @@ class Ctx:
     #    ⚠️ **由服务器算好递进来**（`_im_levelup`，**零额外 HTTP** —— 就在 `/state.activeMenu.levelUp`
     #       里，跟状态条那条引导同一份）；这一层不认菜单名、不编职业名。
     levelup: dict = field(default_factory=dict)
+    # 🏛️ 2026-10-04 恒「动A」：「看看你觉得方便，又**保留一种一件件物品捧上槽位的趣味感**？」
+    #    `{}` = 这一刻没开献祭板（或老 DLL 报不出"能捧上什么"）；有值时（服务器 `_im_cc` 算好）：
+    #      `{"area":"鱼缸","specific":False,"current":-1,"new_fields":True,
+    #        "bundles":[{"index":6,"name":"河鱼收集包","complete":False,
+    #                    "missing":[{"name":"鲤鱼","need":1,"category":None}],
+    #                    "give":[{"slot":3,"name":"鲤鱼","id":"(O)147","count":3,
+    #                             "want":"鲤鱼","need":1,"full":True}],
+    #                    "click":{"x":…,"y":…}}],
+    #        "slots":[…],"inventory":[…],"donatables":[…],"partial":…}`
+    #    ⚠️ **判据全在游戏**（`Bundle.IsValidItemForThisIngredientDescription` /
+    #       `canAcceptThisItem` / `CanBePartiallyOrFullyDonated`）——这一层不认 id、不认类别号。
+    cc: dict = field(default_factory=dict)
     # 📋 **开着的菜单里摊出来的东西**（2026-10-01 · P-menus）。
     #    ⚠️ **由服务器挑好递进来**（`_im_menu_data`），这一层**不自己打 `/menu`、也不认菜单名**
     #       —— 跟 `menu_exit`/`shop`/`caps` 同一个形状：判据只有一处，消费侧只管用。
@@ -1329,6 +1341,146 @@ TANK_ADD_V = Verb("tank_add", "添加", 0, _tank_tile_can, _tank_reason_add,
 TANK_SWAP_V = Verb("tank_swap", "替换", 0, _tank_tile_can,
                    lambda c, t: "替换", lambda c, t: "替换", "tile", exec=_exec_tank_swap,
                    menu_ok=True)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 🏛️ 献祭板「一件件物品捧上槽位」（2026-10-04 · 恒 A 批）
+# ═══════════════════════════════════════════════════════════════════
+# 恒原话：「**看看你觉得方便，又保留一种一件件物品捧上槽位的趣味感**？」
+# ⇒ 形状**照鱼缸那条**（都是"一层层进去、一件一件动手"），但**不做"一键捐完"**：
+#    顶层一行 →（点开）本间**手上能捧上东西**的包各一行 →（点开）**一件一行**「捧上 鲤鱼」。
+#    按下去就是**真人那两步**：点底部背包那格（`inventory.leftClick` 把那件拿到光标）→
+#    点那一格槽位（游戏自己 `canAcceptThisItem`→`tryToDepositThisItem` /
+#    `HandlePartialDonation`）—— **投料动画、音效、"格子被填上"全是游戏自己的**，
+#    回执再把「背包 ×3 → ×2 · 那一格 0/1 → 1/1」念出来（这就是那个趣味感的账）。
+# ⚠️ 判据**全在游戏**（`/menu.characterCust` 的 `canGive`/`donatables`/`ingredientSlots`）：
+#    这一层**不认 id、不认类别号、不认品质**（类别型需求 `-4`=鱼 / `-5`=蛋 只有游戏分得清）。
+# ⚠️ **老 DLL 没有那两栏**（`new_fields=False`）⇒ 这条**整条不出行**，退回 `menu read` 那张
+#    「图标↔收集包」表（2026-09-25 那份，仍然是权威）—— 宁可不给，也不给一行按了不成的。
+def _cc_bundles(ctx) -> list:
+    return [b for b in ((ctx.cc or {}).get("bundles") or []) if isinstance(b, dict)]
+
+
+def _cc_workable(ctx) -> list:
+    """**手上现在就能捧上东西**的包（`give` 非空）—— 单子只列这些（按了不成的别占行）。"""
+    return [b for b in _cc_bundles(ctx) if b.get("give")]
+
+
+def _cc_give_all(ctx) -> int:
+    return sum(len(b.get("give") or []) for b in _cc_workable(ctx))
+
+
+def _cc_missing_line(b) -> str:
+    miss = b.get("missing") or []
+    if not miss:
+        return ""
+    bit = "、".join(f"{m.get('name') or '?'}" + (f"×{m.get('need')}" if (m.get("need") or 1) > 1 else "")
+                    for m in miss[:4])
+    if len(miss) > 4:
+        bit += f"…（共 {len(miss)} 件）"
+    return f"还差：{bit}"
+
+
+def _cc_can(ctx, t):
+    """🏛️ 只在**这版 DLL 报得出"能捧上什么"**、且真开着献祭板、且**有得捧**时才给这一行。"""
+    cc = ctx.cc or {}
+    if not cc or not cc.get("new_fields"):
+        return CAN_NO
+    return CAN_YES if (_cc_workable(ctx) or cc.get("specific")) else CAN_NO
+
+
+def _cc_show(ctx, t):
+    cc = ctx.cc or {}
+    if cc.get("specific"):
+        b = next((x for x in _cc_bundles(ctx) if x.get("index") == cc.get("current")), None)
+        if b:
+            return f"献祭板·正翻着「{b.get('name') or b.get('index')}」"
+    return f"献祭板（{cc.get('area') or '本间'} · 手上能捧上 {_cc_give_all(ctx)} 件）"
+
+
+def _cc_reason(ctx, t):
+    cc = ctx.cc or {}
+    if cc.get("specific"):
+        b = next((x for x in _cc_bundles(ctx) if x.get("index") == cc.get("current")), None)
+        if b:
+            return f"{_cc_missing_line(b) or '这一包要的都齐了'} · 一件一件捧上去"
+    return (f"本间 {len(_cc_bundles(ctx))} 包还没做完 · **手上就能捧上 {_cc_give_all(ctx)} 件**"
+            f"（一件一行，投料动画是游戏自己的）")
+
+
+# ⚠️ 三个子动词都带 `menu_ok=True`：`do_row` 在**菜单态**会拦"菜单态做不了的动作"的号，
+#    而这一族**整族都活在菜单态里**（不写这个位，点开第二层就被自己人挡住——自验当场撞到过）。
+CC_BUNDLE_V = Verb("cc_bundle", "开", 0, lambda c, t: CAN_YES, None,
+                   lambda c, t: f"开「{t.get('name') or t.get('index')}」", "world", menu_ok=True)
+
+
+def _exec_cc_offer(ctx, targets, run):
+    """🏛️ 「捧上 这一件」—— 执行侧那一句话来自服务器（它自己回读"背包少了没"）。"""
+    t = (targets or [{}])[0]
+    g = t.get("give") or {}
+    return _receipt_from_helper("捧上", f"「{g.get('name') or '?'}」",
+                                run("cc_offer", {"item_id": g.get("id") or "",
+                                                 "name": g.get("name") or ""}))
+
+
+def _exec_cc_back(ctx, targets, run):
+    return _exec_chore(ctx, targets, run, "cc_back", "返回")
+
+
+def _cc_offer_rows(b) -> list:
+    """这一包里**手上能捧上的每一件**各一行（个数/需求数都印在理由栏里）。"""
+    rows = []
+    for g in (b.get("give") or []):
+        if not isinstance(g, dict):
+            continue
+        need = int(g.get("need") or 1)
+        why = (f"背包 ×{int(g.get('count') or 0)} · 这一格要「{g.get('want') or g.get('name')}」"
+               + (f"×{need}" if need > 1 else "")
+               + ("（一次就能填满）" if g.get("full") else "（先放一部分，凑齐了它自己算完成）"))
+        rows.append(Row(CC_OFFER_V, [{"give": dict(g)}], f"捧上 {g.get('name') or '?'}", why, 0))
+    return rows
+
+
+def _cc_page_level(b) -> "Level":
+    rows = _cc_offer_rows(b)
+    rows.append(Row(CC_BACK_V, [{}], "返回收集包列表", "回去看本间还有哪几包能捧（不丢东西）", 0))
+    title = (f"「{b.get('name') or b.get('index')}」 —— 捧哪一件上去？"
+             + (f"\n  {_cc_missing_line(b)}" if _cc_missing_line(b) else ""))
+    return Level(rows, title=title)
+
+
+def _cc_flow(ctx, targets):
+    """🏛️ 献祭板那两层 —— 由**游戏自己的状态**决定给你看哪一层（不是靠我们记"点到第几层"）。"""
+    cc = ctx.cc or {}
+    if not cc or not cc.get("new_fields"):
+        return None
+    if cc.get("specific"):
+        b = next((x for x in _cc_bundles(ctx) if x.get("index") == cc.get("current")), None)
+        if b:
+            return _cc_page_level(b)
+    rows = []
+    for b in _cc_workable(ctx):
+        rows.append(Row(CC_BUNDLE_V, [{"index": b.get("index"), "name": b.get("name")}],
+                        f"开「{b.get('name') or b.get('index')}」",
+                        f"{_cc_missing_line(b)} · 手上能捧上 {len(b.get('give') or [])} 件", 0,
+                        level=_cc_page_level(b)))
+    if not rows:
+        rows.append(Row(CC_BACK_V, [{}], "返回收集包列表", "这一层没有能捧的", 0))
+    done = [b for b in _cc_bundles(ctx) if b.get("complete")]
+    return Level(rows, title=(f"{cc.get('area')} · 本间 {len(_cc_bundles(ctx))} 包"
+                              f"（已做完 {len(done)} 包）—— 先开哪一包？"))
+
+
+CC_V = Verb("cc", "献祭板", 74, _cc_can, _cc_reason, _cc_show, "world",
+            subs=_cc_flow, menu_ok=True)
+# ⚠️ 子层那两个动词**必须在 exec 函数之后**建（`exec=` 是**定义时求值**的）——
+#    写在前面就是 NameError（这一批我自己踩了一次，import 当场炸）。
+CC_OFFER_V = Verb("cc_offer", "捧上", 0, lambda c, t: CAN_YES, None,
+                  lambda c, t: f"捧上 {t.get('name')}", "world", exec=_exec_cc_offer,
+                  menu_ok=True)
+CC_BACK_V = Verb("cc_back", "返回收集包列表", 0, lambda c, t: CAN_YES, None,
+                 lambda c, t: "返回收集包列表", "world", exec=_exec_cc_back,
+                 menu_ok=True)
 
 
 # 🪑 「起身」（2026-10-01）—— **坐着时的唯一出路**。
@@ -3986,6 +4138,9 @@ VERBS: list = [
     COLA_V,
     # 🌾 2026-10-01 恒「支持上单子」：**铺 干草**（只在动物建筑内、筒仓有草、槽没满时出现）。
     HAY_V,
+    # 🏛️ 2026-10-04 恒「动A」：**献祭板**（一件件捧上槽位；只在板子开着 + 这版 DLL 报得出
+    #    "能捧上什么" 时出现 —— 判据见 `_cc_can` 那段）。
+    CC_V,
 ]
 
 
@@ -5008,7 +5163,7 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
              doors: dict = None, chores: dict = None, clint_open: bool = False,
              hay: dict = None, pick: dict = None,
              ponds: dict = None, statue: dict = None, tank: dict = None,
-             quests: dict = None, levelup: dict = None) -> Ctx:
+             quests: dict = None, levelup: dict = None, cc: dict = None) -> Ctx:
     """把 `/state`(**full**) + `/surroundings`(+`/machines`/`/scan_chests`) 拼成 Ctx。
 
     ⚠️ 只搬运，**不补默认值**：缺什么就让它缺着（`can()` 遇到缺失自然回 假/？）。
@@ -5112,6 +5267,9 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
                # 🧬 「选职业」那两行的账（同上：`_im_levelup` 从 `/state.activeMenu.levelUp` 拿，
                #    这一层不认菜单名、也不编职业名）。
                levelup=levelup or {},
+               # 🏛️ 献祭板那两层的账（同上：`_im_cc` 读 `/menu.characterCust` + `/bundles`，
+               #    判据全在游戏那边 —— 这一层不认 id/类别/品质）。
+               cc=cc or {},
                sitting=bool(((seats or {}).get("me") or {}).get("sitting")),
                worn=(worn or {}),
                pets=pets,

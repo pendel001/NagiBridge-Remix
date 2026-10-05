@@ -14364,9 +14364,23 @@ public class ModEntry : Mod
                                     {
                                         try { name = StardewValley.ItemRegistry.Create(id)?.DisplayName; } catch { name = id; }
                                     }
-                                    ingInfos.Add(new { id, name, count = stack, quality, completed = ingDone });
+                                    // 🏛️ 2026-10-04：**类别型需求**（`Data/Bundles` 里写负数）在旧口径下
+                                    //    `id` 是 null ⇒ 名字恒 null ⇒ 单子/read 里印成 `?`。
+                                    //    改用游戏自己那把尺子（跟它画图标/悬停文字同一处）。
+                                    int? cat = null;
+                                    try
+                                    {
+                                        var ingDesc = (BundleIngredientDescription)ing;
+                                        cat = ingDesc.category;
+                                        if (string.IsNullOrEmpty(name)) name = BundleIngredientLabel(ingDesc);
+                                    }
+                                    catch { }
+                                    ingInfos.Add(new { id, name, count = stack, quality, completed = ingDone, category = cat });
                                 }
-                            bundleInfos.Add(new { index = bIndex, complete, ingredients = ingInfos });
+                            bundleInfos.Add(new { index = bIndex, complete, ingredients = ingInfos,
+                                // 🏛️ 2026-10-04：**这一包现在能捧上背包里哪几件**（判据见 `BundleCanGive`）——
+                                //    单子那两层靠它：列表页念"手上能捧上 N 件"，翻页后一件一行。
+                                canGive = BundleCanGive(b as Bundle) });
                         }
                     }
                     // 2026-08-16 捐赠流程扩展：specific 页坐标（bundle bounds / ingredientSlots / inventory / heldItem）
@@ -14385,7 +14399,10 @@ public class ModEntry : Mod
                             catch { }
                         }
                     // specific 页 ingredientSlots bounds
+                    // 🏛️ 2026-10-04：顺带把**这一格里已经放着什么/几个**读出来（`slot.item`）——
+                    //    单子要念「这一格 3/5」（分次放的时候它就是进度条），回执也靠它核实"真进格了"。
                     var ingSlots = new List<object?>();
+                    var slotComps = new List<ClickableTextureComponent>();   // ← 真组件（判定"能捧哪一格"要用）
                     try
                     {
                         var slots = menu.GetType().GetField("ingredientSlots", jFlags)?.GetValue(menu) as System.Collections.IEnumerable;
@@ -14394,8 +14411,16 @@ public class ModEntry : Mod
                             {
                                 try
                                 {
+                                    var slotCC = slot as ClickableTextureComponent;
+                                    if (slotCC != null) slotComps.Add(slotCC);
                                     if (slot.GetType().GetField("bounds", jFlags)?.GetValue(slot) is Microsoft.Xna.Framework.Rectangle sr)
-                                        ingSlots.Add(new { x = sr.X, y = sr.Y, w = sr.Width, h = sr.Height });
+                                    {
+                                        var slItem = slotCC?.item;
+                                        ingSlots.Add(new { x = sr.X, y = sr.Y, w = sr.Width, h = sr.Height,
+                                                           index = ingSlots.Count,
+                                                           item = slItem?.DisplayName,
+                                                           stack = slItem?.Stack ?? 0 });
+                                    }
                                 }
                                 catch { }
                             }
@@ -14430,11 +14455,64 @@ public class ModEntry : Mod
                     // 具体页正开着的是哪一包（-1=列表页）——MCP 靠它把「这一页要什么」跟包名对上。
                     // ⚠️ `bundles[]` 里只有全局包号、**没有名字**，名字要 MCP 那边去 `/bundles` 反查。
                     int curBundleIdx = -1;
+                    object? curBundleObj = null;
                     try
                     {
-                        var cpb = menu.GetType().GetField("currentPageBundle", jFlags)?.GetValue(menu);
-                        if (cpb != null)
-                            curBundleIdx = Convert.ToInt32(cpb.GetType().GetField("bundleIndex", jFlags)?.GetValue(cpb) ?? -1);
+                        curBundleObj = menu.GetType().GetField("currentPageBundle", jFlags)?.GetValue(menu);
+                        if (curBundleObj != null)
+                            curBundleIdx = Convert.ToInt32(curBundleObj.GetType().GetField("bundleIndex", jFlags)?.GetValue(curBundleObj) ?? -1);
+                    }
+                    catch { }
+                    // 🏛️ 2026-10-04：**这一页上，背包里哪一件能捧进哪一格** —— 判据 = 游戏自己的
+                    //   `Bundle.canAcceptThisItem(item, slot)`（对得上+数量够+格子空 ⇒ 一次填满）
+                    //   与 `JunimoNoteMenu.CanBePartiallyOrFullyDonated(item)`（这一类凑得齐 ⇒ 允许先放一部分）。
+                    //   ⚠️ 只在这一包的详情页开着时才算（那两个函数读的就是"当前这一页"）。
+                    var donatables = new List<object?>();
+                    try
+                    {
+                        if (specific && curBundleObj is Bundle cbPage && slotComps.Count > 0)
+                        {
+                            var jnmTyped = menu as JunimoNoteMenu;
+                            for (int si = 0; si < Game1.player.Items.Count; si++)
+                            {
+                                var it = Game1.player.Items[si];
+                                if (it == null) continue;
+                                int toSlot = -1; bool full = false;
+                                for (int k = 0; k < slotComps.Count; k++)
+                                {
+                                    bool can; try { can = cbPage.canAcceptThisItem(it, slotComps[k]); } catch { can = false; }
+                                    if (can) { toSlot = k; full = true; break; }
+                                }
+                                bool part = false;
+                                if (toSlot < 0 && jnmTyped != null)
+                                {
+                                    try { part = jnmTyped.CanBePartiallyOrFullyDonated(it); } catch { part = false; }
+                                    if (part)
+                                        for (int k = 0; k < slotComps.Count; k++)
+                                            if (slotComps[k].item == null) { toSlot = k; break; }
+                                }
+                                if (toSlot < 0) continue;
+                                string want = "";
+                                try
+                                {
+                                    int gi = cbPage.GetBundleIngredientDescriptionIndexForItem(it);
+                                    if (gi >= 0 && gi < cbPage.ingredients.Count) want = BundleIngredientLabel(cbPage.ingredients[gi]);
+                                }
+                                catch { }
+                                donatables.Add(new { slot = si, name = it.DisplayName ?? it.Name,
+                                                     id = it.QualifiedItemId, count = it.Stack,
+                                                     quality = (it as StardewValley.Object)?.Quality ?? 0,
+                                                     toSlot, full, part, want });
+                            }
+                        }
+                    }
+                    catch { }
+                    // 🏛️ 分次放时"台面上已经放着的那件"（`partialDonationItem`）：名字 + 已放几个
+                    object? partialInfo = null;
+                    try
+                    {
+                        var pItem = menu.GetType().GetField("partialDonationItem", jFlags)?.GetValue(menu) as Item;
+                        if (pItem != null) partialInfo = new { name = pItem.DisplayName ?? pItem.Name, stack = pItem.Stack };
                     }
                     catch { }
                     ccInfo = new
@@ -14447,7 +14525,10 @@ public class ModEntry : Mod
                         bundleBounds,        // 列表页每块 bundle 的点击位（menu_click 进 specific 页）
                         ingredientSlots = ingSlots,  // specific 页投放槽位
                         inventorySlots = invSlots,   // specific 页底部背包（点物品拿起）
-                        heldItem = heldName
+                        heldItem = heldName,
+                        // 🏛️ 2026-10-04（单子那两层用）：
+                        donatables,          // 这一页"背包里哪一件能捧进哪一格"（`toSlot`/`full`/`part`/`want`）
+                        partial = partialInfo   // 分次放已经在台面上的那件（名字 + 已放几个；没在放就是 null）
                     };
                 }
 
@@ -14905,6 +14986,71 @@ public class ModEntry : Mod
     {
         // （2026-09-26 清空；加回来之前先读上面那段——多半该用 move_mouse=1 而不是往这里塞）
     };
+
+    /// <summary>🏛️ 献祭板：**这一包现在能捧上背包里哪几件**（2026-10-04 · 单子那两层用的判据）。</summary>
+    /// <remarks>
+    /// 判据**全用游戏自己的两把尺子**（Python 那边**不许**重抄"id/类别/品质/数量"那套匹配）：
+    ///   · `Bundle.IsValidItemForThisIngredientDescription(item, ing)` —— 对不对得上（游戏原函数；
+    ///      **类别型需求**（`Data/Bundles` 里写负数，如 `-4`=鱼 / `-5`=蛋）也走它
+    ///      ⇒ 我这边既不看 id 也不认类别号）；
+    ///   · 数量：`item.Stack &gt;= ing.stack` 能**一次填满**；否则**这一类合计够**也算
+    ///     （= `JunimoNoteMenu.CanBePartiallyOrFullyDonated` 的总数规则，反编译 `:657-686`）。
+    /// ⚠️ 那个函数本身**不能在这儿调**：它读 `currentPageBundle`（没翻到该包那页时是 null）⇒ 会炸；
+    ///    详情页那一档"能分次放"在调用方拿**真实槽位**另算（见 `donatables`）。
+    /// </remarks>
+    private static List<object> BundleCanGive(Bundle bundle)
+    {
+        var list = new List<object>();
+        if (bundle?.ingredients == null) return list;
+        var bag = Game1.player.Items;
+        for (int gi = 0; gi < bundle.ingredients.Count; gi++)
+        {
+            var ing = bundle.ingredients[gi];
+            if (ing.completed) continue;
+            int need = Math.Max(1, ing.stack);
+            int total = 0;
+            foreach (var it in bag)
+            {
+                if (it == null) continue;
+                bool ok; try { ok = bundle.IsValidItemForThisIngredientDescription(it, ing); } catch { ok = false; }
+                if (ok) total += it.Stack;
+            }
+            if (total < need) continue;             // 这一类**合计都不够** ⇒ 一件也捧不上（partial 也要凑得齐）
+            string want = BundleIngredientLabel(ing);
+            for (int si = 0; si < bag.Count; si++)
+            {
+                var it = bag[si];
+                if (it == null) continue;
+                bool ok; try { ok = bundle.IsValidItemForThisIngredientDescription(it, ing); } catch { ok = false; }
+                if (!ok) continue;
+                list.Add(new { slot = si, name = it.DisplayName ?? it.Name, id = it.QualifiedItemId,
+                               count = it.Stack, quality = (it as StardewValley.Object)?.Quality ?? 0,
+                               want, need, full = it.Stack >= need, ingredientIndex = gi });
+            }
+        }
+        return list;
+    }
+
+    /// <summary>🏛️ 献祭：那条需求怎么念 —— **类别型需求没有 id**，得问游戏要"代表物"。</summary>
+    /// <remarks>
+    /// ⚠️ 用 `JunimoNoteMenu.GetRepresentativeItemId`（**public static**，`:1012`）而不是自己编名单：
+    /// 游戏自己画那一格图标 / 写悬停文字用的就是它（`JunimoNoteMenu.cs:1550` 的 `hoverText`）——
+    /// 类别型需求会落到"这一类里第一件物品"的名字（跟玩家在屏幕上看到的一字不差）。
+    /// </remarks>
+    private static string BundleIngredientLabel(BundleIngredientDescription ing)
+    {
+        try
+        {
+            var rep = JunimoNoteMenu.GetRepresentativeItemId(ing);
+            if (!string.IsNullOrEmpty(rep))
+            {
+                var it = ItemRegistry.Create(rep, 1, ing.quality);
+                if (it != null) return it.DisplayName ?? it.Name;
+            }
+        }
+        catch { }
+        return string.IsNullOrEmpty(ing.id) ? "（这一类）" : ing.id;
+    }
 
     private object HandleMenuClick(HttpListenerContext ctx)
     {
@@ -15506,6 +15652,24 @@ public class ModEntry : Mod
                     else
                     {
                         tcs.SetResult(new { ok = false, error = $"类目 {category} 不可见/超范围" });
+                    }
+                    return;
+                }
+
+                // 🏛️ 2026-10-04：献祭板**从"某一包"的详情页退回本间列表**。
+                //    走 `JunimoNoteMenu.takeDownBundleSpecificPage()`（**public**，`:1751`）——
+                //    别去猜"点哪块空白处"，也别拿通用按钮表找（那页的 backButton 还要求手上空着）。
+                //    ⚠️ 它自己不回话（void）⇒ 成没成由调用方**回读** `specificBundlePage` 判。
+                if (button == "bundleBack")
+                {
+                    if (menu is JunimoNoteMenu jnmBack)
+                    {
+                        jnmBack.takeDownBundleSpecificPage();
+                        tcs.SetResult(new { ok = true, clicked = "bundleBack" });
+                    }
+                    else
+                    {
+                        tcs.SetResult(new { ok = false, error = "当前不是献祭板（没有 bundleBack 这条路）" });
                     }
                     return;
                 }

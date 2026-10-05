@@ -23941,6 +23941,252 @@ def _im_levelup(state: dict) -> dict:
             "right": {"id": off[1].get("id"), "name": off[1].get("name") or "?"}}
 
 
+def _im_cc(state: dict, raw=_UNFETCHED) -> dict:
+    """🏛️ 献祭板（`JunimoNoteMenu`）这一刻的账 —— 恒 2026-10-04：
+
+    > 「看看你觉得方便，又**保留一种一件件物品捧上槽位的趣味感**」
+
+    ⇒ 形状照**鱼缸那条**（一层层进去、**一件一件**捧），判据**全在游戏那边**：
+      `{}` = 这一刻没开献祭板；有值时：
+        {"area":"鱼缸","specific":False,"current":-1,
+         "bundles":[{"index":6,"name":"河鱼收集包","complete":False,
+                     "missing":[{"name":"鲤鱼","need":1,"category":None}],
+                     "give":[{"slot":3,"name":"鲤鱼","id":"(O)147","count":3,
+                              "want":"鲤鱼","need":1,"full":True,"quality":0}],
+                     "click":{"x":592,"y":136}}],
+         "slots":[{"index":0,"x":…,"y":…,"item":"鲤鱼","stack":1}],   # 只在详情页
+         "inventory":[{"index":0,"x":…,"y":…,"item":"鲤鱼"}],        # 只在详情页（底部背包）
+         "donatables":[{…,"toSlot":0,"full":True,"part":False,"want":"鲤鱼"}],
+         "partial":{"name":"鲤鱼","stack":2} | None,
+         "new_fields":True}     # 这版 DLL 报不报 `canGive`/`donatables`（老 DLL 没有这两栏）
+
+    ⚠️ `give`/`donatables` **都是 C# 拿游戏自己的尺子算的**（`Bundle.IsValidItemForThisIngredient
+       Description` + `canAcceptThisItem` + `CanBePartiallyOrFullyDonated`）——这一层**不许**自己
+       按名字/id 重抄那套匹配（类别型需求 `-4`/`-5` 就是靠游戏才认得出来）。
+    ⚠️ 收集包**名字**不在 `/menu` 里（只有全局包号）⇒ 去 `/bundles` 反查（`Bundle.label`）：
+       只在献祭板开着时多打这一发。
+    """
+    mt = ((state or {}).get("activeMenu") or {}).get("type") or ""
+    if mt != "JunimoNoteMenu":
+        return {}
+    if raw is _UNFETCHED:
+        try:
+            raw = api._ai_get("/menu") or {}
+        except Exception:
+            return {}
+    cc = (raw or {}).get("characterCust") or {}
+    if not cc:
+        return {}
+    labels = _bundle_label_map()
+    bounds = cc.get("bundleBounds") or []
+    new_fields = False
+    out_bundles = []
+    for i, b in enumerate(cc.get("bundles") or []):
+        if not isinstance(b, dict):
+            continue
+        idx = b.get("index")
+        give = b.get("canGive")
+        if give is not None:
+            new_fields = True
+        missing = [{"name": (g.get("name") or "?"), "need": int(g.get("count") or 1),
+                    "category": g.get("category")}
+                   for g in (b.get("ingredients") or [])
+                   if isinstance(g, dict) and not g.get("completed")]
+        row = {"index": idx, "complete": bool(b.get("complete")),
+               "name": labels.get(int(idx)) if idx is not None else None,
+               "missing": missing, "give": list(give or [])}
+        if i < len(bounds) and isinstance(bounds[i], dict):
+            bb = bounds[i]
+            row["click"] = {"x": int(bb.get("x", 0)) + int(bb.get("w", 0)) // 2,
+                            "y": int(bb.get("y", 0)) + int(bb.get("h", 0)) // 2}
+        out_bundles.append(row)
+    slots = [dict(s, index=i) for i, s in enumerate(cc.get("ingredientSlots") or [])
+             if isinstance(s, dict) and s.get("x") is not None]
+    inv = [dict(s, index=i) for i, s in enumerate(cc.get("inventorySlots") or [])
+           if isinstance(s, dict) and s.get("x") is not None]
+    donatables = cc.get("donatables")
+    if donatables is not None:
+        new_fields = True
+    return {"area": cc.get("areaName") or f"第{cc.get('whichArea')}间",
+            "which_area": cc.get("whichArea"),
+            "specific": bool(cc.get("specificBundlePage")),
+            "current": cc.get("currentBundleIndex"),
+            "bundles": out_bundles,
+            "slots": slots, "inventory": inv,
+            "donatables": list(donatables or []),
+            "partial": cc.get("partial"),
+            "held": cc.get("heldItem"),
+            "new_fields": bool(new_fields)}
+
+
+def _im_cc_bundle_name(cc: dict, idx) -> str:
+    for b in (cc or {}).get("bundles") or []:
+        if b.get("index") == idx:
+            return b.get("name") or f"收集包#{idx}"
+    return f"收集包#{idx}"
+
+
+def _im_cc_click(x, y) -> bool:
+    try:
+        api._ai_post("/menu/click", {"x": int(x), "y": int(y)})
+        return True
+    except Exception:
+        return False
+
+
+def _im_cc_menu() -> dict:
+    """这一刻的 `/menu`（读不到就空 dict —— 调用方按"不知道"处理，别当"没这回事"）。"""
+    try:
+        return api._ai_get("/menu") or {}
+    except Exception:
+        return {}
+
+
+def _im_cc_open(index) -> str:
+    """🏛️ 把**某一包**的详情页翻开（列表页点它那块图标）→ 一句话。
+
+    ⚠️ 判据 = 游戏自己的 `specificBundlePage` + `currentBundleIndex`（不是"我点了所以成了"）。
+    """
+    raw = _im_cc_menu()
+    cc = (raw.get("characterCust") or {})
+    if not cc:
+        return "❌ 这一刻没开着献祭板"
+    if cc.get("specificBundlePage") and cc.get("currentBundleIndex") == index:
+        return ""                                   # 已经就是这一页
+    if cc.get("specificBundlePage"):
+        _im_cc_back()
+        time.sleep(0.3)
+        raw = _im_cc_menu()
+        cc = (raw.get("characterCust") or {})
+    bounds = cc.get("bundleBounds") or []
+    bundles = cc.get("bundles") or []
+    pos = next((i for i, b in enumerate(bundles)
+                if isinstance(b, dict) and b.get("index") == index), None)
+    if pos is None or pos >= len(bounds):
+        return f"❌ 这一间里没有包号 {index}（或者读不到它的图标位置）—— 先 `show` 看一眼"
+    bb = bounds[pos]
+    if not isinstance(bb, dict):
+        return "❌ 读不到那一包的图标位置（先别乱点）"
+    _im_cc_click(int(bb.get("x", 0)) + int(bb.get("w", 0)) // 2,
+                 int(bb.get("y", 0)) + int(bb.get("h", 0)) // 2)
+    time.sleep(0.35)
+    cc2 = (_im_cc_menu().get("characterCust") or {})
+    if cc2.get("specificBundlePage") and cc2.get("currentBundleIndex") == index:
+        return ""
+    return (f"⚠️ 点了「{_im_cc_bundle_name(cc, index)}」那块图标，可**没翻到它的详情页**"
+            f"（游戏说 specific={cc2.get('specificBundlePage')}、"
+            f"current={cc2.get('currentBundleIndex')}）")
+
+
+def _im_cc_offer(item_id: str, name: str) -> str:
+    """🏛️ **把这一件捧上槽位**（单子 layer 2 每一行的执行侧）→ 一句话。
+
+    手势 = **真人那两步**（反编译 `JunimoNoteMenu.receiveLeftClick:445/502-516`）：
+      ①点**底部背包那一格** ⇒ `inventory.leftClick` 把那件拿到光标（`heldItem`）；
+      ②点**那一格槽位** ⇒ 游戏自己走 `canAcceptThisItem`→`tryToDepositThisItem`（整格）
+         或 `HandlePartialDonation`（分次放），**动画/音效都是游戏自己的**。
+    ⚠️ 不自己挑槽位：**格号问游戏**（`donatables[].toSlot`，那是 `canAcceptThisItem` 的答案）。
+    ⚠️ 判据 = **背包那件少了没有**（独立事实）+ 那格槽位的 `item/stack` 变了没有；
+       `ok:true` / 动画播了**都不算**。
+    """
+    raw0 = _im_cc_menu()
+    cc0 = (raw0.get("characterCust") or {})
+    if not cc0:
+        return "❌ 这一刻没开着献祭板"
+    cur = cc0.get("currentBundleIndex")
+    want = next((d for d in (cc0.get("donatables") or [])
+                 if isinstance(d, dict) and (d.get("id") == item_id or d.get("name") == name)), None)
+    if not cc0.get("specificBundlePage") or want is None:
+        # 没翻到那一页 ⇒ 先按 item_id 找出它属于哪一包，翻过去再问一次（**一次**，别循环）
+        tgt = None
+        for b in (cc0.get("bundles") or []):
+            if not isinstance(b, dict):
+                continue
+            if any((g.get("id") == item_id or g.get("name") == name)
+                   for g in (b.get("canGive") or [])):
+                tgt = b.get("index")
+                break
+        if tgt is None:
+            return f"❌ 这一刻**没有哪一包收「{name}」**（或者你包里那件不够数）—— 先 `show` 看一眼"
+        err = _im_cc_open(tgt)
+        if err:
+            return err
+        raw0 = _im_cc_menu()
+        cc0 = (raw0.get("characterCust") or {})
+        want = next((d for d in (cc0.get("donatables") or [])
+                     if isinstance(d, dict) and (d.get("id") == item_id or d.get("name") == name)), None)
+        if want is None:
+            return f"❌ 翻到「{_im_cc_bundle_name(cc0, tgt)}」了，可游戏说**这一件捧不上去**（先 `show` 看一眼）"
+    bname = _im_cc_bundle_name(cc0, cc0.get("currentBundleIndex"))
+    si, ti = want.get("slot"), want.get("toSlot")
+    inv = cc0.get("inventorySlots") or []
+    slots = cc0.get("ingredientSlots") or []
+    if not isinstance(si, int) or si >= len(inv) or not isinstance(ti, int) or ti >= len(slots):
+        return f"❌ 读不到「{name}」的背包格/槽位坐标（先别乱点）"
+    b0 = _bag_count(item_id, name)
+    s0 = (slots[ti].get("stack") or 0) if isinstance(slots[ti], dict) else 0
+    _im_cc_click(inv[si].get("x", 0) + inv[si].get("w", 0) // 2,
+                 inv[si].get("y", 0) + inv[si].get("h", 0) // 2)      # ① 拿起
+    time.sleep(0.3)
+    _im_cc_click(slots[ti].get("x", 0) + slots[ti].get("w", 0) // 2,
+                 slots[ti].get("y", 0) + slots[ti].get("h", 0) // 2)   # ② 捧上那一格
+    for _ in range(6):
+        time.sleep(0.15)
+        b1 = _bag_count(item_id, name)
+        if b1 is not None and b0 is not None and b1 < b0:
+            cc2 = (_im_cc_menu().get("characterCust") or {})
+            s2 = None
+            try:
+                s2 = ((cc2.get("ingredientSlots") or [])[ti] or {}).get("stack")
+            except Exception:
+                pass
+            got = f"背包 ×{b0} → ×{b1}"
+            if isinstance(s2, int) and s2:
+                got += f"·「{want.get('want') or name}」那一格 {s0} → {s2}"
+            if cc2.get("currentBundleIndex") is None and not cc2.get("specificBundlePage"):
+                got += "（这一包已经满了）"
+            return f"✅ 捧上「{name}」（{got}）"
+    # 没成：**两把尺子都没动** ⇒ 如实说，并给下一步
+    held_now = (_im_cc_menu().get("characterCust") or {}).get("heldItem")
+    if _bag_count(item_id, name) == b0:
+        tail = (f"⚠️ 手上正拿着「{held_now}」—— 再点一次那一格背包位就放回包里，"
+                f"或者敲「关掉界面」（会帮你放回）" if held_now else
+                "（游戏那一刻认不认它，先 `show` 看一眼）")
+        return (f"⚠️ 点了「{name}」的背包格和槽位，可**背包一件没少** ⇒ 这一件没捧上去；{tail}")
+    return f"⚠️ 点了「{name}」，但**看不出结果**（背包 {b0} → {_bag_count(item_id, name)}）—— 自己核一眼"
+
+
+def _bag_count(item_id: str, name: str):
+    """背包里那件**一共几个**（按 `(O)id` 或显示名）→ int / None（读不到）。"""
+    try:
+        inv = (api.state(light=True) or {}).get("inventory") or []
+    except Exception:
+        return None
+    n = 0
+    for it in inv:
+        if not isinstance(it, dict):
+            continue
+        if (item_id and it.get("itemId") == item_id) or (name and it.get("name") == name):
+            n += int(it.get("stack") or 0)
+    return n
+
+
+def _im_cc_back() -> str:
+    """🏛️ 从"某一包"的详情页退回本间列表 → 一句话（判据 = 游戏自己的 `specificBundlePage`）。"""
+    try:
+        r = api._ai_post("/menu/click", {"button": "bundleBack"}) or {}
+    except Exception as e:
+        return f"❌ 返回收集包列表出错：{type(e).__name__}: {e}"
+    if not r.get("ok"):
+        return f"❌ 返回收集包列表失败：{r.get('error') or r}"
+    time.sleep(0.35)
+    cc = (_im_cc_menu().get("characterCust") or {})
+    if cc and not cc.get("specificBundlePage"):
+        return "✅ 回到本间的收集包列表了"
+    return (f"⚠️ 点了返回，可游戏还说在详情页（specific={cc.get('specificBundlePage')}）"
+            f"—— 手上还拿着东西时它不让你退，先把那件捧上去或放回包里")
+
+
 def _im_ctx():
     """一次把单子要的世界快照凑齐。
 
@@ -24041,6 +24287,9 @@ def _im_ctx():
                                 # 🧬 「选职业」那两行的账（2026-10-04 恒「换成真选项」）：
                                 #    **零额外 HTTP** —— 就在 `/state.activeMenu.levelUp` 里。
                                 levelup=_im_levelup(state),
+                                # 🏛️ 「献祭板」那两层的账（2026-10-04 恒「保留一件件捧上槽位的趣味感」）：
+                                #    只在献祭板开着时多打一发 `/bundles`（包名在那份里）。
+                                cc=_im_cc(state, raw=_RAW_MENU),
                                 worn=worn)
 
 
@@ -25122,6 +25371,15 @@ def _im_run(op, args):
         #    ⚠️ 别直接调 `_menu_levelup_choose`：它的回话是 C# 的**发射后不管**（`{ok:true,…}`）。
         #       `_im_levelup_pick` 会补两把回读尺子（游戏自己的职业表 + 那屏还在不在等你选）。
         "levelup_choose": lambda: _im_levelup_pick(str(args.get("side") or "")),
+        # 🏛️ 2026-10-04 恒「保留一件件捧上槽位的趣味感」：单子那两层的执行侧。
+        #    `cc_offer` = **捧上这一件**（点背包格 → 点槽位，两步都是真人手势；判据=背包少了没）。
+        #    `cc_bundle` = 翻开某一包的详情页（点它那块图标；判据=游戏自己的 specific/current）。
+        #    `cc_back`   = 从详情页退回本间列表（走 `takeDownBundleSpecificPage`，public）。
+        "cc_offer": lambda: _im_cc_offer(str(args.get("item_id") or ""), str(args.get("name") or "")),
+        "cc_bundle": lambda: (_im_cc_open(args.get("index"))
+                              or f"✅ 翻开「{args.get('name') or args.get('index')}」了"
+                                 f"（能捧上什么见新单子）"),
+        "cc_back": lambda: _im_cc_back(),
         "skip": lambda: skip_event(),
         # 🧾 确认过夜结算（2026-10-01）：结算屏（ShippingMenu）上「确认结算」按下去走这里。
         "settle": lambda: confirm_settlement(),

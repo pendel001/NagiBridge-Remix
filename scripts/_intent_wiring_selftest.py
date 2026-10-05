@@ -4131,6 +4131,180 @@ def main():
     res.append(ok("🧬🔴 C# 回 `ok:true` 而**职业表里没有它** ⇒ 不许报 ✅（那正是「发射后不管」的账）",
                   _r_lu2.get("st") != "yes" and "没对上" in (_r_lu2.get("text") or ""), _r_lu2))
 
+    # ㉗ 203z补15 🏛️ **献祭板「一件件捧上槽位」**（恒 2026-10-04 A 批：「看看你觉得方便，
+    #     又**保留一种一件件物品捧上槽位的趣味感**」）。三层形状 + 两条判据（游戏自己的
+    #     `canGive`/`donatables`；成不成只看**背包那件少了没**）。
+    _CC_MENU = {
+        "ok": True, "type": "JunimoNoteMenu",
+        "characterCust": {
+            "whichArea": 2, "areaName": "鱼缸", "specificBundlePage": False, "currentBundleIndex": -1,
+            "bundleBounds": [{"x": 568, "y": 104, "w": 64, "h": 64},
+                             {"x": 368, "y": 352, "w": 64, "h": 64}],
+            "bundles": [
+                {"index": 6, "complete": False, "ingredients": [
+                    {"id": "147", "name": "鲤鱼", "count": 1, "quality": 0, "completed": False, "category": None},
+                    {"id": None, "name": "河豚", "count": 1, "quality": 0, "completed": False, "category": -4}],
+                 "canGive": [{"slot": 3, "name": "鲤鱼", "id": "(O)147", "count": 3, "quality": 0,
+                              "want": "鲤鱼", "need": 1, "full": True, "ingredientIndex": 0}]},
+                {"index": 7, "complete": True, "ingredients": [], "canGive": []}],
+            "ingredientSlots": [], "inventorySlots": [], "donatables": [], "partial": None,
+            "heldItem": None}}
+    _cc_lbl0 = M._bundle_label_map
+    M._bundle_label_map = lambda: {6: "河鱼收集包", 7: "夜间垂钓收集包"}
+    try:
+        _stub(menu="JunimoNoteMenu", menu_raw=_CC_MENU)
+        _ctx_cc = M._im_ctx()
+        res.append(ok("🏛️ 账：本间两个包 + 手上能捧上 1 件（`new_fields` = 这版 DLL 报得出判据）",
+                      (_ctx_cc.cc or {}).get("area") == "鱼缸"
+                      and (_ctx_cc.cc or {}).get("new_fields") is True
+                      and len((_ctx_cc.cc or {}).get("bundles") or []) == 2
+                      and (_ctx_cc.cc or {}).get("bundles")[0].get("give"),
+                      (_ctx_cc.cc or {}).get("new_fields")))
+        _sheet_cc = _IM.render_menu(_ctx_cc, n=10)
+        res.append(ok("🏛️ 顶层一行：献祭板（鱼缸 · 手上能捧上 1 件）…（目录行，句尾带 `…`）",
+                      "献祭板（鱼缸 · 手上能捧上 1 件）…" in _sheet_cc and "关掉界面" in _sheet_cc,
+                      _sheet_cc.splitlines()[:2]))
+        _l1 = _IM.do_row("1", M._im_run, _ctx_cc)
+        res.append(ok("🏛️ 第二层：只列**能捧上的包**（做完的那包不占行）+ 标题报已做完几包",
+                      "开「河鱼收集包」" in _l1 and "夜间垂钓收集包" not in _l1 and "已做完 1 包" in _l1,
+                      _l1.splitlines()[:2]))
+        _l2 = _IM.do_row("1", M._im_run, _ctx_cc)
+        res.append(ok("🏛️ 第三层：**一件一行**「捧上 鲤鱼」+ 那件/那格的账写清 + 返回行",
+                      "捧上 鲤鱼" in _l2 and "背包 ×3" in _l2 and "这一格要「鲤鱼」" in _l2
+                      and "返回收集包列表" in _l2, _l2.splitlines()[:3]))
+        # 老 DLL：**没有** `canGive`/`donatables` ⇒ 这整条不出行（宁可不给，也不给按了不成的）
+        _old_cc = {"ok": True, "type": "JunimoNoteMenu",
+                   "characterCust": {"whichArea": 2, "areaName": "鱼缸",
+                                     "specificBundlePage": False, "currentBundleIndex": -1,
+                                     "bundleBounds": [{"x": 568, "y": 104, "w": 64, "h": 64}],
+                                     "bundles": [{"index": 6, "complete": False, "ingredients": [
+                                         {"id": "147", "name": "鲤鱼", "count": 1, "quality": 0,
+                                          "completed": False}]}]}}
+        _stub(menu="JunimoNoteMenu", menu_raw=_old_cc)
+        _ctx_cc_old = M._im_ctx()
+        _sheet_cc_old = _IM.render_menu(_ctx_cc_old, n=10)
+        res.append(ok("🏛️ 老 DLL（没 `canGive`）⇒ `new_fields=False`、**整条不出行**（只剩关掉界面）",
+                      (_ctx_cc_old.cc or {}).get("new_fields") is False
+                      and "献祭板" not in _sheet_cc_old and "关掉界面" in _sheet_cc_old,
+                      _sheet_cc_old.splitlines()[:2]))
+        # 别的菜单开着 ⇒ 账空（且不多打 `/bundles`）
+        _lbl_calls = {"n": 0}
+        M._bundle_label_map = lambda: (_lbl_calls.__setitem__("n", _lbl_calls["n"] + 1),
+                                       {6: "x"})[1]
+        _stub(menu="ItemListMenu")
+        _ctx_ni2 = M._im_ctx()
+        res.append(ok("🏛️ 别的菜单 ⇒ 账空、而且**一发 `/bundles` 都不多打**",
+                      not (_ctx_ni2.cc or {}) and _lbl_calls["n"] == 0, _lbl_calls["n"]))
+        M._bundle_label_map = lambda: {6: "河鱼收集包", 7: "夜间垂钓收集包"}
+    finally:
+        M._bundle_label_map = _cc_lbl0
+
+    # 执行侧：捧上这一件（**点背包格 → 点槽位**），成不成只看背包少了没
+    class _CC:
+        """🧪 献祭板那一页的小模型：按 `donatables` 收下我们那两下点击。"""
+
+        def __init__(self, give=True):
+            self.inv = [{"name": "Galaxy Hammer", "itemId": "(W)29", "stack": 1},
+                        {"name": "鲤鱼", "itemId": "(O)147", "stack": 3}]
+            self.page = 6 if give else -1          # -1 = 列表页
+            self.slot_stack = 0
+            self.clicks = []
+            self.give = give
+            self.held = None
+
+        def state(self):
+            return {"ok": True, "location": {"name": "CommunityCenter"},
+                    "player": {"x": 12, "y": 12, "money": 500},
+                    "inventory": [dict(i, slotIndex=n) for n, i in enumerate(self.inv)],
+                    "activeMenu": {"type": "JunimoNoteMenu"}}
+
+        def menu(self):
+            cc = dict(_CC_MENU["characterCust"])
+            cc["specificBundlePage"] = self.page != -1
+            cc["currentBundleIndex"] = self.page
+            cc["inventorySlots"] = [{"x": 100 + n * 64, "y": 700, "w": 64, "h": 64, "item": i["name"]}
+                                    for n, i in enumerate(self.inv)]
+            cc["ingredientSlots"] = [{"x": 400, "y": 300, "w": 64, "h": 64, "index": 0,
+                                      "item": ("鲤鱼" if self.slot_stack else None),
+                                      "stack": self.slot_stack}]
+            cc["donatables"] = ([{"slot": 1, "name": "鲤鱼", "id": "(O)147",
+                                  "count": self.inv[1]["stack"], "quality": 0, "toSlot": 0,
+                                  "full": True, "part": False, "want": "鲤鱼"}]
+                                if (self.give and self.inv[1]["stack"] > 0) else [])
+            cc["bundles"] = [dict(b) for b in _CC_MENU["characterCust"]["bundles"]]
+            cc["bundles"][0]["canGive"] = cc["donatables"]
+            return {"ok": True, "type": "JunimoNoteMenu", "characterCust": cc}
+
+        def click(self, d):
+            x, y = d.get("x"), d.get("y")
+            self.clicks.append((x, y, d.get("button")))
+            if d.get("button") == "bundleBack":
+                self.page = -1
+                return
+            if x is None:
+                return
+            if self.page == -1:                       # 列表页点图标 ⇒ 翻到那一包的详情页
+                if abs(x - 600) <= 40 and abs(y - 136) <= 40:
+                    self.page = 6
+                return
+            if abs(y - 700) <= 40:                    # ① 点背包格：拿起
+                if abs(x - (100 + 64)) <= 40:
+                    self.held = "鲤鱼"
+                return
+            if abs(y - 300) <= 40 and abs(x - 400) <= 40 and self.held == "鲤鱼":
+                self.inv[1]["stack"] -= 1             # ② 捧上那一格：背包少 1、格子涨 1
+                self.slot_stack += 1
+                self.held = None
+
+    def _cc_run(ccobj, fn):
+        _og, _op, _ost = api._ai_get, api._ai_post, api.state
+        api.state = lambda *a, **k: ccobj.state()
+
+        def _g(ep, params=None):
+            if ep == "/menu":
+                CALLS.append(("GET", ep, params)); return ccobj.menu()
+            if ep == "/state":
+                return ccobj.state()
+            return _og(ep, params)
+
+        def _p(ep, data=None):
+            if ep == "/menu/click":
+                CALLS.append(("POST", ep, data)); ccobj.click(data or {}); return {"ok": True}
+            return _op(ep, data)
+
+        api._ai_get, api._ai_post = _g, _p
+        try:
+            return fn()
+        finally:
+            api._ai_get, api._ai_post, api.state = _og, _op, _ost
+
+    _stub(menu="JunimoNoteMenu", menu_raw=_CC_MENU)
+    _c1 = _CC()
+    _r_cc = _cc_run(_c1, lambda: M._im_run("cc_offer", {"item_id": "(O)147", "name": "鲤鱼"}))
+    _txt_cc = _r_cc.get("text") or ""
+    res.append(ok("🏛️ 捧上：**两步真人手势**（点背包那格 → 点那一格槽位），不是隔空塞",
+                  abs(_c1.clicks[0][1] - 732) <= 8 and abs(_c1.clicks[1][1] - 332) <= 8
+                  and abs(_c1.clicks[1][0] - 432) <= 8, _c1.clicks[:3]))
+    res.append(ok("🏛️ 捧上：回执两把尺子都对上（背包 ×3 → ×2 · 那一格 0 → 1）",
+                  _r_cc.get("st") == "yes" and "背包 ×3 → ×2" in _txt_cc and "0 → 1" in _txt_cc,
+                  _txt_cc[:160]))
+    _c2 = _CC()
+    _c2.click = lambda d: _c2.clicks.append((d.get("x"), d.get("y"), d.get("button")))   # 点不动
+    _r_cc2 = _cc_run(_c2, lambda: M._im_run("cc_offer", {"item_id": "(O)147", "name": "鲤鱼"}))
+    res.append(ok("🏛️🔴 点了两下**背包一件没少** ⇒ 不许报 ✅、且明说「没捧上去」",
+                  _r_cc2.get("st") != "yes" and "一件没少" in (_r_cc2.get("text") or ""),
+                  _r_cc2.get("text")))
+    _c3 = _CC()
+    _r_cc3 = _cc_run(_c3, lambda: M._im_run("cc_back", {}))
+    res.append(ok("🏛️ 返回收集包列表：走 `button=bundleBack`，而且**回读** `specificBundlePage` 确认",
+                  _r_cc3.get("st") == "yes" and _c3.page == -1
+                  and any(c[2] == "bundleBack" for c in _c3.clicks), _r_cc3.get("text")))
+    _c4 = _CC(give=False)
+    _c4.page = -1
+    _r_cc4 = _cc_run(_c4, lambda: M._im_run("cc_bundle", {"index": 6, "name": "河鱼收集包"}))
+    res.append(ok("🏛️ 翻开某一包：点它那块图标，判据 = 游戏自己的 `specific`+`current`",
+                  _r_cc4.get("st") == "yes" and _c4.page == 6, _r_cc4.get("text")))
+
     print(f"\n{sum(res)}/{len(res)} 过")
     return all(res)
 
