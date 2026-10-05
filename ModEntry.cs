@@ -18176,23 +18176,17 @@ var tcs = new TaskCompletionSource<object>();
 
             var positions = new List<Dictionary<string, object>>();
             try {
-                var dict = farmer.archaeologyFound;
-                string[] fns = {"field", "_field", "dictionary", "_dictionary", "_fields", "pairs", "Pairs"};
-                foreach (var fn in fns) {
-                    var fi = dict.GetType().GetField(fn,
-                        System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                    var raw = fi?.GetValue(dict) as System.Collections.IDictionary;
-                    if (raw != null && raw.Count > 0) {
-                        foreach (System.Collections.DictionaryEntry e in raw)
-                            if (e.Value is int[] arr)
-                                positions.Add(new Dictionary<string, object> {
-                                    ["id"] = e.Key?.ToString() ?? "?",
-                                    ["tileX"] = arr[0], ["tileY"] = arr[1]
-                                });
-                        break;
-                    }
-                }
-            } catch { }
+                // ⛔ 2026-10-05 恒：旧代码用 `GetField("Pairs")` 反射找底层字典 —— `.Pairs` 是**属性**不是字段，
+                //   `GetField` 永远返回 null ⇒ 这段**一直是空的**（现场 `artifactPositions: []` 就是这么来的）。
+                // ✅ 1.6 的 `archaeologyFound` 是**"捡到过这种几件"**的计数表：key=物品 id，value={找到数,找到数}
+                //   （`Farmer.foundArtifact`，反编译 Farmer.cs:2959-2976；收藏页取 value[0] 显示"已找到 N 件"，
+                //   CollectionsPage.cs:752）——**不是**展位坐标表。这里如实把"找到几件"报出来。
+                foreach (var kvp in farmer.archaeologyFound.Pairs)
+                    positions.Add(new Dictionary<string, object> {
+                        ["id"] = kvp.Key,
+                        ["found"] = (kvp.Value != null && kvp.Value.Length > 0) ? kvp.Value[0] : 0
+                    });
+            } catch (Exception ex) { positions.Add(new Dictionary<string, object> { ["error"] = ex.Message }); }
 
             return new { ok = true, inventory = list,
                 archaeologyCount = keys.Count, archaeologyKeys = keys,
@@ -20301,144 +20295,203 @@ var tcs = new TaskCompletionSource<object>();
 	                    return;
 	                }
 
-	                		                // 获取合法空展位: 用 LibraryMuseum.getFreeDonationSpot()
-		                var displaySlots = new List<(int x, int y)>();
-		                try
-		                {
-		                    var libMuseum = museum as StardewValley.Locations.LibraryMuseum;
-		                    if (libMuseum != null)
-		                    {
-		                        while (true)
-		                        {
-		                            var spot = libMuseum.getFreeDonationSpot();
-		                            if (spot == default || (spot.X == 0 && spot.Y == 0) || displaySlots.Contains(((int)spot.X, (int)spot.Y)))
-		                                break;
-		                            // ⛔ 2026-09-12 恒：**这道闸不能省**。游戏原版 getFreeDonationSpot() 在
-		                            //   **找不到任何空位时返回硬编码坐标 (26,5)**（反编译 LibraryMuseum.cs:555 末尾
-		                            //    `return new Vector2(26f, 5f);`），而本循环的终止条件只认 (0,0) ⇒
-		                            //    "博物馆已满"时它会往 (26,5) 写 _diag_ 占位符、**覆盖掉那儿的真展品**，
-		                            //    随后 cleanup 见值是 _diag_ 就 Remove ⇒ **真展品被删掉**。
-		                            //    真机实测：满馆调一次 donate ⇒ 展品 95 → 94，且 (26,5) 变空。
-		                            //    闸门=占位符**只许写在空位上**；返回的坐标已经有东西 ⇒ 那是"没空位"的哨兵，停手。
-		                            var vKey = new Vector2(spot.X, spot.Y);
-		                            if (Game1.netWorldState.Value.MuseumPieces.ContainsKey(vKey))
-		                                break;
-		                            displaySlots.Add(((int)spot.X, (int)spot.Y));
-		                            Game1.netWorldState.Value.MuseumPieces[vKey] = "_diag_";
-		                        }
-		                        foreach (var (sx, sy) in displaySlots)
-		                        {
-		                            var vKey = new Vector2(sx, sy);
-		                            if (Game1.netWorldState.Value.MuseumPieces.TryGetValue(vKey, out var val) && val == "_diag_")
-		                                Game1.netWorldState.Value.MuseumPieces.Remove(vKey);
-		                        }
-		                    }
-		                }
-		                catch { }
-		                // 兜底: 手动扫 Buildings 图层 tile index 173
-		                if (displaySlots.Count == 0)
-		                {
-		                    try
-		                    {
-		                        var bLayer = museum.Map.GetLayer("Buildings");
-		                        if (bLayer != null)
-		                        {
-		                            for (int x = 0; x < bLayer.LayerWidth; x++)
-		                                for (int y = 0; y < bLayer.LayerHeight; y++)
-		                                    if (bLayer.Tiles[x, y]?.TileIndex == 173)
-		                                        displaySlots.Add((x, y));
-		                        }
-		                    }
-		                    catch { }
-		                }
-		                // 兜底2: 已知标准展位
-		                if (displaySlots.Count == 0)
-		                {
-		                    var known = new (int, int)[] {
-		                        (26,11),(27,11),(28,11),(29,11),(30,11),(31,11),(32,11),(33,11),(34,11),(35,11),
-		                        (27,8),(28,8),(29,8),(30,8),(31,8),(32,8),(33,8),(34,8),(35,8),
-		                        (27,6),(28,6),(29,6),(30,6),(31,6),(32,6),(33,6),(34,6),(35,6),
-		                        (27,5),(28,5),(29,5),(30,5),(31,5),(32,5),(33,5),(34,5),(35,5),
-		                        (27,4),(28,4),(29,4),(30,4),(31,4),(32,4),(33,4),(34,4),(35,4),
-		                    };
-		                    displaySlots.AddRange(known);
-		                }
-		                                // 找出空位
-                var emptySlots = displaySlots
-                    .Where(s => !farmer.archaeologyFound.Values.Any(v => v[0] == s.x && v[1] == s.y))
-                    .ToList();
+	                // 获取合法空展位: 用 LibraryMuseum.getFreeDonationSpot()
+	                //   判据（反编译 LibraryMuseum.cs:467-478 `isTileSuitableForMuseumPiece`）= 该格**没被占**
+	                //   且 Buildings 图层 tile index ∈ {1072,1073,1074} ∪ {1237,1238}。
+	                //   ⇒ "哪些格子能摆"由**地图自己**说，不是我们手抄的坐标表（手抄表只留作最后兜底）。
+	                var libMuseum = museum as StardewValley.Locations.LibraryMuseum;
+	                var displaySlots = new List<(int x, int y)>();
+	                try
+	                {
+	                    if (libMuseum != null)
+	                    {
+	                        while (true)
+	                        {
+	                            var spot = libMuseum.getFreeDonationSpot();
+	                            if (spot == default || (spot.X == 0 && spot.Y == 0) || displaySlots.Contains(((int)spot.X, (int)spot.Y)))
+	                                break;
+	                            // ⛔ 2026-09-12 恒：**这道闸不能省**。游戏原版 getFreeDonationSpot() 在
+	                            //   **找不到任何空位时返回硬编码坐标 (26,5)**（反编译 LibraryMuseum.cs:568 末尾
+	                            //    `return new Vector2(26f, 5f);`），而本循环的终止条件只认 (0,0) ⇒
+	                            //    "博物馆已满"时它会往 (26,5) 写 _diag_ 占位符、**覆盖掉那儿的真展品**，
+	                            //    随后 cleanup 见值是 _diag_ 就 Remove ⇒ **真展品被删掉**。
+	                            //    真机实测：满馆调一次 donate ⇒ 展品 95 → 94，且 (26,5) 变空。
+	                            //    闸门=占位符**只许写在空位上**；返回的坐标已经有东西 ⇒ 那是"没空位"的哨兵，停手。
+	                            var vKey = new Vector2(spot.X, spot.Y);
+	                            if (Game1.netWorldState.Value.MuseumPieces.ContainsKey(vKey))
+	                                break;
+	                            displaySlots.Add(((int)spot.X, (int)spot.Y));
+	                            Game1.netWorldState.Value.MuseumPieces[vKey] = "_diag_";
+	                        }
+	                        foreach (var (sx, sy) in displaySlots)
+	                        {
+	                            var vKey = new Vector2(sx, sy);
+	                            if (Game1.netWorldState.Value.MuseumPieces.TryGetValue(vKey, out var val) && val == "_diag_")
+	                                Game1.netWorldState.Value.MuseumPieces.Remove(vKey);
+	                        }
+	                    }
+	                }
+	                catch { }
+	                // 兜底: 手动扫 Buildings 图层 —— tile index 用**游戏自己的**那几个（1072-1074 / 1237-1238），
+	                //   并再过一遍 `isTileSuitableForMuseumPiece`（顺手判"这格是不是已经被占了"）。
+	                //   ⛔ 旧代码这里写的是 `TileIndex == 173` —— 不是展位瓦片编号，纯属抄错（真被走到会往非展位塞东西）。
+	                if (displaySlots.Count == 0)
+	                {
+	                    try
+	                    {
+	                        var bLayer = museum.Map.GetLayer("Buildings");
+	                        if (bLayer != null)
+	                        {
+	                            for (int x = 0; x < bLayer.LayerWidth; x++)
+	                                for (int y = 0; y < bLayer.LayerHeight; y++)
+	                                {
+	                                    int ti = bLayer.Tiles[x, y]?.TileIndex ?? -1;
+	                                    bool isDisplayTile = (ti >= 1072 && ti <= 1074) || ti == 1237 || ti == 1238;
+	                                    if (isDisplayTile && (libMuseum == null || libMuseum.isTileSuitableForMuseumPiece(x, y)))
+	                                        displaySlots.Add((x, y));
+	                                }
+	                        }
+	                    }
+	                    catch { }
+	                }
+	                // 兜底2: 已知标准展位 —— ⚠️这是**猜的**（手抄），只在上面两条路都空手时才用；返回里会标出来。
+	                bool slotsAreGuessed = false;
+	                if (displaySlots.Count == 0)
+	                {
+	                    slotsAreGuessed = true;
+	                    var known = new (int, int)[] {
+	                        (26,11),(27,11),(28,11),(29,11),(30,11),(31,11),(32,11),(33,11),(34,11),(35,11),
+	                        (27,8),(28,8),(29,8),(30,8),(31,8),(32,8),(33,8),(34,8),(35,8),
+	                        (27,6),(28,6),(29,6),(30,6),(31,6),(32,6),(33,6),(34,6),(35,6),
+	                        (27,5),(28,5),(29,5),(30,5),(31,5),(32,5),(33,5),(34,5),(35,5),
+	                        (27,4),(28,4),(29,4),(30,4),(31,4),(32,4),(33,4),(34,4),(35,4),
+	                    };
+	                    displaySlots.AddRange(known);
+	                }
+	                // 找出空位
+	                // ⛔ 2026-10-05 恒："我们的捐献是不是按游戏内名单认的" —— 查证结论（反编译为准）：
+	                //   ① "能捐哪些"**从来没抄名单**，是**问游戏**（`isItemSuitableForDonation`，见下面循环）；
+	                //      游戏自己那份"名单"也是**算出来的**：遍历 `ItemRegistry.RequireTypeDefinition("(O)")`
+	                //      逐件过判据（`LibraryMuseum.totalArtifacts`，反编译 :30-47）。所以没有"五六十件"的手抄表存在。
+	                //   ② "这个格子有没有东西"旧代码用 `farmer.archaeologyFound` 比 (x,y) 判 —— **口径错**：
+	                //      1.6 的 `archaeologyFound` 是**"捡到过这种几件"**的计数表（`Farmer.foundArtifact`
+	                //      写 {n,n}，反编译 Farmer.cs:2959-2976；收藏页取 value[0] 显示"已找到 N 件"，
+	                //      CollectionsPage.cs:752），**不是展位坐标表**。
+	                //      真机现场：本角色 7 条记录全是 {1,1} ⇒ 比不中任何展位坐标 ⇒ 这道筛子一直在空转（语义是错的）。
+	                //   ⇒ 占没占**只认 `MuseumPieces`**（游戏自己就是这么判的：`HasDonatedArtifactAt`，
+	                //      反编译 LibraryMuseum.cs:81-84）。
+	                var emptySlots = displaySlots
+	                    .Where(s => !Game1.netWorldState.Value.MuseumPieces.ContainsKey(new Vector2(s.x, s.y)))
+	                    .ToList();
 
-                var donated = new List<object>();
-                for (int i = 0; i < farmer.Items.Count && emptySlots.Count > 0; i++)
-                {
-                    if (farmer.Items[i] is StardewValley.Object obj)
-                    {
-                        // 判据=游戏自己的 LibraryMuseum.isItemSuitableForDonation
-                        //   （not_museum_donatable 标签 / 已捐过 / 既非矿物又非古物 → 它都挡）。
-                        // ⛔ 2026-09-12 恒：**删掉了原来的 category 兜底**。它把"判据说不行"和"判据没拿到"
-                        //    混成了同一种情况，真机实测后果（博物馆本来就 95/95 全齐）：
-                        //      · 已捐过的方解石(-12)/铁铅矿(-12) 被重新塞进第二个展位
-                        //        ⇒ museumPieces 变成 97 条 / 95 个 id（多出 2 条幻影展品）
-                        //      · 羊奶酪(工匠品) 被当成"宝石"捐掉、从背包消失
-                        //    两个根因：① 常量认错 —— -26 是 artisanGoods(工匠品)、-23 是
-                        //    sellAtFishShop(鱼店可售)，真正的宝石是 -2；② "已经捐过"也走这条兜底，
-                        //    所以全齐的博物馆照样能被再塞一遍。
-                        //    按《宁报错别兜底》：判据拿不到就**明确报错**，不许拿一张猜的类别表放行。
-                        bool suitable;
-                        try
-                        {
-                            var libMuseum = museum as StardewValley.Locations.LibraryMuseum;
-                            if (libMuseum == null)
-                            {
-                                tcs.SetResult(new { ok = false,
-                                    error = "ArchaeologyHouse 不是 LibraryMuseum，拿不到可捐性判据 —— 拒绝捐（宁可报错也不猜）" });
-                                return;
-                            }
-                            suitable = libMuseum.isItemSuitableForDonation(obj);
-                        }
-                        catch (Exception ex)
-                        {
-                            tcs.SetResult(new { ok = false,
-                                error = $"可捐性判据调用失败：{ex.Message} —— 拒绝捐（宁可报错也不猜）" });
-                            return;
-                        }
-                        if (!suitable) continue;   // 游戏说不行就是不行（含"已捐过"），别再兜底
+	                var donated = new List<object>();
+	                var rejected = new List<object>();   // 如实记账：每件"为什么没捐"
+	                int looked = 0;                      // 真正检查过的 Object 件数
+	                for (int i = 0; i < farmer.Items.Count && emptySlots.Count > 0; i++)
+	                {
+	                    if (farmer.Items[i] is StardewValley.Object obj)
+	                    {
+	                        // 兼容多种 ID 格式：ItemId / QualifiedItemId / 裸 ID
+	                        string id = obj.ItemId ?? "";
+	                        string qid = obj.QualifiedItemId ?? "";
+	                        string bareId = id.Contains(")") ? id.Split(')')[1] : id;
+	                        if (string.IsNullOrEmpty(bareId)) bareId = qid.Contains(")") ? qid.Split(')')[1] : qid;
+	                        looked++;
 
-                        // 兼容多种 ID 格式：ItemId / QualifiedItemId / 裸 ID
-                        string id = obj.ItemId ?? "";
-                        string qid = obj.QualifiedItemId ?? "";
-                        string bareId = id.Contains(")") ? id.Split(')')[1] : id;
-                        if (string.IsNullOrEmpty(bareId)) bareId = qid.Contains(")") ? qid.Split(')')[1] : qid;
+	                        // 判据=游戏自己的 LibraryMuseum.isItemSuitableForDonation
+	                        //   （not_museum_donatable 标签 / 已捐过 / 既非矿物又非古物 → 它都挡）。
+	                        //   ⚠️ "已捐过"它**也管**：`IsItemSuitableForDonation` 内部就调 `HasDonatedArtifact`
+	                        //   （扫 `MuseumPieces` 的值，跨角色共享，反编译 :88-103 / :126）⇒ 不需要再自己判一次。
+	                        // ⛔ 2026-09-12 恒：**删掉了原来的 category 兜底**。它把"判据说不行"和"判据没拿到"
+	                        //    混成了同一种情况，真机实测后果（博物馆本来就 95/95 全齐）：
+	                        //      · 已捐过的方解石(-12)/铁铅矿(-12) 被重新塞进第二个展位
+	                        //        ⇒ museumPieces 变成 97 条 / 95 个 id（多出 2 条幻影展品）
+	                        //      · 羊奶酪(工匠品) 被当成"宝石"捐掉、从背包消失
+	                        //    两个根因：① 常量认错 —— -26 是 artisanGoods(工匠品)、-23 是
+	                        //    sellAtFishShop(鱼店可售)，真正的宝石是 -2；② "已经捐过"也走这条兜底，
+	                        //    所以全齐的博物馆照样能被再塞一遍。
+	                        //    按《宁报错别兜底》：判据拿不到就**明确报错**，不许拿一张猜的类别表放行。
+	                        bool suitable;
+	                        try
+	                        {
+	                            if (libMuseum == null)
+	                            {
+	                                tcs.SetResult(new { ok = false,
+	                                    error = "ArchaeologyHouse 不是 LibraryMuseum，拿不到可捐性判据 —— 拒绝捐（宁可报错也不猜）" });
+	                                return;
+	                            }
+	                            suitable = libMuseum.isItemSuitableForDonation(obj);
+	                        }
+	                        catch (Exception ex)
+	                        {
+	                            tcs.SetResult(new { ok = false,
+	                                error = $"可捐性判据调用失败：{ex.Message} —— 拒绝捐（宁可报错也不猜）" });
+	                            return;
+	                        }
+	                        if (!suitable)
+	                        {
+	                            // 游戏说不行就是不行，别再兜底 —— 但**要记账**（不然"为什么没捐"又变成一句糊话）。
+	                            bool alreadyThere = false;
+	                            try { alreadyThere = StardewValley.Locations.LibraryMuseum.HasDonatedArtifact(obj.QualifiedItemId); }
+	                            catch { }
+	                            rejected.Add(new { item = obj.Name, id = bareId,
+	                                why = alreadyThere
+	                                    ? "博物馆已经收过这件了（`HasDonatedArtifact`：MuseumPieces 里有这个 id，跨角色共享）"
+	                                    : "游戏判据说这件不能捐（既非古物/矿物，或带 not_museum_donatable 标签）" });
+	                            continue;
+	                        }
 
-                        // 检查是否已捐（同时查裸ID和全ID）
-                        bool alreadyDonated = farmer.archaeologyFound.ContainsKey(bareId)
-                            || farmer.archaeologyFound.ContainsKey(id)
-                            || farmer.archaeologyFound.ContainsKey(qid);
-                        if (alreadyDonated) continue;
+	                        var slot = emptySlots[0];
+	                        emptySlots.RemoveAt(0);
+	                        // 同步到博物馆展品数据 —— **这是"真捐"唯一该写的东西**
+	                        //   （反编译 `MuseumMenu.cs:214-230`：`isTileSuitableForMuseumPiece && isItemSuitableForDonation`
+	                        //    ⇒ `museum.museumPieces.Add(new Vector2(x,y), item.ItemId)` + `completeQuest("24")`
+	                        //    + 消耗 1 个 + `stats.checkForArchaeologyAchievements()` + 广播；
+	                        //    **全程不碰 `archaeologyFound`**）。
+	                        // ⛔ 2026-10-05 恒：删掉了 `farmer.archaeologyFound[bareId] = new int[]{slot.x, slot.y}`。
+	                        //   1.6 的 `archaeologyFound` 是"捡到过几件"的计数表（见上），把**展位坐标**写进去
+	                        //   = 把"已找到 N 件"写成 28/31 这种数字（收藏页会显示"找到 28 件"）—— 那是污染存档，
+	                        //   而且会让下面那句 `alreadyDonated`（旧代码）把"捡到过"误当"捐过"，永久挡住这件。
+	                        //   真机现场：古代玩偶 (O)103 在 `archaeologyFound` 里（捡到过）、但**不在** `MuseumPieces` 里
+	                        //   （没捐过）⇒ 旧代码一句 `continue` 把它假拒了 —— 就是恒问的"古代玩偶真的不行吗"。
+	                        try {
+	                            var vec2 = new Vector2(slot.x, slot.y);
+	                            var np = Game1.netWorldState.Value.MuseumPieces;
+	                            if (!np.ContainsKey(vec2))
+	                                np.Add(vec2, bareId);
+	                        } catch { }
+	                        // 游戏真捐时顺带做的两件事（不做的话"展品在、任务/成就没算"就是半个假捐）。
+	                        try { farmer.completeQuest("24"); } catch { }
+	                        try { Game1.stats.checkForArchaeologyAchievements(); } catch { }
+	                        donated.Add(new { item = obj.Name, id = bareId, tileX = slot.x, tileY = slot.y,
+	                            itemId = id, qualifiedId = qid });
+	                        obj.Stack--;
+	                        if (obj.Stack <= 0) farmer.Items[i] = null;
+	                    }
+	                }
 
-                        var slot = emptySlots[0];
-                        emptySlots.RemoveAt(0);
-                        farmer.archaeologyFound[bareId] = new int[] { slot.x, slot.y };
-                        // 同步到博物馆展品数据
-                        try {
-                            var vec2 = new Vector2(slot.x, slot.y);
-                            var np = Game1.netWorldState.Value.MuseumPieces;
-                            if (!np.ContainsKey(vec2))
-                                np.Add(vec2, bareId);
-                        } catch { }
-                        donated.Add(new { item = obj.Name, id = bareId, tileX = slot.x, tileY = slot.y,
-                            itemId = id, qualifiedId = qid });
-                        obj.Stack--;
-                        if (obj.Stack <= 0) farmer.Items[i] = null;
-                    }
-                }
-
-                int totalDonated = farmer.archaeologyFound.Keys.Count();
-                int remaining = emptySlots.Count;
-                if (donated.Count > 0)
-                    tcs.SetResult(new { ok = true, donated, totalDonated, remainingSlots = remaining });
-                else
-                    tcs.SetResult(new { ok = false, error = "No new items to donate or no empty slots" });
+	                // ⚠️ `archaeologyFound.Count` 是"**捡到过**几种"，**不是**"捐了几件"（口径纠正见上）。
+	                //    真要报"捐了多少"用 `MuseumPieces.Length`。
+	                int foundKinds = farmer.archaeologyFound.Keys.Count();
+	                int museumCount = Game1.netWorldState.Value.MuseumPieces.Length;
+	                int totalArtifacts = 0;
+	                try { totalArtifacts = StardewValley.Locations.LibraryMuseum.totalArtifacts; } catch { }
+	                int remaining = emptySlots.Count;
+	                if (donated.Count > 0)
+	                    tcs.SetResult(new { ok = true, donated, rejected, checkedCount = looked,
+	                        foundKinds, museumCount, totalArtifacts,
+	                        remainingSlots = remaining, slotsAreGuessed });
+	                else
+	                {
+	                    // ⛔ 2026-10-05 恒：旧代码不管什么原因都回一句英文
+	                    //   "No new items to donate or no empty slots" —— 把"没东西可捐"和"没空位"
+	                    //   混成一句（就是这句糊话把"古代玩偶明明能捐"盖住的）。现在**分开说 + 带账**。
+	                    string why = remaining == 0
+	                        ? $"博物馆没有空展位了（已展出 {museumCount} 件 / 游戏名单共 {totalArtifacts} 件）"
+	                        : $"背包里没有能捐的了（空展位还有 {remaining} 个；查了 {looked} 件，全被游戏判据挡下）";
+	                    tcs.SetResult(new { ok = false, error = why, emptySlots = remaining, checkedCount = looked,
+	                        rejected, foundKinds, museumCount, totalArtifacts, slotsAreGuessed });
+	                }
             }
             catch (Exception ex)
             {

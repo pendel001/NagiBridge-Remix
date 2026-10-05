@@ -19406,9 +19406,17 @@ def museum_donate() -> str:
         r = api._post("/museum_donate")
         if r.get("ok"):
             items = r.get("donated") or []
-            lines = [f"{step}\n🏛️ 捐赠 {len(items)} 件（剩 {r.get('remainingSlots')} 个展位）"]
+            _hall = ""
+            if r.get("museumCount") is not None and r.get("totalArtifacts"):
+                _hall = f"；馆内 {r.get('museumCount')}/{r.get('totalArtifacts')}（游戏自己的名单大小）"
+            lines = [f"{step}\n🏛️ 捐赠 {len(items)} 件（剩 {r.get('remainingSlots')} 个空展位{_hall}）"]
             for it in items:
                 lines.append(f"  . {it.get('item', it)} → 展位({it.get('tileX')},{it.get('tileY')})")
+            _rej = r.get("rejected") or []
+            if _rej:
+                lines.append(f"  （另有 {len(_rej)} 件没捐，逐件原因：）")
+                for it in _rej[:10]:
+                    lines.append(f"  . {it.get('item')} → {it.get('why')}")
             return "\n".join(lines)
         else:
             # ⚠️ C# 的 error 是**英文原文**（如 "No new items to donate or no empty slots"）——
@@ -19421,7 +19429,16 @@ def museum_donate() -> str:
                     "（博物馆已收齐时这是正常回答，不是出错）",
             }
             _msg = _known.get(_err.strip(), _err)
-            return f"❌ {_msg}"
+            out = [f"❌ {_msg}"]
+            # 2026-10-05：C# 不再把「没东西可捐」和「没空位」混成一句，并且逐件记「为什么没捐」——
+            #   如实把账摊给 AI 看（老 DLL 没有这几个字段，那时就只剩上面那句）。
+            _rej = r.get("rejected") or []
+            if _rej:
+                out.append(f"  （空展位 {r.get('emptySlots')} 个 · 查过 {r.get('checkedCount')} 件 · "
+                           f"馆内 {r.get('museumCount')}/{r.get('totalArtifacts')}）")
+                for it in _rej[:10]:
+                    out.append(f"  . {it.get('item')} → {it.get('why')}")
+            return "\n".join(out)
     except Exception as e:
         return f"❌ {e}"
 
