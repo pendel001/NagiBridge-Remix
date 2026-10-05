@@ -14528,6 +14528,23 @@ public class ModEntry : Mod
                         if (pItem != null) partialInfo = new { name = pItem.DisplayName ?? pItem.Name, stack = pItem.Stack };
                     }
                     catch { }
+                    // 🚦 2026-10-05 恒：「可不可以查游戏里**不允许操作的一些（动画播放）时刻**来治本呀」
+                    //    —— 游戏自己就有这个闸，别猜 sleep：
+                    //      · `JunimoNoteMenu.canClick`（**public static**，`:56`）：`receiveLeftClick` 开头
+                    //        就是 `if (!canClick) return;`（`:432`）⇒ 关着的时候**点什么都被静默吞掉**；
+                    //        谁关它：**收集包完成那一刻**（`checkIfBundleIsComplete` `:1095`）+ 屏幕滑动
+                    //        期间（`update` `:1244-1248`）—— 正是恒看到的那个"热气球动画"。
+                    //      · `Bundle.completionTimer > 0` = 这一包正在放完成动画（拿它当"别动"的前置，
+                    //        `:443/:1270`）。
+                    //    ⇒ 探针把这两位吐出去，消费侧**等它说"可以"再点**（0 猜测）。
+                    bool? canClickNow = null;
+                    try
+                    {
+                        canClickNow = (bool?)typeof(JunimoNoteMenu).GetField("canClick",
+                            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
+                            ?.GetValue(null);
+                    }
+                    catch { }
                     ccInfo = new
                     {
                         whichArea,
@@ -14539,6 +14556,12 @@ public class ModEntry : Mod
                         ingredientSlots = ingSlots,  // specific 页投放槽位
                         inventorySlots = invSlots,   // specific 页底部背包（点物品拿起）
                         heldItem = heldName,
+                        // 🚦 这一刻游戏**让不让点**（`canClick=false` = 动画在放，点什么都被吞）
+                        canClick = canClickNow,
+                        // 🚦 正翻着这一包的完成动画还剩几毫秒（>0 = 别动）
+                        completionTimer = curBundleObj == null ? 0
+                            : (int)(curBundleObj.GetType().GetField("completionTimer", jFlags)
+                                    ?.GetValue(curBundleObj) ?? 0),
                         // 🏛️ 2026-10-04（单子那两层用）：
                         donatables,          // 这一页"背包里哪一件能捧进哪一格"（`toSlot`/`full`/`part`/`want`）
                         partial = partialInfo   // 分次放已经在台面上的那件（名字 + 已放几个；没在放就是 null）
@@ -15697,6 +15720,67 @@ public class ModEntry : Mod
                         tcs.SetResult(new { ok = false, error = "当前不是献祭板（没有 bundleBack 这条路）" });
                     }
                     return;
+                }
+
+                // 🚦🚦 2026-10-05 恒：「**直接把这种时刻都阻塞上就不会让 ai 乱点了**」
+                //    ⇒ 闸设在**这一层**（所有 `/menu/click` 都从这里过），而不是让每个消费侧各自小心。
+                //    判据全用**游戏自己的旗**（我们不猜 sleep）：
+                //      · `JunimoNoteMenu.canClick == false` —— `receiveLeftClick` 开头就是
+                //        `if (!canClick) return;`（`:432`）⇒ 这一刻点什么都被**静默吞掉**
+                //        （谁关它：收集包完成 `:1095` / 屏幕滑动 `:1244-1248`）；
+                //      · `Bundle.completionTimer > 0` —— 这一包在放完成动画（`:443/:1270` 拿它当前置）；
+                //      · `DialogueBox.safetyTimer > 0` —— 刚弹出的对话框（`:receiveLeftClick` 开头同样
+                //        `return`，2026-10-02 真机踩过"框一出现就点 = 静默点空"）。
+                //    ⚠️ **拒绝**（不是"等一等再点"）：让调用方**知道刚才那一发压根没生效**，
+                //       别把它误读成"点了、没成"。报文里带上**是哪个旗**，便于下一步决定等多久。
+                //    ⚠️ 出口不受影响：`/menu_close`（强制退）/`/key` 都不走这一层。
+                if (menu is JunimoNoteMenu jnmGate)
+                {
+                    bool canClickNow = true;
+                    try
+                    {
+                        canClickNow = (bool?)typeof(JunimoNoteMenu).GetField("canClick",
+                            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
+                            ?.GetValue(null) ?? true;
+                    }
+                    catch { }
+                    int jTimer = 0;
+                    try
+                    {
+                        var cpb = menu.GetType().GetField("currentPageBundle",
+                            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic |
+                            System.Reflection.BindingFlags.Instance)?.GetValue(menu);
+                        if (cpb != null)
+                            jTimer = Convert.ToInt32(cpb.GetType().GetField("completionTimer",
+                                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic |
+                                System.Reflection.BindingFlags.Instance)?.GetValue(cpb) ?? 0);
+                    }
+                    catch { }
+                    if (!canClickNow || jTimer > 0)
+                    {
+                        tcs.SetResult(new { ok = false, blocked = !canClickNow ? "canClick" : "completionTimer",
+                            canClick = canClickNow, completionTimer = jTimer,
+                            error = "献祭板正在放动画（收集包完成/翻页）—— 这一刻点什么都会被游戏吞掉，"
+                                    + "等它放完再点（约 1 秒）" });
+                        return;
+                    }
+                }
+                if (menu is DialogueBox dbGate)
+                {
+                    int safety = 0;
+                    try
+                    {
+                        safety = (int)(typeof(DialogueBox).GetField("safetyTimer",
+                            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic |
+                            System.Reflection.BindingFlags.Instance)?.GetValue(dbGate) ?? 0);
+                    }
+                    catch { }
+                    if (safety > 0)
+                    {
+                        tcs.SetResult(new { ok = false, blocked = "safetyTimer", safetyTimer = safety,
+                            error = "对话框刚弹出来（safetyTimer 还在走）—— 这一刻点它只会被吞掉，稍等再点" });
+                        return;
+                    }
                 }
 
                 if (button != "")

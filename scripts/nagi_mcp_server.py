@@ -24067,12 +24067,29 @@ def _im_cc_bundle_name(cc: dict, idx) -> str:
     return f"收集包#{idx}"
 
 
-def _im_cc_click(x, y) -> bool:
-    try:
-        api._ai_post("/menu/click", {"x": int(x), "y": int(y)})
-        return True
-    except Exception:
-        return False
+def _im_cc_click(x, y, tries: int = 3) -> str:
+    """🏛️ 点一下**献祭板**上的坐标 → `""`（成了）或**拒绝原因**（没生效）。
+
+    ⚠️⚠️ 2026-10-05 恒：「**直接把这种时刻都阻塞上就不会让 ai 乱点了**」——
+       C# 那边已经把闸设好了（`canClick` / `completionTimer`，见 `HandleMenuClick` 里那一段）：
+       动画在放时 `/menu/click` **直接拒绝**并回报 `blocked`。这一层只做**等它放完再试**：
+       · 拒绝理由带 `canClick`/`completionTimer` ⇒ **等 ~0.5s 重试**（最多 `tries` 次）；
+       · 其它拒绝 ⇒ 原样带出去（**不硬试**，尤其别把"被吞"读成"点了没成"）。
+    """
+    last = ""
+    for n in range(max(1, tries)):
+        try:
+            r = api._ai_post("/menu/click", {"x": int(x), "y": int(y)}) or {}
+        except Exception as e:
+            return f"{type(e).__name__}: {e}"
+        if r.get("ok"):
+            return ""
+        last = str(r.get("error") or r)
+        if r.get("blocked") in ("canClick", "completionTimer", "safetyTimer") and n < tries - 1:
+            time.sleep(0.5)
+            continue
+        return last
+    return last
 
 
 def _im_cc_menu() -> dict:
@@ -24175,11 +24192,38 @@ def _im_cc_offer(item_id: str, name: str) -> str:
         return f"❌ 读不到「{name}」的背包格/槽位坐标（先别乱点）"
     b0 = _bag_count(item_id, name)
     s0 = (slots[ti].get("stack") or 0) if isinstance(slots[ti], dict) else 0
-    _im_cc_click(inv[si].get("x", 0) + inv[si].get("w", 0) // 2,
-                 inv[si].get("y", 0) + inv[si].get("h", 0) // 2)      # ① 拿起
+    # ⚠️⚠️ 2026-10-05 真机抓到的第二种 race：翻页之后**槽位/背包格的坐标可能还是 0**
+    #   （布局要等游戏那一拍）⇒ 照 0 点 = **点空 ⇒ 详情页被退回列表**，两次点击全落空
+    #   （现场：19 号包 4/4 都成、**17 号包连续两发「背包一件没少」且页被退回列表**）。
+    #   ⇒ 点之前**等到坐标是真值**（x/y 都 > 0），并且给布局留一口气。
+    for _ in range(10):
+        _c1, _c2 = inv[si], slots[ti]
+        if (int(_c1.get("x") or 0) > 0 and int(_c1.get("y") or 0) > 0
+                and int(_c2.get("x") or 0) > 0 and int(_c2.get("y") or 0) > 0):
+            break
+        time.sleep(0.15)
+    time.sleep(0.25)                     # 布局/翻页动画再稳一下（宁可多等，别点空）
+    # ⚠️⚠️ 2026-10-05 恒：「**直接把这种时刻都阻塞上就不会让 ai 乱点了**」——
+    #   C# 那边已经把闸设好（`canClick`/`completionTimer` 一关就**拒绝**），这里只负责：
+    #   **拒绝理由若是"动画在放"就等它放完再试**；要是被拒绝还硬往下点，就是把"被吞"读成"点了没成"。
+    _e1 = _im_cc_click(inv[si].get("x", 0) + inv[si].get("w", 0) // 2,
+                       inv[si].get("y", 0) + inv[si].get("h", 0) // 2)      # ① 拿起
+    if _e1:
+        return (f"⚠️ 「{name}」这一发**没点下去** —— 游戏说：{_e1}"
+                f"（不是我点错了坐标，是这一刻不让点）")
     time.sleep(0.3)
-    _im_cc_click(slots[ti].get("x", 0) + slots[ti].get("w", 0) // 2,
-                 slots[ti].get("y", 0) + slots[ti].get("h", 0) // 2)   # ② 捧上那一格
+    # 🚦 拿起之后**先回读"手上是不是它"**再点槽位（别把"没拿起"当成"放不进去"）
+    try:
+        _held = (_im_cc_menu().get("characterCust") or {}).get("heldItem") or ""
+    except Exception:
+        _held = ""
+    if _held and _held != name:
+        return (f"⚠️ 点了「{name}」那一格，可**手上拿起来的是「{_held}」**（多半是背包格号/坐标对不上）"
+                f" —— 这一发没往下点，先 `show` 看一眼")
+    _e2 = _im_cc_click(slots[ti].get("x", 0) + slots[ti].get("w", 0) // 2,
+                       slots[ti].get("y", 0) + slots[ti].get("h", 0) // 2)   # ② 捧上那一格
+    if _e2:
+        return (f"⚠️ 「{name}」拿在手上之后**没点成那一格** —— 游戏说：{_e2}")
     for _ in range(6):
         time.sleep(0.15)
         b1 = _bag_count(item_id, name)
