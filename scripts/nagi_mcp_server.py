@@ -11112,6 +11112,27 @@ def _tile_obstacle(info):
     return (None, False)
 
 
+def _is_garden_pot(info) -> bool:
+    """🪴 这一格是不是**花盆**（`(BC)62` / 名字 `Garden Pot`）。
+
+    ⚠️ 为什么非要有它（2026-10-05 补27 · 恒旧档真机逮到）：
+    花盆那格 `/surroundings` 报的是
+    `{"object":"Garden Pot","objId":"(BC)62","terrain":"HoeDirt"}` —— **terrain 是 HoeDirt**！
+    于是它一路骗过两道判据：`_tile_obstacle()` 说"已锄好、不是障碍"，`_farm_plant` 也判它"锄过了"
+    ⇒ 最后走**左键 `use_item()`** 那条路 ⇒ 游戏回 `Cannot place '…' here`（种子想往地上放，盆挡着）。
+
+    花盆的真身是 `Object (BC)62` + 内部 `hoeDirt`，**不是 HoeDirt terrain feature**
+    （所以 `/tool` 那条路对它无效；反编译 `Hoe.cs:67-85` → `IndoorPot.performToolAction` →
+    `HoeDirt.cs:758` `crop.hitWithHoe`：**拿锄头打花盆会把盆里的作物锄掉** ⇒ 锄地绝不碰它）。
+    播种它只认**游戏自己的路**：`select 种子 → interact 那一格`
+    （2026-10-05 真机验过：这样种得上，随后那格报 `crop:"262",cropName:"小麦"` —— 与大田同一套字段）。
+    """
+    if not isinstance(info, dict):
+        return False
+    return (str(info.get("objId") or "") == "(BC)62"
+            or str(info.get("object") or "") == "Garden Pot")
+
+
 def _obstacle_lines(blocked, verb="锄") -> list:
     """`{类别: [(x,y,标签)]}` → 给 AI 看的几行（till/plant/fertilize 共用措辞）。
 
@@ -11617,7 +11638,16 @@ def _farm_plant(seed_name: str = "", seed: str = "", x: int = -1, y: int = -1, r
         #    ⚠️ 别自己算"是不是当季"：那要么维护一张种子→季节的表（本项目早拍掉"手抄表改成问游戏"），
         #    要么漏掉"温室/姜岛全年可种"这条（露天农场才有季节限制）。**游戏是按当前地点判的**，
         #    温室里种夏季种子它压根不拒 ⇒ 我们照抄它的判断，天然分地点，不用特判。
-        _r = api.use_item()
+        # 🪴 2026-10-05 补27（恒旧档真机）：**花盆不能走 `use_item`（左键 use）** ——
+        #    花盆那格 terrain 报 `HoeDirt`，会被当成"已锄好的地"走左键 use，
+        #    游戏回 `Cannot place '…' here` ⇒ 恒看到的"种不进花盆"。
+        #    花盆走**游戏自己的路**：已经把种子选在手上 → `interact` 那一格（`IndoorPot.checkForAction`）。
+        #    ⚠️ 别改成"所有格都 interact"：大田那条（左键 use 撒种）是**游戏正经的播种方式**，
+        #       动它会牵动整条农活循环（farm_row.py 也走 use_item）。
+        if _is_garden_pot(tiles.get((tx, ty), {})):
+            _r = api.interact_at(tx, ty)
+        else:
+            _r = api.use_item()
         if isinstance(_r, dict) and _r.get("ok") is False:
             refused.append((tx, ty, str(_r.get("error") or "?")))
         time.sleep(0.35)
@@ -16600,6 +16630,29 @@ def _interact_at_core(tile_x: int, tile_y: int) -> str:
                 f"⚠️ ({tile_x},{tile_y}) 上有「{_obj}」，但 interact 没触发它（**不是那里空着**）。"
                 f"换条路：机器→`intent` 单子「收 已好的机器」/ farm 的 collect；家具→看类型走对应交互；NPC→social 域。"
             )
+        # 🚨 2026-10-05 补27（恒旧档真机 · 玛妮柜台那出）：**目标格 == 自己脚下那格**时，
+        #    游戏如实回 `actionTriggered:false`，可读起来像"这儿的东西没了/柜台坏了"。
+        #    真凶几乎总是**调用方把 POI 的「站位格」当成了「目标格」**——
+        #    `scene at x y` 的 x,y 是**要点的目标格**；POI 的 `pos` 是**站位**、`face` 才是目标方向。
+        #    现场：玛妮柜台 POI `pos=(12,16) face=0` ⇒ 目标是 `(12,15)`。
+        #      站 (12,16) 朝上、**无坐标** `scene interact` ⇒ 四个选项全出来（我实测 ✅）；
+        #      而 `scene at 12 16`（= 点自己脚下）⇒ false（上一棒就是这么做、然后误判成"POI 站位错"）。
+        #    ⇒ **不拦**（自己的格子也可能是合法目标，且导航推门那条也走 interact_at），
+        #      只在"没触发 + 目标就是脚下"时把这句话说出来。
+        try:
+            _me = api.state().get("player") or {}
+            if _me.get("x") == tile_x and _me.get("y") == tile_y:
+                return _with_state(
+                    f"⚠️ 该位置没有可交互的东西（actionTriggered=false）\n"
+                    f"  🚨 注意：`({tile_x},{tile_y})` **就是你自己站着的那格** —— "
+                    f"`scene at x y` 的 x,y 是**要点的目标格**，不是站位格。\n"
+                    f"  📌 POI 给的 `pos` 是**站位**、`face` 才是目标方向"
+                    f"（例：玛妮牧场(柜台) 站 `(12,16)` 朝上 ⇒ 目标是 `(12,15)`）。\n"
+                    f"  🔎 下一步：`map walk <那个 POI>`（走过去它自己会站对、面朝目标）然后 `scene interact`；"
+                    f"或者直接把**目标格**传给 `scene at`。"
+                )
+        except Exception:
+            pass
         return _with_state(f"⚠️ 该位置没有可交互的东西（actionTriggered=false）")
     except Exception as e:
         return _with_state(f"❌ 交互失败: {e}")
