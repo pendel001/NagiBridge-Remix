@@ -24981,16 +24981,48 @@ def _fish_xy_dist(ax, ay, px, py) -> int:
     return abs(ax - px) + abs(ay - py)
 
 
-def _fish_calibrated_poi(area: dict, loc_name: str):
-    """这个鱼区里有没有**恒真机验过的校准钓点**（`fish_run.FISHING_TARGETS`，只有 4 个）。
+def _fish_spot_from_calib(spot) -> dict:
+    """`fish_run.get_spot` 的回包 → 我们账里那一份（`{standX,standY,waterX,waterY,dir,calibrated}`）。
 
-    ⚠️ **只做偏好，不做归区判断**：命中判据是"那个 POI 落在这个区的 `position` 矩形里"
-       （`FishAreaData.Position` 就是游戏归区用的那把尺子，`GameLocation.cs:13801`；
-       `Rectangle.Contains` 语义 = **左闭右开**）。区域 id 一律用游戏给的 `spots` 那份，
-       绝不在 Python 里重算"这格算哪个区"（那要重实现带 Position 优先 + 兜底区的优先级，必漂）。
-    ⚠️ 没有 `position` 的区（`Default` 那种兜底区）**不做这个偏好** —— 矩形都没有，认不了。
-    → `{"standX","standY","waterX","waterY","dir"}` / `None`。
+    ⚠️ 水格 = **站在岸格面朝的那一格**（`dir` = 站格→水格的方向，同 `ModEntry.cs:17191` 的
+       `spots[].dir`；0上 1右 2下 3左）。读不出来的（老表缺字段）⇒ `None`，不猜。
     """
+    if not isinstance(spot, dict):
+        return None
+    x, y, face = spot.get("x"), spot.get("y"), spot.get("face")
+    if not isinstance(x, int) or not isinstance(y, int) or face not in (0, 1, 2, 3):
+        return None
+    return {"standX": x, "standY": y,
+            "waterX": x + (0, 1, 0, -1)[face],
+            "waterY": y + (-1, 0, 1, 0)[face],
+            "dir": int(face), "calibrated": spot.get("poi")}
+
+
+def _fish_calibrated_poi(area: dict, loc_name: str):
+    """这个鱼区里有没有**我们校准过的钓点**（`fish_run` 那两张表）→ spot dict / `None`。
+
+    🔑 **两条路，判据不一样**（2026-10-05 加第 ① 条）：
+      ① **按 (图名, 鱼区 id)**（`fish_run.FISHING_AREA_TARGETS`，**优先**）——
+         那张表本身就**声明了**「这个 POI 属这个区」⇒ 命中即用，**不再做矩形包含测试**。
+         为什么非要它：`Forest.River` / `Desert.TopPond` 这种区的 `position` 是 **null**（兜底区），
+         矩形那条判据**根本没法用**，恒亲站的 (20,76) / (9,10) 就永远轮不上。
+      ② 老的**按图**表（`FISHING_TARGETS`）——它只说"这张图有个校准点"，**不说是哪个水域**
+         ⇒ **必须证明**那个 POI 落在**本区**的 `position` 矩形里（左闭右开，`GameLocation.cs:13801`），
+         否则 Forest 的小池塘点会被 `River` 也拿去用（"按 A 缸的判断动 B 缸"同族）。
+         ⚠️ 没有 `position` 的区在这条路上**认不了**（矩形都没有）⇒ 返回 `None`。
+    ⛔ **只做"用哪个钓点"的偏好，不做归区判断**：区域 id 一律用游戏给的 `spots` 那份 ——
+       绝不在 Python 里重算"这格算哪个区"（那要重实现 Position 优先 + 兜底区的优先级，必漂）。
+    ⛔ 坐标**只走 `fish_run.get_spot`**（别在这儿抄坐标）；只认那两张表**已经有的**条目，别顺手扩图。
+    """
+    area_id = area.get("id")
+    try:
+        from fish_run import FISHING_AREA_TARGETS, get_spot     # 懒导入：**唯一那两张校准表**
+    except Exception:
+        return None
+    # ① 按 (图, 鱼区) 的显式表：命中即用（自己声明的归属，不需要矩形）
+    if area_id and (loc_name, area_id) in FISHING_AREA_TARGETS:
+        return _fish_spot_from_calib(get_spot(loc_name, area_id=area_id))
+    # ② 按图表：那个 POI 得**真的落在本区矩形里**才算本区的
     pos = area.get("position")
     if not isinstance(pos, dict):
         return None
@@ -24999,29 +25031,13 @@ def _fish_calibrated_poi(area: dict, loc_name: str):
         w, h = int(pos.get("w")), int(pos.get("h"))
     except Exception:
         return None
-    try:
-        from fish_run import FISHING_TARGETS as _FT       # 懒导入：**唯一那份校准表**
-        from locations import POI
-    except Exception:
+    spot = _fish_spot_from_calib(get_spot(loc_name))            # 按图那条（`area_id` 不传）
+    if not spot:
         return None
-    hit = _FT.get(loc_name)
-    if not hit:
-        return None
-    poi_name, face = hit
-    p = (POI.get(poi_name) or {}).get("pos") or (None, None)
-    tx, ty = p[0], p[1]
-    if not isinstance(tx, int) or not isinstance(ty, int):
-        return None
+    tx, ty = spot["standX"], spot["standY"]
     if not (x0 <= tx < x0 + w and y0 <= ty < y0 + h):
         return None
-    return {"standX": tx, "standY": ty,
-            # 校准点的 `face` 是恒验过的抛竿朝向（`fish_run.FISHING_TARGETS`）；
-            # 这条路上**水格 = 站在岸格面朝的那一格**（同口的 `spots[].dir`：dir=站格→水格的方向，
-            # `ModEntry.cs:17191`）。0上 1右 2下 3左。
-            "waterX": tx + ((0, 1, 0, -1)[face] if face in (0, 1, 2, 3) else 0),
-            "waterY": ty + ((-1, 0, 1, 0)[face] if face in (0, 1, 2, 3) else 0),
-            "dir": int(face) if face in (0, 1, 2, 3) else 2,
-            "calibrated": poi_name}
+    return spot
 
 
 def _fish_areas_raw() -> dict:

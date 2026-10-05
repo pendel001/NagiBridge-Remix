@@ -367,6 +367,118 @@ try:
     a, nav, scripts, out = _go(st, {"wx": 34, "wy": 26, "area": "Lake"}, land=(34, 25))
     ck("行上没带坐标（老单子/账丢了）⇒ 当场报错、**不动手**",
        scripts == [] and nav.calls == [] and "show" in out, out)
+
+    print("\n⑦ 按鱼区校准表（`FISHING_AREA_TARGETS`）：三条映射 + 老路一字不变 + 无校准就退回游戏 spots")
+    import fish_run as FR
+    from locations import POI as _POI
+
+    # ① POI 本身（同名 key 后写的赢 —— 2026-10-05 真踩过：森林河边钓点 被 (70,95) 那条静默盖掉）
+    ck("`POI[森林河边钓点]` 唯一且 = (20,76)（曾有一条同名 (70,95)待校准 盖掉它）",
+       (_POI.get("森林河边钓点") or {}).get("pos") == (20, 76), str(_POI.get("森林河边钓点")))
+    ck("…`沙漠钓鱼点` = (9,10) · `森林小池塘钓点` = (34,25)（后两者没被同名盖）",
+       (_POI.get("沙漠钓鱼点") or {}).get("pos") == (9, 10)
+       and (_POI.get("森林小池塘钓点") or {}).get("pos") == (34, 25),
+       str([_POI.get("沙漠钓鱼点"), _POI.get("森林小池塘钓点")]))
+
+    # ② 老调用点（不传 area_id）**一字不变**
+    _leg = {k: FR.get_spot(k) for k in ("Beach", "Mountain", "Forest", "Town")}
+    ck("老路 `get_spot(图)` 4 张图一字不变（Forest 仍回 (34,25) 小池塘 face2）",
+       [(k, _leg[k].get("x"), _leg[k].get("y"), _leg[k].get("face")) for k in
+        ("Beach", "Mountain", "Forest", "Town")]
+       == [("Beach", 52, 25, 2), ("Mountain", 68, 24, 2), ("Forest", 34, 25, 2), ("Town", 3, 93, 2)],
+       str(_leg))
+
+    # ③ 新路三条 + 两条兜底
+    _r = FR.get_spot("Forest", "River")
+    ck("`get_spot('Forest','River')` ⇒ 恒亲站的 (20,76) face=1（冬季鱼王点，面东抛向河面）",
+       (_r or {}).get("x") == 20 and _r.get("y") == 76 and _r.get("face") == 1, str(_r))
+    _l = FR.get_spot("Forest", "Lake")
+    ck("`get_spot('Forest','Lake')` ⇒ (34,25) face=2（= 原按图那份，保持等价）",
+       (_l or {}).get("x") == 34 and _l.get("y") == 25 and _l.get("face") == 2, str(_l))
+    _d = FR.get_spot("Desert", "TopPond")
+    ck("`get_spot('Desert','TopPond')` ⇒ (9,10) face=2（POI note 自证：站(9,10)朝下钓(9,11)）",
+       (_d or {}).get("x") == 9 and _d.get("y") == 10 and _d.get("face") == 2, str(_d))
+    _n = FR.get_spot("Forest", "NoSuchArea")
+    ck("没进按区表的 id ⇒ 退回**按图**那张（Forest 仍回 (34,25)，不是「没找到就放弃」）",
+       (_n or {}).get("x") == 34 and _n.get("y") == 25, str(_n))
+    _b = FR.get_spot("Beach", "Default")
+    ck("…Beach 没有按区条目 ⇒ 退回按图 (52,25)（只认表里那几条，不许顺手扩图）",
+       (_b or {}).get("x") == 52 and _b.get("y") == 25, str(_b))
+
+    # ④ 端到端：Forest 的 River / Lake 各走对了点（River 的 position 是 null ⇒ 只有按区表救得了它）
+    FISH_FOREST_REAL = {"ok": True, "location": "Forest", "hasFishAreaData": True, "count": 2, "areas": [
+        {"id": "River", "displayName": None, "position": None, "waterTiles": 300, "spotsFound": 2,
+         "spots": [{"waterX": 91, "waterY": 5, "standX": 91, "standY": 6, "dir": 0},
+                   {"waterX": 21, "waterY": 76, "standX": 21, "standY": 77, "dir": 0}]},
+        {"id": "Lake", "displayName": None, "position": {"x": 30, "y": 20, "w": 10, "h": 10},
+         "waterTiles": 59, "spotsFound": 1, "spotsTruncated": False,
+         "spots": [{"waterX": 34, "waterY": 26, "standX": 34, "standY": 25, "dir": 2}]}]}
+    api = FakeApi(_state("Forest", x=80, y=80, in_hand=True), fish_areas=FISH_FOREST_REAL)
+    acct_f = _acct(api)
+    _picks_f = {p.get("area"): p for p in (acct_f.get("picks") or [])}
+    ck("端到端 Forest/River ⇒ (20,76) face1「校准钓点」（它的 position=null，按图那条路够不着）",
+       (_picks_f.get("River", {}).get("standX"), _picks_f.get("River", {}).get("standY"),
+        _picks_f.get("River", {}).get("dir")) == (20, 76, 1)
+       and _picks_f["River"].get("calibrated") == "森林河边钓点", str(_picks_f.get("River")))
+    ck("端到端 Forest/Lake ⇒ (34,25) face2（两个区各走各的，不串）",
+       (_picks_f.get("Lake", {}).get("standX"), _picks_f.get("Lake", {}).get("standY"),
+        _picks_f.get("Lake", {}).get("dir")) == (34, 25, 2), str(_picks_f.get("Lake")))
+    _ctx_f, _m_f = _sheet(acct_f, loc="Forest", px=80, py=80)
+    _lv2_f = IM.do_row(_no_of("垂钓"), _fake_run, _ctx_f)
+    _rv_line = next((l for l in _lv2_f.splitlines() if "River" in l), "")
+    ck("…第二层 `River` 那行印 (20,76) 且标「校准钓点」；`Lake` 行是 (34,25)（不是同一行复制两遍）",
+       "(20,76)" in _rv_line and "校准钓点" in _rv_line and "(34,25)" in _lv2_f, _lv2_f)
+
+    # ⑤ 端到端 Desert：唯一有水的 TopPond ⇒ 一层 + 校准点 (9,10)
+    FISH_DESERT = {"ok": True, "location": "Desert", "hasFishAreaData": True, "count": 2, "areas": [
+        {"id": "TopPond", "displayName": None, "position": None, "waterTiles": 59, "spotsFound": 2,
+         "spots": [{"waterX": 10, "waterY": 13, "standX": 10, "standY": 12, "dir": 2},
+                   {"waterX": 5, "waterY": 12, "standX": 5, "standY": 13, "dir": 0}]},
+        {"id": "BottomPond", "displayName": None, "position": {"x": 0, "y": 56, "w": 255, "h": 255},
+         "waterTiles": 0, "spotsFound": 0, "spots": [], "noSpotReason": "没扫到水格"}]}
+    api = FakeApi(_state("Desert", x=40, y=40, in_hand=True), fish_areas=FISH_DESERT)
+    acct_d = _acct(api)
+    _pd = (acct_d.get("picks") or [])
+    _m_d = _sheet(acct_d, loc="Desert", px=40, py=40)[1]
+    ck("端到端 Desert/TopPond ⇒ (9,10) face2、账里 `calibrated`=沙漠钓鱼点、**只有一层**"
+       "（BottomPond 无水不上；`position=null` ⇒ 只有按区表救得了它）",
+       len(_pd) == 1 and (_pd[0].get("standX"), _pd[0].get("standY"), _pd[0].get("dir")) == (9, 10, 2)
+       and _pd[0].get("calibrated") == "沙漠钓鱼点" and "垂钓…" not in _m_d
+       and "(9,10)" in _m_d, str(_pd) + " || " + _m_d)
+
+    # ⑥ 老「按图」那条路：同图两区**只有一个**能拿到校准点（矩形包含判据）
+    FISH_TOWN = {"ok": True, "location": "Town", "hasFishAreaData": True, "count": 2, "areas": [
+        {"id": "River", "displayName": None, "position": {"x": 0, "y": 0, "w": 120, "h": 120},
+         "waterTiles": 300, "spotsFound": 2, "spots": [
+             {"waterX": 91, "waterY": 5, "standX": 91, "standY": 6, "dir": 0},
+             {"waterX": 3, "waterY": 94, "standX": 3, "standY": 93, "dir": 2}]},
+        {"id": "EastPond", "displayName": None, "position": {"x": 80, "y": 0, "w": 30, "h": 30},
+         "waterTiles": 20, "spotsFound": 1, "spots": [
+             {"waterX": 85, "waterY": 10, "standX": 85, "standY": 11, "dir": 0}]}]}
+    api = FakeApi(_state("Town", x=50, y=50, in_hand=True), fish_areas=FISH_TOWN)
+    acct_t = _acct(api)
+    _pt = {p.get("area"): p for p in (acct_t.get("picks") or [])}
+    ck("按图那条路：`Town/River` 的矩形含 (3,93) ⇒ 用校准点 `镇鲶鱼钓点`（(3,93) face2）",
+       (_pt.get("River", {}).get("standX"), _pt.get("River", {}).get("standY")) == (3, 93)
+       and _pt["River"].get("calibrated") == "镇鲶鱼钓点", str(_pt.get("River")))
+    ck("…`Town/EastPond` 的矩形**不含** (3,93) ⇒ 退回它自己的 spots (85,11)，`calibrated` 缺席",
+       (_pt.get("EastPond", {}).get("standX"), _pt.get("EastPond", {}).get("standY")) == (85, 11)
+       and "calibrated" not in _pt["EastPond"], str(_pt.get("EastPond")))
+    IM.reset_menu()
+    _ctx_t, _m_t = _sheet(acct_t, loc="Town", px=50, py=50)
+    _lv2_t = IM.do_row(_no_of("垂钓"), _fake_run, _ctx_t)
+    _ep_line = next((l for l in _lv2_t.splitlines() if "EastPond" in l), "")
+    ck("…**无校准的鱼区那行不许报「校准钓点」**（按图那个点是 River 的，不是它的）",
+       "校准" not in _ep_line and "校准钓点" in _lv2_t, _ep_line or _lv2_t)
+
+    # ⑦ 恒亲站那条的**执行端**：站在 (20,76) ⇒ 面东朝 (21,76) 河面（`/face 1`）
+    st = _state("Forest", x=20, y=76, in_hand=True)
+    a, nav, scripts, out = _go(st, {"x": 20, "y": 76, "wx": 21, "wy": 76, "dir": 1, "area": "River"},
+                               land=(20, 76))
+    ck("执行端 Forest/River：站在 (20,76) ⇒ `/face 1`（面东朝河）+ 开了 `fish_run`",
+       ("/face", {"direction": 1}) in a.posts and bool(scripts) and "River" in out,
+       str(a.posts) + " || " + out)
+    ck("…`(20,76)` 已经在岸格上 ⇒ **不用再走位**（map walk 不发）", nav.calls == [], str(nav.calls))
 finally:
     for k, v in _real.items():
         setattr(M, k, v)

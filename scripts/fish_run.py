@@ -26,6 +26,28 @@ FISHING_TARGETS = {
     "Forest":   ("森林小池塘钓点", 2),     # (34,25) 猪车旁小池塘，面下
     "Town":     ("镇鲶鱼钓点", 2),        # (3,93) 雨天鲶鱼钓点（2026-08-15恒：暴雨天钓鲶鱼）
 }
+# 🎣 **按鱼区**的校准钓点（比"按图"更细一层；2026-10-05 加，给「快捷钓鱼上单」的第二层用）。
+#    键 = (**图名**, **鱼区 id**)；鱼区 id 就是 `/fish_areas` 的 `areas[].id`
+#         （= 游戏 `Data/Locations` 的 `FishAreas` 字典 key，见 CHANGELOG 203z补31）。
+#    值 = (POI 名, face)；face 口径 0上 1右 2下 3左（`ModEntry.cs:2406-2409`，= 站格望向水格的方向）。
+#
+#    ⚠️ **优先于按图那张 `FISHING_TARGETS`**：一张图有两个水域时，按图那张只能说一个点，
+#       按区这张才分得清（Forest 就是这档：`Lake` 是猪车旁小池塘、`River` 是那条河）。
+#    ⚠️ 只在**有据可依**时才加行（恒亲站 / POI note 自证）；没据的就**空着** ——
+#       消费侧（`_im_fish`）会退回"游戏自己算的 spots"，**绝不编一个坐标**。
+#    ⚠️ POI 名必须**在 `locations.POI` 里唯一**（同名 key 后写的赢，静默盖掉前面那条 ——
+#       2026-10-05 真踩过：`森林河边钓点` 被一条 (70,95)「❌待校准」盖掉了恒亲站的 (20,76)）。
+FISHING_AREA_TARGETS = {
+    # 恒 2026-10-05 **亲站**：`/state`= Forest (20,76) facing=1，东邻 (21,76) 是河
+    # ⇒ 面东抛向河面（POI `森林河边钓点` = `locations.py:191`）；恒原话「**这位置还能钓冬季鱼王**」。
+    ("Forest", "River"):   ("森林河边钓点", 1),
+    # (34,25) 面下 —— 就是原按图 `FISHING_TARGETS["Forest"]` 那一份，**保持等价**（不是新点）。
+    ("Forest", "Lake"):    ("森林小池塘钓点", 2),
+    # (9,10) 面下钓 (9,11) 水面 —— POI note 自证（`locations.py:369` + `POI_FACE`；`沙漠钓鱼点`）。
+    # ⚠️ `Desert.TopPond` 的 `position` 是 **null**（兜底区）⇒ 按图那条路的"矩形包含"判据用不上，
+    #    这张显式表正是为它准备的。
+    ("Desert", "TopPond"): ("沙漠钓鱼点", 2),
+}
 # ⚡ 收手的体力线（**绝对值**，不是百分比 —— 星之果实会把 maxStamina 拉高、百分比会误判）。
 # ⚠️ **只此一处定义**：`stamina_common.MIN_STAMINA`（锄地/浇水/播种/开钓闸门全用它）。
 #    这里 re-export，别在本文件里再写一个字面量 20。
@@ -38,9 +60,21 @@ FISHING_SPOTS = {
 }
 
 
-def get_spot(location):
-    """解析钓点：优先用我们 locations.py 的校准 POI，原版 FISHING_SPOTS 兜底。"""
+def get_spot(location, area_id=None):
+    """解析钓点：**先按 (图名, 鱼区 id) 查**（`area_id` 非空时）→ 再按图查校准 POI → 最后原版 `FISHING_SPOTS` 兜底。
+
+    ⚠️ **老调用点（不传 `area_id`）走的路一个字都没变**：`fish_run` 自己的 `--location` 那条照旧按图解析。
+    ⚠️ 传了 `area_id` 但**那张表里没有这一条** ⇒ **退回按图那张**（不是"没找到就放弃"）。
+       要区分「命中的是按区表还是按图表」的调用方**自己查 `FISHING_AREA_TARGETS`**
+       （`nagi_mcp_server._fish_calibrated_poi` 就是这么做的：按图表那条必须再做"矩形包含"验证）。
+    """
     from locations import POI
+    if area_id:
+        hit = FISHING_AREA_TARGETS.get((location, area_id))
+        if hit:
+            poi = POI.get(hit[0])
+            if poi:
+                return {"x": poi["pos"][0], "y": poi["pos"][1], "face": hit[1], "poi": hit[0]}
     if location in FISHING_TARGETS:
         name, face = FISHING_TARGETS[location]
         poi = POI.get(name)
