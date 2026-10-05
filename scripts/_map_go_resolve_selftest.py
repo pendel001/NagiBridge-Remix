@@ -119,15 +119,25 @@ try:
     print("\n⑦ 源码钉：`map_go` 里不许再出现**子串**判据（防回归）")
     _src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "navigation.py"),
                 encoding="utf-8").read()
-    _ia = _src.index("def map_go(")
+    # ⚠️ 2026-10-05（真机 B 精修）：`map_go` 现在是**薄壳**（只贴"按短名理解"那句声明），
+    #    大身板搬到了 `_map_go_body` ⇒ 这几条钉子必须钉**身板**，钉壳子会全假过。
+    _ia = _src.index("def _map_go_body(")
     _ib = _src.index("\ndef ", _ia + 10)
     _body = _src[_ia:_ib]
     # ⚠️ 只看**代码行**（我这批的解释注释里故意引用了旧判据原样，不能把它自己当病）
     _code = "\n".join(l for l in _body.splitlines() if not l.strip().startswith("#"))
-    ck("⑦ `map_go` 走的是整串判据 `_is_home_word(...)`", "_is_home_word(destination)" in _code, "")
+    ck("⑦ `map_go` 身板走的是整串判据 `_is_home_word(...)`", "_is_home_word(destination)" in _code, "")
     ck('⑦ …且**没有**裸子串 `"小屋" in`（真机 A 的病根）', '"小屋" in' not in _code, "")
     ck("⑦ …且歧义闸在（`_poi_ambiguous`）", "_poi_ambiguous(destination)" in _code, "")
     ck("⑦ …且**变体名闸**在（`_variant_name_error`）", "_variant_name_error(destination)" in _code, "")
+    # 薄壳本身的钉子：贴声明 + 歧义闸那种不贴（`_poi_ambiguous` 守卫）
+    _wa = _src.index("def map_go(")
+    _wb = _src.index("\ndef ", _wa + 10)
+    _wcode = "\n".join(l for l in _src[_wa:_wb].splitlines() if not l.strip().startswith("#"))
+    ck("⑦b 薄壳 `map_go` 调身板 `_map_go_body(...)` 并贴 `_variant_shortname_note(...)`",
+       "_map_go_body(destination, npc)" in _wcode and "_variant_shortname_note(destination)" in _wcode, "")
+    ck("⑦b …且歧义闸那种**不贴**（`not _poi_ambiguous(destination)`）",
+       "not _poi_ambiguous(destination)" in _wcode, "")
 
     # ══════════════════════════════════════════════════════════════════════════
     # ⑧⑨⑩⑪ 2026-10-05 真机 B：**不许静默改写目的地**（"别名 ⊂ 输入"那条）
@@ -154,6 +164,11 @@ try:
     ck("⑧ 判据本身：`_resolve_scene_name` **不再**把它当成 IslandSouth",
        N._resolve_scene_name("姜岛小屋(门内六房)") != "IslandSouth",
        N._resolve_scene_name("姜岛小屋(门内六房)"))
+    ck("⑧ 判据本身：相似度 0.952 ≥ 阈值 0.95（所以走**报错**，不是「按短名」）",
+       N._variant_sim_best("姜岛小屋(门内六房)")[0] >= N._VARIANT_SIM_THRESHOLD,
+       str(N._variant_sim_best("姜岛小屋(门内六房)")))
+    ck("⑧ **不贴**「按短名」声明（报错回执里不许自相矛盾）",
+       "按短名" not in _out8 and N._variant_shortname_note("姜岛小屋(门内六房)") == "", _out8)
 
     print("\n⑨ 回归：短名/精确全名/口语前缀——**一条都不许改坏**")
     for _q in ("姜岛", "岛", "鱼店", "农场"):
@@ -177,6 +192,8 @@ try:
     _allnames = list(M.locations.POI) + list(M.locations.MAP_LINKS) + list(N.SCENE_NAME_ALIAS)
     _bad = [k for k in _allnames if N._variant_name_error(k) != ""]
     ck(f"⑨b 表里**全部** {len(_allnames)} 个名字都不被变体闸拦（精确名优先）", not _bad, str(_bad[:8]))
+    _badn = [k for k in _allnames if N._variant_shortname_note(k) != ""]
+    ck("⑨b …也**都不**贴「按短名」声明（精确名 = 直达，不用解释）", not _badn, str(_badn[:8]))
     # 真机 selftest（需窗口，本文件不跑）里那些**写死的目的地**也得照样放行
     for _q in ("镇鲶鱼钓点", "ArchaeologyHouse", "畜棚", "火山入口", "Mine"):
         ck(f"⑨b `{_q}`（需窗口的 `_map_go_arrive_selftest` 写死的输入）⇒ 放行",
@@ -189,6 +206,8 @@ try:
        "2 个候选" in _out10 and "姜岛小屋(门口)" in _out10 and "姜岛小屋(门内六人房)" in _out10, _out10)
     ck("⑩a …没动角色（`go_to` 一次都没调）", not _CALLS, str(_CALLS))
     ck("⑩a …也没挑目标（`_NAV_LAST` 空）", not N._NAV_LAST, str(N._NAV_LAST))
+    ck("⑩a …**不贴**「按短名」声明（歧义闸不替谁挑，贴了就自相矛盾）",
+       "按短名" not in _out10 and N._variant_shortname_note("姜岛小屋") != "", _out10)
     _CALLS.clear()
     _out10b = N.map_go("山入口")
     ck("⑩b 别名方向多候选（火山入口 VolcanoEntrance / 火山入口区 IslandNorth）⇒ 报错并列两个候选",
@@ -230,11 +249,67 @@ try:
     _q2 = _jraw.index('"""', _q1 + 3)
     _jraw = _jraw[:_q1] + _jraw[_q2 + 3:]
     _jcode = "\n".join(l for l in _jraw.splitlines() if not l.strip().startswith("#"))
-    ck("⑪ …`alias in s` / `a in s` 都没了（真机 B 的病根）",
-       "alias in s" not in _jcode and "a in s" not in _jcode, "")
     ck("⑪ …「输入 ⊂ 别名」（`s in a`）那半条照旧保留", "s in a" in _jcode, "")
     ck("⑪ …且多候选分叉时**返回原值不猜**（`len({k for _, k in _cands}) >= 2`）",
        "len({k for _, k in _cands}) >= 2" in _jcode, "")
+    # ⚠️ 2026-10-05 精修后语义变了：方向 B 不是"删掉"，而是"**上了相似度闸**"——
+    #    像真名错字（≥ 阈值）⇒ 原样返回交门口报错；不像 ⇒ 按最长短名解析（回执由薄壳声明）。
+    #    ⇒ 钉子照实改成"方向 B 必须带闸"，不许再钉"`a in s` 必须消失"（那是上一版的判据）。
+    ck("⑪ …方向 B（`a in s`）现在**必须**带相似度闸",
+       "a in s" in _jcode and ">= _VARIANT_SIM_THRESHOLD" in _jcode and "return s" in _jcode, "")
+    ck("⑪ …且没有旧的无条件形态 `if alias in s or s in alias`",
+       "if alias in s or s in alias" not in _jcode, "")
+    ck("⑪ …阈值常量 = 0.95 且两处（闸/声明）都用它（同一把尺子）",
+       N._VARIANT_SIM_THRESHOLD == 0.95
+       and "_sim < _VARIANT_SIM_THRESHOLD" in _src
+       and "_variant_sim_best(q)[0] >= _VARIANT_SIM_THRESHOLD" in _src,
+       str(N._VARIANT_SIM_THRESHOLD))
+
+    print("\n⑫ 真机**惯用名回归**（恒钦定：这四条不许报错，但回执必须**说**按短名）")
+    for _q, _sc, _sn in (("罗宾木匠店", "ScienceHouse", "木匠店"),
+                         ("威利鱼店", "FishShop", "鱼店"),
+                         ("皮埃尔店", "SeedShop", "皮埃尔"),
+                         ("皮埃尔店(柜台)", "SeedShop", "皮埃尔")):
+        _CALLS.clear()
+        _o12 = N.map_go(_q)
+        ck(f"⑫ `{_q}` ⇒ **不报错**（变体闸放行）", N._variant_name_error(_q) == "", N._variant_name_error(_q))
+        ck(f"⑫ …回执**必须出现「按短名」**且指出「{_sn}」→ {_sc}",
+           "按短名" in _o12 and f"「{_sn}」" in _o12 and _sc in _o12, _o12)
+        ck(f"⑫ …声明的目标 = `_resolve_scene_name` 真解析的目标（{_sc}，同一口径）",
+           N._resolve_scene_name(_q) == _sc and GATE_MARK in _o12, f"{N._resolve_scene_name(_q)} / {_o12}")
+    _CALLS.clear()
+    _o12b = N.map_go("姜岛农")      # 两头都沾（`姜岛` ⊂ 它 ⊂ `姜岛农场`）：老口径取**更长命中** ⇒ IslandWest，且**不用**声明
+    ck("⑫b `姜岛农`（两头都沾）⇒ 取更长命中 IslandWest，且**不贴**「按短名」",
+       N._resolve_scene_name("姜岛农") == "IslandWest" and "按短名" not in _o12b
+       and N._alias_variant("姜岛农")[0] == "shorter", _o12b)
+
+    print("\n⑬ 合成近似名夹具：『比真名少一个字』⇒ 必须走**报错**分支（宁报错别兜底）")
+    _FQ = "农场自验房(门内六房)"          # = 下面那条真名删掉一个"人"字
+    _FAKE2 = {"农场自验房(门内六人房)": {"map": "Farm", "pos": (1, 1), "note": "自验夹具"}}
+    _CALLS.clear(); N._NAV_LAST.clear()
+    try:
+        M.locations.POI.update(_FAKE2)
+        _sim13 = N._variant_sim_best(_FQ)
+        ck(f"⑬ 与夹具真名的相似度 {_sim13[0]:.3f} ≥ {N._VARIANT_SIM_THRESHOLD}",
+           _sim13[0] >= N._VARIANT_SIM_THRESHOLD, str(_sim13))
+        _o13 = N.map_go(_FQ)
+        ck("⑬ 回执是**报错**（认不出）且候选里有那条真名",
+           "认不出" in _o13 and "农场自验房(门内六人房)" in _o13, _o13)
+        ck("⑬ …**不贴**「按短名」", "按短名" not in _o13, _o13)
+        ck("⑬ …没被放行到下游（不是【GATE】/【HOME】）", _o13 not in (GATE_MARK, HOME_MARK), _o13)
+        ck("⑬ **没动角色**（`go_to` 一次都没调）", not _CALLS, str(_CALLS))
+    finally:
+        for _k in _FAKE2:
+            M.locations.POI.pop(_k, None)
+
+    print("\n⑭ 精确名回归：四条真名照旧**直达**，一个「按短名」都不许冒出来")
+    for _q in ("姜岛小屋(门内六人房)", "木匠商店(门外)", "鱼店(门口)", "皮埃尔商店(求助布告栏)"):
+        _CALLS.clear()
+        _o14 = N.map_go(_q)
+        ck(f"⑭ `{_q}` ⇒ 放行到下一道闸（不报错）", _o14 == GATE_MARK, _o14)
+        ck("⑭ …**没有**「按短名」字样", "按短名" not in _o14, _o14)
+        ck("⑭ …判据本身：精确名 ⇒ 闸/声明都不动它（`_variant_name_error`/`_variant_shortname_note` 皆空）",
+           N._variant_name_error(_q) == "" and N._variant_shortname_note(_q) == "", "")
 
 finally:
     for k, v in _real.items():

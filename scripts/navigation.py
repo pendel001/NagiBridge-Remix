@@ -32,6 +32,7 @@ import re
 import subprocess
 import sys
 import time
+import unicodedata          # 🔤 近似名判据的归一（全角括号/标点→半角，见 `_norm_sim`）
 
 import calendar_data
 import locations
@@ -1536,6 +1537,8 @@ def _alias_variant(q):
                              ⇒ **绝对不许静默选中**；
       · `("none",    [])` —— 无关，放行。
     ⚠️ 单字别名（`len<2`）照旧不算（恒 2026-08 的"防山/岛/镇误伤"口径）；单字**输入**本批也不动。
+    ⚠️ 两头都沾的输入（`姜岛农`：`姜岛` ⊂ 它 ⊂ `姜岛农场`）按 **shorter 先**判 —— 与
+       `_resolve_scene_name` 的取用顺序、以及老代码"取最长命中"同一个解（否则声明会和真解析打架）。
     """
     s = str(q or "").strip()
     if not s:
@@ -1549,36 +1552,52 @@ def _alias_variant(q):
                or _norm_key(_v) in _MAP_KEYS_CI):
         return ("exact", [])
     if len(s) >= 2:
-        _long = sorted([(a, k) for a, k in SCENE_NAME_ALIAS.items() if len(a) >= 2 and a in s],
-                       key=lambda x: -len(x[0]))
-        if _long:
-            return ("longer", _long)
+        # ⚠️ 顺序 = `_resolve_scene_name` 的顺序（**输入更短**那条在前）：含 `s` 的别名一定**长过** `s`，
+        #    而被 `s` 含着的别名一定**短过** `s` ⇒ 前者总是"更长命中"、与老代码的"取最长"同解。
+        #    （`姜岛农` 这种两头都沾的输入：老代码取 `姜岛农场`⇒IslandWest，这里也必须落 A，别落 B。)
         _short = sorted([(a, k) for a, k in SCENE_NAME_ALIAS.items() if len(a) >= 2 and s in a],
                         key=lambda x: -len(x[0]))
         if _short:
             return ("shorter", _short)
+        _long = sorted([(a, k) for a, k in SCENE_NAME_ALIAS.items() if len(a) >= 2 and a in s],
+                       key=lambda x: -len(x[0]))
+        if _long:
+            return ("longer", _long)
     return ("none", [])
 
 
 def _variant_name_error(q):
-    """**变体名闸**：认不出、却"含"着表里的短名/别名（输入更长）⇒ 明确报错 + 列候选；否则返回 ""。
+    """**变体名闸**：认不出、却"含"着表里的短名/别名（输入更长）且**像真名的错字变体** ⇒ 报错 + 列候选。
 
-    判据三条（**别放宽**）：
+    判据（**别放宽**；阈值与实测带见 `_VARIANT_SIM_THRESHOLD`）：
       ① 精确命中 ⇒ `""`（放行；现有合法行为一条不改）；
       ② 输入**比**别名短 ⇒ 只在**多候选且目标不在一张图**时报歧义（与 补30 `_poi_ambiguous` 同口径：
          指向同一张图的多个候选不算歧义，交给下游既有兜底）；单候选 ⇒ `""`（`_resolve_scene_name` 照旧认）；
-      ③ 别名**是输入的真子串**（输入更长，真机 B）⇒ **一律报错**：列 ①`q` 能匹配到的 POI 全名
-         （含"只差一个字"的变体，用 `difflib` 把真名摆出来）②别名原本指向的场景键（让 AI/恒自己挑）。
+      ③ 别名**是输入的真子串**（输入更长）⇒ 先算它与**真名集合**的最高近似度：
+         · **≥ 阈值** ⇒ 报错（宁报错别兜底）：候选①那个**最高分真名**摆最前 ②别名原本指向的场景键；
+         · **< 阈值** ⇒ `""`（放行 ⇒ 按短名解析）。⚠️ 放行**不等于静默**：回执由
+           `_variant_shortname_note` 明写「按短名「X」理解 → <场景>」。
     ⚠️ 只在 `map_go` 门口调；`walk_to` / `go_to` / POI 那条既有路一个字不动。
     """
     kind, hits = _alias_variant(q)
     if kind in ("none", "exact"):
         return ""
-    if kind == "shorter" and len({k for _, k in hits}) < 2:
-        return ""      # 单目标：`_resolve_scene_name` 照旧认成那个场景（既有行为）
+    _sim, _simname = 0.0, ""
+    if kind == "longer":
+        _sim, _simname = _variant_sim_best(q)
+        if _sim < _VARIANT_SIM_THRESHOLD:
+            return ""      # 不像真名的错字 ⇒ 按短名解析，但回执会**显式声明**（见 `_variant_shortname_note`）
+    elif len({k for _, k in hits}) < 2:
+        return ""          # 单目标半截名：`_resolve_scene_name` 照旧认成那个场景（既有行为）
     s = str(q or "").strip()
-    # 候选①：POI 全名 —— 先双向整串，再补"只差一个字"的近似名（真机 B 的真名就差一个"人"字）
-    _poi = [n for n in locations.POI if s in n or n in s]
+    # 候选①：POI 全名 —— **最高分真名摆最前**，再补双向整串 + `difflib` 近似名
+    _poi = []
+    if _simname and _simname in locations.POI:
+        _poi.append(_simname)
+    for _n in locations.POI:
+        if (_n in _poi) or not (s in _n or _n in s):
+            continue
+        _poi.append(_n)
     for _c in difflib.get_close_matches(s, list(locations.POI), n=4, cutoff=0.6):
         if _c not in _poi:
             _poi.append(_c)
@@ -1588,14 +1607,68 @@ def _variant_name_error(q):
         _lines.append(f"     · POI「{_n}」（{_p.get('map')} {_p.get('pos')}）")
     for _a, _k in hits[:4]:
         _lines.append(f"     · 短名「{_a}」→ 场景 {_k}")
-    _why = ("它比表里的名字**长**、却又**不是**表里的名字（像是某个名字的变体），"
-            "我不拿短名/别名当子串猜（那会把目的地悄悄改写掉）"
+    _why = (f"它比表里名字只差一点（与「{_simname}」的相似度 {_sim:.2f} ≥ {_VARIANT_SIM_THRESHOLD}），"
+            f"像是**真名的错字变体**，我不拿短名/别名当子串猜（那会把目的地悄悄改写掉）"
             if kind == "longer"
             else "它是**半截名**，能同时对上好几个短名、还指向不同的图，我不替你挑")
     return _with_state(
         f"❌ 认不出「{s}」这个地点：{_why}。\n"
         f"  你可能想说的是：\n" + "\n".join(_lines) + "\n"
         f"  👉 换个名字再来（POI 全名要连括号里那截写全），或用 `map lookup 关键词` 查真名。")
+
+
+# 🔢 **近似名阈值**（2026-10-05 真机 B 精修；判据入口 `_variant_name_error` / `_variant_shortname_note`）。
+#   含义：只有"与某个真名相似度 ≥ 0.95"的更长输入才算"真名的错字变体"⇒ 报错；
+#         其余（相似度低）⇒ 按短名解析，但回执**必须显式声明**（`🗺️ 按短名「X」理解 → <场景>`）。
+#   ⚠️ **为什么是 0.95 而不是 0.80**（实测带，`SequenceMatcher.ratio` + `_norm_sim` 归一）：
+#       恒钦定"必须放行（按短名）"的四个真机惯用名，最高分是 `皮埃尔店(柜台)` vs `皮埃尔商店(柜台)` = **0.941**；
+#       而"必须报错"的病样本 `姜岛小屋(门内六房)` vs 真名 `姜岛小屋(门内六人房)` = **0.952**。
+#       ⇒ 阈值只能落在 (0.941, 0.952] 这个**窄带**里；取 0.95（余量 ±0.01，要挪就挪这一个数）。
+#       （0.80 会把 `皮埃尔店(柜台)` 0.941 / `皮埃尔店` 0.889 一起拦下 —— 那正是恒不要的。）
+_VARIANT_SIM_THRESHOLD = 0.95
+
+
+def _norm_sim(s):
+    """近似度比较用的归一：**去空格 + 全角括号/标点→半角（NFKC）+ 小写**。
+
+    ⚠️ 只用于"近似名"打分；地名认不认得出仍然只看 `_norm_key`/精确表（两把尺子，别混）。"""
+    return "".join(unicodedata.normalize("NFKC", str(s or "")).lower().split())
+
+
+def _variant_sim_best(q):
+    """`q` 与**真名集合**（POI 键 + MAP_LINKS 键/图名 + 别名键）的最高近似度 ⇒ `(分数, 真名)`。
+
+    ⚠️ 实时扫表（不预烤）：`locations.POI` 在自验里会被临时塞夹具（`_map_go_resolve_selftest` ⑩c/⑬），
+       预烤的常量表会看不到它们 ⇒ 判据就测不到了。代价只在"输入更长"那条窄路上（~800 次比对，约 10ms）。"""
+    a = _norm_sim(q)
+    if not a:
+        return (0.0, "")
+    best = (0.0, "")
+    for _n in list(locations.POI) + list(locations.MAP_LINKS) + list(SCENE_NAME_ALIAS):
+        b = _norm_sim(_n)
+        if not b:
+            continue
+        r = difflib.SequenceMatcher(None, a, b).ratio()
+        if r > best[0]:
+            best = (r, _n)
+    return best
+
+
+def _variant_shortname_note(q):
+    """近似度低、按短名解析时**必须显式声明**的那一行（把"静默改写"变成"贴标签改写"）；否则 ""。
+
+    判据与 `_variant_name_error` **互补**（同一个 `_alias_variant` + 同一个 `_VARIANT_SIM_THRESHOLD`）：
+      · `longer` 且最高近似度 **< 阈值** ⇒ `🗺️ 按短名「木匠店」理解 → ScienceHouse（要指定别的地点：map lookup）`
+        （「X」取**最长命中**那个别名 —— 与 `_resolve_scene_name` 真正采用的解析**同一个**，不许两套口径）；
+      · 精确名 / 半截名 / 会被报错拦下的近似名 / 无关 ⇒ `""`。
+    """
+    kind, hits = _alias_variant(q)
+    if kind != "longer" or not hits:
+        return ""
+    if _variant_sim_best(q)[0] >= _VARIANT_SIM_THRESHOLD:
+        return ""          # 这条会被 `_variant_name_error` 报错拦下 ⇒ 不能再贴"按短名理解"（自相矛盾）
+    _a, _k = hits[0]
+    return f"🗺️ 按短名「{_a}」理解 → {_k}（要指定别的地点：map lookup）"
 
 
 def _near_map_hint(dest):
@@ -1618,11 +1691,14 @@ def _resolve_scene_name(name):
     精确命中→返回场景键；找不到→返回原值(交给既有逻辑走 POI/建筑兜底)。
     选近口不在这做——_map_bfs 会挑最少段数入口。
 
-    ⚠️ 2026-10-05（真机 B）：**删掉**旧第 3 步里"`alias in s`（更长的输入里含短别名）⇒ 悄悄选中"那半条
-       ——`map go 姜岛小屋(门内六房)` 就是被别名「姜岛」当子串命中、静默改写成岛枢纽 `IslandSouth` 的。
-       那一类现在由 `_variant_name_error`（在 `map_go` 门口调）**明确报错 + 列候选**，这里不再兜。
-    保留：① 精确；② 输入**比**别名短（`岛小屋` ⊂ `姜岛小屋(门内六人房)`）——但多候选且**目标不在一张图**
-       时**不猜**（返回原值 ⇒ 门口那道闸报歧义）；单字输入照旧走老口径（本批不动战场）。"""
+    ⚠️ 2026-10-05（真机 B，两批）：
+       · 旧第 3 步里**无条件**的"`alias in s`（更长的输入里含短别名）⇒ 悄悄选中"**没了**
+         ——`map go 姜岛小屋(门内六房)` 就是被别名「姜岛」当子串命中、静默改写成 `IslandSouth` 的；
+       · 现在那条路只在**相似度低**（不像真名错字）时**按最长短名**解析，而且**必须**由 `map_go` 的薄壳
+         贴一句 `🗺️ 按短名「X」理解 → <场景>`（判据见 `_VARIANT_SIM_THRESHOLD`/`_variant_shortname_note`）；
+       · 相似度 ≥ 阈值（像真名错字）⇒ 这里**原样返回**，由门口 `_variant_name_error` 报错 + 列候选。
+    保留：① 精确（含剥口语前缀动词后精确）；② 输入**比**别名短（`岛小屋` ⊂ `姜岛小屋(门内六人房)`）——
+       但多候选且**目标不在一张图**时**不猜**（返回原值 ⇒ 门口那道闸报歧义）；单字输入照旧走老口径（本批不动）。"""
     if not name:
         return name
     s = str(name).strip()
@@ -1664,6 +1740,18 @@ def _resolve_scene_name(name):
             best = (alias, key)
     if best:
         return best[1]
+    # 4. 别名**是 `s` 的真子串**（输入更长，真机 B：`姜岛` ⊂ `姜岛小屋(门内六房)`）——
+    #    2026-10-05 精修后**不是**无条件静默选中了：
+    #      · 相似度 ≥ `_VARIANT_SIM_THRESHOLD`（像真名的错字变体）⇒ **原样返回**，交 `map_go` 门口
+    #        的 `_variant_name_error` 报错 + 列候选（宁报错别兜底）；
+    #      · 相似度低（真机惯用名：`罗宾木匠店`/`威利鱼店`/`皮埃尔店`）⇒ 按**最长短名**解析，
+    #        但 `map_go` 的薄壳会贴一句 `🗺️ 按短名「X」理解 → <场景>`（恒：「绝不静默」）。
+    #    取最长命中：与 3. 同一个口径、也与 `_variant_shortname_note` 声明的那一个**必须同一个**。
+    _bcands = [(a, k) for a, k in SCENE_NAME_ALIAS.items() if len(a) >= 2 and a in s]
+    if _bcands:
+        if _variant_sim_best(s)[0] >= _VARIANT_SIM_THRESHOLD:
+            return s                      # 像真名错字 ⇒ 这里一个字都不猜
+        return max(_bcands, key=lambda x: len(x[0]))[1]
     return s
 
 
@@ -3401,7 +3489,6 @@ def _poi_walk_honest(dest: str, destination: str, poi: dict,
     return True, _apply_poi_stand_face(destination) + _step_into_building(dest, poi["pos"])
 
 
-@_stuck_track
 def map_go(destination: str = "", npc: str = "") -> str:
     """🗺️ 走地图网络导航到目标地点（交通节点 > BFS 逐段执行）
     ⚠️ 2026-08-16 恒：**跨场景切换的唯一入口**——走出口瓦片/门/买票的真实路径，
@@ -3418,7 +3505,23 @@ def map_go(destination: str = "", npc: str = "") -> str:
         destination: 目标地点名（SeedShop / Mine / Town…）或 POI 名（皮埃尔商店）
         npc: 可选，传 NPC 名则直接路由到该 NPC 当前所在场景，到场自动贴近；
              NPC 正在移动会提示"位置可能有延时偏差"（到场建议重新 find_npc 确认）。
+
+    ⚠️ 2026-10-05（真机 B 精修）：真正的大身板在 `_map_go_body`（原样搬过去、逻辑一个字没动）；
+       这一层只干一件事——**"按短名理解"必须说出来**（`_variant_shortname_note`）：
+       以前 `map go 罗宾木匠店` 是**静默**改写成 ScienceHouse，现在回执顶上会明写
+       `🗺️ 按短名「木匠店」理解 → ScienceHouse（要指定别的地点：map lookup）`（恒：「绝不静默」）。
     """
+    _out = _map_go_body(destination, npc)
+    _note = _variant_shortname_note(destination)
+    # ⚠️ 歧义闸（`_poi_ambiguous`）那一类**不贴**——它本来就不替谁挑，贴"按短名理解"会自相矛盾。
+    if _note and not _poi_ambiguous(destination):
+        return f"{_note}\n{_out}"
+    return _out
+
+
+@_stuck_track
+def _map_go_body(destination: str = "", npc: str = "") -> str:
+    """`map_go` 的实现体（公开入口是上面的 `map_go`；它只负责贴"按短名理解"那句声明）。"""
     _nr = _nav_resolve(destination)
     if _nr:
         _NAV_LAST.update(_nr)
