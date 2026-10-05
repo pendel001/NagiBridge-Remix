@@ -20245,7 +20245,9 @@ def read_menu() -> str:
                     if got:
                         lines.append(f"        🎒 **你现在就能捐**: {'、'.join(got)}")
                 lines.append("  🧭 **上面的图标不用猜** —— 每包后面那行坐标就是它的位置（已做完的点不开）。")
-                lines.append("  🧭 进包后：`menu read` 看这一包要什么 → `menu click(item=物品名)` 直接捐（工具自己从背包拿到对的槽里）")
+                lines.append("  🧭 进包后：**单子（intent）上有「捧上 X」那种行时走单子**（点背包那格 → 点那一格，"
+                             "整摞往里塞、封顶由游戏自己算）；手搓就走 `menu click(item=物品名)`"
+                             "（同样整摞递，余数自动回背包）")
                 lines.append("  🧭 关掉板子 = menu click(button=upperRightCloseButton)；想先备货 → menu bundle 看全局缺口 / menu bundle_kb 查东西在哪弄")
             else:
                 # ── 具体页：这一包要什么 ──

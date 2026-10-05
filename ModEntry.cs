@@ -15495,13 +15495,13 @@ var tcs = new TaskCompletionSource<object>();
                                     }
                                     else
                                     {
-                                        // 堆叠物品：拿 1 个放光标，其余留背包
-                                        var one = found.getOne();
-                                        if (one != null)
-                                        {
-                                            found.Stack -= 1;
-                                            jType.GetField("heldItem", jFlags)?.SetValue(menu, one);
-                                        }
+                                        // 🏛️ 2026-10-05 恒：「**玩家手持应该是一整堆往里塞的**（有 47 就放 47；下次拿 99 来再点这格
+                                        //    就捐 52 剩 47；刚好 99 一堆就刚好塞满）」。
+                                        //    老路原来只 `getOne()` ⇒ 游戏只能按"分次放"收 1 个
+                                        //    （真机实测 198 木材 ⇒ 198→197、格子 1/99）；两步手势那条路
+                                        //    本来就是整摞递 ⇒ 两条路现在对齐（封顶由游戏自己做）。
+                                        playerItems[slotIdx] = null;            // 整摞拿到手上
+                                        jType.GetField("heldItem", jFlags)?.SetValue(menu, found);
                                     }
                                 }
                                 else
@@ -15518,6 +15518,17 @@ var tcs = new TaskCompletionSource<object>();
                                 catch (Exception ex) { excMsg = ex.Message; }
                                 var afterHeld = jType.GetField("heldItem", jFlags)?.GetValue(menu) as Item;
                                 bool slotItemAfter = slots[i].item != null;
+                                // 🏛️ 整摞递之后**手上剩的那部分要放回背包**（不然它吊在光标上，下一发会乱放；
+                                //    `tryToDepositThisItem` 会把余数原样返回）
+                                try
+                                {
+                                    if (afterHeld != null)
+                                    {
+                                        Game1.player.addItemToInventory(afterHeld);
+                                        jType.GetField("heldItem", jFlags)?.SetValue(menu, null);
+                                    }
+                                }
+                                catch { }
                                 bool ingredientCompleted = false;
                                 try
                                 {
