@@ -15228,7 +15228,27 @@ public class ModEntry : Mod
                         _probe.TrySetResult(true);      // 读不出来 = **不拦**（宁放行，别假拦）
                     }
                 });
-                if (_probe.Task.GetAwaiter().GetResult()) { waitedMs = (int)_sw.ElapsedMilliseconds; break; }
+                if (_probe.Task.GetAwaiter().GetResult())
+                {
+                    // ⚠️⚠️ 2026-10-05 真机抓到的**竞态**（恒定案③第一次实测）：投料刚完的那一瞬问游戏
+                    //    "能点吗"，它答"能"——因为**完成动画是下一拍才开始的**（`completionTimer`
+                    //    还没被置上）。于是预等放行、主线程 dispatch 再查时动画已经起了 ⇒ 回了拒绝
+                    //    （现场：`waitedMs: 0` + `blocked: completionTimer=288ms`）。
+                    //    ⇒ **"能点"必须稳定**：隔 60ms 再问一次，两次都"能"才算真能点。
+                    System.Threading.Thread.Sleep(60);
+                    var _probe2 = new TaskCompletionSource<bool>();
+                    EnqueueMainThread(() =>
+                    {
+                        try { _probe2.TrySetResult(MenuBusyReason(Game1.activeClickableMenu, out int _) == null); }
+                        catch { _probe2.TrySetResult(true); }
+                    });
+                    if (_probe2.Task.GetAwaiter().GetResult())
+                    {
+                        waitedMs = (int)_sw.ElapsedMilliseconds;
+                        break;
+                    }
+                    continue;                            // 又不稳了 ⇒ 接着等（不回拒绝）
+                }
                 System.Threading.Thread.Sleep(25);      // ← 这是 HTTP 线程，安全
             }
         }
