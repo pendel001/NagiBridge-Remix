@@ -4544,23 +4544,46 @@ def main():
     #    `LibraryMuseum.IsItemSuitableForDonation`：既非古物/矿物、带 `not_museum_donatable`、
     #    **以及"博物馆已经收过这件"** 它都回 false）。这一层不认类别号、不认 id。
     print("\n🏛️ 补24c 可捐打标（消费侧只认游戏那一把尺子）")
-    _mg1 = M._im_museum_go({"inventory": [{"name": "古代玩偶", "donatable": True}]})
-    res.append(ok("🏛️🎒 世界侧账：包里 1 件可捐 ⇒ `have=1`（那行才出得来）",
+    _MUS = {"name": "ArchaeologyHouse"}          # 馆内（补24e：地点闸在服务器 `_im_museum_go`）
+    _mg1 = M._im_museum_go({"location": _MUS,
+                            "inventory": [{"name": "古代玩偶", "donatable": True}]})
+    res.append(ok("🏛️🎒 馆内 + 包里 1 件可捐 ⇒ `have=1`（那行才出得来）",
                   _mg1.get("have") == 1, _mg1))
-    res.append(ok("🏛️🎒 全是 `donatable: false`（都捐过/都不能捐）⇒ **那行不出现**",
-                  M._im_museum_go({"inventory": [{"name": "紫水晶", "donatable": False},
+    res.append(ok("🏛️🎒 馆内 + 全是 `donatable: false`（都捐过/都不能捐）⇒ **那行不出现**",
+                  M._im_museum_go({"location": _MUS,
+                                   "inventory": [{"name": "紫水晶", "donatable": False},
                                                  {"name": "鲶鱼", "donatable": False}]}) == {}, ""))
-    res.append(ok("🏛️🎒 **键缺失**（老 DLL）⇒ 算不出 ⇒ 那行不出现（**不许**拿类别兜底）",
-                  M._im_museum_go({"inventory": [{"name": "羊奶酪", "catNum": -26}]}) == {}, ""))
-    _ctx_mg = M.intent_menu.ctx_from(state={"location": {"name": "Farm"}, "player": {"x": 1, "y": 1}},
+    res.append(ok("🏛️🎒 馆内 + **键缺失**（老 DLL）⇒ 算不出 ⇒ 那行不出现（**不许**拿类别兜底）",
+                  M._im_museum_go({"location": _MUS,
+                                   "inventory": [{"name": "羊奶酪", "catNum": -26}]}) == {}, ""))
+    # ⛔ 补24e 的钉子（真机验收逮到的假门）：**不在博物馆 ⇒ 那行一行都不许出**，哪怕包里有可捐的
+    _mg_out = M._im_museum_go({"location": {"name": "JojaMart"},
+                               "inventory": [{"name": "碧玉", "donatable": True}]})
+    res.append(ok("🏛️🚪 **不在博物馆 + 有可捐 ⇒ 那行不出**（补24e 假门钉子）："
+                  "执行侧 `museum_donate()` 的 `_require_counter` **只在同图带路、跨图直接拒绝** ⇒ "
+                  "原来那版按下去只会报「不在ArchaeologyHouse，不能操作」",
+                  _mg_out == {}, _mg_out))
+    res.append(ok("🏛️🚪 不在博物馆 + 0 件可捐 ⇒ 也不出（地点/背包两条闸任一不过都不给行）",
+                  M._im_museum_go({"location": {"name": "Farm"}, "inventory": []}) == {}, ""))
+    _ctx_mg = M.intent_menu.ctx_from(state={"location": {"name": "ArchaeologyHouse"},
+                                            "player": {"x": 3, "y": 10}},
                                      surr={}, museum_go={"have": 2})
-    _ctx_mg0 = M.intent_menu.ctx_from(state={"location": {"name": "Farm"}, "player": {"x": 1, "y": 1}},
+    _ctx_mg0 = M.intent_menu.ctx_from(state={"location": {"name": "ArchaeologyHouse"},
+                                             "player": {"x": 3, "y": 10}},
                                       surr={}, museum_go={})
-    res.append(ok("🏛️🎒 单子那行：`去博物馆捐赠（包里 2 件可捐）`；没账 ⇒ 这行不出；"
-                  "**不限地点**（跟献祭那行不同的地方，故意的）",
+    res.append(ok("🏛️🎒 单子那行：`去博物馆捐赠（包里 2 件可捐）`；没账 ⇒ 这行不出。"
+                  "⚠️ **地点闸在服务器**（`_im_museum_go`），这一层**不认地名**"
+                  "（同 `CC_GO_V`：判据全在服务器，见 `intent_menu.py` 那段注释）⇒ "
+                  "服务器**只在馆内**才会给出 `museum_go` 这个账",
                   M.intent_menu._museum_go_can(_ctx_mg, None) == M.intent_menu.CAN_YES
                   and M.intent_menu._museum_go_show(_ctx_mg, None) == "去博物馆捐赠（包里 2 件可捐）"
                   and M.intent_menu._museum_go_can(_ctx_mg0, None) == M.intent_menu.CAN_NO))
+    # 🔒 源码形状钉：地点闸**必须**留在 `_im_museum_go` 里（补24e 假门的病根就在它原来不限地点）
+    import inspect as _inspmg
+    _mg_src = _inspmg.getsource(M._im_museum_go)
+    res.append(ok("🏛️🔒 源码形状钉：`_im_museum_go` 里**确实带地点比较**（照 `_im_cc_board` 比地名）——"
+                  "免得以后被删掉又变回跨图假门（注释/文案里提到地名**不算**：这里认的是带 `!=` 的那一行）",
+                  '!= "ArchaeologyHouse"' in _mg_src, ""))
     # 消费侧（`check backpack` 底部那行）：只列可捐的；**已捐过的不列**；老 DLL 如实说读不到
     _don_new = M._check_museum_donables({"inventory": [
         {"name": "古代玩偶", "donatable": True, "stack": 1},

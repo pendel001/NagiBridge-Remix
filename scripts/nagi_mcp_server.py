@@ -24505,12 +24505,19 @@ def _im_museum_go(state) -> dict:
 
     恒原话：「**背包有可捐能跟献祭一样打标吗？**」
 
-      ① **背包**：判据 = `/state.inventory[].donatable` —— **游戏自己那把尺子**
+      ① **地点**：我在 ArchaeologyHouse（柜台只在那儿 —— 跟献祭那行的三条件一个道理）。
+         ⛔ 这一条是**补24e 加的**：原来这行"**不限地点**"，而执行侧 `museum_donate()`
+         第一句 `_require_counter("博物馆(柜台)", …)` **只在同图带路、跨图直接拒绝**
+         ⇒ 人在别处也会出这行、按下去只报「不在ArchaeologyHouse，不能操作」（**假门**）。
+         **真机验收当场逮到**（恒：AI 在 JojaMart、包里 1 件没捐过的碧玉 ⇒ 那行出现、敲下去什么都没发生；
+         回读展品 24 件没变、碧玉还在包里）。
+         跨图要过去，走普通的 `map go 博物馆(柜台)`（那是既有能力，别揉进这一行）。
+      ② **背包**：判据 = `/state.inventory[].donatable` —— **游戏自己那把尺子**
          （`LibraryMuseum.IsItemSuitableForDonation`，见 C# `CouldBeDonated`）：
          "既非古物/矿物"、"带 not_museum_donatable"、**"博物馆已经收过"** 它都回 false
          ⇒ 不会再劝 AI 揣着"已经捐过的那件"白跑一趟（捐不动那件事游戏自己知道）。
-      ② **消失**：包里 0 件可捐 ⇒ **不给行**。
-      ③ 老 DLL 没这一位 ⇒ **不给行**（同 `_im_cc_board`：宁可不给，也不给一行按了白跑的）。
+      ③ **消失**：包里 0 件可捐 ⇒ **不给行**。
+      ④ 老 DLL 没这一位 ⇒ **不给行**（同 `_im_cc_board`：宁可不给，也不给一行按了白跑的）。
 
     → `{}`（不给行）或 `{"have": N}`。
     ⚠️ 这一层**只读 `/state`**（零额外 HTTP）。
@@ -24519,6 +24526,13 @@ def _im_museum_go(state) -> dict:
        拿错的那张做闸反而会把合法时段也挡掉 ⇒ 这一行**不看时间**；真关门时走过去会被门如实拦下
        （补24b 已经把"硬闯/warp"改成"如实报"）。
     """
+    # ⛔ 2026-10-05（补24e）**假门修复**：这一行原来不看地点 ⇒ 人在别处也出，按下去 `museum_donate()`
+    #    的 `_require_counter` 只会在**同图**带路、跨图直接拒绝 ⇒ 报「不在ArchaeologyHouse」。
+    #    修法**照 `_im_cc_board` 的地点闸**（献祭那行的三条件之一就是"地点"）：
+    #    柜台只在那张图 ⇒ **人不在馆里就不给这行**（宁可不给，也不给一行按了白跑的）。
+    loc = ((state or {}).get("location") or {}).get("name") or ""
+    if loc != "ArchaeologyHouse":
+        return {}
     inv = (state or {}).get("inventory") or []
     have = [i for i in inv if isinstance(i, dict) and i.get("donatable") is True]
     if not have:
