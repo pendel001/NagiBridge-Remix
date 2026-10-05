@@ -4149,8 +4149,11 @@ def main():
                 {"index": 7, "complete": True, "ingredients": [], "canGive": []}],
             "ingredientSlots": [], "inventorySlots": [], "donatables": [], "partial": None,
             "heldItem": None}}
-    _cc_lbl0 = M._bundle_label_map
-    M._bundle_label_map = lambda: {6: "河鱼收集包", 7: "夜间垂钓收集包"}
+    # ⚠️ 只打桩**发 `/bundles` 那一处**（`_bundle_maps`）——2026-10-05 真机抓到 `/menu` 的
+    #    `areaName` 手抄数组**顺序是反的**（0/1 与 4/5），所以献祭板那一支改成从 `/bundles`
+    #    取房间名与包名（同一发 HTTP 两张表）⇒ 打桩点也跟着换（还打 `_bundle_label_map` 就喂不到了）。
+    _cc_lbl0 = M._bundle_maps
+    M._bundle_maps = lambda: ({6: "河鱼收集包", 7: "夜间垂钓收集包"}, {2: "鱼缸"})
     try:
         _stub(menu="JunimoNoteMenu", menu_raw=_CC_MENU)
         _ctx_cc = M._im_ctx()
@@ -4189,15 +4192,15 @@ def main():
                       _sheet_cc_old.splitlines()[:2]))
         # 别的菜单开着 ⇒ 账空（且不多打 `/bundles`）
         _lbl_calls = {"n": 0}
-        M._bundle_label_map = lambda: (_lbl_calls.__setitem__("n", _lbl_calls["n"] + 1),
-                                       {6: "x"})[1]
+        M._bundle_maps = lambda: (_lbl_calls.__setitem__("n", _lbl_calls["n"] + 1),
+                                  ({6: "x"}, {}))[1]
         _stub(menu="ItemListMenu")
         _ctx_ni2 = M._im_ctx()
         res.append(ok("🏛️ 别的菜单 ⇒ 账空、而且**一发 `/bundles` 都不多打**",
                       not (_ctx_ni2.cc or {}) and _lbl_calls["n"] == 0, _lbl_calls["n"]))
-        M._bundle_label_map = lambda: {6: "河鱼收集包", 7: "夜间垂钓收集包"}
+        M._bundle_maps = lambda: ({6: "河鱼收集包", 7: "夜间垂钓收集包"}, {2: "鱼缸"})
     finally:
-        M._bundle_label_map = _cc_lbl0
+        M._bundle_maps = _cc_lbl0
 
     # 执行侧：捧上这一件（**点背包格 → 点槽位**），成不成只看背包少了没
     class _CC:

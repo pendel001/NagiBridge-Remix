@@ -1424,7 +1424,12 @@ def _exec_cc_offer(ctx, targets, run):
 
 
 def _exec_cc_back(ctx, targets, run):
-    return _exec_chore(ctx, targets, run, "cc_back", "返回")
+    """🏛️ 返回收集包列表 —— 服务器那句话**本身就是完整回执**（`✅ 回到…` / `⚠️ 手上还拿着…`），
+    所以**原样带出去**，不再套一层 `✅ 返回`（那样一屏两个 ✅，跟"同一屏自己打自己"同族）。"""
+    r = run("cc_back", {})
+    if isinstance(r, dict):
+        return (r.get("text") or "").strip() or _receipt_from_helper("返回", "", r)
+    return _receipt_from_helper("返回", "", r)
 
 
 def _cc_offer_rows(b) -> list:

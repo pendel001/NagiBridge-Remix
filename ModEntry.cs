@@ -14329,9 +14329,19 @@ public class ModEntry : Mod
                     // BundleIngredientDescription.id/stack/quality(+GetDisplayName)。
                     var jFlags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
                         | System.Reflection.BindingFlags.Instance;
-                    string[] areaNames = { "工艺室", "茶水间", "鱼缸", "锅炉房", "布告栏", "金库" };
+                    // ⚠️⚠️ 2026-10-05 真机抓到：这里原来**手抄**了一份房间名数组
+                    //    `{ "工艺室","茶水间","鱼缸","锅炉房","布告栏","金库" }`，而游戏自己的编号是
+                    //    0=茶水间 / 1=工艺室 / … / 4=金库(Vault) / 5=布告栏
+                    //    （`CommunityCenter.getAreaNumberFromName`，反编译 `CommunityCenter.cs`）
+                    //    ⇒ **0/1 与 4/5 全是反的**：`/menu` 的 `areaName` 一直报错房间
+                    //    （同一间屋的包号明明对得上 —— 真机现场：「whichArea=1 却说茶水间」，
+                    //      而给的料是工艺室的椰子/红蘑菇）。
+                    //    ⇒ 跟 `HandleBundles`（`:4042/:5173/:5364`）一样**取游戏本地化串**，不再手抄。
+                    string areaLabel = "";
                     int whichArea = 0;
                     try { whichArea = Convert.ToInt32(menu.GetType().GetField("whichArea", jFlags)?.GetValue(menu) ?? 0); } catch { }
+                    try { areaLabel = CommunityCenter.getAreaDisplayNameFromNumber(whichArea); } catch { }
+                    if (string.IsNullOrEmpty(areaLabel)) areaLabel = whichArea.ToString();
                     var bundlesList = menu.GetType().GetField("bundles", jFlags)?.GetValue(menu) as System.Collections.IEnumerable;
                     var bundleInfos = new List<object?>();
                     if (bundlesList != null)
@@ -14518,7 +14528,7 @@ public class ModEntry : Mod
                     ccInfo = new
                     {
                         whichArea,
-                        areaName = (whichArea >= 0 && whichArea < areaNames.Length) ? areaNames[whichArea] : whichArea.ToString(),
+                        areaName = areaLabel,
                         bundles = bundleInfos,
                         specificBundlePage = specific,
                         currentBundleIndex = curBundleIdx,   // 🏛️ 具体页=当前包号；列表页=-1（2026-09-25）

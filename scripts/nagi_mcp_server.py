@@ -11613,6 +11613,29 @@ def _bundle_label_map() -> dict:
     return out
 
 
+def _bundle_maps() -> tuple:
+    """🎁 一发 `/bundles` 拿两张表：`({包号: 包名}, {房间号: 房间名})`（读不到就是两个空表）。
+
+    ⚠️ 2026-10-05 真机抓到：`/menu.characterCust.areaName` 在献祭板那一支里是**手抄的数组**，
+       而 0/1（茶水间/工艺室）与 4/5（金库/布告栏）**顺序是反的**（同一间屋的包号明明对得上）
+       ⇒ 单子/read 一直报**错房间**。**游戏自己的数据**在 `/bundles` 里（C# 那份走的是
+       `CommunityCenter.getAreaDisplayNameFromNumber`）⇒ 房间名以它为准，`areaName` 只当兜底。
+       （C# 那边的手抄数组也一起改成取游戏本地化串了 —— 根因在那边，这里只是**当场就能对**。）
+    """
+    try:
+        d = api._get("/bundles") or {}
+    except Exception:
+        return {}, {}
+    labels, rooms = {}, {}
+    for a in (d.get("areas") or []):
+        if a.get("area") is not None and a.get("name"):
+            rooms[int(a["area"])] = a["name"]
+        for b in (a.get("bundles") or []):
+            if b.get("index") is not None and b.get("name"):
+                labels[int(b["index"])] = b["name"]
+    return labels, rooms
+
+
 def _bag_name_set() -> set:
     """🎒 背包里物品的显示名集合（小写归一）——判断"这一包缺的我现在有没有"用。"""
     try:
@@ -23977,7 +24000,7 @@ def _im_cc(state: dict, raw=_UNFETCHED) -> dict:
     cc = (raw or {}).get("characterCust") or {}
     if not cc:
         return {}
-    labels = _bundle_label_map()
+    labels, rooms = _bundle_maps()
     bounds = cc.get("bundleBounds") or []
     new_fields = False
     out_bundles = []
@@ -24007,8 +24030,10 @@ def _im_cc(state: dict, raw=_UNFETCHED) -> dict:
     donatables = cc.get("donatables")
     if donatables is not None:
         new_fields = True
-    return {"area": cc.get("areaName") or f"第{cc.get('whichArea')}间",
-            "which_area": cc.get("whichArea"),
+    _wa = cc.get("whichArea")
+    return {"area": (rooms.get(int(_wa)) if isinstance(_wa, int) else None)
+                    or cc.get("areaName") or f"第{_wa}间",
+            "which_area": _wa,
             "specific": bool(cc.get("specificBundlePage")),
             "current": cc.get("currentBundleIndex"),
             "bundles": out_bundles,
