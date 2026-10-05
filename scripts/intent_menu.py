@@ -226,6 +226,14 @@ class Ctx:
     # 🏛️ 2026-10-05 恒三条件定的**世界侧入口**（_im_cc_board）：{} = 不给那行（不在社区中心 /
     #    包里没有它收的 / 板子已不在）；有值 {x,y,area,have,pos} ⇒ 给一行「看 献祭板（走过去）」。
     cc_board: dict = field(default_factory=dict)
+    # 🏛️ 2026-10-05（补24c）**世界侧那一行**「去博物馆捐赠（包里 N 件可捐）」的账 ——
+    #    恒原话：「背包有可捐能跟献祭一样打标吗？」（形状照 `cc_board` 那一行）。
+    #    `{}` = **不给那行**（三种情形合并：包里 0 件可捐 / 老 DLL 报不出 `donatable` 这一位 /
+    #    服务器没算）；有值 `{"have": N}` ⇒ 给一行「去博物馆捐赠（包里 N 件可捐）」。
+    #    ⚠️ 判据全在服务器（`_im_museum_go`）：`/state.inventory[].donatable` = **游戏自己那把尺子**
+    #       （`LibraryMuseum.IsItemSuitableForDonation`，"已经捐过"它自己就回 false）——
+    #       这一层**不认类别号、不认 id、也不判"捐过没有"**。
+    museum_go: dict = field(default_factory=dict)
     # 📋 **开着的菜单里摊出来的东西**（2026-10-01 · P-menus）。
     #    ⚠️ **由服务器挑好递进来**（`_im_menu_data`），这一层**不自己打 `/menu`、也不认菜单名**
     #       —— 跟 `menu_exit`/`shop`/`caps` 同一个形状：判据只有一处，消费侧只管用。
@@ -1554,6 +1562,34 @@ CC_GO_V = Verb("cc_go", "看 献祭板", 74, _cc_go_can, _cc_go_reason, _cc_go_s
                    "看 献祭板", "",
                    run("cc_go", {"x": (c.cc_board or {}).get("x"),
                                  "y": (c.cc_board or {}).get("y")})))
+
+
+# 🏛️ 「去博物馆捐赠（包里 N 件可捐）」—— **世界侧**入口（补24c；恒 2026-10-05：
+#    「背包有可捐能跟献祭一样打标吗？」）。形状与判据位置**照 `CC_GO_V` 那条一比一镜像**。
+#    ⚠️ `menu_ok` **故意不设**（同 `CC_GO_V`）：它只在**没开菜单**时才该出现 —— 开着菜单时
+#       这一行会劝 AI 去走位，而那件事归菜单闸门管。
+#    ⚠️ 这一层**不认物品类别、也不判"捐过没有"**（那是游戏自己的尺子：已捐过 ⇒ `donatable=false`）
+#       ⇒ 这里只数件数；`0` 件 ⇒ `Ctx.museum_go` 是 `{}` ⇒ 那行不出现。
+#    ⚠️ 与献祭那行的一处**有意不同**：献祭那行要求"人在社区中心"（板子在那儿，走过去=几百格），
+#       博物馆这行**不限地点** —— 从哪都能 `map_go` 过去（`museum_donate()` 自己会走到柜台）。
+def _museum_go_can(ctx, t):
+    return CAN_YES if int((ctx.museum_go or {}).get("have") or 0) > 0 else CAN_NO
+
+
+def _museum_go_show(ctx, t):
+    return f"去博物馆捐赠（包里 {int((ctx.museum_go or {}).get('have') or 0)} 件可捐）"
+
+
+def _museum_go_reason(ctx, t):
+    n = int((ctx.museum_go or {}).get("have") or 0)
+    return (f"包里 {n} 件博物馆还没收的（游戏自己判的：没捐过、且是古物/矿物）"
+            f" · 走过去交给柜台，捐完才算成")
+
+
+MUSEUM_GO_V = Verb("museum_go", "去博物馆捐赠", 73, _museum_go_can, _museum_go_reason,
+                   _museum_go_show, "world",
+                   exec=lambda c, t, run: _receipt_from_helper(
+                       "去博物馆捐赠", "", run("museum_go", {})))
 # ⚠️ 子层那两个动词**必须在 exec 函数之后**建（`exec=` 是**定义时求值**的）——
 #    写在前面就是 NameError（这一批我自己踩了一次，import 当场炸）。
 CC_OFFER_V = Verb("cc_offer", "捧上", 0, lambda c, t: CAN_YES, None,
@@ -2955,7 +2991,11 @@ def _menu_box_count(ctx, targets):
 
 
 def _menu_box_show(ctx, t):
-    return "箱子里"
+    # 🏛️ 2026-10-05（补24）**这一份不是箱子**：真机博物馆领奖那份 `ItemGrabMenu` 是"游戏递给你的一堆东西"
+    #    （`containerAt`/`grabBehavior` 都空、又不是送礼菜单 ⇒ 服务器给的那位 `reward`）——
+    #    恒点名「『箱子里…』这个行文对奖励菜单**不贴**」⇒ 这一档改口叫「奖励」。
+    #    ⚠️ 判据**在服务器**（C# 那三个事实），这一层只认 `reward` 这一位，不认菜单名。
+    return "奖励" if (ctx.menu_data or {}).get("reward") else "箱子里"
 
 
 def _menu_box_subs(ctx, targets):
@@ -3152,6 +3192,10 @@ def _option_can(ctx, t):
     # 🧬 职业分支**没有位次号**（那屏不是 responses）—— 判据是"服务器给了这个 side"。
     if t.get("kind") == "levelup":
         return CAN_YES if t.get("side") in ("left", "right") else CAN_NO
+    # 🏛️ 柜台那两档（2026-10-05 补24）：判据**在服务器**（`kind` 只按游戏自己的
+    #    `responseKey` 给：`Donate`/`Collect`）—— 这一层**不认文本、不认菜单名**。
+    if t.get("kind") == "museum_donate":
+        return CAN_YES
     return CAN_YES if t.get("index") is not None else CAN_NO
 
 
@@ -3160,6 +3204,11 @@ def _option_show(ctx, t):
     # 🧬 职业分支印「选 垂钓者」（**不加书名号**：那不是一句台词，是一个职业名）。
     if t.get("kind") == "levelup":
         return f"选 {txt}"
+    # 🏛️ 柜台那两档（恒 2026-10-05：「柜台的菜单 1.捐 2.领 3.走 的 1 **接我们自己的捐赠方法**」）：
+    #    行文必须让 AI **一眼看出"捐"不是游戏那个手动摆界面的入口**（恒特别强调这句）。
+    #    ⚠️ 不写「选「向博物馆捐赠」」那种话——那是游戏原文的文案，按下去走的却是我们的路。
+    if t.get("kind") == "museum_donate":
+        return "捐（我们的自动捐）"
     # ⚠️ 两条选项**一字不差**时会撞车（同一个桶键 ⇒ 并成一行，而执行器只发一个答案）。
     #    真出现时补个位次区分 —— 只在撞车时才付这个字数（同 `_eat_show` 那条星级前缀的理由）。
     same = [o for o in _menu_options(ctx) if (o.get("text") or "") == (t.get("text") or "")]
@@ -3173,6 +3222,9 @@ def _option_reason(ctx, t):
     ⇒ 不再印位次，只印**总数**（真事实、且跟行号不冲突）。
     位次只在两条选项**一字不差**时才补 —— 那时不补就分不开（见 `_option_show`）。
     🧬 职业分支那档要说的是**代价**（恒那句"选了就定了"是这类决策的关键信息）。
+    🏛️ 柜台那两档（2026-10-05 补24）要说的是**"这一按到底走哪条路"** ——
+       恒点名的那件事：**捐**走的是我们自己的 `/museum_donate`（一次把包里能捐的都捐上），
+       **不是**游戏那个手动摆放界面；**领**是选游戏那个「领」再把奖励一次收进包。
     """
     if t.get("kind") == "levelup":
         lu = ctx.levelup or {}
@@ -3180,6 +3232,9 @@ def _option_reason(ctx, t):
         alt = (lu.get(other) or {}).get("name") or "?"
         return (f"{lu.get('skill') or '技能'} Lv{lu.get('level')} 分支 · **选了就定了**（不可逆）"
                 f"｜另一个是「{alt}」")
+    if t.get("kind") == "museum_donate":
+        return ("**我们的自动捐**：一次把包里能捐的都捐上 —— **不走**游戏那个手动摆放界面"
+                "（游戏原文那项是「向博物馆捐赠」）")
     n = len(_menu_options(ctx))
     return f"共 {n} 个选项，敲哪个就选哪个" if n > 1 else "唯一的选项"
 
@@ -3192,6 +3247,11 @@ def _exec_option(ctx, targets, run):
     ⚠️ 两档走**两条路**（判据在服务器算好递进来的 `kind` 上，这一层不认菜单类型）：
        · 💬 对话选项 ⇒ `menu_option {option: N[, real]}`（`real` 判据 = `_question_needs_real`）；
        · 🗿 图标选择题 ⇒ `menu_icon {x, y}`（那屏没有 responses，只能按坐标点）。
+    🏛️ 2026-10-05（补24）柜台那一档：`museum_donate` ⇒ **我们的自动捐**（不点游戏那项，
+       所以**根本不发 `menu_option`**；回执在服务器 helper 里回读后生成）。
+    ⛔ 「领」**没有专属 kind** —— 恒 2026-10-05 拍板「**好，保持吧。**」＝ 保持三步
+       （选游戏那一项 `Collect` → 「箱子里…」→ 「取 …」→ 关掉界面），所以它走**普通选项行**；
+       原来那条"一键领完"的 `museum_collect` / `museum_collect_row` 已拆干净，**别再引回来**。
     """
     t = targets[0] if targets else {}
     txt = t.get("text") or "?"
@@ -3203,6 +3263,9 @@ def _exec_option(ctx, targets, run):
     if t.get("kind") == "choose":
         r = run("menu_icon", {"x": t.get("x"), "y": t.get("y"), "key": t.get("key")})
         return _receipt_from_helper("选", f"「{txt}」", r)
+    # 🏛️ 柜台「捐」：走我们自己的自动捐（服务器 helper 自己回读、自己出回执）
+    if t.get("kind") == "museum_donate":
+        return _receipt_from_helper("捐（我们的自动捐）", "", run("museum_donate_row", {}))
     # 🗳 「要不要 real=true」由**服务器**算好递进来（判据 `_question_needs_real`）——
     #    这一层**不自己认框种类**（猜错就是静默点空，真机 2026-10-01 当场照过一次）。
     _d = (ctx.menu_data or {}).get("dialogue") or {}
@@ -4228,6 +4291,8 @@ VERBS: list = [
     # 🏛️ 2026-10-05 恒三条件（地点/背包/板子在）定的**世界侧入口**：
     #    menu_ok=False（**故意**）—— 它只在没开菜单时才该出现，不然会劝 AI 开着菜单去走位。
     CC_GO_V,
+    # 🏛️ 2026-10-05（补24c）世界侧「去博物馆捐赠（包里 N 件可捐）」（恒：「背包有可捐能跟献祭一样打标吗？」）
+    MUSEUM_GO_V,
 ]
 
 
@@ -5251,7 +5316,7 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
              hay: dict = None, pick: dict = None,
              ponds: dict = None, statue: dict = None, tank: dict = None,
              quests: dict = None, levelup: dict = None, cc: dict = None,
-             cc_board: dict = None) -> Ctx:
+             cc_board: dict = None, museum_go: dict = None) -> Ctx:
     """把 `/state`(**full**) + `/surroundings`(+`/machines`/`/scan_chests`) 拼成 Ctx。
 
     ⚠️ 只搬运，**不补默认值**：缺什么就让它缺着（`can()` 遇到缺失自然回 假/？）。
@@ -5360,6 +5425,9 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
                cc=cc or {},
                # 🏛️ 世界侧入口那行的账（同上：_im_cc_board 算好递进来）。
                cc_board=cc_board or {},
+               # 🏛️ 世界侧那行「去博物馆捐赠（包里 N 件可捐）」的账（补24c，同上：
+               #    `_im_museum_go` 算好递进来，`{}` = 不给行 —— 包里没有可捐的 / 老 DLL 报不出）。
+               museum_go=museum_go or {},
                sitting=bool(((seats or {}).get("me") or {}).get("sitting")),
                worn=(worn or {}),
                pets=pets,

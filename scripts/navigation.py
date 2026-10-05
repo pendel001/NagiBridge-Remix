@@ -1396,12 +1396,42 @@ def _warps_to(target_loc: str):
         return []
 
 
-def _enter_building_door(loc: str) -> bool:
-    """map_go 进门：走到建筑门口 → confirm 进门。
+def _enter_building_door(loc: str):
+    """map_go 进门：走到建筑门口 → 推门进屋。**返回 `(进去了没, why, 门格, 细节原话)`**。
+
     门口坐标：BUILDING_DOORS（固定建筑）优先，_resolve_place（农场建筑动态）兜底。
-    返回是否成功进入目标地点。"""
+
+    ⚠️ 2026-10-05 恒：「刚才好像走到一半就 warp 进博物馆了。」／「问题在于根本没走到博物馆
+       门口推门就直接进来。」—— 病根在这个函数的**返回值太穷**：旧版只回 bool，调用方
+       **分不出**三种失败：
+         ① 根本没走到门口（走位超时 / 人不在门那张图 / 表里没门格）
+         ② 走到门口、推了门、门锁着（游戏会说话 ⇒ `_locked_door_dialogue()` 读得到）
+         ③ 走到门口、也推了、游戏没反应
+       旧调用方把 ①③ 都当"真·导航失败" ⇒ 掉进兜底 `api.warp` **瞬移穿墙**进屋
+       （人从没正对过门 —— 恒看画面一眼看穿）。
+    ⇒ 现在把 `why` + 门格 + **走位那一发的原话**一起回上去（`why`：`""` 成了 / `no_door` /
+       `other_map` / `walk_failed` / `pushed_no_effect` / `error`），调用方按它如实报、
+       **一律不再 warp**。
+
+    🔁 2026-10-05（补24b 尾巴 · 恒的假设「**还在走就提前兜底**」）：① 走位超时后**先判人还在不在动**
+       （`isMoving` 为真 **或** 两次采样坐标变了）—— 还在动就**照同图 POI 那条先例再补一段**
+       （25 → 30，**最多两段**），真停了才允许判 `walk_failed`；③ 退邻格也只在"人就在门附近"
+       （走位成了、或离门 ≤6 格）时才试，免得在远处用 4×10s 原地打转把"没走到"这一档盖住。
+
+    🔬 2026-10-05 真机读出来的门格事实（`/tile_props?x=101&y=89&location=Town`，只读）：
+       `Buildings` 层 `Action: "LockedDoorWarp 3 14 ArchaeologyHouse 800 1800"` —— 即
+       **门就是那一格的 Buildings 瓦片属性、开放时段 800~1800（8:00-18:00）**
+       （所以 09:30 那次失败跟"没开门"无关，恒的判断对）。这种**门瓦片人往往站不上去**
+       （Buildings 层），⇒ 现在门格没走成时**会退到门格四邻再推一次**（见下面 ③）。
+    """
+    tile = None
     try:
         cur = api.state().get("location", {}).get("name", "")
+
+        def _inside() -> bool:
+            """进没进屋 —— 判据**只有**这一条（别拿"站到门口那格"当代理指标）。"""
+            return api.state().get("location", {}).get("name", "") == loc
+
         # 1. 固定建筑门口
         door = locations.BUILDING_DOORS.get(loc)
         if door is None:
@@ -1413,36 +1443,111 @@ def _enter_building_door(loc: str) -> bool:
             except Exception:
                 pass
         if door is None:
-            return False
+            return False, "no_door", None, ""
         out_map, (dx, dy) = door
+        tile = (dx, dy)
         if out_map != cur:
             # 先到门口所在的地图（一般就在当前图；不在就走 MAP_LINKS 到门口那张图）
-            return False
-        # /walk_to 到门口瓦片（用户实测 2026-08-13：Saloon 门在 Town(45,71)，不是 dy+1）→ 精确点门瓦片开门
-        _wok = _walk_and_wait(out_map, dx, dy, timeout=25)[0]
-        # 若走位已触发进门（走到门瓦片上可能直接传），提前返回。
+            return False, "other_map", tile, f"人在 {cur}，门在 {out_map}"
+
+        def _push() -> bool:
+            """推门两发：① `interact_at(门格)`（`/interact {x,y}` → 直接 `checkAction` 那一格，
+            不要求面朝）② 面朝上 + `/interact` 兜底。返回"进没进屋"。"""
+            try:
+                api.interact_at(dx, dy)
+            except Exception:
+                pass
+            time.sleep(1.2)
+            if _inside():
+                return True
+            try:
+                api._post("/face", {"direction": 0})   # 兜底：面朝门 + /interact
+                time.sleep(0.3)
+                api._post("/interact")
+            except Exception:
+                pass
+            time.sleep(1.5)
+            return _inside()
+
+        # ① 走到门格。`/walk_to` 对**站不住的目标格**会「就近改到最近可走格」并把改后坐标
+        #    放进回包（`ModEntry.cs:19782-19800`）；`_walk_and_wait` 等的就是**改后那格**。
+        _wok, _wnote = _walk_and_wait(out_map, dx, dy, timeout=25)
+        # 若走位已触发进门（踩上门瓦片被游戏送进屋），提前返回。
         # ⚠️ 这步必须在 `if not _wok` **之前** —— 人踩上门瓦片、被游戏自己送进屋时，
         #    `_wait_arrival` 会因"人已离开该图"**如实**报失败，可我们**明明已经进屋了**
         #    （修 2026-09-19 那个"提前收工"时一并发现的顺序问题）。
-        #    判据是**进没进屋**，不是"站没站到门口那一格" —— 别拿代理指标当结论。
-        if api.state().get("location", {}).get("name", "") == loc:
-            return True
+        if _inside():
+            return True, "", tile, _wnote
+        # 🔁 2026-10-05（补24b 尾巴 · 恒的假设）：「我以为是**等待时间**还是什么出了问题导致
+        #    **还在走就提前兜底**。」—— `_wait_arrival` 超时那一刻人**可能还在路上**
+        #    （从 Town 一头走到门格 (101,89) 是长距离），旧代码在这儿**直接判死**，
+        #    于是"走位还没走完"和"根本没到门口"混成同一档。
+        #    ⇒ 先判"还在不在动"：还在动就**照同图 POI 那条先例再补一段**（`:3236` 附近注释、
+        #    自验钉成 `waits == [20, 30]`）。**最多补一段**（25 → 30），不写无限续走
+        #    （恒讨厌"谜之停顿"）；真停了才允许往 `walk_failed` 报。
+        #    判据**两个取或**：`/state.player.isMoving` 为真 **或** 两次采样（~1.2s）坐标变了 ——
+        #    单看 `isMoving` 会漏"后台暂停时 isMoving=False 但走位排着队"那一档（项目多处踩过）。
+        _carry = ""
         if not _wok:
-            return False
-        # ‑ 2026-09-05 修：直接精确点门瓦片 interact_at（对角/不贴脸，不依赖面朝——
-        #   walk_to 有 ±2 容差会停偏、面朝可能歪 → 旧"面朝上+/interact(面前格)"会打歪）。
-        #   ⚠️ 不做通用"站门下方(dy+1)"——Saloon 门实测在 Town(45,71)，并非 dy+1。
-        api.interact_at(dx, dy)
-        time.sleep(1.2)
-        if api.state().get("location", {}).get("name", "") == loc:
-            return True
-        api._post("/face", {"direction": 0})   # 兜底：面朝门 + /interact
-        time.sleep(0.3)
-        api._post("/interact")
-        time.sleep(1.5)
-        return api.state().get("location", {}).get("name", "") == loc
-    except Exception:
-        return False
+            _p1 = _ai_pos()
+            try:
+                _mv1 = bool((api.state().get("player") or {}).get("isMoving"))
+            except Exception:
+                _mv1 = False
+            time.sleep(1.2)
+            _p2 = _ai_pos()
+            if _mv1 or _p1 != _p2:
+                _wok2, _wn2 = _walk_and_wait(out_map, dx, dy, timeout=30)
+                if _inside():
+                    return True, "", tile, (_wnote or "") + "；续走那一段时被游戏送进屋"
+                _wok = _wok2
+                _carry = (f"；⚠️ 超时那刻人**还在动**（moving={_mv1}，{_p1}→{_p2}）"
+                          f"⇒ 照先例再补一段 30s：" + (_wn2 or ("到了" if _wok2 else "仍没到")))
+            else:
+                _carry = f"；超时那刻人**已停且不在门格**（moving=False，坐标没变 {_p1}）"
+            _wnote = (_wnote or "走位超时") + _carry
+        _trail = [f"走门格({dx},{dy})：" + (_wnote or ("到了" if _wok else "没到"))]
+        _pushed = False
+        # ② 到了（或已在门格 ±2 内 —— `/walk_to` 自带容差、`interact_at` 是"点门格"）⇒ 推门
+        _px, _py = _ai_pos()
+        try:
+            _near = (abs(int(_px) - int(dx)) <= 2 and abs(int(_py) - int(dy)) <= 2)
+        except Exception:
+            _near = False
+        if _wok or _near:
+            _pushed = True
+            if _push():
+                return True, "", tile, "；".join(_trail)
+            _trail.append(f"在 {_ai_pos()} 推了门({dx},{dy})：游戏没让进")
+        # ③ 门格站不住 / 没走到 / 人离门还远 ⇒ **退到门格四邻再推一次**。
+        #    理由（真机读到的）：门常常是 `Buildings` 层那一格的 `Action`（门瓦片），
+        #    **人站不上去**；而 `/walk_to` 的"就近改"未必改到门旁边。
+        #    ⚠️ 只在"人现在不贴着门"时才试（贴着了再走邻格是白走）。
+        try:
+            _far = (abs(int(_px) - int(dx)) > 1 or abs(int(_py) - int(dy)) > 1)
+            _dist = max(abs(int(_px) - int(dx)), abs(int(_py) - int(dy)))
+        except Exception:
+            _far, _dist = True, 999
+        # ⚠️ 2026-10-05（补24b 尾巴）：退邻格只在"**人就在门附近**"时才值得 ——
+        #    若走位**超时且人停在远处**，再走四个邻格就是 4×10s 的原地打转（恒讨厌"谜之停顿"），
+        #    还会把"没走到"这一档盖成"试过了"。
+        #    ⇒ ② 走位**成了**（`_wok`，只是游戏"就近改格"把落点改到门旁边、够不着门）照旧退邻格；
+        #       走位**没成**时，只在人已到门格 6 格内才试。
+        if _far and (_wok or _dist <= 6):
+            for (_cx, _cy) in ((dx, dy + 1), (dx, dy - 1), (dx - 1, dy), (dx + 1, dy)):
+                _ok2, _n2 = _walk_and_wait(out_map, _cx, _cy, timeout=10)
+                if _inside():
+                    return True, "", tile, "；".join(_trail + [f"走到邻格({_cx},{_cy})时被游戏送进屋"])
+                _trail.append(f"邻格({_cx},{_cy})：" + (_n2 or ("到了" if _ok2 else "没到")))
+                if not _ok2:
+                    continue
+                _pushed = True
+                if _push():
+                    return True, "", tile, "；".join(_trail)
+                _trail.append(f"从邻格({_cx},{_cy})推了门({dx},{dy})：游戏没让进")
+        return False, ("pushed_no_effect" if _pushed else "walk_failed"), tile, "；".join(_trail)
+    except Exception as _e:
+        return False, "error", tile, f"{type(_e).__name__}: {_e}"
 
 
 # ── 门反查表：门口瓦片 → 建筑（2026-09-10 恒拍板"map_go/walk_to 一键开门"）──
@@ -1593,7 +1698,11 @@ def _step_into_building(arrive_map: str, arrive_pos) -> str:
         cur = (api.state().get("location") or {}).get("name", "")
         if cur != arrive_map:          # 已进门/不在门外 → 不重复进
             return ""
-        if _enter_building_door(b):
+        # ⚠️ 2026-10-05：`_enter_building_door` 现在回三元组（`(成没成, 为什么, 门格)`）——
+        #    这一处**只要"成没成"**：没成的话下面那条 `_locked_door_dialogue()` 会把
+        #    游戏的原话（锁门/信件）如实转述出来，`why` 在这儿没有新增信息。
+        _ok_b, _why_b, _ = _enter_building_door(b)
+        if _ok_b:
             return f"，推门进屋已站在{b}室内门口"
     except Exception:
         return ""
@@ -2856,11 +2965,12 @@ def _map_go_walk(path, destination: str, dest: str, lead_log: str = "", npc_targ
                 _NAV_FAILED["v"] = True
                 return _with_state("\n".join(log) + f"\n⚠️ 到 {nxt} 失败")
         elif kind == "door":
-            ok = _enter_building_door(nxt)
+            ok, why, dtile, dnote = _enter_building_door(nxt)
             # 🔎 2026-09-10 恒：**推门成功**和**兜底 warp 硬进**结局一样（都落在目标图里），
             #    日志也一模一样 → 恒看不出到底推门了没（"我都没见小人正对过门"）。分开标出来。
+            #    2026-10-05 加门格坐标：这样"真走到门口推的"和别的情形一眼可分（恒复核用）。
             if ok:
-                log[-1] += "（🚪推门进屋）"
+                log[-1] += f"（🚪走到门格 {dtile} 推门进屋）"
             if not ok:
                 # 🔒 门锁着（未到营业时间/未解锁/好感不够/性别不符）→ 推门时游戏会说句话
                 #    （**对话或信件**，两种都算，见 `_locked_door_dialogue`）。
@@ -2878,17 +2988,35 @@ def _map_go_walk(path, destination: str, dest: str, lead_log: str = "", npc_targ
                     return _with_state("\n".join(log) +
                         f"\n🔒 {nxt} 门锁着，没进去：{lock_txt or '未到营业时间/未解锁/好感不够'}"
                         f"\n   停在这里——这是门的条件没满足，不是路走不到；等开门时间/好感够了再来，别硬闯")
-                # 兜底：直接传送到建筑入口 ARRIVE（只对"门没锁但没推成功"这类真·导航失败生效）
-                ar = locations.ARRIVE.get(nxt)
-                if ar:
-                    api.warp(nxt, ar[0], ar[1])
-                    time.sleep(1.5)
-                    ok = api.state().get("location", {}).get("name", "") == nxt
-                    if ok:
-                        log[-1] += "（⚠️推门没成 → 兜底warp 硬进）"
-            if not ok:
+                # ⛔ 2026-10-05 恒：「刚才好像走到一半就 warp 进博物馆了。」「问题在于**根本没走到
+                #    博物馆门口推门**就直接进来。」—— ⇒ **兜底 warp 撤销**（那句
+                #    `api.warp` 那一发与「⚠️推门没成 → 兜底warp 硬进」那句日志都删了）。
+                #    旧代码只要"没读到锁门台词"就无条件瞬移进屋，于是**纯走位失败**（没到门口）
+                #    也变成穿墙，而日志只说"推门没成"——恒从画面上看穿了（小人没正对过门）。
+                #    现在按 `_enter_building_door` 回的 `why` **如实分开报**，哪一种都**不 warp**：
+                _p = _ai_pos()
+                _here = (api.state().get("location") or {}).get("name", "") or frm
+                _tbl = (getattr(locations, "SHOP_HOURS", {}) or {}).get(nxt)
+                # 🔬 把 `_enter_building_door` 里**走位那一发的原话**（寻路失败/超时/改到哪格/
+                #    推了几次）原样贴出来 —— 旧代码把它丢了，于是只剩"推门没成"这种糊话。
+                _dn = f"（走位原话：{dnote}）" if dnote else ""
+                if why == "walk_failed":
+                    _tail = (f"⚠️ **没走到 {nxt} 的门口就停了**：人在 `{_here}{_p}`，"
+                             f"门格在 `{nxt} {dtile}` —— 这是**走位没到**（不是门锁着）。"
+                             f"原地停下，别硬闯（旧版这里会 warp 瞬移进屋 = 穿墙，恒 2026-10-05 抓到）"
+                             f"{_dn}")
+                elif why == "other_map":
+                    _tail = (f"⚠️ 人在 `{_here}{_p}`，而 `{nxt}` 的门格 `{dtile}` 不在这张图 ——"
+                             f"先 `map go` 到门口那张图；原地停下，别硬闯（旧版会 warp 瞬移）{_dn}")
+                elif why == "no_door":
+                    _tail = (f"⚠️ 表里查不到 `{nxt}` 的门格（`BUILDING_DOORS`/`_resolve_place` 都没有，"
+                             f"人在 `{_here}{_p}`）—— 不敢硬进（旧版这里会 warp 瞬移进屋）{_dn}")
+                else:   # pushed_no_effect / error
+                    _tail = (f"⚠️ **走到门格 {dtile} 也推了门，游戏没让进**（人在 `{_here}{_p}`）——"
+                             f"这既不是走位失败、也没读到锁门的话；原地停下，别硬闯"
+                             + (f"（这扇门的营业时间表：{_tbl}）" if _tbl else "") + _dn)
                 _NAV_FAILED["v"] = True
-                return _with_state("\n".join(log) + f"\n⚠️ 进 {nxt} 失败")
+                return _with_state("\n".join(log) + "\n" + _tail)
         elif kind == "portal":
             # 🔮 传送阵/模拟出口 warp（2026-08-30 恒：女巫/法师区魔法传送，非原生 warp 瓦片）。
             #    ⚠️ 恒拍板：传送阵要**精确站位**（像门 BUILDING_DOORS）——先 walk_to 到传送阵站格，

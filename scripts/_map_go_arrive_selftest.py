@@ -88,6 +88,148 @@ try:
     ck("…并应用了站位/朝向", "站位朝向" in out, out)
     ck("…而且**没白等第二段**（第一次就成了）", waits == [20], str(waits))
 
+    print("\n④ 门那条路（恒 2026-10-05：「**根本没走到博物馆门口推门就直接进来**」）")
+    # 人在 Town ⇒ 直接点真目标 `ArchaeologyHouse`（MAP_LINKS 里 Town→它 就是 door 那一步），
+    # 再把 `_enter_building_door` 换成"造出来的失败形状"，看门分支怎么报、有没有 warp。
+    _ebd_bak = N._enter_building_door
+    _warp_bak = getattr(N.api, "warp", None)
+    warps = []
+    N.api.warp = lambda *a, **k: (warps.append(a), {"ok": True})[1]
+    try:
+        N._walk_and_wait = lambda loc, x, y, timeout=0: (True, "")
+        for _why, _tile, _want in (
+                ("walk_failed", (101, 89), "没走到"),
+                ("other_map", (101, 89), "不在这张图"),
+                ("no_door", None, "查不到"),
+                ("pushed_no_effect", (101, 89), "推了门")):
+            warps.clear()
+            N._enter_building_door = (lambda _w, _t: (lambda loc: (False, _w, _t, "自验假细节")))(_why, _tile)
+            _out = N.map_go("ArchaeologyHouse")
+            ck(f"门失败 why={_why} ⇒ **一次 warp 都没打**（旧版这里瞬移穿墙进屋）",
+               not warps, str(warps))
+            ck(f"门失败 why={_why} ⇒ 如实报「{_want}」", _want in _out, _out)
+            ck(f"门失败 why={_why} ⇒ 带上走位原话（旧版把这句话丢了，只剩「推门没成」）",
+               "走位原话" in _out, _out)
+        warps.clear()
+        N._enter_building_door = lambda loc: (True, "", (101, 89), "")
+        _out = N.map_go("ArchaeologyHouse")
+        ck("门成功 ⇒ 日志点明「走到门格 (101, 89) 推门进屋」（恒靠这句分'推门'还是'瞬移'）",
+           "走到门格 (101, 89)" in _out and "推门进屋" in _out, _out)
+        ck("门成功 ⇒ 也没有 warp", not warps, str(warps))
+    finally:
+        N._enter_building_door = _ebd_bak
+        if _warp_bak is None:
+            try:
+                del N.api.warp
+            except Exception:
+                pass
+        else:
+            N.api.warp = _warp_bak
+
+    print("\n⑤ 源码钉：门那两处再也不许出现 `api.warp`（防回归）")
+    _src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "navigation.py"),
+                encoding="utf-8").read()
+    _ia = _src.index("def _enter_building_door(")
+    _ib = _src.index("\ndef ", _ia + 10)
+    ck("_enter_building_door 自己一次 warp 都不打", "api.warp(" not in _src[_ia:_ib],
+       _src[_ia:_ib][-160:])
+    _ja = _src.index('        elif kind == "door":')
+    _jb = _src.index('        elif kind == "portal":', _ja)
+    ck("map_go 的 door 分支里没有 `api.warp(`", "api.warp(" not in _src[_ja:_jb],
+       _src[_ja:_jb][-160:])
+
+    print("\n⑥ 门那条的「走位超时／人还在走」档（恒：「**还在走就提前兜底**」）")
+    # 这一档**不 stub** `_enter_building_door` —— 直接用真函数 + 造出来的走位回包，
+    # 钉住"超时那一刻先判人还在不在动，还在动就照同图 POI 先例再补一段"。
+    _walk_bak, _api_bak = N._walk_and_wait, N.api
+
+    class _DoorApi:
+        """人在 Town 往博物馆门口走；`push_works` = 推门真能进屋。"""
+        def __init__(self, x, y, moving, push_works=True):
+            self.x, self.y, self.moving = x, y, moving
+            self.push_works, self.entered = push_works, False
+            self.warps, self.interacts = [], []
+
+        def state(self, **kw):
+            return {"location": {"name": "ArchaeologyHouse" if self.entered else "Town"},
+                    "player": {"x": self.x, "y": self.y, "isMoving": self.moving},
+                    "time": {}, "inventory": []}
+
+        def _get(self, ep):
+            return {"ok": True, "chests": [], "buildings": []}
+
+        def _post(self, ep, data=None):
+            return {"ok": True}
+
+        def interact_at(self, x, y):
+            self.interacts.append((x, y))
+            if self.push_works:
+                self.entered = True
+            return {"ok": True}
+
+        def warp(self, *a, **k):
+            self.warps.append(a)
+            return {"ok": True}
+
+        def player_tile(self):
+            return (self.x, self.y)
+
+    def _stub_walks(seq):
+        """按 `seq` 顺序回包（每项 `(ok, note)`），同时把每次的 timeout 记下来。"""
+        calls = []
+
+        def _f(loc, x, y, timeout=0):
+            calls.append(timeout)
+            i = len(calls) - 1
+            return seq[i] if i < len(seq) else (False, f"走位超时没到（{loc} {x},{y}）")
+        return calls, _f
+
+    try:
+        # ⑥-1 超时那刻人**还在动** ⇒ 续一段（25 → 30）；续走成了 ⇒ 照旧推门进屋
+        _d1 = _DoorApi(96, 89, True)
+        N.api = _d1
+        _w1, N._walk_and_wait = _stub_walks([(False, "走位超时没到（Town 101,89）"), (True, "")])
+        _r1 = N._enter_building_door("ArchaeologyHouse")
+        ck("⑥-1 超时但仍在动 ⇒ **续了一段 30s**（不是一次就判死）", _w1 == [25, 30], str(_w1))
+        ck("⑥-1 …续走成了 ⇒ 真推门进屋（ok=True）", _r1[0] is True, str(_r1))
+        ck("⑥-1 …走位原话里点明「还在动」（恒要的分档）", "还在动" in (_r1[3] or ""), str(_r1[3]))
+        ck("⑥-1 …一次 warp 都没打", not _d1.warps, str(_d1.warps))
+
+        # ⑥-2 超时那刻人**已停**（坐标没变、moving=False）⇒ 不许续走，如实判 walk_failed
+        _d2 = _DoorApi(60, 74, False)
+        N.api = _d2
+        _w2, N._walk_and_wait = _stub_walks([(False, "走位超时没到（Town 101,89）")])
+        _r2 = N._enter_building_door("ArchaeologyHouse")
+        ck("⑥-2 人已停（坐标没变、moving=False）⇒ **只有一次走位**，不续走", _w2 == [25], str(_w2))
+        ck("⑥-2 …如实判 `walk_failed`（不是「推门没成」）", _r2[1] == "walk_failed", str(_r2))
+        ck("⑥-2 …原话点明「已停」+ 人当时在哪",
+           "已停" in (_r2[3] or "") and "(60, 74)" in (_r2[3] or ""), str(_r2[3]))
+        ck("⑥-2 …人停在远处时**不做 4×10s 的退邻格打转**（不再白花 40 秒）",
+           10 not in _w2, str(_w2))
+        ck("⑥-2 …一次 warp 都没打", not _d2.warps, str(_d2.warps))
+
+        # ⑥-3 两段都没成 ⇒ 最多两段，仍不许 warp
+        _d3 = _DoorApi(80, 74, True)
+        N.api = _d3
+        _w3, N._walk_and_wait = _stub_walks([(False, "走位超时没到（Town 101,89）"),
+                                             (False, "走位超时没到（Town 101,89）")])
+        _r3 = N._enter_building_door("ArchaeologyHouse")
+        ck("⑥-3 两段都没成 ⇒ **最多两段**（`[25, 30]`，没有第三段续走）", _w3 == [25, 30], str(_w3))
+        ck("⑥-3 …如实判失败", _r3[0] is False and _r3[1] == "walk_failed", str(_r3))
+        ck("⑥-3 …仍**一次 warp 都没打**", not _d3.warps, str(_d3.warps))
+
+        # ⑥-4 全路径（真 `_enter_building_door` + `map_go`）：走位没到 ⇒ 如实说"没走到"
+        _d4 = _DoorApi(60, 74, False)
+        N.api = _d4
+        _w4, N._walk_and_wait = _stub_walks([(False, "走位超时没到（Town 101,89）")])
+        _o4 = N.map_go("ArchaeologyHouse")
+        ck("⑥-4 map_go：走位没到 ⇒ 回包如实说「没走到」（不再谎报进屋）", "没走到" in _o4, _o4)
+        ck("⑥-4 map_go：带上**走位原话**（恒靠这句分'推门'还是'瞬移'）", "走位原话" in _o4, _o4)
+        ck("⑥-4 map_go：**一次 warp 都没打**（旧版这里瞬移穿墙进屋）", not _d4.warps, str(_d4.warps))
+        ck("⑥-4 map_go：没说「推门进屋」（那是推成了才配说的话）", "推门进屋" not in _o4, _o4)
+    finally:
+        N._walk_and_wait, N.api = _walk_bak, _api_bak
+
     print("\n" + ("=" * 46))
     print("❌ 失败 " + str(len(FAIL)) + " 项: " + ", ".join(FAIL) if FAIL else "✅ 全过（0 失败）")
 finally:

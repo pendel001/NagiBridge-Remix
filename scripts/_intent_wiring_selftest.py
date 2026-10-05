@@ -4358,6 +4358,233 @@ def main():
     finally:
         M.api._get = _orig_get_ccb
 
+    # ═══ 🏛️ 补24：柜台那三行（恒 2026-10-05：「柜台的菜单 1.捐 2.领 3.走 的 1 接我们自己的捐赠方法」）═══
+    # 真机原文（三项那次）：[0] Donate=向博物馆捐赠 / [1] Collect=收集奖励 / [2] Leave=离开
+    print("\n🏛️ 补24 柜台问句（按游戏自己的 responseKey 派活，不认显示文本）")
+
+    _CNT3 = [{"index": 0, "key": "Donate", "text": "向博物馆捐赠"},
+             {"index": 1, "key": "Collect", "text": "收集奖励"},
+             {"index": 2, "key": "Leave", "text": "离开"}]
+
+    class _Counter:
+        """柜台那一刻的可变桩：`/state.activeMenu` + `/menu.responses`（带 key）+ 背包 + 展品表。"""
+        def __init__(self, loc="ArchaeologyHouse", opts=None, bag=None, pieces=None):
+            self.loc = loc
+            self.opts = [dict(o) for o in (opts or [])]
+            self.bag = list(bag or [])
+            self.pieces = list(pieces or [])
+            self.rewards = []
+            self.menu_type = "DialogueBox" if self.opts else None
+            self.donate_resp = None
+            self.eat = True            # claim 时奖励是否真进包（⑦ 用例设 False）
+            self.sent = []
+
+        def state(self):
+            am = None
+            if self.menu_type:
+                am = {"type": self.menu_type, "dialogue": None, "speaker": None,
+                      "questionKind": "ask",
+                      "responses": [o.get("text") for o in self.opts]}
+            return {"location": {"name": self.loc},
+                    "player": {"x": 3, "y": 10, "maxItems": 36},
+                    "time": {"timeOfDay": 930, "dayOfMonth": 10},
+                    "inventory": list(self.bag), "activeMenu": am}
+
+        def menu(self):
+            if self.menu_type == "DialogueBox":
+                return {"ok": True, "open": True, "type": "DialogueBox",
+                        "responses": [dict(o) for o in self.opts]}
+            return {"ok": True, "open": bool(self.menu_type), "type": self.menu_type,
+                    "items": list(self.rewards)}
+
+    def _counter_patch(c):
+        _og, _op = M.api._ai_get, M.api._ai_post
+
+        def _g(ep, params=None):
+            if ep == "/state":
+                return c.state()
+            if ep == "/menu":
+                return c.menu()
+            return _og(ep, params)
+
+        def _p(ep, data=None):
+            data = data or {}
+            c.sent.append((ep, dict(data)))
+            if ep == "/museum_donate":
+                return c.donate_resp or {"ok": False, "error": "桩没设 donate_resp"}
+            if ep == "/museum_debug":
+                return {"ok": True, "inventory": list(c.bag), "museumPieces": list(c.pieces)}
+            if ep == "/menu/click":
+                if "option" in data:
+                    i = int(data["option"])
+                    key = (c.opts[i] or {}).get("key") if i < len(c.opts) else None
+                    if key == "Leave":
+                        c.opts, c.menu_type = [], None       # 离开 ⇒ 问句没了
+                    elif key == "Collect":
+                        c.menu_type = "ItemGrabMenu"          # 领 ⇒ 出奖励界面
+                    return {"ok": True, "clicked": "response", "option": i}
+                if data.get("action") == "claim":
+                    got = list(c.rewards)
+                    c.rewards = []
+                    if c.eat:
+                        c.bag = list(c.bag) + got
+                    return {"ok": True, "clicked": "claim_multi", "count": len(got)}
+            return _op(ep, data)
+
+        return _og, _op, _g, _p
+
+    def _run_at(c, fn):
+        _og, _op, _g, _p = _counter_patch(c)
+        M.api._ai_get, M.api._ai_post = _g, _p
+        try:
+            return fn()
+        finally:
+            M.api._ai_get, M.api._ai_post = _og, _op
+
+    def _rows(c):
+        """那一刻单子上「选 …」那几行（`_im_menu_data` → `_menu_options` 的真路径）。"""
+        st = c.state()
+        md = M._im_menu_data(st, raw=c.menu())
+        ctx = M.intent_menu.ctx_from(state=st, surr={}, menu_data=md)
+        return [(M.intent_menu._option_show(ctx, o),
+                 M.intent_menu._option_reason(ctx, o),
+                 M.intent_menu._option_can(ctx, o))
+                for o in M.intent_menu._menu_options(ctx)]
+
+    _r1 = _rows(_Counter(opts=_CNT3))
+    _sh1 = "\n".join(f"{a} ｜ {b}" for a, b, _cv in _r1)
+    res.append(ok("🏛️ 三项都上单：「捐（我们的自动捐）」/「收集奖励」/「离开」"
+                  "（领奖那行**就是游戏原文那行**，恒拍板保持三步）",
+                  any(a == "捐（我们的自动捐）" for a, _, _ in _r1)
+                  and any(a == "「收集奖励」" for a, _, _ in _r1)
+                  and any(a == "「离开」" for a, _, _ in _r1), _sh1))
+    res.append(ok("🏛️ 恒点名那句：「捐」的理由写明**不走游戏那个手动摆放界面**",
+                  any("不走" in b and "手动摆放" in b for _, b, _ in _r1), _sh1))
+    res.append(ok("🏛️ **不许**照游戏原文印「选「向博物馆捐赠」」（按下去走的是我们的路，两套说法打架）",
+                  "选「向博物馆捐赠」" not in _sh1, _sh1))
+    res.append(ok("🏛️ 三行都可敲（CAN_YES）",
+                  all(cv == M.intent_menu.CAN_YES for _, _, cv in _r1), _r1))
+
+    _r2 = _rows(_Counter(opts=[dict(o, key=None) for o in _CNT3]))
+    _sh2 = "\n".join(f"{a} ｜ {b}" for a, b, _cv in _r2)
+    res.append(ok("🏛️ 老 DLL 不报 key ⇒ 照旧只有普通「选 «文本»」几行（**如实降级**，不猜不编）",
+                  "「向博物馆捐赠」" in _sh2 and "我们的自动捐" not in _sh2, _sh2))
+
+    _r3 = _rows(_Counter(loc="IslandFieldOffice", opts=_CNT3))
+    res.append(ok("🏛️ 姜岛办事处（同一批 key、但不是 ArchaeologyHouse）⇒ **不给**「捐（我们的自动捐）」",
+                  not any(a == "捐（我们的自动捐）" for a, _, _ in _r3), _r3))
+    res.append(ok("🏛️ …而领奖那行照旧是**普通选项行**（不挑馆、不挑我们那档）",
+                  any(a == "「收集奖励」" for a, _, _ in _r3), _r3))
+
+    # ④ 捐：走我们的路 + 逐件回读 + 把过时的问句收掉
+    _c4 = _Counter(opts=_CNT3, bag=[{"name": "Ancient Doll", "itemId": "103", "stack": 1}])
+    _c4.donate_resp = {"ok": True,
+                       "donated": [{"item": "Ancient Doll", "id": "103", "tileX": 26, "tileY": 5}],
+                       "museumCount": 24, "totalArtifacts": 95, "remainingSlots": 71}
+    _c4.pieces = [{"x": 26, "y": 5, "itemId": "103"}]
+    _c4.bag = []
+    _t4 = (_run_at(_c4, lambda: M._im_run("museum_donate_row", {})) or {}).get("text") or ""
+    res.append(ok("🏛️ 捐：回执点明这是**我们的自动捐** + 馆内 n/95（游戏自己的名单大小）",
+                  "自动捐" in _t4 and "24/95" in _t4, _t4))
+    res.append(ok("🏛️ 捐：逐件**回读**（展品表里有它 / 包里没了）——不是「点了就算」",
+                  "✅ 回读" in _t4 and "包里没了" in _t4, _t4))
+    res.append(ok("🏛️ 捐：把**已经过时**的问句按游戏自己的「离开」收掉（捐完它还问要不要捐＝假门）",
+                  any(d.get("option") == 2 for e, d in _c4.sent if e == "/menu/click")
+                  and "问句已按游戏的「离开」收掉" in _t4, _t4))
+
+    # ⑤ 捐：没有 Donate 那项 ⇒ 明确拒绝，且一次 /museum_donate 都不许打
+    _c5 = _Counter(opts=[_CNT3[1], _CNT3[2]])
+    _t5 = (_run_at(_c5, lambda: M._im_run("museum_donate_row", {})) or {}).get("text") or ""
+    res.append(ok("🏛️ 捐：问句里没有 Donate ⇒ 明确说「没有那一项」+ **一次 /museum_donate 都没打**",
+                  "没有「捐赠」那一项" in _t5
+                  and not any(e == "/museum_donate" for e, _ in _c5.sent), _t5))
+
+    # ⑥ 领奖那行 = **普通选项行**（恒 2026-10-05 拍板：「**好，保持吧。**」= 保持三步，别做一键）
+    _r6 = _rows(_Counter(opts=_CNT3))
+    res.append(ok("🏛️ 领奖**不上一键**：那一行就是普通的「「收集奖励」」（没有自己的 kind/文案）",
+                  any(a == "「收集奖励」" for a, _, _ in _r6)
+                  and not any("一次领完" in a for a, _, _ in _r6), _r6))
+    _srv_src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "nagi_mcp_server.py"), encoding="utf-8").read()
+    _im_src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "intent_menu.py"), encoding="utf-8").read()
+    res.append(ok("🏛️ 一键那套**已经拆干净**（`_im_run` 的接线没了）——"
+                  "⚠️ 只看**接线形状**：注释里提到那个 op 名不算「还有它」",
+                  '"museum_collect_row": lambda' not in _srv_src
+                  and '"museum_collect_row"' not in _im_src, ""))
+
+    # ⑦ 奖励菜单那几行改口叫「奖励」（真机原文那份：containerAt/grabBehavior 都空、非 gift）
+    _rw_raw = {"type": "ItemGrabMenu", "containerAt": None, "grabBehavior": None, "gift": False,
+               "items": [{"index": 0, "name": "《生态山之夜》", "count": 1, "quality": 0,
+                          "id": "(F)1541"}]}
+    _md_rw = M._im_menu_data({"activeMenu": {"type": "ItemGrabMenu"},
+                              "location": {"name": "ArchaeologyHouse"}}, raw=_rw_raw)
+    _ctx_rw = M.intent_menu.ctx_from(state={"location": {"name": "ArchaeologyHouse"}}, surr={},
+                                     menu_data=_md_rw)
+    res.append(ok("🏛️ 奖励菜单 ⇒ 那行叫「奖励」（恒点名：『箱子里…』对它不贴）",
+                  M.intent_menu._menu_box_show(_ctx_rw, None) == "奖励", _md_rw))
+    _chest_raw = {"type": "ItemGrabMenu", "containerAt": {"x": 5, "y": 5},
+                  "grabBehavior": "grabItemFromInventory", "gift": True,
+                  "items": [{"index": 0, "name": "木材", "count": 3}]}
+    _md_chest = M._im_menu_data({"activeMenu": {"type": "ItemGrabMenu"},
+                                 "location": {"name": "Farm"}}, raw=_chest_raw)
+    _ctx_chest = M.intent_menu.ctx_from(state={"location": {"name": "Farm"}}, surr={},
+                                        menu_data=_md_chest)
+    res.append(ok("🏛️ 真箱子照旧叫「箱子里」（判据是 C# 那三个事实，不是菜单名）",
+                  M.intent_menu._menu_box_show(_ctx_chest, None) == "箱子里", _md_chest))
+
+    # ⑧ `responses: null` 的纯对话（真机原文：冈瑟"你似乎没有要捐的…"）⇒ **一行都不许凭空给**
+    _c8 = _Counter(opts=[])
+    _c8.menu_type = "DialogueBox"
+    res.append(ok("🏛️ 纯对话（`responses: null`）⇒ 单子**一行都不凭空给**（没捐/没领那两行）",
+                  _rows(_c8) == [], _rows(_c8)))
+
+    # ═══ 🏛️ 补24c：背包「可捐」打标（恒 2026-10-05：「背包有可捐能跟献祭一样打标吗？」）═══
+    #    判据 = `/state.inventory[].donatable`（C# `CouldBeDonated` ⇒ 游戏自己的
+    #    `LibraryMuseum.IsItemSuitableForDonation`：既非古物/矿物、带 `not_museum_donatable`、
+    #    **以及"博物馆已经收过这件"** 它都回 false）。这一层不认类别号、不认 id。
+    print("\n🏛️ 补24c 可捐打标（消费侧只认游戏那一把尺子）")
+    _mg1 = M._im_museum_go({"inventory": [{"name": "古代玩偶", "donatable": True}]})
+    res.append(ok("🏛️🎒 世界侧账：包里 1 件可捐 ⇒ `have=1`（那行才出得来）",
+                  _mg1.get("have") == 1, _mg1))
+    res.append(ok("🏛️🎒 全是 `donatable: false`（都捐过/都不能捐）⇒ **那行不出现**",
+                  M._im_museum_go({"inventory": [{"name": "紫水晶", "donatable": False},
+                                                 {"name": "鲶鱼", "donatable": False}]}) == {}, ""))
+    res.append(ok("🏛️🎒 **键缺失**（老 DLL）⇒ 算不出 ⇒ 那行不出现（**不许**拿类别兜底）",
+                  M._im_museum_go({"inventory": [{"name": "羊奶酪", "catNum": -26}]}) == {}, ""))
+    _ctx_mg = M.intent_menu.ctx_from(state={"location": {"name": "Farm"}, "player": {"x": 1, "y": 1}},
+                                     surr={}, museum_go={"have": 2})
+    _ctx_mg0 = M.intent_menu.ctx_from(state={"location": {"name": "Farm"}, "player": {"x": 1, "y": 1}},
+                                      surr={}, museum_go={})
+    res.append(ok("🏛️🎒 单子那行：`去博物馆捐赠（包里 2 件可捐）`；没账 ⇒ 这行不出；"
+                  "**不限地点**（跟献祭那行不同的地方，故意的）",
+                  M.intent_menu._museum_go_can(_ctx_mg, None) == M.intent_menu.CAN_YES
+                  and M.intent_menu._museum_go_show(_ctx_mg, None) == "去博物馆捐赠（包里 2 件可捐）"
+                  and M.intent_menu._museum_go_can(_ctx_mg0, None) == M.intent_menu.CAN_NO))
+    # 消费侧（`check backpack` 底部那行）：只列可捐的；**已捐过的不列**；老 DLL 如实说读不到
+    _don_new = M._check_museum_donables({"inventory": [
+        {"name": "古代玩偶", "donatable": True, "stack": 1},
+        {"name": "紫水晶", "donatable": False, "stack": 2},
+        {"name": "石英", "donatable": True, "stack": 3}]})
+    res.append(ok("🏛️🎒 `check backpack`：只列 `donatable: true` 的（古代玩偶×1/石英×3），"
+                  "**已经捐过的那件不列**",
+                  "古代玩偶×1" in _don_new and "石英×3" in _don_new and "紫水晶" not in _don_new,
+                  _don_new))
+    _don_old = M._check_museum_donables({"inventory": [
+        {"name": "羊奶酪", "catNum": -26}, {"name": "方解石", "catNum": -12}]})
+    res.append(ok("🏛️🎒 老 DLL（没这一位）⇒ **如实报「读不到」**，**绝不**照 `catNum` 猜"
+                  "（羊奶酪 -26=newArtisanGoods 那串手抄表已经删掉）——"
+                  "⚠️ 判据看**有没有把它当可捐列出来**（`×` 那种形状），不是有没有提到名字",
+                  "读不到" in _don_old
+                  and "羊奶酪×" not in _don_old and "方解石×" not in _don_old,
+                  _don_old))
+    res.append(ok("🏛️🎒 无可捐（全是 false）⇒ `check backpack` 那行**空着**（不占行）",
+                  M._check_museum_donables({"inventory": [{"name": "鲶鱼", "donatable": False}]}) == "", ""))
+    res.append(ok("🏛️🎒 源码钉子：`_check_museum_donables` 里**再没有手抄类别常量那一刀**"
+                  "（判据只剩游戏那一位）——"
+                  "⚠️ 只看**代码形状**：注释里引用旧写法不算「还在用」",
+                  "ok = cat in (" not in _srv_src and "cat = item.get(\"catNum\")" not in _srv_src, ""))
+
     print(f"\n{sum(res)}/{len(res)} 过")
     return all(res)
 

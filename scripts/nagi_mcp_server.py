@@ -3369,6 +3369,123 @@ def _im_levelup_pick(side: str) -> str:
         return f"❌ 选职业出错：{type(e).__name__}: {e}"
 
 
+def _im_counter_options() -> tuple:
+    """🏛️ 柜台问句此刻的选项 → `([{index,text,key}], 所在图英文名)`；不是问句框 ⇒ `([], loc)`。
+
+    ⚠️ 为什么读 **`/menu`** 而不是 `/state`：**`key` 只有 `/menu` 那份有** ——
+       `/state.activeMenu.responses` 只有**显示文本**（真机样本：`["收集奖励","离开"]`），
+       而文本是本地化的（`向博物馆捐赠`/`收集奖励`/`离开`），拿它派活必脆。
+    ⚠️ 只在"`DialogueBox` + `questionKind == "ask"`"时才认（NPC 对话那种选项挂在 `Dialogue`
+       上，走的不是这条路）—— 判据跟 `_im_menu_data` 那一档**同源**，别在这儿另编一套。
+    ⚠️ 任何一步读不到 ⇒ `([], loc)`：执行侧照这个**如实报"这一刻柜台没有那一项"**，
+       绝不"没看清也点一下"。
+    """
+    loc = ""
+    try:
+        st = api._ai_get("/state") or {}
+        loc = ((st.get("location") or {}).get("name") or "")
+        am = st.get("activeMenu") or {}
+    except Exception:
+        return [], loc
+    if (am.get("type") or "").lower() != "dialoguebox" or am.get("questionKind") != "ask":
+        return [], loc
+    try:
+        m = api._ai_get("/menu") or {}
+    except Exception:
+        return [], loc
+    if (m.get("type") or "").lower() != "dialoguebox":
+        return [], loc
+    out = []
+    for r in (m.get("responses") or []):
+        if isinstance(r, dict) and r.get("index") is not None:
+            out.append({"index": r.get("index"), "text": r.get("text"), "key": r.get("key")})
+    return out, loc
+
+
+def _im_counter_pick(key: str) -> tuple:
+    """选柜台问句里 `key == key` 的那一项 → `(成没成, 一句话)`。
+
+    ⚠️ 走 `/menu/click {option:N, real:true}`（`questionKind=ask` 那档的官方口径）；
+       C# 里 `real` 只在**事件问句**上分岔（`ModEntry.cs:15332`），柜台这种不是事件
+       ⇒ 带不带都点得中（带上只是跟状态条那句口径一致）。
+    """
+    opts, _loc = _im_counter_options()
+    idx = next((o.get("index") for o in opts if o.get("key") == key), None)
+    if idx is None:
+        _have = [o.get("key") for o in opts] or "（读不到选项）"
+        return False, f"这一刻柜台问句里没有「{key}」那一项（现有：{_have}）"
+    try:
+        r = api._ai_post("/menu/click", {"option": int(idx), "real": True}) or {}
+    except Exception as e:
+        return False, f"点「{key}」出错：{type(e).__name__}: {e}"
+    if not r.get("ok"):
+        return False, f"点「{key}」没成：{r.get('error') or r}"
+    return True, f"（点了第 {int(idx) + 1} 项）"
+
+
+def _im_museum_auto_donate() -> str:
+    """🏛️ 单子上那行「捐（我们的自动捐）」的执行侧 —— **一次把包里能捐的都捐上**。
+
+    恒 2026-10-05：「柜台的菜单 1.捐 2.领 3.走 的 1 接我们自己的捐赠方法」
+    ⇒ 走 `/museum_donate`（可捐性判据全在 C#：游戏自己的 `isItemSuitableForDonation`），
+      **不走**游戏那个手动摆放界面（游戏自己的 `Museum_Donate` → `MuseumMenu`）。
+    ⚠️ 先捐、再把那个**已经过时**的问句按游戏自己的「离开」收掉（捐完了它还问你要不要捐）。
+    ⚠️ 回执只报**读得回来的**：`/museum_debug` 回读"这几个 id 在游戏自己的展品表里"；
+       读不回来就如实说"没读回来、自己核对" —— 不许"点了就算"。
+    """
+    opts, loc = _im_counter_options()
+    if loc != "ArchaeologyHouse":
+        return (f"❌ 不在博物馆（现在 `{loc or '?'}`）—— 这一档只对博物馆柜台那个问句生效，**没捐**")
+    if not any(o.get("key") == "Donate" for o in opts):
+        return ("❌ 柜台这个问句里**没有「捐赠」那一项**（游戏只在包里真有可捐的东西时才给）"
+                "—— 没捐，别把它当成捐过了")
+    try:
+        r = api._ai_post("/museum_donate") or {}
+    except Exception as e:
+        return f"❌ 自动捐出错：{type(e).__name__}: {e}"
+    if not r.get("ok"):
+        _rej = r.get("rejected") or []
+        _tail = ("\n  （逐件为什么没捐：）\n" + "\n".join(
+            f"  . {x.get('item')} → {x.get('why')}" for x in _rej[:8])) if _rej else ""
+        return f"❌ 没捐成：{r.get('error') or r}{_tail}"
+    items = r.get("donated") or []
+    # 🔎 回读尺子：`/museum_debug` = 游戏自己的展品表（+ 背包），不是"发射后不管"
+    _ok, _bad, _noread = [], [], None
+    try:
+        d = api._ai_post("/museum_debug") or {}
+        _pieces = {str(p.get("itemId")) for p in (d.get("museumPieces") or [])}
+        _bag = {str(i.get("itemId") or "").split(")")[-1] for i in (d.get("inventory") or [])}
+        for it in items:
+            _id = str(it.get("id") or "")
+            if _id in _pieces:
+                _ok.append((it, _id in _bag))
+            else:
+                _bad.append(it)
+    except Exception as e:
+        _noread = f"{type(e).__name__}: {e}"
+    # 问句收尾：捐完了它还在问"要不要捐" ⇒ 按游戏自己的「离开」关掉
+    _closed = ""
+    _opts2, _loc2 = _im_counter_options()
+    if any(o.get("key") == "Leave" for o in _opts2):
+        _c2, _w2 = _im_counter_pick("Leave")
+        _closed = f"问句已按游戏的「离开」收掉{_w2}" if _c2 else f"⚠️ 没关成问句（{_w2}）"
+    elif not _opts2:
+        _closed = "问句已经不在了"
+    _lines = [f"🏛️ **自动捐** {len(items)} 件（**我们的路**，不走游戏那个手动摆放界面）"
+              f"（馆内 {r.get('museumCount')}/{r.get('totalArtifacts')} = 游戏自己的名单大小）"]
+    for it, _left in _ok:
+        _lines.append(f"  . {it.get('item')} → 展位({it.get('tileX')},{it.get('tileY')})"
+                      f" ✅ 回读：展品表里有它" + ("（包里还剩同款，本来是成摞的）" if _left else "、包里没了"))
+    for it in _bad:
+        _lines.append(f"  . {it.get('item')} ⚠️ 回读**没在展品表里找到它**（id {it.get('id')}）—— 自己核对一眼")
+    if _noread is not None:
+        _lines.append(f"  ⚠️ 回读失败（{_noread}）—— 名目：{[i.get('item') for i in items]}，自己核对")
+    if _closed:
+        _lines.append(f"  {_closed}")
+    _lines.append("  （捐完柜台可能就有「领」那行了 —— 再交互一次柜台即可）")
+    return "\n".join(_lines)
+
+
 def _npcs_hint(state: dict, loc_name: str = "") -> str:
     """👥 本图 NPC 名字 + 「可以 chat / gift」—— 常驻一行，零额外请求。
 
@@ -5127,27 +5244,36 @@ MUSEUM_ITEM_IDS = {
 
 
 def _check_museum_donables(data: dict) -> str:
-    """检查背包里有没有可以捐赠给博物馆的物品。
-    返回空字符串=没有可捐物，否则列出可捐物品。
-    优先用 /state 的数字 catNum（-12矿物 -23古物 -26/-2宝石），
-    兼容字符串 category（getCategoryName）防止旧数据。
-    """
-    inv = data.get("inventory", [])
-    donatables = []
-    for item in inv:
-        name = item.get("name", "")
-        cat = item.get("catNum")
-        if cat is None:
-            cat = item.get("category", "")
-        ok = cat in (-12, -23, -26, -2) or cat in ("Minerals", "Artifacts", "Gems")
-        if ok:
-            donatables.append((name, item.get("stack", 1)))
+    """🏛️ 背包里**这一刻真能捐**给博物馆的那几件 —— 问游戏自己那把尺子（补24c, 2026-10-05）。
 
+    判据 = `/state.inventory[].donatable`（C# `CouldBeDonated` ⇒
+    `LibraryMuseum.IsItemSuitableForDonation(qid)`，反编译 `:113-135`）：
+    既非古物/矿物、带 `not_museum_donatable` 标签、**以及"博物馆已经收过这件"** 它都回 false
+    （内部扫 `MuseumPieces`，**跨角色共享** —— 恒捐过的，AI 这边就报不可捐）。
+
+    ⛔ 2026-10-05（补24c）**删掉了原来那张手抄类别表** `cat in (-12, -23, -26, -2)`：
+      · 常量本来就认错 —— `-12` 是 Minerals 没错，但 **`-26` 是工匠品（artisanGoods）、
+        `-23` 是鱼店可售**，真宝石是 `-2`（见 CHANGELOG 补23 那段"手抄表放行羊奶酪"的旧账）；
+      · 更致命的是它**问不到"捐过没有"** ⇒ 某件一旦捐过，它照旧报"可捐" = **假门**
+        （恒 2026-10-05 就是这么撞上"古代玩偶到底行不行"的）。
+    ⚠️ 老 DLL 没有 `donatable` 这一位 ⇒ **如实报"读不到"**，**不许**拿类别表兜底
+      （《宁报错别兜底》；`None`=键不在 与 `False`=真值"这件不能捐"必须分开）。
+    返回空字符串 = 没有可捐的。"""
+    inv = data.get("inventory", [])
+    if not inv:
+        return ""
+    # ① 先问"这一版 DLL 到底报不报得出来"：**任意一件**带这一位就说明报得出。
+    #    键在而值是 False = 真值"这件不能捐"，**不是**读不到 —— 这两件事以前被混成一种。
+    readable = any(isinstance(i, dict) and "donatable" in i for i in inv)
+    if not readable:
+        return ("🏛️ 可捐赠: ⚠️ **读不到** —— 这一版 DLL 的 `/state.inventory[]` 里没有 `donatable` 这一位"
+                "（重启游戏上新 DLL 才有）。**不猜**：不按类别号列，免得又放出羊奶酪那种假门")
+    donatables = [(i.get("name") or "?", i.get("stack", 1)) for i in inv
+                  if isinstance(i, dict) and i.get("donatable") is True]
     if not donatables:
         return ""
-
     parts = [f"{n}×{c}" for n, c in donatables]
-    return f"🏛️ 可捐赠: {', '.join(parts)}"
+    return f"🏛️ 可捐赠（博物馆还没收的）: {', '.join(parts)}"
 
 
 # ═══════════════════════════════════════════
@@ -24373,6 +24499,33 @@ def _im_cc_board(state: dict) -> dict:
             "have": len(have), "pos": [px, py]}
 
 
+def _im_museum_go(state) -> dict:
+    """🏛️ **世界侧**那行「去博物馆捐赠（包里 N 件可捐）」的账（补24c, 2026-10-05）——
+    形状照 `_im_cc_board`（「看 献祭板（走过去）」那一行的账）。
+
+    恒原话：「**背包有可捐能跟献祭一样打标吗？**」
+
+      ① **背包**：判据 = `/state.inventory[].donatable` —— **游戏自己那把尺子**
+         （`LibraryMuseum.IsItemSuitableForDonation`，见 C# `CouldBeDonated`）：
+         "既非古物/矿物"、"带 not_museum_donatable"、**"博物馆已经收过"** 它都回 false
+         ⇒ 不会再劝 AI 揣着"已经捐过的那件"白跑一趟（捐不动那件事游戏自己知道）。
+      ② **消失**：包里 0 件可捐 ⇒ **不给行**。
+      ③ 老 DLL 没这一位 ⇒ **不给行**（同 `_im_cc_board`：宁可不给，也不给一行按了白跑的）。
+
+    → `{}`（不给行）或 `{"have": N}`。
+    ⚠️ 这一层**只读 `/state`**（零额外 HTTP）。
+    ⚠️ **不做营业时间闸**（2026-10-05 记）：门那格原生 `LockedDoorWarp … 800 1800`（8:00-18:00），
+       而我们的 `locations.SHOP_HOURS["ArchaeologyHouse"]` 写的是 9:00-18:00 —— **两张表不一致**，
+       拿错的那张做闸反而会把合法时段也挡掉 ⇒ 这一行**不看时间**；真关门时走过去会被门如实拦下
+       （补24b 已经把"硬闯/warp"改成"如实报"）。
+    """
+    inv = (state or {}).get("inventory") or []
+    have = [i for i in inv if isinstance(i, dict) and i.get("donatable") is True]
+    if not have:
+        return {}
+    return {"have": len(have)}
+
+
 def _im_cc_go(x, y) -> str:
     """🏛️ 走到板子前 + 交互把板子开出来（单子那行「看 献祭板（走过去）」的执行侧）→ 一句话。
 
@@ -24429,8 +24582,19 @@ def _im_ctx():
     #    ⚠️ 这一发 `/menu` **两处共用**（下面 `_im_menu_data` 摊开 + `_im_quests` 领奖的账）——
     #       同一屏打两次同样的 HTTP 是本项目的白烧老病；`None` = 读失败（让它们照旧各自失败一次，
     #       行为与改前一字不差），`{}` = 真读到了但内容为空（**这两者不能混**）。
+    #    🗳 2026-10-05（补24）：**问句框（`questionKind == "ask"`）也要打这一发** ——
+    #       `/state.activeMenu.responses` 只有**显示文本**（没有 key），而柜台那个问句
+    #       （`Museum`：`Donate`/`Collect`/`Leave`）必须按**游戏自己的 responseKey** 派活
+    #       （显示文本是本地化的，拿它匹配脆；真机原文见 CHANGELOG 补24）。
+    #       `/menu` 那份 dump **早就有 key**（`ModEntry.cs:13705`）⇒ 不用改 C#。
+    #       NPC 对话那种（`questionKind == "npc"`）**照旧不打**（省一发；那边只用文本）。
+    _am_now = ((state or {}).get("activeMenu") or {})
+    _need_menu_keys = (
+        bool(_mt) and "dialoguebox" in _mt.lower()
+        and _am_now.get("questionKind") == "ask"
+        and bool(_am_now.get("responses")))
     _RAW_MENU = _UNFETCHED
-    if _mt and "dialoguebox" not in _mt.lower():
+    if _mt and ("dialoguebox" not in _mt.lower() or _need_menu_keys):
         try:
             _RAW_MENU = api._ai_get("/menu") or {}
         except Exception:
@@ -24502,6 +24666,11 @@ def _im_ctx():
                                 #    地点 / 背包里真有它收的 / 板子还在）——**零额外 HTTP**（除了
                                 #    两条便宜闸门都过之后那一发 /progress）。
                                 cc_board=_im_cc_board(state),
+                                # 🏛️ 世界侧那行「去博物馆捐赠（包里 N 件可捐）」的账（补24c）：
+                                #    判据 = `/state.inventory[].donatable`（游戏自己那把尺子，
+                                #    见 C# `CouldBeDonated`）—— **零额外 HTTP**；
+                                #    老 DLL 没这一位 ⇒ 算不出 ⇒ 那行不出现。
+                                museum_go=_im_museum_go(state),
                                 worn=worn)
 
 
@@ -25579,6 +25748,16 @@ def _im_run(op, args):
         #    ⚠️ 走 `helpers`（回**一句话**）：判据是"那张卡的钱还在不在"，
         #       不是把 `/menu/click` 那几发原始 dict 摊给 AI 看。
         "quest_claim": lambda: _im_claim_quests(),
+        # 🏛️ 2026-10-05（补24）柜台那两行 —— 按游戏自己的 `responseKey` 派活（见 `_im_menu_data`）：
+        #    `museum_donate_row` = **我们的自动捐**（`/museum_donate`，不走游戏那个手动摆放界面）
+        #      + 把过时的问句按游戏自己的「离开」收掉；回执逐件回读展品表。
+        #    ⛔ `museum_collect_row`（一键领完）**2026-10-05 恒拍板撤了** —— 「好，保持吧。」
+        #    ＝ 领奖保持三步（选 `Collect` → 「箱子里…」→ 「取 …」→ 关掉界面），别做一键。
+        "museum_donate_row": lambda: _im_museum_auto_donate(),
+        # 🏛️ 2026-10-05（补24c）**世界侧**那行「去博物馆捐赠（包里 N 件可捐）」的执行侧：
+        #    ⚠️ 走现成的 `museum_donate()`（它自己会先 `_require_counter` 走到柜台再捐），**别另写一套**；
+        #       "捐了几件 / 哪件为什么没捐"由它自己如实印（补23 那套逐件账）。
+        "museum_go": lambda: museum_donate(),
         # 🧬 2026-10-04 恒「换成真选项（menu levelup_choose 左右二选一）」：单子那两行按下去走这里。
         #    ⚠️ 别直接调 `_menu_levelup_choose`：它的回话是 C# 的**发射后不管**（`{ok:true,…}`）。
         #       `_im_levelup_pick` 会补两把回读尺子（游戏自己的职业表 + 那屏还在不在等你选）。
@@ -25934,8 +26113,37 @@ def _im_menu_data(state: dict, raw=_UNFETCHED) -> dict:
     if "dialoguebox" in mt.lower():
         #    ⇒ 在这儿整成**同一档形状**（`[{index, text}]`），单子那边只管认 `index`/`text`；
         #      位次就是 C# 点选项用的号（`selectedResponse = option` → `responseCCs[option]`）。
-        opts = [{"index": i, "text": t}
-                for i, t in enumerate(am.get("responses") or [])]
+        #    🗳 2026-10-05（补24）：**问句框那一档再带上游戏自己的 `key`**（从 `/menu` 那份 dump
+        #      对位次取；`/state` 只有文本）。老 DLL / 读失败 ⇒ 没有 key ⇒ 照旧只有「选 «文本»」那几行
+        #      （**如实降级**，不猜、不拿文本冒充 key）。
+        _rl = (raw or {}).get("responses") if isinstance(raw, dict) else None
+        _keys = []
+        if isinstance(_rl, list):
+            for _r in _rl:
+                _keys.append((_r or {}).get("key") if isinstance(_r, dict) else None)
+        opts = []
+        for i, t in enumerate(am.get("responses") or []):
+            _o = {"index": i, "text": t}
+            _k = _keys[i] if i < len(_keys) else None
+            if _k:
+                _o["key"] = _k
+            opts.append(_o)
+        # 🏛️ **柜台那几行的派活**（恒 2026-10-05：「柜台的菜单 1.捐 2.领 3.走 的 1 接我们自己的
+        #    捐赠方法」）—— 按**游戏自己的 `responseKey`** 认，**不认显示文本**（文本是本地化的）。
+        #      · `Donate` ⇒ 我们的自动捐（`/museum_donate`：一次把包里能捐的都捐上，
+        #        **不走**游戏那个手动摆放界面）；
+        #        ⚠️ **只认本岛那座博物馆**（`ArchaeologyHouse`）：C# 那个端点写死的正是它，
+        #           姜岛田野办公室（`IslandFieldOffice` 也用同一批 key）**不给这一档** ——
+        #           宁可少给一行，也不给一行"按下去捐进了另一座馆"。
+        #      · `Collect` ⇒ **不给 kind**（恒 2026-10-05 拍板：「**好，保持吧。**」= 领奖保持
+        #        "选 `Collect` → 「箱子里…」→ 「取 …」→ 关掉界面"那**三步**，跟真人一样一步步来）。
+        #        ⇒ 它就是一行普通的「「收集奖励」」，走通用 `menu_option` 那条路
+        #        （`real` 由 `_question_needs_real` 给）；⛔ **不做一键领完**。
+        #      · `Leave` / 别的 ⇒ 照旧走普通「选 «离开»」那行（**走**这件事不用新代码）。
+        _loc_now = (((state or {}).get("location") or {}).get("name") or "")
+        for _o in opts:
+            if _o.get("key") == "Donate" and _loc_now == "ArchaeologyHouse":
+                _o["kind"] = "museum_donate"
         return {"dialogue": {"speaker": am.get("speaker") or "",
                              "text": am.get("dialogue") or "",
                              # 🗳 点这些选项要不要 `real=true`（判据在 `_question_needs_real`）——
@@ -26003,9 +26211,16 @@ def _im_menu_data(state: dict, raw=_UNFETCHED) -> dict:
     at = raw.get("containerAt")
     if not (isinstance(at, dict) and isinstance(at.get("x"), int) and isinstance(at.get("y"), int)):
         at = None
+    # 🏛️ 2026-10-05（补24）**这一份不是"箱子"，是"谁递给你的东西"** —— 真机原文（博物馆领奖）：
+    #    `type=ItemGrabMenu`、`containerAt=null`、`grabBehavior=null`、`gift=false`、
+    #    `menuTitle=null`、`listTotal=0`、`items=[{name:"《生态山之夜", id:"(F)1541"}]`。
+    #    恒点名：「『箱子里…』这个行文对**奖励菜单**不贴」⇒ 这一位让单子改口叫「奖励：…」。
+    #    ⚠️ 判据用 **C# 已有的那三个事实**（不猜、不认菜单名）；老 DLL 少给哪个 ⇒ 当"不是奖励菜单"，
+    #       照旧叫「箱子里…」（宁可沿用旧措辞，也不瞎改口）。
+    reward = (at is None and raw.get("grabBehavior") is None and not raw.get("gift"))
     if not items and at is None:
         return {}
-    return {"items": items, "at": at}
+    return {"items": items, "at": at, "reward": bool(reward)}
 
 
 def _im_head(ctx) -> str:

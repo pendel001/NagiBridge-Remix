@@ -5896,6 +5896,12 @@ public class ModEntry : Mod
                         //    ⚠️ 它是**世界侧**判据：**不看板子开没开**、也不认类别号（`-4`=鱼 那种它自己认）
                         //    ⇒ 「这间收的东西我包里有几件」这类问题终于能**问游戏**，不用我抄一份匹配。
                         ["bundle"] = CouldGoToBundle(i),
+                        // 🏛️ 2026-10-05（补24c）恒：「**背包有可捐能跟献祭一样打标吗？**」⇒ 照上面 `bundle` 那位一比一镜像。
+                        //    判据=**游戏自己的** `LibraryMuseum.IsItemSuitableForDonation(qid)`（static，见 `CouldBeDonated` 的 docstring）。
+                        //    ⚠️ 语义是"**现在**能不能捐"：**已经捐过的会 false**（游戏自己扫 `MuseumPieces` 的**值**、跨角色共享）——
+                        //       所以"你捐过的，AI 那边就显示不可捐"是**对的**，不是 bug。
+                        //    ⚠️ 老 DLL 没有这一位 ⇒ 消费侧（Python）**必须当"读不到"处理**，不许拿类别表兜底。
+                        ["donatable"] = CouldBeDonated(i),
                         ["stats"] = DescribeItemStats(i),
                         ["slotIndex"] = x.slotIdx   // 真实背包槽位（点坐标用这个，不是列表 index）
                     };
@@ -15061,6 +15067,26 @@ public class ModEntry : Mod
         catch { return false; }
     }
 
+    /// <summary>🏛️ 这件东西**现在能不能捐给博物馆**（补24c，2026-10-05 恒：「背包有可捐能跟献祭一样打标吗？」）。</summary>
+    /// <remarks>
+    /// 判据=**游戏自己的** `LibraryMuseum.IsItemSuitableForDonation(qid, checkDonatedItems: true)`
+    /// （**static**：不用站在博物馆、不用 location 实例；反编译 `LibraryMuseum.cs:113-135`）：
+    ///   · 既非古物/矿物、或带 `not_museum_donatable` 标签 ⇒ **false**
+    ///   · **已经捐过的也 false** —— 它内部就调 `HasDonatedArtifact`（扫 `MuseumPieces` 的**值**、跨角色共享，`:126` / `:88-103`）
+    /// ⇒ 天然就是"这件**现在**能不能捐"。⛔ **别在消费侧抄类别表/自己判类型**
+    ///    （手抄表栽过一次，见 `HandleMuseumDonate` 里那段"删掉 category 兜底"的注释）。
+    /// ⚠️ 抛异常 ⇒ false；消费侧要分"读到没有"，靠**这一位在不在**（老 DLL 压根没这个键）。
+    /// </remarks>
+    private static bool CouldBeDonated(Item i)
+    {
+        try
+        {
+            if (i == null) return false;
+            return StardewValley.Locations.LibraryMuseum.IsItemSuitableForDonation(i.QualifiedItemId);
+        }
+        catch { return false; }
+    }
+
     /// <summary>🏛️ 献祭：**这一包现在能捧上背包里哪几件**（2026-10-04 · 单子那两层用的判据）。</summary>
     /// <remarks>
     /// 判据**全用游戏自己的两把尺子**（Python 那边**不许**重抄"id/类别/品质/数量"那套匹配）：
@@ -20463,6 +20489,22 @@ var tcs = new TaskCompletionSource<object>();
 	                        // 游戏真捐时顺带做的两件事（不做的话"展品在、任务/成就没算"就是半个假捐）。
 	                        try { farmer.completeQuest("24"); } catch { }
 	                        try { Game1.stats.checkForArchaeologyAchievements(); } catch { }
+	                        // 📢 2026-10-05（补24d）**补上补23 漏掉的那声广播** —— 恒真机验过："捐成功了但没广播"
+	                        //    （他正是靠"没广播"起疑 ⇒ 又用 7842 拿同一件去捐 ⇒ 捐不动 ⇒ **反证那次捐献确实成功了**）。
+	                        //    照反编译 `MuseumMenu.cs:231-247` 抄，**每捐成一件都比一次**（一次捐多件时逐件判）。
+	                        //    ⚠️ 反编译里这一整段还套在 `if (!holdingMuseumPiece)` 里 —— 那是"手上捧着展品在重排"的状态；
+	                        //       我们是"从背包直接捐"，从来不是那种状态 ⇒ 那个条件恒真，不用抄。
+	                        //    ⚠️ 广播失败**绝不许**把捐赠本身搞失败（整段包在 try/catch 里）。
+	                        try {
+	                            int afterCount = Game1.netWorldState.Value.MuseumPieces.Length;
+	                            if (afterCount == StardewValley.Locations.LibraryMuseum.totalArtifacts)
+	                                Game1.Multiplayer.globalChatInfoMessage("MuseumComplete", Game1.player.farmName.Value);
+	                            else if (afterCount == 40)
+	                                Game1.Multiplayer.globalChatInfoMessage("Museum40", Game1.player.farmName.Value);
+	                            else
+	                                Game1.Multiplayer.globalChatInfoMessage("donation", Game1.player.name.Value,
+	                                    StardewValley.TokenizableStrings.TokenStringBuilder.ItemNameFor(obj));
+	                        } catch { }
 	                        donated.Add(new { item = obj.Name, id = bareId, tileX = slot.x, tileY = slot.y,
 	                            itemId = id, qualifiedId = qid });
 	                        obj.Stack--;
