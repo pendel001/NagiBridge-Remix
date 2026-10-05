@@ -29,7 +29,14 @@ def ck(name, cond, extra=""):
 
 
 class FakeApi:
-    """只实现 `break_tile` 会用到的那几件；挥镐记账在 `swings`。"""
+    """只实现 `break_tile` 会用到的那几件；挥镐记账在 `swings`。
+
+    ⚠️ **`/surroundings` 两种模式都要忠实照抄**（2026-10-05 补的一课）：
+      · 不带 `x1..y2` = **以玩家为中心 ±radius**（`ModEntry.cs:7297/7347-7350`）；
+      · `surroundings_rect(x1,y1,x2,y2)` = **矩形**（`stardew_api.py:311` → C# `ModEntry.cs:7300-7321`）。
+    老桩"不管传什么参数都回全部 tiles" ⇒ **永远抓不到"区域离玩家远 ⇒ 静默失效"那个洞**
+    （补28d 的钉子就是靠这个假绿活到真机才被恒的验收子代理抓到）。
+    """
 
     def __init__(self):
         self.loc = "Farm"
@@ -40,15 +47,34 @@ class FakeApi:
     def select(self, *_a, **_k):
         return {"ok": True}
 
+    def _in(self, x1, y1, x2, y2):
+        """把夹具里落在这块矩形里的格挑出来（= 游戏"实际扫到的那几格"）。"""
+        return [dict(t) for t in self.tiles
+                if x1 <= t.get("x", -99) <= x2 and y1 <= t.get("y", -99) <= y2]
+
     def _get(self, path, params=None):
         p = params or {}
         if path == "/surroundings":
-            return {"tiles": [dict(t) for t in self.tiles]}
+            # 忠实照抄：**以玩家为中心**扫（跟请求的 (x,y)/矩形毫无关系——这就是那个洞）
+            r = int(p.get("radius") or 10)
+            px, py = self.player["x"], self.player["y"]
+            return {"ok": True, "rect_mode": False, "radius": r,
+                    "scanned": {"x1": px - r, "y1": py - r, "x2": px + r, "y2": py + r},
+                    "tiles": self._in(px - r, py - r, px + r, py + r)}
         if path == "/dump_tile":
             t = next((t for t in self.tiles
                       if (t.get("x"), t.get("y")) == (p.get("x"), p.get("y"))), {})
             return {"tile": dict(t)}
         return {}
+
+    def surroundings_rect(self, x1, y1, x2, y2):
+        """`GET /surroundings?x1=&y1=&x2=&y2=`（矩形模式）。夹具里就当整块都在图内。"""
+        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+        _a, _b = min(x1, x2), min(y1, y2)
+        _c, _d = max(x1, x2), max(y1, y2)
+        return {"ok": True, "rect_mode": True,
+                "scanned": {"x1": _a, "y1": _b, "x2": _c, "y2": _d},
+                "tiles": self._in(_a, _b, _c, _d)}
 
     def state(self):
         return {"player": dict(self.player), "location": {"name": self.loc}}
@@ -193,6 +219,63 @@ try:
     _out8 = M.break_tile(x=50, y=50, radius=1)
     ck("箱子格跳过（不砸）且**不**被误判成设备", "箱子/容器格跳过" in _out8, _out8[:200])
     ck("箱子那格没挥", _api.swings == [], str(_api.swings))
+
+    print("\n⑪ 🚨 **哨兵钉**：区域中心**离玩家很远**时，设备照样要被找到并拦下（2026-10-05 真机漏的那一条）")
+    # 真机现场：玩家 (55,13)，`farm break x=48 y=11 radius=1`（正下方 (48,12) 就是优质洒水器）
+    # ⇒ 旧代码用 `/surroundings?radius=1`（**以玩家为中心**）⇒ 玩家那一圈里根本没有 (48,12)
+    # ⇒ `dev` 空 ⇒ 回包 `⛏️ 敲完 命中: 无`（**静默**：既不拦、也不敲）。
+    # 这条钉子就是那个洞的哨兵：把"区域离玩家远"造出来，旧代码必红。
+    _reset(player=(55, 13))
+    _api.tiles = _tiles(center=(48, 11),
+                        extra={(48, 12): {"object": "Quality Sprinkler", "objId": "(O)621"},
+                               (48, 10): {"object": "Stone", "objId": "(O)390"}})
+    _out9 = M.break_tile(x=48, y=11, radius=1)
+    ck("⑪ 区域离玩家很远（玩家 (55,13) · 中心 (48,11)）⇒ **照样拦下**（旧代码这里静默「命中: 无」）",
+       "已拦下" in _out9, _out9[:160])
+    ck("⑪ …并报出洒水器坐标 (48,12)", "(48,12)" in _out9, _out9[:220])
+    ck("⑪ …一格都没挥（拦下就不许动镐）", _api.swings == [], str(_api.swings))
+    _api.swings = []
+    _out9b = M.break_tile(x=48, y=11, radius=1)
+    ck("⑪ …对同一区域**再执行一次 ⇒ 放行**（一次性语义没变）",
+       "已拦下" not in _out9b and _api.swings != [] and "确认过的同一区域" in _out9b, _out9b[:200])
+
+    print("\n⑫ 区域里**没有设备** ⇒ 回包**不许**出现「已拦下」（别把空地当设备拦）")
+    _reset(player=(55, 13))
+    _api.tiles = _tiles(center=(70, 70), extra={(70, 70): {"object": "Stone", "objId": "(O)390"}})
+    _out10 = M.break_tile(x=70, y=70, radius=1)
+    ck("⑫ 没设备 ⇒ 没有「已拦下」", "已拦下" not in _out10, _out10[:160])
+    ck("⑫ …石头照敲（不是静默什么都不做）", _api.swings == ["Pickaxe"], str(_api.swings))
+    ck("⑫ …并如实报跳过的空地格数", "跳过" in _out10 and "空地" in _out10, _out10[:200])
+
+    print("\n⑬ 矩形模式**没生效**（贴负坐标 / 老 DLL）⇒ 不许拿「扫的是别处」的数据当「这片没设备」")
+    # 判据出处：C# 矩形模式要求四个坐标都 ≥0（`ModEntry.cs:7313`），否则**静默退回**"以玩家为中心"。
+    class _NoRectApi(FakeApi):
+        """照抄"矩形模式没生效"的回包形状：扫的是**玩家 ±10**，跟请求的矩形无关。"""
+
+        def surroundings_rect(self, x1, y1, x2, y2):
+            r = 10
+            px, py = self.player["x"], self.player["y"]
+            return {"ok": True, "rect_mode": False,
+                    "scanned": {"x1": px - r, "y1": py - r, "x2": px + r, "y2": py + r},
+                    "tiles": self._in(px - r, py - r, px + r, py + r)}
+
+    _api_bak = M.api
+    try:
+        _bad = _NoRectApi()
+        # ⚠️ 夹具要点：**请求的区域必须落在"玩家 ±10"之外**，否则退化的那一发其实**照样覆盖**
+        #    请求那块（我第一版夹具就踩了这个：玩家 (55,13) ±10 罩住了 (47..49,10..12)
+        #    ⇒ 代码正确地放行 ⇒ 钉子假红）。要造的洞是"扫的是别处、请求那片**根本没扫到**"。
+        _bad.player = {"x": 55, "y": 13}
+        _bad.tiles = _tiles(center=(90, 90),
+                            extra={(90, 91): {"object": "Quality Sprinkler", "objId": "(O)621"}})
+        M.api = _bad
+        M._BREAK_DEVICE_CONFIRM.clear()
+        _out11 = M.break_tile(x=90, y=90, radius=1)
+        ck("⑬ 扫的范围不含请求区域 ⇒ **如实报**（既不报'已拦下'，也不当成'这片没东西'）",
+           "扫的不是你要的那片" in _out11 and "已拦下" not in _out11, _out11[:200])
+        ck("⑬ …一格都没挥", _bad.swings == [], str(_bad.swings))
+    finally:
+        M.api = _api_bak
 
     print(f"\n{0 if FAIL else 1} 组结论：{'全部通过' if not FAIL else '有失败'}"
           f"  （{len(FAIL)} 条未过）")

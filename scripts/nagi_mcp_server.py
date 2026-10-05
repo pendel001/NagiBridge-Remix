@@ -15750,9 +15750,12 @@ def interact() -> str:
         _fx, _fy = _ft.get("x"), _ft.get("y")
         _spot = f"({_fx},{_fy})" if _fx is not None else "面前那格"
         if not r.get("actionTriggered", True):
+            # ⚠️ 2026-10-05（真机 B）：原来这里写「面前 X **没有可交互的东西**」—— 那是**我们的结论**。
+            #    `actionTriggered=false` 并不等于"空着"（踩格触发的门/传送就是恒 false，见 `_interact_at_core` 那段）。
             return _with_state(
-                f"⚠️ 面前 {_spot} **没有可交互的东西**（actionTriggered=false）—— "
-                f"多半是**没正对着目标**。想点具体某格就 `scene at tile_x=.. tile_y=..`（会自动转身）。")
+                f"⚠️ 面前 {_spot} interact **没触发**（actionTriggered=false）—— "
+                f"多半是**没正对着目标**；也可能是**踩格触发的门/传送**那类格子（它们不吃 interact）。"
+                f"想点具体某格就 `scene at tile_x=.. tile_y=..`（会自动转身）。")
         _what = r.get("npc") or r.get("object") or r.get("furniture") or ""
         return _with_state(f"🤝 与面前 {_spot} 的 {_what} 交互成功" if _what
                            else f"🤝 已与面前 {_spot} 互动")
@@ -16392,10 +16395,42 @@ def break_tile(x: int, y: int, steps: int = 1, radius: int = 0) -> str:
         time.sleep(0.2)
         tgts, chest_skip, empty_skip, dev_ok = [], [], 0, False
         if radius and radius > 0:
-            try:
-                tiles = (api._get("/surroundings", {"radius": radius}).get("tiles") or [])
-            except Exception:
-                tiles = []
+            # 🚨 **判据必须覆盖"请求的那片矩形"**（2026-10-05 真机抓到的静默失效，见 CHANGELOG 203z补30）：
+            #    `/surroundings?radius=r` 是**以玩家为中心**扫的（`ModEntry.cs:7297` + `:7347-7350`），
+            #    而下面按**请求的中心格** `(x+dx, y+dy)` 去 `bypos` 取格 ⇒ 只有"请求的中心恰好落在
+            #    玩家那一圈里"才碰巧命中（补28d 那次拦得住就是这么绿的：玩家 (43,11)、中心 (43,10)、r=1，
+            #    两圈有交集）。区域离玩家远 ⇒ 交集为空 ⇒ `tgts`/`dev` 全空 ⇒ **静默什么都不做**
+            #    （既没拦设备、也没敲，回包只剩「⛏️ 敲完 命中: 无」）。
+            #    真机现场（恒的验收子代理 2026-10-05）：`farm break x=48 y=11 radius=1`
+            #    （正下方 (48,12) 就是优质洒水器）⇒ `⛏️ 敲完 命中: 无` 一声不吭；把中心改成玩家脚下
+            #    `x=55 y=13` ⇒ 立刻正确报 `🚫 已拦下 (56,13) Torch`。
+            #    ⇒ 改用**按请求矩形**扫：`/surroundings?x1=&y1=&x2=&y2=`（C# 矩形模式
+            #      `ModEntry.cs:7300-7321`，**不看 radius、不看玩家站哪**；`rect_mode`/`scanned`
+            #      自报"实际扫了哪一块" `:7705-7707`）。字段与 `/surroundings` 同一份构造（`:7356-7709`）。
+            _rsp = api.surroundings_rect(x - radius, y - radius, x + radius, y + radius) or {}
+            if _rsp.get("ok") is False:
+                # 矩形超上限（`ModEntry.cs:7319-7320`）/世界没就绪 —— **明确报**，别当成"这片没东西"
+                return _with_state(
+                    f"❌ 扫不到 ({x - radius},{y - radius})-({x + radius},{y + radius}) 这片："
+                    f"{_rsp.get('error') or _rsp} —— **一格都没敲**（别当成'这片什么都没有'）")
+            tiles = (_rsp.get("tiles") or [])
+            # 🧭 再确认一次"扫的**就是**请求那片"：矩形模式要求四个坐标都 ≥0（`ModEntry.cs:7313`）
+            #    ⇒ 区域贴到负坐标时 C# **静默退回**"以玩家为中心 ±10"（旧病同款：扫的不是你要的片）。
+            #    判据=回包 `rect_mode`（`:7705`）+ `scanned`（`:7707`，游戏自报的实际范围）：
+            #    矩形模式**没生效**时，要求请求矩形**整个落在 `scanned` 里**才算数；
+            #    读不到 `rect_mode`/`scanned`（老 DLL）⇒ **不拦**（宁少管一次，
+            #    不拿"我读不到"当"它扫错了"）。
+            _sc = _rsp.get("scanned")
+            if (not _rsp.get("rect_mode")) and isinstance(_sc, dict) \
+                    and all(isinstance(_sc.get(_k), int) for _k in ("x1", "y1", "x2", "y2")):
+                if not (_sc["x1"] <= x - radius and x + radius <= _sc["x2"]
+                        and _sc["y1"] <= y - radius and y + radius <= _sc["y2"]):
+                    return _with_state(
+                        f"❌ 这一发**扫的不是你要的那片区域**：要 ({x - radius},{y - radius})-"
+                        f"({x + radius},{y + radius})，游戏实际只扫了 ({_sc['x1']},{_sc['y1']})-"
+                        f"({_sc['x2']},{_sc['y2']})（矩形模式没生效：`ModEntry.cs:7313` 要求四个坐标都 ≥0；"
+                        f"要么区域贴到了负坐标，要么这一版 DLL 还没编进矩形模式——`ModEntry.cs:7300` 2026-09-23 才加）"
+                        f" ⇒ **一格都没敲**，别当成'这片没东西'；把中心挪进图内/编新 DLL 再来一次")
             bypos = {(t.get("x"), t.get("y")): t for t in tiles if "x" in t and "y" in t}
             dev = []
             for dx in range(-radius, radius + 1):
@@ -16684,6 +16719,16 @@ def _face_toward(x: int, y: int) -> None:
 def _interact_at_core(tile_x: int, tile_y: int) -> str:
     try:
         _ensure_background()  # 开商店/锻造台等菜单前先确保不冻结
+        # 📸 2026-10-05（真机 B · 鱼店后门）：**先记下"点之前人在哪"** —— 有些格子是**踩上去才触发**的门/传送
+        #    （`LockedDoorWarp`/tile 索引式），`checkAction` 对它们**恒回 false**，而门其实开了。
+        #    回读「图/坐标变没变」是判"这一步到底发生了什么"的**游戏事实**，比我们自己下结论可靠。
+        try:
+            _s0 = api.state()
+            _loc0 = str(((_s0.get("location") or {}).get("name")) or "")
+            _p0 = (_s0.get("player") or {})
+            _tile0 = (_p0.get("x"), _p0.get("y"))
+        except Exception:
+            _loc0, _tile0 = "", (None, None)
         _guard = _cross_map_guard(tile_x, tile_y)
         if _guard:
             return _with_state(_guard)
@@ -16731,6 +16776,26 @@ def _interact_at_core(tile_x: int, tile_y: int) -> str:
                 f"⚠️ ({tile_x},{tile_y}) 上有「{_obj}」，但 interact 没触发它（**不是那里空着**）。"
                 f"换条路：机器→`intent` 单子「收 已好的机器」/ farm 的 collect；家具→看类型走对应交互；NPC→social 域。"
             )
+        # 🚪 2026-10-05（真机 B · 鱼店后门）：**踩格触发的门/传送**对 `interact` 是**假阴性** ——
+        #    现场：`scene at 4 3`（鱼店后门）回 `actionTriggered=false`「没有可交互」，可门**其实开了**
+        #    （`FishShop` → `BoatTunnel` 图变了，现场可证）。这类格子压根不是"交互物"，是靠**站上去**触发的
+        #    ⇒ **绝不**对它下"这儿没有可交互的东西"的断言（那是**我们的**结论，不是游戏说的）。
+        #    顺序（全用游戏事实）：① 这一步有没有把人送走（回读图/坐标）→ ② 是不是点在自己脚下
+        #    → ③ 这格在不在门/传送数据里 → ④ 都没有才说"我看不出这格做什么"。
+        _l1, _t1 = _loc0, _tile0
+        try:
+            _s1 = api.state()
+            _l1 = str(((_s1.get("location") or {}).get("name")) or "") or _loc0
+            _p1 = (_s1.get("player") or {})
+            _t1 = (_p1.get("x"), _p1.get("y"))
+        except Exception:
+            pass
+        if _loc0 and _l1 and _l1 != _loc0:
+            return _with_state(
+                f"🚪 **这一步把角色送走了**：{_loc0}({_tile0[0]},{_tile0[1]}) → {_l1}({_t1[0]},{_t1[1]})\n"
+                f"  ⇒ ({tile_x},{tile_y}) 是**踩格触发的门/传送**（`actionTriggered=false` 对这类格"
+                f"**说明不了任何事** —— 真机 2026-10-05 `scene at 4 3` 鱼店后门就是这么回 false 的，门其实开了）。\n"
+                f"  👉 要去那儿照刚才那样走上去就行（或 `map ops=go <地点>`）；回原图 `map ops=go {_loc0}`。")
         # 🚨 2026-10-05 补27（恒旧档真机 · 玛妮柜台那出）：**目标格 == 自己脚下那格**时，
         #    游戏如实回 `actionTriggered:false`，可读起来像"这儿的东西没了/柜台坏了"。
         #    真凶几乎总是**调用方把 POI 的「站位格」当成了「目标格」**——
@@ -16744,7 +16809,7 @@ def _interact_at_core(tile_x: int, tile_y: int) -> str:
             _me = api.state().get("player") or {}
             if _me.get("x") == tile_x and _me.get("y") == tile_y:
                 return _with_state(
-                    f"⚠️ 该位置没有可交互的东西（actionTriggered=false）\n"
+                    f"🕳️ 我看不出这格要做什么（`actionTriggered=false`）\n"
                     f"  🚨 注意：`({tile_x},{tile_y})` **就是你自己站着的那格** —— "
                     f"`scene at x y` 的 x,y 是**要点的目标格**，不是站位格。\n"
                     f"  📌 POI 给的 `pos` 是**站位**、`face` 才是目标方向"
@@ -16754,7 +16819,38 @@ def _interact_at_core(tile_x: int, tile_y: int) -> str:
                 )
         except Exception:
             pass
-        return _with_state(f"⚠️ 该位置没有可交互的东西（actionTriggered=false）")
+        # 🚪 ③ 这格是不是**门/传送格**？判据全取自**已有的表/游戏数据**（不猜）：
+        _door_why = []
+        try:
+            _b = (getattr(navigation, "_REVERSE_DOORS", {}) or {}).get((_l1, (tile_x, tile_y)))
+            if _b:
+                _door_why.append(f"是「{_b}」的**门格**（`navigation._REVERSE_DOORS`）")
+        except Exception:
+            pass
+        try:
+            for _lk in (locations.MAP_LINKS.get(_l1) or []):
+                if _lk.get("tile") and tuple(_lk["tile"]) == (tile_x, tile_y):
+                    _door_why.append(f"是 `MAP_LINKS` 里 {_l1}→{_lk.get('target')} 的"
+                                     f"**{_lk.get('kind')} 出口格**")
+        except Exception:
+            pass
+        try:
+            for _w in (((api._get("/warps") or {}).get("maps") or {}).get(_l1) or []):
+                if _w.get("x") == tile_x and _w.get("y") == tile_y:
+                    _door_why.append(f"是游戏 `/warps` 里的**出口瓦片**（→ {_w.get('targetLocation')}）")
+        except Exception:
+            pass
+        if _door_why:
+            return _with_state(
+                f"🚪 ({tile_x},{tile_y}) **不是交互物、是门/传送格**：{'；'.join(_door_why)}。\n"
+                f"  这类门靠**站上去**触发（或 `/warp`），`scene at` 的 `actionTriggered` 对它**没有意义**"
+                f"（真机 2026-10-05：`scene at 4 3` 鱼店后门回 false，而门其实开了）。\n"
+                f"  👉 `map ops=go <那个地点>`（走门/出口由它负责）；只想摸面前的东西用 `scene interact`。")
+        return _with_state(
+            f"🕳️ 我看不出 ({tile_x},{tile_y}) 这格是做什么的（`actionTriggered=false`，"
+            f"也没查出门/传送属性）—— 这只是**我认不出它**，别当成「这儿空着」。\n"
+            f"  👉 站上去试试（踩格触发的门/楼梯就是这么开的）；或 `scene interact` 点面前那格；"
+            f"拿不准就 `map ops=lookup` 看有哪些地点、或问恒。")
     except Exception as e:
         return _with_state(f"❌ 交互失败: {e}")
 

@@ -167,7 +167,8 @@ try:
 
     M.api = TileApi(12, 16, False)
     out = M._interact_at_core(12, 16)
-    ck("点自己脚下 ⇒ 报没有可交互的东西", "没有可交互的东西" in out, out)
+    ck("点自己脚下 ⇒ 如实说「**我看不出**这格要做什么」", "我看不出这格要做什么" in out, out)
+    ck("…⛔ **绝不**下「没有可交互的东西」这种我们自己的结论", "没有可交互的东西" not in out, out)
     ck("…并点明**那是你自己站的格**", "你自己站着的那格" in out, out)
     ck("…并说清 `scene at` 的坐标是**目标格**", "要点的目标格" in out, out)
     ck("…并给了下一步（`map walk` + `scene interact` 或传目标格）",
@@ -180,6 +181,31 @@ try:
     M.api = TileApi(12, 16, True)
     out3 = M._interact_at_core(12, 16)
     ck("脚下那格**真触发了** ⇒ 也不加提示（不误报）", "你自己站着的那格" not in out3, out3)
+
+    print("\n⑥ 🚪 **踩格触发的门**：`actionTriggered=false` 是**假阴性**（真机 2026-10-05 鱼店后门）")
+    # 真机现场：`scene at 4 3`（鱼店后门）回 `actionTriggered=false`「没有可交互」，**可门其实开了**
+    # （`FishShop` → `BoatTunnel` 图变了，现场可证）。这类格子靠**站上去**触发，不是交互物。
+    class StepDoorApi(FakeApi):
+        """照真机形状：interact 回 false，但**这一步把人送走了**（图变了）。"""
+
+        def __init__(self):
+            self.loc = "FishShop"
+
+        def state(self):
+            return {"player": {"x": 4, "y": 4}, "location": {"name": self.loc}}
+
+        def interact_at(self, x, y):
+            self.loc = "BoatTunnel"           # 点完人已经在另一张图了
+            return {"ok": True, "actionTriggered": False}
+
+    M.api = StepDoorApi()
+    out4 = M._interact_at_core(4, 3)
+    ck("⑥ call 之后**图变了** ⇒ 如实说「这一步把角色送走了」", "送走了" in out4, out4)
+    ck("⑥ …点明那是**踩格触发的门/传送**、且 `actionTriggered` 对它没意义",
+       "踩格触发" in out4 and "说明不了任何事" in out4, out4)
+    ck("⑥ …并带上图/坐标的变化（判据是游戏事实）",
+       "FishShop" in out4 and "BoatTunnel" in out4, out4)
+    ck("⑥ …⛔ **绝不**出现「没有可交互」（真机 B 的病就是这句）", "没有可交互" not in out4, out4)
 finally:
     for k, v in _real.items():
         setattr(M, k, v)

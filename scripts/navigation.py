@@ -24,9 +24,11 @@
 （走 AI 端口）。抽模块不改变这点 —— `api` 仍是 server 的那一个模块对象。
 """
 
+import datetime
 import difflib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -541,6 +543,7 @@ def _walk_to_coord(x: int, y: int) -> str:
     except Exception as e:
         return _with_state(f"❌ 读不到当前状态: {e}")
     try:
+        _t_sent = time.time()      # 🕒 发车时刻（走位失败警报旁路的时间闸，见 `_wait_arrival`）
         r = api.walk_to_coord(loc_before, x, y)
     except Exception as e:
         return _with_state(f"❌ 走位请求失败: {e}")
@@ -551,7 +554,9 @@ def _walk_to_coord(x: int, y: int) -> str:
     #    落点对不上照旧由下面那句「已到 (x,y) 附近，实际站在…」如实说 —— 判据一个字没放宽。
     _d = ((r or {}).get("destination") or {}) if isinstance(r, dict) else {}
     _ax, _ay = _d.get("x", x), _d.get("y", y)
-    arrived = _wait_arrival(loc_before, _ax, _ay, timeout=30)
+    # 🛑 `since=_t_sent`：游戏报 `walk_failed`/`walk_blocked`（`ModEntry.cs:2294/2281`）
+    #    且**晚于**本次发车 ⇒ 立刻收工，不再干等满 30s（判据与成功条件都没动，见 `_wait_arrival`）。
+    arrived = _wait_arrival(loc_before, _ax, _ay, timeout=30, since=_t_sent)
     # ⚠️ 踩上去型的传送点（地图上 `TouchAction: Warp …`，例如小屋地下室楼梯 (19,35)）是
     #    **踩上去的下一 tick** 才换图 —— 刚落到格子上就立刻读，会读到"还没换图" ⇒ **漏判**。
     #    2026-09-11 真机就是这么漏的：走 Cabin(19,35) 返回「🚶 已到 (19,35)」，
@@ -1053,7 +1058,78 @@ def _go_home(who: str = "", door_only: bool = False) -> tuple[bool, str]:
         return False, f"❌ 回家失败: {e}"
 
 
-def _wait_arrival(target_loc: str, target_x: int, target_y: int, timeout: int = 30) -> bool:
+# ═══════════════════════════════════════════
+#  🛑 走位失败警报旁路（2026-10-05 · **只用于失败早退**）
+# ═══════════════════════════════════════════
+# 判据出处（游戏侧，权威）：
+#   · `ModEntry.cs:2294` `walk_failed`  —— "附近也没有可站格——原地不动"（**这一步真没动**）
+#   · `ModEntry.cs:2281` `walk_blocked` —— "和你现在站的不是同一片连通区…这一步没走过去"
+#   · 读法 `ModEntry.cs:8086-8104` `GET /alerts`；⚠️ **默认会消费队列**（`:8094-8095`），
+#     **`peek=true` 才只读不拿**（`:8089`）；状态条正是靠消费它来喂的（`nagi_mcp_server.py:1275`）
+#   · ⚠️ 游戏对 **同 type + 同文案** 有 **4 秒去重**（`ModEntry.cs:1182-1184`）⇒ 连续两次
+#     一模一样的失败可能**整段一条都收不到** —— 那时**退回旧行为**（等满 timeout / 图名早退），
+#     **不会更糟**。
+#   · 先例：`mine_run.py:459-464` 早就在读 `walk_completed`（⚠️ 它没传 peek ⇒ 是**消费式**的，
+#     这里**刻意不学**那一点）。
+#
+# `DateTime.UtcNow.ToString("O")`（`ModEntry.cs:1188`）＝ ISO8601 **UTC**、**7 位**小数秒，
+# 形如 `2026-10-05T12:34:56.7890123Z`。下面这条正则只干一件事：把小数秒**截到 6 位**
+# （Python <3.11 的 `fromisoformat` 只认 3/6 位）。
+_ALERT_UTC_RE = re.compile(r"^(.*\.)(\d{6})\d+([+-]\d{2}:?\d{2})$")
+
+
+def _alert_epoch_utc(alert) -> float:
+    """把游戏警报的 `timeUtc` 解析成 **epoch 秒**（与 `time.time()` 同一把尺子）。
+
+    解析不出来（字段缺 / 格式变了 / Python 太老）→ 返回 `None` ⇒ 调用方**当成没收到**：
+    **宁可不早退，也不拿猜出来的时间判"没到"**（假失败比白等更糟）。
+    """
+    raw = str((alert or {}).get("timeUtc") or "").strip()
+    if not raw:
+        return None
+    try:
+        _s = raw.replace("Z", "+00:00")
+        _m = _ALERT_UTC_RE.match(_s)
+        if _m:
+            _s = _m.group(1) + _m.group(2) + _m.group(3)
+        return datetime.datetime.fromisoformat(_s).timestamp()
+    except Exception:
+        return None
+
+
+def _walk_failed_alert(since):
+    """取"**本次走位开始之后**游戏自己报的走位失败警报"（没读到 / 认不出 → `None`）。
+
+    · `since` = 本次发 `/walk_to` 的**时刻**（`time.time()`）；`None` ⇒ **整条旁路关掉**
+      （调用方没给发车时刻 ⇒ 我们没法把队列里的警报归到"这次" ⇒ 宁可不早退）。
+    · ⚠️ **必须 `peek=True`**：不带 peek 会**消费**队列（`ModEntry.cs:8094-8095`），
+      而状态条靠这份队列喂（`nagi_mcp_server.py:1275`）—— 偷走它＝状态条瞎掉。
+    · ⚠️ **必须比时间戳**：队列里可能还躺着**上一次**走位的失败警报
+      （游戏在 update 里补发的、或我们用自己 timeout 提前收工时它才发出来）
+      ⇒ 只认 `timeUtc` **晚于** `since` 的那条，否则会把旧失败当"这次没到"（假失败）。
+    · 只看 `walk_failed` / `walk_blocked` 两种（`ModEntry.cs:2294/2281`）；
+      **不看** `walk_completed` —— "收到完成就判成功"是另一回事，本批不做（成功判据一个字没动）。
+    """
+    if since is None:
+        return None
+    try:
+        a = api.alerts(peek=True)      # ⚠️ 关键字**必须是 peek=True**（别改成消费式，见上）
+    except Exception:
+        return None
+    _best, _best_t = None, None
+    for _al in ((a or {}).get("alerts") or []):
+        if str((_al or {}).get("type") or "") not in ("walk_failed", "walk_blocked"):
+            continue
+        _t = _alert_epoch_utc(_al)
+        if _t is None or _t <= since:
+            continue
+        if _best_t is None or _t > _best_t:    # 取**最新**那条（要印给调用方的就是它）
+            _best, _best_t = _al, _t
+    return _best
+
+
+def _wait_arrival(target_loc: str, target_x: int, target_y: int, timeout: int = 30,
+                  since: float = None, alert_out: dict = None) -> bool:
     """轮询等 walk_to 到达（含跨地图自动寻路）。⚠️ 传**游戏回包里的**坐标，见 `_walk_and_wait`。
 
     🩺 **慢就出声**（2026-09-19）：这个循环判据三条（名字对 / ≤2 格 / 不在移动），任一不满足
@@ -1061,6 +1137,18 @@ def _wait_arrival(target_loc: str, target_x: int, target_y: int, timeout: int = 
       `TimeOut` 一旦跑满，症状就是恒说的"谜之停顿"。所以**超过 3 秒就 print 一行**：
       哪张图、哪个格、等了多久、成没成、以及**当时人到底在哪**（一眼看出是哪条判据不满足）。
       常态下这些等待都是 1~2 秒 ⇒ 不打印；**打印了就是有事**，别当噪音忽略。
+
+    🛑 **`since` / `alert_out` ＝ 走位失败警报旁路**（2026-10-05 加；**只用于失败早退**）：
+
+      · `since`：**本次发 `/walk_to` 的时刻**（`time.time()`，由 `_walk_and_wait` 从它真正
+        发车那一行传进来）。只有 `timeUtc` **晚于**它的 `walk_failed`/`walk_blocked` 才认。
+        `None` ⇒ **整条旁路关掉**（认不出"这次"就宁可不早退，见 `_walk_failed_alert`）。
+      · `alert_out`：**出参**（调用方传个 dict 进来）。命中时写
+        `{"game_alert": 游戏原话, "game_alert_type": 警报 type}`，供调用方并进失败说明。
+      · ⚠️ **成功判据（图名 + ±2 + 静止）一个字没放宽**；本旁路只在成功判据不满足时才看，
+        且**不会**因为收到 `walk_completed` 就提前判成功。
+      · ⚠️ 游戏有 **4 秒同文案去重**（`ModEntry.cs:1182-1184`）⇒ 有可能整段一次警报都收不到；
+        那种情况**退回加这条之前的老行为**（等满 / 图名早退），**不是更糟**。
     """
     _t0 = time.time()
     deadline = _t0 + timeout
@@ -1090,6 +1178,23 @@ def _wait_arrival(target_loc: str, target_x: int, target_y: int, timeout: int = 
                     return False
         except Exception:
             pass
+        # 🛑 游戏自己的走位终局警报（**只用于失败早退**，2026-10-05）
+        #    `walk_failed`（`ModEntry.cs:2294` 附近全站不住 ⇒ 原地不动）/
+        #    `walk_blocked`（`:2281` 落点不在同一连通区 ⇒ 这一步没过去）都是**游戏权威**的"这步没成"。
+        #    加这条之前：走位**已经失败**了这儿还在干等满 timeout（预算 `min(max(25, dist*0.5+10), 60)`
+        #    = `navigation.py:2017`）⇒ 这就是恒报「走不到」里那段"白等"的来源。
+        #    ⚠️ 放在**成功判据之后**：人真站在目标 ±2 内就先判成功（警报晚到一步也不算失败）。
+        _al = _walk_failed_alert(since)
+        if _al:
+            _dt = time.time() - _t0
+            _gt = str(_al.get("type") or "")
+            _gm = str(_al.get("message") or "")
+            if alert_out is not None:
+                alert_out["game_alert"] = _gm
+                alert_out["game_alert_type"] = _gt
+            print(f"[walk-gamefail] 等「{target_loc} ({target_x},{target_y})」时游戏报走位失败"
+                  f"（{_gt}）—— 提前 {_dt:.1f}s 收工：{_gm}", flush=True)
+            return False
         time.sleep(0.8)
     try:
         _s = api.state()
@@ -1146,7 +1251,15 @@ def _walk_and_wait(loc: str, x: int, y: int, timeout: int = 25):
     **返回契约**：`(ok, note)`
       · `ok=True`  → `note` 是 ""，或"目标被调整"的提示（`（⚠️ (x,y) 站不住，游戏就近改到 (ax,ay)）`）
       · `ok=False` → `note` **一定是可直接展示的失败原因**，调用方 `return note` 就行，别再自己编。
+
+    🛑 **走位失败警报旁路**（2026-10-05）：发车**之前**先记下时刻（`_t_sent`），交给
+      `_wait_arrival(since=…)` —— 游戏自己报的 `walk_failed`/`walk_blocked`
+      （`ModEntry.cs:2294/2281`）**只认晚于这个时刻**的那条 ⇒ 走位已经失败就**立刻收工**，
+      不再干等满 timeout；并把它**原话**并进失败说明（`_to`），调用方印出来就是游戏自己的话。
+      ⚠️ `since` 必须是"**发车时刻**"而不是"开始等的时刻"：游戏可能在 `/walk_to` 那一发
+      里就已经判失败（回包还没回到我们手上）⇒ 用开始等的时刻会漏掉它。
     """
+    _t_sent = time.time()          # 🕒 发车时刻（失败警报旁路的时间闸，见 _wait_arrival docstring）
     try:
         r = api._post("/walk_to", {"location": loc, "x": x, "y": y})
     except Exception as e:
@@ -1160,12 +1273,20 @@ def _walk_and_wait(loc: str, x: int, y: int, timeout: int = 25):
     note = ""
     if (ax, ay) != (x, y):
         note = f"（⚠️ ({x},{y}) 站不住，游戏就近改到 ({ax},{ay})）"
-    if _wait_arrival(loc, ax, ay, timeout=timeout):
+    _aout = {}
+    if _wait_arrival(loc, ax, ay, timeout=timeout, since=_t_sent, alert_out=_aout):
         _walk_log(loc, x, y, ax, ay, "到位")
         return True, note
     # ⚠️ 超时原因里写**我们真正等的那个格**（ax,ay），不是请求的那个 —— 否则排查时被带偏
-    _walk_log(loc, x, y, ax, ay, "超时没到（人可能还在路上）")
-    _to = f"走位超时没到（{loc} {ax},{ay}）"
+    _ga = str(_aout.get("game_alert") or "").strip()
+    if _ga:
+        # 游戏自己说"这步没成" ⇒ 失败说明里放**游戏原话**（判据来源是游戏，不是我们猜）
+        _walk_log(loc, x, y, ax, ay,
+                  f"游戏警报说走位失败（{_aout.get('game_alert_type')}）· 没走到")
+        _to = f"走位失败（{loc} {ax},{ay}）—— 游戏警报原话：{_ga}"
+    else:
+        _walk_log(loc, x, y, ax, ay, "超时没到（人可能还在路上）")
+        _to = f"走位超时没到（{loc} {ax},{ay}）"
     return False, (note + _to) if note else _to
 
 
@@ -1331,6 +1452,57 @@ for _k in locations.MAP_LINKS:
         raise RuntimeError(f"MAP_LINKS 键归一后冲突：{_k} vs {_MAP_KEYS_CI[_n]}")
     _MAP_KEYS_CI[_n] = _k
 del _k, _n
+
+
+# 🏠 「自家小屋/家」的**整串**白名单（判据见 `_is_home_word`）。
+# ⚠️ 2026-10-05（真机 A）：以前 `map_go` 里是**子串**判据（`"小屋" in 目的地`）⇒
+#    `map go 姜岛小屋(门内六人房)`（`locations.py:432` 里**有这条全名**）被"小屋"两个字劫持到
+#    **自家 Cabin 门口 Farm(55,12)**，还回「🏠 已到自家小屋门口」＝**认错地方还报"到了"**。
+_HOME_WORDS = ("小屋", "我的小屋", "自己小屋", "自家小屋", "我的家", "我家", "自己家", "自家", "家",
+               "cabin", "小屋(床)", "我的小屋(床)", "自己小屋(床)", "自家小屋(床)")
+_HOME_VERBS = ("去", "进", "回", "到", "往", "走")
+
+
+def _is_home_word(s) -> bool:
+    """这个目的地是不是在说「**自家**小屋/家」？—— **整串**判据（去掉一个前缀动词后整串相等）。
+
+    恒 2026-09-05 拍板的语义**原样保留**：`去小屋/进小屋/回家/我家/小屋(床)` 都算"自家小屋"，
+    统一走 `_nav_home_door()`（只到门口，进屋交给 AI）。
+    ⚠️ 2026-10-05（真机 A）改成整串：`姜岛小屋(门内六人房)` / `雷欧小屋(内)` / `女巫小屋(门口)`
+    这类**带修饰的全名**一律**不算**（它们该走 POI/场景那条路，别被两个字劫持）。
+    """
+    t = str(s or "").strip().lower().replace(" ", "")
+    for _v in _HOME_VERBS:
+        if t.startswith(_v):
+            t = t[len(_v):]
+            break
+    return t in _HOME_WORDS
+
+
+def _poi_ambiguous(q):
+    """半截名 `q` 在 POI 表里**多候选、且落点不止一张图** ⇒ 返回候选全名（否则 `[]`）。
+
+    判据（**别再放宽**）：
+      ① `q` **精确**命中 `locations.POI` / `MAP_LINKS` 键 / `SCENE_NAME_ALIAS`（或归一后命中键）
+         ⇒ `[]` —— **精确名优先**：全名/别名命中时不许再拿子串去搅（真机 A 就是全名被子串赢走的）；
+      ② 否则取**名字里含 `q`** 的 POI 当候选；
+      ③ 候选 ≥2 **且 `map` 不止一个** ⇒ 报歧义。⚠️ 命中**同一张图**的多个 POI **不算**歧义
+         （导航目的地本来就是那张图，交给下游既有的建筑/场景兜底）——这里**不替谁挑任何一个 POI**。
+    ⚠️ 只在 `map_go` 门口调（它是跨场景入口）；`walk_to` / `go_to` 的既有行为一个字不动。
+    """
+    s = str(q or "").strip()
+    if not s:
+        return []
+    if s in locations.POI or s in locations.MAP_LINKS or s in SCENE_NAME_ALIAS:
+        return []
+    if _norm_key(s) in _MAP_KEYS_CI:
+        return []
+    cand = [n for n in locations.POI if s in n]
+    if len(cand) < 2:
+        return []
+    if len({(locations.POI[n].get("map") or "") for n in cand}) < 2:
+        return []
+    return sorted(cand)
 
 
 def _near_map_hint(dest):
@@ -3142,13 +3314,29 @@ def map_go(destination: str = "", npc: str = "") -> str:
     # 🏠 自家小屋拦截（2026-09-05 恒：裸"小屋"被 SCENE_NAME_ALIAS 的"女巫小屋/巫师小屋"子串劫持
     #   → 误导航去 WitchHut（AI 说"去小屋"走到女巫小屋，找不到自家门）。"去小屋/进小屋/回家/我家"统一走回家**进屋**。
     #   ⚠️ 排除"女巫/巫师/魔法/神殿"——那些是真女巫小屋，别劫持。）
+    # ⚠️⚠️ 2026-10-05（真机 A，恒的验收子代理）：这里**以前是子串判据**（`"小屋" in 目的地`）⇒
+    #   `map go 姜岛小屋(门内六人房)`（`locations.py:432` 里**有这条全名**）被"小屋"两个字劫持 ⇒
+    #   走 `_nav_home_door()` 把人带到**自家 Cabin 门口 Farm(55,12)**，还回「🏠 已到自家小屋门口」
+    #   ＝ **认错地方还报"到了"**（假成功）。⇒ 改成**只认整串就是"家/小屋"**（`_is_home_word`），
+    #   带修饰的 POI 全名一律落下去走 POI 那条路。
     _hp = str(destination or "").lower()
     _excl = ("女巫", "巫师", "魔法", "神殿", "witch")
     if "回家" in _hp and not any(k in _hp for k in _excl):
         return go_to("回家")          # 明确"回家"→推门进屋就停（要躺床走 sleep / 点名"小屋(床)"）
-    if ("小屋" in _hp or "我的家" in _hp or _hp == "家" or "cabin" in _hp) \
-            and not any(k in _hp for k in _excl):
+    if _is_home_word(destination) and not any(k in _hp for k in _excl):
         return _nav_home_door()       # "进小屋/cabin"→只导航到门口（进屋交给 AI interact_at）
+
+    # 🎯 2026-10-05（真机 A）：**精确名优先 + 半截名不猜**（判据与反例见 `_poi_ambiguous`）。
+    #    真机现场：`map go 姜岛小屋`（半截）会被子串/别名悄悄挑一个落点 ⇒ 宁报错别兜底：
+    #    把候选**全列出来**让人/AI 说全名，**绝不**自己挑一个再报"到了"。
+    _amb = _poi_ambiguous(destination)
+    if _amb:
+        _lst = "\n".join(f"     · 「{n}」（{locations.POI[n].get('map')} {locations.POI[n].get('pos')}）"
+                         for n in _amb)
+        return _with_state(
+            f"❌ 「{destination}」有 {len(_amb)} 个候选、落点**不在同一张图**，我不替你挑：\n{_lst}\n"
+            f"  👉 把**全名**（连括号里那截）写全再敲一次，例如 `map ops=go {_amb[0]}`；"
+            f"或直接写要去的**图**（如 `map ops=go {locations.POI[_amb[0]].get('map')}`）")
 
     # 🔍 npc 优先：路由到该 NPC 当前所在场景（2026-09-06 恒：手机实测员建议）
     _npc_target = None
@@ -3231,7 +3419,26 @@ def map_go(destination: str = "", npc: str = "") -> str:
                 if _cur != loc:
                     # 到不了目标图：**如实报**，不做跨图瞬移（宁报错别兜底）
                     return _with_state(f"❌ 到不了 {loc}（现在在 {_cur or '?'}）——先 map go {loc} 走过去")
-                _walk_and_wait(loc, x, y, timeout=35)
+                _w_ok, _w_note = _walk_and_wait(loc, x, y, timeout=35)
+                if not _w_ok:
+                    # 🚫 2026-10-05：这里的返回值**以前被丢掉**，走位超时/失败**照样**回
+                    #    「🗺️ 已到「X」门口」= **谎报到达**（"报成功但事没发生"家族，恒最恨的一类）。
+                    #    判据是 `_walk_and_wait` 自己的 `(ok, note)`（ok=图名对上+±2+静止，
+                    #    `navigation.py:1068-1093`）——**没有**改成任何新的宽松判据，只是**不再无视**它。
+                    #    ⚠️ 本批只改这一处；审计列出的另外 11 处同样丢返回值的调用点**原样不动**
+                    #      （逐条判断见 CHANGELOG 203z补30）。
+                    try:
+                        _wst = api.state()
+                        _wp = (_wst.get("player") or {})
+                        _wpos = (f"{((_wst.get('location') or {}).get('name') or '?')} "
+                                 f"({_wp.get('x')},{_wp.get('y')})")
+                    except Exception:
+                        _wpos = "读不到位置"
+                    return _with_state(
+                        f"❌ **没走到「{destination}」门口**（目标 {loc} {x},{y}）：{_w_note}；"
+                        f"人现在在 {_wpos}{_pre}。"
+                        f"下一步：看 `_mcp_out.log` 里的 `[walk]` 那行落点，再 `map ops=go {destination}` 重试；"
+                        f"要进屋请先站到门口那格 `scene interact` 推门（别当自己已经到了）")
                 # 📬 邮箱不是"建筑门"：这一格只是**站位**，要敲的是旁边那格邮箱
                 #    （2026-09-24 真机：原文案会回"（建筑门，进屋用 interact）"，把 AI 往错的动作上带）
                 if any(k in (destination or "") for k in ("邮箱", "信箱", "mailbox")):
