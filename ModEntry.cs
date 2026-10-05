@@ -3275,6 +3275,11 @@ public class ModEntry : Mod
                 ["forage"] = true,
                 ["diggable"] = true,
                 ["harvestable"] = true,
+                // 🪨🚿 2026-10-05（补29）：`/surroundings` 每格多报**游戏自己的对象事实** ——
+                //    `isStone`/`isWeeds`/`isTwig`（`Object.IsBreakableStone/IsWeeds/IsTwig`，出处 `:6082/:6098/:6117`）
+                //    + `bigCraftable`/`objType`/`objCategory`（设备闸的真判据，替换 Python 的过渡猜法）。
+                //    （照上面那条规矩：这里只陈述"会不会吐这些键"。）
+                ["object_flags"] = true,
                 // 各端点
                 ["chest_open"] = true,               // 👀 /chest_open（真开箱）
                 ["machines_heldItemDisplay"] = true, // 🏭 /machines 的 heldItemDisplay（中文显示名）
@@ -7568,6 +7573,23 @@ public class ModEntry : Mod
                     if (objName != null) tile["object"] = objName;
                     if (objId != null) tile["objId"] = objId;
                     if (objForage) tile["forage"] = true;   // 🌿 游戏判的"可手捡"（见上面 objForage 注释）
+                    // 🪨🚿 2026-10-05（补29 · 规格书 §6.4②）——**"这是什么"问游戏**，别再靠 objId/名字猜：
+                    //    · `isStone`/`isWeeds`/`isTwig` = 游戏自己的三个判据
+                    //      （`Object.IsBreakableStone()` `Object.cs:6082` · `IsTwig()` `:6098` · `IsWeeds()` `:6117`）
+                    //      ⇒ 单子上"先出敲还是先出清杂"不再靠名字表（1.6 矿节点 Name 全报 Stone 那次就是教训）。
+                    //    · `bigCraftable`/`objType`/`objCategory` = **设备闸的真判据**（替换 Python 那边
+                    //      "(BC) 开头 或 名字≠Stone" 的过渡猜法）。C# **只报事实**，设备语义留在消费侧定。
+                    //    ⚠️ 照 2026-10-02 灌木那次的教训：**真假都要显式报**（只在为真时写键 ⇒
+                    //       消费侧"有键=听游戏的"判据永远不成立，一路退回猜）。
+                    if (obj != null)
+                    {
+                        try { tile["isStone"] = obj.IsBreakableStone(); } catch { }
+                        try { tile["isWeeds"] = obj.IsWeeds(); } catch { }
+                        try { tile["isTwig"] = obj.IsTwig(); } catch { }
+                        tile["bigCraftable"] = obj.bigCraftable.Value;
+                        tile["objType"] = obj.Type ?? "";
+                        tile["objCategory"] = obj.Category;
+                    }
                     if (tileTerrain != null) tile["terrain"] = tileTerrain;
                     // 🍓 灌木三件（消费侧优先用前两件，`bushBloom` 是**旧字段**，含义只是"贴图切到第 1 帧"）：
                     if (bushSize >= 0)

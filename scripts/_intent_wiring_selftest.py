@@ -3711,6 +3711,18 @@ def main():
                   M._is_auto_grabber(_grab_m) and not M._is_auto_grabber({"type": "Auto-Petter"})))
     res.append(ok("🤖 197：机器台数**不含**这两台（那一屏只该有 Keg 一台）",
                   "全农场机器 (1 台)" in _mr, _mr[:120]))
+    # 🌱 203z补29：C# 新增第 4 档 `growing`（**有作物但还不能收**，花盆那类）⇒
+    #    机器清点里要有自己的说法，**不许并进「加工」**（盆里长着的作物不是"加工中"）。
+    M.api.farm_report = lambda *a, **k: {
+        "ok": True,
+        "machines": {"machines": [{"type": "Garden Pot", "location": "Farm", "x": 53, "y": 17,
+                                   "status": "growing", "heldItemDisplay": ""}]}}
+    try:
+        _mg = M.machine_report()
+    finally:
+        M.api.farm_report = _old_fr
+    res.append(ok("🌱 补29：`growing`（有作物没熟）**自己一档「生长」**，不并进「加工」",
+                  "生长1" in _mg and "加工0" in _mg, _mg[:200]))
     _stub(loc="Deluxe Coop", surr_tiles=[])
     M._BARN_EMPTY_KEY.update(loc=None, txt="")
     _old_am = M.api.machines

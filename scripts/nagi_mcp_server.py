@@ -8479,10 +8479,19 @@ def machine_report() -> str:
                 _c = f"{m.get('location', '?')}({m.get('x')},{m.get('y')})"
                 _containers["grab" if _is_auto_grabber(m) else "pet"].append(_c)
                 continue
-            t = agg.setdefault(m.get("type") or "?", {"total": 0, "idle": 0, "processing": 0, "ready": 0, "byLoc": {}})
+            t = agg.setdefault(m.get("type") or "?", {"total": 0, "idle": 0, "processing": 0,
+                                                      "growing": 0, "ready": 0, "byLoc": {}})
             t["total"] += 1
             status = m.get("status")
-            key = "idle" if status == "empty" else ("ready" if status == "ready" else "processing")
+            # 🌱 2026-10-05（补29）：`growing` 是 C# 新增的**第 4 档**（"有作物但还不能收"，花盆那类）。
+            #    原来这句只认 empty/ready、其余一律归"加工" ⇒ 会把花盆里正长着的作物报成「加工中」（假话）。
+            #    ⚠️⚠️ **现在跑着的那份 DLL（`C1090198`）里还没有这一档** —— 探针实测（把 DLL 当字节按
+            #       UTF-16 找字面量）`growing=False` ⇒ 这段**今天永远不会触发**，是"提前接好"；
+            #       **要等编包 + 重启游戏**才会真出现。别把它当成"已经在跑"（那是假成功隐患）。
+            key = ("idle" if status == "empty"
+                   else "ready" if status == "ready"
+                   else "growing" if status == "growing"
+                   else "processing")
             t[key] += 1
             loc = m.get("location", "?")
             t["byLoc"][loc] = t["byLoc"].get(loc, 0) + 1
@@ -8490,7 +8499,8 @@ def machine_report() -> str:
         for name, s in sorted(agg.items()):
             cn = MACHINE_CN.get(name, name)
             locs = ", ".join(f"{k}x{v}" for k, v in s["byLoc"].items())
-            lines.append(f"  • {cn}: 共{s['total']}台 闲置{s['idle']} 加工{s['processing']} 完成{s['ready']}  ({locs})")
+            _grow = f" 生长{s['growing']}" if s.get("growing") else ""
+            lines.append(f"  • {cn}: 共{s['total']}台 闲置{s['idle']} 加工{s['processing']}{_grow} 完成{s['ready']}  ({locs})")
         if _containers["grab"]:
             lines.append(f"  🤖 自动采集器 {len(_containers['grab'])} 台（**当箱子用**：走到它旁边 "
                          f"`scene at x y` 打开 → `menu read` 看里面 → 点物品取出；"
@@ -15997,7 +16007,8 @@ def _break_worth(t: dict) -> bool:
 #      ① `objId` 以 `(BC)` 开头 = 大制作物（机器/花盆/稻草人/雕像…）—— **游戏的结构**，不是名单；
 #      ② 有 `object` 且名字不是 `"Stone"` —— **1.6 里矿节点的 Name 全报 `"Stone"`**，
 #         而**洒水器在 1.6 是 `(O)` 物件**（真机 `(O)621`）⇒ 只靠 ① 会漏掉洒水器。
-#    📌 ② 是**过渡判据**：真判据该由 C# 报 `obj.Type`（`"Crafting"`），已进"待编 C# 清单"。
+#    📌 ② 是**过渡判据**：真判据是 C# 那两位 `bigCraftable`/`objType`（补29 已写进源码，**待编**）——
+#       `_is_device_tile` 里**先认那两位**，只在这两位缺席（老 DLL）时才退回 ①②。
 _BREAK_DEVICE_CONFIRM: dict = {}      # 区域 key → 上次"拦下"的时间戳
 _BREAK_CONFIRM_TTL = 600.0            # 10 分钟：防"很久以后同一句指令被当成确认"
 
@@ -16006,16 +16017,30 @@ def _is_device_tile(t: dict) -> bool:
     """这格是不是**设备**（挥镐会把它们捡起来/敲掉）⇒ 划范围模式要拦。
     箱子/容器**不算**（它们另有 `chest_skip` 那条路，已经单独在报）。
 
-    ⚠️ **两条判据都要**（真机 2026-10-05 当场逮到第一版漏了洒水器）：
-      ① `objId` 以 `(BC)` 开头 = 大制作物（机器/花盆/稻草人/雕像…）；
-      ② **有 `object` 且名字不是 `"Stone"`** —— 因为 **1.6 里所有矿节点（石头/矿脉/宝石）的 `Name` 都报 `"Stone"`**
-         （见 AGENTS「关键坑 6」），而**洒水器在 1.6 是 `(O)` 物件**（真机：`(O)621` = 优质洒水器，
-         `/surroundings` 报 `object:"Quality Sprinkler"`, `objId:"(O)621"`）⇒ **只靠 `(BC)` 会漏掉它**。
-      📌 这是**过渡判据**：真判据该由 C# 报游戏自己的 `obj.Type`（`"Crafting"` = 可放置制作物）；
-        那条已进"待编 C# 清单"（补28d），编出来就把 ② 换成它（别让这条口径漂）。
+    ⚠️ **判据分两层**（真机 2026-10-05 当场逮到第一版只认 `(BC)`、漏了洒水器）：
+      **① 真判据（补29 的 C# 位，问游戏的结构 —— 优先用）**：
+         `bigCraftable` 为真 ⇒ 设备；`bigCraftable` 为假 ⇒ 看 `objType == "Crafting"`
+         （1.6 的洒水器/火把那类 `(O)` 制作物走这一支）。
+         ⚠️⚠️ **现在跑着的那份 DLL（`C1090198`）没吐这两个键**（探针实测 `bigCraftable=False` /
+         `objType=False`）⇒ **这一支今天不会命中**，全靠下面的过渡判据兜着；
+         **编包 + 重启游戏之后**它才会接管（那时过渡判据自然退居老 DLL 兜底）。
+      **② 过渡判据（只在那两位缺席 = 老 DLL 时退回，边界如实写在这里）**：
+         `objId` 以 `(BC)` 开头 或「有 `object` 且名字不是 `"Stone"`」——
+         因为 **1.6 里所有矿节点（石头/矿脉/宝石）的 `Name` 都报 `"Stone"`**（见 AGENTS「关键坑 6」），
+         而**洒水器在 1.6 是 `(O)` 物件**（真机：`(O)621` = 优质洒水器 ⇒ `/surroundings` 报
+         `object:"Quality Sprinkler"`, `objId:"(O)621"`）。
+         ⚠️ 过渡判据的边界（**宁误拦不放过**）：`(O)` 类的地面小件（火把/蟹笼…）也会被算设备 ⇒
+         划范围经过它们会**先拦一次**（多问一句，不是错事）；反过来它**不会漏**洒水器。
     """
     if _is_chest_tile(t):
         return False
+    # ✅ ① 真判据：C# 报的游戏事实（`Object.bigCraftable` / `Object.Type`，反编译 `Object.cs:383`）
+    bc = t.get("bigCraftable")
+    if isinstance(bc, bool):
+        if bc:
+            return True
+        return str(t.get("objType") or "") == "Crafting"
+    # 🕰️ ② 老 DLL（没这两位）⇒ 退回过渡判据
     if str(t.get("objId") or "").startswith("(BC)"):
         return True
     name = str(t.get("object") or "")

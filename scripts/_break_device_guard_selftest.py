@@ -113,6 +113,23 @@ try:
     ck("空/None ⇒ 不炸也不误判",
        M._is_device_tile({}) is False and M._is_device_tile({"objId": None}) is False)
 
+    print("\n①b 真判据（补29 的 C# 位）：`bigCraftable`/`objType` 在场就**只认它们**，不靠名字猜")
+    ck("大制作物 `bigCraftable=True` ⇒ 设备",
+       M._is_device_tile({"bigCraftable": True, "objType": "Crafting", "objId": "(BC)62"}) is True)
+    ck("`(O)621` 洒水器：`bigCraftable=False` 但 `objType=Crafting` ⇒ 设备",
+       M._is_device_tile({"bigCraftable": False, "objType": "Crafting", "objId": "(O)621",
+                          "object": "Quality Sprinkler"}) is True)
+    ck("石头：`bigCraftable=False` + `objType=Basic` ⇒ **不是**设备（真判据不看名字）",
+       M._is_device_tile({"bigCraftable": False, "objType": "Basic", "objId": "(O)390",
+                          "object": "Stone"}) is False)
+    ck("⚠️ 真判据在场时**不再**按名字兜底：`objType=Basic` 的怪名字也不当设备",
+       M._is_device_tile({"bigCraftable": False, "objType": "Basic", "object": "Mystery Thing"}) is False)
+    ck("箱子照样先被 chest 那条排除（`bigCraftable=True` 也不行）",
+       M._is_device_tile({"bigCraftable": True, "objType": "Crafting", "objId": "(BC)130",
+                          "object": "Chest"}) is False)
+    ck("老 DLL（没这两位）⇒ 退回过渡判据：`(O)621` + 名字 ⇒ 设备",
+       M._is_device_tile({"object": "Quality Sprinkler", "objId": "(O)621"}) is True)
+
     print("\n② 区域身份：同图+同中心+同半径 才是「同一个区域」")
     _reset()
     _k1 = M._break_area_key(50, 50, 2)
