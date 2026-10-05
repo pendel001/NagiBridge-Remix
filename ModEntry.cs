@@ -15100,6 +15100,84 @@ public class ModEntry : Mod
         return string.IsNullOrEmpty(ing.id) ? "（这一类）" : ing.id;
     }
 
+    /// <summary>🚦 这一刻这个菜单**让不让点** → `null`（让点）或"为什么不让"（人话）+ 剩余毫秒。</summary>
+    /// <remarks>
+    /// ⚠️ 2026-10-05 恒三条追问定形：
+    ///   ①**要通用**（别只给献祭板写死）⇒ 判据收在**这一处**（`HandleMenuClick` 进门先问它）；
+    ///      加新类就往下面加一段，**别在 dispatch 里散着写**。
+    ///   ②**别只回"拒绝"**：拒绝函在路上时游戏可能已经能点了 ⇒ 那句拒绝就成了**过期的假话**
+    ///      （恒：「会不会阻塞到返回拒绝的结果然后实际上 ai 看到的时候已经能操作了」）。
+    ///      ⇒ 报文里**必须带"还要等多久"**（能读到就精确读，读不到就说读不到）。
+    ///   ③**不能在这里 sleep**：这一层跑在**主线程**上，而这两位旗正是主线程 `update()` 每帧改的
+    ///      ⇒ sleep = 把游戏冻住、动画永远走不完（"自己等自己"）。
+    ///      真要"服务端等到好再动手"，得做成**延后执行**（挂到下一帧的待办队列、能点了再点、
+    ///      再把真结果回出去）—— 前端就不用会 sleep 了。
+    /// 判据逐类问游戏（**能读剩余毫秒的尽量读**）：
+    ///   · 献祭板：`JunimoNoteMenu.canClick`（public static，`:56`，`receiveLeftClick` 开头就 `return`）
+    ///     + `Bundle.completionTimer`（ms，`:443/:1270` 拿它当"别动"的前置）；
+    ///   · 对话框：`DialogueBox.safetyTimer`（帧，>0 就吞点击，2026-10-02 真机踩过）。
+    /// </remarks>
+    private static string? MenuBusyReason(IClickableMenu menu, out int waitMs)
+    {
+        const System.Reflection.BindingFlags F = System.Reflection.BindingFlags.Public |
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+        waitMs = -1;                       // -1 = **读不到**（别编一个数）
+        if (menu == null) return null;
+        if (menu is JunimoNoteMenu)
+        {
+            try
+            {
+                var cc = typeof(JunimoNoteMenu).GetField("canClick",
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
+                    ?.GetValue(null);
+                if (cc is bool cb && !cb)
+                {
+                    // `canClick` 是**布尔**（转场结束才置真）⇒ 剩多久**读不到**；但若这一包正在放
+                    // 完成动画，那位的 ms 是现成的，顺手报出来。
+                    try
+                    {
+                        var cpb = menu.GetType().GetField("currentPageBundle", F)?.GetValue(menu);
+                        var t = cpb == null ? 0 : Convert.ToInt32(
+                            cpb.GetType().GetField("completionTimer", F)?.GetValue(cpb) ?? 0);
+                        if (t > 0) waitMs = t;
+                    }
+                    catch { }
+                    return "献祭板正在转场/放完成动画（canClick=false，点什么都会被吞）";
+                }
+            }
+            catch { }
+            try
+            {
+                var cpb2 = menu.GetType().GetField("currentPageBundle", F)?.GetValue(menu);
+                if (cpb2 != null)
+                {
+                    int t = Convert.ToInt32(cpb2.GetType().GetField("completionTimer", F)?.GetValue(cpb2) ?? 0);
+                    if (t > 0)
+                    {
+                        waitMs = t;
+                        return $"这一包正在放完成动画（completionTimer={t}ms）";
+                    }
+                }
+            }
+            catch { }
+        }
+        if (menu is DialogueBox db)
+        {
+            try
+            {
+                int st = Convert.ToInt32(typeof(DialogueBox).GetField("safetyTimer", F)?.GetValue(db) ?? 0);
+                if (st > 0)
+                {
+                    // `safetyTimer` 按**帧**递减（60fps 下 st 帧 ≈ st*16.7ms）——给个**估值**并标明是估的
+                    waitMs = (int)(st * 16.7);
+                    return $"对话框刚弹出来（safetyTimer={st} 帧）";
+                }
+            }
+            catch { }
+        }
+        return null;
+    }
+
     private object HandleMenuClick(HttpListenerContext ctx)
     {
         var p = ReadJson(ctx);
@@ -15720,67 +15798,6 @@ public class ModEntry : Mod
                         tcs.SetResult(new { ok = false, error = "当前不是献祭板（没有 bundleBack 这条路）" });
                     }
                     return;
-                }
-
-                // 🚦🚦 2026-10-05 恒：「**直接把这种时刻都阻塞上就不会让 ai 乱点了**」
-                //    ⇒ 闸设在**这一层**（所有 `/menu/click` 都从这里过），而不是让每个消费侧各自小心。
-                //    判据全用**游戏自己的旗**（我们不猜 sleep）：
-                //      · `JunimoNoteMenu.canClick == false` —— `receiveLeftClick` 开头就是
-                //        `if (!canClick) return;`（`:432`）⇒ 这一刻点什么都被**静默吞掉**
-                //        （谁关它：收集包完成 `:1095` / 屏幕滑动 `:1244-1248`）；
-                //      · `Bundle.completionTimer > 0` —— 这一包在放完成动画（`:443/:1270` 拿它当前置）；
-                //      · `DialogueBox.safetyTimer > 0` —— 刚弹出的对话框（`:receiveLeftClick` 开头同样
-                //        `return`，2026-10-02 真机踩过"框一出现就点 = 静默点空"）。
-                //    ⚠️ **拒绝**（不是"等一等再点"）：让调用方**知道刚才那一发压根没生效**，
-                //       别把它误读成"点了、没成"。报文里带上**是哪个旗**，便于下一步决定等多久。
-                //    ⚠️ 出口不受影响：`/menu_close`（强制退）/`/key` 都不走这一层。
-                if (menu is JunimoNoteMenu jnmGate)
-                {
-                    bool canClickNow = true;
-                    try
-                    {
-                        canClickNow = (bool?)typeof(JunimoNoteMenu).GetField("canClick",
-                            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
-                            ?.GetValue(null) ?? true;
-                    }
-                    catch { }
-                    int jTimer = 0;
-                    try
-                    {
-                        var cpb = menu.GetType().GetField("currentPageBundle",
-                            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic |
-                            System.Reflection.BindingFlags.Instance)?.GetValue(menu);
-                        if (cpb != null)
-                            jTimer = Convert.ToInt32(cpb.GetType().GetField("completionTimer",
-                                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic |
-                                System.Reflection.BindingFlags.Instance)?.GetValue(cpb) ?? 0);
-                    }
-                    catch { }
-                    if (!canClickNow || jTimer > 0)
-                    {
-                        tcs.SetResult(new { ok = false, blocked = !canClickNow ? "canClick" : "completionTimer",
-                            canClick = canClickNow, completionTimer = jTimer,
-                            error = "献祭板正在放动画（收集包完成/翻页）—— 这一刻点什么都会被游戏吞掉，"
-                                    + "等它放完再点（约 1 秒）" });
-                        return;
-                    }
-                }
-                if (menu is DialogueBox dbGate)
-                {
-                    int safety = 0;
-                    try
-                    {
-                        safety = (int)(typeof(DialogueBox).GetField("safetyTimer",
-                            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic |
-                            System.Reflection.BindingFlags.Instance)?.GetValue(dbGate) ?? 0);
-                    }
-                    catch { }
-                    if (safety > 0)
-                    {
-                        tcs.SetResult(new { ok = false, blocked = "safetyTimer", safetyTimer = safety,
-                            error = "对话框刚弹出来（safetyTimer 还在走）—— 这一刻点它只会被吞掉，稍等再点" });
-                        return;
-                    }
                 }
 
                 if (button != "")
