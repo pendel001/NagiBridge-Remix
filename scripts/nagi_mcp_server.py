@@ -8825,6 +8825,34 @@ def _face_water_here(radius: int = 8) -> str:
         return ""       # 读不到水格/转不了 → 不拦路（脚本照旧会如实报"没有水"）
 
 
+def _fish_stamina_block() -> str:
+    """⚡ 开钓前的**体力闸**（`""` = 放行 / 一句话 = 拦下来）。**拦在走位之前**。
+
+    ⚠️ 判据与脚本**同一份**：`fish_run.MIN_STAMINA`（绝对值 20，不走百分比）—— 这里**不另写一个 20**。
+    ⚠️ 读不到体力就**不拦** —— 读不到 ≠ 没体力，别把"我瞎了"变成"路不通"
+       （方向跟「手上有竿」那条**相反**：那条是"给了一行按了必须成"，宁缺勿编）。
+    📌 2026-10-05：从 `go_fishing`（`:8856`）里**原样抽出来**，单子那行（`_im_fish_go`）复用同一份 ——
+       同一张判据放两处 = 早晚漂（本项目的老病）。
+    """
+    try:
+        from fish_run import MIN_STAMINA as _MIN        # 懒导入，单一来源
+    except Exception:
+        return ""
+    if not _MIN:
+        return ""
+    try:
+        _p = api.state().get("player") or {}
+        _sta, _mx = _p.get("stamina"), _p.get("maxStamina")
+        if isinstance(_sta, (int, float)) and 0 <= _sta < _MIN:
+            return (f"❌ 体力只剩 {int(_sta)}/{int(_mx) if _mx else '?'}，低于钓鱼线 {_MIN}"
+                    f"（脚本一看到 <{_MIN} 就收手）——现在开钓只会抛出一竿就停，所以**不开**。\n"
+                    f"  先补体力：`daily(ops=\"eat\", kw={{\"name\": \"<背包里的食物>\"}})`；"
+                    f"泉里泡（`map go 温泉`）；或 `daily(ops=\"sleep\")` 过夜。")
+    except Exception:
+        pass
+    return ""
+
+
 def go_fishing(
     location: Optional[str] = None,
     max_casts: int = 0,
@@ -8876,18 +8904,9 @@ def go_fishing(
     #    ⇒ 开钓前就拦（拦在走位**之前**，别先让人跑半个地图过去再告诉他不钓）。
     #    ⚠️ 判据与脚本**同一份**（`fish_run.MIN_STAMINA`，不是这里另写一个 20）。
     #    ⚠️ 读不到体力就**不拦** —— 读不到 ≠ 没体力，别把"我瞎了"变成"路不通"（宁报错别兜底的反面同样成立）。
-    if _FISH_MIN_STA:
-        try:
-            _p = api.state().get("player") or {}
-            _sta, _mx = _p.get("stamina"), _p.get("maxStamina")
-            if isinstance(_sta, (int, float)) and 0 <= _sta < _FISH_MIN_STA:
-                return _with_state(
-                    f"❌ 体力只剩 {int(_sta)}/{int(_mx) if _mx else '?'}，低于钓鱼线 {_FISH_MIN_STA}"
-                    f"（脚本一看到 <{_FISH_MIN_STA} 就收手）——现在开钓只会抛出一竿就停，所以**不开**。\n"
-                    f"  先补体力：`daily(ops=\"eat\", kw={{\"name\": \"<背包里的食物>\"}})`；"
-                    f"泉里泡（`map go 温泉`）；或 `daily(ops=\"sleep\")` 过夜。")
-        except Exception:
-            pass
+    _sb = _fish_stamina_block()
+    if _sb:
+        return _with_state(_sb)
     _facew = ""      # 👤 就地钓那条路会填（"已朝水"那行）；点名钓点走校准朝向，不填
     if location:
         # 🎣 2026-09-05 恒：钓点是 POI，跨图该走 map_go（和 walk_to 的跨图委派一致）——不再是 warp 回家再跳。
@@ -24921,6 +24940,365 @@ def _im_museum_go(state) -> dict:
     return {"have": len(have)}
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 🎣 「快捷钓鱼上单」的账与执行（2026-10-05 恒拍板 · B 形）
+# ══════════════════════════════════════════════════════════════════════════════
+# 单子长这样（`intent_menu.FISH_V`）：
+#   1 垂钓              ← 只在**手上有竿**时出现
+#     └ 1 Lake  2 River  ← **当前图真有钓点**的水域，**原样印 `areas[].id`**（两个以上才给这一层）
+# ⛔ 不印鱼种（恒 2026-10-05 明确删掉）；⛔ 不配中英对照表（九个区的 `displayName` 实测全是 null
+#    ⇒ 恒拍板原样印 id，见 CHANGELOG 203z补31 §③）。
+# 🔑 形状的三条硬规矩：
+#   ① **「水域」≠「钓点」**：`areas[].spots` 为空（`spotsFound:0`）⇒ **那一行不上单子**
+#      （恒：去不了的水域摆上单子 = 假门）。Forest 就是"两种水域、能站的钓点只有一处"。
+#   ② **没有鱼区但图上有水**（`Farm`/`Mountain`/`Backwoods`… 实测 `count:0`）⇒ 只给一层，
+#      钓点按**地图尺寸**多锚点拼 `/water` 扫出来（`/water` 是局部方扫，见 `ModEntry.cs:17040`）。
+#   ③ 读不到 ⇒ **不给行**（`rod.inHand` 读不到、老 DLL 没有 `/fish_areas`、都算"算不出来"）。
+_FISH_CACHE = {"key": None, "ts": 0.0, "raw": None}
+_FISH_CACHE_TTL = 60.0        # 同一张图 60s 内不重扫（⚠️ `/fish_areas` 会**在主线程全图逐格扫水**）
+_FISH_WATER_RADIUS = 30       # `/water` 的**上限**（`ModEntry.cs:17045` 里 `Math.Min(vr, 30)`）——少打几发
+_FISH_PASSABLE_TRIES = 240    # 一趟最多问几格 `/passable`（防"大图但没岸"那种病态开销）
+_FISH_MAX_PICKS = 8           # 第二层最多几行（防病态地图把单子撑爆；超了按下标截断并如实报数）
+
+
+def _fish_rod_in_hand(state: dict) -> bool:
+    """🎣 **手上有竿**吗 —— 权威判据 = `/state.player.rod.inHand`（`ModEntry.cs:6825`
+    `inHand = ReferenceEquals(f.CurrentTool, rod)`）。
+
+    ⛔ **不能**用 `player.rod` 非空：`RodInfo`（`ModEntry.cs:6806`）走的是 `FindFishingRod`
+       （`ModEntry.cs:6787`），**手持没有就退回背包里升级最高的那根** ⇒ 竿在包里 ≠ 竿在手。
+    ⚠️ 读不到这一位（老 DLL）⇒ **False**（⇒ 那行不出现）。方向与体力闸**相反**：
+       体力是"别白跑一趟"，竿是"给了一行按了必须成" ⇒ 宁缺勿编。
+    """
+    rod = ((state or {}).get("player") or {}).get("rod")
+    return bool(isinstance(rod, dict) and rod.get("inHand") is True)
+
+
+def _fish_xy_dist(ax, ay, px, py) -> int:
+    """曼哈顿距离；坐标不是整数 ⇒ **给一个很大的数**（排序里垫底，不猜它等于 0）。"""
+    if not isinstance(ax, int) or not isinstance(ay, int):
+        return 10 ** 6
+    return abs(ax - px) + abs(ay - py)
+
+
+def _fish_calibrated_poi(area: dict, loc_name: str):
+    """这个鱼区里有没有**恒真机验过的校准钓点**（`fish_run.FISHING_TARGETS`，只有 4 个）。
+
+    ⚠️ **只做偏好，不做归区判断**：命中判据是"那个 POI 落在这个区的 `position` 矩形里"
+       （`FishAreaData.Position` 就是游戏归区用的那把尺子，`GameLocation.cs:13801`；
+       `Rectangle.Contains` 语义 = **左闭右开**）。区域 id 一律用游戏给的 `spots` 那份，
+       绝不在 Python 里重算"这格算哪个区"（那要重实现带 Position 优先 + 兜底区的优先级，必漂）。
+    ⚠️ 没有 `position` 的区（`Default` 那种兜底区）**不做这个偏好** —— 矩形都没有，认不了。
+    → `{"standX","standY","waterX","waterY","dir"}` / `None`。
+    """
+    pos = area.get("position")
+    if not isinstance(pos, dict):
+        return None
+    try:
+        x0, y0 = int(pos.get("x")), int(pos.get("y"))
+        w, h = int(pos.get("w")), int(pos.get("h"))
+    except Exception:
+        return None
+    try:
+        from fish_run import FISHING_TARGETS as _FT       # 懒导入：**唯一那份校准表**
+        from locations import POI
+    except Exception:
+        return None
+    hit = _FT.get(loc_name)
+    if not hit:
+        return None
+    poi_name, face = hit
+    p = (POI.get(poi_name) or {}).get("pos") or (None, None)
+    tx, ty = p[0], p[1]
+    if not isinstance(tx, int) or not isinstance(ty, int):
+        return None
+    if not (x0 <= tx < x0 + w and y0 <= ty < y0 + h):
+        return None
+    return {"standX": tx, "standY": ty,
+            # 校准点的 `face` 是恒验过的抛竿朝向（`fish_run.FISHING_TARGETS`）；
+            # 这条路上**水格 = 站在岸格面朝的那一格**（同口的 `spots[].dir`：dir=站格→水格的方向，
+            # `ModEntry.cs:17191`）。0上 1右 2下 3左。
+            "waterX": tx + ((0, 1, 0, -1)[face] if face in (0, 1, 2, 3) else 0),
+            "waterY": ty + ((-1, 0, 1, 0)[face] if face in (0, 1, 2, 3) else 0),
+            "dir": int(face) if face in (0, 1, 2, 3) else 2,
+            "calibrated": poi_name}
+
+
+def _fish_areas_raw() -> dict:
+    """问游戏要**当前图**的鱼区盘点（`GET /fish_areas`，`ModEntry.cs:17133`）→ dict。
+
+    `{}` = 读不到 / `ok:false` / 老 DLL（没有这条路就**绝不退回手抄表**）。
+    """
+    try:
+        r = api._ai_get("/fish_areas") or {}
+    except Exception:
+        return {}
+    return r if r.get("ok") else {}
+
+
+def _fish_water_scan(state: dict) -> list:
+    """本图**没有可用鱼区**时的兜底：多锚点拼 `/water` 找「水格 + 能站的岸格」。
+
+    为什么非要拼：`/water` 是**局部方扫**（`ModEntry.cs:17040-17079`，以 `x/y` 为中心 `radius` 格，
+    `radius` 上限 30）⇒ 大图必须多锚点覆盖。锚点按**到人的距离**排序、**找到就收手**
+      （一次 `/water` 已经盖住 ±30 格的一大块，没必要把全图扫完 —— 那是主线程逐格扫水）。
+
+    "能站"的判据 = `/passable`（`ModEntry.cs:4702` → `IsTilePassable`，`ModEntry.cs:24587`），
+    与 `/fish_areas` 里 `spots` 的**同一把尺子**（`ModEntry.cs:17189`）——
+    ⛔ 不在这里自己写地形名单；`allowWater` **不传**（水格不可站，`ModEntry.cs:24673`）。
+
+    → `[{waterX,waterY,standX,standY,dir}, …]`（`[]` = 本图找不到能站的岸位）
+    ⚠️ 只收**最好先命中的那一块锚点**的结果（见上）；`_FISH_PASSABLE_TRIES` 用完即止、如实返回空。
+    """
+    loc = (state or {}).get("location") or {}
+    w, h = loc.get("mapWidth"), loc.get("mapHeight")
+    if not isinstance(w, int) or not isinstance(h, int) or w <= 0 or h <= 0:
+        return []                     # 地图尺寸读不到 ⇒ **不猜**（同 `_scan_statues_rect:24037`）
+    p = (state or {}).get("player") or {}
+    px, py = p.get("x") if isinstance(p.get("x"), int) else 0, \
+             p.get("y") if isinstance(p.get("y"), int) else 0
+    step = _FISH_WATER_RADIUS
+    anchors = [(x, y) for y in range(0, h, step) for x in range(0, w, step)]
+    anchors.sort(key=lambda a: _fish_xy_dist(a[0], a[1], px, py))     # 近的先问
+    seen, tries = set(), 0
+    for ax, ay in anchors:
+        try:
+            r = api._ai_get("/water", {"x": ax, "y": ay, "radius": step}) or {}
+        except Exception:
+            return []
+        if not r.get("ok"):
+            return []
+        tiles = [t for t in (r.get("water") or []) if isinstance(t, dict)]
+        tiles.sort(key=lambda t: _fish_xy_dist(t.get("x"), t.get("y"), px, py))
+        pairs = []
+        for t in tiles:
+            wx, wy = t.get("x"), t.get("y")
+            if not isinstance(wx, int) or not isinstance(wy, int) or (wx, wy) in seen:
+                continue
+            seen.add((wx, wy))
+            # 四邻 = 岸（`_CRAB_FACE`：`(dx,dy,face)` 是"**站 = 水 + 偏移**、面朝水"，
+            # 与 `/fish_areas` 的 `spots[].dir` **同一口径**：dir 就是站格望向水格的方向）
+            for dx, dy, face in _CRAB_FACE:
+                sx, sy = wx + dx, wy + dy
+                if (sx, sy) in seen:
+                    continue                     # 是水格 ⇒ 不是岸（同 `_crab_find_edges:12390`）
+                tries += 1
+                if tries > _FISH_PASSABLE_TRIES:
+                    return pairs                 # 只报**已经问出来**的（不假装还有）
+                try:
+                    if not api._post("/passable", {"x": sx, "y": sy}).get("passable"):
+                        continue
+                except Exception:
+                    continue
+                pairs.append({"waterX": wx, "waterY": wy,
+                              "standX": sx, "standY": sy, "dir": int(face)})
+        if pairs:
+            return pairs                          # 就近这一块有岸位 ⇒ 收手（见 doc）
+    return []
+
+
+def _fish_picks_from_raw(raw: dict, state: dict) -> list:
+    """把缓存的**原始账**（鱼区 / 水格）算成"这一刻能去的钓点"列表（**每次现算**，不打 HTTP）。
+
+    为什么要分开：缓存的是**端点原始回包**（贵的那一发），"离我最近的钓点"是**每屏都可能变**的
+    —— 缓存成品会把人在农场东头时算的钓点，一直喂到人走到西头（同族坑：拿旧账当真）。
+
+    → `[{area, standX, standY, waterX, waterY, dir, waterTiles, spotsFound, calibrated?}, …]`
+      ⚠️ `area` = `/fish_areas` 的 `areas[].id` **原文**（不翻译、不美化）；水格扫描那档是 `""`。
+    """
+    p = (state or {}).get("player") or {}
+    px = p.get("x") if isinstance(p.get("x"), int) else 0
+    py = p.get("y") if isinstance(p.get("y"), int) else 0
+    loc_name = ((state or {}).get("location") or {}).get("name") or ""
+    mode = (raw or {}).get("mode")
+
+    if mode == "areas":
+        picks = []
+        for a in ((raw or {}).get("areas") or []):
+            if not isinstance(a, dict):
+                continue
+            spots = [s for s in (a.get("spots") or []) if isinstance(s, dict)]
+            if not spots:
+                # ⛔ 恒的硬规矩：**水域 ≠ 钓点**。`spots:[]`（spotsFound:0）⇒ 这一行不上单子
+                #    （按下去去不了的 = 假门）。Forest 就是"两种水域、能站的钓点只有一处"。
+                continue
+            cal = _fish_calibrated_poi(a, loc_name)
+            if cal:
+                picks.append(dict(cal, area=a.get("id"),
+                                  waterTiles=a.get("waterTiles"),
+                                  spotsFound=a.get("spotsFound")))
+                continue
+            best = min(spots, key=lambda s: _fish_xy_dist(s.get("standX"), s.get("standY"), px, py))
+            try:
+                d = int(best.get("dir"))
+            except Exception:
+                continue                          # 朝向读不出来 ⇒ 不猜（宁可少一行）
+            if d not in (0, 1, 2, 3):
+                continue
+            picks.append({"area": a.get("id"), "dir": d,
+                          "standX": best.get("standX"), "standY": best.get("standY"),
+                          "waterX": best.get("waterX"), "waterY": best.get("waterY"),
+                          "waterTiles": a.get("waterTiles"),
+                          "spotsFound": a.get("spotsFound")})
+        picks.sort(key=lambda k: _fish_xy_dist(k.get("standX"), k.get("standY"), px, py))
+        return picks
+
+    if mode == "water":
+        pairs = [q for q in ((raw or {}).get("pairs") or []) if isinstance(q, dict)]
+        pairs.sort(key=lambda q: _fish_xy_dist(q.get("standX"), q.get("standY"), px, py))
+        return [dict(q, area="", waterTiles=None, spotsFound=None) for q in pairs]
+
+    return []
+
+
+def _im_fish(state: dict, caps: dict = None) -> dict:
+    """🎣 「垂钓」那行的账（`intent_menu.Ctx.fish` 的形状见那儿）。
+
+    三道闸门，**任何一道过不去 ⇒ `{}`（整行不出现）**：
+      ① `rod.inHand is True`（`ModEntry.cs:6825`）—— 竿不在手 = 没有钓鱼意图；
+      ② `caps["fish_areas"]`（`/status.caps`；`ModEntry.cs:3314`）—— 老 DLL 没这个端点；
+      ③ 游戏答得出来吗：`/fish_areas` 的**有钓点水域**（`spots` 非空）；
+         一个都没有时退回**水格扫描**（`/water` 多锚点 + `/passable`）——
+         连岸位都找不到（或图上压根没水）⇒ `{}`。
+
+    ⚠️ **原样印 id**：这一层把 `areas[].id` 当**显示名**用（恒 2026-10-05 拍板）；
+       `/fish_areas` 回的 `displayName` 实测九个区**全是 null**，所以连"优先用它"这条路都省了。
+    ⚠️ 结果按**图名**缓存 `_FISH_CACHE_TTL` 秒（键 = 图名，换图必失效）——
+       `/fish_areas` 会**在主线程全图逐格扫水**（C# `ModEntry.cs:17176-17203`），
+       而 `intent show` 一屏一发，不缓存会在农场那种大图上白烧。
+       ⚠️ 缓存的**只是端点原始回包**，"离我最近的那个钓点"每次现算（见 `_fish_picks_from_raw`）。
+    """
+    if not _fish_rod_in_hand(state):
+        return {}
+    if (caps or {}).get("fish_areas") is not True:
+        return {}                                     # 老 DLL：**绝不退回手抄表**
+    loc_name = ((state or {}).get("location") or {}).get("name") or ""
+    if not loc_name:
+        return {}                                     # 图名读不到 ⇒ 缓存键都拼不出来 ⇒ 不猜
+    now = time.time()
+    raw = None
+    if _FISH_CACHE.get("key") == loc_name and (now - _FISH_CACHE.get("ts", 0.0)) < _FISH_CACHE_TTL:
+        raw = _FISH_CACHE.get("raw")
+    if raw is None:
+        r = _fish_areas_raw()
+        areas = [a for a in (r.get("areas") or [])
+                 if isinstance(a, dict) and (a.get("spots") or [])]
+        if areas:
+            raw = {"mode": "areas", "areas": areas}
+        else:
+            # ⚠️ `hasFishAreaData=True, count=0` 的图（Farm/Mountain…）与"有鱼区但都没钓点"的图
+            #    （Town 的 Fountain 水格 0）**都走这一支**：鱼区那条路给不出能站的钓点，
+            #    就如实退回"水格扫描"——**不是**"这张图不能钓"。
+            pairs = _fish_water_scan(state)
+            raw = {"mode": "water", "pairs": pairs} if pairs else {}
+        _FISH_CACHE.update(key=loc_name, ts=now, raw=raw or {})
+    picks = _fish_picks_from_raw(raw or {}, state)
+    if not picks:
+        return {}
+    truncated = len(picks) > _FISH_MAX_PICKS
+    picks = picks[:_FISH_MAX_PICKS]
+    return {"mode": (raw or {}).get("mode") or "", "picks": picks,
+            "count": len(picks), "truncated": truncated}
+
+
+def _im_fish_go(args: dict) -> str:
+    """🎣 单子那行「垂钓」按下去的执行侧 → 一句话回执（`_im_run` 的 `helpers` 那档）。
+
+    链路**照抄 `go_fishing`（`:8856`）的入口顺序**（别新造一套；⚠️ 不能直接复用它本身：
+    它只认 `fish_run.FISHING_TARGETS` 那 4 个地名，非那 4 张图会被当场拒）：
+      ① **体力闸**（`_fish_stamina_block()` = 与脚本同一份判据）—— 拦在走位**之前**；
+      ② **竿还在手**吗（`rod.inHand`；单子可能是几秒前看的，人可能换了工具）；
+      ③ **走位**到那一区的岸格（`navigation.walk_to`，同图精确走位）；
+      ④ **到点复核**（同 `go_fishing:8934` 的 ±3 容忍；人在半路就**不开钓** + 给下一步）；
+      ⑤ **就地转向水**（按**实际站位**重算朝向 → `/face`，同 `_face_water_here:8794` 的道理：
+         朝错 = 鱼机朝陆地抛 = 「🚫 抛竿方向没有水」）；
+      ⑥ `fish_run` **就地钓**（**不带** `--location`，它自己找水抛竿/收竿）。
+
+    Args（由单子那一层给，**都来自被点的那一行**）：
+      `x/y`   = 岸格（`picks[].standX/standY`）——⚠️ **必须是被点那一区的**，不是"最近/默认"那个
+      `wx/wy` = 那一格要朝的水格（`picks[].waterX/waterY`）
+      `dir`   = 游戏给的方向码（0上 1右 2下 3左；`/fish_areas` 的 `spots[].dir`）
+      `area`  = 水域 id（**只用于回执**，原样印；水格扫描那档是 `""`）
+    """
+    args = dict(args or {})
+    x, y = args.get("x"), args.get("y")
+    if not isinstance(x, int) or not isinstance(y, int):
+        return "❌ 这一行没带钓点坐标 —— 敲 `show` 重开一张（号不跨屏，别按着旧号敲）"
+    wx, wy = args.get("wx"), args.get("wy")
+    area = str(args.get("area") or "")
+    where = f"「{area}」" if area else "水格扫描那一处"
+
+    out = _fish_stamina_block()
+    if out:
+        return out
+
+    # ② 竿还在手吗（⚠️ 与`①`同一发 `/state` 就能一起读，别为它多打一发）
+    try:
+        st = api.state() or {}
+    except Exception:
+        st = {}
+    if not _fish_rod_in_hand(st):
+        return (f"⚠️ 去{where}之前发现**竿已经不在手上了**（换工具了？）—— 这一行什么都没做。\n"
+                f"   想钓就先把鱼竿拿到手上，再 `show` 重开一张。")
+    p = st.get("player") or {}
+    px, py = p.get("x"), p.get("y")
+    if not isinstance(px, int) or not isinstance(py, int):
+        return "⚠️ 读不到我在哪 —— **不敢瞎走/瞎抛**（这一行什么都没做），稍后再试"
+
+    # ③ 走位（同图精确走位；走不到的落点由 `walk_to` 自己就近修正并如实印）
+    walk = ""
+    if abs(px - x) + abs(py - y) > 1:
+        try:
+            walk = navigation.walk_to(x=x, y=y) or ""
+        except Exception as e:
+            return f"❌ 走不到{where}的岸格 ({x},{y})：{type(e).__name__}: {e}"
+        try:
+            p2 = (api.state() or {}).get("player") or {}
+            px, py = p2.get("x"), p2.get("y")
+        except Exception:
+            px, py = None, None
+
+    # ④ 到点复核（容忍 ±3，判据与 `go_fishing:8934` 同一档；读不到坐标就不拦 —— 读不到 ≠ 没到）
+    if isinstance(px, int) and isinstance(py, int):
+        if abs(px - x) > 3 or abs(py - y) > 3:
+            return (f"❌ **还没站到{where}的岸格**就不开钓：它在 ({x},{y})，人现在 ({px},{py})"
+                    f" —— 就地钓会朝着「你走路的那个方向」抛竿，只会白跑一趟。\n"
+                    f"  · 路远时它还在走：歇一下再敲这行（那会儿多半已经到了）\n"
+                    f"  · 或自己走过去：`map walk x={x} y={y}` → 到了再 `show`")
+        if isinstance(wx, int) and isinstance(wy, int) and abs(wx - px) + abs(wy - py) > 4:
+            return (f"❌ 站到了 ({px},{py})，可那一格水 ({wx},{wy}) **够不着**（走位落在了别处）"
+                    f" —— 这一竿不开（宁可不钓，也不发一竿朝陆地）。敲 `show` 重开一张。")
+
+    # ⑤ 就地转向水：**按实际站位重算**（`_face_dir` 与执行器同一套算法 `:25754`）
+    face = args.get("dir")
+    if face not in (0, 1, 2, 3):
+        face = None
+    if isinstance(px, int) and isinstance(py, int) and isinstance(wx, int) and isinstance(wy, int):
+        face = _face_dir(px, py, wx, wy)
+    if face is not None:
+        try:
+            api._ai_post("/face", {"direction": int(face)})
+            time.sleep(0.15)
+        except Exception:
+            pass
+    face_line = f"  👤 已朝{['上', '右', '下', '左'][face]}" if face in (0, 1, 2, 3) else ""
+
+    # ⑥ 就地钓（**不带 --location**：`fish_run` 就在当前站位抛）
+    args_list = ["--port", str(_ai_port()), "--max-casts", "0", "--no-sleep"]
+    try:
+        out = _run_script("fish_run", args_list, timeout=180, async_ok=True)
+    except Exception as e:
+        return f"❌ 起 `fish_run` 失败：{type(e).__name__}: {e}"
+    head = f"🎣 去{where}的岸格 ({x},{y})"
+    if walk:
+        head = walk.strip() + "\n" + head
+    if face_line:
+        head += "\n" + face_line
+    if str(out).startswith("🚀"):
+        return head + "\n" + str(out)            # 长脚本异步：回 job 号，**别说成"钓到了"**
+    return head + "\n🎣 钓鱼报告：\n" + str(out)[:800]
+
+
 def _im_cc_go(x, y) -> str:
     """🏛️ 走到板子前 + 交互把板子开出来（单子那行「看 献祭板（走过去）」的执行侧）→ 一句话。
 
@@ -25066,6 +25444,13 @@ def _im_ctx():
                                 #    见 C# `CouldBeDonated`）—— **零额外 HTTP**；
                                 #    老 DLL 没这一位 ⇒ 算不出 ⇒ 那行不出现。
                                 museum_go=_im_museum_go(state),
+                                # 🎣 「垂钓」那行的账（2026-10-05 恒拍板的「快捷钓鱼上单」）：
+                                #    闸门① `rod.inHand`（`ModEntry.cs:6825`）② `caps["fish_areas"]`
+                                #    ③ `/fish_areas` 的**有钓点水域**（`spots` 非空）；一只都没有 ⇒
+                                #    退回多锚点 `/water` + `/passable` 扫岸位。读不到 ⇒ 整行不出现。
+                                #    ⚠️ 结果按**图名**缓存 60s（那个端点在主线程全图逐格扫水）——
+                                #       「离我最近的钓点」仍每次现算（见 `_im_fish` 的 doc）。
+                                fish=_im_fish(state, _caps),
                                 worn=worn)
 
 
@@ -26275,6 +26660,12 @@ def _im_run(op, args):
         "pond_collect": lambda: _pond_collect(
             args["x"] if isinstance(args.get("x"), int) else -1,
             args["y"] if isinstance(args.get("y"), int) else -1),
+        # 🎣 垂钓（2026-10-05 恒拍板的「快捷钓鱼上单」）：单子那行按下去走这里。
+        #    ⚠️ 走 `helpers`（回**一句话**）：回执要说清"走到哪、朝哪、开没开钓"，
+        #       不是把 `/face`、`walk_to`、`fish_run` 那几发原始回包摊给 AI 看。
+        #    ⚠️ 坐标 (`x/y` 岸格 + `wx/wy` 水格 + `dir`) **全从被点的那一行带过来** ——
+        #       这一层**不许**再自己去账里挑一个"最近/默认"的（本项目有过"按 A 缸的判断动 B 缸"的事故）。
+        "fish": lambda: _im_fish_go(args),
     }
     # 🛒 买卖走**裸端点**（回 dict，回执要逐条报数字），只是外面多两道闸门。
     raw_ops = {

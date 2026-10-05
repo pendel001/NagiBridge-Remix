@@ -380,6 +380,21 @@ class Ctx:
     #       `CanBeDeposited`/`HasRoomForThisItem`/`GetCategoryFromItem`/`CatchWearHat`）——
     #       这一层是纯函数：不打 HTTP，也**不许自己抄 `Data/AquariumFish` 或那 14 个装饰 ID**。
     tank: dict = field(default_factory=dict)
+    # 🎣 **这一刻"能不能就地下竿"**（2026-10-05 恒拍板的「快捷钓鱼上单」）。
+    #    `{}` = **不给「垂钓」这行**（四种情形合并：手上没竿 / 这版 DLL 没有 `/fish_areas` /
+    #       本图一个**有钓点**的水域都没有且水格扫描也找不到能站的岸位 / 读不到）。
+    #    有值时形如：
+    #      `{"mode": "areas"|"water", "count": N, "truncated": False,
+    #        "picks": [{"area": "Lake",              # = `/fish_areas` 的 `areas[].id` **原文**
+    #                   "standX": 34, "standY": 25, "waterX": 34, "waterY": 26, "dir": 2,
+    #                   "waterTiles": 59, "spotsFound": 21, "calibrated": "森林小池塘钓点"}, …]}`
+    #    ⚠️ **判据全在服务器**（`_im_fish`：闸门① `rod.inHand`（`ModEntry.cs:6825`，⛔ 不是
+    #       `player.rod` 非空 —— `FindFishingRod`（`:6787`）会退回**背包里那根**）
+    #       → 闸门② `/fish_areas`（`:17133`）→ ③ 没鱼区时按地图尺寸多锚点拼 `/water` + `/passable`）——
+    #       这一层是**纯函数**：`can()` 不打 HTTP、不认地点名、**不配任何中英对照表**。
+    #    ⛔ `picks[].area` **原样印**（九个区的 `displayName` 实测全是 null ⇒ 恒拍板印 id）——
+    #       在这里写"湖泊/河流"就是把我们发明的词塞回单子，恒明确否掉了。
+    fish: dict = field(default_factory=dict)
 
     def zh_of(self, name: str) -> str:
         return (self.zh or {}).get(name) or name
@@ -4119,6 +4134,176 @@ HAY_V = Verb("hay", "铺 干草", 68, _hay_can, _hay_reason, _hay_show, "world",
 #    C# 那边本来就只有 `/toggle_doors` 一个**翻转**端点，**没有**"保证开/保证关"两条路。
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# 🎣 「快捷钓鱼上单」（2026-10-05 恒拍板 · B 形）
+# ═══════════════════════════════════════════════════════════════════════
+# 形状（恒拍板）：
+#   1 垂钓              ← 只在**手上有竿**时出现（判据 `rod.inHand`，`ModEntry.cs:6825`）
+#     └ 1 Lake  2 River  ← **当前图真有钓点**的水域，**原样印游戏给的 `areas[].id`**
+#                         （图里只有一种水域 ⇒ **不给第二层**：「垂钓」自己就是动作行）
+# ⛔ **不印鱼种、不预报鱼种**（恒 2026-10-05 明确删掉）。
+# ⛔ **一个中文水域名都不许写进 Python**：`/fish_areas` 那九个区的 `displayName` 实测**全是 null**
+#    ⇒ 恒拍板**原样印 `id`**（`Lake`/`River`/`Default`/`TopPond`…）。**禁止**加"湖泊/河流"对照表
+#    （加了就是**我们自己发明的词**，恒否掉过）。
+# ⚠️ **「水域」≠「钓点」**：`spots:[]`（`spotsFound:0`）的水域**一行都不上**（恒的硬规矩：
+#    去不了的水域摆上单子 = **假门**）。Forest 就是"两种水域、能站的钓点只有一处"。
+# ⚠️ **没有鱼区但图上有水**的图（`Farm`/`Mountain`/`Backwoods`/`BusStop`… 实测 `count:0`）⇒
+#    **只给一层**；钓点由服务器按地图尺寸**多锚点拼 `/water`** + `/passable` 扫出来（`_im_fish`）。
+# ⚠️ 判据**全在服务器**（`Ctx.fish`）：这一层纯消费 —— 不打 HTTP、不认地点名、不抄名单。
+# ⚠️ `menu_ok` **故意不设**：这条是**世界动作**（要走位/开脚本），菜单开着时不该劝 AI 去走位。
+def _fish_picks(ctx) -> list:
+    """本图**能去的钓点**（服务器算好的账）—— `[]` = 这行不给。"""
+    return [p for p in ((ctx.fish or {}).get("picks") or []) if isinstance(p, dict)]
+
+
+def _fish_spot_of(p: dict) -> str:
+    """钓点坐标那截（岸格）。拼不出来就**如实说"位置读不到"**，不编一个 (0,0)。"""
+    x, y = p.get("standX"), p.get("standY")
+    if isinstance(x, int) and isinstance(y, int):
+        return f"({x},{y})"
+    return "（位置读不到）"
+
+
+def _fish_pick_reason(p: dict) -> str:
+    """第二层每一行的理由栏 = **审计面**：哪个水域 · 钓点在哪 · 本区几个水格/几处能站。
+
+    ⚠️ 只印**游戏给的数**（`/fish_areas` 的 `waterTiles`/`spotsFound`）与**原样的 id**；
+       水格扫描那档（`area == ""`）如实标成"水格扫描"，**不假装它是鱼区**。
+    """
+    bits = []
+    if p.get("area"):
+        bits.append(f"钓点 {_fish_spot_of(p)}")
+        if isinstance(p.get("waterTiles"), int):
+            bits.append(f"本区水格 {p['waterTiles']}")
+        if isinstance(p.get("spotsFound"), int):
+            bits.append(f"能站 {p['spotsFound']} 处")
+    else:
+        bits.append(f"水格扫描到的岸位 {_fish_spot_of(p)}")
+    if p.get("calibrated"):
+        bits.append("用的校准钓点")
+    return " · ".join(bits)
+
+
+def _fish_can(ctx, t):
+    return CAN_YES if _fish_picks(ctx) else CAN_NO
+
+
+def _fish_area_can(ctx, t):
+    """子层那一行的 `can()` —— `do_row` 的**执行前复验**（`_recheck`）拿它问"这一刻还能不能去"。
+
+    ⚠️ 判据跟顶层同一条（服务器那份账非空）⇒ 竿被收起 / 换了图 / 端点读不到，
+       旧号会被当场拦下来（"⏳ 这一刻做不了了"），不会拿着上一次的坐标硬走一趟。
+    """
+    return CAN_YES if _fish_picks(ctx) else CAN_NO
+
+
+def _fish_show(ctx, t):
+    return "垂钓"
+
+
+def _fish_reason(ctx, t):
+    picks = _fish_picks(ctx)
+    if not picks:
+        return ""
+    if len(picks) == 1:
+        p = picks[0]
+        where = f"「{p.get('area')}」" if p.get("area") else "（水格扫描）"
+        return (f"本图只有{where}一处能下竿 · 钓点 {_fish_spot_of(p)} · "
+                f"按下去：走过去 → 朝水 → 开钓（`fish_run` 自己找水抛竿/收竿）")
+    return f"本图 {len(picks)} 处能下竿 · 点开挖**去哪一处**"
+
+
+def _fish_count(ctx, targets) -> str:
+    """目录行那截计数 —— 印**水域名本身**（`areas[].id` 原文）。
+
+    ⚠️ 用 `Verb.count` 而不是让它退回 `len(rows)`：默认那句是「N 件」——
+       **水域不是"件"**，同屏两把尺子就是本项目最烦的那类错（同容器行那条账）。
+    ⚠️ 顶层就先把 id 摆出来（跟第二层同一份数据、同一个顺序）⇒ AI 常常不用点开就知道去哪；
+       但**第二层仍然要在**（恒拍板：两个以上水域才给这一层，选哪一处是这一步的正事）。
+    """
+    return " / ".join(str(p.get("area") or "?") for p in _fish_picks(ctx))
+
+
+def _fish_subs(ctx, targets):
+    """🎣 第二层（**只在有两个以上能去的水域时**才给）。
+
+    ⚠️ `len(picks) <= 1` ⇒ **返回 `None`** —— 这就是恒那条"图里只有一种水域 ⇒ 不给第二层"的
+       判据：返回 `None` 时这一行**仍是动作行**（`exec` 直接开钓），不是空目录。
+    ⛔ **水格扫描那档永远只给一层**（恒拍板「0 个但图上有水 ⇒ 一层」）：那些钓点**没有名字**
+       （`area` 是空串）⇒ 给第二层就是几行**同名**的行，正是"同名多行 = 假装能挑一个"的老坑。
+    ⚠️ 子层每一行只认**自己那一份** `picks[i]`（`targets[0]`）——执行侧拿的是**被点那一区**的坐标，
+       不是"最近/默认"那个（本项目有过"按 A 缸的判断动 B 缸"的事故，这里不重犯）。
+    """
+    picks = _fish_picks(ctx)
+    if ((ctx.fish or {}).get("mode") or "") != "areas" or len(picks) < 2:
+        return None
+    rows = [Row(FISH_AREA_V, [dict(p)], str(p.get("area") or "?"), _fish_pick_reason(p),
+                0, where="")
+            for p in picks]
+    return Level(rows, title=f"本图 {len(rows)} 处能下竿 —— 去哪一处？")
+
+
+def _fish_run_pick(p: dict, run) -> str:
+    """把**被点的那一行**的坐标交给服务器（`_im_fish_go`）—— 一处判断、一处动作，同源。"""
+    desc = str(p.get("area") or "") or f"水格扫描的岸位 {_fish_spot_of(p)}"
+    r = run("fish", {"x": p.get("standX"), "y": p.get("standY"),
+                     "wx": p.get("waterX"), "wy": p.get("waterY"),
+                     "dir": p.get("dir"), "area": p.get("area") or ""})
+    return _receipt_from_helper("垂钓", desc, r)
+
+
+def _exec_fish(ctx, targets, run):
+    """顶层那一行（**只有一处能去**时才轮到它执行）。
+
+    ⚠️ 坐标**从这一刻的账里现取**（`ctx.fish` 是服务器按**当前图**重算的）——
+       所以人换了图再敲这一行，走的仍是**新图**的钓点，不会拿着旧坐标跨图乱走。
+    """
+    picks = _fish_picks(ctx)
+    if not picks:
+        return "⏳ 这一刻算不出本图哪个水域能下竿了（单子是**上一次**看的）—— 敲 `show` 重开一张"
+    return _fish_run_pick(picks[0], run)
+
+
+def _exec_fish_area(ctx, targets, run):
+    """第二层那一行：**只吃被点的那一行**（`targets[0]`），并在**当前账里按水域名复验**。
+
+    ⚠️ 为什么要复验（不是多此一举）：单子可能是**上一次**看的 —— 人可能已经换了图
+       （`render_menu` 只在**重新 show** 时按世界指纹清子层，`do_row` 不管这个）
+       ⇒ 直接拿旧坐标走位就是**跨图走位**（走到当前图里一个碰巧同名的坐标）。
+       判据 = **水域名**（游戏给的 `areas[].id`，同图内唯一）：在**现在**这份账里找**同一个名字**
+       （同 `_tank_find:1278` 那条"按 id 在当前账里找回那一件"）——
+       找到就用**现在**的坐标（同一处水域、可能离人更近了）；找不到就如实说、**不硬走**。
+    ⛔ **绝不换成另一个水域**：找的是**同一个 id**，不是"最近那个"。
+    """
+    p = dict((targets or [{}])[0] or {})
+    want = p.get("area") or ""
+    picks = _fish_picks(ctx)
+    if want:
+        fresh = next((q for q in picks if q.get("area") == want), None)
+        if fresh is None:
+            return (f"⏳ 「{want}」这一刻不在单子上了（换图了 / 账变了 / 竿收了）"
+                    f"—— 敲 `show` 重开一张（号不跨屏）")
+        p = dict(fresh)
+    elif picks:
+        p = dict(picks[0])
+    if not isinstance(p.get("standX"), int) or not isinstance(p.get("standY"), int):
+        return "⏳ 这一行的账丢了（单子是**上一次**看的）—— 敲 `show` 重开一张"
+    return _fish_run_pick(p, run)
+
+
+# ⚠️ 子层那个动词**不进 `VERBS`**（同鱼缸那三个 `TANK_*_V`：它只在第二层出现，
+#    顶层不该有"去 XXX"这种没有目标的空行）。
+FISH_AREA_V = Verb("fish_area", "去", 0, _fish_area_can,
+                   lambda c, t: _fish_pick_reason(t or {}),
+                   lambda c, t: str((t or {}).get("area") or "去"),
+                   "world", exec=_exec_fish_area)
+# ⚠️ 权重 71（**恒的记忆里提过"放 收蟹笼(72) 附近"**）：压在 `收 蟹笼 72` 下一点、`摇 浆果 66` 之上
+#    —— 它是**真动作**（按下去就是几分钟的 `fish_run`），但也不该压过"一两下就完"的日常活。
+#    ⚠️ 它**不会常驻**：判据是 `rod.inHand`（竿握在手上）⇒ 只有 AI 自己决定钓鱼时才在单子上。
+FISH_V = Verb("fish", "垂钓", 71, _fish_can, _fish_reason, _fish_show, "world",
+              exec=_exec_fish, subs=_fish_subs, count=_fish_count)
+
+
 VERBS: list = [
     # 📦 容器（箱子/冰箱）：**一行一个箱子**，点开是它的动作面（看/取/存）。
     #    判据在 `_chest_can`（"在 /scan_chests 名单里"），收容判据在文件上方那段反编译说明。
@@ -4303,6 +4488,11 @@ VERBS: list = [
     CC_GO_V,
     # 🏛️ 2026-10-05（补24c）世界侧「去博物馆捐赠（包里 N 件可捐）」（恒：「背包有可捐能跟献祭一样打标吗？」）
     MUSEUM_GO_V,
+    # 🎣 2026-10-05 恒拍板的「快捷钓鱼上单」：**手上真有竿**时才给的一行
+    #    （判据 `Ctx.fish` = 服务器那三道闸门，见上面那一段的账）。
+    #    · 两个以上能去的水域 ⇒ 这一行是**目录行**（点开选哪一处）；
+    #    · 只有一处（或水格扫描那一处）⇒ **不给第二层**，它自己就是动作行（恒拍板）。
+    FISH_V,
 ]
 
 
@@ -5326,7 +5516,7 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
              hay: dict = None, pick: dict = None,
              ponds: dict = None, statue: dict = None, tank: dict = None,
              quests: dict = None, levelup: dict = None, cc: dict = None,
-             cc_board: dict = None, museum_go: dict = None) -> Ctx:
+             cc_board: dict = None, museum_go: dict = None, fish: dict = None) -> Ctx:
     """把 `/state`(**full**) + `/surroundings`(+`/machines`/`/scan_chests`) 拼成 Ctx。
 
     ⚠️ 只搬运，**不补默认值**：缺什么就让它缺着（`can()` 遇到缺失自然回 假/？）。
@@ -5438,6 +5628,9 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
                # 🏛️ 世界侧那行「去博物馆捐赠（包里 N 件可捐）」的账（补24c，同上：
                #    `_im_museum_go` 算好递进来，`{}` = 不给行 —— 包里没有可捐的 / 老 DLL 报不出）。
                museum_go=museum_go or {},
+               # 🎣 「垂钓」那行的账（同上：服务器 `_im_fish` 算好递进来 —— 这一层不认水域名、
+               #    不打 HTTP、**更不配中英对照表**：恒拍板原样印游戏给的 `areas[].id`）。
+               fish=fish or {},
                sitting=bool(((seats or {}).get("me") or {}).get("sitting")),
                worn=(worn or {}),
                pets=pets,
