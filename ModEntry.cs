@@ -8781,6 +8781,15 @@ public class ModEntry : Mod
                 //    也不要求 Diggable：游戏那条路走 makeHoeDirt(ignoreChecks: true)。
                 if (hasObj)
                 {
+                    // 🪴 2026-10-05 恒真机证的（补28）：「**我一锄头锄掉了**」—— 游戏**允许**用锄头打花盆
+                    //    （他当场把补27b 造的那只空花盆锄掉了）。盆里有作物时**连作物一起锄掉**
+                    //    （`Hoe.cs:67-85` → `IndoorPot.performToolAction` → `HoeDirt.cs:758` `crop.hitWithHoe`；
+                    //     本文件 8276-8279 那段注释早就记着这条游戏规则）。
+                    //    ⛔ 原来"有 object 就挡"是一刀切 ⇒ 等于**我们自己发明了一条游戏没有的禁令**
+                    //    （真机回包 `{"ok":false,"error":"Tile blocked by object: Garden Pot"}`，
+                    //     后果：盆里作物锄不掉、放下的花盆撤不掉）。
+                    //    ⇒ 花盆这一档**放行**，交给游戏自己判（与上面 ginger / diggable-spot 两个例外同型）。
+                    if (loc.objects[tileVec] is IndoorPot) return null;
                     if (!IsDiggableSpot(loc.objects[tileVec]))
                         return $"Tile blocked by object: {loc.objects[tileVec].Name}";
                     return null;
