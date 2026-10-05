@@ -412,6 +412,97 @@ try:
     finally:
         N._walk_and_wait, N.api = _ww_bak, _m4_api_bak
 
+    print("\n⑨ 另外两处漏网的「谎报到达」+ 失败说明必须带**这一刻**的落点（2026-10-05）")
+    # ⑧ 只收了 `_resolve_place` 兜底那一处。全文件还有两条同族（审计点名）：
+    #   · `_minecart_route_go` 的「矿车到站后最后小走到 POI」——`_walk_and_wait` 返回值被丢
+    #   · `map_go` 的「从农场室内出屋后走到**本图 POI**」——同上
+    # 现在两条都走 `_poi_walk_honest`（同一份判据），没走到就**不许**出现「到达 <目的地>」。
+
+    # ⑨-1 失败说明里的落点必须是**现读**的（真机：以前只印"我们请求的那个格"，读起来像"人在这"）
+    _wa_bak3, _api_bak3, _post_bak3 = N._walk_and_wait, N.api, N.api._post
+    try:
+        class _StillTown:
+            def state(self, **kw):
+                return {"location": {"name": "Town"}, "player": {"x": 68, "y": 74, "isMoving": False},
+                        "time": {}, "inventory": []}
+
+            def _post(self, ep, data=None):
+                if ep == "/walk_to":
+                    return {"ok": True, "destination": {"x": 3, "y": 93}}
+                return {"ok": True}
+
+            def _get(self, ep, params=None):
+                return {"ok": True}
+
+        N.api = _StillTown()
+        N._walk_and_wait = _real["_walk_and_wait"]         # **真函数**（这一条测的就是它）
+        N._wait_arrival = lambda *a, **k: False            # 只把"等"这一步停掉
+        _ok9, _note9 = N._walk_and_wait("Town", 3, 93, timeout=1)
+        ck("⑨-1 走位失败说明里有「人现在在」+ **现读**的坐标 (68,74)（不是请求格 (3,93)）",
+           (not _ok9) and "人现在在" in _note9 and "(68,74)" in _note9, _note9)
+        ck("⑨-1 …失败说明里**两种坐标都在**：等的是哪格 `Town 3,93` ＋ 人现在在哪 `Town (68,74)`（后者现读）",
+           "人现在在 Town (68,74)" in _note9 and "Town 3,93" in _note9, _note9)
+    finally:
+        N._walk_and_wait, N.api = _wa_bak3, _api_bak3
+        N.api._post = _post_bak3
+
+    # ⑨-2 矿车到站后的"最后小走到 POI"：没走到 ⇒ 不许回「到达 <目的地>」
+    _mcgo_bak = getattr(N, "_minecart_go", None)
+    try:
+        N._minecart_go = lambda *a, **k: (True, "🚂 矿车站→镇矿车站 → Town")
+        N._walk_and_wait = _timeout
+        _mc = N._minecart_route_go(None, "矿车站", {"map": "Town"}, "镇矿车站",
+                                   "Town", "镇鲶鱼钓点", "镇鲶鱼钓点")
+        ck("⑨-2 矿车到站、最后那段没走到 ⇒ 回包**不许**出现「到达 镇鲶鱼钓点」",
+           "到达 镇鲶鱼钓点" not in _mc, _mc)
+        ck("⑨-2 …如实说「还没走到」+ 人还在半路", "还没走到" in _mc and "半路" in _mc, _mc)
+        N._walk_and_wait = lambda loc, x, y, timeout=0: (True, "")
+        _mc2 = N._minecart_route_go(None, "矿车站", {"map": "Town"}, "镇矿车站",
+                                    "Town", "镇鲶鱼钓点", "镇鲶鱼钓点")
+        ck("⑨-2 …走到了 ⇒ 照旧印「到达 镇鲶鱼钓点（(3, 93)）」", "到达 镇鲶鱼钓点" in _mc2, _mc2)
+    finally:
+        if _mcgo_bak is not None:
+            N._minecart_go = _mcgo_bak
+        N._walk_and_wait = _timeout
+
+    # ⑨-3 从农场室内出屋后走到**本图 POI**：没走到 ⇒ 不许回「到达 <POI>」
+    class _CabinApi:
+        """人在自家小屋里；`_exit_farm_building` 一叫就"出屋"（当前图翻成 Farm）。"""
+        def __init__(self):
+            self.loc = "Cabin"
+
+        def state(self, **kw):
+            return {"location": {"name": self.loc}, "player": {"x": 6, "y": 6, "isMoving": False},
+                    "time": {}, "inventory": []}
+
+        def _post(self, ep, data=None):
+            if ep == "/walk_to":
+                return {"ok": True, "destination": {"x": 8, "y": 8}}
+            return {"ok": True}
+
+        def _get(self, ep, params=None):
+            return {"ok": True}
+
+    _exit_bak, _api_bak4 = N._exit_farm_building, N.api
+    _fa = _CabinApi()
+    try:
+        N.api = _fa
+        N._exit_farm_building = lambda cur, dest: (setattr(_fa, "loc", "Farm"), True)[1]
+        N._walk_and_wait = _timeout
+        _po = N.map_go("农场洞穴(外)")
+        ck("⑨-3 出屋了、POI 没走到 ⇒ 回包**不许**出现「到达 农场洞穴(外)」",
+           "到达 农场洞穴(外)" not in _po, _po)
+        ck("⑨-3 …如实说「还没走到」", "还没走到" in _po, _po)
+        ck("⑨-3 …⛔ 也没设站位/朝向（离得远时设朝向是假的）", "[站位朝向]" not in _po, _po)
+        _fa.loc = "Cabin"          # ⚠️ 上一次调用已经把"出屋"翻成 Farm 了 —— 放回室内，这条才走**出屋分支**
+        N._walk_and_wait = lambda loc, x, y, timeout=0: (True, "")
+        _po2 = N.map_go("农场洞穴(外)")
+        ck("⑨-3 …走到了 ⇒ 照旧印「到达 农场洞穴(外)（(34, 7)）」+ 站位朝向",
+           "到达 农场洞穴(外)" in _po2 and "(34, 7)" in _po2 and "[站位朝向]" in _po2, _po2)
+    finally:
+        N._exit_farm_building, N.api = _exit_bak, _api_bak4
+        N._walk_and_wait = _timeout
+
     print("\n" + ("=" * 46))
     print("❌ 失败 " + str(len(FAIL)) + " 项: " + ", ".join(FAIL) if FAIL else "✅ 全过（0 失败）")
 finally:

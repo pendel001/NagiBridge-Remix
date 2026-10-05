@@ -24959,6 +24959,24 @@ _FISH_CACHE_TTL = 60.0        # 同一张图 60s 内不重扫（⚠️ `/fish_ar
 _FISH_WATER_RADIUS = 30       # `/water` 的**上限**（`ModEntry.cs:17045` 里 `Math.Min(vr, 30)`）——少打几发
 _FISH_PASSABLE_TRIES = 240    # 一趟最多问几格 `/passable`（防"大图但没岸"那种病态开销）
 _FISH_MAX_PICKS = 8           # 第二层最多几行（防病态地图把单子撑爆；超了按下标截断并如实报数）
+# ⛔⛔ 2026-10-05（**恒一句提醒点破的**）—— 水格扫描那一档**先整档关死**：
+#   恒：「河流农场有很多小河，而轮回的钓鱼等级是 10，**抛到对岸也会算没水**」。
+#   我去核了游戏代码，他说对了，而且比"对岸"更根本：**鱼漂根本不落在"旁边那一格"** ——
+#     · 落点判据（`FishingRod.cs:411-414`）：`location.canFishHere() && isTileFishable(tileX,tileY)`
+#       用的是**落点**那一格；`tileX/tileY` 来自 `bobber`，而 `bobber` 在抛竿那一刻就被设成
+#       **满距离**（`FishingRod.cs:1950/1958/1976/1994`）：
+#         `num = Math.Max(128f, castingPower * (getAddedDistance(谁) + 4) * 64f)`（左右向；上下向 +3）
+#     · `getAddedDistance`（`:357`）按**钓鱼等级**给：≥15⇒4 · **≥8⇒3** · ≥4⇒2 · ≥1⇒1
+#       ⇒ 轮回 10 级 ⇒ **+3** ⇒ 满蓄力时左右 ≈ **7 格**、上下 ≈ **6 格**；**下限也是 2 格**（128px）。
+#     · 真机对上：Farm 站 (29,23) 面左 **成**（落点 ≈ (22,23)，实测是水）；同站位面下 **败**
+#       （落点 ≈ (29,29)，实测是岸）；(28,22)/(27,22) 面下败（落点 (28,28)/(27,28)，实测不是水）。
+#   ⇒ **"水格四邻能站 + dir=站格→水格" 这个模型在 10 级满蓄力下是错的**（鱼漂会飞过窄河/小池塘）。
+#     所以这一档**必须**改成按**落点**挑位（落点 = 站格 + 朝向 × 抛竿距离），而"抛竿距离"要么
+#     从 Fishbot 的 CastDistance＋游戏公式算、要么直接把 `bobber` 从 C# 吐出来实测。
+#     在没改成之前 —— **一行都不给**（`/water`＋`/passable` 挑出来的岸位按下去就是假门）。
+#   ⚠️ 这一位**与 DLL 新旧无关**：`fishable`（见 `_fish_water_scan` 假门闸②）是**另一条**真缺陷
+#      （`isWaterTile` ≠ `isTileFishable`），两条都得修；修好落点模型前先别开这一档。
+_FISH_WATER_SWEEP_ENABLED = False
 
 
 def _fish_rod_in_hand(state: dict) -> bool:
@@ -25052,8 +25070,21 @@ def _fish_areas_raw() -> dict:
     return r if r.get("ok") else {}
 
 
-def _fish_water_scan(state: dict) -> list:
+def _fish_water_scan(state: dict, caps: dict = None) -> list:
     """本图**没有可用鱼区**时的兜底：多锚点拼 `/water` 找「水格 + 能站的岸格」。
+
+    🔴 **2026-10-05 真机逮到假门（根因就在这一段，别删）**：本函数原来只认 `isWaterTile`
+       （`/water` 的 `water[]`）＋四邻 `/passable`，**可游戏抛竿用的是另一个判据** —— 反编译
+       `FishingRod.cs:2191`：`if (!who.currentLocation.isTileFishable(bobberTile))` **直接不开钓**
+       （`isTileFishable` = `GL:2330`：`isWaterTile` ＋ Back 层无 `NoFishing` ＋ Buildings 层那格带 `Water` 属性）。
+       真机（Farm 标准农场池塘，2026-10-05 深夜只读探针）：
+         · 站 (28,22) 面下 → 水 (28,23)：**两趟 `isFishing` 都没建立**（体力白扣 7-8，随后 Fishbot 弹 GameMenu）；
+         · 站 (27,22) 面下 → 水 (27,23)：**同样失败**；站 (40,0) 面左 → 水 (39,0)：同样失败；
+         · 同一格水 (28,23)：站 **(29,23) 面左却 2.0 秒就成了** ✅ —— 因为游戏自己会把鱼漂往**垂直方向**
+           挪一格去找可钓格（`FishingRod.cs:2193-2220`），横向抛能落到下面那排**钓得了**的水。
+       ⇒ **「看着是水」≠「钓得着」**，而 `/water`＋`/passable` 这两样分不出来。
+       ⇒ 现在两道闸：① `caps["water_fishable"]`（老 DLL 的 `/water` 没有 `fishable` 这一位 ⇒
+          **整趟不扫**——宁可不给行，也不给按下去去不了的假门）；② 逐格只认 `fishable is True`。
 
     为什么非要拼：`/water` 是**局部方扫**（`ModEntry.cs:17040-17079`，以 `x/y` 为中心 `radius` 格，
     `radius` 上限 30）⇒ 大图必须多锚点覆盖。锚点按**到人的距离**排序、**找到就收手**
@@ -25066,6 +25097,11 @@ def _fish_water_scan(state: dict) -> list:
     → `[{waterX,waterY,standX,standY,dir}, …]`（`[]` = 本图找不到能站的岸位）
     ⚠️ 只收**最好先命中的那一块锚点**的结果（见上）；`_FISH_PASSABLE_TRIES` 用完即止、如实返回空。
     """
+    if not _FISH_WATER_SWEEP_ENABLED:
+        return []                     # ⛔ 整档关死（理由见 `_FISH_WATER_SWEEP_ENABLED` 那段长注释：
+        #                               鱼漂落点在**7 格外**，不是"旁边那一格"⇒ 这个模型整体是错的）
+    if (caps or {}).get("water_fishable") is not True:
+        return []                     # 老 DLL：`/water` 不吐 `fishable` ⇒ **整趟不扫**（见上，假门闸①）
     loc = (state or {}).get("location") or {}
     w, h = loc.get("mapWidth"), loc.get("mapHeight")
     if not isinstance(w, int) or not isinstance(h, int) or w <= 0 or h <= 0:
@@ -25085,6 +25121,10 @@ def _fish_water_scan(state: dict) -> list:
         if not r.get("ok"):
             return []
         tiles = [t for t in (r.get("water") or []) if isinstance(t, dict)]
+        # 🎣 **只认游戏说钓得着的水格**（假门闸②）——`fishable` 是 `/water` 逐格给的 `isTileFishable`
+        #    （`GL:2330`）。❌ **不许**在这里自己按 `canCrabPot`/`isWaterTile` 猜"这个大概能钓"：
+        #    真机上"能放蟹笼"与"能抛竿"根本不是同一把尺子（(29,24) 能放笼却抛不进，(28,23) 反之）。
+        tiles = [t for t in tiles if t.get("fishable") is True]
         tiles.sort(key=lambda t: _fish_xy_dist(t.get("x"), t.get("y"), px, py))
         pairs = []
         for t in tiles:
@@ -25138,6 +25178,13 @@ def _fish_picks_from_raw(raw: dict, state: dict) -> list:
                 # ⛔ 恒的硬规矩：**水域 ≠ 钓点**。`spots:[]`（spotsFound:0）⇒ 这一行不上单子
                 #    （按下去去不了的 = 假门）。Forest 就是"两种水域、能站的钓点只有一处"。
                 continue
+            # 🎣 2026-10-05：`/fish_areas` 现在逐格给游戏自己的抛竿判据 `fishable`（`isTileFishable`）。
+            #    ⛔ 只丢**游戏明说钓不了**的那些（`is False`）；**键不在**（老 DLL 没这一位）⇒ 照旧留着
+            #    —— 那批行今天就是能用的（Forest/Town/Beach/Desert），不能因为"问不到"就全砍掉。
+            _fishable = [s for s in spots if s.get("fishable") is not False]
+            if not _fishable:
+                continue
+            spots = _fishable
             cal = _fish_calibrated_poi(a, loc_name)
             if cal:
                 picks.append(dict(cal, area=a.get("id"),
@@ -25176,6 +25223,14 @@ def _im_fish(state: dict, caps: dict = None) -> dict:
       ③ 游戏答得出来吗：`/fish_areas` 的**有钓点水域**（`spots` 非空）；
          一个都没有时退回**水格扫描**（`/water` 多锚点 + `/passable`）——
          连岸位都找不到（或图上压根没水）⇒ `{}`。
+      🔴 ④ **2026-10-05 补的第四道闸 —— 水格扫描那一档现在整档关死**
+         （`_FISH_WATER_SWEEP_ENABLED = False`，理由与游戏公式见那个常量上面的长注释）：
+         恒提醒「10 级**抛到对岸也算没水**」⇒ 核代码坐实 **鱼漂落点在 7 格（左右）/6 格（上下）外**，
+         而这一档原来按"水格四邻 + 朝向"挑位 —— **模型本身就是错的**（按下去到不了水里）。
+         另外它还多一道 `caps["water_fishable"]`：老 DLL 的 `/water` 没有游戏抛竿判据
+         `isTileFishable` 这一位 ⇒ 也一格都不信。
+         ⇒ **没有鱼区的图（Farm/Mountain…）眼下不给「垂钓」行**（恒拍板：宁可不给，也不给假门）；
+            要恢复必须先把落点模型做对（把 `bobber` 从 C# 吐出来实测，或按 CastDistance＋等级公式算）。
 
     ⚠️ **原样印 id**：这一层把 `areas[].id` 当**显示名**用（恒 2026-10-05 拍板）；
        `/fish_areas` 回的 `displayName` 实测九个区**全是 null**，所以连"优先用它"这条路都省了。
@@ -25205,7 +25260,7 @@ def _im_fish(state: dict, caps: dict = None) -> dict:
             # ⚠️ `hasFishAreaData=True, count=0` 的图（Farm/Mountain…）与"有鱼区但都没钓点"的图
             #    （Town 的 Fountain 水格 0）**都走这一支**：鱼区那条路给不出能站的钓点，
             #    就如实退回"水格扫描"——**不是**"这张图不能钓"。
-            pairs = _fish_water_scan(state)
+            pairs = _fish_water_scan(state, caps)
             raw = {"mode": "water", "pairs": pairs} if pairs else {}
         _FISH_CACHE.update(key=loc_name, ts=now, raw=raw or {})
     picks = _fish_picks_from_raw(raw or {}, state)
@@ -25260,6 +25315,30 @@ def _im_fish_go(args: dict) -> str:
     px, py = p.get("x"), p.get("y")
     if not isinstance(px, int) or not isinstance(py, int):
         return "⚠️ 读不到我在哪 —— **不敢瞎走/瞎抛**（这一行什么都没做），稍后再试"
+
+    # ②b 🎣 **那一格水现在真的钓得着吗**（只查一格，一发 `/water?radius=1`）——
+    #     判据是**游戏自己的** `isTileFishable`（`GL:2330`；抛竿入口 `FishingRod.cs:2191`）。
+    #     为什么单子上明明按过还要再问一次：单子可能是几十秒前看的（`/water` 那层还有 60s 缓存），
+    #     而"看着是水"与"钓得着"在两套判据下不是一回事（真机：农场池塘北沿那排 `isWaterTile=true`
+    #     却四种朝向都抛不出去）。
+    #     ⚠️ **只在答得出来时才拿它当闸**（`fishable` 这一位在不在 = DLL 新旧）：
+    #        · 回包带 `fishable` ⇒ 两条路都照它判；
+    #        · 回包不带（老 DLL）⇒ **只有水格扫描那一档**（`area` 为空）当场拒 ——
+    #          那档本来就是靠这一位活着；**鱼区那档不许因此变红**（Forest/Town/Beach/Desert 今天能用）。
+    if isinstance(wx, int) and isinstance(wy, int):
+        try:
+            _w = api._ai_get("/water", {"x": wx, "y": wy, "radius": 1}) or {}
+        except Exception:
+            _w = {}
+        _wt = [t for t in (_w.get("water") or []) if isinstance(t, dict)]
+        _hit = [t for t in _wt if t.get("x") == wx and t.get("y") == wy]
+        _can_judge = any("fishable" in t for t in _wt)
+        if (_can_judge or not area) and (not _w.get("ok") or not _hit
+                                         or _hit[0].get("fishable") is not True):
+            return (f"⚠️ 那一格水 ({wx},{wy}) **游戏现在不许下竿**（`isTileFishable` 不为真）"
+                    f" —— 这一行**什么都没做**（不走过去、不抛竿）。\n"
+                    f"   敲 `show` 重开一张（这一屏的号是旧的/那片水变了）；"
+                    f"要确认某格能不能钓，看 `/water` 回的 `fishable`。")
 
     # ③ 走位（同图精确走位；走不到的落点由 `walk_to` 自己就近修正并如实印）
     walk = ""

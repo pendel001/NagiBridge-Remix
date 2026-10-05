@@ -1288,6 +1288,16 @@ def _walk_and_wait(loc: str, x: int, y: int, timeout: int = 25):
     else:
         _walk_log(loc, x, y, ax, ay, "超时没到（人可能还在路上）")
         _to = f"走位超时没到（{loc} {ax},{ay}）"
+    # 🔴 2026-10-05 恒真机逮到（「失败时印的是**旧坐标**」）：上面两句写的 `(loc ax,ay)` 是
+    #    **我们请求的那个格**，不是"人现在在哪" ⇒ 读起来像"人在这"，其实人可能在大老远。
+    #    ⇒ 失败说明里必须带**这一刻现读**的落点（读不到就如实说读不到，⛔不拿旧值/目标值冒充）。
+    try:
+        _s2 = api.state()
+        _p2 = _s2.get("player") or {}
+        _l2 = ((_s2.get("location") or {}).get("name") or "?")
+        _to += f"；**人现在在 {_l2} ({_p2.get('x')},{_p2.get('y')})**"
+    except Exception:
+        _to += "；人现在在哪**读不到**（别当成已经到了目标格）"
     return False, (note + _to) if note else _to
 
 
@@ -3181,11 +3191,22 @@ def _minecart_route_go(walk_path, sname, stn, ds, cart_target, final_dest,
     body = prefix
     if final_dest and final_dest in locations.POI and locations.POI[final_dest].get("map") == cart_target:
         poi = locations.POI[final_dest]
-        _walk_and_wait(cart_target, poi["pos"][0], poi["pos"][1], timeout=20)
-        face_log = _apply_poi_stand_face(final_dest)
-        body += f" → 到达 {destination}（{poi['pos']}）{face_log}"
+        # 🔴 2026-10-05：这里原来**把 `_walk_and_wait` 的返回值丢掉**，走位超时/失败**照样**回
+        #    「→ 到达 {destination}（pos）」= **谎报到达**（同 `_poi_walk_honest:3466` 记的同族，
+        #    那三处已收口，这条是漏网的第四处）。⇒ 走**同一份判据**：没走到就如实说人还在半路，
+        #    且**不设站位/朝向**（离得远时设朝向是假的，人一走就没了）。
+        _ok, _tail = _poi_walk_honest(cart_target, destination, poi)
+        body += (f" → 到达 {destination}（{poi['pos']}）{_tail}" if _ok else f" → {_tail}")
     else:
-        body += f" → 到达 {cart_target}"
+        # ⚠️ 这一支是"矿车把人送到 cart_target，但目的地不是本图 POI"：**到达判据是 `_minecart_go`
+        #    回读的图名**（`navigation.py:3137` 那次 `/state`），坐标这一刻现读——别拿出发前那份写。
+        try:
+            _mst = api.state()
+            _mcur = ((_mst.get("location") or {}).get("name") or "?")
+            _mpl = _mst.get("player") or {}
+            body += f" → 到达 {_mcur}（{_mpl.get('x')},{_mpl.get('y')}）"
+        except Exception:
+            body += f" → 到达 {cart_target}"
     if npc_target:
         body += "\n" + _npc_arrive_note(npc_target.get("name") or npc_target.get("displayName") or "", npc0, cart_target)
     return _with_state(body + mine_hint + _mine_entry_reminder(cart_target))
@@ -3740,12 +3761,15 @@ def _map_go_body(destination: str = "", npc: str = "") -> str:
                 _poi_here = locations.POI.get(destination) if destination in locations.POI else None
                 if _poi_here and _poi_here.get("map") == "Farm":
                     _ppx = api.state().get("player", {})      # 出屋瞬间的落点（写进日志，别读走完之后的）
-                    _walk_and_wait("Farm", _poi_here["pos"][0], _poi_here["pos"][1], timeout=30)
-                    _face_after = _apply_poi_stand_face(destination)
-                    _door_after = _step_into_building("Farm", _poi_here["pos"])
-                    return _with_state(
-                        f"🏡 已离开室内回到农场（{cur} {_ppx.get('x')},{_ppx.get('y')}）"
-                        f" → 到达 {destination}（{_poi_here['pos']}）{_face_after}{_door_after}")
+                    # 🔴 2026-10-05：这条原来**把 `_walk_and_wait` 的返回值丢掉** ⇒ 走位没走完照样回
+                    #    「→ 到达 {destination}（pos）」= **谎报到达**（同族第四处，见 `_poi_walk_honest:3466`）。
+                    #    改走**同一份判据**（它末尾已经带 `_apply_poi_stand_face` + `_step_into_building`）。
+                    _ok, _tail = _poi_walk_honest("Farm", destination, _poi_here)
+                    _head = (f"🏡 已离开室内回到农场（{cur} {_ppx.get('x')},{_ppx.get('y')}）"
+                             f"（目标 {destination} 在本图）")
+                    if not _ok:
+                        return _with_state(_head + "\n" + _tail)
+                    return _with_state(f"{_head}\n→ 到达 {destination}（{_poi_here['pos']}）{_tail}")
                 return _with_state(f"🏡 已离开室内回到农场（{cur} {api.state().get('player',{}).get('x')},{api.state().get('player',{}).get('y')}）")
         # 玩家坐标（就近段数比较平局时比"第一段地图内距离"用）
         _pos = None

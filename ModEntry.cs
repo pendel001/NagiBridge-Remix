@@ -3312,6 +3312,11 @@ public class ModEntry : Mod
                 //    （照上面那条规矩：这里只陈述"会不会吐这些键"，**不**陈述游戏规则——
                 //      "哪片水域有没有能站的钓点"必须反过来问游戏，那正是这个端点干的事。）
                 ["fish_areas"] = true,
+                // 🎣 2026-10-05：`/water` 的水格**多了 `fishable` 这一位**（`isTileFishable`，GL:2330 —— 这才是
+                //    游戏**抛竿时**用的判据，见 `FishingRod.cs:2191`；`isWaterTile` 只是"看着是水"）。
+                //    ⚠️ 消费侧（`_fish_water_scan`）**必须先看这一位**：老 DLL 上没有它 ⇒ 那一趟扫水
+                //       一格都不该信（恒的规矩：宁可不给行，也不给按下去去不了的假门）。
+                ["water_fishable"] = true,
             }
         };
     }
@@ -17067,7 +17072,16 @@ var tcs = new TaskCompletionSource<object>();
                             //    Python 选点只挑 canCrabPot=true → /use x,y 一次放成功，不再 Cannot place 试错。
                             bool canCrab = loc.objects != null
                                 && StardewValley.Objects.CrabPot.IsValidCrabPotLocationTile(loc, tx, ty);
-                            water.Add(new { x = tx, y = ty, canCrabPot = canCrab });
+                            // 🎣 2026-10-05（恒「快捷钓鱼上单」真机逮到假门）：**抛竿判据是 `isTileFishable`，不是 `isWaterTile`**。
+                            //    反编译 `FishingRod.cs:2191`：`if (!who.currentLocation.isTileFishable(bobberTile))`
+                            //    —— 不满足就**根本不开钓**（线直接收回，只有体力白扣）。`GL:2330` 的判据是
+                            //    `isWaterTile && Back 层无 NoFishing && Buildings 层那格带 Water 属性`。
+                            //    ⇒ 农场池塘**北沿那一排**实测就是这种格：`isWaterTile=true`、`canCrabPot` 有真有假，
+                            //      可**四种朝向都抛不出去**（真机：(28,23)/(27,23)/(39,0) 全失败；同一格水
+                            //      从侧面抛却成了——因为游戏自己会把鱼漂往**垂直方向**挪一格找可钓格）。
+                            //    ⇒ Python 侧的水格扫描**必须**用这一位筛，不许再拿 `isWaterTile` 当"能钓"。
+                            water.Add(new { x = tx, y = ty, canCrabPot = canCrab,
+                                            fishable = loc.isTileFishable(tx, ty) });
                         }
                     }
                 }
@@ -17101,7 +17115,13 @@ var tcs = new TaskCompletionSource<object>();
     ///   · `areas[].waterTiles`  ← 扫全图，`loc.isWaterTile(x, y)`（GL:13223，= Back 层有没有 `Water` 属性）
     ///                             为真、且 `loc.TryGetFishAreaForTile`（GL:13791）归到本区的格数。
     ///                             复用的就是 `/water`（:17053）那把尺子，**没有第二套水格实现**。
-    ///   · `areas[].spots[]`     ← 见下「可达钓点」。
+    ///   · `areas[].fishableTiles` ← 🎣 上面那堆里**真能抛竿**的有几格 —— `loc.isTileFishable(x, y)`（GL:2330，
+    ///                             = **游戏抛竿时**用的判据，`FishingRod.cs:2191`）。2026-10-05 加：
+    ///                             `isWaterTile` 只是"看着是水"，农场池塘北沿那种格 `isWaterTile=true`
+    ///                             却**四种朝向都抛不出去**（真机假门）⇒ 消费侧要按这一位筛。
+    ///                             `waterTiles` 与它的差 = "看着是水但钓不了"的格数。
+    ///   · `areas[].spots[]`     ← 见下「可达钓点」。每条带 `fishable`（那格水的 `isTileFishable`，原样照抄
+    ///                             游戏、**不在消费侧重算**）——`fishable:false` 的 spot 是**假门**，别摆上单子。
     ///   · `count`               ← 鱼区数量（= `areas.Length`）。
     ///
     /// ⛔ **不回鱼种**（需求方明确不要）：而且 `FishAreaData` **本来就没有鱼列表** —— 反射实锤它只有
@@ -17154,6 +17174,7 @@ var tcs = new TaskCompletionSource<object>();
                 // GL:14329 `GetData()` → GL:13794/13798 `FishAreas`（反射实锤：Dictionary<string, FishAreaData>）
                 var fishAreas = loc.GetData()?.FishAreas;
                 var waterCount = new Dictionary<string, int>();
+                var fishableCount = new Dictionary<string, int>();   // 🎣 本区**真能抛竿**的水格数（见 /water 那段注释）
                 var spotsById = new Dictionary<string, List<object>>();
 
                 if (fishAreas != null)
@@ -17161,6 +17182,7 @@ var tcs = new TaskCompletionSource<object>();
                     foreach (var pair in fishAreas)
                     {
                         waterCount[pair.Key] = 0;
+                        fishableCount[pair.Key] = 0;
                         spotsById[pair.Key] = new List<object>();
                     }
 
@@ -17182,6 +17204,10 @@ var tcs = new TaskCompletionSource<object>();
                                     continue;                                                // GL:13791
                                 if (areaId == null || !waterCount.ContainsKey(areaId)) continue;
                                 waterCount[areaId]++;
+                                // 🎣 游戏**抛竿时**的真判据（`FishingRod.cs:2191` → `GL:2330`）——
+                                //    只有这一位为真，这一格水才收得下鱼漂（见 /water 那段长注释）。
+                                bool waterFishable = loc.isTileFishable(tx, ty);
+                                if (waterFishable) fishableCount[areaId]++;
 
                                 for (int k = 0; k < 4; k++)
                                 {
@@ -17197,6 +17223,7 @@ var tcs = new TaskCompletionSource<object>();
                                         standY = sy,
                                         dir,
                                         dirName = dir == 0 ? "up" : dir == 1 ? "right" : dir == 2 ? "down" : "left",
+                                        fishable = waterFishable,   // ⛔ 逐字照抄游戏；消费侧据此筛（别自己算）
                                     });
                                 }
                             }
@@ -17218,6 +17245,8 @@ var tcs = new TaskCompletionSource<object>();
                         string? noSpotReason = null;
                         if (waterCount[id] == 0)
                             noSpotReason = "本区范围内没扫到水格（isWaterTile 恒 false）";
+                        else if (fishableCount[id] == 0)
+                            noSpotReason = "本区有水格，但**一格都不是 isTileFishable**（游戏抛竿判据 GL:2330 ⇒ 抛不出去，不是没站处）";
                         else if (found.Count == 0)
                             noSpotReason = "本区有水格，但水格四邻没有一格可站（IsTilePassable 全 false）";
 
@@ -17230,6 +17259,7 @@ var tcs = new TaskCompletionSource<object>();
                                 ? new { x = pos.Value.X, y = pos.Value.Y, w = pos.Value.Width, h = pos.Value.Height }
                                 : null,
                             waterTiles = waterCount[id],
+                            fishableTiles = fishableCount[id],      // 🎣 其中真能抛竿的（spots[].fishable 的分母）
                             spotsFound = found.Count,               // 截断前的真实个数
                             spotsTruncated = found.Count > maxSpots,
                             spots,

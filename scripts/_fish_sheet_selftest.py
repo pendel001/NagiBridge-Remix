@@ -129,10 +129,16 @@ try:
                 "activeMenu": None}
 
     def _acct(api, caps=None):
-        """走服务器那条真路（`_im_fish`）；⚠️ 顺手清缓存（同一张图的账会缓存 60s）。"""
+        """走服务器那条真路（`_im_fish`）；⚠️ 顺手清缓存（同一张图的账会缓存 60s）。
+
+        ⚠️ 默认 caps **必须带 `water_fishable`**（2026-10-05 新加的假门闸①）：不带它，
+           水格扫描那档整趟不扫（老 DLL 的行为，另有专测）。
+        """
         M._FISH_CACHE.update({"key": None, "ts": 0.0, "raw": None})
         M.api = api
-        return M._im_fish(api._state, caps if caps is not None else {"fish_areas": True})
+        return M._im_fish(api._state,
+                          caps if caps is not None
+                          else {"fish_areas": True, "water_fishable": True})
 
     def _sheet(acct, loc="Forest", px=80, py=80):
         """用真 `ctx_from` 拼 Ctx（也顺手钉住「新字段 `fish=` 真的接上了」）再渲染一屏。"""
@@ -196,7 +202,15 @@ try:
        IM._fish_subs(ctx1, [None]) is None, str(acct1))
 
     # 0 个有钓点 + 图上有水 ⇒ 一层（水格扫描）
-    water = {(30, 30): [{"x": 31, "y": 31, "canCrabPot": False}]}
+    # ⚠️ 2026-10-05 恒提醒（「10 级**抛到对岸也算没水**」）⇒ 核了游戏代码：
+    #    落点在 `FishingRod.cs:1950` 的 `max(128, 蓄力×(等级加成+4)×64)` 之外（10 级⇒+3⇒满蓄力≈7 格），
+    #    **"水格四邻 + 朝向"这个模型整体是错的** ⇒ 那一档已**整档关死**（`_FISH_WATER_SWEEP_ENABLED`）。
+    #    下面的检查用 `= True` **把逻辑本身钉住**（将来把落点模型做对了，翻回 True 即可），
+    #    同时另有一条钉子钉住"默认必须是关的"。
+    M._FISH_WATER_SWEEP_ENABLED = True
+    # ⚠️ 2026-10-05：`/water` 的每格**必须**带 `fishable`（游戏自己的抛竿判据 `isTileFishable`，
+    #    `GL:2330`）——这一档只认 `fishable is True` 的格（假门闸②，见 `_fish_water_scan` 的注释）。
+    water = {(30, 30): [{"x": 31, "y": 31, "canCrabPot": False, "fishable": True}]}
     passable = {(32, 31): True}
     api = FakeApi(_state("Farm", x=40, y=32, in_hand=True, wh=(80, 65)),
                   fish_areas=FISH_FARM, water=water, passable=passable)
@@ -214,8 +228,29 @@ try:
     ck("…⛔ 没自己编一种水域名（`area` 是空串，不是「池塘」这种我们发明的词）",
        not any(isinstance(p.get("area"), str) and p.get("area") for p in picks_w), str(picks_w))
 
+    # 🔴 假门闸①：老 DLL 的 `/water` **不吐 `fishable`** ⇒ 这一档**整趟不扫**（宁可不给行）
+    api_old = FakeApi(_state("Farm", x=40, y=32, in_hand=True, wh=(80, 65)),
+                      fish_areas=FISH_FARM, water=water, passable=passable)
+    acct_old = _acct(api_old, caps={"fish_areas": True})           # 只给了老的两位
+    ck("老 DLL（caps 没有 `water_fishable`）⇒ 水格扫描那档**一行都不给**",
+       acct_old == {} and not any(ep == "/water" for ep, _ in api_old.gets),
+       str(acct_old) + " || " + str(api_old.gets[:2]))
+
+    # 🔴 假门闸②：`/water` 说这格 `fishable:false`（看着是水、抛不出去）⇒ 不算钓点
+    for _bad, _why in (({"x": 31, "y": 31, "canCrabPot": True, "fishable": False},
+                        "`fishable:false`（真机：农场池塘北沿那排就是这个）"),
+                       ({"x": 31, "y": 31, "canCrabPot": True},
+                        "**缺 `fishable` 键**（老 DLL 的回包）")):
+        _a = FakeApi(_state("Farm", x=40, y=32, in_hand=True, wh=(80, 65)),
+                     fish_areas=FISH_FARM, water={(30, 30): [_bad]},
+                     passable={(32, 31): True})
+        _ac = _acct(_a)
+        ck(f"…{_why} ⇒ 那一格水**不算钓点**（整行不出现，⛔ 连 `canCrabPot` 都不拿来当理由）",
+           _ac == {}, str(_ac))
+
     # 水格扫描那档**永远只给一层**（那些钓点没有名字 ⇒ 第二层会变成几行同名）
-    water2 = {(30, 30): [{"x": 31, "y": 31}, {"x": 28, "y": 29}]}
+    water2 = {(30, 30): [{"x": 31, "y": 31, "fishable": True},
+                         {"x": 28, "y": 29, "fishable": True}]}
     passable2 = {(32, 31): True, (29, 29): True}
     api = FakeApi(_state("Farm", x=40, y=32, in_hand=True, wh=(80, 65)),
                   fish_areas=FISH_FARM, water=water2, passable=passable2)
@@ -234,6 +269,41 @@ try:
        acct_n == {} and "垂钓" not in menu_n, str(acct_n) + " || " + menu_n)
     ck("…也真问过了（不是「没读就算没有」）：`/water` 打了、回包 ok 但是空",
        any(ep == "/water" for ep, _ in api.gets), str(api.gets[:2]))
+
+    # 🔴 恒 2026-10-05：「河流农场有很多小河，而轮回的钓鱼等级是 10，抛到对岸也会算没水」
+    #    ⇒ 水格扫描那一档**整体关死**（鱼漂落点在 7 格外，不是"旁边那一格"；见常量上的长注释）。
+    #    这条钉子钉的就是"默认必须是关的"——将来谁把模型做对了要翻回 True，**必须同时改这条**。
+    M._FISH_WATER_SWEEP_ENABLED = False
+    api_off = FakeApi(_state("Farm", x=40, y=32, in_hand=True, wh=(80, 65)),
+                      fish_areas=FISH_FARM, water=water, passable=passable)
+    acct_off = _acct(api_off)
+    ck("⛔ 默认 `_FISH_WATER_SWEEP_ENABLED=False` ⇒ 没有鱼区的图（Farm）**一行都不给**",
+       acct_off == {} and not any(ep == "/water" for ep, _ in api_off.gets),
+       str(acct_off) + " || " + str(api_off.gets[:2]))
+    M._FISH_WATER_SWEEP_ENABLED = True   # 后面的检查继续钉"逻辑本身"（见上面那段说明）
+
+    # 🎣 鱼区那档的 `fishable` 口径（2026-10-05）：**只丢游戏明说钓不了的**，缺键的照旧留着
+    _f = {"ok": True, "location": "Forest", "hasFishAreaData": True, "count": 1,
+          "areas": [{"id": "River", "displayName": None, "position": None,
+                     "waterTiles": 9, "fishableTiles": 1, "spotsFound": 1, "spotsTruncated": False,
+                     "spots": [{"waterX": 21, "waterY": 76, "standX": 20, "standY": 76,
+                                "dir": 1, "fishable": False}]}]}
+    M._FISH_CACHE.update({"key": None, "ts": 0.0, "raw": None})
+    _a = FakeApi(_state("Forest", in_hand=True), fish_areas=_f)
+    M.api = _a
+    ck("`spots[].fishable:false`（游戏说这格水抛不出去）⇒ 那一区**不上单子**",
+       M._im_fish(_a._state, {"fish_areas": True, "water_fishable": True}) == {}, "应当为 {}")
+    _f2 = {"ok": True, "location": "Forest", "hasFishAreaData": True, "count": 1,
+           "areas": [{"id": "River", "displayName": None, "position": None,
+                      "waterTiles": 9, "spotsFound": 1, "spotsTruncated": False,
+                      "spots": [{"waterX": 21, "waterY": 76, "standX": 20, "standY": 76,
+                                 "dir": 1}]}]}          # ⚠️ **没有** fishable 这一位 = 老 DLL 的回包
+    M._FISH_CACHE.update({"key": None, "ts": 0.0, "raw": None})
+    _a2 = FakeApi(_state("Forest", in_hand=True), fish_areas=_f2)
+    M.api = _a2
+    _ac2 = M._im_fish(_a2._state, {"fish_areas": True})
+    ck("…**缺 `fishable` 键**（老 DLL）⇒ 照旧留着（Forest/Town/Beach/Desert 今天能用，不许因\"问不到\"全砍）",
+       len(_ac2.get("picks") or []) == 1 and _ac2["picks"][0].get("dir") == 1, str(_ac2))
 
     print("\n③ 哨兵：「水域 ≠ 钓点」—— `spots:[]` 的水域不许上第二层")
     ck("没钓点那个 id（干水域）在整个单子/第二层里**一个字都不出现**",
@@ -367,6 +437,29 @@ try:
     a, nav, scripts, out = _go(st, {"wx": 34, "wy": 26, "area": "Lake"}, land=(34, 25))
     ck("行上没带坐标（老单子/账丢了）⇒ 当场报错、**不动手**",
        scripts == [] and nav.calls == [] and "show" in out, out)
+
+    # ②b 🎣 那一格水**现在**钓不钓得着（游戏自己的 `isTileFishable`；只查一格）
+    def _go_w(st, args, water, land=None):
+        a = FakeApi(st, water=water)
+        nav = FakeNav(a, land)
+        scripts = []
+        M.api = a
+        M.navigation = nav
+        M._run_script = lambda name, argv, **kw: (scripts.append((name, list(argv))),
+                                                  "🚀 已后台启动")[1]
+        return a, nav, scripts, M._im_fish_go(args)
+
+    st = _state("Forest", x=34, y=25, in_hand=True)     # 人已经站在岸格上
+    a, nav, scripts, out = _go_w(st, ARGS, {(34, 26): [{"x": 34, "y": 26, "fishable": False}]})
+    ck("按下去时游戏说那格水 `isTileFishable=false` ⇒ **当场拒**（不走位、不抛竿、不设朝向）",
+       scripts == [] and nav.calls == [] and "/face" not in [e for e, _ in a.posts]
+       and "不许下竿" in out, out)
+    a, nav, scripts, out = _go_w(st, ARGS, {(34, 26): [{"x": 34, "y": 26, "fishable": True}]})
+    ck("…`fishable:true` ⇒ 照常走完（这一道闸不误伤能钓的点）",
+       bool(scripts) and scripts[0][0] == "fish_run", out)
+    a, nav, scripts, out = _go_w(st, ARGS, {})          # 老 DLL：回包里压根没有 fishable 这一位
+    ck("…回包**没有** `fishable` 这一位（老 DLL）⇒ 鱼区那档**不因此变红**（Forest/Town/Beach/Desert 今天能用）",
+       bool(scripts) and scripts[0][0] == "fish_run", out)
 
     print("\n⑦ 按鱼区校准表（`FISHING_AREA_TARGETS`）：三条映射 + 老路一字不变 + 无校准就退回游戏 spots")
     import fish_run as FR

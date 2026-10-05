@@ -521,14 +521,21 @@ def run(port, location, max_casts=0, no_sleep=False):
     _ok = False
     _hard_end = time.time() + STARTUP_WAIT + 20
     _deadline = time.time() + STARTUP_WAIT
+    _menu_hits = 0
+    _menu_types = []
     while time.time() < _deadline and time.time() < _hard_end:
         time.sleep(0.3)
         _st = bot.state()
         _mt = (_st.get("activeMenu") or {}).get("type")
         if _mt and _mt != "BobberBar":
-            log(f"  🚧 启动期被「{_mt}」挡住 → 关掉再等（这秒不计）")
+            log(f"  🚧 启动期被「{_mt}」挡住 → 关掉再等（这段不算数）")
             bot.close_menu()
-            _deadline += 1.5
+            _menu_hits += 1
+            _menu_types.append(_mt)
+            # 🔁 **重新给一整段"无菜单"窗口**（2026-10-05 真机：原来只 `+= 1.5`，可关掉菜单之后
+            #    Fishbot 要再抛一次、鱼漂飞到落点，实测要 2~3s ⇒ 1.5s 不够，窗口被菜单吃光后
+            #    照样落到下面那句**假诊断**上）。硬上限仍是 `_hard_end`（防反复弹拖成死循环）。
+            _deadline = max(_deadline, time.time() + STARTUP_WAIT)
             continue
         _f = (_st.get("player") or {}).get("fishing") or {}
         if _f.get("isFishing"):
@@ -544,7 +551,46 @@ def run(port, location, max_casts=0, no_sleep=False):
             except Exception:
                 pass
     if not _ok:
-        log("🚫 抛竿方向没有水，请调整站位或朝向（isFishing 未建立）")
+        # 🎯 这里判的只是 **`isFishing` 有没有建立**，而"没建立"**不等于**"方向没水" ——
+        #    上面 :491 那段注释早就写过一次，2026-10-05 真机**又栽在同一个坑**：
+        #    Fishbot 自动补饵弹的 `GameMenu` 把 5 秒启动窗口吃光 ⇒ 报「抛竿方向没有水」，
+        #    可人站的格、朝向、面前那格水**全是对的**（探针坐实：同一格水从侧面抛 2.0 秒就成）
+        #    ⇒ 这就是一条**假诊断**（会把人支去调站位/朝向，越调越远）。
+        #    ⚠️ 2026-10-05 **第二轮真机又教了一次**：那次 `GameMenu` 其实是"抛失败**之后**" Fishbot
+        #       弹的（探针里 `isCasting` 先真起来、随后菜单才出现）⇒ **见到菜单 ≠ 菜单是原因**。
+        #       ⇒ 所以现在**两条事实都报**（见过几次界面 ＋ 游戏自己怎么判那格水），并且
+        #          **判不了就明说判不了** —— 不再用一个"多半是…"去顶替证据。
+        _facts = (f"启动期 Fishbot 弹了 {_menu_hits} 次界面"
+                  f"（{'/'.join(dict.fromkeys(_menu_types))}），已关掉"
+                  if _menu_hits else "启动期没见到界面")
+        try:
+            _p = bot.state().get("player") or {}
+            _fx, _fy = int(_p.get("x")), int(_p.get("y"))
+            _fd = int(_p.get("facingDirection"))
+            _dx, _dy = (0, 1, 0, -1)[_fd], (-1, 0, 1, 0)[_fd]
+            # 朝这条线看 10 格：水/岸（有 `fishable` 就带上"钓不了"）——**事实**，不猜原因
+            _w = bot._get(f"/water?x={_fx}&y={_fy}&radius=10").get("water") or []
+            _by = {(t.get("x"), t.get("y")): t for t in _w if isinstance(t, dict)}
+            _has_flag = any("fishable" in t for t in _by.values())
+            _ray = []
+            for _i in range(1, 11):
+                _it = _by.get((_fx + _dx * _i, _fy + _dy * _i))
+                if _it is None:
+                    _ray.append(f"{_i}:岸")
+                elif _has_flag and _it.get("fishable") is not True:
+                    _ray.append(f"{_i}:水(钓不了)")
+                else:
+                    _ray.append(f"{_i}:水")
+            _verdict = (f"朝{['上', '右', '下', '左'][_fd]}这条线（第1格起）：{' '.join(_ray)}\n"
+                        f"   ⚠️ **鱼漂不是落在旁边那一格**：落点 = 站格 + 朝向 × 抛竿距离，"
+                        f"距离 = `max(128, 蓄力 × (等级加成+4) × 64)` px（`FishingRod.cs:1950`，上下向 +3）"
+                        f"⇒ **10 级（加成+3）满蓄力左右≈7 格、上下≈6 格，下限也有 2 格**。"
+                        f"落点那格不是「水」就是抛过头/不够 —— 换离水更远或更近的站格，"
+                        f"或把 Fishbot 的 `CastDistance` 调小（窄河/小池塘尤其要）。")
+        except Exception:
+            _verdict = "面前这条线**没问成**（读不到）⇒ 这一句断不了。"
+        log(f"🚫 没能抛出竿（`isFishing` 未建立 —— 这**不等于**「方向没有水」）：{_facts}。\n"
+            f"   {_verdict}")
         bot.fishbot("off")
         # 收杆兜底：鱼漂若在空中/甩着，按 cancel 收回
         for _ in range(4):
