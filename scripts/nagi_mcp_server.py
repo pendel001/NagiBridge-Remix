@@ -15991,6 +15991,45 @@ def _break_worth(t: dict) -> bool:
         return True
     return False
 
+# ⛏️ 划范围挥镐的"设备闸"（恒 2026-10-05 拍板）
+#    恒原话：「划范围的地上有设备就**拒绝 + 报告一次区域内的设备坐标**，**第二次执行相同区域不再拦**。」
+#    判据（**两条**，见 `_is_device_tile` 的 docstring）：
+#      ① `objId` 以 `(BC)` 开头 = 大制作物（机器/花盆/稻草人/雕像…）—— **游戏的结构**，不是名单；
+#      ② 有 `object` 且名字不是 `"Stone"` —— **1.6 里矿节点的 Name 全报 `"Stone"`**，
+#         而**洒水器在 1.6 是 `(O)` 物件**（真机 `(O)621`）⇒ 只靠 ① 会漏掉洒水器。
+#    📌 ② 是**过渡判据**：真判据该由 C# 报 `obj.Type`（`"Crafting"`），已进"待编 C# 清单"。
+_BREAK_DEVICE_CONFIRM: dict = {}      # 区域 key → 上次"拦下"的时间戳
+_BREAK_CONFIRM_TTL = 600.0            # 10 分钟：防"很久以后同一句指令被当成确认"
+
+
+def _is_device_tile(t: dict) -> bool:
+    """这格是不是**设备**（挥镐会把它们捡起来/敲掉）⇒ 划范围模式要拦。
+    箱子/容器**不算**（它们另有 `chest_skip` 那条路，已经单独在报）。
+
+    ⚠️ **两条判据都要**（真机 2026-10-05 当场逮到第一版漏了洒水器）：
+      ① `objId` 以 `(BC)` 开头 = 大制作物（机器/花盆/稻草人/雕像…）；
+      ② **有 `object` 且名字不是 `"Stone"`** —— 因为 **1.6 里所有矿节点（石头/矿脉/宝石）的 `Name` 都报 `"Stone"`**
+         （见 AGENTS「关键坑 6」），而**洒水器在 1.6 是 `(O)` 物件**（真机：`(O)621` = 优质洒水器，
+         `/surroundings` 报 `object:"Quality Sprinkler"`, `objId:"(O)621"`）⇒ **只靠 `(BC)` 会漏掉它**。
+      📌 这是**过渡判据**：真判据该由 C# 报游戏自己的 `obj.Type`（`"Crafting"` = 可放置制作物）；
+        那条已进"待编 C# 清单"（补28d），编出来就把 ② 换成它（别让这条口径漂）。
+    """
+    if _is_chest_tile(t):
+        return False
+    if str(t.get("objId") or "").startswith("(BC)"):
+        return True
+    name = str(t.get("object") or "")
+    return bool(name) and name != "Stone"
+
+
+def _break_area_key(x: int, y: int, radius: int) -> str:
+    """划范围挥镐的"区域身份"：**同一张图 + 同一中心 + 同一半径**才算同一个区域。"""
+    try:
+        loc = ((api.state() or {}).get("location") or {}).get("name") or ""
+    except Exception:
+        loc = ""
+    return f"{loc}|r{radius}|{x},{y}"
+
 
 def _stand_near(tx: int, ty: int):
     """目标格旁的可站格（4 正邻优先，/passable 判），找不到返回 None。"""
@@ -16312,6 +16351,8 @@ def break_tile(x: int, y: int, steps: int = 1, radius: int = 0) -> str:
     换手持**镐子**（恒拍板：只敲镐子——锄头/斧头有蓄力/范围更难搞，翻地走 farm till、砍树走 farm chop）→
     站到目标旁（够不着自动 /position 到相邻可站格）→ 面朝 → 挥步骤次数。
     radius=N 扫周围 N 格方形范围，**自动跳过空地格**（无设备/石头且未耕——敲了白敲）。
+    🚿 **划范围遇"设备"（大制作物：洒水器/机器/花盆/稻草人…）会先拦下并报出坐标**，
+       要**对同一区域再执行一次**才照办（恒 2026-10-05 拍板）；**单格模式不拦**。
     能敲：石头/矿点（格上有物件，**排除箱子/容器**）、已耕地翻新（terrain=HoeDirt 且无作物）。
     🧰 **箱子/容器格一律跳过不砸**（SDV：满箱会挪位、空箱变掉落——处理麻烦，AI 不碰，单独报"箱子格跳过"）。
 
@@ -16324,13 +16365,14 @@ def break_tile(x: int, y: int, steps: int = 1, radius: int = 0) -> str:
         tool = "Pickaxe"
         api.select(tool)
         time.sleep(0.2)
-        tgts, chest_skip = [], []
+        tgts, chest_skip, empty_skip, dev_ok = [], [], 0, False
         if radius and radius > 0:
             try:
                 tiles = (api._get("/surroundings", {"radius": radius}).get("tiles") or [])
             except Exception:
                 tiles = []
             bypos = {(t.get("x"), t.get("y")): t for t in tiles if "x" in t and "y" in t}
+            dev = []
             for dx in range(-radius, radius + 1):
                 for dy in range(-radius, radius + 1):
                     t = bypos.get((x + dx, y + dy))
@@ -16338,8 +16380,36 @@ def break_tile(x: int, y: int, steps: int = 1, radius: int = 0) -> str:
                         continue
                     if _is_chest_tile(t):
                         chest_skip.append((x + dx, y + dy))   # 🧰 箱子/容器格：别砸
+                    elif _is_device_tile(t):
+                        dev.append((x + dx, y + dy))          # 🚿 设备：闸门先问一句
                     elif _break_worth(t):
                         tgts.append((x + dx, y + dy))
+                    else:
+                        empty_skip += 1
+            # 🚿 设备闸（恒 2026-10-05 拍板）：划范围遇设备 ⇒ **拦下 + 报坐标**；
+            #    **对同一区域再执行一次 ⇒ 放行**（一次性；放行后 key 就清掉，不会一直免检）。
+            if dev:
+                _k = _break_area_key(x, y, radius)
+                _now = time.time()
+                for _old in [k for k, ts in _BREAK_DEVICE_CONFIRM.items()
+                             if _now - ts > _BREAK_CONFIRM_TTL]:
+                    _BREAK_DEVICE_CONFIRM.pop(_old, None)
+                if _k in _BREAK_DEVICE_CONFIRM:
+                    _BREAK_DEVICE_CONFIRM.pop(_k, None)
+                    dev_ok = True
+                    tgts.extend(dev)          # 确认过了 ⇒ 设备照旧进目标（这就是"第二次不再拦"）
+                else:
+                    _BREAK_DEVICE_CONFIRM[_k] = _now
+                    _lines = "\n".join(
+                        f"     · ({dx},{dy}) {bypos.get((dx, dy), {}).get('object') or '?'}"
+                        for dx, dy in dev)
+                    return _with_state(
+                        f"🚫 划范围挥镐**已拦下**：这片区域里有 **{len(dev)} 件设备**"
+                        f"（镐子敲它们 = **捡起来/敲掉**，不是翻地）：\n{_lines}\n"
+                        f"  👉 真要连设备一起处理 ⇒ **对同一区域再执行一次**"
+                        f"（中心 ({x},{y}) · 半径 {radius}）我就照办；\n"
+                        f"     只想敲石头 ⇒ 换一块区域，或用**单格** "
+                        f"`ops=break kw={{x:…, y:…}}`（单格模式**不拦**）。")
         else:
             # 单格也判箱子（避免 AI 把箱子砸出来/挪走），/dump_tile 拿 object 名
             try:
@@ -16380,6 +16450,12 @@ def break_tile(x: int, y: int, steps: int = 1, radius: int = 0) -> str:
         parts.append("命中: " + (" ".join(f"{a},{b}" for a, b in hit) if hit else "无"))
         if chest_skip:
             parts.append("🚫 箱子/容器格跳过(不砸): " + " ".join(f"{a},{b}" for a, b in chest_skip))
+        # 2026-10-05（补28d，恒问过这条）：空地原来是**静默**跳过的（只给总数），现在如实报一句，
+        #   免得 AI 以为"我扫的那片都敲了"。
+        if radius and radius > 0 and empty_skip:
+            parts.append(f"⏭ 跳过 {empty_skip} 格空地/作物/树（挥镐没意义）")
+        if dev_ok:
+            parts.append("⚠️ 这次是**确认过的同一区域**：设备也一起处理了（上次拦下时报过坐标）")
         if stood_fail:
             parts.append("⚠️ 找不到可站格: " + " ".join(f"{a},{b}" for a, b in stood_fail))
         return _with_state("\n".join(parts))

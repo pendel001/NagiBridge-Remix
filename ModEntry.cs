@@ -8781,15 +8781,6 @@ public class ModEntry : Mod
                 //    也不要求 Diggable：游戏那条路走 makeHoeDirt(ignoreChecks: true)。
                 if (hasObj)
                 {
-                    // 🪴 2026-10-05 恒真机证的（补28）：「**我一锄头锄掉了**」—— 游戏**允许**用锄头打花盆
-                    //    （他当场把补27b 造的那只空花盆锄掉了）。盆里有作物时**连作物一起锄掉**
-                    //    （`Hoe.cs:67-85` → `IndoorPot.performToolAction` → `HoeDirt.cs:758` `crop.hitWithHoe`；
-                    //     本文件 8276-8279 那段注释早就记着这条游戏规则）。
-                    //    ⛔ 原来"有 object 就挡"是一刀切 ⇒ 等于**我们自己发明了一条游戏没有的禁令**
-                    //    （真机回包 `{"ok":false,"error":"Tile blocked by object: Garden Pot"}`，
-                    //     后果：盆里作物锄不掉、放下的花盆撤不掉）。
-                    //    ⇒ 花盆这一档**放行**，交给游戏自己判（与上面 ginger / diggable-spot 两个例外同型）。
-                    if (loc.objects[tileVec] is IndoorPot) return null;
                     if (!IsDiggableSpot(loc.objects[tileVec]))
                         return $"Tile blocked by object: {loc.objects[tileVec].Name}";
                     return null;
@@ -13949,8 +13940,14 @@ public class ModEntry : Mod
                                 }
                                 else if (rw is StardewValley.SpecialOrders.Rewards.MoneyReward mn)
                                 {
+                                    // 🆕 2026-10-05（补28d，恒真机逮到的那笔"钱对不上"）：
+                                    //    原来只读 `mn.amount` ⇒ `questKey=Caroline` 那张卡
+                                    //    `moneyReward=5500` 却把 rewards 渲染成 `💰110g`（110×50 = **漏乘 multiplier**）。
+                                    //    ⇒ 权威金额走游戏自己的 `GetRewardMoneyAmount()`
+                                    //      （= `amount × multiplier`，反编译 `Rewards/MoneyReward.cs:8-21`；
+                                    //       `SpecialOrder.GetMoneyReward()` 就是逐条累加它，`SpecialOrder.cs:1167-1181`）。
                                     int amt2 = 0;
-                                    try { amt2 = mn.amount?.Value ?? 0; } catch { }
+                                    try { amt2 = mn.GetRewardMoneyAmount(); } catch { }
                                     rwDescs.Add($"💰{amt2}g");
                                 }
                                 else if (rw is StardewValley.SpecialOrders.Rewards.GemsReward gemRw)
@@ -13959,18 +13956,46 @@ public class ModEntry : Mod
                                     try { amt3 = gemRw.amount?.Value ?? 0; } catch { }
                                     rwDescs.Add($"💎{amt3}齐钻");
                                 }
+                                else if (rw is StardewValley.SpecialOrders.Rewards.MailReward mailRw)
+                                {
+                                    // 📬 邮件奖励：措辞与 Python 侧 `_ORDER_REWARD_LABELS` **逐字对齐**
+                                    //    （反编译 `Rewards/MailReward.cs:7-13`：`grantedMails` = NetStringList）。
+                                    //    ⚠️ 原来这条落到 `rw.ToString()` ⇒ 漏出 CLR 类名
+                                    //    `StardewValley.SpecialOrders.Rewards.MailReward`（真机两档都见到）。
+                                    int mailCnt = 0;
+                                    try { mailCnt = mailRw.grantedMails?.Count ?? 0; } catch { }
+                                    rwDescs.Add(mailCnt > 0 ? $"📬邮件奖励（信箱收）×{mailCnt}" : "📬邮件奖励（信箱收）");
+                                }
+                                else if (rw is StardewValley.SpecialOrders.Rewards.FriendshipReward frRw)
+                                {
+                                    // 💚 好感奖励（反编译 `Rewards/FriendshipReward.cs:7-13`：targetName + amount）
+                                    string frWho = "";
+                                    int frAmt = 0;
+                                    try { frWho = frRw.targetName?.Value ?? ""; } catch { }
+                                    try { frAmt = frRw.amount?.Value ?? 0; } catch { }
+                                    rwDescs.Add(string.IsNullOrEmpty(frWho)
+                                        ? "💚好感奖励" : $"💚好感奖励：{frWho} +{frAmt}");
+                                }
+                                else if (rw is StardewValley.SpecialOrders.Rewards.ResetEventReward)
+                                {
+                                    // 🔁 事件重置奖励（反编译 `Rewards/ResetEventReward.cs:7-12`：resetEvents）
+                                    rwDescs.Add("🔁事件重置奖励");
+                                }
                                 else if (rw != null)
+                                    // 认不出的**照原样漏 CLR 类名**：Python 侧 `_humanize_order_reward` 会翻/报警
+                                    // （宁报错别兜底：不在这里编一个人话）
                                     rwDescs.Add(rw.ToString() ?? "?");
                             }
                         }
                         catch { }
-                        string soId = "";
+                        // ⛔ 2026-10-05（补28d）：**删掉 `orderId` 那一位** —— `SpecialOrder` **没有 orderId 字段**
+                        //    （`orderId` 只是 `CanStartOrderNow(string orderId, …)` 的**形参名**）⇒
+                        //    `ReflectField(order, "orderId")` **恒为空串**（真机两档四张卡全空）。
+                        //    ⇒ 键一律用 `questKey`（`SpecialOrder.cs:90-91`）；拿空串当键必然踩空。
                         string soKey = "";
-                        try { soId = ReflectField(order, "orderId"); } catch { }
                         try { soKey = order.questKey?.Value ?? ""; } catch { }
                         boardOrders.Add(new
                         {
-                            orderId = soId,
                             questKey = soKey,
                             name = name ?? order.questName?.Value ?? "?",
                             description = desc,
@@ -20595,7 +20620,25 @@ var tcs = new TaskCompletionSource<object>();
             if (!obj.bigCraftable.Value) continue;
 
             string status;
-            if (obj.readyForHarvest.Value)
+            if (obj is IndoorPot pot)
+            {
+                // 🍵 2026-10-05（补28d）：花盆原来**恒报 `empty`** —— 补27b 真机逮到：盆里种着小麦，
+                //    `/machines` 的 `status` 仍是 `empty`。根因：盆里的作物**不住在** `heldObject` /
+                //    `readyForHarvest` 上，而住在 `pot.hoeDirt.Value.crop`（反编译 `IndoorPot.cs:12-24`）
+                //    ⇒ 下面那三档判据**根本看不见它**。
+                //    ⇒ 这里按**盆里那份泥**问游戏，判据与 `/surroundings`（本文件 7424 行
+                //      `harvestable = dirt.readyForHarvest()`）**同一把尺子**，不另立一套。
+                //    ⚠️ `growing` 是**新增的第 4 档**（有作物但还不能收）：原来只能落进 empty/processing，
+                //      两个都不如实 —— 而 "empty = 盆空着" 是**假信息**，正是恒指出来的那个坑。
+                var potDirt = pot.hoeDirt?.Value;
+                if (potDirt?.crop == null)
+                    status = "empty";
+                else if (potDirt.readyForHarvest())
+                    status = "ready";
+                else
+                    status = "growing";
+            }
+            else if (obj.readyForHarvest.Value)
                 status = "ready";
             else if (obj.heldObject.Value != null || obj.MinutesUntilReady > 0)
                 status = "processing";
@@ -20623,6 +20666,17 @@ var tcs = new TaskCompletionSource<object>();
                 ["status"] = status,
                 ["minutesLeft"] = obj.MinutesUntilReady
             };
+
+            // 🍵 2026-10-05（补28d）：花盆把**盆里那份作物的真相**也一起报出来 ——
+            //    消费侧就不用再靠 `/surroundings` 那一格去猜"这个盆里到底是什么"。
+            //    字段名与 `/surroundings` 对齐（`crop` / `cropPhase` / `harvestable`），
+            //    取值路径同本文件 7422-7424 行 —— 三处用的都是**游戏自己的对象**，不另立判据。
+            if (obj is IndoorPot potInfo && potInfo.hoeDirt?.Value?.crop != null)
+            {
+                try { entry["crop"] = potInfo.hoeDirt.Value.crop.indexOfHarvest.Value; } catch { }
+                try { entry["cropPhase"] = potInfo.hoeDirt.Value.crop.currentPhase.Value; } catch { }
+                try { entry["harvestable"] = potInfo.hoeDirt.Value.readyForHarvest(); } catch { }
+            }
 
             if (obj.heldObject.Value != null)
             {
