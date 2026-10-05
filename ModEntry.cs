@@ -3083,6 +3083,7 @@ public class ModEntry : Mod
                 "/tile_props" => HandleTileProps(ctx), // 🗺️ 地图瓦片属性：单格全属性 / 全图扫某属性值（Action/TouchAction/Water…）
                 "/mine_rock" => HandleMineRock(),   // 🧱 矮人商店堵路石（(BC)78 在 Mine(27,8)）是否还在=未炸（cross-map 读，2026-08-23 恒）
                 "/water" => HandleWater(ctx),
+                "/fish_areas" => HandleFishAreas(ctx),    // 🎣 鱼区只读盘点：水域名(游戏自己的 displayName)+水格数+每区可达钓点(2026-10-05)
                 "/crab_pots" => HandleCrabPots(ctx),      // 🦀 蟹笼诊断：列当前/指定图所有蟹笼真实状态(2026-08-30)
                 "/crab_retract" => HandleCrabRetract(ctx), // 🦀 蟹笼回收：收产+笼本体回背包，搁浅笼出路(2026-08-30)
                 "/profile" => HandleProfile(ctx),          // 🧬 读当前进程玩家技能等级+职业分支(2026-08-30 恒:AI 看自己)
@@ -3303,6 +3304,14 @@ public class ModEntry : Mod
                 //    ⚠️ 消费侧（`_im_furn_interact` 鱼缸那半）**必须**先看这一位 —— 老 DLL 上该端点不存在，
                 //       没有这一位就会拿 404/空字典当"这口缸什么都放不进"报出去（静默假话）。
                 ["tank"] = true,
+                // 🎣 /fish_areas（鱼区盘点，2026-10-05 恒「快捷钓鱼上单」的判据）会吐：
+                //    `location`/`hasFishAreaData`/`count` ＋ 每区的 `id`/`displayName`/`position`/
+                //    `waterTiles`/`spotsFound`/`spotsTruncated`/`spots`/`noSpotReason`。
+                //    ⚠️ 消费侧**必须先看这一位**：老 DLL 上这个端点根本不存在（404），
+                //       少了这一位就会把"问不到"读成"这张图没有鱼区"（静默假话）。
+                //    （照上面那条规矩：这里只陈述"会不会吐这些键"，**不**陈述游戏规则——
+                //      "哪片水域有没有能站的钓点"必须反过来问游戏，那正是这个端点干的事。）
+                ["fish_areas"] = true,
             }
         };
     }
@@ -17063,6 +17072,181 @@ var tcs = new TaskCompletionSource<object>();
                     }
                 }
                 tcs.SetResult(new { ok = true, location = loc.Name, count = water.Count, water });
+            }
+            catch (Exception ex) { tcs.SetResult(new { ok = false, error = ex.Message }); }
+        });
+        return tcs.Task.GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// GET /fish_areas[?location=]
+    /// 🎣 **只读**鱼区（`Data/Locations` 的 `FishAreas`）盘点 —— 「快捷钓鱼上单」的判据（2026-10-05 恒）。
+    ///
+    /// 【为什么非问游戏不可】水域名（`Lake`/`River` 这种 key）和"哪格属于哪个水域"
+    /// **只活在游戏数据里**（`FishAreas` 字典 + 每区的 `Position` 矩形），而 Content 是 LZX 压缩 xnb
+    /// ⇒ Python 侧抄不到，只能让游戏自己答。
+    ///
+    /// 【每个字段的判据出处】反编译 `decomp/full/StardewValley/GameLocation.cs`（下称 GL）
+    ///   ＋ 反射核对 `StardewValley.GameData.dll`（1.6.15.24356）：
+    ///   · `location`            ← `loc.Name`（同 `/water` :17065 的口径）
+    ///   · `areas[].id`          ← `FishAreas` 的**字典 key**（`GetData()` GL:14329 → `FishAreas` GL:13794/13798；
+    ///                             反射实锤它是 `LocationData` 的**公开字段**、类型 `Dictionary&lt;string, FishAreaData&gt;`）
+    ///   · `areas[].displayName` ← **游戏自己的** `loc.GetFishingAreaDisplayName(id)`（GL:13831，
+    ///                             内部 `TokenParser.ParseText(value.DisplayName)`）。
+    ///                             ⚠️ **不在 C# 里写中/英对照表** —— 名是游戏数据给的；游戏没给
+    ///                             （`DisplayName == null`，GL:13834）就**如实回 null**，消费侧要显示就退回用 `id`。
+    ///   · `areas[].position`    ← `FishAreaData.Position`（反射实锤 = `Microsoft.Xna.Framework.Rectangle?`）。
+    ///                             反编译里它**就是"哪格归本区"的判据**：GL:13801 `Position?.Contains(x, y)`。
+    ///                             没写矩形 ⇒ `null`。`w`/`h` = `Width`/`Height`。
+    ///   · `areas[].waterTiles`  ← 扫全图，`loc.isWaterTile(x, y)`（GL:13223，= Back 层有没有 `Water` 属性）
+    ///                             为真、且 `loc.TryGetFishAreaForTile`（GL:13791）归到本区的格数。
+    ///                             复用的就是 `/water`（:17053）那把尺子，**没有第二套水格实现**。
+    ///   · `areas[].spots[]`     ← 见下「可达钓点」。
+    ///   · `count`               ← 鱼区数量（= `areas.Length`）。
+    ///
+    /// ⛔ **不回鱼种**（需求方明确不要）：而且 `FishAreaData` **本来就没有鱼列表** —— 反射实锤它只有
+    ///     4 个成员：`DisplayName`/`Position`/`CrabPotFishTypes`/`CrabPotJunkChance`。
+    ///     鱼挂在**地点级** `LocationData.Fish`（反射实锤 = `List&lt;SpawnFishData&gt;`），
+    ///     靠每条的 `FishAreaId`（`SpawnFishData.FishAreaId`，string）关联到区
+    ///     ⇒ 要鱼种是**另一个端点**的事，别顺手加进来（会把"水域"和"鱼情"两件事搅在一起）。
+    ///
+    /// 【🎯「可达钓点」为什么单列 —— 恒亲自加的边界】
+    ///   「forest 后来也是只留了一个钓点，但是水域好像有湖泊和河流两种」
+    ///   ⇒ **「水域」 ≠ 「钓点」**：一张图可以有两种水域、却只有一个真能站人的钓点。
+    ///     只回水域，消费侧就会把"去不了的河"摆上单子 = **假门**。
+    ///   做法：水格的**四邻**里找**可站**格，判据**直接复用本文件已有的可站判定**
+    ///     `IsTilePassable(loc, tile)`（`ModEntry.cs:24403`）= 游戏的 `isTilePassable` ＋ 建筑占位
+    ///     ＋ 资源堆 ＋ 家具 ＋ 牲畜 ＋ 怪 ＋ 水格闸门 —— **不自己写地形名单**。
+    ///   ⚠️ 进扫描前把 `_walkAllowWater`（`ModEntry.cs:620`，`/walk_to` 的**瞬时**全局）压成 false、
+    ///      扫完在 `finally` 里还原：否则"允许踩水走位"的那一瞬会把**开阔水面**当成站格回出去
+    ///      ⇒ 又是一道假门。本 lambda 是**一次完整的主线程动作**（`EnqueueMainThread` 排队后整段跑，
+    ///      见 :23918 / :328 附近的消费循环），中间插不进别的动作，所以压/还原是安全的。
+    ///   · `spots[].dir` = 站格→水格的朝向，取值照本文件 `:2406-2409` 的 `FacingDirection` 约定
+    ///     （**0=上 1=右 2=下 3=左**，水格就在站格的这一侧）。`dirName` 只是这个数字的英文标签
+    ///     （**枚举标签**，不是游戏数据文本 —— 和上面 `displayName` 是两码事，别混）。
+    ///
+    /// 【📉 截断】每区最多回 **6** 个 `spots`（`maxSpots`；恒在意 token，且消费侧只需知道"有没有"）：
+    ///   按扫描序（先 y 后 x）取**前 6 个**；`spotsFound` = **截断前**的真实个数，
+    ///   `spotsTruncated` = 有没有砍。判"这区能不能钓"只看 `spots.Length &gt; 0` 就够。
+    ///   区分不到水格 / 水格四邻都不可站 ⇒ `spots: []` ＋ **如实**的 `noSpotReason`，**绝不假装有**。
+    /// </summary>
+    private object HandleFishAreas(HttpListenerContext ctx)
+    {
+        if (!Context.IsWorldReady)
+            throw new InvalidOperationException("World not ready");
+
+        const int maxSpots = 6;   // 📉 每区 spots 上限（理由见 doc）
+        var locName = ctx.Request.QueryString["location"];
+
+        var tcs = new TaskCompletionSource<object>();
+        EnqueueMainThread(() =>
+        {
+            try
+            {
+                // 同 /tile_props :16838：走 FindLocationByName 才认唯一名（小屋 `FarmHouse<guid>`）
+                var loc = string.IsNullOrEmpty(locName) ? Game1.player.currentLocation : FindLocationByName(locName);
+                if (loc?.Map == null)
+                {
+                    tcs.SetResult(new { ok = false, error = $"location/map not found: {locName ?? "(当前图)"}" });
+                    return;
+                }
+
+                // GL:14329 `GetData()` → GL:13794/13798 `FishAreas`（反射实锤：Dictionary<string, FishAreaData>）
+                var fishAreas = loc.GetData()?.FishAreas;
+                var waterCount = new Dictionary<string, int>();
+                var spotsById = new Dictionary<string, List<object>>();
+
+                if (fishAreas != null)
+                {
+                    foreach (var pair in fishAreas)
+                    {
+                        waterCount[pair.Key] = 0;
+                        spotsById[pair.Key] = new List<object>();
+                    }
+
+                    int mapW = loc.Map.DisplayWidth / 64;   // 像素 → 格，同 /water :17044
+                    int mapH = loc.Map.DisplayHeight / 64;
+                    int[] ndx = { 0, 0, -1, 1 };            // 四邻偏移：上/下/左/右
+                    int[] ndy = { -1, 1, 0, 0 };
+
+                    bool savedWalkAllowWater = _walkAllowWater;   // 见 doc：压制 /walk_to 的瞬时全局
+                    _walkAllowWater = false;
+                    try
+                    {
+                        for (int ty = 0; ty < mapH; ty++)
+                        {
+                            for (int tx = 0; tx < mapW; tx++)
+                            {
+                                if (!loc.isWaterTile(tx, ty)) continue;                      // GL:13223
+                                if (!loc.TryGetFishAreaForTile(new Vector2(tx, ty), out var areaId, out _))
+                                    continue;                                                // GL:13791
+                                if (areaId == null || !waterCount.ContainsKey(areaId)) continue;
+                                waterCount[areaId]++;
+
+                                for (int k = 0; k < 4; k++)
+                                {
+                                    int sx = tx + ndx[k], sy = ty + ndy[k];
+                                    if (!IsTilePassable(loc, new Point(sx, sy))) continue;   // ModEntry.cs:24403
+                                    int ddx = tx - sx, ddy = ty - sy;                        // 水格在站格的哪一侧
+                                    int dir = Math.Abs(ddx) > Math.Abs(ddy) ? (ddx > 0 ? 1 : 3) : (ddy > 0 ? 2 : 0);
+                                    spotsById[areaId].Add(new
+                                    {
+                                        waterX = tx,
+                                        waterY = ty,
+                                        standX = sx,
+                                        standY = sy,
+                                        dir,
+                                        dirName = dir == 0 ? "up" : dir == 1 ? "right" : dir == 2 ? "down" : "left",
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    finally { _walkAllowWater = savedWalkAllowWater; }
+                }
+
+                var areas = new List<object>();
+                if (fishAreas != null)
+                {
+                    foreach (var pair in fishAreas)
+                    {
+                        string id = pair.Key;
+                        var pos = pair.Value.Position;      // Rectangle?（反射实锤）
+                        var found = spotsById[id];
+                        var spots = found.Count > maxSpots ? found.GetRange(0, maxSpots) : found;
+
+                        string? noSpotReason = null;
+                        if (waterCount[id] == 0)
+                            noSpotReason = "本区范围内没扫到水格（isWaterTile 恒 false）";
+                        else if (found.Count == 0)
+                            noSpotReason = "本区有水格，但水格四邻没有一格可站（IsTilePassable 全 false）";
+
+                        areas.Add(new
+                        {
+                            id,
+                            // 游戏自己的显示名；游戏没给 ⇒ null（别在这里编一个）
+                            displayName = loc.GetFishingAreaDisplayName(id),   // GL:13831
+                            position = pos.HasValue
+                                ? new { x = pos.Value.X, y = pos.Value.Y, w = pos.Value.Width, h = pos.Value.Height }
+                                : null,
+                            waterTiles = waterCount[id],
+                            spotsFound = found.Count,               // 截断前的真实个数
+                            spotsTruncated = found.Count > maxSpots,
+                            spots,
+                            noSpotReason,
+                        });
+                    }
+                }
+
+                tcs.SetResult(new
+                {
+                    ok = true,
+                    location = loc.Name,
+                    // false = 这张图在 Data/Locations 里没有 FishAreas 键（**不等于**"这张图没水"）
+                    hasFishAreaData = fishAreas != null,
+                    count = areas.Count,
+                    areas,
+                });
             }
             catch (Exception ex) { tcs.SetResult(new { ok = false, error = ex.Message }); }
         });
