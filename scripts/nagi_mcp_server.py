@@ -20153,6 +20153,61 @@ def buy_item(item_id: str, quantity: int = 1, price: int = -1) -> str:
         return _with_state(f"❌ 购买出错: {e}")
 
 
+# 🎁 特别订单奖励渲染（2026-10-05 补28c）
+#    ⚠️ 为什么不能直接信 C# 给的 `rewards[]`：C# 里 MoneyReward 那支**只读了 `amount`、漏了 `multiplier`** ——
+#    · 反编译 `MoneyReward.cs:8-21`：`MoneyReward` 有 `amount` **和** `multiplier` 两个字段，
+#      真值函数是 `GetRewardMoneyAmount() = (int)(amount * multiplier)`；
+#    · `SpecialOrder.cs:1167-1181`：`GetMoneyReward()` = 逐条累加 `GetRewardMoneyAmount()`。
+#    ⇒ 权威金额就是 C# 已经给的 `moneyReward`；`rewards[]` 里那行 `💰Ng` 只有 multiplier==1 时才对。
+#    真机 2026-10-05 逮到（旧档镇上布告栏）：`questKey=Caroline` 那张卡 `moneyReward=5500` 而 rewards 写 `💰110g`（110×50）；
+#    同一块板的 `questKey=Clint` 卡是 `moneyReward=6000` + `rewards=['💰6000g']`（multiplier=1）⇒ **对照组**，证明差的就是 multiplier。
+_RE_MONEY_REWARD = re.compile(r"^💰(\d+)g$")
+
+# 📇 OrderReward 子类的**显示名**表。
+#    ⚠️ 这不是"游戏内容名单"（本项目禁的那种）：它翻的是**我们 C# 侧 `rw.ToString()` 漏出来的 CLR 类名**
+#    （`ModEntry.cs` 的奖励分支只认 ObjectReward/MoneyReward/GemsReward，其余走 `rw.ToString()`）。
+#    类清单由反编译 `decomp/full/StardewValley.SpecialOrders.Rewards/*.cs` 固定（6 个文件：Object/Money/Gems/Mail/Friendship/ResetEvent）；
+#    **认不出的一律显式写「⚠️未知奖励类型」，绝不静默吞**（宁报错别兜底）。
+_ORDER_REWARD_LABELS = {
+    "MailReward": "📬邮件奖励（信箱收）",
+    "FriendshipReward": "💚好感奖励",
+    "ResetEventReward": "🔁事件重置奖励",
+    "ObjectReward": "📦物品奖励",
+    "MoneyReward": "💰钱",
+    "GemsReward": "💎齐钻",
+}
+
+
+def _humanize_order_reward(r: str) -> str:
+    """把 C# 漏出来的 CLR 类名（`StardewValley.SpecialOrders.Rewards.MailReward`）翻成人话。"""
+    s = str(r or "")
+    if "." not in s:
+        return s
+    short = s.rsplit(".", 1)[-1]
+    return _ORDER_REWARD_LABELS.get(short) or f"⚠️未知奖励类型（{short}）"
+
+
+def _order_reward_parts(card: dict):
+    """🎁 特别订单奖励 → (要拼的片段, 警告行 or None)。**钱以 `moneyReward` 为准**（见上面那段口径）。"""
+    rw = [str(r) for r in (card.get("rewards") or [])]
+    money_rows = [r for r in rw if _RE_MONEY_REWARD.match(r)]
+    rest = [r for r in rw if r not in money_rows]
+    money = card.get("moneyReward") or 0
+    parts = []
+    if money > 0:
+        parts.append(f"💰{money}g")
+    elif money_rows:
+        parts.extend(money_rows)          # 没有权威金额时照原样给（宁可难看，也别吞信息）
+    parts.extend(_humanize_order_reward(r) for r in rest)
+    warn = None
+    if money_rows and money > 0:
+        nums = sorted({int(_RE_MONEY_REWARD.match(r).group(1)) for r in money_rows})
+        if nums != [money]:
+            warn = ("         ⚠️ 原始奖励表写的是 " + "、".join(money_rows)
+                    + f"（漏乘 multiplier）—— **以 💰{money}g 为准**")
+    return parts, warn
+
+
 @mcp.tool()
 def read_menu() -> str:
     """📋 读取当前打开的菜单（商店/对话/衣柜/信箱）
@@ -20258,18 +20313,26 @@ def read_menu() -> str:
             for c in cards:
                 st = "✅已接" if c.get("accepted") else ("🔓可接" if c.get("canAccept") else "🔒待解锁")
                 dl = c.get("daysLeft", "?")
-                lines.append(f"  · [{st}] {c.get('name')}（⏱{dl}天）")
+                # 🔑 卡的身份键用 `questKey`（= `Data/SpecialOrders` 的键，反编译 SpecialOrder.cs:90-91 的 `questKey` 字段）。
+                #    ⚠️ 别用 `orderId`：C# 那一位是 `ReflectField(order,"orderId")` 反射来的，而 `SpecialOrder` **没有 orderId 字段**
+                #    ⇒ 恒为空串（2026-10-05 补28c 真机两档四张卡全空）。见本块末尾那句口径提示。
+                _qk = c.get("questKey") or ""
+                lines.append(f"  · [{st}] {c.get('name')}（⏱{dl}天）" + (f" · key={_qk}" if _qk else ""))
                 if c.get("description"):
                     lines.append(f"      {c.get('description')}")
                 for o in (c.get("objectives") or []):
                     lines.append(f"      ▸ {o}")
-                rw = c.get("rewards") or []
-                if rw:
-                    lines.append(f"      🎁 {'、'.join(rw)}")
+                _rw_parts, _rw_warn = _order_reward_parts(c)
+                if _rw_parts:
+                    lines.append(f"      🎁 {'、'.join(_rw_parts)}")
+                if _rw_warn:
+                    lines.append(_rw_warn)
                 if not c.get("accepted"):
                     lines.append(f"      🖱️ 接取: menu click(button=acceptLeftQuestButton)（左卡）/ acceptRightQuestButton（右卡）")
             lines.append("  💡 特殊订单同时只能接一个；板只接单/看进度，**不在此领奖**（完成单只画✔）。")
             lines.append("  💡 收起=button=upperRightCloseButton（这是接单板，接完/看完就关，别点 accept 误接）")
+            lines.append("  🔑 卡的身份键用 `key=`（= `questKey`，`Data/SpecialOrders` 的键）；"
+                         "`orderId` 那一位**恒为空**（我们 C# 反射的字段在 `SpecialOrder` 里不存在）⇒ **别拿它当键**。")
             lines.append("  🏆 领奖链：①任务日志点 menu click(button=rewardBox) 领钱 ②社区布告栏左2格**领奖箱**站(60,94)朝上交互领**兑奖券**(背包要空位) "
                          "③**刘易斯家兑奖机**站(1,6)朝上交互 → menu click(button=mainButton) 兑换")
             return _with_state("\n".join(lines))

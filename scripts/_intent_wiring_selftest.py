@@ -4706,6 +4706,38 @@ def main():
                   M.intent_menu._cc_go_show(_ctx_ab25, None) == "看 收集包板子（走过去）"
                   and M.intent_menu._cc_go_show(_ctx_cc25, None) == "看 献祭板（走过去）", ""))
 
+    # ── 🎁 203z补28c：特别订单奖励渲染（钱以 moneyReward 为准 / CLR 类名翻人话 / orderId 不当键） ──
+    #    夹具取自 2026-10-05 真机（旧档镇上布告栏）两张卡：
+    #      Caroline：moneyReward=5500 而 rewards 写 "💰110g"（110×50，multiplier 被漏）
+    #      Clint   ：moneyReward=6000 且 rewards 写 "💰6000g"（multiplier=1）⇒ 对照组
+    _ord_caroline = {"questKey": "Caroline", "moneyReward": 5500,
+                     "rewards": ["💰110g", "StardewValley.SpecialOrders.Rewards.MailReward"]}
+    _ord_clint = {"questKey": "Clint", "moneyReward": 6000,
+                  "rewards": ["💰6000g", "StardewValley.SpecialOrders.Rewards.MailReward"]}
+    _op1, _ow1 = M._order_reward_parts(_ord_caroline)
+    _op2, _ow2 = M._order_reward_parts(_ord_clint)
+    res.append(ok("🎁 金额以 `moneyReward` 为准（Caroline 那张：原始表 💰110g ⇒ 渲染 💰5500g）",
+                  _op1 and _op1[0] == "💰5500g" and all("110g" not in x for x in _op1), _op1))
+    res.append(ok("🎁 对不上时**如实报**（不静默吞）：警告点明「漏乘 multiplier」+ 以哪个为准",
+                  bool(_ow1) and "110g" in _ow1 and "5500g" in _ow1, _ow1))
+    res.append(ok("🎁 对得上时**不啰嗦**（Clint 那张 multiplier=1 ⇒ 无警告、金额照给）",
+                  _op2 and _op2[0] == "💰6000g" and _ow2 is None, (_op2, _ow2)))
+    res.append(ok("🎁 CLR 类名翻人话：MailReward ⇒ 邮件奖励（不再吐 `StardewValley.*`）",
+                  any("邮件奖励" in x for x in _op1) and all("StardewValley" not in x for x in _op1), _op1))
+    _op3, _ = M._order_reward_parts({"moneyReward": 0, "rewards": ["💎100齐钻", "A.B.UnknownReward"]})
+    res.append(ok("🎁 认不出的奖励类型**显式报**「⚠️未知奖励类型」，不静默吞",
+                  any("未知奖励类型" in x for x in _op3), _op3))
+    res.append(ok("🎁 齐钻/物品那两种**照原样**（不误翻）",
+                  any("💎100齐钻" in x for x in _op3)
+                  and M._humanize_order_reward("芋头×100") == "芋头×100", _op3))
+    _ord_src = open(os.path.join(_here, "nagi_mcp_server.py"), encoding="utf-8").read()
+    res.append(ok("🔑 源码：板子卡行给 `key=`（questKey），并写明 `orderId` 恒空、别拿它当键",
+                  "key={_qk}" in _ord_src and "别拿它当键" in _ord_src, ""))
+    res.append(ok("🔑 源码：🎁 那行走 `_order_reward_parts`（不再直接 join 原始 rewards —— 那会印错的钱）",
+                  "_order_reward_parts(c)" in _ord_src
+                  and "🎁 {'、'.join(_rw_parts)}" in _ord_src
+                  and "🎁 {'、'.join(rw)}" not in _ord_src, ""))
+
     print(f"\n{sum(res)}/{len(res)} 过")
     return all(res)
 

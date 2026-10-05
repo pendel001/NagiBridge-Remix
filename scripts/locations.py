@@ -53,7 +53,7 @@ ROUTES = [
     # 海滩
     ("Beach",        "left",  "Town",         (28, 54)),   # 隧道回镇
     ("Beach",        "door",  "FishShop",     (5, 9)),     # ✅ 鱼店门口Beach(30,34)→FishShop(5,9)
-    ("FishShop",     "door",  "BoatTunnel",   (4, 10)),    # 🚢 鱼店后门→BoatTunnel→姜岛船
+    ("FishShop",     "door",  "BoatTunnel",   (6, 12)),    # 🚢 鱼店后门→BoatTunnel→姜岛船（落点 (6,12) = 反编译 `FishShop.cs:74` warpFarmer("BoatTunnel",6,12)；2026-10-05 补28c 真机读门格 (4,3)=WarpBoatTunnel）
     # 铁路区域
     # 沙漠区域
     ("Desert",       "door",  "SkullCave",    (7, 8)),     # 💀 头骨矿洞入口Desert(8,5)→SkullCave(7,8)
@@ -77,10 +77,10 @@ ROUTES = [
     ("IslandSouth",  "east",  "IslandEast",    (0, 41)),    # 🏝️ 东桥→丛林(0,46)
     ("IslandSouth",  "up",    "IslandNorth",   (40, 24)),   # 🏝️ 北边→火山入口区(36,89)
     ("IslandSouth",  "door",  "FishShop",      (4, 4)),     # 🚢 码头坐船返航→鱼店(4,4)
-    ("FishShop",     "door",  "BoatTunnel",    (4, 10)),    # 🚢 鱼店后门→船坞
+    ("FishShop",     "door",  "BoatTunnel",    (6, 12)),    # 🚢 鱼店后门→船坞（落点同 `FishShop.cs:74`）
     ("BoatTunnel",   "door",  "IslandSouth",   (21, 43)),   # 🚢 上船→姜岛码头(21,43)
     ("IslandWest",   "door",  "IslandFarmHouse", (14, 15)), # 🏠 姜岛小屋
-    ("IslandWest",   "door",  "QiNutRoom",     (7, 7)),     # 🥥 齐钻核桃房
+    ("IslandWest",   "door",  "QiNutRoom",     (7, 8)),     # 🥥 齐钻核桃房（落点 (7,8) = 反编译 `IslandWest.cs:336` warpFarmer("QiNutRoom",7,8,0)；2026-10-05 补28c 改正，原写 (7,7) 差一格）
     ("IslandWest",   "door",  "IslandFarmCave", (4, 10)),   # 🕳️ 农场洞穴
     ("IslandNorth",  "door",  "VolcanoEntrance", (1, 1)),   # 🌋 火山入口
     ("IslandNorth",  "door",  "IslandFieldOffice", (4, 10)),# 🏛️ 办事处
@@ -271,7 +271,7 @@ POI = {
     "鱼店(柜台)":        {"map": "FishShop",   "pos": (4, 6),  "note": "威利柜台：买鱼竿/鱼饵/蟹笼/鱼 ✅"},
     "鱼店(多汁的虫子桶)": {"map": "Beach", "pos": (37, 34), "require_order": {"any_keywords": ["虫肉"]}, "note": "🪱 **「需要多汁的虫子」交付点**(收集100虫肉倒进鱼店旁桶)：人站(37,34)朝0交互(37,33)倒虫肉进桶；require_order=已接虫肉订单(进行中)才显示；⚠️(37,33)为AI面前solid推测,**坐标待恒确认**(鱼店门口30,34;旁边(40-41,33-34)也有一小块，桶可能是那);可加 requester(\"Willy\")更准（2026-08-22 恒带路,点位不太确定）"},
     "鱼店(姜岛船门)":    {"map": "FishShop",   "pos": (4, 4),  "note": "鱼店后门→BoatTunnel→姜岛"},
-    "姜岛船坞(入口)":    {"map": "BoatTunnel", "pos": (4, 10), "note": "船坞隧道，买票上船去姜岛"},
+    "姜岛船坞(入口)":    {"map": "BoatTunnel", "pos": (6, 12), "note": "🚢 船坞隧道**真实落点**(6,12)（反编译 FishShop.cs:74；2026-10-05 补28c 由 (4,10) 改正），买票上船去姜岛"},
     "姜岛船坞(售票)":    {"map": "BoatTunnel", "pos": (4, 9), "note": "售票机(触发4,9站位4,10)：交互选'是'花1000g去姜岛码头；等动画~10s（2026-08-15实测）。⚠️码头返程=传送岛(17,44)→鱼店(4,4)"},
 
     # ── 矿洞 ──
@@ -433,7 +433,7 @@ POI = {
     "姜岛农场(南沙滩蚌矿)": {"map": "IslandWest",  "pos": (70, 73), "note": "农场南侧沙滩，有蚌矿石(Clam rocks)可挖，捡拾翻找得蚌"},
     "姜岛农场(南桥拾贝)":  {"map": "IslandWest",  "pos": (42, 77), "note": "农场西南过桥的拾贝区，可捡珊瑚/海胆/贝壳等海滩采集品"},
     "齐钻核桃房(门口)":   {"map": "IslandWest",  "pos": (20, 23), "note": "齐钻核桃房(Walnut Room/QiNutRoom)门口，在IslandWest西北"},
-    "齐钻核桃房(内)":     {"map": "QiNutRoom",   "pos": (7, 7),  "note": "齐先生核桃房内部(15x10)，从门口走进来的落点，接齐钻任务/兑换物品"},
+    "齐钻核桃房(内)":     {"map": "QiNutRoom",   "pos": (7, 8),  "note": "齐先生核桃房内部(15x10)，**真实落点 (7,8)**（反编译 IslandWest.cs:336；2026-10-05 补28c 由 (7,7) 改正），接齐钻任务/兑换物品"},
     "齐先生任务板":      {"map": "QiNutRoom",   "pos": (3, 4),  "note": "📜 齐先生任务板(QiNutRoom)：接齐钻任务/挑战；人站(3,4)朝上交互(3,3)开 SpecialOrdersBoard；menu read 看任务卡→menu click(button=acceptLeftQuestButton/acceptRightQuestButton)接；⚠️与社区布告栏同型(2026-08-22 AI现场检测+实测接单，accept_quest已退役)"},
     "姜岛农场(鹦鹉特快)": {"map": "IslandWest",  "pos": (74, 9),  "note": "农场上方鹦鹉特快站，给金核桃解锁后快速传送"},
     "火山区域(鹦鹉特快)": {"map": "IslandNorth", "pos": (60, 17), "note": "IslandNorth火山入口区鹦鹉特快站"},
@@ -784,7 +784,7 @@ MAP_LINKS = {
     "IslandWest": [
         {"tile": (106, 41), "target": "IslandSouth", "kind": "warp", "note": "东桥→IslandSouth(0,11)（/warps实测）"},
         {"tile": (77, 40), "target": "IslandFarmHouse", "kind": "door", "note": "姜岛小屋门"},
-        {"tile": (20, 23), "target": "QiNutRoom", "kind": "door", "note": "齐钻核桃房门→(7,7)"},
+        {"tile": (20, 23), "target": "QiNutRoom", "kind": "door", "note": "🥥 齐钻核桃房：**站格=(20,23)**（人要站这儿）；**门格=(20,22)** 记在 `BUILDING_DOORS[\"QiNutRoom\"]`（Buildings **瓦片索引 1470**，⚠️**没有 Action**）。反编译 `IslandWest.cs:327-338`：1470 ⇒ 未解锁弹核桃计数、解锁则 `warpFarmer(\"QiNutRoom\",7,8,0)`；2026-10-05 补28c 真机读瓦片确认（原表把**站格**写进了门格那一位 ⇒ `map go` 到门口如实停）"},
         {"tile": None, "target": "IslandFarmCave", "kind": "door", "note": "农场洞穴(96,32)→IslandFarmCave(4,10)（2026-08-15补）"},
     ],
     "IslandNorth": [
@@ -857,7 +857,7 @@ MAP_LINKS = {
                      {"tile": (13, 23), "target": "SebastianRoom", "kind": "warp", "note": "⬇️ 地下室楼梯：站(13,22)面下 踩(13,23)warp→SebastianRoom(1,1)（另一格(12,23)同效）。⚠️是**走上去的 warp**不是门（2026-09-10 恒带路校准）"}],
     "SebastianRoom": [{"tile": (1, 0), "target": "ScienceHouse", "kind": "warp", "note": "⬆️ 地下室出来楼梯：站(1,1)面下 踩(1,0)warp→ScienceHouse(12,21)（2026-09-10 恒带路校准）"}],
     "FishShop": [{"tile": None, "target": "Beach", "kind": "warp", "note": "鱼店门口→海滩"},
-                 {"tile": None, "target": "BoatTunnel", "kind": "door", "note": "鱼店后门→船坞(4,10)，买票去姜岛"}],
+                 {"tile": None, "target": "BoatTunnel", "kind": "door", "note": "🚢 鱼店后门→船坞：**门格 (4,3)** 记在 `BUILDING_DOORS[\"BoatTunnel\"]`（Buildings `Action: WarpBoatTunnel`）；站格=(4,4)（POI「鱼店(姜岛船门)」）。反编译 `FishShop.cs:70-76`：需**威利后屋邀请** `willyBackRoomInvitation`，否则弹「上锁了……」；进了落 BoatTunnel **(6,12)**"}],
     "BoatTunnel": [{"tile": None, "target": "FishShop", "kind": "warp", "note": "船坞→鱼店"},
                    {"tile": None, "target": "IslandSouth", "kind": "door", "note": "上船→姜岛码头(21,43)，1000g（2026-08-15补）"}],
     "AnimalShop": [{"tile": None, "target": "Forest", "kind": "warp", "note": "玛妮牧场门口→森林"}],
@@ -1254,6 +1254,12 @@ BUILDING_DOORS = {
     "Tunnel":          ("Backwoods",(22, 31)),
     "MermaidHouse":    ("BeachNightMarket", (58, 32)),   # 🎇 美人鱼船门（节日限定冬15-17）
     "Submarine":       ("BeachNightMarket", (5, 35)),    # 🎇 钓鱼潜艇门（节日限定冬15-17）
+    # 🚢🥥 2026-10-05（补28c）新增两条：**门格此前根本没进表** ⇒ `map go` 走到门口就如实停（"表里查不到 X 的门格"）。
+    #    判据都是**只读真机**（`/tile_props`）+ 反编译：
+    "BoatTunnel":      ("FishShop",  (4, 3)),    # 🚢 鱼店后屋门：FishShop(4,3) Buildings `Action: WarpBoatTunnel`（真机读）；
+                                                 #    反编译 `FishShop.cs:70-76`：需威利后屋邀请 `willyBackRoomInvitation`，进了落 BoatTunnel **(6,12)**
+    "QiNutRoom":       ("IslandWest",(20, 22)),  # 🥥 核桃房门：IslandWest(20,22) Buildings **瓦片 1470**（⚠️**没有 Action**，别只按 Action 找门）；
+                                                 #    反编译 `IslandWest.cs:327-338`：解锁则 `warpFarmer("QiNutRoom",7,8,0)`；站格=(20,23)（MAP_LINKS/POI 那边）
 }
 
 
@@ -1319,7 +1325,7 @@ ARRIVE = {
     "ScienceHouse": (6, 24),
     "SebastianRoom": (1, 1),
     "FishShop": (5, 9),
-    "BoatTunnel": (4, 10),
+    "BoatTunnel": (6, 12),         # 🚢 从鱼店后门进来的**真实落点**（反编译 `FishShop.cs:74` warpFarmer("BoatTunnel",6,12)）；2026-10-05 补28c 改正（原写 (4,10)=售票机站格，不是落点）
     "AnimalShop": (13, 19),
     "WizardHouse": (8, 24),
     "Woods": (58, 15),
@@ -1350,7 +1356,9 @@ ARRIVE = {
     "VolcanoEntrance": (1, 1),
     "VolcanoDungeon0": (31, 50),
     "IslandFarmHouse": (14, 15),
-    "QiNutRoom": (7, 7),
+    "QiNutRoom": (7, 8),           # 🥥 真实落点（反编译 `IslandWest.cs:336` warpFarmer("QiNutRoom",7,8,0)）；
+                                   #    2026-10-05 补28c 改正（原写 (7,7) 差一格）。判据同 MasteryCave 那条先例：
+                                   #    以游戏自己的 warpFarmer 落点为准（(7,8) 有 Back 瓦片 105，可站）
     # 🎓 精通山洞（2026-09-16 改）：原来是 (7,9)，但游戏的**真实落点**是 `warpFarmer("MasteryCave",7,11,0)`
     #    （反编译 GameLocation.cs:8784）—— (7,11) 就在出洞口 (7,12) 正北一格，不会被立刻弹出去。
     "MasteryCave": (7, 11),
