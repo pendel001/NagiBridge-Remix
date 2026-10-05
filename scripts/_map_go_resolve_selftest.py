@@ -127,6 +127,115 @@ try:
     ck("⑦ `map_go` 走的是整串判据 `_is_home_word(...)`", "_is_home_word(destination)" in _code, "")
     ck('⑦ …且**没有**裸子串 `"小屋" in`（真机 A 的病根）', '"小屋" in' not in _code, "")
     ck("⑦ …且歧义闸在（`_poi_ambiguous`）", "_poi_ambiguous(destination)" in _code, "")
+    ck("⑦ …且**变体名闸**在（`_variant_name_error`）", "_variant_name_error(destination)" in _code, "")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # ⑧⑨⑩⑪ 2026-10-05 真机 B：**不许静默改写目的地**（"别名 ⊂ 输入"那条）
+    # ══════════════════════════════════════════════════════════════════════════
+    _CALLS = []
+    N.go_to = lambda s: (_CALLS.append(s), f"【GO_TO {s}】")[1]     # 记录"角色**动没动**"
+
+    print("\n⑧ 病样本（真机 B）：`姜岛小屋(门内六房)`（真名带\"人\"字：`locations.py:432`）")
+    _CALLS.clear(); N._NAV_LAST.clear()
+    _out8 = N.map_go("姜岛小屋(门内六房)")
+    ck("⑧ 回执含「认不出「姜岛小屋(门内六房)」这个地点」",
+       "认不出「姜岛小屋(门内六房)」这个地点" in _out8, _out8)
+    ck("⑧ 候选里有**真名** `姜岛小屋(门内六人房)`", "姜岛小屋(门内六人房)" in _out8, _out8)
+    ck("⑧ 候选里有那个短别名原本指向的目标（短名「姜岛」→ IslandSouth）",
+       "短名「姜岛」" in _out8 and "IslandSouth" in _out8, _out8)
+    ck("⑧ 给了下一步（`map lookup`）", "map lookup" in _out8, _out8)
+    ck("⑧ **没有**任何「到达/已到」字样", "到达" not in _out8 and "已到" not in _out8, _out8)
+    ck("⑧ 没被放行到下游（不是【GATE】/【HOME】）", _out8 not in (GATE_MARK, HOME_MARK), _out8)
+    ck("⑧ **没动角色**（`go_to` 一次都没调）", not _CALLS, str(_CALLS))
+    ck("⑧ 也没挑目标（`_NAV_LAST` 空）", not N._NAV_LAST, str(N._NAV_LAST))
+    ck("⑧ 判据本身：`_alias_variant` 分类 = longer",
+       N._alias_variant("姜岛小屋(门内六房)")[0] == "longer",
+       str(N._alias_variant("姜岛小屋(门内六房)")))
+    ck("⑧ 判据本身：`_resolve_scene_name` **不再**把它当成 IslandSouth",
+       N._resolve_scene_name("姜岛小屋(门内六房)") != "IslandSouth",
+       N._resolve_scene_name("姜岛小屋(门内六房)"))
+
+    print("\n⑨ 回归：短名/精确全名/口语前缀——**一条都不许改坏**")
+    for _q in ("姜岛", "岛", "鱼店", "农场"):
+        _CALLS.clear()
+        _o = N.map_go(_q)
+        ck(f"⑨ 短名 `{_q}` 照旧放行（精确别名 ⇒ 下一道闸）", _o == GATE_MARK, _o)
+    ck("⑨ 短名 `小屋` 照旧 = **自家小屋门口**（恒 2026-09-05 语义）",
+       N.map_go("小屋") == HOME_MARK, N.map_go("小屋"))
+    for _q in ("去姜岛", "回姜岛", "去铁路"):
+        _CALLS.clear()
+        _o = N.map_go(_q)
+        ck(f"⑨ 口语前缀 `{_q}` 照旧认得出（剥前缀后精确命中）", _o == GATE_MARK, _o)
+    _CALLS.clear()
+    _o9 = N.map_go("姜岛小屋(门内六人房)")
+    ck("⑨ 精确全名 `姜岛小屋(门内六人房)` 照旧直达（不被变体闸拦）", _o9 == GATE_MARK, _o9)
+    ck("⑨ …单候选半截名照旧认（`姜岛农` ⇒ IslandWest）",
+       N._resolve_scene_name("姜岛农") == "IslandWest", N._resolve_scene_name("姜岛农"))
+    ck("⑨ …单字精确别名照旧（`镇` ⇒ Town；单字输入的旧口径本批不动）",
+       N._resolve_scene_name("镇") == "Town", N._resolve_scene_name("镇"))
+    # 判据①的**穷举回归**：表里所有名字（POI/MAP_LINKS/别名）一个都不许被变体闸拦（精确名优先）
+    _allnames = list(M.locations.POI) + list(M.locations.MAP_LINKS) + list(N.SCENE_NAME_ALIAS)
+    _bad = [k for k in _allnames if N._variant_name_error(k) != ""]
+    ck(f"⑨b 表里**全部** {len(_allnames)} 个名字都不被变体闸拦（精确名优先）", not _bad, str(_bad[:8]))
+    # 真机 selftest（需窗口，本文件不跑）里那些**写死的目的地**也得照样放行
+    for _q in ("镇鲶鱼钓点", "ArchaeologyHouse", "畜棚", "火山入口", "Mine"):
+        ck(f"⑨b `{_q}`（需窗口的 `_map_go_arrive_selftest` 写死的输入）⇒ 放行",
+           N._variant_name_error(_q) == "", N._variant_name_error(_q))
+
+    print("\n⑩ 歧义（判据②：输入更短、多候选且目标不在一张图）⇒ 报错 + 列候选，绝不静默选一个")
+    _CALLS.clear(); N._NAV_LAST.clear()
+    _out10 = N.map_go("姜岛小屋")
+    ck("⑩a 真名夹具（两条 POI：IslandWest / IslandFarmHouse）⇒ 报「2 个候选」并列两条全名",
+       "2 个候选" in _out10 and "姜岛小屋(门口)" in _out10 and "姜岛小屋(门内六人房)" in _out10, _out10)
+    ck("⑩a …没动角色（`go_to` 一次都没调）", not _CALLS, str(_CALLS))
+    ck("⑩a …也没挑目标（`_NAV_LAST` 空）", not N._NAV_LAST, str(N._NAV_LAST))
+    _CALLS.clear()
+    _out10b = N.map_go("山入口")
+    ck("⑩b 别名方向多候选（火山入口 VolcanoEntrance / 火山入口区 IslandNorth）⇒ 报错并列两个候选",
+       _out10b not in (GATE_MARK, HOME_MARK)
+       and "火山入口" in _out10b and "火山入口区" in _out10b
+       and "VolcanoEntrance" in _out10b and "IslandNorth" in _out10b, _out10b)
+    ck("⑩b …给下一步（`map lookup`）", "map lookup" in _out10b, _out10b)
+    ck("⑩b …没动角色（`go_to` 一次都没调）", not _CALLS, str(_CALLS))
+    ck("⑩b 判据本身：`_resolve_scene_name('山入口')` **不猜**（返回原值）",
+       N._resolve_scene_name("山入口") == "山入口", N._resolve_scene_name("山入口"))
+    _CALLS.clear()
+    _out10b2 = N.map_go("巴士")     # 这条**先**被 补30 的 POI 歧义闸拦（POI 里 6 条含"巴士"）—— 同样不静默选
+    ck("⑩b' `巴士` 先被 补30 的 POI 歧义闸拦（列 6 条候选）⇒ 也**不静默选一个**",
+       _out10b2 not in (GATE_MARK, HOME_MARK) and "个候选" in _out10b2 and "沙漠(巴士站)" in _out10b2, _out10b2)
+    ck("⑩b' …没动角色（`go_to` 一次都没调）", not _CALLS, str(_CALLS))
+
+    print("\n⑩c 合成夹具：往 POI 表里临时塞两条（不同图）⇒ 子串命中仍然报歧义")
+    _FAKE = {"测试点甲(内)": {"map": "Farm", "pos": (1, 1), "note": "自验夹具"},
+             "测试点乙(内)": {"map": "Town", "pos": (2, 2), "note": "自验夹具"}}
+    _CALLS.clear(); N._NAV_LAST.clear()
+    try:
+        M.locations.POI.update(_FAKE)
+        ck("⑩c `_poi_ambiguous('测试点')` = 两个候选",
+           set(N._poi_ambiguous("测试点")) == set(_FAKE), str(N._poi_ambiguous("测试点")))
+        _out10c = N.map_go("测试点")
+        ck("⑩c 回执报「2 个候选」并把两条全名列出来",
+           "2 个候选" in _out10c and "测试点甲(内)" in _out10c and "测试点乙(内)" in _out10c, _out10c)
+        ck("⑩c …没动角色（`go_to` 一次都没调）", not _CALLS, str(_CALLS))
+    finally:
+        for _k in _FAKE:
+            M.locations.POI.pop(_k, None)
+
+    print("\n⑪ 源码钉：`_resolve_scene_name` 里「别名 ⊂ 输入 ⇒ 悄悄选中」那半条**必须消失**")
+    _ja = _src.index("def _resolve_scene_name(")
+    _jb = _src.index("\ndef ", _ja + 10)
+    _jraw = _src[_ja:_jb]
+    # ⚠️ docstring 里**故意引用了旧判据原样**（"alias in s"）来说明这次删了什么 ⇒ 先摘掉 docstring 再看代码
+    _q1 = _jraw.index('"""')
+    _q2 = _jraw.index('"""', _q1 + 3)
+    _jraw = _jraw[:_q1] + _jraw[_q2 + 3:]
+    _jcode = "\n".join(l for l in _jraw.splitlines() if not l.strip().startswith("#"))
+    ck("⑪ …`alias in s` / `a in s` 都没了（真机 B 的病根）",
+       "alias in s" not in _jcode and "a in s" not in _jcode, "")
+    ck("⑪ …「输入 ⊂ 别名」（`s in a`）那半条照旧保留", "s in a" in _jcode, "")
+    ck("⑪ …且多候选分叉时**返回原值不猜**（`len({k for _, k in _cands}) >= 2`）",
+       "len({k for _, k in _cands}) >= 2" in _jcode, "")
+
 finally:
     for k, v in _real.items():
         setattr(N, k, v)

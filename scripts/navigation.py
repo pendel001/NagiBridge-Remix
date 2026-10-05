@@ -1505,6 +1505,99 @@ def _poi_ambiguous(q):
     return sorted(cand)
 
 
+# 🚫 「变体名」判据零件（2026-10-05 真机 B）——
+#   现场：`map go 姜岛小屋(门内六房)`（POI 表里的真名带"人"字：`姜岛小屋(门内六人房)`，`locations.py:432`）
+#   ⇒ 回执「🗼 姜岛图腾柱(→岛) → IslandSouth (11,11) → 到达 IslandSouth」：**没报错、没提歧义**，
+#   被别名「姜岛」→`IslandSouth`（`SCENE_NAME_ALIAS`，本文件 `:1430`）当**子串**命中，
+#   **悄悄把目的地改写成岛枢纽**。❌ 不是假到达（确实到了它自己选的地方），是**静默改写目的地**
+#   ⇒ 违反铁律「宁报错别兜底」。⇒ 判据拆成下面两个纯函数，`map_go` 门口与 `_resolve_scene_name` 共用。
+_VARIANT_VERBS = ("前往", "去往", "去", "进", "回", "到", "往", "走")   # 口语前缀（"去铁路"/"回姜岛"）
+
+
+def _strip_lead_verb(s):
+    """剥掉一个**口语前缀动词**（"去铁路"→"铁路"、"回姜岛"→"姜岛"）；没前缀返回 ""。
+
+    ⚠️ 只服务于"剥完**精确**命中"这一条（保住 `map go 去铁路` 这类既有写法）；剥完还认不出 ⇒ 照旧报错。
+    ⚠️ 按**长度降序**试（"去往农场"必须先剥"去往"，否则剥出"往农场"⇒ 认不出）。"""
+    t = str(s or "").strip()
+    for _v in sorted(_VARIANT_VERBS, key=len, reverse=True):
+        if t.startswith(_v) and len(t) > len(_v):
+            return t[len(_v):].strip()
+    return ""
+
+
+def _alias_variant(q):
+    """`q` 与别名表里短名的**真子串**关系分类 —— 返回 `(kind, hits)`，`hits=[(别名, 目标键)]`。
+
+      · `("exact",   [])` —— 精确命中（MAP_LINKS 键/归一键/别名键/POI 键，含剥前缀动词后的精确命中）
+                             ⇒ **合法入口，一个字都不改**（`map go 姜岛` 仍是 IslandSouth）；
+      · `("shorter", …)` —— `q` 是别名键的真子串（**输入更短**，如 `岛小屋`）⇒ 候选，多候选交调用方报歧义；
+      · `("longer",  …)` —— 别名键是 `q` 的真子串（**输入更长** = 真机 B：`姜岛` ⊂ `姜岛小屋(门内六房)`）
+                             ⇒ **绝对不许静默选中**；
+      · `("none",    [])` —— 无关，放行。
+    ⚠️ 单字别名（`len<2`）照旧不算（恒 2026-08 的"防山/岛/镇误伤"口径）；单字**输入**本批也不动。
+    """
+    s = str(q or "").strip()
+    if not s:
+        return ("none", [])
+    if s in locations.MAP_LINKS or s in SCENE_NAME_ALIAS or s in locations.POI:
+        return ("exact", [])
+    if _norm_key(s) in _MAP_KEYS_CI:
+        return ("exact", [])
+    _v = _strip_lead_verb(s)
+    if _v and (_v in locations.MAP_LINKS or _v in SCENE_NAME_ALIAS or _v in locations.POI
+               or _norm_key(_v) in _MAP_KEYS_CI):
+        return ("exact", [])
+    if len(s) >= 2:
+        _long = sorted([(a, k) for a, k in SCENE_NAME_ALIAS.items() if len(a) >= 2 and a in s],
+                       key=lambda x: -len(x[0]))
+        if _long:
+            return ("longer", _long)
+        _short = sorted([(a, k) for a, k in SCENE_NAME_ALIAS.items() if len(a) >= 2 and s in a],
+                        key=lambda x: -len(x[0]))
+        if _short:
+            return ("shorter", _short)
+    return ("none", [])
+
+
+def _variant_name_error(q):
+    """**变体名闸**：认不出、却"含"着表里的短名/别名（输入更长）⇒ 明确报错 + 列候选；否则返回 ""。
+
+    判据三条（**别放宽**）：
+      ① 精确命中 ⇒ `""`（放行；现有合法行为一条不改）；
+      ② 输入**比**别名短 ⇒ 只在**多候选且目标不在一张图**时报歧义（与 补30 `_poi_ambiguous` 同口径：
+         指向同一张图的多个候选不算歧义，交给下游既有兜底）；单候选 ⇒ `""`（`_resolve_scene_name` 照旧认）；
+      ③ 别名**是输入的真子串**（输入更长，真机 B）⇒ **一律报错**：列 ①`q` 能匹配到的 POI 全名
+         （含"只差一个字"的变体，用 `difflib` 把真名摆出来）②别名原本指向的场景键（让 AI/恒自己挑）。
+    ⚠️ 只在 `map_go` 门口调；`walk_to` / `go_to` / POI 那条既有路一个字不动。
+    """
+    kind, hits = _alias_variant(q)
+    if kind in ("none", "exact"):
+        return ""
+    if kind == "shorter" and len({k for _, k in hits}) < 2:
+        return ""      # 单目标：`_resolve_scene_name` 照旧认成那个场景（既有行为）
+    s = str(q or "").strip()
+    # 候选①：POI 全名 —— 先双向整串，再补"只差一个字"的近似名（真机 B 的真名就差一个"人"字）
+    _poi = [n for n in locations.POI if s in n or n in s]
+    for _c in difflib.get_close_matches(s, list(locations.POI), n=4, cutoff=0.6):
+        if _c not in _poi:
+            _poi.append(_c)
+    _lines = []
+    for _n in _poi[:6]:
+        _p = locations.POI.get(_n) or {}
+        _lines.append(f"     · POI「{_n}」（{_p.get('map')} {_p.get('pos')}）")
+    for _a, _k in hits[:4]:
+        _lines.append(f"     · 短名「{_a}」→ 场景 {_k}")
+    _why = ("它比表里的名字**长**、却又**不是**表里的名字（像是某个名字的变体），"
+            "我不拿短名/别名当子串猜（那会把目的地悄悄改写掉）"
+            if kind == "longer"
+            else "它是**半截名**，能同时对上好几个短名、还指向不同的图，我不替你挑")
+    return _with_state(
+        f"❌ 认不出「{s}」这个地点：{_why}。\n"
+        f"  你可能想说的是：\n" + "\n".join(_lines) + "\n"
+        f"  👉 换个名字再来（POI 全名要连括号里那截写全），或用 `map lookup 关键词` 查真名。")
+
+
 def _near_map_hint(dest):
     """认不出的目的地 → 回一句"你是不是想去 X"（没把握就返回空串）。
 
@@ -1521,15 +1614,33 @@ def _near_map_hint(dest):
 
 
 def _resolve_scene_name(name):
-    """把中文/别名目的地认成 MAP_LINKS 场景键（模糊匹配）。
+    """把中文/别名目的地认成 MAP_LINKS 场景键（**精确优先；变体名宁报错**）。
     精确命中→返回场景键；找不到→返回原值(交给既有逻辑走 POI/建筑兜底)。
-    选近口不在这做——_map_bfs 会挑最少段数入口。"""
+    选近口不在这做——_map_bfs 会挑最少段数入口。
+
+    ⚠️ 2026-10-05（真机 B）：**删掉**旧第 3 步里"`alias in s`（更长的输入里含短别名）⇒ 悄悄选中"那半条
+       ——`map go 姜岛小屋(门内六房)` 就是被别名「姜岛」当子串命中、静默改写成岛枢纽 `IslandSouth` 的。
+       那一类现在由 `_variant_name_error`（在 `map_go` 门口调）**明确报错 + 列候选**，这里不再兜。
+    保留：① 精确；② 输入**比**别名短（`岛小屋` ⊂ `姜岛小屋(门内六人房)`）——但多候选且**目标不在一张图**
+       时**不猜**（返回原值 ⇒ 门口那道闸报歧义）；单字输入照旧走老口径（本批不动战场）。"""
     if not name:
         return name
     s = str(name).strip()
     # 1. 本来就是 MAP_LINKS 键(英文) → 直接用
     if s in locations.MAP_LINKS:
         return s
+    # 1.2 剥掉口语前缀动词后再**精确**命中（"去铁路"/"回姜岛"——老代码靠子串歪打正着，这里明写、判据更死）
+    _v = _strip_lead_verb(s)
+    if _v:
+        if _v in locations.MAP_LINKS:
+            return _v
+        _vh = _MAP_KEYS_CI.get(_norm_key(_v))
+        if _vh:
+            return _vh
+        if _v in SCENE_NAME_ALIAS:
+            return SCENE_NAME_ALIAS[_v]
+        if _v in locations.POI:
+            return locations.POI[_v]["map"]
     # 1.5 🔤 大小写/空格不敏感（2026-09-22 恒真机撞见）：AI 满屏看到的域名叫**小写** `farm`
     #     （状态条「🛠️ 可用域: farm」、引导文案「farm 通常在 Farm 做」），于是照着敲
     #     `map go farm` ⇒ 报「知识库没有「farm」的地点链接」，人在自家小屋出不了门。
@@ -1541,15 +1652,16 @@ def _resolve_scene_name(name):
     # 2. 精确命中别名
     if s in SCENE_NAME_ALIAS:
         return SCENE_NAME_ALIAS[s]
-    # 3. 子串模糊：dest 含某别名 或 某别名含 dest(如 "去铁路"/"铁路(站台)")
-    #    ——优先更长匹配，别被单字"山/镇/岛"误伤(用 is 子串的双向 + 长度降序)
+    # 3. `s` 是别名的**真子串**（输入更短，如 `岛小屋`）—— 既有候选行为：取最长命中。
+    #    ⚠️ 多候选**指向不同的图**时**不猜**（返回原值 ⇒ `map_go` 门口的 `_variant_name_error` 报歧义）；
+    #    ⚠️ 单字输入（`len(s)==1`）照旧走"最长命中"老口径（恒 2026-08 "防单字误伤"那条，本批不动）。
+    _cands = [(a, k) for a, k in SCENE_NAME_ALIAS.items() if len(a) >= 2 and s in a]
+    if len(s) >= 2 and len({k for _, k in _cands}) >= 2:
+        return s
     best = None
-    for alias, key in SCENE_NAME_ALIAS.items():
-        if len(alias) < 2:
-            continue
-        if alias in s or s in alias:
-            if best is None or len(alias) > len(best[0]):
-                best = (alias, key)
+    for alias, key in _cands:
+        if best is None or len(alias) > len(best[0]):
+            best = (alias, key)
     if best:
         return best[1]
     return s
@@ -3337,6 +3449,13 @@ def map_go(destination: str = "", npc: str = "") -> str:
             f"❌ 「{destination}」有 {len(_amb)} 个候选、落点**不在同一张图**，我不替你挑：\n{_lst}\n"
             f"  👉 把**全名**（连括号里那截）写全再敲一次，例如 `map ops=go {_amb[0]}`；"
             f"或直接写要去的**图**（如 `map ops=go {locations.POI[_amb[0]].get('map')}`）")
+
+    # 🚫 2026-10-05（真机 B）：**变体名不许静默改写目的地**（判据/真机现场/候选来源见 `_variant_name_error`）。
+    #    病样本：`map go 姜岛小屋(门内六房)`（POI 真名带"人"字）被别名「姜岛」当子串命中 ⇒
+    #    **不报错、不提示歧义**，悄悄改路去 IslandSouth 还回"到达" ⇒ 宁报错别兜底：这里直接拦下、列候选。
+    _verr = _variant_name_error(destination)
+    if _verr:
+        return _verr
 
     # 🔍 npc 优先：路由到该 NPC 当前所在场景（2026-09-06 恒：手机实测员建议）
     _npc_target = None

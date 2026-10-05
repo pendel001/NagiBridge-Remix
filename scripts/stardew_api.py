@@ -28,6 +28,27 @@ import os
 #     判据：`print(api.BASE_URL)` —— 打算动 AI 却打出 7842，就是这条踩上了。
 BASE_URL = os.environ.get("NAGI_URL", "http://localhost:7842")
 
+# 🚨 2026-10-05：**默认端口 = 7842 = 房主(恒)** —— 上面那段注释只是"写在文件里"，运行时**一声不响**
+#    ⇒ 真机又踩了一次（命令行直调读到的是**恒**的农舍，而当时要看的是 **AI** 的图）。
+#    判据（可靠且无副作用）：`NAGI_URL` **不在** os.environ 里 ⇒ 这个 BASE_URL 是被 `.get(..., 7842)`
+#    兜到房主端口的。**MCP 服务器进程永不触发**：`nagi_mcp_server.py:73` 在 `import stardew_api` 之前
+#    就 `os.environ.setdefault("NAGI_URL", "http://localhost:7843")`（`:78` 才 import）⇒ env 里一定有。
+#    日常脚本/自验同理（各自在 import 前 setdefault）。⚠️ 只**喊一声**，一个字都不改默认值
+#    （把默认改成 7843 只是把静默错误换个方向，见恒 2026-09-23 的教训）。
+if "NAGI_URL" not in os.environ:
+    try:
+        sys.stderr.write(
+            "🚨 [NagiBridge] 没设 NAGI_URL ⇒ 正在用默认端口 7842 = **房主(恒)**！"
+            "要读/动 AI(farmhand) 必须显式设 `NAGI_URL=http://localhost:7843`"
+            "（且要在 `import stardew_api` **之前**）；判据：print(api.BASE_URL)。\n")
+        sys.stderr.flush()
+    except Exception:
+        try:
+            sys.stderr.write("[NagiBridge] NAGI_URL unset -> default 7842 = HOST(heng). "
+                             "Set NAGI_URL=http://localhost:7843 for AI.\n")
+        except Exception:
+            pass          # 喊不出来也不能连累正主（绝不影响调用本身）
+
 # AI 角色（被 MCP 控制的 farmhand）的进程端口 — 彩蛋/分身类操作打到这个进程。
 # Game1.player 在 host 进程是房主，在 farmhand 进程才是 AI 角色；角色名不写死，随 NAGI_URL 决定。
 AI_BASE_URL = os.environ.get("NAGI_AI_URL", "http://localhost:7843")
