@@ -15195,7 +15195,54 @@ public class ModEntry : Mod
         // 🖱️ 挪不挪**真人 OS 光标**：-1=自动（只对真读鼠标位的菜单挪）/ 0=绝不挪 / 1=强制挪（万一名单漏了）
         var moveMouse = GetParamOr(p, "move_mouse", -1);
 
-        var tcs = new TaskCompletionSource<object>();
+                // 🚦🚦 2026-10-05 恒定案③：**延后执行**（"不让点就等到能点，再返回那个动作的真结果"）。
+        //
+        // ⚠️⚠️ **等的线程选错会把游戏冻死**：`MenuBusyReason` 读的那两位（`canClick` /
+        //    `completionTimer`）是**主线程每帧 `update()` 在改**的 ⇒ 在 `EnqueueMainThread` 的
+        //    回调里 sleep = 冻住帧循环 ⇒ 那个动画**永远走不完**（自己等自己，一直等到超时）。
+        //    而 **HTTP 处理器线程本来就不是游戏线程** ⇒ 在这儿等是安全的；
+        //    每次"问一句"走一次**快进快出**的 `EnqueueMainThread`（几十微秒，不碍帧）。
+        // ⇒ 前端**不需要会 sleep**，也**拿不到过期的拒绝**：等到能点了就照原路执行、回真结果。
+        //    ⚠️ 上限 3s：真到超时（旗卡住了/不是动画而是别的原因）**才**回"拒绝 + 为什么"。
+        int waitedMs = 0;
+        string? busyWhy = null;
+        int busyWait = -1;
+        try
+        {
+            var _sw = System.Diagnostics.Stopwatch.StartNew();
+            while (_sw.ElapsedMilliseconds < 3000)
+            {
+                var _probe = new TaskCompletionSource<bool>();
+                EnqueueMainThread(() =>
+                {
+                    try
+                    {
+                        string? why = MenuBusyReason(Game1.activeClickableMenu, out int w);
+                        busyWhy = why;
+                        busyWait = w;
+                        _probe.TrySetResult(why == null);
+                    }
+                    catch
+                    {
+                        busyWhy = null;
+                        _probe.TrySetResult(true);      // 读不出来 = **不拦**（宁放行，别假拦）
+                    }
+                });
+                if (_probe.Task.GetAwaiter().GetResult()) { waitedMs = (int)_sw.ElapsedMilliseconds; break; }
+                System.Threading.Thread.Sleep(25);      // ← 这是 HTTP 线程，安全
+            }
+        }
+        catch { }
+        if (busyWhy != null)
+        {
+            return new { ok = false, blocked = busyWhy, waitMs = busyWait, waitedMs,
+                error = busyWhy + (busyWait >= 0
+                    ? $"—— 大约还有 {busyWait}ms（游戏自己报的数），等它过去再点"
+                    : "—— 这一刻点什么都会被吞掉，等它过去再点（读不到精确时长）") };
+        }
+        if (waitedMs >= 150)
+            Monitor.Log($"[menu/click] 这一发在动画/转场里等了 {waitedMs}ms 才点（恒定案③：延后执行）", LogLevel.Trace);
+var tcs = new TaskCompletionSource<object>();
         EnqueueMainThread(() =>
         {
             try
