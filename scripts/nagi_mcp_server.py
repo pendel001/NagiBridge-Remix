@@ -2450,6 +2450,16 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
     except Exception:
         pass
 
+    # 🕵️ 「神秘的齐」**按图注入**（恒 2026-10-06：「在隧道时……就报那个坐标和物品提示」）：
+    #    人在当前步那张图上就报一句；已了结/读不到进度 ⇒ 不出声（见 `_qi_map_hint`）。
+    #    ⚠️ Tunnel/Farm 那几张图**本来连 `🗺️ 可:` 都不印** ⇒ 这一句是它们在状态条上唯一的线索。
+    try:
+        _qh = _qi_map_hint(loc_name)
+        if _qh:
+            lines.append(f"  {_qh}")
+    except Exception:
+        pass
+
     # 🎪 节日限定 POI enum（2026-08-24 恒：动态——未交互在前、交互过沉底、组内按离 AI 近的先；非节日不显示）
     try:
         _fps = _festival_pois_sorted(loc_name, x, y, maxn=3)   # 省 token，只列前3
@@ -13932,6 +13942,49 @@ def _qi_chain_hint() -> str:
     if "TH_Tunnel" in recv:
         return "🧾 神秘的齐①b：手持彩虹贝壳(394)→火车站箱(45,40)，站(45,41)朝上"
     return "🧾 神秘的齐①a(任务开头)：手持电池组(787)→隧道锁盒(17,6)，站(17,7)朝上"
+
+
+# 🕵️ 2026-10-06 恒：「**在隧道时没有完成过神秘的齐任务就报那个坐标和物品提示**」——
+#    原来只在**打开那张任务卡**时才注入（`_qi_chain_card_hint`），而 Tunnel 那张图连
+#    `🗺️ 可:` 整行都被跳过 ⇒ **人在隧道里什么都不说**。⇒ 加"**按图注入**"这一路。
+#    ⚠️ 文字里的物品 id／坐标必须与 `_qi_chain_hint()` 一致，钉子两边对照防漂移。
+_QI_STEPS = (
+    ("Tunnel",     "🧾 神秘的齐①a（任务开头）：手持**电池组(787)** → 隧道锁盒(17,6)，站(17,7)朝上"),
+    ("Railroad",   "🧾 神秘的齐①b：手持**彩虹贝壳(394)** → 火车站箱(45,40)，站(45,41)朝上"),
+    ("ManorHouse", "🧾 神秘的齐②：手持**10 甜菜** → 镇长家冰箱(9,4)，站(9,5)朝上"),
+    ("Desert",     "🧾 神秘的齐③：手持**日光精华(768)** → 沙漠沙之巨龙嘴(9,36)，站(9,37)朝上"),
+    ("Farm",       "🧾 神秘的齐④（最后步）：去家门口**木材堆**检查领会员卡（位置随房型变，别硬记坐标）"),
+)
+
+
+def _qi_map_hint(loc_name: str) -> str:
+    """人在「神秘的齐」**当前步那张图**上 ⇒ 报坐标＋该手持什么；**已完成（领过会员卡）就不报**。
+
+    进度阶梯照抄 `_qi_chain_hint()`（`/mail` 的 `TH_*`）；读不到邮件 ⇒ **不注入**
+    （宁缺勿编：不能凭猜告诉 AI"你该去放电池"）。
+    """
+    if not loc_name:
+        return ""
+    try:
+        m = api._get("/mail")
+        recv = set()
+        for r in (m.get("received") or []):
+            if isinstance(r, dict):
+                recv.add(r.get("id") or "")
+            elif isinstance(r, str):
+                recv.add(r)
+    except Exception:
+        return ""
+    if "TH_LumberPile" in recv:      # ✅ 链已了结（④ 做过）⇒ 别再唠叨
+        return ""
+    step = 0
+    for i, k in enumerate(("TH_Tunnel", "TH_Railroad", "TH_MayorFridge", "TH_SandDragon"), start=1):
+        if k in recv:
+            step = i                 # 阶梯取**最高**那个（mail 里旧标记会一直留着）
+    mp, txt = _QI_STEPS[step]
+    if mp != loc_name:
+        return ""
+    return f"（本图）{txt}"
 
 
 def _qi_chain_card_hint(cname: str) -> str:
