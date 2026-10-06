@@ -434,6 +434,12 @@ class Ctx:
     #    待领 0 张 / 读不到）。有值时 `{"n": N}`，N = `/state.player.voucherPending`。
     #    ⚠️ 一次交互**只给一张**（游戏 `GameLocation.cs:9006-9020` 每次减 1）⇒ 行上印 `×N`。
     vouchers: dict = field(default_factory=dict)
+    # 🎰 **手头**的兑奖券（`/state.player.prizeTickets`，2026-10-06）。`{}` = 不给那一行
+    #    （**不在镇上** / 手头 0 张 / 读不到）。有值时 `{"n": N}`。
+    #    ⚠️⚠️ 跟上面 `vouchers`（`voucherPending` = 板旁领奖箱里**待领**的）**不是同一个数** ——
+    #       这一条管的是"够去刘易斯家那台兑奖机开几次"，⛔ 不许拿待领数顶替。
+    #    ⚠️ 判据在服务器（`_im_prizes`：地点 + `prizeTickets`）⇒ 这一层只做成员判断。
+    prizes: dict = field(default_factory=dict)
 
     def zh_of(self, name: str) -> str:
         return (self.zh or {}).get(name) or name
@@ -4124,6 +4130,49 @@ VOUCHER_V = Verb("voucher", "领取兑奖券", 72, _voucher_can, _voucher_reason
                  "world", exec=_exec_voucher, batch=True, menu_ok=True)
 
 
+# 🎰 去兑奖机换奖品（恒 2026-10-06：「兑奖机那一行补进单子」）——
+# ⚠️ 跟上面那条**不是同一件事**，别混（这是本项目最容易漂的一处）：
+#   · `voucher`（`Ctx.vouchers`）= 板旁领奖箱里**待领**的券（`/state.player.voucherPending`）；
+#   · `prize`（`Ctx.prizes`）= **手头**已经领进包里的券（`/state.player.prizeTickets`）。
+#   两者不同步：领完箱子 pending 掉 1 / 手头涨 1；去机器换掉一件**只动手头**。
+# ⚠️ 判据全在服务器（`_im_prizes`：`location.name == "Town"` + `prizeTickets > 0`）——
+#    这一层**不打 HTTP、不认菜单名、不编张数**（同 `shop`/`doors`/`tailor` 的形状）。
+# ⚠️ **不是 `batch=True`**：这一按**不会把 N 张都换掉** —— 它只把机器**开出来**，
+#    换到哪件是随机的（`PrizeTicketMenu` 的 `mainButton`，一次一张），让 AI 自己决定。
+#    ⇒ 标题里的 `×N` 是"**手头有 N 张**"那个事实（恒要的形状），不是"这一按做 N 次"。
+def _prize_n(ctx):
+    try:
+        return int(((ctx.prizes or {}).get("n")) or 0)
+    except Exception:
+        return 0
+
+
+def _prize_can(ctx, t):
+    """🎰 **手头真有券**才给这一行（服务器按 `Town` + `prizeTickets > 0` 判过）。"""
+    return CAN_YES if _prize_n(ctx) > 0 else CAN_NO
+
+
+def _prize_show(ctx, t):
+    return f"去兑奖机换奖品×{_prize_n(ctx)}"
+
+
+def _prize_reason(ctx, t):
+    return (f"刘易斯家（镇长家）兑奖机 · 站 (1,6) 朝上交互 (1,5) · 一次一张 · 手头 {_prize_n(ctx)} 张")
+
+
+def _exec_prize(ctx, targets, run):
+    """🎰 走过去**把兑奖机开出来**（服务器那侧包办走位+交互；回执拿**它自己那句话**）。
+
+    ⚠️ 回执里那句「换奖品敲 `menu click(button=mainButton)`（一次一张）」是**留给 AI 的话**，
+       这一层**不替它花券** —— 换到哪件是随机的（见上面那段）。
+    """
+    return _receipt_from_helper("去兑奖机", "", run("prize", {}))
+
+
+PRIZE_V = Verb("prize", "去兑奖机换奖品", 70, _prize_can, _prize_reason, _prize_show,
+               "world", exec=_exec_prize, menu_ok=True)
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # 🚪🐄 放牧（开棚门）/ 关棚门 —— 2026-10-01 恒：「放牧（开关畜棚鸡舍门）做进选项了吗？」
 # ═══════════════════════════════════════════════════════════════════════
@@ -4915,7 +4964,7 @@ VERBS: list = [
     # 🐄🧵🎟 2026-10-06 恒「一起做了」的那四档（买动物 / 缝纫机 / 取回失物 / 镇上两个顺手办）。
     #    判据全在服务器（见上面那一大段的账）；四条都 `menu_ok`（它们**本来就是菜单里/菜单旁的事**，
     #    菜单态过滤时不许把它们的行滤掉）。
-    ANIMAL_V, RECOVER_V, TAILOR_V, ORDER_V, VOUCHER_V,
+    ANIMAL_V, RECOVER_V, TAILOR_V, ORDER_V, VOUCHER_V, PRIZE_V,
     # 🚪 界面出口（**菜单态专属**，见上面 `CLOSE_V` 那段）。放最后只为读着顺——
     #    排序走权重（30），跟它在列表里的位置无关。
     CLOSE_V,
@@ -6017,7 +6066,7 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
              quests: dict = None, levelup: dict = None, cc: dict = None,
              cc_board: dict = None, museum_go: dict = None, fish: dict = None,
              animals_for_sale: dict = None, tailor: dict = None,
-             orders: dict = None, vouchers: dict = None) -> Ctx:
+             orders: dict = None, vouchers: dict = None, prizes: dict = None) -> Ctx:
     """把 `/state`(**full**) + `/surroundings`(+`/machines`/`/scan_chests`) 拼成 Ctx。
 
     ⚠️ 只搬运，**不补默认值**：缺什么就让它缺着（`can()` 遇到缺失自然回 假/？）。
@@ -6141,6 +6190,9 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
                tailor=tailor or {},
                orders=orders or {},
                vouchers=vouchers or {},
+               # 🎰 手头那几张券（同批新增）：跟上面 `vouchers` **不是同一件事**
+               #    （待领 vs 手头，见 `Ctx.prizes`）—— ⛔ 别把两者并成一份。
+               prizes=prizes or {},
                sitting=bool(((seats or {}).get("me") or {}).get("sitting")),
                worn=(worn or {}),
                pets=pets,

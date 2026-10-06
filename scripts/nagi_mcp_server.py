@@ -24969,6 +24969,15 @@ ORDER_BOARD_TILE = (62, 93)
 ORDER_BOARD_STAND = (62, 94)
 VOUCHER_TILE = (60, 93)
 VOUCHER_STAND = (60, 94)
+# 🎰 刘易斯镇长家那台**特别订单兑奖机**（`PrizeTicketMenu`）—— 坐标不是编的：
+#   · POI `locations.py:144`「刘易斯家(特别订单兑奖机)」= `ManorHouse (1,6)`；
+#   · `POI_FACE`（`locations.py:554`）写着 `face 0 / stand (1,6)` ⇒ **站 (1,6) 朝上交互 (1,5)**；
+#   · 2026-08-29 真机验过：交互 (1,5) 弹出兑奖菜单、玩家站 (1,6)。
+#   ⚠️ 跨图那一步走 `navigation.map_go(PRIZE_MACHINE_POI)`（POI 表里
+#      `locations.py:40` 有 `("Town","door","ManorHouse",(5,11))` ⇒ 这条路走得通）。
+PRIZE_MACHINE_TILE = (1, 5)
+PRIZE_MACHINE_STAND = (1, 6)
+PRIZE_MACHINE_POI = "刘易斯家(特别订单兑奖机)"
 
 
 def _im_order_read(state: dict, caps: dict = None) -> dict:
@@ -25062,6 +25071,38 @@ def _im_vouchers(state: dict, raw: dict = None) -> dict:
         return {}
     try:
         n = int((((state or {}).get("player") or {}).get("voucherPending")) or 0)
+    except Exception:
+        return {}
+    return {"n": n} if n > 0 else {}
+
+
+def _im_prizes(state: dict) -> dict:
+    """🎰 「**手头**有几张兑奖券」（= 够去刘易斯家那台兑奖机开几次）→ `{"n": N}` / `{}`。
+
+    === 判据 ===
+      · 数量 = `/state.player.prizeTickets`（C# 早在报：`farmer.Items.CountId("PrizeTicket")`，
+        `ModEntry.cs:6176`）—— **手头包里真有的张数**。
+      · 位置：**只在 `Town`** 才给这一行（兑奖机在镇上刘易斯家 `ManorHouse`，
+        跨图那一步交给执行侧 `navigation.map_go`；不在镇上就不该往单子上摆"去兑奖机"）。
+        ⚠️ 这里判的是**当前所在地名**，不是"兑奖机在哪个图"—— 站在 ManorHouse 里时
+        这一行**不出现**（兑奖机那屏本来就该走菜单那域，不是"走过去"）。
+
+    ⚠️⚠️ **`prizeTickets` 与 `voucherPending` 是两个不同的东西**（老账，别混）：
+      · `prizeTickets` = **手头**（已经领进背包里）的券 —— 这一行管的是它；
+      · `voucherPending` = 板旁领奖箱里**还没领**的券（`_im_vouchers` 那一行管的是它）。
+      两者**不同步**：领完箱子 `pending` 掉 1、手头涨 1；去兑奖机换掉一件**只动手头**。
+      ⇒ 这一行**不许**拿 `voucherPending` 顶替（那会让 AI 站在机器前手里一张都没有）。
+
+    ⚠️ 读不到 `state` / 读不到那个字段 ⇒ `{}`（**整行不出现**）：**不猜 0、不编**。
+       （0 和"读不出来"在这条路上要分开 —— 0 是"确实没券"，读不到是"我不知道"。）
+    """
+    if ((state or {}).get("location") or {}).get("name") != "Town":
+        return {}
+    v = ((state or {}).get("player") or {}).get("prizeTickets")
+    if v is None:
+        return {}
+    try:
+        n = int(v)
     except Exception:
         return {}
     return {"n": n} if n > 0 else {}
@@ -26643,6 +26684,9 @@ def _im_ctx():
     _order_raw = _im_order_read(state, _caps)
     _order = _im_order_board(state, _order_raw)
     _vouchers = _im_vouchers(state, _order_raw)
+    # 🎰 手头那几张券（`/state.player.prizeTickets`）—— 跟上面那一行**不是同一件事**
+    #    （待领 vs 手头，见 `_im_prizes` 的 docstring）；**零额外 HTTP**（就在已经拿到的 state 里）。
+    _prizes = _im_prizes(state)
     _content_shown = (bool(_md) or bool((_shop or {}).get("items"))
                       or bool(_animals.get("buy")) or bool(_tailor))
     return intent_menu.ctx_from(state, surr, machines, chests, caps=_caps,
@@ -26731,6 +26775,10 @@ def _im_ctx():
                                 #    「查看社区特别任务 → 接左边/接右边」与「领取兑奖券×n」。
                                 orders=_order,
                                 vouchers=_vouchers,
+                                # 🎰 「去兑奖机换奖品×N」那行的账（同批）：**手头**的券
+                                #    （`prizeTickets`，不是上面的 `voucherPending`）——
+                                #    只在镇上且有券时非空，见 `_im_prizes`。
+                                prizes=_prizes,
                                 worn=worn)
 
 
@@ -27956,6 +28004,63 @@ def _im_order_accept(side) -> str:
             "（看单子的时候是有的，这一刻可能变了）；别当成接上了，自己看一眼")
 
 
+def _prize_tickets() -> int:
+    """**手头**兑奖券数（`/state.player.prizeTickets`）；**读不到 → -1**（不是 0 —— 0 是"确实没有"）。
+
+    ⚠️ 跟 `_voucher_pending()`（板旁领奖箱里**待领**的）**不是同一个数**，见 `_im_prizes`。
+    """
+    try:
+        v = ((api._ai_get("/state") or {}).get("player") or {}).get("prizeTickets")
+        return int(v) if v is not None else -1
+    except Exception:
+        return -1
+
+
+def _im_prize_go() -> str:
+    """🎰 走到刘易斯家的兑奖机前 + 交互把它**开出来**（单子那行的执行侧）→ 一句话。
+
+    ⚠️ 两段路：`navigation.map_go`（跨图到 `ManorHouse`，POI 名字见 `PRIZE_MACHINE_POI`）
+       + `_tank_go(1,5)`（就位判据 = 站正交邻格 + 面朝它，跟 `_im_order_accept`/`_im_cc_go`
+       同一套 —— 站远了隔空 `/interact` 会被游戏无视）。
+    ⚠️ 成不成看 **`/state.activeMenu.type` 真的是不是 `PrizeTicketMenu`**（`ok:true` 不算）——
+       开出来的**不是它**就如实说"什么都没换"（本项目老账：`ok:true` ≠ 事情动了）。
+    ⛔ **不替 AI 花券**：兑奖机开出来以后换到哪件是**随机的**（`PrizeTicketMenu` 的
+       `mainButton`，一次一张）⇒ 这一层**只负责把机器开出来**，让 AI 自己敲
+       `menu click(button=mainButton)`（回执里就是这么说的）。
+    ⚠️ 菜单开着 / 手头没券 ⇒ **当场如实拒**（不白跑一趟、也不瞎点）。
+    """
+    _ensure_background()
+    mt = _im_menu_type()
+    if mt == "?":
+        return "❌ 读不到现在开着什么界面 —— 不敢瞎走位/瞎点"
+    if mt:
+        return f"❌ 现在开着 `{mt}` 界面 —— 先关掉它再去兑奖机（界面开着会被吃掉那一下）"
+    n = _prize_tickets()
+    if n < 0:
+        return "❌ 读不到手头兑奖券数（`/state.player.prizeTickets`）—— 不敢瞎走"
+    if n == 0:
+        return ("❌ 手头**一张兑奖券都没有**（`prizeTickets` 0）—— 先拿券再来"
+                "（券是板旁领奖箱领的，`voucherPending` 那个数是**待领**、不是手头）")
+    try:
+        navigation.map_go(PRIZE_MACHINE_POI)
+    except Exception as e:
+        return f"❌ 走去兑奖机那段路出错（{PRIZE_MACHINE_POI}）：{type(e).__name__}: {e}"
+    step = _tank_go(*PRIZE_MACHINE_TILE, what="兑奖机")
+    if step:
+        return step
+    api._ai_post("/interact", {"x": PRIZE_MACHINE_TILE[0], "y": PRIZE_MACHINE_TILE[1]})
+    for _ in range(10):
+        time.sleep(0.2)
+        now = _im_menu_type()
+        if now == "PrizeTicketMenu":
+            return (f"🎰 兑奖机开了（手头 {n} 张）—— 换奖品敲 `menu click(button=mainButton)`"
+                    "（一次一张）")
+        if now == "?":
+            break
+    return ("⚠️ 站到了也点了，可开出来的不是兑奖机（%s）—— 什么都没换"
+            % (_im_menu_type() or "没开界面"))
+
+
 def _im_voucher_take() -> str:
     """🎟 **走过去 + 连点**把板旁领奖箱里待领的兑奖券全领了（单子那行的执行侧）→ 一句话。
 
@@ -28199,6 +28304,9 @@ def _im_run(op, args):
         "order_accept": lambda: _im_order_accept(args.get("side")),
         # 🎟 领兑奖券（同上）：走到板旁领奖箱 + 连点 + **看统计数掉没掉**。
         "voucher": lambda: _im_voucher_take(),
+        # 🎰 去兑奖机换奖品（同上，2026-10-06）：走去刘易斯家 + 交互**把机器开出来**，
+        #    ⛔ **不替 AI 花券**（换到哪件是随机的，让它自己敲 `menu click(button=mainButton)`）。
+        "prize": lambda: _im_prize_go(),
     }
     # 🛒 买卖走**裸端点**（回 dict，回执要逐条报数字），只是外面多两道闸门。
     raw_ops = {
