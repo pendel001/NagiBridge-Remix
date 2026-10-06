@@ -18,6 +18,7 @@
 ⚠️ **这里绿 ≠ 真机成**：`/fish_areas` 的字段、以及「水格扫描的锚点覆盖够不够」都还没在真机跑过
    —— 真机验收清单见 `CHANGELOG.md` 的 `203z补32`。
 """
+import json
 import os
 import sys
 
@@ -39,15 +40,22 @@ def ck(name, cond, extra=""):
 
 # ── 假 api：只回答这次要问的（`/fish_areas` / `/water` / `/passable` / `/face` / `/state`）──────
 class FakeApi:
-    def __init__(self, state=None, fish_areas=None, water=None, passable=None):
+    def __init__(self, state=None, fish_areas=None, water=None, passable=None, host=None):
         self._state = state if state is not None else {}
         self.fish_areas = fish_areas          # None = 端点挂了/老 DLL
         self.water = water or {}              # (锚点x, 锚点y) -> [水格 dict]
         self.passable = passable or {}        # (x, y) -> True/False
+        self.host = host or {}                # 7842 的 `/state` 回包（矿井那档用；`{}` = 读不到）
         self.gets, self.posts = [], []
 
     def state(self, **kw):
         return self._state
+
+    def host_get(self, ep, params=None, timeout=10):
+        self.gets.append(("host" + str(ep), dict(params or {})))
+        if ep == "/state":
+            return self.host
+        raise RuntimeError("unexpected host GET " + ep)
 
     def _ai_get(self, ep, params=None):
         self.gets.append((ep, dict(params or {})))
@@ -516,11 +524,60 @@ try:
     a, nav, scripts, out = _go_w(st, _SW, {(29, 27): [{"x": 29, "y": 27, "fishable": True}]})
     ck("📏 水格扫描档：站 (29,21) 落点 (29,27) = 正下 6 格 ⇒ **照常开钓**（旧的「≤4 格」闸会误拦）",
        bool(scripts) and scripts[0][0] == "fish_run" and ("/face", {"direction": 2}) in a.posts, out)
-    _BAD = dict(_SW, wy=25)                                              # 落点对不上（只有 4 格）
+    _BAD = dict(_SW, wy=30)                                              # 落点对不上（9 格，远超 D=6）
     st = _state("Farm", x=29, y=21, in_hand=True, wh=(80, 65))
-    a, nav, scripts, out = _go_w(st, _BAD, {(29, 25): [{"x": 29, "y": 25, "fishable": True}]})
-    ck("…落点距离对不上 D（只有 4 格）⇒ **当场拒**、不发这一竿",
+    a, nav, scripts, out = _go_w(st, _BAD, {(29, 30): [{"x": 29, "y": 30, "fishable": True}]})
+    ck("…落点距离对不上 D（9 格 vs 该 6 格）⇒ **当场拒**、不发这一竿",
        scripts == [] and "对不上" in out, out)
+    # ⚠️ 反向：**紧邻（≤4 格）**的 `wx/wy` 是"该朝哪一格"（校准点的 face 目标）⇒ **不走落点窗口**这条闸
+    _NEAR = {"x": 34, "y": 25, "wx": 34, "wy": 26, "dir": 2, "area": "Lake"}
+    st = _state("Forest", x=34, y=25, in_hand=True)
+    a, nav, scripts, out = _go_w(st, _NEAR, {(34, 26): [{"x": 34, "y": 26, "fishable": True}]})
+    ck("…紧邻那档（校准点 face 目标，1 格）⇒ **照旧放行**（别把鱼区那档一起收紧）",
+       bool(scripts) and scripts[0][0] == "fish_run", out)
+
+    print("\n⑦b 🎣 矿井钓点（20/60/100 层 · 站位与朝向照抄 7842 的当下站位）")
+    # 恒 2026-10-06：「位于这些层时也给对应的钓鱼选项，抛竿位置在**现在 7842 的站位和朝向**」。
+    # 真机那一刻：7842 在 UndergroundMine100 (26,13) facing=1；朝右第 7 格 (33,13) 实测 `fishable:true`。
+    FISH_MINE = {"ok": True, "location": "UndergroundMine100", "hasFishAreaData": False,
+                 "count": 0, "areas": []}
+    HOST_M = {"location": {"name": "UndergroundMine100"},
+              "player": {"x": 26, "y": 13, "facingDirection": 1}}
+    _mw = {(33, 13): [{"x": 33, "y": 13, "canCrabPot": False, "fishable": True}]}
+    api = FakeApi(_state("UndergroundMine100", x=20, y=13, in_hand=True, wh=(50, 22)),
+                  fish_areas=FISH_MINE, water=_mw, passable={(26, 13): True}, host=HOST_M)
+    acct_m = _acct(api)
+    pk_m = acct_m.get("picks") or []
+    ck("矿井那三层：照抄 7842 的站位 (26,13) + 朝向 1，落点 = 朝右 D=7 ⇒ (33,13)",
+       acct_m.get("mode") == "host" and len(pk_m) == 1
+       and (pk_m[0].get("standX"), pk_m[0].get("standY")) == (26, 13)
+       and pk_m[0].get("dir") == 1
+       and (pk_m[0].get("waterX"), pk_m[0].get("waterY")) == (33, 13), str(acct_m))
+    ck("…名字用**游戏自己的图名**（`UndergroundMine100` 原样，层号就在里面）",
+       pk_m and pk_m[0].get("area") == "UndergroundMine100", str(pk_m))
+    ck("…⛔ 一个鱼种、一个中文水域名都没有（恒 2026-10-05 的老规矩）",
+       not any(w in json.dumps(acct_m, ensure_ascii=False)
+               for w in ("鬼鱼", "石鱼", "冰柱鱼", "岩浆鳗鱼", "洞穴凝胶", "水池", "岩浆")), str(acct_m))
+    ck("…`_fish_subs` 返回 None（这一档只有一条 ⇒ 它自己就是动作行）",
+       IM._fish_subs(IM.ctx_from(_state("UndergroundMine100", x=20, y=13, in_hand=True),
+                                 {}, caps={"fish_areas": True}, fish=acct_m), [None]) is None, "")
+
+    # 三道闸：任何一道过不去 ⇒ **如实不给行**
+    for _h, _p, _w, _why in (
+            ({"location": {"name": "UndergroundMine60"},
+              "player": {"x": 26, "y": 13, "facingDirection": 1}}, {(26, 13): True}, _mw,
+             "他**不在同一层**（换层了）"),
+            (HOST_M, {(26, 13): False}, _mw, "他站的那格**走不过去**"),
+            (HOST_M, {(26, 13): True}, {(33, 13): [{"x": 33, "y": 13, "fishable": False}]},
+             "落点**不是能钓的水**")):
+        M._FISH_CACHE.update({"key": None, "ts": 0.0, "raw": None})
+        _a = FakeApi(_state("UndergroundMine100", x=20, y=13, in_hand=True, wh=(50, 22)),
+                     fish_areas=FISH_MINE, water=_w, passable=_p, host=_h)
+        _ac = _acct(_a)
+        ck(f"…{_why} ⇒ 矿井那一行**不给**（宁可不给，也不给假门）", _ac == {}, str(_ac))
+    ck("…那三层**只在这三层**：别的矿层（如 UndergroundMine21）不走这条路",
+       M._FISH_MINE_MAPS == ("UndergroundMine20", "UndergroundMine60", "UndergroundMine100"),
+       str(M._FISH_MINE_MAPS))
 
     print("\n⑦ 按鱼区校准表（`FISHING_AREA_TARGETS`）：三条映射 + 老路一字不变 + 无校准就退回游戏 spots")
     import fish_run as FR

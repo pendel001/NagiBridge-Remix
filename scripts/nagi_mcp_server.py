@@ -24980,6 +24980,11 @@ _FISH_MAX_PICKS = 8           # 第二层最多几行（防病态地图把单子
 #   ⚠️ 这一位现在**只当紧急开关**用（默认 True）。要关它的理由只有一条：真机又验出这一档在骗人 ——
 #     那时**先关、再查**，别让它带着假门跑。
 _FISH_WATER_SWEEP_ENABLED = True
+# 🎣 **矿井有鱼的水池层**（恒 2026-10-06 查 wiki 给的：20 / 60 / 100 层）——
+#    这几层给「垂钓」行，**站位与朝向照抄 7842 的当下站位**（他站哪朝哪，我们就去哪朝哪；
+#    理由与三道闸见 `_fish_mine_pick`）。⚠️ 图名 = 游戏自己的 `UndergroundMine<层>`，
+#    别写成 "Mine"/"矿井" 那种（那会命中整座矿）。
+_FISH_MINE_MAPS = ("UndergroundMine20", "UndergroundMine60", "UndergroundMine100")
 
 
 def _fish_rod_in_hand(state: dict) -> bool:
@@ -25133,6 +25138,64 @@ def _fish_cast_d(level, axis: str):
         base = _fish_added_distance(level) + (4 if axis == "h" else 3)
         return max(2, int(round(float(pw) * base)))
     return None
+
+
+def _fish_host_spot() -> dict:
+    """读 **7842（恒）**这一刻站哪、朝哪 —— 矿井那几层的钓点用他当"人肉标定"。
+
+    `{loc, x, y, face}` 或 `{}`（读不到 / 没进世界）。⚠️ 走 `api.host_get`（**host 进程**），
+    ⛔ 别用 `_get`/`_ai_get`（那打的是轮回自己那端 —— 看别人站位必须问房主那端）。
+    """
+    try:
+        st = api.host_get("/state") or {}
+        p = st.get("player") or {}
+        loc = ((st.get("location") or {}).get("name") or "")
+        return {"loc": loc, "x": p.get("x"), "y": p.get("y"), "face": p.get("facingDirection")}
+    except Exception:
+        return {}
+
+
+def _fish_mine_pick(state: dict, loc_name: str) -> dict:
+    """🎣 矿井那三层的钓点行（恒 2026-10-06 拍板要做）—— 返回 `_im_fish` 那种账，给不了就 `{}`。
+
+    站位/朝向**照抄 7842 的当下站位**；落点 = 他的站格 + 他的朝向 × D，**必须**是游戏说 `fishable` 的水。
+    三道闸（任何一道过不去 ⇒ `{}`，如实不给行）：
+      ① 他也**在同一层**（不在 ⇒ 这个"标定"根本不在场，别猜）；
+      ② 他那格 `/passable`（走不过去的位置给了也是假门）；
+      ③ 落点那格 `/water` 回 `fishable: true`（问他那端也行、问我们自己这端也行 —— 同一张图）。
+    ⛔ 鱼种一个字都不印（恒 2026-10-05 的老规矩）；这一行的"名字"用**游戏自己的图名**
+      （`UndergroundMine100` —— 原样透传，里面就带层号）。
+    """
+    hp = _fish_host_spot()
+    if not hp or hp.get("loc") != loc_name:
+        return {}
+    hx, hy, hf = hp.get("x"), hp.get("y"), hp.get("face")
+    if not isinstance(hx, int) or not isinstance(hy, int) or hf not in (0, 1, 2, 3):
+        return {}
+    axis = "h" if hf in (1, 3) else "v"
+    lv = (((state or {}).get("player") or {}).get("fishing") or {}).get("fishingLevel")
+    D = _fish_cast_d(lv, axis)
+    if not isinstance(D, int):
+        return {}                                     # 抛竿距离还没量过 ⇒ 算不出落点
+    wx, wy = hx + (0, 1, 0, -1)[hf] * D, hy + (-1, 0, 1, 0)[hf] * D
+    try:
+        if not api._post("/passable", {"x": hx, "y": hy}).get("passable"):
+            return {}                                 # 他站的那格走不过去 ⇒ 不给行
+    except Exception:
+        return {}
+    try:
+        w = api._ai_get("/water", {"x": wx, "y": wy, "radius": 1}) or {}
+    except Exception:
+        return {}
+    hit = [t for t in (w.get("water") or [])
+           if isinstance(t, dict) and t.get("x") == wx and t.get("y") == wy]
+    if not w.get("ok") or not hit or hit[0].get("fishable") is not True:
+        return {}                                     # 落点不是能钓的水 ⇒ 不给行（假门闸）
+    return {"mode": "host", "count": 1, "truncated": False,
+            "picks": [{"area": loc_name, "standX": hx, "standY": hy,
+                       "waterX": wx, "waterY": wy, "dir": int(hf),
+                       "waterTiles": None, "spotsFound": None,
+                       "calibrated": "恒站位(7842)"}]}
 
 
 def _fish_water_scan(state: dict, caps: dict = None) -> list:
@@ -25325,6 +25388,13 @@ def _im_fish(state: dict, caps: dict = None) -> dict:
     loc_name = ((state or {}).get("location") or {}).get("name") or ""
     if not loc_name:
         return {}                                     # 图名读不到 ⇒ 缓存键都拼不出来 ⇒ 不猜
+    # 🎣 **矿井钓点优先**（恒 2026-10-06）：20/60/100 层那三处水池 —— 站位/朝向**用 7842 的当下站位**
+    #    （恒原话：「位于这些层时也给对应的钓鱼选项，抛竿位置在**现在 7842 的站位和朝向**」）。
+    #    为什么走这条路而不是水格扫描：那几层**没有 FishAreas 数据**（游戏按矿层给鱼），而恒人能站到、
+    #    亲手验过的地方就是权威 ⇒ **他站哪朝哪，我们就去哪朝哪**；⛔ 不自己算矿洞钓点。
+    #    ⚠️ 一律过三道闸才给行：同在一层 · 落点 = 他站格 + 他朝向 × D 是 `fishable` 的水 · 他那格可站。
+    if loc_name in _FISH_MINE_MAPS:
+        return _fish_mine_pick(state, loc_name)
     now = time.time()
     raw = None
     if _FISH_CACHE.get("key") == loc_name and (now - _FISH_CACHE.get("ts", 0.0)) < _FISH_CACHE_TTL:
@@ -25441,13 +25511,14 @@ def _im_fish_go(args: dict) -> str:
                     f"  · 或自己走过去：`map walk x={x} y={y}` → 到了再 `show`")
         if isinstance(wx, int) and isinstance(wy, int):
             _cheb = max(abs(wx - px), abs(wy - py))
-            if not area:
-                # 📏 **水格扫描那一档：`wx/wy` 就是落点**（2026-10-06 起按落点挑位）⇒ 按 D 的窗口判。
-                #    ⛔ 别再用"4 格内"那把**旧模型**的尺子 —— 真机当场踩到：正确的行
-                #    (站 29,21 → 落点 29,27，D=6) 被它判成"够不着"，整行白走一趟。
-                #    两条判据都用**这一行自己给的数**：① 朝向：从站格看落点是 `dir`；
-                #    ② 距离：切比雪夫必须落在 `[max(2, D-1), D+1]`（D 就是这一行该落的距离；
-                #       2 = 公式 `Math.Max(128f, …)` 的下限；±1 容忍游戏落点取整/垂直挪一格）。
+            # 📏 **两种语义，按"水格离人多远"分**（2026-10-06 定；比按 `area` 空不空分更靠得住）：
+            #    · **紧邻（≤4 格）** = "该朝哪一格"（校准点的 face 目标，如 Forest (20,76) 面东的 (21,76)；
+            #      或 `/fish_areas` 那种四邻 spot）⇒ 老粗闸就够了（它的落点同样在 D 格外，
+            #      靠恒验过的那片宽河，落点几何不归这一档管）。
+            #    · **远处（>4 格）** = 这一格**就是落点**（水格扫描那一档 / 矿井那一档）⇒ 必须对上
+            #      「站格 + 朝向 × D」：① 方向一致 ② 切比雪夫落在 `[max(2,D-1), D+1]`。
+            #    ⛔ 别再用"水格≤4 格"那把旧模型的尺子（真机当场把正确的行判成"够不着"，白走一趟）。
+            if _cheb > 4:
                 _d_dir = args.get("dir")
                 _axis = "h" if _d_dir in (1, 3) else "v"
                 _lv = ((st.get("player") or {}).get("fishing") or {}).get("fishingLevel")
@@ -25461,13 +25532,6 @@ def _im_fish_go(args: dict) -> str:
                             f"（行里写的是朝{_name.get(_d_dir, '?')}、约 {_exp} 格；实际从这儿看是朝"
                             f"{_name.get(_fdir)}、{_cheb} 格）—— 这一竿不开（宁可不钓，也不发一竿朝陆地）。"
                             f"敲 `show` 重开一张。")
-            elif abs(wx - px) + abs(wy - py) > 4:
-                # ⚠️ **鱼区那档（有 `area`）这一格 `wx/wy` 不是落点**，而是"该朝哪一格"（校准点的 face
-                #    目标，通常就是紧邻那一格 —— 例如 Forest (20,76) 面东的 (21,76)）。
-                #    它的落点同样是 7 格外（靠恒验过的那片宽河），所以这里**只做"人别站得太离谱"的
-                #    粗闸**，落点几何留给"按落点挑位"那一档去管（那一档才拿得到 D 与落点的对应关系）。
-                return (f"❌ 站到了 ({px},{py})，可那一格水 ({wx},{wy}) **够不着**（走位落在了别处）"
-                        f" —— 这一竿不开（宁可不钓，也不发一竿朝陆地）。敲 `show` 重开一张。")
 
     # ⑤ 就地转向水：**按实际站位重算**（`_face_dir` 与执行器同一套算法 `:25754`）
     face = args.get("dir")
