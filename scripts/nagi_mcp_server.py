@@ -27,6 +27,7 @@ import io
 import difflib   # 🔎 参数名/op 名写错时给"你是不是想写 X"（2026-09-24）
 import inspect
 import functools
+import threading as _threading   # ⚠️ 闸门深度要线程局部（`:657`）+ 后台脚本那些锁（`:22663`）都要它
 import re
 import random
 import textwrap
@@ -652,25 +653,34 @@ _orig_mcp_tool = mcp.tool
 # ⚠️ 重入计数：**域工具内部是直接调那些隐藏工具的**（`menu(ops=read)` → `read_menu()`），
 #    而隐藏工具也被本猴补包了一层 ⇒ 不挡的话会**双层判定**：外层放行、内层照样拦
 #    （实测：`menu ops=read` 被 `read_menu` 那一层拦下）。**只有最外层调用才判闸门。**
-_MENU_GATE_DEPTH = {"n": 0}
+# 🔴 **必须是线程局部**（2026-10-06 改）：现在每个工具都跑在**工作线程**里（见下面 `_in_thread`），
+#    模块级 dict 会被并发调用互相污染（A 的嵌套内层看见 B 的外层深度 ⇒ **闸门被静默跳过**）。
+_MENU_GATE_DEPTH = _threading.local()
+
+
+def _gate_depth() -> int:
+    """本线程现在在"工具嵌套"里有多深（0 = 最外层）—— 见上面为什么必须线程局部。"""
+    return getattr(_MENU_GATE_DEPTH, "n", 0)
 
 
 def _gated_tool(*dargs, **dkwargs):
+    import anyio
+
     _deco = _orig_mcp_tool(*dargs, **dkwargs)
 
     def _wrap(fn):
         @functools.wraps(fn)          # ← 保住 __name__/__doc__/__wrapped__（FastMCP 靠它读签名）
         def _inner(*a, **kw):
-            if _MENU_GATE_DEPTH["n"] > 0:      # 内层：已经在外层工具的执行里，不再判
+            if _gate_depth() > 0:              # 内层：已经在外层工具的执行里，不再判
                 return fn(*a, **kw)
             _blocked, _note = _menu_gate(getattr(fn, "__name__", ""), kw, a, fn)
             if _blocked:
                 return _with_state(_note)
-            _MENU_GATE_DEPTH["n"] += 1
+            _MENU_GATE_DEPTH.n = _gate_depth() + 1
             try:
                 _out = fn(*a, **kw)
             finally:
-                _MENU_GATE_DEPTH["n"] -= 1
+                _MENU_GATE_DEPTH.n = _gate_depth() - 1
             if not _note:
                 return _out
             # ⚠️ 2026-09-23：`_out` **不一定是 str**（`screenshot()` 现在返回 `[文本, Image]`）。
@@ -682,7 +692,35 @@ def _gated_tool(*dargs, **dkwargs):
                 return [_note + "\n"] + _out
             return _out
 
-        return _deco(_inner)
+        # ══════════════════════════════════════════════════════════════════════
+        # 🧵 **注册的是"丢工作线程"版** —— 2026-10-06 恒：「**你想从外面递的话，stop 好修就修一下吧**」
+        # ══════════════════════════════════════════════════════════════════════
+        # 🔴 为什么（反编译实据，别删）：`mcp 1.28.1` 的 FastMCP 对**同步**工具是**在事件循环里直接调**的
+        #    —— `mcp/server/fastmcp/utilities/func_metadata.py:93-96`：`else: return fn(**kw)`，**没有 threadpool**。
+        #    我们 16 个工具原来全是 `def` ⇒ 工具体里一处长时间 `time.sleep`（最典型 = `_bg_block_until_wake`
+        #    的"挂到唤醒"，默认 180s；`_BG_PARK_SLICE` 封顶 30s）就把**整个 :8000 卡住不接请求**
+        #    ⇒ 从外面发 `script stop` **递不进来**（真机 2026-10-06：同会话 26.0s / 独立会话 22.2s 都回「❌ 无响应」；
+        #      而 git 实据显示 2026-09-24 改"真阻塞"**之前**异步分支是立刻 return ⇒ 那时 stop 一直可用）。
+        # ⇒ 现在**事件循环只收发**，活干在工作线程里 ⇒ 长脚本照旧挂住 AI 那一回合（语义不变），
+        #    但外面**随时递得进来**（`script stop` / 别的小工具 / 连 `map go` 长走位期间服务也不僵）。
+        # ⚠️ **模块名仍返回同步的 `_inner`**：域工具内部**直接调**别的工具（`menu` → `read_menu()`），
+        #    名字若变成 async，那些直调会拿到 coroutine（自验里也当场炸过一次）⇒ 名字必须留同步版。
+        async def _in_thread(*a, **kw):
+            return await anyio.to_thread.run_sync(lambda: _inner(*a, **kw))
+
+        # 名字/文档/签名照抄——但**不用 `functools.wraps`**（那会挂 `__wrapped__`，
+        # 而 FastMCP 读签名时会顺着它；我们要的是**原封不动的参数表**）。
+        _in_thread.__name__ = getattr(fn, "__name__", "tool")
+        _in_thread.__doc__ = fn.__doc__
+        try:
+            _in_thread.__signature__ = inspect.signature(fn)
+        except Exception:
+            pass
+        try:
+            _deco(_in_thread)          # 注册（`_deco` 返回的就是传进去那个函数，忽略即可）
+        except Exception:
+            _deco(_inner)              # 兜底：注册不成也别把工具弄丢（退回同步版）
+        return _inner                  # ⚠️ 模块名 = **同步版**（嵌套直调 / 自验直调都靠它）
 
     return _wrap
 
@@ -3314,7 +3352,9 @@ _BAG_JUNK_IDS = {
 #    `(BC)`=机器/大工艺品（熔炉、稻草人…）· `(F)`=家具 · `(T)`=工具 · `(W)`=武器 · `(H)`=帽子 · `(S)`=衣服 · `(B)`=靴子/戒指
 #    —— 这些**不是"包满了随手扔一件"的东西**，列出来就是诱导 AI 把自己的家当扔了。
 _BAG_NEVER_IDS_PREFIX = ("(T)", "(W)", "(BC)", "(F)", "(H)", "(S)", "(B)", "(TR)")
-# 🪨 **常见消耗品**（这些标"普通"就够了；其余 `(O)` 一律标「⚠️ 可能值钱」让 AI 自己掂量）
+# ⚠️ `_BAG_JUNK_IDS` / `_BAG_COMMON_IDS` 那套"价值分档"**2026-10-06 恒拍板撤了**
+#    （"不用上那种（垃圾）（普通）等的判断，ai自己按需取舍"）—— 留 `_BAG_JUNK_IDS` 只是给**别的**地方
+#    可能要用（目前无消费方）；**换件候选一律不分档、不排序**。
 _BAG_COMMON_IDS = {
     "(O)388", "(O)390", "(O)92", "(O)771", "(O)330", "(O)382",              # 木头/石头/树液/纤维/黏土/煤
     "(O)378", "(O)380", "(O)384", "(O)386",                                  # 铜/铁/金/铱矿石
@@ -3325,21 +3365,20 @@ _CLAIM_MAX_SUBS = 8      # 最多列几条换件候选（同 `_FISH_MAX_PICKS` �
 
 
 def _menu_claim_subs() -> list:
-    """「**和什么替换？**」的候选（背包里**可以扔掉腾格**的）→ `[{slot,name,id,stack,why}, …]`。
+    """「**和什么替换？**」的候选（背包里可以拿去腾格的）→ `[{slot,name,id,stack}, …]`。
 
-    判据（宁可少给，绝不给出错的）：
-      ① ⛔ **工具/武器/机器/家具/穿的一律不列**（`_BAG_NEVER_IDS_PREFIX`）——
-         2026-10-06 真机第一版把 `Furnace / Rarecrow / Barbed Hook` 都摆出来了，那是**诱导 AI 扔家当**；
-      ② 已知垃圾优先（按 **itemId** 认，不按中文名 —— 同一件东西两种语言都出现过，吃过亏）；
-      ③ 其余按**堆叠小的优先**（换一格就是一格，先扔少的）；
-      ④ `why` 实话实说：`垃圾` / `普通` / `⚠️ 可能值钱`（**只给警，不替 AI 决定**）；
-      ⑤ 最多 `_CLAIM_MAX_SUBS` 条。
+    ⚠️ 恒 2026-10-06 拍板：**"不用上那种（垃圾）（普通）等的判断，ai自己按需取舍"**
+       ⇒ 这一层**不做价值分档、不排序、不打标**（原来那套"垃圾优先 / 普通 / ⚠️ 可能值钱"
+         是我自作主张加的，**撤了**）：**背包顺序原样摆出来**，取舍**交给 AI**。
+    判据只保留**一条安全线**（这不是价值判断，是"别把家当列进'随手扔'清单"）：
+      ① ⛔ 工具/武器/机器/家具/穿的一律不列（`_BAG_NEVER_IDS_PREFIX`）——
+         2026-10-06 真机第一版把 `Furnace / Rarecrow / Barbed Hook` 都摆出来过；
+      ② 最多 `_CLAIM_MAX_SUBS` 条。
     ⚠️ 判据**只在本函数**（同"判据只有一处"）—— 单子那层只负责把 `Ctx.menu_claim_subs` 摆出来。
     """
     try:
         st = api.state() or {}
         inv = (st.get("inventory") or [])
-        cap = int(((st.get("player") or {}).get("maxItems")) or 36)
     except Exception:
         return []
     out = []
@@ -3347,18 +3386,10 @@ def _menu_claim_subs() -> list:
         if not it:
             continue
         iid = str(it.get("itemId") or "")
-        nm = it.get("name") or "?"
         if any(iid.startswith(_p) for _p in _BAG_NEVER_IDS_PREFIX):
             continue
-        if iid in _BAG_JUNK_IDS:
-            why = "垃圾"
-        elif iid in _BAG_COMMON_IDS:
-            why = "普通"
-        else:
-            why = "⚠️ 可能值钱"
-        out.append({"slot": i, "name": nm, "id": iid,
-                    "stack": int(it.get("stack") or 1), "why": why})
-    out.sort(key=lambda x: (0 if x["why"] == "垃圾" else (1 if x["why"] == "普通" else 2), x["stack"]))
+        out.append({"slot": i, "name": it.get("name") or "?", "id": iid,
+                    "stack": int(it.get("stack") or 1)})
     return out[:_CLAIM_MAX_SUBS]
 
 

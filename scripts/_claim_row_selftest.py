@@ -146,7 +146,7 @@ try:
        "masterytrackermenu" not in str(M._menu_claim_label({"type": "MasteryTrackerMenu", "mastery": {}})),
        str(M._menu_claim_label({"type": "MasteryTrackerMenu", "mastery": {}})))
 
-    print("\n⑤ 换件候选（恒的「和什么替换？」）：垃圾优先、**绝不列工具**、最多 8 条")
+    print("\n⑤ 换件候选：**不分档不排序**（恒：不用（垃圾）（普通）那种判断，AI 自己取舍）")
     M.api = _BagApi([{"name": "Iridium Pickaxe", "itemId": "(T)IronPickaxe", "stack": 1},
                      {"name": "Furnace", "itemId": "(BC)13", "stack": 1},
                      {"name": "Oak Chair", "itemId": "(F)6", "stack": 1},
@@ -157,17 +157,15 @@ try:
     _subs = M._menu_claim_subs()
     _names = [s["name"] for s in _subs]
     ck("⛔ 工具（`(T)`）**一条都不列**", "Iridium Pickaxe" not in _names, str(_names))
-    # 🔴 2026-10-06 真机第一版逮到的：机器/家具也摆出来当"可扔的"（Furnace/Rarecrow）
     ck("⛔ 机器（`(BC)`）/家具（`(F)`）也不列（第一版真机就摆出了熔炉）",
        "Furnace" not in _names and "Oak Chair" not in _names, str(_names))
-    ck("垃圾排在最前（`why=垃圾`）", bool(_subs) and _subs[0]["why"] == "垃圾", str(_subs[:2]))
-    ck("…且**只列垃圾那两件在最前**（Broken CD / Trash，堆叠小的先）",
-       _names[:2] in (["Trash", "Broken CD"], ["Broken CD", "Trash"]), str(_names))
-    ck("常见消耗品标「普通」（石头）", any(s["name"] == "Stone" and s["why"] == "普通" for s in _subs), str(_subs))
-    # ⚠️ 认不出的 `(O)` **不替 AI 决定**，但要**给警**（鬼鱼 → 可能值钱）
-    ck("认不出的标「⚠️ 可能值钱」（鬼鱼）—— 只给警不下结论",
-       any(s["name"] == "Ghostfish" and "值钱" in s["why"] for s in _subs), str(_subs))
-    ck("…而且**值钱的排在最后**（垃圾/普通在前）", _names[-1] == "Ghostfish", str(_names))
+    # 🔴 恒 2026-10-06：「不用上那种（垃圾）（普通）等的判断，ai自己按需取舍」
+    ck("🔴 **不带 `why` 分档**（不再评「垃圾/普通/可能值钱」）",
+       all("why" not in s for s in _subs), str(_subs))
+    ck("…**顺序 = 背包原顺序**（不按价值重排：Broken CD→Stone→Ghostfish→Trash）",
+       _names == ["Broken CD", "Stone", "Ghostfish", "Trash"], str(_names))
+    ck("…条目里该有的都有（slot/name/id/stack）",
+       all({"slot", "name", "id", "stack"} <= set(s) for s in _subs), str(_subs))
 
     print("\n⑥ 腾格 = **扔垃圾桶**（恒：「别丢地上」）；没扔掉 ⇒ **绝不接着领**")
     a = FakeApi(used=30, discard_ok=True)

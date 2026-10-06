@@ -2918,7 +2918,9 @@ def _claim_swap_level(c):
     if not subs:
         return None
     rows = [Row(_SWAP_V, [dict(s)],
-                f"丢 {s.get('name')}×{s.get('stack')}" + (f"（{s.get('why')}）" if s.get("why") else ""),
+                # ⚠️ 恒 2026-10-06：「**不用上那种（垃圾）（普通）等的判断，ai自己按需取舍**」
+                #    ⇒ 只念**是什么、几件**，**不替 AI 评价值**（原来那句 `（垃圾）` 撤了）。
+                f"丢 {s.get('name')}×{s.get('stack')}",
                 f"扔垃圾桶 → {c.menu_claim}", 0, where="")
             for s in subs]
     return Level(rows, title="包满了：**和什么替换？**（挑一件扔垃圾桶，我包办「扔 + 领」）")
@@ -2930,7 +2932,7 @@ def _tidy_level(c):
     if not subs:
         return None
     rows = [Row(_TIDY_V, [dict(s)],
-                f"丢 {s.get('name')}×{s.get('stack')}" + (f"（{s.get('why')}）" if s.get("why") else ""),
+                f"丢 {s.get('name')}×{s.get('stack')}",
                 "扔进菜单垃圾桶（不是丢地上）", 0, where="")
             for s in subs]
     return Level(rows, title="腾格：**丢哪件说哪件**（统一扔垃圾桶）")
