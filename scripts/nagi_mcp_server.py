@@ -26969,7 +26969,7 @@ def _tank_lines(x, y, tk, w, howto=True) -> list:
     return out
 
 
-def _tank_go(x, y, tries=2) -> str:
+def _tank_go(x, y, tries=2, what="鱼缸") -> str:
     """🐟 走到缸边、**面朝它**、确认"相邻"再动手 → `""`（就位）/ 一句实话。
 
     ⚠️ 恒 2026-10-04 亲眼看到的：「**一开始我还见到你隔空放不成功，后来走过去才成功**」——
@@ -26981,6 +26981,11 @@ def _tank_go(x, y, tries=2) -> str:
           所以恒看到的是"不成功"，而不是假成功）。
     ⚠️ 判据**照抄 `interact_machine`**（四个邻格逐个试 + 转身 + `px+fdx==mx and py+fdy==my`），
        但坐标/朝向全走 `_ai_`（**显式钉 AI 端口**）—— 这一层栽过"打错进程动到恒身上"。
+    🔴 **2026-10-06 真机修的走位闸**：原来写的是「离目标 **>3 格**才走」⇒ 人在 **2~3 格外**
+      时它**一步都不走**、接着判"没就位"⇒ 直接失败（领奖券那次：人在 Town (62,94)、
+      领奖箱 (60,93)，曼哈顿 3 ⇒ 回「没能站到鱼缸 (60,93) 正旁边（现在 (62,94)）」，可它就差两步）。
+      ⇒ 现在按**候选格**算：**没站在它旁边（曼哈顿 >1）就去走**。
+    ⚠️ `what` = 报错里那个名词（默认鱼缸，老调用点一字不变；镇上的领奖箱/订单板各自传自己的）。
     """
     def _here():
         try:
@@ -27007,12 +27012,12 @@ def _tank_go(x, y, tries=2) -> str:
             px, py, fd = _here()
             if px is None:
                 return "❌ 走到一半读不到我在哪 —— 不敢瞎点"
-            if max(abs(px - int(x)), abs(py - int(y))) > 3:
-                # 还远着 ⇒ 先往缸那一格走（走不到的落点由 `walk_to` 自己就近修正）
+            if abs(px - tx) + abs(py - ty) > 1:
+                # 还**没站到那一格/它旁边** ⇒ 就去走（⛔ 别用"离得 >3 格才走"那把尺子，见上面那段）
                 try:
                     navigation.walk_to(x=tx, y=ty)
                 except Exception as e:
-                    return f"❌ 走不到鱼缸 ({x},{y})：{type(e).__name__}: {e}"
+                    return f"❌ 走不到{what} ({x},{y})：{type(e).__name__}: {e}"
                 px, py, fd = _here()
                 if px is None:
                     return "❌ 走完读不到我在哪 —— 不敢瞎点"
@@ -27027,7 +27032,7 @@ def _tank_go(x, y, tries=2) -> str:
                     return ""
         time.sleep(0.2)
     px, py, _fd = _here()
-    return (f"⚠️ 没能站到鱼缸 ({x},{y}) 正旁边（现在 ({px},{py})）"
+    return (f"⚠️ 没能站到{what} ({x},{y}) 正旁边（现在 ({px},{py})）"
             f"—— 换个角度再来一次（这一发**什么都没做**，别当成放/取成功）")
 
 
@@ -27915,7 +27920,7 @@ def _im_order_accept(side) -> str:
         return f"❌ 现在开着 `{mt}` 界面 —— 先关掉它（单子上有「关掉界面」）再来接单"
     # ① 板子没开 ⇒ 走过去 + 交互开出来（就位判据 + 复验，见 docstring）
     if mt != "SpecialOrdersBoard":
-        step = _tank_go(*ORDER_BOARD_TILE)
+        step = _tank_go(*ORDER_BOARD_TILE, what="订单板")
         if step:
             return step
         api._ai_post("/interact", {"x": ORDER_BOARD_TILE[0], "y": ORDER_BOARD_TILE[1]})
@@ -27970,7 +27975,7 @@ def _im_voucher_take() -> str:
         return "❌ 读不到待领券数（`/state.player.voucherPending`）—— 不敢瞎点"
     if n0 == 0:
         return "❌ 这一刻**没有待领的兑奖券**（待领 0）"
-    step = _tank_go(*VOUCHER_TILE)
+    step = _tank_go(*VOUCHER_TILE, what="领奖箱")
     if step:
         return step
     cur = n0

@@ -47,8 +47,8 @@ def _stub(loc="Town", unlocked=True, accepted=False, vouchers=0,
     """装桩。⚠️ `S` 是**可变的世界状态**（走位/交互/领券都会改它）——
     桩按真端点的语义改它，这样 `_tank_go`/回读那几段才测得到。
     ⚠️ `xy` = **我这一刻站哪格**（默认板前 (62,94)）。领券那几条要传 (60,94) ——
-       走位本身是留给真机验的那一段（`_tank_go` 只在距离 >3 格时才走，站在 2 格外它会
-       如实回一句「没能站到正旁边」而**什么都不按**，那正是 ⑪ 要钉的形状）。"""
+       走位本身留给真机验，但**"没站到旁边就去走"这条闸**在这里钉：桩里的 `walk_to` 会照
+       `/walk_to` 的语义把人挪过去（目标格站不住时落到它下面那格，就是真机 `adjusted` 那形状）。"""
     CALLS.clear()
     S.clear()
     S.update({
@@ -113,8 +113,22 @@ def _stub(loc="Town", unlocked=True, accepted=False, vouchers=0,
         return {"ok": True}
 
     api._ai_get, api._ai_post = g, p
+
+    def _fake_walk(*a, **k):
+        """照 `/walk_to` 的语义挪人：**目标格站不住就落到它下面那格**（真机的 `adjusted`）。
+
+        🔴 2026-10-06：`_tank_go` 那把"离得 >3 格才走"的尺子改了（人在 2~3 格外时它一步都不走、
+        接着判"没就位"失败 —— 领奖券真机就是这么失败的）⇒ 桩必须真的会挪人，否则新闸测不到。
+        """
+        tx, ty = k.get("x"), k.get("y")
+        if (tx, ty) == (60, 93):        # 领奖箱那格自己站不住 ⇒ 就近落它下面 (60,94)
+            tx, ty = 60, 94
+        if isinstance(tx, int) and isinstance(ty, int):
+            S["x"], S["y"] = tx, ty
+        return "🚶 已到"
+
     api._get, api._post = g, p
-    M.navigation.walk_to = lambda *a, **k: None
+    M.navigation.walk_to = _fake_walk
     M._with_state = lambda x, *a, **k: x
     M._ensure_background = lambda *a, **k: None
     M._peer_econ_mute = lambda *a, **k: None
@@ -239,9 +253,30 @@ try:
     ck("回执说**一张都没领到**并点名背包", "一张都没领到" in r and "背包" in r, r)
     api._ai_post = _orig_p
 
-    # ⑧b **走位没到 ⇒ 一个字节都不许按**（这个项目刚踩过"走位没到就按"的坑）
-    print("\n⑧b 位置没到领奖箱正旁边 ⇒ 如实说「没能站到」且**不按**")
-    _stub(vouchers=2, xy=(62, 94))       # 站在板前（离领奖箱 2 格）
+    # ⑧b 🔴 2026-10-06 真机修的那把尺子：站得还差两格 ⇒ **先走过去**再按
+    #     （原来写的是"离得 >3 格才走" ⇒ 人在 2~3 格外时**一步都不走**、接着判"没就位"失败 ——
+    #      领奖券真机就是这么失败的：人在 Town (62,94)、领奖箱 (60,93)，就差两步）
+    print("\n⑧b 站得还差两格 ⇒ **先走过去**（邻格）再按，⛔ 不许站着不动就判失败")
+    _stub(vouchers=2, xy=(62, 94))       # 板前，离领奖箱 (60,93) 差两步
+    CALLS.clear()
+    _walks = []
+    _orig_walk2 = M.navigation.walk_to
+
+    def _walk_log(*a, **k):
+        _walks.append((k.get("x"), k.get("y")))
+        return _orig_walk2(*a, **k)
+
+    M.navigation.walk_to = _walk_log
+    r = M._im_voucher_take()
+    ck("…真去走了（`walk_to` 被调到）", bool(_walks), str(_walks))
+    ck("…走了以后**照领**（回执说领到 2 张）", "领到 2 张" in r, r)
+    ck("…按的是领奖箱那一格 (60,93)",
+       any(c[1] == "/interact" and (c[2] or {}).get("x") == 60 and (c[2] or {}).get("y") == 93
+           for c in CALLS if c[0] == "POST"), str(CALLS))
+    # ⑧c 走位**真走不到**（桩不动人）⇒ 照旧"不按"，如实说没能站到（那道闸还在）
+    print("\n⑧c 真的走不到 ⇒ 如实说「没能站到」且**一次都不按**")
+    _stub(vouchers=2, xy=(62, 94))
+    M.navigation.walk_to = lambda *a, **k: None
     CALLS.clear()
     r = M._im_voucher_take()
     ck("回执说没能站到正旁边", "没能站到" in r, r)
