@@ -6198,7 +6198,22 @@ public class ModEntry : Mod
                     isFishing = rod.isFishing,
                     isNibbling = rod.isNibbling,
                     isReeling = rod.isReeling,
-                    hit = rod.hit
+                    hit = rod.hit,
+                    // 🎣 2026-10-05 补36（恒：「河流农场小河多，而轮回 10 级，**抛到对岸也算没水**」）——
+                    //    把**鱼漂落点**吐出来。为什么它能当"落点"用：`FishingRod.cs:1958`（左右向）/
+                    //    `:1994`（上下向）在**抛竿那一刻**就把 `bobber` 设成"满距离"的落点、飞行中不再改
+                    //    ⇒ **连抛失败的竿也读得到**（我们要的正是这个：拿它量"这孩子到底能扔多远"）。
+                    //    判据出处：抛竿成不成看的是**落点那一格** `isTileFishable`（`:411-414`）；
+                    //    落点距离 = `max(128, 蓄力 × (等级加成+4) × 64)` px（`:1950` 左右 / `:1976` 上下），
+                    //    等级加成 `getAddedDistance`（`:357`）：≥15⇒4 / **≥8⇒3** / ≥4⇒2 / ≥1⇒1。
+                    //    ⇒ 轮回 10 级 ⇒ 满蓄力左右 ≈ **7 格**、上下 ≈ 6 格，**下限也有 2 格**。
+                    //    ⇒ 消费侧挑钓点必须按「站格 + 朝向 × 实测距离 = 落点」算，⛔ 不许按"旁边那一格"。
+                    //    ⚠️ 没在抛（`bobber` 归零）⇒ 两个都 null，**别拿 0 当坐标**。
+                    bobberX = (rod.bobber.X == 0f && rod.bobber.Y == 0f) ? (int?)null : (int)(rod.bobber.X / 64f),
+                    bobberY = (rod.bobber.X == 0f && rod.bobber.Y == 0f) ? (int?)null : (int)(rod.bobber.Y / 64f),
+                    castingPower = Math.Round(rod.castingPower, 3),   // 蓄力 0~1：距离公式的乘数（量距离要连它一起记）
+                    clearWaterDistance = rod.clearWaterDistance,      // 游戏自己算的"落点离岸几格"（`:413`；控鱼质/垃圾率）
+                    fishingLevel = farmer.FishingLevel,               // 等级加成（`:357`）→ 落点距离
                 } : null,
                 // 🎣 鱼竿装备（饵/钓具）——2026-08-29：AI 钓鱼意图=竿在手时能看挂的饵/钓具+背包饵量，据此决定补不补。
                 //    at 恒点：自动补饵仅在背包有饵时兜底，多数情况没饵，要从箱子取虫肉/买饵合成 → 0 也报。

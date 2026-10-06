@@ -523,6 +523,7 @@ def run(port, location, max_casts=0, no_sleep=False):
     _deadline = time.time() + STARTUP_WAIT
     _menu_hits = 0
     _menu_types = []
+    _obs = {}                      # 📏 观测到的最远鱼漂落点（量"这孩子能扔多远"，见 :1950 那段注释）
     while time.time() < _deadline and time.time() < _hard_end:
         time.sleep(0.3)
         _st = bot.state()
@@ -537,7 +538,21 @@ def run(port, location, max_casts=0, no_sleep=False):
             #    照样落到下面那句**假诊断**上）。硬上限仍是 `_hard_end`（防反复弹拖成死循环）。
             _deadline = max(_deadline, time.time() + STARTUP_WAIT)
             continue
-        _f = (_st.get("player") or {}).get("fishing") or {}
+        _p0 = _st.get("player") or {}
+        _f = _p0.get("fishing") or {}
+        # 📏 **量落点**（2026-10-05 补36）：`bobber` 在抛竿那一刻就是"满距离落点"（`FishingRod.cs:1958/1994`）
+        #    ⇒ 抛成功与否都读得到。取**最远的那次**（同一趟可能抛了两竿），把距离/蓄力/等级/离岸一起记下。
+        try:
+            _bx, _by = _f.get("bobberX"), _f.get("bobberY")
+            if isinstance(_bx, int) and isinstance(_by, int):
+                _d = max(abs(_bx - int(_p0.get("x", 0))), abs(_by - int(_p0.get("y", 0))))
+                if _d > _obs.get("d", -1):
+                    _obs = {"d": _d, "x": _bx, "y": _by,
+                            "power": _f.get("castingPower"),
+                            "level": _f.get("fishingLevel"),
+                            "clear": _f.get("clearWaterDistance")}
+        except Exception:
+            pass
         if _f.get("isFishing"):
             _ok = True
             break
@@ -563,6 +578,26 @@ def run(port, location, max_casts=0, no_sleep=False):
         _facts = (f"启动期 Fishbot 弹了 {_menu_hits} 次界面"
                   f"（{'/'.join(dict.fromkeys(_menu_types))}），已关掉"
                   if _menu_hits else "启动期没见到界面")
+        _land_txt = ""
+        if _obs:
+            # 📏 有实测落点就先说它（**最硬的一条**：游戏自己把鱼漂放那儿了）
+            try:
+                _lw = bot._get(f"/water?x={_obs['x']}&y={_obs['y']}&radius=1").get("water") or []
+                _lh = [t for t in _lw if isinstance(t, dict)
+                       and t.get("x") == _obs["x"] and t.get("y") == _obs["y"]]
+                if not _lh:
+                    _lwhy = "**不是水格** ⇒ 这一竿就是抛空/抛过头了"
+                elif "fishable" not in _lh[0]:
+                    _lwhy = "是水（`fishable` 这一位老 DLL 没有 ⇒ 判不了能不能钓）"
+                elif _lh[0].get("fishable"):
+                    _lwhy = "是水、游戏也说**能钓** ⇒ 那就不是落点的问题（查背包满没满/界面）"
+                else:
+                    _lwhy = "是水、但**游戏判它钓不了**（`isTileFishable=false`）"
+            except Exception:
+                _lwhy = "（那一格没问成）"
+            _land_txt = (f"📏 **实测落点** ({_obs['x']},{_obs['y']}) = 距站格 **{_obs['d']} 格**"
+                         f"（蓄力 {_obs.get('power')} · 等级 {_obs.get('level')} · 离岸 {_obs.get('clear')}）："
+                         f"{_lwhy}\n   ")
         try:
             _p = bot.state().get("player") or {}
             _fx, _fy = int(_p.get("x")), int(_p.get("y"))
@@ -590,7 +625,7 @@ def run(port, location, max_casts=0, no_sleep=False):
         except Exception:
             _verdict = "面前这条线**没问成**（读不到）⇒ 这一句断不了。"
         log(f"🚫 没能抛出竿（`isFishing` 未建立 —— 这**不等于**「方向没有水」）：{_facts}。\n"
-            f"   {_verdict}")
+            f"   {_land_txt}{_verdict}")
         bot.fishbot("off")
         # 收杆兜底：鱼漂若在空中/甩着，按 cancel 收回
         for _ in range(4):
@@ -602,6 +637,11 @@ def run(port, location, max_casts=0, no_sleep=False):
         stow_rod(bot)   # 收工时同样把竿从手上收起（别攥着竿走）
         return
     log("🎯 能抛，开始钓（水域固定，之后无需再判死水）")
+    if _obs:
+        # 📏 成功的这一竿也把距离记下来 —— 这组数就是"按落点挑钓点"要用的**实测**距离
+        #    （⛔ 别拿公式反推：公式只是解释，实测才是据；两者不一致时以实测为准并回头查公式）
+        log(f"  📏 本竿落点 ({_obs['x']},{_obs['y']}) = 距站格 **{_obs['d']} 格**"
+            f"（蓄力 {_obs.get('power')} · 等级 {_obs.get('level')} · 离岸 {_obs.get('clear')}）")
 
     # monitor loop（max_casts=0 不限竿数 → 钓到体力<20 / 背包满 / 太晚才停）
     # 2026-09-01 恒拍板：0.6.1 fishbot 自动玩，靠"体力降/8"估抛竿的旧法（每轮降幅<8→恒0）已废 → 计数恒 0。
