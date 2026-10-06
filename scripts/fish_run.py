@@ -2,14 +2,22 @@
 自动钓鱼脚本：默认【就地钓】= 就在当前站位原地钓（不传送）；指定 --location → warp 去校准钓点。
 → 启动Fishbot → 监控体力/背包/时间/空抛 → 安全退出。
 
+🔴🔴 **手工/探针跑，务必带 `--no-sleep`**（2026-10-06 我把恒的一整个早上睡掉了，他笑我"早上六点也去睡觉"）：
+   本脚本**收工会 `warp FarmHouse` + `POST /sleep`**（见文末 :846-852，那是"钓完这一趟就过夜"的设计）。
+   ⚠️ `/sleep` 会让游戏**受理**这次睡觉（`Sleep_Yes`）⇒ 之后光调 `/cancel_sleep` **撤不掉**
+     （`isInBed` 仍为 true、人**动不了**；真机实测：`/walk_to` 报 ok 但一步不动）。
+     脱离办法（实测）：`POST /warp` 到**别的图**（如 Farm）⇒ 立刻能走 ✅。
+   单子那条路（`nagi_mcp_server._im_fish_go`）**写死了 `--no-sleep`** ⇒ 只有手敲才会踩。
+
 用法:
-    PYTHONIOENCODING=utf-8 python3 fish_run.py [--port 7843]                 # 就地钓（当前站位）
+    PYTHONIOENCODING=utf-8 python3 fish_run.py [--port 7843] --no-sleep        # 就地钓（**手工跑带这个**）
     PYTHONIOENCODING=utf-8 python3 fish_run.py --location Beach --max-casts 20  # 去某钓点
 
 参数:
     --port          NagiBridge端口（默认 7843，AI 角色）
     --location      钓点名（Beach/Mountain/Forest/Town）。不带=就地钓（当前站位；开局一次性 isFishing 判能否抛）
     --max-casts     抛 N 竿就收手（0=不限，钓到体力<20/背包满/太晚/抛不出去停）
+    --no-sleep      收工**不回家不过夜**（手工跑/探针必带；全自动循环才不带）
 """
 
 import os
@@ -843,17 +851,15 @@ def run(port, location, max_casts=0, no_sleep=False):
         time.sleep(0.8)
     log("收杆完成（鱼线已收回）")
 
-    # go home and sleep（--no-sleep 时不睡，测试用/留给全自动循环决定）
-    if not no_sleep:
-        bot.warp("FarmHouse")
-        time.sleep(1.5)
-        try:
-            bot._post("/sleep", {})
-            log("went to bed")
-        except Exception:
-            log("warped home (sleep failed)")
-    else:
-        log("no-sleep: 留在钓点不睡觉")
+    # 🚫 2026-10-06 恒：「**这个钓鱼里的 sleep，只有坏处没有好处**……可以把它去掉吗」⇒ **删了**。
+    #    原来这里收工会 `warp FarmHouse` + `POST /sleep`（"钓完这一趟就过夜"），实测两宗罪：
+    #      ① **脚本替 AI/人决定结束这一天** —— 那天早上 6 点就把轮回睡掉了（恒："早上六点也去睡觉"）；
+    #      ② `/sleep` 会让游戏**受理**这次睡觉（`Sleep_Yes`）⇒ 此后 `/cancel_sleep` **撤不干净**：
+    #         `isInBed` 仍为 true、人**动不了**（真机：`/walk_to` 报 ok 但一步不动），
+    #         只能 `POST /warp` 到**别的图**才解开（实测）。
+    #    ⇒ **睡觉是上层的事**（`go_sleep`／兜底／人），脚本不再插手。
+    #      ⚠️ `--no-sleep` 参数**保留**（老调用方都传着它），现在它是个**兼容用的空开关**。
+    log("留在钓点不睡觉（本脚本**不再自己睡** —— 要过夜用 go_sleep / 兜底）")
     log("=== fish run complete ===")
 
 

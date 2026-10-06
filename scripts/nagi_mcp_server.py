@@ -12015,6 +12015,35 @@ def bundle_kb(query: str = "") -> str:
     return _with_state(bundles.search_bundles(query))
 
 
+def _in_thread(fn):
+    """🧵 把**会长时间挂住**的工具体丢到**工作线程**跑 —— 2026-10-06 恒「**刚才没能及时停下来**」的根治。
+
+    🔴 为什么非有它不可（反编译实据，别删）：`mcp 1.28.1` 的 FastMCP 对**同步**工具是
+       **直接在事件循环里调的** —— `mcp/server/fastmcp/utilities/func_metadata.py:93-96`：
+       `if fn_is_async: return await fn(**kw)` / `else: return fn(**kw)`，**没有 threadpool**。
+       我们 16 个工具全是 `def` ⇒ 工具体里只要有一处长时间 `time.sleep`，**整个 :8000 一个请求都不接**。
+       最典型就是 `_bg_block_until_wake` 的"挂到唤醒"（默认 `wake_interval=180s`，见那段自己的注释
+       "这期间服务不接别的请求"）⇒ `script stop` **发不进来**、客户端超时成「❌ 无响应」。
+       真机：2026-10-06 钓着鱼想停，stop 那一发根本没被服务（最后是满包菜单把脚本停下的）；
+       再往前 `map go` 跨图几十秒同族（恒早知道，代价一直记着）。
+
+    ⇒ 这一层**只做搬运**：`anyio.to_thread.run_sync` 里跑原来的同步实现。
+      ✅ 对外**签名/文档/schema 一字不变**（`functools.wraps` 保住 `__wrapped__`，
+         FastMCP 用 `inspect.signature` 取参数 ⇒ 生成的 schema 与原来逐字相同）；
+      ✅ AI 那侧"阻塞到唤醒"的语义**一点不变**（这次工具调用照样不返回，直到收工/唤醒点）；
+      ✅ 事件循环腾出来 ⇒ `script stop` / 别的小工具**随时进得来**。
+      ⛔ 不改任何工具自己的逻辑；⛔ 不要给"秒回"的短工具也套（多一层线程没意义）。
+    """
+    import functools
+    import anyio
+
+    @functools.wraps(fn)
+    async def _wrapped(*a, **k):
+        return await anyio.to_thread.run_sync(lambda: fn(*a, **k))
+
+    return _wrapped
+
+
 @mcp.tool()
 def farm(ops: str = "", kw: dict | None = None) -> str:
     """🌾 农活域（农场/温室/姜岛）。till 锄地 / plant 种(可带 layout 按洒水器布局) / water 浇地 / harvest 收 / fertilize 施化肥 / clear 清杂草石头树桩(**在哪就在哪清**，不必先回农场) / load 收放机器(拟人走过去逐台；`item` 留空=只收不放) / chop 砍树。动物：animals 摸+收 / 喂水 宠物碗 / milk 挤奶剪毛 / **doors 开关畜棚鸡舍门**（别名 放牧/开关门/棚门；**翻转端点**——先走到棚门口再翻，回执**逐栋报执行后的门态**，要反着来再敲一次）/ **买动物**(会先走到玛妮柜台再下单，柜台 9:00~18:00 才开)。全 ops → help(farm)。⚠️带尺寸 op(till/plant/clear/fertilize)：**x/y 必填**（不传直接报错，不再兜底成"玩家面向格"）；rows×length 缺省只做 1 格，要多大自己传。animal water 用 喂水，water=浇地。💡**多 op 一次调用共用一份 kw**（如 ops="till plant"），各自只吃自己认识的参数、属于别人的会**点名忽略**。⛔ 2026-10-01 退役两个：`collect`（一键瞬收、不走路）与 `building`（fruit_round 那套会提前收工）——**收放只剩 `load` 这一条**。"""
@@ -22473,6 +22502,11 @@ _BG_MAX_FINISHED = 5          # 最多留几个已完成任务（防内存膨胀
 _bg_jobs = {}                 # job_id -> _BgJob
 _bg_seq = 0
 _bg_lock = _threading.Lock()
+# ⏱️ **单片挂住上限**（秒）—— 见 `_bg_block_until_wake` 里那段长注释：
+#    同步工具的事件循环一挂住，整个 :8000 就不接请求（`script stop` 进不来）。
+#    30 = "stop 最迟半分钟进来" 与 "别把 AI 的回合切得太碎" 之间的折中；
+#    要更灵敏/更省回合，**只改这一个数**（`wake_interval` 比它短时仍以 `wake_interval` 为准）。
+_BG_PARK_SLICE = 30
 
 
 class _BgJob:
@@ -22698,6 +22732,18 @@ def _bg_block_until_wake(job: "_BgJob") -> str:
     """
     global _bg_last_wake
     interval = int(_bg_cfg.get("wake_interval", 60) or 60)
+    # 🔴 2026-10-06 恒「**刚才没能及时停下来**」—— 单次挂住**必须封顶**（别再让服务饿死）：
+    #    FastMCP 对**同步**工具是**在事件循环里直接调**的（`mcp/server/fastmcp/utilities/
+    #    func_metadata.py:93-96`：`else: return fn(**kw)`，没有 threadpool）；
+    #    ⇒ 这个函数挂多久，**:8000 就多久不接任何请求** ⇒ `script stop` **发不进来**
+    #      （真机：钓着鱼想停，那一发超时成「❌ 无响应」，最后是**满包菜单**把脚本停下的）。
+    #    ⚠️ 而且这是**回归**：git 实据 —— 改成 `_bg_block_until_wake` **之前**，`_run_script`
+    #      的异步分支是**立刻 return**（`🚀 已后台启动…停止: script(ops="stop")`），
+    #      工具调用当场结束、服务空闲 ⇒ **stop 一直可用**（恒记的"钓鱼一直是异步可停"没错）。
+    #      恒 2026-09-24 要的是"别让 AI 看到『已后台启动』就结束这一回合"，不是"停不下来"。
+    #    ⇒ 所以把**单片**封顶到 `_BG_PARK_SLICE` 秒：AI 那侧照旧"阻塞到唤醒点"（一个字不变），
+    #      只是**每片之间服务是活的** ⇒ stop 最迟 30 秒进得来（客户端超时默认 150s，绰绰有余）。
+    interval = min(interval, _BG_PARK_SLICE)
     t0 = time.time()
     while time.time() - t0 < interval:
         time.sleep(0.5)
@@ -27618,6 +27664,38 @@ navigation.bind(
     fest_season_cn=_FEST_SEASON_CN,
     mark_festival_poi_name=_mark_festival_poi_name,
 )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🧵 把"会长时间挂住"的工具**改挂到工作线程**（2026-10-06 恒：「刚才没能及时停下来」的根治）
+# ══════════════════════════════════════════════════════════════════════════════
+# 🔴 **回归实据（git，别删）**：恒 2026-09-24 要"异步必须真阻塞"**之前**，`_run_script` 的异步分支是
+#    **立刻 return**（`🚀 已后台启动…停止: script(ops="stop")`）⇒ 工具调用当场结束、:8000 空闲
+#    ⇒ `script stop` **进得来** —— 恒记的「钓鱼一直是异步可停」没错。改成 `_bg_block_until_wake(job)`
+#    之后，工具调用**被挂住到唤醒点**（默认 `wake_interval=180s`）；而 FastMCP 对**同步**工具是
+#    **在事件循环里直接调**的（`mcp/server/fastmcp/utilities/func_metadata.py:93-96`，无 threadpool）
+#    ⇒ 这 180s 里**服务一个请求都不接** ⇒ `script stop` 根本发不进来
+#    （真机 2026-10-06：钓着鱼想停，stop 超时成「❌ 无响应」，最后是**满包菜单**把脚本停下的）。
+#    ⚠️ 恒要的是「**别让 AI 看到『已后台启动』就结束这一回合**」，**不是**"停不下来" —— 两者可以都要。
+# ⇒ 修法：**只换注册表里那个函数对象**（摘掉同步版 → 挂上"丢线程"版）：
+#    · 模块里的 `farm/mine/fish/daily/map/script/intent` **同步函数一字不动**
+#      （自验/内部直调 `M.daily(...)` 不受影响 —— 我第一版直接把名字换成 async，自验当场炸过）；
+#    · 工具**名字/签名/文档逐字不变**（`functools.wraps` 保住 `__wrapped__` ⇒ FastMCP 生成的 schema 同）；
+#    · AI 那侧"阻塞到唤醒"的语义**一点不变**（这次调用照样不返回）—— 只是**事件循环腾出来了**，
+#      `script stop`／别的小工具**随时进得来**。
+# ✅ **本批采用的修法 = 给"挂住"封顶**（`_BG_PARK_SLICE = 30`，见 `_bg_block_until_wake` 里那段）：
+#    最小改动、零工具面风险，stop 最迟 30 秒进得来。
+# ⛔ **"把工具体丢线程"那条路我试过、当场撤回，别再照它写**（留个路标省下次的功夫）：
+#    ① 直接在工具函数上叠 `@_in_thread`（把模块里的 `farm/daily/…` 变成 async）⇒ **自验当场炸**
+#       （`_toolmerge_selftest` 里直接调 `M.daily(...)`：`coroutine … was never awaited`）——
+#       模块里那些**同步实现是公开 API**，不能换成 async。
+#    ② 改成"只换注册表里那个函数对象"（`mcp.remove_tool` + `mcp.tool(name=…)(async版)`）⇒ **不生效**：
+#       本文件 `:690` 猴补了 `mcp.tool = _gated_tool`（菜单闸门），它给**每个**工具又包了一层
+#       **同步** `_inner` ⇒ FastMCP 拿到的仍是同步函数（实测 `tool.is_async=False`，
+#       `tool.fn.__wrapped__` 指向我们的闸门包装）。要走这条路，得同时
+#       ③ 让闸门包装**保持 async**（`async def _inner` + `await fn(...)`）并把
+#          `_MENU_GATE_DEPTH` 从模块级 dict 改成**线程局部**（否则并发调用会互相把闸门深度算错）。
+#       那是一次**工具管线改造**，等恒点头再做（收益：stop 0 延迟、且 `map go` 长走位期间服务也活着）。
 
 
 if __name__ == "__main__":
