@@ -18275,38 +18275,109 @@ def _place_match(q: str, text: str) -> str:
     return ""
 
 
-def _place_line(q: str) -> str:
-    """关键词 → **一条地点**（静态扫 `locations.MAP_FEATURES` / `locations.POI`，不碰游戏）。
+def _place_infix(q: str, text: str) -> str:
+    """`q` 里**最长的、出现在 `text` 中间**的 2~6 字子串（前缀那条的补充）。
 
-    🚨 为什么必须和"工具"那条**分开给**（2026-09-25 恒：**"工具要配地点用"**）——
+    为什么必须有它（2026-10-06 恒：「**确保 ai 能搜到**」）：AI 只会说它自己那套词，
+    可表里写的是我们的全名——表里叫「**农场**洞穴(外)」，AI 说「洞穴」，
+    前缀匹配（`_place_match`）**一律落空** ⇒ 它空手而归，以为"没这东西"。
+    英文 2~3 字照旧不算（与前缀那条同规矩：`co` 不许撞 `CommunityCenter`）。
+    """
+    ql, tl = (q or "").lower(), (text or "").lower()
+    if not tl:
+        return ""
+    n = len(ql)
+    for L in range(min(6, n), 1, -1):
+        for i in range(n - L + 1):
+            cand = ql[i:i + L]
+            if cand not in tl:
+                continue
+            if cand.isascii() and L < 4:
+                continue
+            return cand
+    return ""
+
+
+def _place_lines(q: str, n: int = 3) -> list:
+    """关键词 → 最多 `n` 条**地点候选行**（**只指路，不执行**）。
+
+    2026-10-06 恒拍板：「列这么**三条**相关搜索结果给它就好了，**不用帮它跑**」。
+    三档命中，依次降权；同档内 **POI 优先于 `MAP_FEATURES`**：
+      ① 前缀（词打头，`_place_match`）
+      ② 中缀（"洞穴" → 「农场洞穴(外)」）—— ⚠️ **只对 `locations.POI` 生效**：
+         `MAP_FEATURES` 里混着说明文（「收银台卖东西」），放开中缀会让"东西"这种**句子尾巴词**
+         被当成地点，把该给的工具挤掉（2026-09-25 恒那条"说明文不许当索引"，钉子钉着）。
+      ③ `difflib` 近似（错字"农场动穴"，行尾标「相近」）
+    ⚠️ POI 优先这条是**修假门**：POI 是**一个点**（带坐标），`MAP_FEATURES` 只是"这张图有什么"。
+       旧版两者同命中长度时排序键相同 ⇒ 先扫的 `MAP_FEATURES` 赢，于是
+       `help("农场洞穴")` 给出 `map go Farm` —— **只保证人在农场图上，不带你到洞口**。
+
+    🚨 为什么地点那条必须和"工具"那条**分开给**（2026-09-25 恒：**"工具要配地点用"**）——
     AI 搜「火山」，它想问的到底是"火山怎么去/解锁没"，还是"在火山里怎么炸矿"？
     **它在调用之前根本分不清**：连这地方去没去过、解锁没有，它都不知道。
     所以同一个词命中两类时，两条都给，让它自己挑，**别替它猜一条**——
     原先索引把「火山」整个吃给 `bomb_volcano`（一个"得先人在火山里"才放行的工具），
     正好就是猜错的那一次。
+
+    谁也不中 → 返回 `[]`（由 `help` 明说"没找到"，**绝不猜一条给个错的**）。
     """
-    tail = ("；锁着/没解锁它会当场报 🔒（想看全貌 → map(ops=\"unlocks\"))")
-    cands = []   # (命中长度, 名字段长度的负数, 行文本)：命中越长越好；同长则**名字段越短越好**
-                 # —— 名字段短 = 这词就是它的主名（"沙漠"胜过"沙漠商人"、"火山"胜过"火山矿井"），
-                 #    否则字典序一抖，同一个词问两次可能给两个地方。
+    q = (q or "").strip()
+    if not q:
+        return []
+    tail = "；锁着/没解锁它会当场报 🔒（想看全貌 → map(ops=\"unlocks\"))"
+
+    def _poi_line(name: str, p: dict) -> str:
+        return (f"  📍 {name}（在 {p.get('map') or '?'}）"
+                f"→ map(ops=\"go\", kw={{\"destination\":\"{name}\"}}){tail}")
+
+    def _map_line(loc: str, feat: str) -> str:
+        return f"  📍 {loc}（{feat}）→ map(ops=\"go\", kw={{\"destination\":\"{loc}\"}}){tail}"
+
+    pair = []            # (档, 来源, 命中长度, 名字段长度, 行)
+    heads = {}           # 名字段 → 行（difflib 兜底用；POI 先入 ⇒ 同名字段 POI 赢）
+    for name, p in locations.POI.items():
+        head, line = _place_head(name), _poi_line(name, p)
+        heads.setdefault(head, line)
+        m = _place_match(q, head)
+        if m:
+            pair.append((0, 0, len(m), len(head), line))
+            continue
+        m = _place_infix(q, head)
+        if m:
+            pair.append((1, 0, len(m), len(head), line))
     for loc, feats in locations.MAP_FEATURES.items():
         for f in feats:
-            head = _place_head(f)
+            head, line = _place_head(f), _map_line(loc, f)
+            heads.setdefault(head, line)
             m = max((_place_match(q, loc), _place_match(q, head)), key=len)
-            if len(m) >= 2:
-                cands.append((len(m), -len(head),
-                              f"  📍 {loc}（{f}）→ map(ops=\"go\", kw={{\"destination\":\"{loc}\"}}){tail}"))
-    for name, p in locations.POI.items():
-        head = _place_head(name)
-        m = _place_match(q, head)
-        if len(m) >= 2:
-            cands.append((len(m), -len(head),
-                          f"  📍 {name}（在 {p.get('map') or '?'}）"
-                          f"→ map(ops=\"go\", kw={{\"destination\":\"{name}\"}}){tail}"))
-    if not cands:
-        return ""
-    cands.sort(key=lambda x: (-x[0], -x[1]))
-    return cands[0][2]
+            if m:
+                pair.append((0, 1, len(m), len(head), line))
+    # ⚠️ **中缀只对 `POI` 生效**（2026-09-25 恒那条教训，别放宽）：
+    #    `MAP_FEATURES` 里混着**说明文**（如「收银台卖东西」），一放开中缀，
+    #    AI 说"给恒送个东西"里的「东西」就会命中它、把该给的工具挤掉
+    #    —— 这正是「说明文不许当索引」那条老病（钉子 `domain_selftest` 钉着）。
+    # ③ 近似名兜底：只跟**名字段**比（比整串短，ratio 才够；cutoff 0.6 与走位那条同门槛）
+    for m in difflib.get_close_matches(q, list(heads), n=2, cutoff=0.6):
+        pair.append((2, 0, 0, len(m), heads[m] + "（相近）"))
+    if not pair:
+        return []
+    # 命中越长越好；同长则**名字段越短越好**（"沙漠"胜过"沙漠商人"，同一个词问两次不许给两个地方）
+    pair.sort(key=lambda x: (x[0], x[1], -x[2], x[3]))
+    out, seen = [], set()
+    for item in pair:
+        if item[4] in seen:          # 不同来源可能指同一个目的地 ⇒ 按行去重
+            continue
+        seen.add(item[4])
+        out.append(item[4])
+        if len(out) >= n:
+            break
+    return out
+
+
+def _place_line(q: str) -> str:
+    """关键词 → **一条**地点（老 API 保留：既有调用点/钉子还在用；新代码用 `_place_lines`）。"""
+    _l = _place_lines(q, n=1)
+    return _l[0] if _l else ""
 
 
 _DISPATCH_KEYS = None
@@ -18383,9 +18454,9 @@ def _op_lookup(topic: str) -> str:
             + f"\n  （细节 → help({where})；换个说法找意图 → 直接 help(\"一句话\"))")
 
 
-def _intent_search(query: str, top: int = 2) -> str:
+def _intent_search(query: str, top: int = 3) -> str:
     """按**意图**找"该敲哪条"。**地点**（数据）和**工具**（`_INTENT_INDEX`）两路一起搜，
-    命中就只回前 top 条。
+    命中就只回前 top 条（2026-10-06 恒：「列这么**三条**相关搜索结果就够」）。
 
     与第④级「内容兜底」的区别：兜底是在域正文里蹭子串（蹭到的是**坑的描述**），
     这里蹭的是**AI 自己会说的那句话**，所以"我想给恒送个东西"能命中。
@@ -18395,18 +18466,20 @@ def _intent_search(query: str, top: int = 2) -> str:
         return ""
     ql = q.lower()
     lines, dom = [], ""
-    # ① 地点优先占一条（"工具要配地点用"）：命中地点就先给地点，剩下的位子才轮到工具
-    _pl = _place_line(q)
-    if _pl:
-        lines.append(_pl)
-        dom = "map"
-    # ② 工具：命中词越多/越长越靠前
+    # ② 工具**先算**（好给地点留位）：命中词越多/越长越靠前
     scored = []
     for kws, d, op, hint in _INTENT_INDEX:
         hit = [k for k in kws.split(",") if k and k.lower() in ql]
         if hit:
             scored.append((len(hit), max(len(h) for h in hit), d, op, hint))
     scored.sort(key=lambda x: (-x[0], -x[1]))
+    # ① 地点（"工具要配地点用"，2026-09-25 恒）：一次给最多 `top` 条候选（前缀/中缀/近似，只指路不代跑）。
+    #    ⚠️ **命中了工具就得给它留一条**（恒的判据「地点+工具两条都要给」）——
+    #       否则地点占满 3 条、工具一条也印不出来（真机钉子 `domain_selftest` 当场红）。
+    _pls = _place_lines(q, n=(top - 1) if scored else top)
+    if _pls:
+        lines.extend(_pls)
+        dom = "map"
     seen = set()
     for _, _, d, op, hint in scored:
         if len(lines) >= top:
@@ -18443,7 +18516,8 @@ def help(topic: str = "") -> str:
     # 2) 别名：中文/口语词 → 域名（help 钓鱼 / help 睡觉 等）
     if tl in _HELP_ALIAS:
         return _DOMAIN_GUIDES[_HELP_ALIAS[tl]]
-    # 3) 🎯 意图索引：AI 说的是"我想干嘛"（一句话/处境），不是域名 → 直给敲哪条（top-2）
+    # 3) 🎯 意图索引：AI 说的是"我想干嘛"（一句话/处境），不是域名 → 直给敲哪条
+    #    （2026-10-06 起**最多三条**：地点候选优先、命中工具时给它留至少一条）
     #    ⚠️ 必须排在 4) 英文域名子串**之前**：intent 触发词全是短语，不会误吃 "farm stuff" 这类。
     _intent = _intent_search(t)
     if _intent:
@@ -21045,7 +21119,9 @@ def read_menu() -> str:
             if prizes:
                 lines.append("  🎰 兑奖机奖品带(固定顺序，当前/下几个): " + "、".join(f"{p.get('name')}×{p.get('stack')}" for p in prizes))
             if mb:
-                lines.append("  🎰 兑奖机有 mainButton：menu click(button=mainButton) 消费1张兑奖券换 `currentPrizeTrack[0]`（手头要有兑奖券+背包空位）")
+                lines.append("  🎰 兑奖机有 mainButton：menu click(button=mainButton) 消费1张兑奖券换 `currentPrizeTrack[0]`"
+                             "（⚠️ 反编译 `PrizeTicketMenu.cs:173-192`：按完 **2000ms** 才结算、菜单**兑完不关**，"
+                             "背包满时奖品**丢在脚下**、券照样扣）")
             else:
                 lines.append("  🎰 兑奖机（没读到 mainButton，可能没兑奖券/已兑完？）")
             return _with_state("\n".join(lines))
@@ -25082,10 +25158,15 @@ def _im_prizes(state: dict) -> dict:
     === 判据 ===
       · 数量 = `/state.player.prizeTickets`（C# 早在报：`farmer.Items.CountId("PrizeTicket")`，
         `ModEntry.cs:6176`）—— **手头包里真有的张数**。
-      · 位置：**只在 `Town`** 才给这一行（兑奖机在镇上刘易斯家 `ManorHouse`，
-        跨图那一步交给执行侧 `navigation.map_go`；不在镇上就不该往单子上摆"去兑奖机"）。
-        ⚠️ 这里判的是**当前所在地名**，不是"兑奖机在哪个图"—— 站在 ManorHouse 里时
-        这一行**不出现**（兑奖机那屏本来就该走菜单那域，不是"走过去"）。
+      · 位置：**`Town` 或 `ManorHouse`（镇长家屋里）**才给这一行 —— 兑奖机就在镇上的
+        刘易斯家（`ManorHouse (1,5)`），跨图那一步交给执行侧 `navigation.map_go`：
+        人在镇上 ⇒ 这一行是"走过去兑"；**人已经站在镇长家屋里 ⇒ 这一行照样要给**
+        （2026-10-06 恒：「手上有券且在镇子上**或者刘易斯家**就上单显示」——
+         否则站在机器跟前反而没了入口，等于逼 AI 自己想起来）。
+        ⚠️ 这里判的是**当前所在地名**，不是"兑奖机在哪个图"；两张地图之外
+        （农场/矿洞/别的镇外图）**整行不出现**（不该在那儿劝 AI"去兑奖机"）。
+        ⚠️ 执行侧 `_im_prize_go` 自己会判"要不要跨图"（已在 `ManorHouse` ⇒ 跳过 `map_go`，
+        ⛔ 不重复跨图）—— 判据那件事只有它一处。
 
     ⚠️⚠️ **`prizeTickets` 与 `voucherPending` 是两个不同的东西**（老账，别混）：
       · `prizeTickets` = **手头**（已经领进背包里）的券 —— 这一行管的是它；
@@ -25096,7 +25177,7 @@ def _im_prizes(state: dict) -> dict:
     ⚠️ 读不到 `state` / 读不到那个字段 ⇒ `{}`（**整行不出现**）：**不猜 0、不编**。
        （0 和"读不出来"在这条路上要分开 —— 0 是"确实没券"，读不到是"我不知道"。）
     """
-    if ((state or {}).get("location") or {}).get("name") != "Town":
+    if ((state or {}).get("location") or {}).get("name") not in ("Town", "ManorHouse"):
         return {}
     v = ((state or {}).get("player") or {}).get("prizeTickets")
     if v is None:
@@ -28004,30 +28085,135 @@ def _im_order_accept(side) -> str:
             "（看单子的时候是有的，这一刻可能变了）；别当成接上了，自己看一眼")
 
 
-def _prize_tickets() -> int:
-    """**手头**兑奖券数（`/state.player.prizeTickets`）；**读不到 → -1**（不是 0 —— 0 是"确实没有"）。
+def _prize_state():
+    """一发 `/state` 读出这一层判据要的**三样**：手头券数 / 背包快照 / 我现在在哪个图。
 
+    → `(n, inv, loc)`；读不到 ⇒ `(-1, None, "?")`（`n=-1` = 不知道，**不是** 0）。
+
+    ⚠️ 三样**必须同一次读**（分两次读会拿到两个时刻的世界 —— 跨图前后、兑奖前后各一次，
+       于是"要不要跨图"和"券掉没掉"就各说各话；本项目"判据只有一处"那条规矩）。
     ⚠️ 跟 `_voucher_pending()`（板旁领奖箱里**待领**的）**不是同一个数**，见 `_im_prizes`。
     """
     try:
-        v = ((api._ai_get("/state") or {}).get("player") or {}).get("prizeTickets")
-        return int(v) if v is not None else -1
+        st = api._ai_get("/state") or {}
     except Exception:
-        return -1
+        return -1, None, "?"
+    v = ((st.get("player") or {}).get("prizeTickets"))
+    try:
+        n = int(v) if v is not None else -1
+    except Exception:
+        n = -1
+    loc = str(((st.get("location") or {}).get("name")) or "") or "?"
+    inv = st.get("inventory")
+    return n, (inv if isinstance(inv, list) else None), loc
+
+
+def _inv_counts(inv) -> dict:
+    """背包一份「按限定 id（没 id 就按名字）汇总的总量 + 显示名」→ `{key: (n, 名)}`。
+
+    ⚠️ 只服务**回执**（"换到的东西进包了没"）—— **不是**成交判据，见 `_prize_gain_line`。
+    """
+    d = {}
+    for it in (inv or []):
+        if not isinstance(it, dict):
+            continue
+        k = str(it.get("itemId") or it.get("name") or it.get("displayName") or "")
+        if not k:
+            continue
+        try:
+            add = int(it.get("stack") or 1)
+        except Exception:
+            add = 1
+        n0, nm = d.get(k) or (0, "")
+        d[k] = (n0 + add, nm or str(it.get("displayName") or it.get("name") or k))
+    return d
+
+
+def _prize_gain_line(before, after) -> str:
+    """这一按之后背包**多了什么** → 「神秘盒子×3」/ `""`（没多 / 有一边读不到）。
+
+    参数是**两发 `/state.inventory` 原件**（不是汇总表 —— 汇总只在里面做一次，
+    免得调用点各自漏一次 `_inv_counts`）。
+
+    ⚠️ **不是成交判据**：满包时游戏把奖品**丢在脚下**（`createItemDebris`），背包一动不动，
+       可券**照样**扣 —— 详见 `_im_prize_go` 的反编译那段。
+    """
+    if not isinstance(before, list) or not isinstance(after, list) or not after:
+        return ""
+    b, a = _inv_counts(before), _inv_counts(after)
+    out = []
+    for k, (n1, nm) in (a or {}).items():
+        n0 = (b.get(k) or (0, ""))[0]
+        if n1 > n0:
+            out.append(f"{nm or k}×{n1 - n0}")
+    return "、".join(out)
+
+
+# ⏱️ 兑奖那一按的**节拍**（全是从反编译算出来的，不是拍的）：
+#   · `PrizeTicketMenu.cs:173-192`：点下去到真结算要 **2000ms**（`getRewardTimer > 2000`）
+#     ⇒ 轮询券数给 0.25s × 20 = **5s** 上限（含 `pressedButtonTimer` 200ms 那一小段）。
+#   · `:186-212`：结算完立刻进 `movingRewardTrack`（500ms 预备 + 2000ms 走带 = **~2.5s**），
+#     而这窗口里再点 `mainButton` **是空点**（`:151` 的条件带 `!movingRewardTrack`）
+#     ⇒ 下一张之前必须等够，否则会把"窗口里点空了"误判成"券没掉 ⇒ 停手"。
+_PRIZE_SETTLE_POLLS = 20
+_PRIZE_SETTLE_STEP = 0.25
+_PRIZE_TRACK_WAIT = 2.6
+
+
+def _prize_track_head() -> str:
+    """这一按**要吐出来的那件**（游戏自己的回读）→ 名字 / `""`。
+
+    = `/menu.items[0]`，也就是 C# 的 `PrizeTicketMenu.currentPrizeTrack[0]`
+    （`ModEntry.cs:14616-14634` 把它摊进 `items`）；结算时进包/落地的**就是这一格**
+    （`PrizeTicketMenu.cs:180-183`）—— 所以"按之前读它"就是"这一张换到了什么"的实话。
+    """
+    try:
+        items = (api._ai_get("/menu") or {}).get("items") or []
+    except Exception:
+        return ""
+    if not items or not isinstance(items[0], dict):
+        return ""
+    it = items[0]
+    return str(it.get("name") or it.get("displayName") or it.get("id") or "")
 
 
 def _im_prize_go() -> str:
-    """🎰 走到刘易斯家的兑奖机前 + 交互把它**开出来**（单子那行的执行侧）→ 一句话。
+    """🎰 走到刘易斯家的兑奖机前 + **一张一张把券兑到底**（单子那行的执行侧）→ 一句话。
 
-    ⚠️ 两段路：`navigation.map_go`（跨图到 `ManorHouse`，POI 名字见 `PRIZE_MACHINE_POI`）
-       + `_tank_go(1,5)`（就位判据 = 站正交邻格 + 面朝它，跟 `_im_order_accept`/`_im_cc_go`
-       同一套 —— 站远了隔空 `/interact` 会被游戏无视）。
-    ⚠️ 成不成看 **`/state.activeMenu.type` 真的是不是 `PrizeTicketMenu`**（`ok:true` 不算）——
-       开出来的**不是它**就如实说"什么都没换"（本项目老账：`ok:true` ≠ 事情动了）。
-    ⛔ **不替 AI 花券**：兑奖机开出来以后换到哪件是**随机的**（`PrizeTicketMenu` 的
-       `mainButton`，一次一张）⇒ 这一层**只负责把机器开出来**，让 AI 自己敲
-       `menu click(button=mainButton)`（回执里就是这么说的）。
-    ⚠️ 菜单开着 / 手头没券 ⇒ **当场如实拒**（不白跑一趟、也不瞎点）。
+    === 反编译查到的机器语义（`decomp/c1615/.../StardewValley.Menus/PrizeTicketMenu.cs`）===
+      · **按一次 `mainButton` = 消耗 1 张**，但**不是按下就扣**：
+        `receiveLeftClick`（`:145-163`）只在"点中了 `mainButton` + 手头有券"
+        （`Items.CountId("PrizeTicket") > 0`）时立 `gettingReward=true`（**这一下不扣券**）；
+        真正结算在 `update`（`:173-192`）：`getRewardTimer > 2000` 时才
+        ① 把 `currentPrizeTrack[0]` **塞进背包**（`addItemToInventoryBool`）；
+        ② 塞不进 ⇒ **不报错、也不吞**：`createItemDebris` 把那件**丢在玩家脚下**（`:180-183`）；
+        ③ 然后 `Items.ReduceId("PrizeTicket", 1)`（`:184`）—— **不管上面塞没塞进去，券都扣 1**。
+        ⇒ **奖品去处 = 背包优先、满了落地**；**没有"背包满就不给兑"的分支**。
+      · **菜单兑完不关**：`:186-190` 只把 track 头挪掉、立 `movingRewardTrack`，
+        `readyToClose()`/`exitThisMenu` 一个字都没动 ⇒ 兑完菜单还开着，可以接着按。
+      · ⚠️ **按完 ~2.5 秒不能再按**：`:151` 的判定条件里带 `!movingRewardTrack`，
+        而结算后要等 `moveRewardTrackPreTimer` 500ms + `moveRewardTrackTimer` 2000ms
+        （`:193-212`）才复位 ⇒ 这窗口里点 `mainButton` **一点用都没有**（不吃、也不扣）。
+        ⇒ 这一层**必须等够**再按下一张（`_PRIZE_TRACK_WAIT`），否则会把"窗口里点空了"
+          误判成"券没掉 ⇒ 停手"。
+      · `getPrizeItem`（`:66-133`）按 `stats.ticketPrizesClaimed` 发奖 ⇒ **换到哪件是随机的**
+        （同一个种子/玩家同一档固定，跨档不同），这一层**不预测、只回读**。
+
+    === 这一层的判据（照游戏，不猜）===
+      · 走位：不在 `ManorHouse` ⇒ `navigation.map_go(PRIZE_MACHINE_POI)` 跨图；
+        **已在 ⇒ 跳过**（⛔ 不重复跨图——`map_go` 到同一张图是白跑一趟）；
+        然后 `_tank_go(1,5, what="兑奖机")`（就位判据 = 站正交邻格 + 面朝它，
+        跟 `_im_order_accept`/`_im_cc_go` 同一套 —— 站远了隔空 `/interact` 会被游戏无视）。
+      · 开没开：**`/state.activeMenu.type` 真的是不是 `PrizeTicketMenu`**（`ok:true` 不算）——
+        不是 ⇒ 如实说"站到了也点了，可开出来的不是兑奖机（X）—— 什么都没兑"。
+      · **一张一张兑**：循环 `/menu/click {button: mainButton}`，**每一按都回读
+        `/state.player.prizeTickets`** —— **那个数真掉了 1 才算这张成交**（唯一判据）。
+        一旦**没掉**就**停手**，如实说清是哪一种（菜单关了 / 这一按没被吃掉 / 读不到），
+        ⛔ **绝不许**拿"我点了 N 次"报"兑了 N 张"。
+      · 逐张"换到了什么"取**游戏自己的回读**：按之前那一发 `/menu.items[0]`
+        （= `currentPrizeTrack[0]`，见 `_prize_track_head`）+ 背包增量（`_prize_gain_line`）；
+        背包没多就如实写一句（满包时游戏会把它丢在脚下，见上面那段）。
+      · 菜单开着 / 手头没券 / 读不到我在哪 ⇒ **当场如实拒**（不白跑一趟、也不瞎点）。
     """
     _ensure_background()
     mt = _im_menu_type()
@@ -28035,30 +28221,98 @@ def _im_prize_go() -> str:
         return "❌ 读不到现在开着什么界面 —— 不敢瞎走位/瞎点"
     if mt:
         return f"❌ 现在开着 `{mt}` 界面 —— 先关掉它再去兑奖机（界面开着会被吃掉那一下）"
-    n = _prize_tickets()
+    n, inv_cur, loc = _prize_state()
     if n < 0:
         return "❌ 读不到手头兑奖券数（`/state.player.prizeTickets`）—— 不敢瞎走"
     if n == 0:
         return ("❌ 手头**一张兑奖券都没有**（`prizeTickets` 0）—— 先拿券再来"
                 "（券是板旁领奖箱领的，`voucherPending` 那个数是**待领**、不是手头）")
-    try:
-        navigation.map_go(PRIZE_MACHINE_POI)
-    except Exception as e:
-        return f"❌ 走去兑奖机那段路出错（{PRIZE_MACHINE_POI}）：{type(e).__name__}: {e}"
+    if loc == "?":
+        return "❌ 读不到我现在在哪个图 —— 不敢瞎跨图/瞎走位"
+    if loc != "ManorHouse":
+        # ⚠️ 只在**不在镇长家**时才跨图；已经在屋里还 `map_go` 就是白跑一趟
+        #    （恒 2026-10-06 这一版的口径：「**帮忙包办走过去兑奖的过程**」）。
+        try:
+            navigation.map_go(PRIZE_MACHINE_POI)
+        except Exception as e:
+            return f"❌ 走去兑奖机那段路出错（{PRIZE_MACHINE_POI}）：{type(e).__name__}: {e}"
+        loc2 = _prize_state()[2]
+        if loc2 not in ("ManorHouse", "?"):
+            return (f"❌ 跨图那一步没到镇长家（`map_go` 走完还在 `{loc2}`）"
+                    "—— 站都没站到，**什么都没兑**")
     step = _tank_go(*PRIZE_MACHINE_TILE, what="兑奖机")
     if step:
         return step
     api._ai_post("/interact", {"x": PRIZE_MACHINE_TILE[0], "y": PRIZE_MACHINE_TILE[1]})
+    opened = False
     for _ in range(10):
         time.sleep(0.2)
-        now = _im_menu_type()
-        if now == "PrizeTicketMenu":
-            return (f"🎰 兑奖机开了（手头 {n} 张）—— 换奖品敲 `menu click(button=mainButton)`"
-                    "（一次一张）")
-        if now == "?":
+        now_mt = _im_menu_type()
+        if now_mt == "PrizeTicketMenu":
+            opened = True
             break
-    return ("⚠️ 站到了也点了，可开出来的不是兑奖机（%s）—— 什么都没换"
-            % (_im_menu_type() or "没开界面"))
+        if now_mt == "?":
+            break
+    if not opened:
+        return ("⚠️ 站到了也点了，可开出来的不是兑奖机（%s）—— 什么都没兑"
+                % (_im_menu_type() or "没开界面"))
+    # 开出来之后**重新读一次**（走位那几秒里世界可能变了）：这才是兑奖循环的起点快照。
+    n_now, inv_cur, _loc3 = _prize_state()
+    if n_now >= 0:
+        n, inv_cur = n_now, inv_cur
+    if n <= 0:
+        # ⛔ 这一刻真读到 0 张 ⇒ **一下都不许按**，也别把"点了 mainButton"写进回执（没点过）。
+        return ("⚠️ 兑奖机开着，可**手头这一刻读到 0 张券**（`prizeTickets` 0）"
+                "—— 一张都没按，什么都没兑")
+    cur = n
+    got = 0
+    got_lines = []
+    stop = ""
+    for _ in range(max(0, n)):
+        head = _prize_track_head()          # 游戏自己的回读：这一按要吐出来的那件
+        api._ai_post("/menu/click", {"button": "mainButton"})
+        now, inv_now = cur, inv_cur
+        for _w in range(_PRIZE_SETTLE_POLLS):
+            time.sleep(_PRIZE_SETTLE_STEP)
+            now, inv_now, _l_now = _prize_state()      # ⚠️ 一发 `/state`（别打两发拿两个时刻的世界）
+            if now < 0 or now < cur:
+                break
+        if now < 0:
+            stop = "读不到手头券数（`/state.player.prizeTickets`）—— 不敢接着按"
+            break
+        if now >= cur:
+            # ⛔ **没掉 ⇒ 停手**（这一按不算成交，也不许按"点了几次"记账）
+            mt_now = _im_menu_type()
+            if mt_now != "PrizeTicketMenu":
+                stop = f"兑奖机菜单已经关了（现在开着 `{mt_now or '没开界面'}`）—— 这一按没兑成"
+            else:
+                stop = ("这一按**没被游戏吃掉**（`mainButton` 的条件没满足：菜单还开着 "
+                        f"`PrizeTicketMenu`、手头也还有 {cur} 张）—— ⚠️ **不是背包满**"
+                        "（反编译 `PrizeTicketMenu.cs:180-184`：塞不进包也照样扣券、东西落地）")
+            break
+        got += 1
+        cur = now
+        gain = _prize_gain_line(inv_cur, inv_now)
+        got_lines.append(f"第{got}张 {head or '(奖品名没读到)'}"
+                         + (f"（背包多了 {gain}）" if gain
+                            else "（背包没见着它 —— 满包时游戏会把它**丢在脚下**）"))
+        if isinstance(inv_now, list):
+            inv_cur = inv_now
+        if cur <= 0:
+            break
+        # ⚠️ 结算完还有 ~2.5s 的 `movingRewardTrack` 窗口：这窗口里再点 `mainButton`
+        #    是空点（`:151` 的条件带 `!movingRewardTrack`）⇒ 必须等够（见上面反编译那段）。
+        time.sleep(_PRIZE_TRACK_WAIT)
+    if got <= 0:
+        return ("⚠️ 站到兑奖机前也点了 `mainButton`，可**一张都没兑成** —— "
+                + (stop or "券数没掉（这一按没成交）")
+                + f"（手头还是 {n} 张，**什么都没兑**）")
+    tail = ""
+    if stop:
+        tail = f"；⛔ 停手：{stop}（还剩 {max(cur, 0)} 张没兑）"
+    elif cur > 0:
+        tail = f"；还剩 {cur} 张没兑"
+    return f"🎰 兑了 {got} 张（手头 {n} → {max(cur, 0)}）：" + "；".join(got_lines) + tail
 
 
 def _im_voucher_take() -> str:
@@ -28304,8 +28558,9 @@ def _im_run(op, args):
         "order_accept": lambda: _im_order_accept(args.get("side")),
         # 🎟 领兑奖券（同上）：走到板旁领奖箱 + 连点 + **看统计数掉没掉**。
         "voucher": lambda: _im_voucher_take(),
-        # 🎰 去兑奖机换奖品（同上，2026-10-06）：走去刘易斯家 + 交互**把机器开出来**，
-        #    ⛔ **不替 AI 花券**（换到哪件是随机的，让它自己敲 `menu click(button=mainButton)`）。
+        # 🎰 去兑奖机换奖品（2026-10-06 恒「**帮忙包办走过去兑奖的过程**」）：
+        #    走过去（不在镇长家才跨图）+ 开机器 + **一张一张兑到底**，判据是
+        #    `/state.player.prizeTickets` **每按一次真掉 1**（没掉就停手，见 `_im_prize_go`）。
         "prize": lambda: _im_prize_go(),
     }
     # 🛒 买卖走**裸端点**（回 dict，回执要逐条报数字），只是外面多两道闸门。

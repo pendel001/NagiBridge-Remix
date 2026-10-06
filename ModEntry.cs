@@ -24415,6 +24415,9 @@ var tcs = new TaskCompletionSource<object>();
         //    （`GameLocation.cs:13153`，返回 `string?`，null = 没这个属性；
         //     它内部也会问 `Building.doesTileHaveProperty`，`:13157-13168`）
         //    ＋ `Building.humanDoor`（"没有门"＝ `Point(-1,-1)`，游戏自己的判据在 `:16704`）。
+        //    🔻 2026-10-06 恒「4 收窄吧」：判据**只认真会换图/真门那一类** `Action` 取值（`Door` ＋ 首 token
+        //       `Warp*`），不再"带 Action 就算" —— 否则灶台 `Action: kitchen`（只开做菜菜单）走过去也会被拒。
+        //       取值口径与"哪些故意没收"全写在 `IsWarpOrDoorTile` / `IsDoorOrWarpAction` 的注释里。
         //    ⛔ **不是**"一刀切禁掉传送格"：`map ops=go` 本来就靠踩出口格换图，
         //       所以跨图那几处由调用方传 `allowWarp=true` 放行（缺省 false 只挡 AI 直调的坐标走位）。
         {
@@ -24589,14 +24592,35 @@ var tcs = new TaskCompletionSource<object>();
     /// <summary>
     /// 🚪 这格是不是**门/传送格**（踩上去会让游戏换图）？给 `HandleWalkTo` 入口校验用。
     ///
-    /// 三条判据**全是游戏自己的数据**（反编译出处写在旁边）：
-    ///   · `Action` / `TouchAction` / `Warp` 地图属性 —— 查 `Buildings` 与 `Back` 两层
-    ///     （`InteriorDoor.cs:72-80` 就是给带 `Action: Door` 的格子补 `TouchAction: Door …`，
-    ///      那一句正说明"室内隔间门"是靠 TouchAction 踩上去触发的）。
-    ///   · 某个 `Building` 的 `humanDoor` 瓦片 —— "这栋楼没门"的游戏判据是 `Point(-1,-1)`
-    ///     （`GameLocation.cs:16704`），门格 = `tileX/tileY + humanDoor`。
-    ///   · 重载挑的是 `GameLocation.doesTileHaveProperty(int,int,string,string,bool)`
-    ///     （`GameLocation.cs:13153`，返回 `string?`，null = 没这属性；内部也问建筑，`:13157-13168`）。
+    /// 🔻 2026-10-06 恒拍板「4 收窄吧」：老判据是**"带 Action 就算门"**（三个属性各问一句 `!= null`）⇒
+    ///    误伤**有 Action 但不换图**的格，AI 直调 `map ops=walk` 会收到一个**理由不准**的 `warp_tile` 拒绝。
+    ///    真机会撞上的反例（取值来自反编译，读数来自真机）：
+    ///      · `Buildings 19~23,23` 灶台五格 = `Action: kitchen`（`checkAction` 的
+    ///        `case "kitchen": case "Kitchen":` → `ActivateKitchen()`，`GameLocation.cs:8979-8980`
+    ///        ＝ **只开做菜菜单、一格都不换图**；"灶台在 Buildings 层、值是小写 kitchen"这份真机读数
+    ///        见 CHANGELOG 2026-09-11）
+    ///      · `Action: Message` / `MessageOnce` / `Dialogue`（`:9595` / `:9764` / `:9621` ＝ 只弹对话）
+    ///      · 浴室更衣格的 `TouchAction: ChangeIntoSwimsuit` / `ChangeOutOfSwimsuit`（`:3988-3994` ＝ 只换衣服）
+    ///
+    /// 现在只挡**真会换图/真门**的那几类（判据全是游戏自己的数据，取值口径照抄反编译）：
+    ///   ① `Warp` 属性（查 `Buildings` 与 `Back` 两层）—— ⚠️ 自查结论：1.6 这份全量反编译里**没有一处读
+    ///      "瓦片级" `Warp` 属性**（全仓 grep `"Warp"` 只命中 `Utility.cs:908` 那处**地图级**属性，
+    ///      当"进入本图的落点"用；瓦片上挂的换图键在 1.6 是 `TouchAction`，见 `FarmHouse.updateCellarWarps`
+    ///      `FarmHouse.cs:1953-1957` 改的就是 `TouchAction: Warp Cellar…`）。恒点名要 ① ⇒ 留着
+    ///      （xTile 老地图/旧 mod 有用这个键的先例；它的误伤面比"漏掉一个真传送格"小）。
+    ///   ② `TouchAction` 是**踩上去就换图**的两条：`Warp <地点> <x> <y>`（`performTouchAction` `case 4`
+    ///      `:3696-3711`）与 `MagicWarp <地点> <x> <y>`（9 参那条 `:3649-3691`）—— 见 `IsDoorOrWarpTouchAction`
+    ///   ③ `Action` 是**门/传送那一类**：`Door` ＋ `LockedDoorWarp` ＋ 首 token 以 `Warp` 开头
+    ///      （`getWarpFromDoor` `:2210-2246` 的 case 名，⚠️ `LockedDoorWarp` 不以 `Warp` 开头、得单列；
+    ///       default 分支 `text.Contains("Warp")` `:2239`；`updateDoors` `:17601` 同一条）
+    ///      —— 见 `IsDoorOrWarpAction`
+    ///   ④ **保留**「这格是某个 `Building` 的 `humanDoor`」：小屋门就靠这条（真机实据 Farm `(55,12)`）。
+    ///      "这栋楼没门"的游戏判据是 `Point(-1,-1)`（`:16704`），门格 = `tileX/tileY + humanDoor`。
+    ///
+    /// ⛔ **故意没收**（踩上去不换图 ⇒ 不是本闸门的靶子；真在门口被换了图还有 `AbortWalkIfMapChanged` 兜底）：
+    ///    `ConditionalDoor`(`:9547`)、`ObeliskWarp`(`:9036`)、`ForestPylon`(`:8935`)、`EnterSewer`(`:10006`)、
+    ///    `WizardHatch`(`:9991`)、`Mine`/`NextMineLevel`(`:9807-9808`)、`MineElevator`(`:9797`)、
+    ///    `MinecartTransport`(`:9790`)、`Theater_Entrance`(`:10063`) —— 这些都要 **interact/菜单再选** 才换图。
     ///
     /// ⚠️ 它**只回答"这格危不危险"**，不决定放不放行 —— 放行与否看调用方传的 `allowWarp`
     ///    （跨图导航故意要踩出口格）。`why` 只用来在拒绝时告诉调用方**是哪条判据命中的**。
@@ -24609,19 +24633,25 @@ var tcs = new TaskCompletionSource<object>();
 
         foreach (var layer in new[] { "Buildings", "Back" })
         {
-            if (loc.doesTileHaveProperty(x, y, "Action", layer) != null)
+            // ① `Action`：**只认门/传送那一类取值** —— ⛔ 别退回 `!= null`（灶台 `kitchen` 就是这么被误伤的）
+            var act = loc.doesTileHaveProperty(x, y, "Action", layer);
+            if (IsDoorOrWarpAction(act))
             {
-                why = $"Action({layer}) = {loc.doesTileHaveProperty(x, y, "Action", layer)}";
+                why = $"Action({layer}) = {act}";
                 return true;
             }
-            if (loc.doesTileHaveProperty(x, y, "TouchAction", layer) != null)
+            // ② `TouchAction`：**踩上去就换图**的那两条（`Warp …` / `MagicWarp …`）
+            var touch = loc.doesTileHaveProperty(x, y, "TouchAction", layer);
+            if (IsDoorOrWarpTouchAction(touch))
             {
-                why = $"TouchAction({layer}) = {loc.doesTileHaveProperty(x, y, "TouchAction", layer)}";
+                why = $"TouchAction({layer}) = {touch}";
                 return true;
             }
-            if (loc.doesTileHaveProperty(x, y, "Warp", layer) != null)
+            // ③ `Warp` 属性：xTile 老式传送格写法，有它就是传送格
+            var warp = loc.doesTileHaveProperty(x, y, "Warp", layer);
+            if (warp != null)
             {
-                why = $"Warp({layer}) = {loc.doesTileHaveProperty(x, y, "Warp", layer)}";
+                why = $"Warp({layer}) = {warp}";
                 return true;
             }
         }
@@ -24638,6 +24668,46 @@ var tcs = new TaskCompletionSource<object>();
             }
         }
         return false;
+    }
+
+    /// <summary>
+    /// 🚪 `Action` 取值算不算**门/传送**那一类？—— 本闸门"收窄"就收在这里。
+    /// 口径照抄游戏（`getWarpFromDoor` `GameLocation.cs:2210-2246` ＋ `updateDoors` `:17601`）：
+    ///   · `Door` —— `performAction` 的 `case "Door"`（`:9566-9590`）→ `openDoor()`（`:8222`，只做开合动画）。
+    ///     恒点名的"门那一类"，保留：想进门该 `interact`，不是走过去。
+    ///   · `LockedDoorWarp` —— ⚠️ **它不以 `Warp` 开头**，得单列（`getWarpFromDoor` `:2223` / `performAction`
+    ///     `:9537-9546` → `lockedDoorWarp(...)` → 开门后 `Game1.warpFarmer`）。真机读到的就是这族门：
+    ///     `Town(95,50) = LockedDoorWarp 13 29 JojaMart 900 2300`（Joja 超市）、Leah/Elliott 家门
+    ///     （`locations.py:762/772` 记的 `LockedDoorWarp … 1000 1800 Leah/Elliott 500`）。
+    ///   · 首 token **以 `Warp` 开头** —— 游戏自己就是这么判的：`getWarpFromDoor` 认的其余 case 名全是 `Warp*`
+    ///     （`Warp` / `WarpMensLocker` / `WarpWomensLocker` / `WarpCommunityCenter` /
+    ///      `Warp_Sunroom_Door` / `WarpBoatTunnel`），default 分支一句 `text.Contains("Warp")`（`:2239`）
+    ///     连带参数的写法 `Warp <x> <y> <地点>`（`performAction` `case "Warp"` `:9475-9490` → `Game1.warpFarmer`）
+    ///     和 `WarpGreenhouse`（`:9415`）一起兜住 ⇒ 用 `StartsWith("Warp")` 一个条件覆盖整族。
+    ///   · ⛔ **没有** `kitchen`/`Kitchen`（`:8979`）、`Message`（`:9595`）、`Dialogue`（`:9621`）、`Yoba`（`:10033`）
+    ///     —— 它们带 Action 但**不换图**；老判据把它们一起拒了，报的还是"踩上去会换图"，理由不准。
+    /// </summary>
+    private static bool IsDoorOrWarpAction(string? action)
+    {
+        if (string.IsNullOrEmpty(action)) return false;
+        var first = action.Split(' ')[0];   // 首 token ＝ 游戏取的那一段（ArgUtility.Get(array, 0)）
+        if (first == "Door" || first == "LockedDoorWarp") return true;   // ⚠️ 后者**不**以 Warp 开头
+        return first.StartsWith("Warp", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 🚪 `TouchAction` 取值是不是"**踩上去就换图**"？只有这两条（`performTouchAction`，`GameLocation.cs:3606`）：
+    ///   · `Warp <地点> <x> <y> [mail]` —— `case 4:` 里的 `if (value == "Warp")`（`:3696-3711`）→ `Game1.warpFarmer`
+    ///   · `MagicWarp <地点> <x> <y> [mail]` —— 9 参那条（`:3649-3691`），同样 `Game1.warpFarmer`
+    ///     （现网地图未见用它，但它是**真换图**那一类 ⇒ 一并收进；它不可能误伤 `kitchen` 这种值。）
+    /// ⛔ 别退回 `!= null`：浴室更衣格的 `ChangeIntoSwimsuit`/`ChangeOutOfSwimsuit`（`:3988-3994`）
+    ///    也是 TouchAction，但**只换衣服不换图**（真机坐标见 CHANGELOG 2026-09-10）。
+    /// </summary>
+    private static bool IsDoorOrWarpTouchAction(string? touchAction)
+    {
+        if (string.IsNullOrEmpty(touchAction)) return false;
+        var first = touchAction.Split(' ')[0];
+        return first == "Warp" || first == "MagicWarp";
     }
 
     /// <summary>

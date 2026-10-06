@@ -12,19 +12,26 @@
   · Python 侧：**跨图/导航内部**的走位（`_walk_and_wait` 的每一个调用方）带 `allowWarp=true` 放行；
     **AI 直调的坐标走位**（`_walk_to_coord`）**不传** ＝ 闸门就设在这一层。
 
-钉五条：
+钉六条：
   ① 导航内部走位（`_walk_and_wait`）发 `/walk_to` 时**带 `allowWarp: true`**（放行门格，行为不倒退）
   ② AI 直调坐标走位（`_walk_to_coord`）**不带**（源码级 + 运行时两把尺子）
   ③ `warp_tile` 拒绝 ⇒ 原话照转，并提示该用 `interact` / `map ops=go`
   ④ 半路换图 ⇒ 优先转述**游戏自己**的 `walk_changed_map`（含 from/to），没收到才退回按状态说
   ⑤ `_walk_changed_map_alert` 与 `_walk_failed_alert` 同规矩：`since=None` 关旁路、`peek=True`、比时间戳
+  ⑥ **反例（2026-10-06 恒「4 收窄吧」）**：闸门判据**收窄成"只认真会换图/真门那一类取值"** ——
+     一个 `Action: kitchen`（自家灶台五格，`checkAction` → `ActivateKitchen()`，**只开做菜菜单不换图**）的格
+     **不许**被拒（老判据是"带 Action 就算"⇒ 拒了还报"踩上去会换图"，**理由不准**）。
+     这把尺子读 `ModEntry.cs` 原文，从 `IsDoorOrWarpAction`/`IsDoorOrWarpTouchAction` 里**抠出取值表**再逐值对表
+     （不是我自己另抄一份名单）；同时钉住 ④「建筑 `humanDoor` 门格」那条**没被顺手删掉**（小屋门 Farm(55,12) 靠它）。
 """
 import inspect
 import os
+import re
 import sys
 
+HERE = os.path.dirname(os.path.abspath(__file__))
 os.environ.setdefault("NAGI_URL", "http://localhost:7843")
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, HERE)
 
 import navigation as N          # import 安全：这文件只定义函数/常量
 
@@ -153,6 +160,72 @@ try:
     N.api = f
     ck("…`walk_failed` 那条**不认**（只认 walk_changed_map）",
        N._walk_changed_map_alert(0) is None)
+
+    # ── ⑥ 反例：`Action: kitchen`（带 Action 但**不换图**）⛔ 不许被拒（2026-10-06 恒「4 收窄吧」）──
+    print("\n⑥ 反例：`Action: kitchen`（带 Action 但**不换图**）⛔ 不许被拒 —— 判据只认门/传送那一类取值")
+    _cs = open(os.path.join(HERE, "..", "ModEntry.cs"), encoding="utf-8").read()
+
+    def _method(sig_pat, max_lines=140):
+        """抠出某个 C# 方法的**原文**（到那一层自己的收尾 `    }` 为止）。"""
+        _lines = _cs.splitlines()
+        for _i, _ln in enumerate(_lines):
+            if re.search(sig_pat, _ln):
+                _out = []
+                for _l2 in _lines[_i:_i + max_lines]:
+                    _out.append(_l2)
+                    if _l2 == "    }" and len(_out) > 1:
+                        break
+                return "\n".join(_out)
+        return ""
+
+    def _code_only(t):
+        """去掉 `//` 注释行 —— 注释里**必须**能写旧形状（不然下一个读的人又不知道坑在哪）。"""
+        return "\n".join(_l for _l in t.splitlines() if not _l.lstrip().startswith("//"))
+
+    _gate = _method(r"private bool IsWarpOrDoorTile\(")
+    _act_h = _method(r"private static bool IsDoorOrWarpAction\(")
+    _touch_h = _method(r"private static bool IsDoorOrWarpTouchAction\(")
+    ck("…抠到了 C# 闸门本体 + 两个取值判据函数（`IsWarpOrDoorTile` / `IsDoorOrWarpAction` / `…TouchAction`）",
+       bool(_gate) and bool(_act_h) and bool(_touch_h), f"{len(_gate)}/{len(_act_h)}/{len(_touch_h)}")
+    _gate_code = _code_only(_gate)
+    ck("…`Action` 那一格**过判据函数**（不再「带 Action 就算」）",
+       "IsDoorOrWarpAction(" in _gate_code)
+    ck("…老判据 `\"Action\", layer) != null` **在代码里已不存在**（注释里写旧形状是允许的）",
+       '"Action", layer) != null' not in _gate_code)
+    ck("…`TouchAction` 那一格也过判据函数", "IsDoorOrWarpTouchAction(" in _gate_code)
+    ck("…④「建筑 `humanDoor` 门格」那条**留着**（小屋门 Farm(55,12) 就靠它）",
+       "humanDoor" in _gate_code and "new Point(-1, -1)" in _gate_code)
+    ck("…拒绝文案一个字没松（响亮、且指向 interact / map ops=go）",
+       "那格是门/传送格（踩上去会换图）—— 要进门请用 interact；跨图请用 map ops=go" in _cs)
+
+    # 取值表**从 C# 源码里抠**（`first == "X"` 的字面量 + 有没有 `StartsWith("Warp"`）—— 不是我另抄一份
+    _act_lits = set(re.findall(r'first == "([^"]+)"', _act_h))
+    _touch_lits = set(re.findall(r'first == "([^"]+)"', _touch_h))
+    _act_prefix = 'StartsWith("Warp"' in _act_h
+
+    def _mirror(v, lits, prefix):
+        _f = v.split(" ")[0]
+        return _f in lits or (prefix and _f.startswith("Warp"))
+
+    print("     （从源码抠到的表：Action 字面量 " + str(sorted(_act_lits))
+          + " / 前缀 Warp=" + str(_act_prefix) + "；TouchAction " + str(sorted(_touch_lits)) + "）")
+    ck("…⛔ 反例 `Action: kitchen`（自家灶台五格，小写）⇒ **放行**",
+       _mirror("kitchen", _act_lits, _act_prefix) is False)
+    ck("…⛔ 反例 `Action: Kitchen`（游戏两个 case 都收）⇒ **放行**",
+       _mirror("Kitchen", _act_lits, _act_prefix) is False)
+    ck("…⛔ 反例 `Action: Message \"...\"` / `Dialogue ...` / `Yoba`（带 Action 不换图）⇒ **放行**",
+       not any(_mirror(v, _act_lits, _act_prefix)
+               for v in ('Message "hi"', "MessageOnce abc", "Dialogue Sebastian", "Yoba")))
+    ck("…✅ 正例 `Door`（`openDoor`，恒点名的门那一类）⇒ **仍拒**",
+       _mirror("Door Sebastian", _act_lits, _act_prefix) is True)
+    ck("…✅ 正例 `Warp 3 12 Cabin` / `LockedDoorWarp …` / `WarpCommunityCenter`（真会换图）⇒ **仍拒**",
+       all(_mirror(v, _act_lits, _act_prefix) for v in
+           ("Warp 3 12 Cabin", "LockedDoorWarp 12 9 Sebastian 900 1900",
+            "WarpCommunityCenter", "Warp_Sunroom_Door", "WarpMensLocker", "WarpGreenhouse")))
+    ck("…✅ 正例 `TouchAction: Warp Cellar2`（Cabin 地下室楼梯）⇒ **仍拒**",
+       _mirror("Warp Cellar2", _touch_lits, False) is True)
+    ck("…⛔ 反例 `TouchAction: ChangeIntoSwimsuit`（浴室更衣格，只换衣服）⇒ **放行**",
+       not any(_mirror(v, _touch_lits, False) for v in ("ChangeIntoSwimsuit", "ChangeOutOfSwimsuit")))
 finally:
     for _k, _v in _real.items():
         setattr(N, _k, _v)

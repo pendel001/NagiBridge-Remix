@@ -435,10 +435,11 @@ class Ctx:
     #    ⚠️ 一次交互**只给一张**（游戏 `GameLocation.cs:9006-9020` 每次减 1）⇒ 行上印 `×N`。
     vouchers: dict = field(default_factory=dict)
     # 🎰 **手头**的兑奖券（`/state.player.prizeTickets`，2026-10-06）。`{}` = 不给那一行
-    #    （**不在镇上** / 手头 0 张 / 读不到）。有值时 `{"n": N}`。
+    #    （**不在镇上/镇长家里** / 手头 0 张 / 读不到）。有值时 `{"n": N}`。
     #    ⚠️⚠️ 跟上面 `vouchers`（`voucherPending` = 板旁领奖箱里**待领**的）**不是同一个数** ——
-    #       这一条管的是"够去刘易斯家那台兑奖机开几次"，⛔ 不许拿待领数顶替。
-    #    ⚠️ 判据在服务器（`_im_prizes`：地点 + `prizeTickets`）⇒ 这一层只做成员判断。
+    #       这一条管的是"够去刘易斯家那台兑奖机兑几次"，⛔ 不许拿待领数顶替。
+    #    ⚠️ 判据在服务器（`_im_prizes`：`location in ("Town","ManorHouse")` + `prizeTickets`，
+    #       恒 2026-10-06「手上有券且在镇子上**或者刘易斯家**就上单显示」）⇒ 这一层只做成员判断。
     prizes: dict = field(default_factory=dict)
 
     def zh_of(self, name: str) -> str:
@@ -4130,16 +4131,20 @@ VOUCHER_V = Verb("voucher", "领取兑奖券", 72, _voucher_can, _voucher_reason
                  "world", exec=_exec_voucher, batch=True, menu_ok=True)
 
 
-# 🎰 去兑奖机换奖品（恒 2026-10-06：「兑奖机那一行补进单子」）——
+# 🎰 去兑奖机换奖品（恒 2026-10-06：「兑奖机那一行补进单子」→ 同日追加
+#    「手上有券且在镇子上**或者刘易斯家**就上单显示，**帮忙包办走过去兑奖的过程**」）——
 # ⚠️ 跟上面那条**不是同一件事**，别混（这是本项目最容易漂的一处）：
 #   · `voucher`（`Ctx.vouchers`）= 板旁领奖箱里**待领**的券（`/state.player.voucherPending`）；
 #   · `prize`（`Ctx.prizes`）= **手头**已经领进包里的券（`/state.player.prizeTickets`）。
 #   两者不同步：领完箱子 pending 掉 1 / 手头涨 1；去机器换掉一件**只动手头**。
-# ⚠️ 判据全在服务器（`_im_prizes`：`location.name == "Town"` + `prizeTickets > 0`）——
+# ⚠️ 判据全在服务器（`_im_prizes`：`location in ("Town","ManorHouse")` + `prizeTickets > 0`）——
 #    这一层**不打 HTTP、不认菜单名、不编张数**（同 `shop`/`doors`/`tailor` 的形状）。
-# ⚠️ **不是 `batch=True`**：这一按**不会把 N 张都换掉** —— 它只把机器**开出来**，
-#    换到哪件是随机的（`PrizeTicketMenu` 的 `mainButton`，一次一张），让 AI 自己决定。
-#    ⇒ 标题里的 `×N` 是"**手头有 N 张**"那个事实（恒要的形状），不是"这一按做 N 次"。
+# ⚠️ **`batch=True`**（2026-10-06 恒改口径后）：这一按**真会把 N 张都兑掉**（服务器那侧
+#    自己走过去 + 开机器 + 一张一张兑到底，每按一张都拿 `/state.player.prizeTickets`
+#    回读判成交，没掉就停手 —— 见 `_im_prize_go`）⇒ 标题里的 `×N` 是"**这一按做 N 次**"
+#    那个真承诺，符合本项目"真会全做才许印 ×N"的规矩。
+# ⚠️ 仍要说清的两件事（进理由栏）：① **自己走过去**（不在镇长家就跨图）；
+#    ② **换到哪件是随机的**（`getPrizeItem` 按 `ticketPrizesClaimed` 发，这一层不预测）。
 def _prize_n(ctx):
     try:
         return int(((ctx.prizes or {}).get("n")) or 0)
@@ -4157,20 +4162,22 @@ def _prize_show(ctx, t):
 
 
 def _prize_reason(ctx, t):
-    return (f"刘易斯家（镇长家）兑奖机 · 站 (1,6) 朝上交互 (1,5) · 一次一张 · 手头 {_prize_n(ctx)} 张")
+    """🎰 理由栏（恒 2026-10-06 的口径）：**自己走过去** + **一次一张兑到底** + **换到什么是随机的**。"""
+    return (f"自己走过去（不在镇长家就先跨图）· 刘易斯家兑奖机站 (1,6) 朝上交互 (1,5) · "
+            f"一次一张兑到底 · 换到哪件是随机的 · 手头 {_prize_n(ctx)} 张")
 
 
 def _exec_prize(ctx, targets, run):
-    """🎰 走过去**把兑奖机开出来**（服务器那侧包办走位+交互；回执拿**它自己那句话**）。
+    """🎰 走过去**把 N 张券一张一张兑到底**（服务器那侧包办走位/开机器/逐张回读券数）。
 
-    ⚠️ 回执里那句「换奖品敲 `menu click(button=mainButton)`（一次一张）」是**留给 AI 的话**，
-       这一层**不替它花券** —— 换到哪件是随机的（见上面那段）。
+    ⚠️ 回执拿**它自己那句话**：里面逐张带着游戏自己的回读（`currentPrizeTrack[0]` 的奖品名
+       + 背包增量），兑不成/中途停手也如实说原因 —— 这一层**不替它下结论、不重算张数**。
     """
     return _receipt_from_helper("去兑奖机", "", run("prize", {}))
 
 
 PRIZE_V = Verb("prize", "去兑奖机换奖品", 70, _prize_can, _prize_reason, _prize_show,
-               "world", exec=_exec_prize, menu_ok=True)
+               "world", exec=_exec_prize, batch=True, menu_ok=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════

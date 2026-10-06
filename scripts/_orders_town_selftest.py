@@ -14,6 +14,11 @@
     `SpecialOrdersBoard.cs:94-98`）——⛔ **不是**"板上有没有卡"（接单不移卡，`:130-132`）；
   · 券数 = `/state.player.voucherPending`（`Game1.player.stats.Get("specialOrderPrizeTickets")`）；
   · 一次交互**只给一张**（`GameLocation.cs:9006-9020`）⇒ 行上印 `×N`。
+
+🎰 ⑪~⑮ 是**兑奖机那一行**（牛头不对马嘴的另一件事，别跟上面两条混）：
+  · `Town`/`ManorHouse` + `/state.player.prizeTickets > 0` ⇒ 「去兑奖机换奖品×N」；
+  · 那一按**包办**：自己走过去（不在镇长家才跨图）→ 开机器 → **一张一张兑到底**，
+    判据是**每按一次 `prizeTickets` 真掉 1**（桩里的 `mainButton` 按反编译真语义减数）。
 """
 import os
 import sys
@@ -43,14 +48,16 @@ S = {}
 
 def _stub(loc="Town", unlocked=True, accepted=False, vouchers=0,
           left=True, right=True, board_open=False, state_raises=False, xy=(62, 94),
-          caps=True, prizes=0):
-    """装桩。⚠️ `S` 是**可变的世界状态**（走位/交互/领券都会改它）——
+          caps=True, prizes=0, prize_name="神秘盒子"):
+    """装桩。⚠️ `S` 是**可变的世界状态**（走位/交互/领券/兑奖都会改它）——
     桩按真端点的语义改它，这样 `_tank_go`/回读那几段才测得到。
     ⚠️ `xy` = **我这一刻站哪格**（默认板前 (62,94)）。领券那几条要传 (60,94) ——
        走位本身留给真机验，但**"没站到旁边就去走"这条闸**在这里钉：桩里的 `walk_to` 会照
        `/walk_to` 的语义把人挪过去（目标格站不住时落到它下面那格，就是真机 `adjusted` 那形状）。
     ⚠️ `prizes` = **手头**的兑奖券（`/state.player.prizeTickets`）；传 `None` = **老 DLL 上没这一位**
-       （`/state` 里那个键整个不出现 —— "读不到"那根钉子要的形状，⛔ 别拿 0 顶替它）。"""
+       （`/state` 里那个键整个不出现 —— "读不到"那根钉子要的形状，⛔ 别拿 0 顶替它）。
+    ⚠️ `prize_name` = 兑奖机那一按**要吐出来的那件**（`/menu.items[0]` = C# 的
+       `currentPrizeTrack[0]`）—— 回执里"逐张带回游戏自己的回读"就靠它。"""
     CALLS.clear()
     S.clear()
     S.update({
@@ -59,8 +66,8 @@ def _stub(loc="Town", unlocked=True, accepted=False, vouchers=0,
         "unlocked": bool(unlocked), "accepted": bool(accepted),
         "left": bool(left), "right": bool(right),
         "board_open": bool(board_open), "orders": 0,
-        # 🎰 手头券 + 那台机器开着没（`PrizeTicketMenu`）——见 `_state`/`p` 里 `/interact` 那支
-        "prizes": prizes, "prize_open": False,
+        # 🎰 手头券 + 那台机器开着没（`PrizeTicketMenu`）+ 奖品带第一件 + 背包（见 `_state`）
+        "prizes": prizes, "prize_open": False, "prize_name": prize_name, "inv": [],
     })
 
     def _state():
@@ -78,7 +85,7 @@ def _stub(loc="Town", unlocked=True, accepted=False, vouchers=0,
             pl["prizeTickets"] = S["prizes"]
         return {"player": pl,
                 "location": {"name": S["loc"], "uniqueName": S["loc"]},
-                "inventory": [], "activeMenu": am}
+                "inventory": list(S["inv"]), "activeMenu": am}
 
     def g(ep, params=None):
         CALLS.append(("GET", ep, params))
@@ -92,6 +99,14 @@ def _stub(loc="Town", unlocked=True, accepted=False, vouchers=0,
                         activeOrders=S["orders"],
                         left=(ORDER_BOARD["left"] if S["left"] else None),
                         right=(ORDER_BOARD["right"] if S["right"] else None))
+        if ep == "/menu":
+            # 🎰 兑奖机开着时 `/menu.items[0]` = `currentPrizeTrack[0]`（`ModEntry.cs:14616-14634`）
+            if not S["prize_open"]:
+                return {"ok": True, "type": "", "items": []}
+            return {"ok": True, "type": "PrizeTicketMenu",
+                    "items": [{"index": 0, "name": S["prize_name"],
+                               "id": "(O)MysteryBox", "stack": 3}],
+                    "buttons": [{"name": "mainButton"}]}
         if ep == "/status":
             # ⚠️ 新 DLL 会自报 `caps`（`_im_order_read` 的闸门就是 `caps["order_board"]`）——
             #    `caps=False` = **老 DLL 的形状**（没有这一位 ⇒ 一次都不许打）。
@@ -126,6 +141,17 @@ def _stub(loc="Town", unlocked=True, accepted=False, vouchers=0,
                     return {"ok": True, "clicked": "button"}   # 按钮压根不在（游戏自己藏了）
                 S["accepted"] = True
                 S["orders"] += 1
+            # 🎰 `mainButton` = 兑奖券那一下 —— **照反编译的真语义**（`PrizeTicketMenu.cs:145-192`）：
+            #    · **消耗 1 张**（`:184`，且**不看背包满不满**：塞不进包就 `createItemDebris` 丢脚下）；
+            #    · 奖品进**背包**（`:180`；桩只做"进包"这一支，"落地"那支留给真机/回执的兜底话术）；
+            #    · 菜单**兑完不关**（`:186-190` 只挪 track，不 `exitThisMenu`）。
+            #    ⚠️ 真机是**点完 2000ms 才结算**（`:173-192`）—— 桩里立刻减，这样钉子测的是
+            #       "逐张回读券数"那条判据，不是游戏那 2 秒的节拍（节拍由 `_PRIZE_*` 常量管）。
+            if btn == "mainButton" and S["prize_open"]:
+                if (S["prizes"] or 0) > 0:
+                    S["prizes"] -= 1
+                    S["inv"].append({"itemId": "(O)MysteryBox", "name": S["prize_name"],
+                                     "displayName": S["prize_name"], "stack": 3})
             return {"ok": True, "clicked": "button"}
         return {"ok": True}
 
@@ -149,8 +175,11 @@ def _stub(loc="Town", unlocked=True, accepted=False, vouchers=0,
 
     def _fake_map_go(destination="", npc=""):
         """🧭 跨图那一发**在离线钉子里不许真跑**（真 `map_go` 会打 HTTP/BFS）——
-        这里只记一笔，让钉子能证明"**走去兑奖机那一步真的发生了**"。"""
+        这里只记一笔 + **照真语义把图换过去**（走成了才会到），这样钉子才能证明
+        "**先 `map_go`**"与"**已在 ManorHouse 就不重复 `map_go`**"两件事。"""
         CALLS.append(("MAPGO", destination, {"npc": npc}))
+        if destination == M.PRIZE_MACHINE_POI:
+            S["loc"] = "ManorHouse"
         return "🚶 已到"
 
     M.navigation.map_go = _fake_map_go
@@ -343,16 +372,28 @@ try:
     out = M.intent(ops="show", kw={"n": 40})
     ck("…单子上**有**那一行", "prize" in _rows(), str(_rows()))
     ck("…标题带 `×1`", "去兑奖机换奖品×1" in out, out)
-    ck("…理由栏写清机器位置 + 一次一张 + 手头张数",
-       "(1,6)" in out and "(1,5)" in out and "一次一张" in out and "手头 1 张" in out, out[:600])
+    ck("…理由栏写清机器位置 + **一次一张兑到底** + 手头张数",
+       "(1,6)" in out and "(1,5)" in out and "一次一张兑到底" in out and "手头 1 张" in out,
+       out[:600])
+    ck("…理由栏写清**自己走过去** + **换到哪件是随机的**",
+       "自己走过去" in out and "随机" in out, out[:600])
+    # 🔴 2026-10-06 恒改口径（包办兑奖）⇒ 那一按真会把 N 张都兑掉 ⇒ `batch=True`
+    #    （本项目"真会全做才许印 ×N"的规矩，见 `Verb.batch`）。
+    ck("…`PRIZE_V.batch is True`（这一按真兑 N 张）",
+       M.intent_menu.PRIZE_V.batch is True, str(M.intent_menu.PRIZE_V.batch))
 
-    # ⑫ 不在镇上 ⇒ 不给（跨图那一步不该在农场/矿洞里劝"去兑奖机"）
-    print("\n⑫ 不在镇上（Farm）⇒ 不给那一行（哪怕手头有券）")
+    # ⑫ 不在镇上/镇长家 ⇒ 不给（跨图那一步不该在农场/矿洞里劝"去兑奖机"）
+    print("\n⑫ 不在镇上（Farm / FarmHouse）⇒ 不给那一行（哪怕手头有券）")
     _stub(loc="Farm", prizes=3)
     ctx = M._im_ctx()
     ck("…`prizes` 空", ctx.prizes == {}, str(ctx.prizes))
     M.intent(ops="show", kw={"n": 40})
     ck("…单子上没有那一行", "prize" not in _rows(), str(_rows()))
+    # ⚠️ 放行的只有 `Town`/`ManorHouse` **两张图**，⛔ 不是"只要是屋里就行"
+    _stub(loc="FarmHouse", prizes=3)
+    ctx = M._im_ctx()
+    ck("…别的屋（FarmHouse）也**不给**（放行的是那两张图，不是「只要是室内」）",
+       ctx.prizes == {}, str(ctx.prizes))
 
     # ⑬ 手头 0 张 ⇒ 不给；**读不到那一位**（老 DLL）⇒ 也 `{}`（⛔ 不许猜成 0 更不许编一张）
     print("\n⑬ Town + `prizeTickets=0` / **读不到那一位** ⇒ 都不给那一行")
@@ -367,9 +408,10 @@ try:
     M.intent(ops="show", kw={"n": 40})
     ck("…读不到 ⇒ 单子上也没有那一行", "prize" not in _rows(), str(_rows()))
 
-    # ⑭ 执行侧两根：没券 ⇒ **当场回绝、一个 `/interact` 都不打**；
-    #    有券 ⇒ 真去 `map_go` + 点 (1,5) + **照 `activeMenu.type` 认成没成**
-    print("\n⑭ `_im_prize_go`：没券当场回绝（零 `/interact`）；有券真开出来才算成")
+    # ⑭ 执行侧：没券 ⇒ **当场回绝、一个 `/interact` 都不打**（也不白跨图）；
+    #    有券 ⇒ 走过去 + 开机器 + **一张一张兑掉**（判据 = 券数每按一次真掉 1）；
+    #    开出来的**不是兑奖机** ⇒ 如实说"什么都没兑"且**一张都不按**
+    print("\n⑭ `_im_prize_go`：没券当场回绝（零 `/interact`）；有券真兑掉才算成")
     _stub(prizes=0, xy=(1, 6))
     CALLS.clear()
     r = M._im_prize_go()
@@ -386,10 +428,95 @@ try:
     ck("…交互打的是兑奖机那一格 (1,5)",
        any(c[0] == "POST" and c[1] == "/interact" and (c[2] or {}).get("x") == 1
            and (c[2] or {}).get("y") == 5 for c in CALLS), str(CALLS))
-    ck("…回执说机器开了 + 手头 1 张 + 怎么换（`mainButton`）",
-       "兑奖机开了" in r and "手头 1 张" in r and "mainButton" in r, r)
-    ck("…⛔ **没替 AI 花券**（`menu/click` 一下都没打）",
-       not any(c[1] == "/menu/click" for c in CALLS), str(CALLS))
+    ck("…回执报「兑了 1 张」+ 手头 1 → 0",
+       "兑了 1 张" in r and "手头 1 → 0" in r, r)
+    ck("…逐张带回**游戏自己的回读**（`/menu.items[0]` 的奖品名 + 背包多了什么）",
+       "神秘盒子" in r and "背包多了" in r, r)
+    # 开出来的不是兑奖机（点了 (1,5) 可菜单没弹出来）⇒ 如实拒 + **一张都不按**
+    print("⑭b 站到了也点了、可**开出来的不是兑奖机** ⇒ 如实说 + 一张都不按")
+    _stub(prizes=1, xy=(1, 6), loc="ManorHouse")
+    _orig_p14 = api._ai_post
+
+    def _p_noopen(ep, data=None):
+        d = data or {}
+        if ep == "/interact" and int(d.get("x") or -1) == 1:
+            return {"ok": True, "actionTriggered": True}      # 点了，可什么都没弹出来
+        return _orig_p14(ep, data)
+
+    api._ai_post = _p_noopen
+    CALLS.clear()
+    r = M._im_prize_go()
+    ck("回执说「开出来的不是兑奖机」+「什么都没兑」",
+       "开出来的不是兑奖机" in r and "什么都没兑" in r, r)
+    ck("…⛔ **一张都没按**（`mainButton` 一下都没打）",
+       not any(c[1] == "/menu/click" and (c[2] or {}).get("button") == "mainButton"
+               for c in CALLS if c[0] == "POST"), str(CALLS))
+    api._ai_post = _orig_p14
+
+    # ═══ ⑮ 🔴 2026-10-06 恒追加的四根（原话：「手上有券且在镇子上**或者刘易斯家**就上单显示，
+    #     **帮忙包办走过去兑奖的过程**」）—— 前四块钉的是"上不上单"，这四块钉的是"包办得对不对"
+    #     （桩里的 `mainButton` 已按反编译真语义减 `prizeTickets`，见 `_stub` 里那段）。
+    # ⑮① `ManorHouse`（镇长家屋里）+ 有券 ⇒ **也有那一行**（原来是"只在 Town"）
+    print("\n⑮① `ManorHouse`（镇长家屋里）+ 有券 ⇒ **照样给那一行**")
+    _stub(loc="ManorHouse", prizes=2)
+    ctx = M._im_ctx()
+    ck("`prizes` 有 `n=2`（人在屋里也给）", (ctx.prizes or {}).get("n") == 2, str(ctx.prizes))
+    out = M.intent(ops="show", kw={"n": 40})
+    ck("…单子上**有**那一行", "prize" in _rows(), str(_rows()))
+    ck("…标题带 `×2`", "去兑奖机换奖品×2" in out, out[:400])
+
+    # ⑮② 两张券 ⇒ **真按了 2 次 `mainButton`**（每一按都以"券数掉了 1"记账）
+    print("\n⑮② 两张券 ⇒ 真按 **2 次** `mainButton`，回执逐张报")
+    _stub(loc="ManorHouse", prizes=2, xy=(1, 6))
+    CALLS.clear()
+    r = M._im_prize_go()
+    _mb = [c for c in CALLS if c[0] == "POST" and c[1] == "/menu/click"
+           and (c[2] or {}).get("button") == "mainButton"]
+    ck("…`mainButton` 真按了 **2 次**", len(_mb) == 2, str(len(_mb)))
+    ck("…回执报「兑了 2 张」+ 手头 2 → 0", "兑了 2 张" in r and "手头 2 → 0" in r, r)
+    ck("…逐张带游戏自己的回读（两张都报了奖品名）", r.count("神秘盒子") >= 2, r)
+    ck("…⛔ 没谎报（不含「还剩」/「停手」那句）", "停手" not in r and "还剩" not in r, r)
+
+    # ⑮③ 按了但**券数不掉** ⇒ 回执**不说"兑了"**、如实说清原因、**只按 1 次就停手**
+    print("\n⑮③ 按了但券数不掉 ⇒ 不说「兑了」+ 说清原因 + **只按 1 次**")
+    _stub(loc="ManorHouse", prizes=2, xy=(1, 6))
+    _orig_p15 = api._ai_post
+
+    def _p_noconsume(ep, data=None):
+        d = data or {}
+        if ep == "/menu/click" and str(d.get("button") or "") == "mainButton":
+            CALLS.append(("POST", ep, d))
+            return {"ok": True, "clicked": "button"}     # 游戏：这一按没被吃进去
+        return _orig_p15(ep, data)
+
+    api._ai_post = _p_noconsume
+    CALLS.clear()
+    r = M._im_prize_go()
+    _mb = [c for c in CALLS if c[0] == "POST" and c[1] == "/menu/click"
+           and (c[2] or {}).get("button") == "mainButton"]
+    ck("…**只按 1 次**就停手（券没掉就不再按）", len(_mb) == 1, str(len(_mb)))
+    ck("…回执**不说「兑了」**", "兑了" not in r, r)
+    ck("…如实说「一张都没兑成」+ 券数没掉 + 手头还是 2 张",
+       "一张都没兑成" in r and "没被游戏吃掉" in r and "还是 2 张" in r, r)
+    ck("…⛔ 不拿「背包满」顶锅（反编译：满包照样扣券、东西落地）",
+       "不是背包满" in r, r)
+    api._ai_post = _orig_p15
+
+    # ⑮④ 不在 `ManorHouse` ⇒ **先 `map_go`**；已在 ⇒ **不重复 `map_go`**（⛔ 别白跨一趟）
+    print("\n⑮④ 不在 ManorHouse ⇒ 先 `map_go`；已在 ⇒ **一次都不打**")
+    _stub(loc="Town", prizes=1, xy=(1, 6))
+    CALLS.clear()
+    r = M._im_prize_go()
+    _maps = [c for c in CALLS if c[0] == "MAPGO"]
+    ck("…不在 ⇒ 真跨了那一图、而且**只跨一次**",
+       len(_maps) == 1 and _maps[0][1] == "刘易斯家(特别订单兑奖机)", str(_maps))
+    ck("…跨完照样把它兑成了", "兑了 1 张" in r, r)
+    _stub(loc="ManorHouse", prizes=1, xy=(1, 6))
+    CALLS.clear()
+    r = M._im_prize_go()
+    ck("…已在 ⇒ **一次 `map_go` 都不打**",
+       not any(c[0] == "MAPGO" for c in CALLS), str(CALLS))
+    ck("…并在屋里直接兑成", "兑了 1 张" in r, r)
 
     print("\n" + ("=" * 46))
     print("❌ 失败 " + str(len(FAIL)) + " 项: " + ", ".join(FAIL) if FAIL else "✅ 全过（0 失败）")
