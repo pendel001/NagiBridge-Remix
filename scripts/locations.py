@@ -198,7 +198,7 @@ POI = {
      "姜岛南岸海钓点":     {"map": "IslandSouth", "pos": (26, 34),"note": "姜岛南岸海洋（姜岛专属鱼）✅ 2026-10-06 轮回亲站，**面下**"},
      # 🏴‍☠️ 恒 2026-10-06 亲站：**东南岛→海盗湾的 warp 瓦片**（走上去触发，不在 `/warps` 表里）。
      #    ⚠️ `IslandSouthEast (0,29)` 那块以**度假村修复**为门禁（恒当天指出）。
-     "海盗湾(入口)":       {"map": "IslandSouthEast", "pos": (29, 18),"note": "🏴‍☠️ 东南岛→海盗湾的 **warp 瓦片**（Action 触发，走上去就进湾；`/warps` 查不到）✅ 2026-10-06 恒亲站"},
+     "海盗湾(入口)":       {"map": "IslandSouthEast", "pos": (31, 18),"note": "🏴‍☠️ 东南岛→海盗湾的 **warp 瓦片**（**总表口径 (31,18)**；恒亲站的 (29,18) 是边走格）（Action 触发，走上去就进湾；`/warps` 查不到）✅ 2026-10-06 恒亲站"},
      "海盗湾内钓点":     {"map": "IslandSouthEastCave", "pos": (6, 8),"note": "海盗湾内的钓点（姜岛专属鱼）✅ 2026-10-06 真机：单子按下去走到这格**朝右**，真钓上一条"},
     "书摊":               {"map": "Town",       "pos": (110,27),"note": "书商摊位(非每日开)"},
     "冰淇淋摊位":        {"map": "Town",       "pos": (88, 93), "season": "summer", "note": "🍦 冰淇淋摊(夏季限定)：博物馆桥东；**只在夏季营业**，周三/雨天休，13:00-17:00；亚历克斯站柜台(88,91)→人站(88,93)朝上交互(88,92)买冰淇淋；海莉常在这附近(夏季找她好地方)（2026-08-22 AI现场检测）"},
@@ -662,6 +662,14 @@ COMMUNITY_CENTER_BOARDS = {
 #             但 scene at(场景交互) 对门无效，进门用"走门 tile + confirm"——跟门交互行为）
 # tile 是源地图上的瓦片坐标（None=建筑门坐标按农场类型/建筑位置动态，用门检测或 /warp_building 兜底）
 MAP_LINKS = {
+    "Trailer_Big": [{"tile": [13, 25], "target": "Town", "kind": "warp", "arrive": [72, 69], "note": "📋 2026-10-06 按 `/warps` 总表补（原表缺这条 ⇒ `map go` 到不了）"}],
+    "Sunroom": [{"tile": [5, 14], "target": "SeedShop", "kind": "warp", "arrive": [32, 4], "note": "📋 2026-10-06 按 `/warps` 总表补（原表缺这条 ⇒ `map go` 到不了）"}],
+    "IslandWestCave1": [{"tile": [6, 12], "target": "IslandWest", "kind": "warp", "arrive": [61, 5], "note": "📋 2026-10-06 按 `/warps` 总表补（原表缺这条 ⇒ `map go` 到不了）"}],
+    "IslandSouthEastCave": [{"tile": [0, 7], "target": "IslandSouthEast", "kind": "warp", "arrive": [30, 19], "note": "📋 2026-10-06 按 `/warps` 总表补（原表缺这条 ⇒ `map go` 到不了）"}],
+    "IslandSouthEast": [{"tile": [31, 18], "target": "IslandSouthEastCave", "kind": "warp", "arrive": [1, 8], "note": "📋 2026-10-06 按 `/warps` 总表补（原表缺这条 ⇒ `map go` 到不了）"}, {"tile": [0, 28], "target": "IslandSouth", "kind": "warp", "arrive": [43, 29], "note": "📋 2026-10-06 按 `/warps` 总表补（原表缺这条 ⇒ `map go` 到不了）；⚠️ 出口瓦片 x<0（边界外）⇒ 取边界内可达格"}],
+    "DesertFestival": [{"tile": [8, 5], "target": "SkullCave", "kind": "warp", "arrive": [7, 8], "note": "📋 2026-10-06 按 `/warps` 总表补（原表缺这条 ⇒ `map go` 到不了）"}, {"tile": [18, 26], "target": "BusStop", "kind": "warp", "arrive": [22, 10], "note": "📋 2026-10-06 按 `/warps` 总表补（原表缺这条 ⇒ `map go` 到不了）"}],
+    "Cellar": [{"tile": [3, 1], "target": "FarmHouse", "kind": "warp", "arrive": [19, 34], "note": "📋 2026-10-06 按 `/warps` 总表补（原表缺这条 ⇒ `map go` 到不了）"}],
+    "CaptainRoom": [{"tile": [0, 5], "target": "IslandWest", "kind": "warp", "arrive": [59, 92], "note": "📋 2026-10-06 按 `/warps` 总表补（原表缺这条 ⇒ `map go` 到不了）；⚠️ 出口瓦片 x<0（边界外）⇒ 取边界内可达格"}],
     # ── 农场 ──
     "Farm": [
         {"tile": (79, 17), "target": "BusStop", "kind": "warp", "arrive": (11, 23), "note": "农场右侧口→巴士站。原出口瓦片标(80,15-18)，x=80 在宽度80边界外(x0..79)，walk_to 到不了=到不了巴士站根因；改边界内达格(79,17)(同 Farm→Backwoods 修正)，BusStop→Farm 落点正是(79,17)，站这里再/warp 巴士站(11,23)"},
@@ -783,7 +791,7 @@ MAP_LINKS = {
     # ⚠️ 2026-08-15 用实时 /warps 校准：岛的结构是 IslandSouth 为枢纽——西桥→IslandWest、东桥→IslandEast、北边→IslandNorth(火山区)。
     #    ❌ 不存在 IslandWest↔IslandNorth / IslandEast↔IslandNorth 直连（之前误加已删）；岛内快捷=金核桃解锁的鹦鹉特快（见 LOCKED_MAPS.parrotExpress）
     "IslandSouth": [
-        {"tile": (0, 11), "target": "IslandWest", "kind": "warp", "note": "西桥头→姜岛农场(105,41)"},
+        {"tile": [43, 28], "target": "IslandSouthEast", "kind": "warp", "arrive": [0, 29], "note": "📋 2026-10-06 按 `/warps` 总表补（原表缺这条 ⇒ `map go` 到不了）"}, {"tile": (0, 11), "target": "IslandWest", "kind": "warp", "note": "西桥头→姜岛农场(105,41)"},
         {"tile": (36, 12), "target": "IslandEast", "kind": "warp", "note": "东桥头→丛林/度假村(0,46)"},
         {"tile": (18, 0), "target": "IslandNorth", "kind": "warp", "arrive": (36, 89), "note": "北边小路站格(18,0)→/warp 火山入口区(36,89)。原出口(18,-1) y=-1 边界外"},
         # ⚠️ `tile` 必须是**站得住的格**（本表契约：`_map_go_walk` 拿它当"走到这再 /warp"的出口站格）。
@@ -794,7 +802,7 @@ MAP_LINKS = {
         {"tile": (20, 44), "target": "FishShop", "kind": "warp", "note": "码头→坐船返航直达鱼店(4,4)（站格 20,44；warp 触发格 17,44 站不住）"},
     ],
     "IslandWest": [
-        {"tile": (106, 41), "target": "IslandSouth", "kind": "warp", "note": "东桥→IslandSouth(0,11)（/warps实测）"},
+        {"tile": [61, 3], "target": "IslandWestCave1", "kind": "warp", "arrive": [6, 11], "note": "📋 2026-10-06 按 `/warps` 总表补（原表缺这条 ⇒ `map go` 到不了）"}, {"tile": [60, 92], "target": "CaptainRoom", "kind": "warp", "arrive": [0, 5], "note": "📋 2026-10-06 按 `/warps` 总表补（原表缺这条 ⇒ `map go` 到不了）"}, {"tile": (106, 41), "target": "IslandSouth", "kind": "warp", "note": "东桥→IslandSouth(0,11)（/warps实测）"},
         {"tile": (77, 40), "target": "IslandFarmHouse", "kind": "door", "note": "姜岛小屋门"},
         {"tile": (20, 23), "target": "QiNutRoom", "kind": "door", "note": "🥥 齐钻核桃房：**站格=(20,23)**（人要站这儿）；**门格=(20,22)** 记在 `BUILDING_DOORS[\"QiNutRoom\"]`（Buildings **瓦片索引 1470**，⚠️**没有 Action**）。反编译 `IslandWest.cs:327-338`：1470 ⇒ 未解锁弹核桃计数、解锁则 `warpFarmer(\"QiNutRoom\",7,8,0)`；2026-10-05 补28c 真机读瓦片确认（原表把**站格**写进了门格那一位 ⇒ `map go` 到门口如实停）"},
         {"tile": None, "target": "IslandFarmCave", "kind": "door", "note": "农场洞穴(96,32)→IslandFarmCave(4,10)（2026-08-15补）"},
