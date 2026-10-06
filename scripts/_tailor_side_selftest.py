@@ -126,6 +126,13 @@ ck("…装备着的那件：只清槽、**不进背包**（文案点明「留在
 ck("…非装备的照旧进背包／掉脚边（老路没被砍）", "addItemToInventoryBool(it)" in _clr
    and "createItemDebris(it" in _clr)
 
+print("⑨ 🔄 `place=` 直接写槽后**必须让游戏重建缓存**（恒真机根因：陈旧缓存 ⇒ 游戏拒抓身上那件）")
+ck("…放料后调了 `tm.BuildHighlightCache()`",
+   "try { tm.BuildHighlightCache(); } catch { }" in _set)
+ck("…抓身上那件之前也先重建一次（`BuildHighlightCache` 顺带会 `Clear`）",
+   _pw.count("BuildHighlightCache") >= 1)
+ck("…注释里写明根因（「陈旧」＋ `HighlightItems`）", "陈旧" in _set and "HighlightItems" in _set)
+
 print()
 if FAIL:
     print(f"❌ 失败 {len(FAIL)} 项: {FAIL}")

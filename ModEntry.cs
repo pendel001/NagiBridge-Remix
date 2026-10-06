@@ -17404,7 +17404,8 @@ var tcs = new TaskCompletionSource<object>();
                     var riClear = tm.rightIngredientSpot?.item;
                     tcs.SetResult(new { ok = true, action = "clear", returned,
                         left = liClear?.DisplayName, right = riClear?.DisplayName,
-                        note = returned.Count == 0 ? "两个槽本来就是空的" : $"退回 {returned.Count} 件" });
+                        note = returned.Count == 0 ? "两个槽本来就是空的"
+                             : "清槽：" + string.Join("、", returned.Select(x => $"{x["name"]}→{x["to"]}")) });
                     return;
                 }
 
@@ -17438,6 +17439,26 @@ var tcs = new TaskCompletionSource<object>();
                     if (worn == null) return (false, "", $"身上没穿{key}");
                     if (GetMenuHeldItem(tm) is Item) return (false, "", "光标上还拿着东西 —— 先放回背包再弄");
 
+                    // 🔄 先让**游戏自己**重建高亮缓存：`place=绿藻` 那一发是"直接写槽字段"放进去的，
+                    //    游戏不会因此重建缓存 ⇒ `HighlightItems` 可能读着**陈旧**的表（恒真机：
+                    //    缓存说 `left=true`、`HighlightItems` 却回 false）。重建后再判、再点。
+                    try { tm.BuildHighlightCache(); } catch { }
+                    string _diag;
+                    try
+                    {
+                        var hf = typeof(StardewValley.Menus.TailoringMenu)
+                            .GetField("ItemHighlightCache", F)?.GetValue(tm) as System.Collections.IDictionary;
+                        if (hf == null || !hf.Contains(worn)) _diag = "缓存里没有这件";
+                        else
+                        {
+                            var hl = hf[worn]; var ht = hl.GetType();
+                            _diag = $"缓存 left={ht.GetField("LeftSlot")?.GetValue(hl)}"
+                                  + $" right={ht.GetField("RightSlot")?.GetValue(hl)}"
+                                  + $" equip={ht.GetField("EquipmentSlot")?.GetValue(hl)}";
+                        }
+                    }
+                    catch (Exception ex) { _diag = "诊断读不出来: " + ex.Message; }
+
                     // ① 首选：**真点击**（图标中心 → 料槽中心），跟玩家自己点一模一样
                     if (icon != null)
                     {
@@ -17455,7 +17476,7 @@ var tcs = new TaskCompletionSource<object>();
                     //    ⛔ 仍然**不直接写 `spot.item`**；`via` 会如实告诉调用方**是哪一档成的**。
                     if (!tm.HighlightItems(worn))
                         return (false, "", $"点了侧边图标没反应，且游戏自己的 `HighlightItems` 说这{key}当不了料"
-                                           + "（AnySlot=false）—— 料槽没动");
+                                           + $"（=false；{_diag}）—— 料槽没动");
                     Item? grabbed2 = null;
                     try { grabbed2 = Utility.PerformSpecialItemGrabReplacement(worn); } catch { }
                     if (grabbed2 == null) return (false, "", "游戏自己的抓取 helper 回了空 —— 料槽没动");
@@ -17536,6 +17557,15 @@ var tcs = new TaskCompletionSource<object>();
 
                 // ♻️ 刷新（`_ValidateCraft` 是 protected，反射调 —— 同 `/forge_set` 那一发）
                 //    它会把 `craftResultDisplay.item` 按当前两槽重新算出来（`:631-672`）。
+                // ⚠️⚠️ 2026-10-06 恒真机逮到的**根因**：上面 `place=` 是**直接写槽字段**（不是游戏手势），
+                //    ⇒ 游戏**不会**重建它自己的 `ItemHighlightCache` ⇒ 之后再"抓身上那件进料槽"时，
+                //    游戏的闸门 `HighlightItems` 读的是**陈旧**的表、于是**拒绝抓取**
+                //    （真机：缓存说 `left=true`、`HighlightItems` 回 false；把菜单关掉重开就一切正常）。
+                //    ⇒ 照游戏自己手势之后那对动作补上：`ItemHighlightCache.Clear()` ＋ `_ValidateCraft()`
+                //    （见 `TailoringMenu.cs:443-444`/`:458-459`/`:476-477` 都是这两句连用）。
+                //    ⚠️ `BuildHighlightCache()` 自己开头就 `ItemHighlightCache.Clear()`（`:280`）⇒ 调它就等于
+                //       "清 + 重建"，一步到位（别自己再反射 Clear 一遍）。
+                try { tm.BuildHighlightCache(); } catch { }
                 try
                 {
                     typeof(StardewValley.Menus.TailoringMenu)
