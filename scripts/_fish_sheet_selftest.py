@@ -126,7 +126,12 @@ try:
              "noSpotReason": "本区范围内没扫到水格（isWaterTile 恒 false）"},
         ],
     }
-    # 水格扫描那档（Farm：有鱼区数据但一个区都没有 ⇒ 退回 `/water`）
+    # 水格扫描那档（**有鱼区数据但一个区都没有** ⇒ 退回 `/water`）。
+    # 🔴 2026-10-06 恒拍板「**撤掉农场的钓鱼选项单**」之后，这里**不能再用 Farm** 当夹具
+    #    （农场现在整行不给，见下面那根"农场不给行"的钉子）⇒ 换**同类形状**的 `Mountain`
+    #    （`_im_fish` 里那条注释自己写着 `Farm/Mountain… hasFishAreaData=True, count=0`）。
+    FISH_NOAREA = {"ok": True, "location": "Mountain", "hasFishAreaData": True, "count": 0, "areas": []}
+    # 农场载荷（**只用来验"整行不出现"**）：形状跟上面一样 —— 单看数据它是"能扫出落点"的。
     FISH_FARM = {"ok": True, "location": "Farm", "hasFishAreaData": True, "count": 0, "areas": []}
     FISH_CABIN = {"ok": True, "location": "Cabin", "hasFishAreaData": False, "count": 0, "areas": []}
 
@@ -225,11 +230,11 @@ try:
     # 水格 (31,31)（fishable）⇒ 只有"站 (38,31) 面左"这一对能把鱼漂丢到它上面（D_h=7）
     water = {(30, 30): [{"x": 31, "y": 31, "canCrabPot": False, "fishable": True}]}
     passable = {(38, 31): True}
-    api = FakeApi(_state("Farm", x=40, y=32, in_hand=True, wh=(80, 65)),
-                  fish_areas=FISH_FARM, water=water, passable=passable)
+    api = FakeApi(_state("Mountain", x=40, y=32, in_hand=True, wh=(80, 65)),
+                  fish_areas=FISH_NOAREA, water=water, passable=passable)
     acct_w = _acct(api)
     picks_w = acct_w.get("picks") or []
-    ctx_w, menu_w = _sheet(acct_w, loc="Farm", px=40, py=32)
+    ctx_w, menu_w = _sheet(acct_w, loc="Mountain", px=40, py=32)
     ck("0 个有钓点但图上有水 ⇒ **一层**且给得出钓点（走 `/water` 扫描）",
        len(picks_w) == 1 and "垂钓…" not in menu_w, str(acct_w) + " || " + menu_w)
     ck("…挑出来的是**落点那一对**：站 (38,31) 面左 3 ⇒ 鱼漂飞 7 格正好落在水 (31,31) 上",
@@ -245,8 +250,8 @@ try:
        not any(isinstance(p.get("area"), str) and p.get("area") for p in picks_w), str(picks_w))
 
     # 🔴 假门闸①：老 DLL 的 `/water` **不吐 `fishable`** ⇒ 这一档**整趟不扫**（宁可不给行）
-    api_old = FakeApi(_state("Farm", x=40, y=32, in_hand=True, wh=(80, 65)),
-                      fish_areas=FISH_FARM, water=water, passable=passable)
+    api_old = FakeApi(_state("Mountain", x=40, y=32, in_hand=True, wh=(80, 65)),
+                      fish_areas=FISH_NOAREA, water=water, passable=passable)
     acct_old = _acct(api_old, caps={"fish_areas": True})           # 只给了老的两位
     ck("老 DLL（caps 没有 `water_fishable`）⇒ 水格扫描那档**一行都不给**",
        acct_old == {} and not any(ep == "/water" for ep, _ in api_old.gets),
@@ -257,8 +262,8 @@ try:
                         "`fishable:false`（真机：农场池塘北沿那排就是这个）"),
                        ({"x": 31, "y": 31, "canCrabPot": True},
                         "**缺 `fishable` 键**（老 DLL 的回包）")):
-        _a = FakeApi(_state("Farm", x=40, y=32, in_hand=True, wh=(80, 65)),
-                     fish_areas=FISH_FARM, water={(30, 30): [_bad]},
+        _a = FakeApi(_state("Mountain", x=40, y=32, in_hand=True, wh=(80, 65)),
+                     fish_areas=FISH_NOAREA, water={(30, 30): [_bad]},
                      passable={(38, 31): True})
         _ac = _acct(_a)
         ck(f"…{_why} ⇒ 那一格水**不算钓点**（整行不出现，⛔ 连 `canCrabPot` 都不拿来当理由）",
@@ -266,8 +271,8 @@ try:
 
     # 📏 落点距离 **D 算不出来 ⇒ 整档不给行**（⛔ 宁可空着，也不拿"旁边那格"糊一个）
     M._fish_cast_dist_raw = lambda: {}                 # 从没量过
-    _a = FakeApi(_state("Farm", x=40, y=32, in_hand=True, wh=(80, 65)),
-                 fish_areas=FISH_FARM, water=water, passable=passable)
+    _a = FakeApi(_state("Mountain", x=40, y=32, in_hand=True, wh=(80, 65)),
+                 fish_areas=FISH_NOAREA, water=water, passable=passable)
     _ac = _acct(_a)
     ck("📏 从没量过抛竿距离（`_fish_cast_dist.json` 空）⇒ 那一档**一行都不给**",
        _ac == {}, str(_ac))
@@ -279,10 +284,10 @@ try:
     water2 = {(30, 30): [{"x": 31, "y": 31, "fishable": True},
                          {"x": 28, "y": 29, "fishable": True}]}
     passable2 = {(38, 31): True, (35, 29): True}       # (28,29) 的落点对：站 (35,29) 面左 7 格
-    api = FakeApi(_state("Farm", x=40, y=32, in_hand=True, wh=(80, 65)),
-                  fish_areas=FISH_FARM, water=water2, passable=passable2)
+    api = FakeApi(_state("Mountain", x=40, y=32, in_hand=True, wh=(80, 65)),
+                  fish_areas=FISH_NOAREA, water=water2, passable=passable2)
     acct_w2 = _acct(api)
-    ctx_w2, menu_w2 = _sheet(acct_w2, loc="Farm", px=40, py=32)
+    ctx_w2, menu_w2 = _sheet(acct_w2, loc="Mountain", px=40, py=32)
     ck("…扫出**两处**岸位也只给一层（没名字 ⇒ 第二层就是几行同名，恒拍板这档只有一层）",
        len(acct_w2.get("picks") or []) == 2 and "垂钓…" not in menu_w2
        and IM._fish_subs(ctx_w2, [None]) is None, str(acct_w2) + " || " + menu_w2)
@@ -301,13 +306,29 @@ try:
     #    ⇒ 那一档改成**按落点挑位**（见上面那组检查）；`_FISH_WATER_SWEEP_ENABLED` 现在只当**紧急开关**。
     #    这条钉子钉的是"开关关掉就真不给行"（真机又验出它在骗人时，先关再查）。
     M._FISH_WATER_SWEEP_ENABLED = False
-    api_off = FakeApi(_state("Farm", x=40, y=32, in_hand=True, wh=(80, 65)),
-                      fish_areas=FISH_FARM, water=water, passable=passable)
+    api_off = FakeApi(_state("Mountain", x=40, y=32, in_hand=True, wh=(80, 65)),
+                      fish_areas=FISH_NOAREA, water=water, passable=passable)
     acct_off = _acct(api_off)
-    ck("⛔ 紧急开关 `_FISH_WATER_SWEEP_ENABLED=False` ⇒ 没有鱼区的图（Farm）**一行都不给**",
+    ck("⛔ 紧急开关 `_FISH_WATER_SWEEP_ENABLED=False` ⇒ 没有鱼区的图（Mountain）**一行都不给**",
        acct_off == {} and not any(ep == "/water" for ep, _ in api_off.gets),
        str(acct_off) + " || " + str(api_off.gets[:2]))
     M._FISH_WATER_SWEEP_ENABLED = True   # 后面的检查继续钉"逻辑本身"（见上面那段说明）
+
+    # 🚫🏡 恒 2026-10-06：「**除了河流农场之外应该就一两个水潭子，而且只有森林农场钓得木跃鱼，
+    #    其他农场钓上来都是垃圾** ⇒ 我建议**撤掉农场的钓鱼选项单**，实在需要的时候让 ai 自己调用 fish 抛。」
+    _api_farm = FakeApi(_state("Farm", x=40, y=32, in_hand=True, wh=(80, 65)),
+                        fish_areas=FISH_FARM, water=water, passable=passable)
+    _acct_farm = _acct(_api_farm)
+    _ctx_farm, _menu_farm = _sheet(_acct_farm, loc="Farm", px=40, py=32)
+    ck("🚫 农场（Farm）⇒ **整行不出现**（恒拍板撤掉农场钓鱼档）",
+       _acct_farm == {} and "垂钓" not in _menu_farm, str(_acct_farm) + " || " + _menu_farm)
+    ck("…而且**连水格扫描都不打**（那档在农场大图上最贵，白烧）",
+       not any(ep == "/water" for ep, _ in _api_farm.gets), str(_api_farm.gets[:3]))
+    # ⚠️ 只是"不上单子"，**不是**"农场不能钓"：同图换到 `FarmHouse`（另外的图）判据不该被误伤
+    ck("…判据只认农场那张图本体：`FarmHouse`/`FarmCave` 不算（别用 startswith('Farm') 一刀切）",
+       M._is_farm_map("Farm") and M._is_farm_map("Farm_Island")
+       and not M._is_farm_map("FarmHouse") and not M._is_farm_map("FarmCave"),
+       str([M._is_farm_map(x) for x in ("Farm", "Farm_Island", "FarmHouse", "FarmCave")]))
 
     # 📏 落点距离 D 的算法（**自动**：实测优先 → 公式＋实测蓄力 → 算不出给 None）
     M._fish_cast_dist_raw = lambda: {"power": 1.0, "obs": {"10": {"h": 7, "v": 6}}}
@@ -520,12 +541,12 @@ try:
     # 📏 水格扫描那一档的"到点复核"必须按**落点**判（2026-10-06 真机踩到：旧尺子"≤4 格"把
     #    正确的行 (站 29,21 → 落点 29,27，D=6) 判成"够不着"，白走一趟）
     _SW = {"x": 29, "y": 21, "wx": 29, "wy": 27, "dir": 2, "area": ""}   # 落点在正下 6 格（D_v=6）
-    st = _state("Farm", x=29, y=21, in_hand=True, wh=(80, 65))
+    st = _state("Mountain", x=29, y=21, in_hand=True, wh=(80, 65))
     a, nav, scripts, out = _go_w(st, _SW, {(29, 27): [{"x": 29, "y": 27, "fishable": True}]})
     ck("📏 水格扫描档：站 (29,21) 落点 (29,27) = 正下 6 格 ⇒ **照常开钓**（旧的「≤4 格」闸会误拦）",
        bool(scripts) and scripts[0][0] == "fish_run" and ("/face", {"direction": 2}) in a.posts, out)
     _BAD = dict(_SW, wy=30)                                              # 落点对不上（9 格，远超 D=6）
-    st = _state("Farm", x=29, y=21, in_hand=True, wh=(80, 65))
+    st = _state("Mountain", x=29, y=21, in_hand=True, wh=(80, 65))
     a, nav, scripts, out = _go_w(st, _BAD, {(29, 30): [{"x": 29, "y": 30, "fishable": True}]})
     ck("…落点距离对不上 D（9 格 vs 该 6 格）⇒ **当场拒**、不发这一竿",
        scripts == [] and "对不上" in out, out)

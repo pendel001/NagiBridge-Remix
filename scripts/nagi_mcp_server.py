@@ -25742,6 +25742,15 @@ def _fish_picks_from_raw(raw: dict, state: dict) -> list:
     return []
 
 
+def _is_farm_map(loc_name: str) -> bool:
+    """**是不是玩家农场那张图**（`Farm` / `Farm_*`）—— 见 `_im_fish` 里"农场不上单子"那段的来历。
+
+    ⚠️ 别用 `startswith("Farm")`：`FarmHouse` / `FarmCave` 是**另外的图**（`Farm` 才是农场地图本体）。
+    """
+    _n = str(loc_name or "")
+    return _n == "Farm" or _n.startswith("Farm_")
+
+
 def _im_fish(state: dict, caps: dict = None) -> dict:
     """🎣 「垂钓」那行的账（`intent_menu.Ctx.fish` 的形状见那儿）。
 
@@ -25775,6 +25784,16 @@ def _im_fish(state: dict, caps: dict = None) -> dict:
     #    （恒亲站的那一格；他正好在同一层时用他的**当下**站位）。层号解析认 `…:布局` 那种写法（困难模式）。
     if _fish_mine_level(loc_name) is not None:
         return _fish_mine_pick(state, loc_name)
+    # 🚫🏡 **玩家农场一律不上单子**（恒 2026-10-06 拍板）：
+    #    「**除了河流农场之外应该就一两个水潭子，而且只有森林农场钓得木跃鱼，其他农场钓上来都是垃圾。**
+    #      我建议**撤掉农场的钓鱼选项单**，实在需要的时候让 ai 自己调用 fish 抛。」
+    #    ⚠️ 两条要点：
+    #      ① **只是不上单子** —— `fish` 域那条"就地钓"照样能用（他想钓随时钓，别把路堵死）；
+    #      ② **连水格扫描都不扫**：那档要在整张农场图上逐格打 `/water` + `/passable`（`_fish_water_scan`
+    #         自己就写着"农场那种大图"最贵）⇒ 白烧一趟还给出个"垃圾水域"的行。
+    #    ⚠️ 判据只认**农场地图**（`Farm` / `Farm_*`）：`FarmHouse`/`FarmCave` 是**另外的图**（别用 startswith("Farm") 一刀切）。
+    if _is_farm_map(loc_name):
+        return {}
     now = time.time()
     raw = None
     if _FISH_CACHE.get("key") == loc_name and (now - _FISH_CACHE.get("ts", 0.0)) < _FISH_CACHE_TTL:
