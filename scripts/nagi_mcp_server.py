@@ -510,8 +510,26 @@ def _close_hint(menu: str, content_on_sheet: bool = False) -> str:
                 "左右槽放了什么，再用 `menu forge item1=… item2=… mode=…`（它**直接用已经开着的台子**）；"
                 "收掉走上面那行「关掉界面」（这屏**没有**右上角关闭键）")
     if "tailoringmenu" in m:
-        return ("🧵 缝纫机屏：正事是**把线轴+布料放进去做成衣服/染色**（点这屏里的槽）；"
+        # 🧵 2026-10-06：缝纫机**有真 op 了**（`menu tailor`）⇒ 这句从"点这屏里的槽"
+        #    改成点名那条路（同 `forgemenu` 那条的理由：点名真路，别让 AI 猜怎么点）。
+        if content_on_sheet:
+            return ("🧵 缝纫机屏：**槽里有什么、背包里哪件能进哪一槽、产出预览**都在单子上"
+                    "（`tailor` 那一栏）⇒ 正事用 `menu tailor place=… slot=left/right` 放料、"
+                    "`action=start` 开缝、`action=take` 收产物；"
+                    "收掉走上面那行「关掉界面」（这屏**没有**右上角关闭键）")
+        return ("🧵 缝纫机屏：正事是**把料放进左右槽做成衣服/染色** → "
+                "`menu read` 看这屏槽里有什么，再 `menu tailor place=… slot=… / action=start|take`；"
                 "收掉走上面那行「关掉界面」（这屏**没有**右上角关闭键）")
+    if "purchaseanimalsmenu" in m:
+        # 🐄 2026-10-06：买动物菜单（原先 `/menu` 对它只有 `shopItems:null`）。
+        if content_on_sheet:
+            return ("🐄 买动物屏：**能买哪几只、各自多少钱、缺钱还是缺棚**都在单子上"
+                    "（`animalShop` 那一栏）⇒ 下单走单子那行「买动物」"
+                    "（它自己走过去/挑空棚/起名，钱从共享钱包扣）；"
+                    "收掉走上面那行「关掉界面」")
+        return ("🐄 买动物屏：正文用 `menu read` 看（`animalShop.animals` = 能买哪几只 + 各自价格 + "
+                "缺钱/缺棚）；下单走 `menu click(animal=名字[, animal_name=给它起的名])`；"
+                "收掉走上面那行「关掉界面」")
     if "animalquerymenu" in m:
         return ("🐄 动物查询屏：看这头动物的资料（这屏有几个自己的按钮）；"
                 "收掉走上面那行「关掉界面」（这屏**没有**右上角关闭键）")
@@ -13554,6 +13572,9 @@ def menu(ops: str = "", kw: dict | None = None) -> str:
         "recipes": list_recipes, "菜谱": list_recipes,
         "craftables": list_craftables, "配方": list_craftables,
         "forge": forge, "锻造": forge,
+        # 🧵 2026-10-06 恒：「两三个槽位也不复杂，跟锻造台差不多」+「完全没有做过，没有 enum
+        #    原生操作指导」⇒ 缝纫机也给它一个门牌（放料/开缝/取产物，引导写在函数 docstring 里）。
+        "tailor": tailor_menu, "裁缝": tailor_menu, "缝纫": tailor_menu, "缝纫机": tailor_menu,
         "geode": process_geode, "晶球": process_geode,
         "geodes": process_geodes,
         "customize": character_customize, "捏人": character_customize, "起名": character_customize,
@@ -17990,7 +18011,7 @@ _SETTINGS_DISPATCH = {
 
 # 📖 详细域指引（2026-08-22：docstring 精简后，深度/坑靠 help 查，不丢细节）
 _DOMAIN_GUIDES = {
-"intent": "🎯 意图选项单（**先看单子、再敲编号**）：`intent(ops=\"show\")` 看这一刻能做的事（一行一件，`←` 后面是理由）；`intent(ops=\"do\", kw={\"code\":\"1\"})` 敲第 1 行；`intent(ops=\"at\", kw={\"x\":12,\"y\":30})` 指哪打哪（逃生口，问「这一格能做什么」）。敲法：`1` 一行 · `1,4` **多选**（选哪些，顺序无所谓）· `1=2,4=7` **各多少**（号=数量，配对，顺序也无所谓）· `0` = 这些都不是（子层里 = 返回上一层）。⚠️**目录行句尾带 `…`**（点开还有下一层，顶层只报个数不发号）；**号是当场发的、不跨屏** —— 敲之前先 `show` 看一眼当前那一屏，别记着上一屏的号去敲。⚠️单子上**出现的那条，按了就成**；没出现 = 这一刻算不出来（不是「不行」）。覆盖：收机器 / 开箱子（取·存）/ **箱子里…**（容器界面**开着**时，箱内容**直接摊成一行行「取」**——那儿有格号，同名不同星的两摞也点得准；不用再 `menu read` 自己解析）/ **存…**（同一个界面里往这只箱子放东西：跟箱子**关着**时同一套「选哪几样 → 各多少」；放进去屏幕上是**当场看得见**的）/ 吃 / 看书（**背包里没拿手上的也算**）/ 捡 / 收作物 / **浇水**（只浇**没浇过的作物格**——不用给矩形/半径，端点自己找；水壶空了自己跑去打水）/ 坐·**起身** / 摸动物 / 摸猫狗 / **放牧（开棚门）**（早上 06:00–15:00 且不下雨/非冬天，站在农场上时）/ **关棚门**（≥17:00 或 <06:00，同条件） **买·卖**（只在商店 menu 开着时才出现）/ **推进对话**（有对话框或剧情在播时）/ **确认结算**（过夜结算屏 ShippingMenu）/ **投出货箱**（站在农场 + 背包里有投得进去的）/ **关掉界面**（任何界面开着时的出口）。⚠️**要规划的那些农活不在单子上**（锄地/播种/施肥/清场/砍树）—— 它们得按矩形/布局算落点、还要挑蓄力站位，走 `farm` 域（`farm ops=till, kw={x1,y1,x2,y2,layout}` 这种），**单子上一格一格敲比它慢得多、还更费体力**。挖蚯蚓/远古斑点走 `scene ops=spot`（一次全挖）。⚠️**搬家具（搬走）2026-10-02 也撤出单子了**（恒：家居装饰场景专用、优先级极低）—— 走现成的域工具 `scene(ops=\"furniture\")` 看清单 / `scene(ops=\"pickup\", kw={\"tile_x\":X,\"tile_y\":Y})` 搬起。⚠️**穿戴（穿/脱）2026-10-02 也撤出单子了**（恒：权重最低 ⇒ 空场景里常驻）—— 走 `daily(ops=\"wear\", kw={\"name\": 内部名})` 或 `kw={\"slot\": \"hat\"}`。⚠️**买**是两层（选哪几样 → 各多少）；**卖**只有一层（选哪几摞 → 敲了就卖，**整摞走**——游戏单击就是卖整摞，别试 `1=2` 那种写法，那一层不收数量）。",
+"intent": "🎯 意图选项单（**先看单子、再敲编号**）：`intent(ops=\"show\")` 看这一刻能做的事（一行一件，`←` 后面是理由）；`intent(ops=\"do\", kw={\"code\":\"1\"})` 敲第 1 行；`intent(ops=\"at\", kw={\"x\":12,\"y\":30})` 指哪打哪（逃生口，问「这一格能做什么」）。敲法：`1` 一行 · `1,4` **多选**（选哪些，顺序无所谓）· `1=2,4=7` **各多少**（号=数量，配对，顺序也无所谓）· `0` = 这些都不是（子层里 = 返回上一层）。⚠️**目录行句尾带 `…`**（点开还有下一层，顶层只报个数不发号）；**号是当场发的、不跨屏** —— 敲之前先 `show` 看一眼当前那一屏，别记着上一屏的号去敲。⚠️单子上**出现的那条，按了就成**；没出现 = 这一刻算不出来（不是「不行」）。覆盖：收机器 / 开箱子（取·存）/ **箱子里…**（容器界面**开着**时，箱内容**直接摊成一行行「取」**——那儿有格号，同名不同星的两摞也点得准；不用再 `menu read` 自己解析）/ **存…**（同一个界面里往这只箱子放东西：跟箱子**关着**时同一套「选哪几样 → 各多少」；放进去屏幕上是**当场看得见**的）/ 吃 / 看书（**背包里没拿手上的也算**）/ 捡 / 收作物 / **浇水**（只浇**没浇过的作物格**——不用给矩形/半径，端点自己找；水壶空了自己跑去打水）/ 坐·**起身** / 摸动物 / 摸猫狗 / **放牧（开棚门）**（早上 06:00–15:00 且不下雨/非冬天，站在农场上时）/ **关棚门**（≥17:00 或 <06:00，同条件） **买·卖**（只在商店 menu 开着时才出现）/ **买动物**（只在玛妮柜台的买动物 menu 开着时；菜单已经进「挑棚」阶段就给不出行）/ **缝纫**（缝纫机开着时：放料/开缝/收产物/退料）/ **取回失物**（马龙的失物招领开着时：**花钱**把丢的东西一件件买回来）/ **查看社区特别任务**（站在镇上、板子还没接取时：点开是「接左边/接右边」）/ **领取兑奖券×n**（站在镇上、板子旁领奖箱有待领券时）/ **推进对话**（有对话框或剧情在播时）/ **确认结算**（过夜结算屏 ShippingMenu）/ **投出货箱**（站在农场 + 背包里有投得进去的）/ **关掉界面**（任何界面开着时的出口）。⚠️**要规划的那些农活不在单子上**（锄地/播种/施肥/清场/砍树）—— 它们得按矩形/布局算落点、还要挑蓄力站位，走 `farm` 域（`farm ops=till, kw={x1,y1,x2,y2,layout}` 这种），**单子上一格一格敲比它慢得多、还更费体力**。挖蚯蚓/远古斑点走 `scene ops=spot`（一次全挖）。⚠️**搬家具（搬走）2026-10-02 也撤出单子了**（恒：家居装饰场景专用、优先级极低）—— 走现成的域工具 `scene(ops=\"furniture\")` 看清单 / `scene(ops=\"pickup\", kw={\"tile_x\":X,\"tile_y\":Y})` 搬起。⚠️**穿戴（穿/脱）2026-10-02 也撤出单子了**（恒：权重最低 ⇒ 空场景里常驻）—— 走 `daily(ops=\"wear\", kw={\"name\": 内部名})` 或 `kw={\"slot\": \"hat\"}`。⚠️**买**是两层（选哪几样 → 各多少）；**卖**只有一层（选哪几摞 → 敲了就卖，**整摞走**——游戏单击就是卖整摞，别试 `1=2` 那种写法，那一层不收数量）。",
 "check": "查询域，what=...：status(完整状态) backpack(逐格价值/星级) worn(穿戴) machines(全场机器清单) mine(下矿进度) silo(干草) mastery(精通) buildings(木匠建筑) quest(开任务日志) chests(当前图箱) storage(箱子网络) look(环视周围) profile(我的技能等级+职业分支,如是否 Luremaster 蟹笼免饵) role(端口↔角色确认:我是谁/恒是谁) ready(就绪握手实况:卡在就绪框时查,两侧都读才看得出死锁在哪头)。⚠️查概览用 status，查逐格用 backpack，别都调浪费 token。📌profile/role 一律走 check（不叫 profile()/which_role()）。📐这个域的参数叫 **what**，**不是 ops**。带参的只有两个: chests(chest=N 看第N个箱) / look(radius=10 环视半径)；其余(status/backpack/worn/machines/mine/silo/mastery/buildings/quest/ready/storage/profile/role)**全无参**。⚠️查概览用 status、查逐格用 backpack，别都调一遍浪费 token。",
 "farm": "农活域(🌱必走，别手动挥工具组合，用域 ops)：till(锄地) plant(种,跳过已种;带 layout 就按洒水器布局种) water(浇,自动跳雨+水壶没水先装满) harvest(收：**镰刀作物自动换镰刀**（小麦/苋菜/水稻/芋头…任何镰刀都行）；**背包没镰刀就跳过它们**、手摘照收、收完如实报；已领耕种精通+有铱镰刀时手摘作物也一并扫) fertilize(化肥) clear(清杂草石树桩;坐标同 till，也可 `radius=N` 走**圆形**；**会自动往外多清 2 格**——田边的杂草会长进田里把作物顶掉，不用自己放大) plot(连通域规划) plan(方形规划,纯算格) chop(砍树)。⚠️**锄地/播种各只有一个实现**：锄地=`till`（`hoe`/`布局锄`/`tillfield`/`蓄力锄` 都是它的别名）、播种=`plant`（`sow`/`plantlayout`/`播种规划` 都是它的别名）；⛔ 没有 `till_plant`——要锄+种写 `ops=\"till plant\"`。 clearground(清单格) load(收放机器:**拟人走过去逐台**、收放一条过;`item` 留空=只收不放) break(拆/敲同scene,镐子敲可破物/翻已耕地) place(放置/播种同scene) pond/pond_add/pond_feed/pond_collect/pond_fish(鱼塘)。⚠️漏格DLL自动补；**缺的格会被点名「被什么挡着」**（🌿草/杂草/🪨石头/🪵树枝→**先 `clear` 清一遍再 till/plant**；🏗️洒水器/箱子等设施→⛔别清、那是规划该绕开的格）——草占着地格时锄头是锄不出 HoeDirt 的，别对着「缺失N格」发呆。只在 Farm/温室/姜岛。带参 op(plant 的 seed_name、till/clear 的 x/y/rows、fertilize 的 fertilizer_name、place 的 name、load 的 item/machine_type/here、pond_add 的 item)→ kw={'参数名':值}。🐄动物: animals(摸+收) 喂水/碗(宠物水,🌧️雨天自动跳过——雨会把碗填满) milk(挤奶剪毛) doors(开关畜棚鸡舍门,别名 放牧/开关门/棚门——**默认是翻转端点**:先走到棚门口再翻,回执逐栋报执行后的门态;🆕 传 `want`=`open`/`close` 就是**收敛到目标态**(只补翻没到位的几栋,`close` 还先查「外面还有没有动物」)) buy(买动物,豁免建议) hay(干草) pet(猫狗) petwalk(拟人摸) 畜舍/这间(这间屋动物) statue(祈福)——⚠️farm water=浇地,动物水用 喂水; farm load=机器收放,这屋动物用 畜舍。📐参数键名: till/clear/plant/fertilize 都是 x,y(**必填**),rows,length,direction（till/plant 也可用 x1,y1,x2,y2 直接给矩形两角）；plant 另有 seed_name,layout,direct,trellis；harvest=radius（**只有一个收获口**：镰刀作物自动换镰刀、没镰刀跳过并报，见上）；plot=x,y,radius,all_plots；chop=area(**值写几个数**：4 个数=矩形两角 / 3 个数=圆心+半径，逗号空格都认)；collect=machine_type,location；load=item,machine_type,location,count,here；place=name,x,y；break=x,y,steps,radius；pond_add=item+x,y（pond_feed/collect/fish 只要 x,y）；buy=animal_type,name,building；petwalk=include_petted；hay=dry_run。⚠️direction 只认 horizontal(默认)/vertical 两个值,别写'横'/'竖'。💡大田洒水器布局(可选,纯自动化建议)：要按洒水器留格/留走道就 plan→till→plant 三件套——plan(x1,y1,x2,y2,layout=0,hoe_level=-1,trellis=False) **纯算格不动机器**先看要锄/种哪些; till(x1,y1,x2,y2,layout=0) 按布局锄; plant(x1,y1,x2,y2,seed_name,**layout**) 按布局种（layout=0 整块/1 初级十字/2 高级/3 铱；direct=True 瞬移快、默认走位拟人）。想一次说完就 `ops=\"till plant\"`（**一份 kw 共用**，锄地会自动点名忽略 seed_name）。**layout 四档**: 0=标准整块(不预留洒水器,锄法蛇形逐格走位,任何锄头等级都行) 1=初级(十字稀疏,每台覆盖上下左右4格;锄法=精确锄每台4格,**与锄头等级无关**) 2=高级(优质,田宽高先裁成**3的倍数**,每3×3中心1台覆盖8格,整块蓄力锄) 3=铱(裁成**5的倍数**,每5×5中心1台覆盖24格;⚠️爬架作物不适用)。hoe_level: 0→1格 1→3线 2→5线 3→3×3 4→6×3,-1=自动读手持。trellis=True=爬架作物(啤酒花/青豆/葡萄,不可通过格)⇒自动**种2留1**留走道让AI能进田浇收。只管种不摆洒水器就直接 plant,不用 plan 那套。⚠️已知限制: layout 0/2/3 碰上金/铱锄(hoe_level>=3)会报**0处锄地站位**并自打一行'落点未实测校准,暂不规划蓄力站位'——**那是刻意不猜不是出错**; layout 1 不吃蓄力站位不受影响。",
 "mine": "下矿域(⚒️ 矿井/头骨/火山)：go(去挖矿:mode=rush冲层/farm刷矿,start起始层,target目标层,ore,cycles圈数) progress(进度) bomb_status/bomb_plan/bomb_place/bomb_collect/bomb_ladder/bomb_retreat(单步炸,**都要 bomb_ 前缀**) bomb_mine(自动) bomb_volcano(火山) organize(整理背包)。🔁**刷矿=mode=go(mode=farm)**：定点刷指定矿→ore=Copper铜(21层)/Iron铁(41层)/Gold金(71层)；**煤靠 farm 铁层(41)顺手清尘埃精灵/蝙蝠掉**（不是 ore 选项，跑 auto 内部刷）。🏃下矿=mode=go(mode=rush,start可选≤电梯上限+5倍数,target默认120)。⚠️无镐/血低硬拦；梯子 /ladder+confirm。⚔️贴身(3×3)自卫=游戏自己每 tick 挥刀(go/bomb_mine/bomb_volcano 三个脚本都自开自关,**只转向不移动**;手上是锤子且冷却好了会重砸6×6)；2格外的怪仍靠脚本扫描,别站桩。🍽️**自定义吃食**：go/bomb_mine/bomb_volcano 都可传 food_hp/food_sta=**逗号分隔、靠前的先吃**(如 food_hp=「奶酪,鱼肉卷」)。血低只看 food_hp、体力低只看 food_sta(**两张表分开别混**)。点名=**白名单**——只在这几样里挑、**吃完了也不吃别的**(恒 2026-10-03)，目的是**防止自动挑把你留着卖的吃了**(山羊奶酪最典型)；一个字都没点名才自动挑(自动挑**不吃带效果的**)。🍽️food_buff=点名「去吃带这个效果的那份」(效果关键字如 运气/钓鱼，判据=游戏报的 foodBuffs)；每层开打前看该 buff 没挂/快过期就吃；**不传也会自动补**（自动挑包里带 buff 的那份——恒 2026-10-03 晚拍板「不点名也自动补」，与炸矿那套统一）。⚠️food_buff **只有 go/bomb_mine 有**（火山不补 buff，别指望它；恒 2026-10-03 拍板维持现状）。⚠️bomb_mine 没炸弹+host在同矿井→自动转【内部】协同(跟随host+帮忙敲矿/打怪)不撤退出矿(🗑️ 独立脚本 `bomb_escort` 2026-10-03 恒拍板**已真删**，协同就是这里内联的；**沙漠这档只能被动起**——恒 2026-10-03 拍板「不需要主动起」，别再开这个口)；**协同期间又拿到炸弹会自动回炸矿模式**(2026-10-03，照火山那套『同一循环里重估炸弹』；包里还有别的类型会先换类型再决定要不要交棒)；bomb_retreat 结束协同+停脚本+脱离矿井回门口(随时可结束)。⚠️接「深处的危险」重置电梯→起始层动态从1起(内置脚本自动读，不暴露工具)；刷矿目标层不可直达会上报，需先冲层带回或改浅层。📐带参速查: go(mode=rush冲层/farm刷矿, start起始层, target目标层, ore=Copper铜/Iron铁/Gold金, cycles圈数, hp_threshold, food_sta, food_hp, food_buff, resume) bomb_plan(radius,min_covered,top) bomb_place(x,y **必填**) bomb_collect(max_items) bomb_mine(target,bomb,min_covered,follow_host,lead,autodrop,one_floor,food_hp,food_sta) bomb_volcano(bomb,min_covered,hp_threshold,max_minutes,poll,food_hp,food_sta) organize(disable,reset)。💣bomb 三个取值 'Cherry Bomb'樱桃/'Bomb'黑/'Mega Bomb'超级——**点名的包里没有就按 黑>超级>樱桃 自动换成有的**(不会误报没炸弹)；范围 樱桃=边长7十字 / 黑=11x11方块 / 超级=15x15方块，⚠️黑和超级**会炸伤自己**(实测黑掉3血)。⚠️bomb_volcano **要求 host 已在矿/火山里**才放行(火山瓦片没法程序化换层)。⚠️bomb_mine one_floor=True=逐层模式(同步,只跑一层出摘要,不撤退)；**默认冲层模式=异步后台跑,推荐**。💡出发前占位物：提前放1个可堆叠物(铱矿/铱锭/五彩碎片)在包，满包时同种战利品自动堆叠吸附、少触发满包停；别拿银河之魂这类带死亡会丢的稀有物当占位。",
@@ -18002,7 +18023,7 @@ _DOMAIN_GUIDES = {
 #       一个 AI 够不着的域名。逐 op 的替代路由 `domain_selftest._SUBSUMED_DOMAINS` 审。
 "social": "社交域：chat(搭话,name=NPC名) gift(送礼,npc_name/item_name) give(送玩家物品,手持右键正式赠予,一次要等同意) hand(递给玩家,走过去丢他脚边,磁吸自动收,可整叠) send(发消息,message,**恒窗口必见——回恒就用它,别只在自己的前端回**) emote(表情,name) friendship(查好感,npc_name) movie(影院,npc)。📐参数键名: chat=name / gift=npc_name+item_name / give=player_name+item_name / hand=player_name+item_name+count(0=整叠) / send=message / emote=name(默认爱心) / friendship=name / movie=npc。⚠️**give vs hand**：give=面对面正式赠予(手持右键,一次一个)——**它发的是「赠送提议」,对方点同意东西才过去**(没点会退回;回报会明说「等他点同意」,看到这句别当成已经送到)；hand=走过去丢他脚边(磁吸自动收,**可整叠**,不用对方操作)——想整叠给/对方不在手边就用 hand。kw={'参数名':值}。",
 "scene": "场景交互域(点东西/工具/转身/捡/坐)：at(tile_x,tile_y)(点指定格/柜台) interact(点面前) use(挥工具) face(转向0上1右2下3左) select(拿手上) sit(x,y[,face])(**坐椅子**:自动走到座位旁再坐,上不了会明确报错;状态条「🪑 可交互：sit(x,y)」给坐标;可选 face=坐下朝向0上1右2下3左,**只对「朝向来自坐下那刻面朝方向」的座位生效**(反编译:stool 类/opposite 长椅/名字带Stool的家具),其它写死——吃不吃由端点回的 face 字段说了算,不生效会在回报里点名) stand(**起身**:坐着时用,没坐着明确报错,带动画+轮询确认) seats(radius=12)(扫附近能坐的椅子/长凳/沙发,✋=可改朝向) pickup(拿起家具) pickup_scene(捡当前场景物,**只扫你周围方形±30格**) berry(摇/摘 灌木与果树：浆果·茶叶·果子——果树摇完果子**掉地上**要再走上去捡) spot(挖蚯蚓点) moss(绿雨搜苔藓) rock(室外镐击:敲当前图可破物,采石场/挖掘场/蚌矿场跳普通石,dig/dry,battle-free) garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物:一种 name+count / 多种 items=逗号分隔) decor(🪵地板/墙纸真值表:这间屋哪些格能铺+现在铺的什么,**铺前先查这**) furniture(扫家具) place(放置/播种:name=物品名,x/y=目标格→箱子/树种/蟹笼落地或种下,只放可放置物;🪵**地板/墙纸是特例**——只能点在**地板格**(地板)/**靠墙那圈墙格**(墙纸)上,点错游戏**静默不理**;点错时回报会直接告诉你「这格其实是墙不是地板」并给出能铺的格) break(拆/敲:x,y=目标格,steps=挥击次,radius=方圆→镐子敲石头/翻已耕地,跳过箱子/容器格) maze(迷宫视图r半径,gx/gy目标格→ASCII棋盘#墙.可走P自己G目标) maze_seg(走法链gx,gy目标→拆直走廊列表+拼「左/右上/下走到(x,y)」多段链,AI按段walk_to) maze_walk(走迷宫 waypoints=「x,y x,y…」依次walk_to;⚠️**它其实是通用多段走位,主门牌已挪到 `map walk_multi/闲逛`**(闲逛遛弯/绕人转圈/泳池绕圈游),此处保留旧名为兼容) pan(淘金/淘盘:本图水下闪光点→岸边走位面水→铜锅淘金收掉落) front/rummage(分别是interact/garbage的别名)。📌**坐着想起来：scene stand**（别拿 at 猜一个够得着的格子——那条路会静静失败）。📐带参速查(键名必须=下面这些,**写错会被静默丢掉、不报错**): at(tile_x,tile_y) **⚠️是 tile_x/tile_y 不是 x/y** / pickup(tile_x,tile_y **同 at 用 tile_**) / use(name) / face(direction 0上1右2下3左) / select(name) / sit(x,y,face) / seats(radius=12) / pickup_scene(max_items=30) / moss(radius,target_max,rounds,dry_run) / rock(dig,radius,max_break,break_stone) / garbage(loc,pos,wait,dry_run) / pan(dry_run,radius,timeout) / drop(name,count,items=多种一起丢) / place(name,x,y) / decor(无参) / break(x,y,steps,radius) / maze(radius,gx,gy) / maze_seg(gx,gy,radius) / maze_walk(waypoints,location,max_wait,max_seg)。kw={'参数名':值}。",
-"menu": "菜单/界面域(开→看→点)：read(看菜单) advance(推进剧情/对话,一句句) **skip(整段跳过剧情/事件,事件 skippable=true 才跳得动)** click(option/item/button/xy 点;action=claim领/action=discard丢桶腾格;slot=序号领指定格) key(ok/esc/数字按键) cancel(关弹窗/撤就绪) shop(逛店) sell(卖商店) bin(投出货箱) craft(合成) recipes(菜谱) craftables(配方) forge(锻造) geode/geodes(砸晶球) customize(捏人) bundle(献祭缺口·**只读存档不走路**) bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读消耗品:书/秘密纸条/日记残页,统一走右键读 name=物品名) levelup_choose(技能升级职业选择 5/10级:不带参读左右选项,side=left/right 或 profession=职业id 定分支;普通升级自会确认OK) number(数量输入:展览会兑换台/转盘押注 NumberSelectionMenu) minigame(赌场小游戏点按钮 action=hit/stand/bet10/…) minigame_state(读牌面/转盘) display_fill(农展台放满 items='钻石,山羊奶酪') display_takeback(收好) journal(开任务日志→menu read 读卡,翻页=click(button=forward/back),领奖励=click(button=rewardBox)) know(查特别订单详情/知识库SPECIAL_ORDERS,如menu know 岛屿食材)。📐参数键名: click=option,button,x,y,item,right,quantity,action,real,slot,category(**action=claim领 / discard丢桶腾格**;button 用按钮名 ok/upperRightCloseButton/forward/back/rewardBox/mainButton) / key=key,count,hold / number=value,confirm / shop=place,want / sell=name(**多选隔逗号/分号,中英文都行;别用空格**),count(-1=全卖;**sell_all=True 一次卖完这家店收的,不收的一根不动**) / bin=name,sell_all / craft=item_name,count / forge=item1,item2,mode,target / geodes=count / customize=name,farmname,favorite / bundle=area / bundle_kb=query / read_book=name / levelup_choose=side,profession(**不带参=只读当前左右选项**,供配 check(what=profile) 分析后再决定) / minigame=action,x,y / display_fill=items。⚠️cook(做饭)**不在 menu，在 `daily` 域**（`daily ops=cook`；`cabin` 2026-10-01 已撤出顶层、够不着了）。🚫满包接鱼/领箱:**click action=discard 丢桶腾格(回收返金)+action=claim 领取(或用 slot 领指定格;不想要直接 button=ok 关掉)**。🧾关闭菜单一律 click(button=upperRightCloseButton)（ItemGrabMenu/交付容器用 button=ok 确认才关）；订单交付容器(QuestContainerMenu)=点背包对应物品格(见slots的坐标)→放进→点 button=ok 结算；任务日志领钱=点击已完成的有钱任务卡后 click(button=rewardBox)；兑奖机兑换=click(button=mainButton)；特别订单领奖链=日志领钱(上面)→社区板旁领奖箱(60,93)拿兑奖券→刘易斯家兑奖机(mainButton)兑换。",
+"menu": "菜单/界面域(开→看→点)：read(看菜单) advance(推进剧情/对话,一句句) **skip(整段跳过剧情/事件,事件 skippable=true 才跳得动)** click(option/item/button/xy 点;action=claim领/action=discard丢桶腾格;slot=序号领指定格) key(ok/esc/数字按键) cancel(关弹窗/撤就绪) shop(逛店) sell(卖商店) bin(投出货箱) craft(合成) recipes(菜谱) craftables(配方) forge(锻造) **tailor(🧵缝纫机:放料/开缝/取产物)** geode/geodes(砸晶球) customize(捏人) bundle(献祭缺口·**只读存档不走路**) bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读消耗品:书/秘密纸条/日记残页,统一走右键读 name=物品名) levelup_choose(技能升级职业选择 5/10级:不带参读左右选项,side=left/right 或 profession=职业id 定分支;普通升级自会确认OK) number(数量输入:展览会兑换台/转盘押注 NumberSelectionMenu) minigame(赌场小游戏点按钮 action=hit/stand/bet10/…) minigame_state(读牌面/转盘) display_fill(农展台放满 items='钻石,山羊奶酪') display_takeback(收好) journal(开任务日志→menu read 读卡,翻页=click(button=forward/back),领奖励=click(button=rewardBox)) know(查特别订单详情/知识库SPECIAL_ORDERS,如menu know 岛屿食材)。📐参数键名: click=option,button,x,y,item,right,quantity,action,real,slot,category(**action=claim领 / discard丢桶腾格**;button 用按钮名 ok/upperRightCloseButton/forward/back/rewardBox/mainButton) / key=key,count,hold / number=value,confirm / shop=place,want / sell=name(**多选隔逗号/分号,中英文都行;别用空格**),count(-1=全卖;**sell_all=True 一次卖完这家店收的,不收的一根不动**) / bin=name,sell_all / craft=item_name,count / forge=item1,item2,mode,target / geodes=count / customize=name,farmname,favorite / bundle=area / bundle_kb=query / read_book=name / **tailor=place,slot,action**（🧵 缝纫机：place=放进槽的那件、slot=left/right、action=start开缝|take取产物|clear退料；只认已经开着的缝纫机，槽里有什么/能放哪一槽看 `menu read` 的 `tailor` 栏） / levelup_choose=side,profession(**不带参=只读当前左右选项**,供配 check(what=profile) 分析后再决定) / minigame=action,x,y / display_fill=items。⚠️cook(做饭)**不在 menu，在 `daily` 域**（`daily ops=cook`；`cabin` 2026-10-01 已撤出顶层、够不着了）。🚫满包接鱼/领箱:**click action=discard 丢桶腾格(回收返金)+action=claim 领取(或用 slot 领指定格;不想要直接 button=ok 关掉)**。🧾关闭菜单一律 click(button=upperRightCloseButton)（ItemGrabMenu/交付容器用 button=ok 确认才关）；订单交付容器(QuestContainerMenu)=点背包对应物品格(见slots的坐标)→放进→点 button=ok 结算；任务日志领钱=点击已完成的有钱任务卡后 click(button=rewardBox)；兑奖机兑换=click(button=mainButton)；特别订单领奖链=日志领钱(上面)→社区板旁领奖箱(60,93)拿兑奖券→刘易斯家兑奖机(mainButton)兑换。",
 "storage": "箱子域：view(看箱,box=N看单箱全清单) store(存:what/items限定存哪些,名可带xN数量只存那N份,留空=归位只存已有同类堆,target指定箱/**全存腾空间=all=True——`all` 是参数不是物品名,别写 items=\"all\"**/**工具(镐斧锄壶镰竿)不能丢不能卖,但点名就能存进箱子借人: items=\"十字镐\"**) take(取:x,y+name单箱 或 items批量) find(模糊查哪箱有某物) default(设/清默认箱 clear=清) tag(改名,可带color改色)。📐参数键名(view=box / store=what,items,target,keepTools默认True,all / take=items 或 x+y+name+count默认999 / find=name / default=x,y,clear / tag=tag,target**必填**,color)。🤖存取统一走位：store/take都会先走到相关箱旁(批量只走到第一个),不区分拟人/原子,别靠编号逐箱翻。⭐每个箱子前自动带【类目标签】(内容过半归类):矿/古物/鱼/种子/作物/农产/建材/料理/装备——AI按标签定位箱,找东西用find。⚠️改色别染纯#000000(=默认木纹,识别成未染色);要黑箱用暗灰#303030。",
 "daily": "过日子域：sleep(睡觉) eat(吃食物回血体力,name/item_name) **cook(做饭 — 2026-10-01 从 cabin 收编进来；会先走到厨房，走不过去就明确报错)** wear(穿/脱衣物,name/slot/hand) lie_bed(躺床不过夜) settle(确认过夜结算) heartbeat(心跳间隔,minutes) peek(看恒干嘛) whiteboard(写白板,content) wb_read/wb_pin/wb_clear。📐参数键名: sleep/lie_bed=who eat=name,item_name **cook=recipe_name(必填;食谱用英文原名),count(默认1)** wear=name,slot,hand(**hand 仅戒指**:1/left 或 2/right,或传「要换掉的那枚戒指名」自动找手) heartbeat=minutes whiteboard/wb_pin=content appearance=hair,hair_color,skin,shirt,pants,hat,acc,eye_color,pants_color；settle/peek/wb_read/wb_clear 无参。kw={'参数名':值}。📌sleep/lie_bed 的 who **必填**（名字随存档变，现读现传）：传自己名字=睡自己床；传别人名字=睡那个人的床(一起睡+🌹彩蛋)。⚠️名字写错会报错并列出可选名(不会默默睡成别人的床)。**传对名字就不用先回家**——不在那栋屋会自动走过去(map_go跨图→门口→推门→床边，全程走)。lie_bed 只躺不睡，想离开随时 walk_to 走离床格即可。🏝️**在姜岛是另一套**：岛上共用一间小屋(大通铺)，没有「谁的床」——who 传**正躺在床上的别人**=挤他那张(姜岛版爬床彩蛋)；否则(传自己/那人还没躺)=随便挑一张空床安静睡。⚠️睡别人床/协作前先 check(what=\"role\") 确认端口↔角色（端口按启动顺序分配，重启可能翻转，认错角色=挪了恒的人）。",
 "map": "导航域(🗺️跨图唯一入口)：lookup(查地点功能+出口) query(功能反查) go(走到目标/多段寻路+交通) walk(走到POI **或给x,y走同图坐标**) walk_multi(多段走位:喂一串坐标依次走) npc(找NPC) warp_safe(紧急逃脱) unlocks(查存档解锁:矿洞/巴士/下水道/姜岛/精通/**火山近路**——走捷径前先查)。⚠️出口走出口前一格；交通图腾柱>矿车>走路。📐参数全放kw对象(**别拼进ops串**,键名: go=destination地点名/POI 或 npc=NPC名(二选一)、walk=poi_name 或 x+y(二选一,坐标=只走同图;跨图用go)、walk_multi=waypoints(\"x,y x,y …\"空格/分号分隔),location,max_wait,max_seg、npc=name、lookup=location、query=function、warp_safe 无参、unlocks 无参)。⚠️walk 到 POI 会**自动应用结构化站位+朝向**(水池朝右/柜台朝上),但交互仍要 AI 自己 scene at/interact 触发。🫧walk_multi 别名 **闲逛/多段走**（旧名 festival/scene 的 maze_walk/走迷宫 仍可用）：正事=万灵节迷宫按段走；**活人感**=闲逛遛弯·绕着人转圈示好·浴场泳池绕圈游。",
@@ -18103,6 +18124,20 @@ _INTENT_INDEX = [
     ("做东西,制作,合成,造物", "menu", "craft", "做饭不在这儿**在 daily cook**（2026-10-01 从 cabin 收编）"),
     ("特别订单,订单详情,这个订单要什么", "menu", "know", "查特别订单知识库"),
     ("升级选职业,技能分支,5级10级选什么", "menu", "levelup_choose", "不带参=只读当前左右选项"),
+    # 🧵🐄🎟 2026-10-06 那几档新菜单（缝纫机 / 买动物 / 马龙失物招领 / 镇上两个顺手办）。
+    #    ⚠️ 触发词写**AI 会原样说出口的话**；op 必须真实存在（domain_selftest 第 9 条核悬空）。
+    ("缝纫,裁缝,缝纫机,做衣服,衣服怎么做,染色,染衣服", "menu", "tailor",
+     "只认**已经开着**的缝纫机：place=放进槽那件 + slot=left/right、action=start 开缝 / take 取产物 / clear 退料；"
+     "槽里有什么、背包哪件能进哪一槽看 `menu read` 的 tailor 栏"),
+    ("失物招领,找回东西,死掉丢的东西,马龙找回", "menu", "read",
+     "马龙的失物招领**是个商店形状的菜单**（`ShopId=AdventureGuildRecovery`）⇒ "
+     "`menu read` 看货架，取回用 `menu click(item=名字)`（**花钱**，取回价=游戏算的卖店价）"),
+    ("接特别订单,特别任务板,社区布告栏,接单", "menu", "read",
+     "板子在镇上 (62,94) 站、(62,93) 交互，开出来 `menu read` 看两张卡 → "
+     "`menu click(button=acceptLeftQuestButton/acceptRightQuestButton)` 接（**没接取时才有这两个按钮**）"),
+    ("兑奖券,领券,奖券,special order ticket", "menu", "read",
+     "券在**板子左边两格那台领奖箱**：站 (60,94) 朝上交互 (60,93) 拿（一次一张、背包要有空位）；"
+     "兑换去刘易斯家兑奖机 `menu click(button=mainButton)`"),
 
     # 🌱 农活
     ("浇地,浇水,给作物浇水", "farm", "water", "自动跳雨天；水壶没水会先去装满"),
@@ -20728,8 +20763,22 @@ def read_menu() -> str:
             return _with_state("📋 当前没有菜单打开")
         t = m.get("type")
         lines = [f"📋 菜单: {t}"]
+        # 🏪 这家店**是谁**（2026-10-06）：`/menu` 现在多报一位 `shopId`（`ShopMenu.ShopId`）——
+        #    光看类型分不出皮埃尔/威利/马龙。**马龙的失物招领**要说白话（它是"花钱把丢的东西取回来"）。
+        _sid = m.get("shopId") or ""
+        if t == "ShopMenu" and _sid == "AdventureGuildRecovery":
+            lines.append("  🎟 **马龙的失物招领**（`AdventureGuildRecovery`）："
+                         "下面列的是你**上次倒下时丢掉的东西** —— 取回**要花钱**"
+                         "（价 = 游戏算的卖店价；读过马龙那本书就是**半价**）。")
+            lines.append("  🧭 取回一件: `menu click(item=物品名)`"
+                         "（**一次一件**；钱不够/背包放不下它会明说）")
         si = m.get("shopItems")
-        if si:
+        # ⚠️ 2026-10-06：**只有 `ShopMenu` 才走这段**。`shopItems` 这个键**不是商店专用** ——
+        #    `ForgeMenu`（槽内容）、`TailoringMenu`（槽内容）都复用它带"槽里放了什么"，
+        #    而它们那几条**没有 `id`/`price`/`stock`** ⇒ 原先这里会当场 `KeyError: 'id'`，
+        #    被外层 `except` 吞成「❌ 读取菜单失败」—— **点开装好料的锻造台/缝纫机反而读不出正文**。
+        #    （判据照 `m["type"]` 走，别按"有没有 shopItems"猜。）
+        if si and t == "ShopMenu":
             pg = m.get("shopPage") or {}
             idx = pg.get("index", 0)
             tot = pg.get("total", 0)
@@ -20762,6 +20811,94 @@ def read_menu() -> str:
             lines.append("     买 → `menu click(item=物品名, quantity=N)`（N 个一次结账；右键只会买 5 个）")
             lines.append(f"     卖 → **一次卖完就 `menu sell(sell_all=true)`** {_sellable_txt}")
             lines.append("         只想卖某几样 → `menu sell(name=\"鲈鱼,鲶鱼\")` 逗号分隔，一次调用卖完这几类")
+        # 🐄 买动物（`PurchaseAnimalsMenu`）—— 2026-10-06 恒：「`/menu` 对它只回 shopItems:null ⇒ 读不出来」。
+        #    现在 C# 那一档把 `animalsToPurchase` 摊成 `animalShop`（判据/字段来源见 C# 分支的注释）。
+        #    ⚠️ **返**（不再往下走通用那几行）：这一屏没有对话/没有领取侧，多印那几行只会搅浑。
+        if t == "PurchaseAnimalsMenu":
+            _a = m.get("animalShop")
+            if not isinstance(_a, dict):
+                lines.append("  ⚠️ 读不到动物货架（这版 DLL 还不报 `animalShop`）—— "
+                             "先 reload 游戏换上新 DLL，别拿这一屏瞎猜")
+                return _with_state("\n".join(lines))
+            if _a.get("readOnly"):
+                lines.append("  🔒 这是**只读**的买动物屏（游戏不让在这上面下单）")
+            if _a.get("onFarm") or _a.get("namingAnimal"):
+                lines.append("  🐄 菜单**已经进到「挑棚」那一步了**"
+                             "（挑中的是 %s，价 %sg）—— 这一步得在农场画面上点一栋有空位的棚 + 起名；"
+                             "想重来就先把这一屏收掉"
+                             % (_a.get("chosen") or "?", _a.get("chosenPrice") or 0))
+                return _with_state("\n".join(lines))
+            lines.append("  🐄 可买动物（钱包 %sg · 目标地点 %s）："
+                         % (_a.get("money"), _a.get("targetLocation") or "?"))
+            for _it in (_a.get("animals") or []):
+                if not isinstance(_it, dict):
+                    continue
+                _nm = _it.get("name") or _it.get("id") or "?"
+                _pr = _it.get("price") or 0
+                if _it.get("canBuy") is not True:
+                    lines.append("    🔒 %s %sg —— **买不了**：%s"
+                                 % (_nm, _pr, _it.get("missingText") or "游戏不让买"))
+                    continue
+                _tags = []
+                if not _it.get("affordable"):
+                    _tags.append("❗钱不够")
+                if not _it.get("house"):
+                    _tags.append("❓读不出它住哪种棚")
+                elif not _it.get("freeHouse"):
+                    _tags.append("❗没有空着的「%s」棚" % _it.get("house"))
+                lines.append("    %s %s %sg%s%s"
+                             % ("✅" if not _tags else "⚠️", _nm, _pr,
+                                (" · 住 %s" % _it.get("freeHouse")) if _it.get("freeHouse") else "",
+                                (" —— %s" % "、".join(_tags)) if _tags else ""))
+            lines.append("  🧭 下单: `menu click(animal=名字[, animal_name=给它起的名])`"
+                         "（**不用**再去农场点棚 —— 动物直接进游戏会建议的那栋空棚，钱从共享钱包扣）")
+            lines.append("  🎯 单子上有「买动物」那一行时**走单子**（它已经把「哪几只真能买」判好了）")
+            return _with_state("\n".join(lines))
+        # 🧵 缝纫机（`TailoringMenu`）—— 2026-10-06 恒：「完全没有做过，没有 enum 原生操作指导」
+        #    ⇒ 这一档**连引导一起给**（放什么、放哪槽、产出什么、怎么取）。
+        if t == "TailoringMenu":
+            _tl = m.get("tailor")
+            if not isinstance(_tl, dict):
+                lines.append("  ⚠️ 读不到缝纫机槽位（这版 DLL 还不报 `tailor`）—— 换上新 DLL 再用")
+                return _with_state("\n".join(lines))
+
+            def _tslot(_v):
+                if not _v:
+                    return "（空）"
+                try:
+                    _n = int(_v.get("stack") or 1)
+                except Exception:
+                    _n = 1
+                return ("%s×%d" % (_v.get("name"), _n)) if _n > 1 else str(_v.get("name"))
+
+            lines.append("  🧵 缝纫机 · 左槽 %s ｜ 右槽 %s"
+                         % (_tslot(_tl.get("left")), _tslot(_tl.get("right"))))
+            _tres = _tl.get("result")
+            if _tres:
+                lines.append("  ✨ 产出预览: %s%s"
+                             % (_tres.get("name"),
+                                "" if _tl.get("resultKnown") else
+                                "（⚠️ 游戏对**没做过的**配方打问号 —— 这一件你还没做过，做出来才知道）"))
+            if _tl.get("busy"):
+                lines.append("  ⏳ **正在缝**（约 1.5 秒后产物会跑到光标上，再 `action=take` 收）")
+            elif _tl.get("canStart"):
+                lines.append("  🟢 这一刻**能开缝**")
+            if _tl.get("heldItem"):
+                lines.append("  ✋ 光标上拿着 %s —— `action=take` 收进背包" % _tslot(_tl.get("heldItem")))
+            _tpl = _tl.get("placeable") or []
+            if _tpl:
+                lines.append("  🎒 背包里**能放进去**的（游戏自己算的，哪槽行就进哪槽）：")
+                for _p in _tpl[:12]:
+                    _w = "、".join(_x for _x, _ok in (("左槽", _p.get("left")),
+                                                      ("右槽", _p.get("right"))) if _ok)
+                    lines.append("    · %s → %s" % (_tslot(_p), _w))
+            else:
+                lines.append("  🎒 背包里**没有**能放进去的东西"
+                             "（左槽要布/可染的衣服，右槽要配方对应的染料/材料）")
+            lines.append("  🧭 放料: `menu tailor place=物品名 slot=left|right`；"
+                         "开缝: `menu tailor action=start`；取产物: `menu tailor action=take`；"
+                         "把料退回来: `menu tailor action=clear`")
+            return _with_state("\n".join(lines))
         # 🎓 精通山洞的碑/基座（MasteryTrackerMenu, 2026-09-16 恒）
         #    ⚠️ 数据只在 `/menu` 的 `mastery` 键里；`/state` 的 activeMenu **不带**它
         #    （那边只有 type/dialogue/levelUp/readyCheck/questionKind…）⇒ 状态条 `_menu_advice`
@@ -21930,6 +22067,41 @@ FORGE_GUIDE = """🔨 锻造台（优先用本图的迷你锻造台 Mini-Forge�
 
 
 @mcp.tool()
+def tailor_menu(place: str = "", slot: str = "left", action: str = "") -> str:
+    """🧵 **缝纫机**（`TailoringMenu`）：放料 / 开缝 / 取产物 —— 用**已经开着**的那台。
+
+    恒 2026-10-06：「缝纫机两三个槽位也不复杂，跟锻造台差不多」+「**完全没有做过，没有 enum
+    原生操作指导**」⇒ 这一条**连引导一起给**（下面那段就是 AI 要的"放什么、放哪槽、产出什么、怎么取"）。
+
+    📖 **缝纫机怎么用**（判据全是游戏自己的，见 `_im_tailor`/C# 的 `TailoringMenu` 分支）：
+      · **左槽 = 布料/要染的衣服**（`leftIngredientSpot`）、**右槽 = 线轴/染料**
+        （`rightIngredientSpot`）；**产出槽**（`craftResultDisplay`）由游戏按这两件现算
+        —— 用 `menu ops=read` 时它就在 `tailor.result` 里（游戏对**没做过的**配方打问号，
+        我们也照它说：`resultKnown=false`）。
+      · **做一件新衣服 / 染色 / 合并靴子** 都是"左槽一件 + 右槽一件"：
+        左槽 = 布（`Cloth`）**或**要染的那件衣服，右槽 = 配方对应的那样东西（染料/材料）；
+        靴子合并 = 左右各一只靴子。
+        ⚠️ **具体哪两件配得上别猜**：`menu ops=read` 的 `tailor.placeable` 就是**游戏自己算的**
+        "背包里这一件能进哪一槽"（`left`/`right` 两位，=`TailoringMenu.TailorHighlight`）——
+        照着放，放不进去游戏会当场说。
+      · **怎么取产物**：`action=start` 开缝 → **约 1.5 秒后**产物跑到**光标**上（`heldItem`）
+        → 再 `action=take` 收进背包（背包得有空位）。
+      · `action=clear` = 把两槽的料原样退回背包（不想做了就用它，别让料卡在槽里）。
+
+    Args:
+        place: 要放进槽的那件（物品名 / 限定 id；留空 = 不放料，只做 action）
+        slot: left / right（跟 place 配对用；默认 left）
+        action: start（开缝）/ take（把光标上的产物收进背包）/ clear（两槽的料退回背包）
+
+    ⚠️ 它**只认已经开着的缝纫机**（开台那一发是 `scene interact` 点缝纫机/迷你缝纫机）——
+       不替 AI 走位开台（本项目"工具先走过去"那条规矩留给上层的域 op）。
+    """
+    if _im_menu_type() != "TailoringMenu":
+        return _with_state("❌ 缝纫机没开（现在不是 `TailoringMenu`）—— "
+                           "先走到**缝纫机**旁边 `scene ops=interact` 把它开出来，再来放料")
+    return _with_state(_im_tailor_op({"place": place, "slot": slot, "action": action}))
+
+
 def forge(item1: str, item2: str = "", mode: str = "combine", target: int = 0) -> str:
     """🔨 锻造台一键操作（合成戒指 / 属性附魔 / 龙牙附魔 / 拆解）——2026-08-11 防呆重写
     自动开台（**先找本图 Mini-Forge**，没有才 warp 到 Caldera 锻造台 22,21）→ 放料用 /forge_set 直接设槽（不碰鼠标，
@@ -24038,6 +24210,13 @@ def _im_shop(state):
     ⚠️ 数据只能从 **`/menu`** 拿：`/state.activeMenu` **只有类型**，货架明细在 `/menu`
        那份里（`/state` 瘦 `/menu` 详各序列化一份——09-27 喂错源那次的形状）。
     只在**菜单就是个商店**时才多打这一发：平时一次都不多花。
+
+    🎟️ 2026-10-06 加的两位（**同一次 `/menu`，不额外花一发**）：
+      · `id` = `ShopMenu.ShopId`（C# 报的 `shopId`，public 字段 `ShopMenu.cs:188`）——
+        **光看菜单类型分不出这是哪一家店**（皮埃尔/威利/马龙全是 `ShopMenu`）；
+      · `recovery` = **这是不是马龙的失物招领**。判据 = `id == RECOVERY_SHOP_ID`
+        （= 游戏自己的常量 `Game1.shop_adventurersGuildItemRecovery`）。
+        ⚠️ 判据**留在这层**（单子那层只读 `ctx.shop["recovery"]`）——同 `caps`/`doors` 的规矩。
     """
     try:
         mt = str(((state or {}).get("activeMenu") or {}).get("type") or "")
@@ -24049,9 +24228,24 @@ def _im_shop(state):
         m = api._ai_get("/menu") or {}
     except Exception:
         return {}                       # 开着但读不出来 ⇒ "不知道"
+    _sid = m.get("shopId")
     return {"items": m.get("shopItems") or [],
             "sellable": m.get("sellableHere"),      # ⚠️ `None` 与 `[]` 是两个意思，别兜底
-            "page": m.get("shopPage")}
+            "page": m.get("shopPage"),
+            "id": _sid,
+            "recovery": (str(_sid or "") == RECOVERY_SHOP_ID)}
+
+
+# 🎟️ **马龙的失物招领**那家店的 id —— 游戏自己的常量 `Game1.shop_adventurersGuildItemRecovery`
+#    （反编译 `Game1.cs:193-194`），开它的是 `GameLocation.cs:12289-12291`
+#    （对话选项 `adventureGuild_Recovery` → `Utility.TryOpenShopMenu("AdventureGuildRecovery", "Marlon")`）。
+#    ⚠️ 它就是个**普通 `ShopMenu`**（`Utility.cs:4216` `new ShopMenu(shopId, …)`）⇒ 货架/价格全在
+#       `forSale` + `itemPriceAndStock` 里，C# 那份商店分支本来就报得出来；
+#       **"可找回的物品"从哪来**：`Data/Shops` 里那家店的 item 查询 `ITEMS_LOST_ON_DEATH`
+#       （`StardewValley.Internal/ItemQueryResolver.cs:236-254`）= `Game1.player.itemsLostLastDeath`，
+#       价格 = `Utility.getSellToStorePriceOfItem(item)`（**读过马龙那本 `Book_Marlon` 就是半价**）。
+#    ⇒ 所以"能不能取回"这件事**不用我们算**：货架空 = 没丢过东西 ⇒ 那一行自然不出现。
+RECOVERY_SHOP_ID = "AdventureGuildRecovery"
 
 
 # 🚪🐄 「放牧（开棚门）/ 关棚门」那两行的账（2026-10-01 恒：「放牧（开关畜棚鸡舍门）做进选项了吗？」
@@ -24608,6 +24802,236 @@ def _im_tank(state: dict, furniture: dict, caps: dict) -> dict:
 # 📄 「这份 `/menu` **还没读过**」的哨兵（不是 `None`：`None`/`{}` 都是**读过了**的合法结果）。
 #    `_im_ctx` 里两处消费方（`_im_menu_data` 摊开 / `_im_quests` 领奖的账）**共用一发** HTTP。
 _UNFETCHED = object()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 🐄🧵🎟 2026-10-06 恒拍板「一起做了」的那三档新菜单 + 镇上两个顺手办
+# ═══════════════════════════════════════════════════════════════════════
+# 规矩跟 `_im_shop`/`_im_doors`/`_im_quests` **一字不差**：
+#   · **判据只有这一层**（单子那层只消费 `Ctx` 字段、不打 HTTP、不自己认菜单名）；
+#   · 每档都**只在对应处境下才多打那一发**（平时一次都不多花）；
+#   · 算不出来 ⇒ **那几行整行不出现**（宁缺勿编，⛔ 不给假默认值）。
+
+
+def _im_menu_kind(state: dict) -> str:
+    """这一刻开着什么菜单（**小写**）；读不到 → `""`（**别猜成"菜单开着"**）。"""
+    try:
+        return str(((state or {}).get("activeMenu") or {}).get("type") or "").lower()
+    except Exception:
+        return ""
+
+
+def _im_money(state: dict) -> int:
+    """这一刻钱包多少（`/state.player.money`）。读不到 → `-1` = **不知道**（不是 0）。"""
+    try:
+        v = ((state or {}).get("player") or {}).get("money")
+        return int(v) if v is not None else -1
+    except Exception:
+        return -1
+
+
+def _im_animals(state: dict, raw=_UNFETCHED) -> dict:
+    """🐄 买动物菜单（`PurchaseAnimalsMenu`）上**这一刻真能买**的那几只 → dict / `{}`。
+
+    恒 2026-10-06：「`/menu` 对它只回 `shopItems:null` ⇒ 读不出来，所以单子没法给行」。
+
+    === 三个判据分别来自游戏哪儿（C# `HandleMenu` 的 `PurchaseAnimalsMenu` 分支把原始事实报出来）===
+      · `canBuy`   = `!menu.readOnly && <那只货位>.Type == null`
+        —— **一字不差照游戏那条点击守卫**（`PurchaseAnimalsMenu.cs:466`）；`Type` 非 null
+        正是**缺必需建筑**（`Utility.getPurchaseAnimalStock` 塞的 `ShopMissingBuildingDescription`，
+        `Utility.cs:4951-4953`），那句原文就是"你没有哪种棚"。
+      · `affordable` = `money >= price`（`price` = 游戏自己的 `salePrice()`）。
+      · `freeHouse` = 农场上**能住它、还没满**的那栋棚的类型（判据 = `BuildingData.ValidOccupantTypes`
+        含 `Data/FarmAnimals` 的 `House` + `AnimalHouse.isFull()`，即 `FarmAnimal.CanLiveIn`
+        `FarmAnimal.cs:1227-1235` 那两条 + 游戏点棚时那条红字 `:409`）。
+    ⇒ **三样全过才进 `buy`**（"出现的那条，按了就成"）；没过的一律进 `nobuy` 并**写明为什么**
+      —— 那是给抬头/理由栏用的**事实**，不是"行"。
+    ⚠️ 菜单已经在"挑棚"阶段（`phase == "placing"`）时 `buy` 必空 ⇒ 那一行不出现（对）。
+    ⚠️ `house` 读不出来（理论上不会有 —— 那些 id 就是 `farmAnimalData` 枚举出来的）时
+      **不算空位**，如实进 `nobuy`（宁缺勿编，不拿"大概有吧"顶上）。
+    """
+    if "purchaseanimalsmenu" not in _im_menu_kind(state):
+        return {}
+    if raw is _UNFETCHED:
+        try:
+            raw = api._ai_get("/menu") or {}
+        except Exception:
+            return {}
+    a = (raw or {}).get("animalShop")
+    if not isinstance(a, dict):
+        return {}                       # 菜单开着却读不出来 ⇒ 不给行（同三档：不上单子）
+    money = int(a.get("money") or 0)
+    # 🐄 菜单**已经进了「挑棚」阶段**（`onFarm`/`namingAnimal`）⇒ 这一刻货架不算数：
+    #    那一步是"在农场画面上点一栋棚 + 起名"，我们手里没有那条路（故意的，见 C# 分支的账）
+    #    ⇒ `buy` 必须空（"出现的那条，按了就成"）。原始事实照报（抬头/read 要用）。
+    if a.get("onFarm") or a.get("namingAnimal"):
+        return {"money": money, "buy": [], "nobuy": [], "phase": "placing",
+                "readOnly": bool(a.get("readOnly")),
+                "target": a.get("targetLocation") or ""}
+    buy, nobuy = [], []
+    for it in (a.get("animals") or []):
+        if not isinstance(it, dict):
+            continue
+        nm = it.get("name") or it.get("id") or "?"
+        try:
+            price = int(it.get("price") or 0)
+        except Exception:
+            price = 0
+        if it.get("canBuy") is not True:
+            nobuy.append({"name": nm, "why": it.get("missingText") or "游戏不让买这一只"})
+            continue
+        if not it.get("affordable"):
+            nobuy.append({"name": nm, "why": f"钱不够（要 {price}g，有 {money}g）"})
+            continue
+        if not it.get("house"):
+            nobuy.append({"name": nm, "why": "读不出这一只住哪种棚 ⇒ 判不了有没有空位"})
+            continue
+        if not it.get("freeHouse"):
+            nobuy.append({"name": nm, "why": f"农场上没有空着的「{it.get('house')}」类棚"})
+            continue
+        buy.append({"name": nm, "id": it.get("id") or nm, "price": price,
+                    "house": it.get("freeHouse")})
+    return {"money": money, "buy": buy, "nobuy": nobuy,
+            "readOnly": bool(a.get("readOnly")),
+            "phase": ("placing" if a.get("onFarm") else "browsing"),
+            "target": a.get("targetLocation") or ""}
+
+
+def _im_tailor(state: dict, raw=_UNFETCHED) -> dict:
+    """🧵 缝纫机（`TailoringMenu`）这一刻的账 → dict / `{}`。
+
+    恒 2026-10-06：「两三个槽位也不复杂，跟锻造台差不多」「**完全没有做过，没有 enum 原生操作
+    指导** ⇒ 连引导文案一起写」。
+
+    === 里面每一格是什么（原始事实在 C# `HandleMenu` 的 `TailoringMenu` 分支）===
+      · `left`/`right` = 左料槽 / 右料槽里那件（游戏自己的 `leftIngredientSpot.item` /
+        `rightIngredientSpot.item`，`TailoringMenu.cs:82-90` 那两个 public 字段）；
+      · `result` = **产出预览**（`craftResultDisplay.item`，`_ValidateCraft()` 现算的）；
+        `resultKnown` = 游戏**肯不肯显示**它（`_isDyeCraft || HasTailoredThisItem`，
+        `TailoringMenu.cs:1139`）—— 游戏对没做过的配方是打问号的，我们**照它说**；
+      · `canStart` = `IsValidCraft(左,右) && CanFitCraftedItem() && !IsBusy() && 有预览`
+        （游戏自己那三个函数，`:790-812` / `:983-990` / `:249-252`）；
+      · `heldItem` = 光标上那件（开缝跑完**产物就挂在这儿**，`:1061`）；
+      · `placeable` = 背包里**能进哪一槽**的那几件（游戏自己的 `BuildHighlightCache` +
+        `TailorHighlight.LeftSlot/RightSlot`，`:24-54 / :278-338`）—— 引导文案靠它说"放什么、放哪槽"。
+    ⚠️ 这一层**不自己判**"什么能当料"（那套里有 `color_prismatic`/`dye_*` 标签 + `Data/TailoringRecipes`
+      的两列 tag，抄一份必烂）。
+    """
+    if "tailoringmenu" not in _im_menu_kind(state):
+        return {}
+    if raw is _UNFETCHED:
+        try:
+            raw = api._ai_get("/menu") or {}
+        except Exception:
+            return {}
+    t = (raw or {}).get("tailor")
+    if not isinstance(t, dict):
+        return {}
+
+    def _slot(v):
+        if not isinstance(v, dict) or not v.get("name"):
+            return None
+        return {"name": v.get("name"), "id": v.get("id"),
+                "stack": int(v.get("stack") or 1)}
+
+    place = []
+    for p in (t.get("placeable") or []):
+        if not isinstance(p, dict):
+            continue
+        place.append({"name": p.get("name") or "?", "id": p.get("id"),
+                      "stack": int(p.get("stack") or 1),
+                      "left": bool(p.get("left")), "right": bool(p.get("right"))})
+    return {"left": _slot(t.get("left")), "right": _slot(t.get("right")),
+            "result": _slot(t.get("result")), "resultKnown": bool(t.get("resultKnown")),
+            "busy": bool(t.get("busy")), "canStart": bool(t.get("canStart")),
+            "canFit": bool(t.get("canFit")), "heldItem": _slot(t.get("heldItem")),
+            "placeable": place}
+
+
+# 📋🎟 鹈鹕镇那两个"顺手办"（恒 2026-10-06 追加）—— **坐标不是编的**：
+#   · 社区布告栏（特别任务板）：`Town.cs:547-549` 三格 (61/62/63,93) 都挂 `SpecialOrders` Action
+#     ⇒ **交互格 (62,93)**；站位 (62,94) 取自 `locations.py` 的 POI（恒真机验过）。
+#   · 领奖箱（兑奖券）：`Town.cs:553-554` 的 **(60,93)** 挂 `SpecialOrdersPrizeTickets`
+#     ⇒ **交互格 (60,93)**；站位 (60,94)（`locations.py` POI，AI 2026-08-29 现场实测领到过券）。
+#   ⚠️ 两格**同生同死**：都在同一个 `if (SpecialOrder.IsSpecialOrdersBoardUnlocked())` 里
+#      （`Town.cs:534-555`）⇒ "板子在不在"这一个判据同时管两行。
+ORDER_BOARD_TILE = (62, 93)
+ORDER_BOARD_STAND = (62, 94)
+VOUCHER_TILE = (60, 93)
+VOUCHER_STAND = (60, 94)
+
+
+def _im_order_read(state: dict, caps: dict = None) -> dict:
+    """📋 镇上才打的那一发 `/order_board`（**板子那行和券那行共用**）→ 原始回包 / `{}`。
+
+    ⚠️ 只在 **Town** 才打（`/order_board` 是只读、很轻，但没有理由在矿洞里问镇上板子的事）；
+       打不到/回包不成 ⇒ `{}` ⇒ 那两行都不出现（宁缺勿编）。
+    ⚠️ **先过 `caps["order_board"]`（"这一版 DLL 有没有这个端点"）**：没有就**一次 HTTP 都不打**
+       —— 老 DLL 上那个路径 404，少了这道闸就会"每次 `intent show` 在镇上白烧一发 + 吞异常"
+       （跟 `_im_tank`/`_im_fish` 那两处同一个形状）。
+    """
+    if (caps or {}).get("order_board") is not True:
+        return {}
+    if ((state or {}).get("location") or {}).get("name") != "Town":
+        return {}
+    try:
+        r = api._ai_get("/order_board", {"type": ""}) or {}
+    except Exception:
+        return {}
+    return r if r.get("ok") else {}
+
+
+def _im_order_board(state: dict, raw: dict = None) -> dict:
+    """📋 这一刻"社区特别任务板"的账 → dict / `{}`（**`{}` = 那两行都不给**）。
+
+    === 判据（全在 C# `/order_board` 里问游戏，这一层只做**成员判断/折叠**）===
+      · `accepted` = `team.acceptedSpecialOrderTypes.Contains("")`
+        —— `SpecialOrdersBoard.UpdateButtons` 藏 accept 按钮用的**正是这一条**
+        （反编译 `SpecialOrdersBoard.cs:94-98`，字段 `FarmerTeam.cs:99`）。
+        ⚠️ **不许拿"板上有没有卡"当"接没接"**：接单只往 `specialOrders` 加、
+        **不从 `availableSpecialOrders` 移除**（`SpecialOrdersBoard.cs:130-132`）⇒ 卡一直挂在板上。
+      · 左/右有没有卡 = `GetAvailableSpecialOrder(0/1, "")`（板子 ctor 用的就是它，`:72-73`）。
+      · `boardUnlocked` = `SpecialOrder.IsSpecialOrdersBoardUnlocked()`（社区中心修好后才有板子；
+        没解锁时那两格瓦片**根本不存在** ⇒ `/interact` 是打空）。
+    ⚠️ 三档：**不在镇上** / 读不到 / 没解锁 ⇒ `{}`（整行不出现）。
+       ⚠️ 已经接过了（`accepted=True`）⇒ 也返回 `{}`：那一刻**板子上只剩"关闭"**
+       （两个 accept 按钮被游戏自己藏了），而"关闭"是**板子开着时**才有的行
+       （`CLOSE_V` 本来就在）—— 摆一行"走过去看一个没有可接单的板"就是劝 AI 白跑一趟。
+    """
+    r = raw if isinstance(raw, dict) else {}
+    if not r or r.get("readable") is False or r.get("boardUnlocked") is not True:
+        return {}
+    if r.get("accepted") is True:
+        return {}
+    sides = [s for s in ("left", "right") if r.get(s)]
+    if not sides:
+        return {}
+    return {"sides": sides,
+            "left": (r.get("left") or {}).get("name") or "",
+            "right": (r.get("right") or {}).get("name") or ""}
+
+
+def _im_vouchers(state: dict, raw: dict = None) -> dict:
+    """🎟 「社区布告栏旁边那台**领奖箱**能领几张兑奖券」→ `{"n": N}` / `{}`。
+
+    === 判据 ===
+      · 数量 = `/state.player.voucherPending`（C# 早就报着的
+        `Game1.player.stats.Get("specialOrderPrizeTickets")`；stat 键的常量在 `StatKeys.cs:156`）。
+        ⚠️ 恒提的 `voucherPending` **就叫这个名字**，已核实（`ModEntry.cs` 那份 `/state` 里）。
+      · 位置：`Town` 且 `boardUnlocked`（**板子和领奖箱是同一块 `if` 里铺的**，
+        `Town.cs:534-555`：`(61~63,93)` 挂 `SpecialOrders`、`(60,93)` 挂 `SpecialOrdersPrizeTickets`）。
+      · 有没有得领 = `voucherPending > 0`（游戏那边"没券就静默"，`GameLocation.cs:9007`）。
+    ⚠️ 一次交互**只给一张**（`:9006-9020` 每次 `Decrement` 1）⇒ `n` 就是要按几下。
+    ⚠️ 背包放不下时游戏**只弹红字、不扣数**（`:9015-9018`）⇒ 回执靠"`voucherPending` 掉了没"说话。
+    """
+    r = raw if isinstance(raw, dict) else {}
+    if not r or r.get("boardUnlocked") is not True:
+        return {}
+    try:
+        n = int((((state or {}).get("player") or {}).get("voucherPending")) or 0)
+    except Exception:
+        return {}
+    return {"n": n} if n > 0 else {}
 
 
 def _im_quests(state: dict, raw=_UNFETCHED) -> dict:
@@ -25701,6 +26125,19 @@ def _fish_picks_from_raw(raw: dict, state: dict) -> list:
         for a in ((raw or {}).get("areas") or []):
             if not isinstance(a, dict):
                 continue
+            # 🎣 2026-10-06 恒：「**那就用我们标的那两个森林钓点？一个河流一个湖泊的**」——
+            #    ⚠️ 这一段**必须排在最前面**（`fishable` 过滤与 `spots` 空判之前）：
+            #    原来 `cal = _fish_calibrated_poi(...)` 排在 `fishable` 过滤**之后** ⇒ 森林那 12 个
+            #    `/fish_areas` 自己挑出来的点**全是 `fishable:false`**（游戏说那几格不可钓）⇒
+            #    `if not _fishable: continue` 先把整区丢掉，**校准点那条路永远轮不到** ⇒
+            #    单子上森林**一行都没有**（2026-10-06 真机；而恒的校准点 `(34,25)` 同一片湖上
+            #    `isFishing=True`、还真进了小游戏 ⇒ 根因是**挑位口径**，不是水、不是判据）。
+            cal = _fish_calibrated_poi(a, loc_name)
+            if cal:
+                picks.append(dict(cal, area=a.get("id"),
+                                  waterTiles=a.get("waterTiles"),
+                                  spotsFound=a.get("spotsFound")))
+                continue
             spots = [s for s in (a.get("spots") or []) if isinstance(s, dict)]
             if not spots:
                 # ⛔ 恒的硬规矩：**水域 ≠ 钓点**。`spots:[]`（spotsFound:0）⇒ 这一行不上单子
@@ -25709,16 +26146,11 @@ def _fish_picks_from_raw(raw: dict, state: dict) -> list:
             # 🎣 2026-10-05：`/fish_areas` 现在逐格给游戏自己的抛竿判据 `fishable`（`isTileFishable`）。
             #    ⛔ 只丢**游戏明说钓不了**的那些（`is False`）；**键不在**（老 DLL 没这一位）⇒ 照旧留着
             #    —— 那批行今天就是能用的（Forest/Town/Beach/Desert），不能因为"问不到"就全砍掉。
+            #    ⚠️ **没有校准点的水域**才走这条筛：那种情况下 `fishable` 是唯一判据（宁缺勿编）。
             _fishable = [s for s in spots if s.get("fishable") is not False]
             if not _fishable:
                 continue
             spots = _fishable
-            cal = _fish_calibrated_poi(a, loc_name)
-            if cal:
-                picks.append(dict(cal, area=a.get("id"),
-                                  waterTiles=a.get("waterTiles"),
-                                  spotsFound=a.get("spotsFound")))
-                continue
             best = min(spots, key=lambda s: _fish_xy_dist(s.get("standX"), s.get("standY"), px, py))
             try:
                 d = int(best.get("dir"))
@@ -26038,10 +26470,21 @@ def _im_ctx():
             _RAW_MENU = _UNFETCHED
     _md = _im_menu_data(state, raw=_RAW_MENU)
     _shop = _im_shop(state)
-    _content_shown = bool(_md) or bool((_shop or {}).get("items"))
     # 🔌 能力表**只读一次**：`_im_caps()` 每次都会打 `/status`（老话说得准："判据只有一处"），
-    #    而这一刻有两个消费方（`ctx.cap()` 和「放 鱼缸」那行的便宜闸门 `_im_tank`）。
+    #    而这一刻有三个消费方（`ctx.cap()`、「放 鱼缸」那行的便宜闸门 `_im_tank`、
+    #    「板子/领券」那两行的闸门 `_im_order_read`）⇒ 提前到这儿算，后面共用这一份。
     _caps = _im_caps()
+    # 🐄🧵 2026-10-06 那两档（**跟上面共用同一发 `/menu`**，见 `_RAW_MENU` 的账）：
+    #    买动物菜单的货架 / 缝纫机的槽与产出预览。⚠️ 菜单不是那两种 ⇒ 各自 `{}`（一个字都不多花）。
+    _animals = _im_animals(state, raw=_RAW_MENU)
+    _tailor = _im_tailor(state, raw=_RAW_MENU)
+    # 📋🎟 镇上那两个顺手办：**一次 `/order_board` 两行共用**（券那行也要"板子解锁没"）。
+    #    ⚠️ 先过 `caps`（老 DLL 上那个端点不存在）⇒ 那时**一次都不打**。
+    _order_raw = _im_order_read(state, _caps)
+    _order = _im_order_board(state, _order_raw)
+    _vouchers = _im_vouchers(state, _order_raw)
+    _content_shown = (bool(_md) or bool((_shop or {}).get("items"))
+                      or bool(_animals.get("buy")) or bool(_tailor))
     return intent_menu.ctx_from(state, surr, machines, chests, caps=_caps,
                                 seats=seats, furniture=furniture, animals=animals,
                                 shop=_shop, beds=_im_beds(state),
@@ -26119,6 +26562,15 @@ def _im_ctx():
                                 #    ⚠️ 结果按**图名**缓存 60s（那个端点在主线程全图逐格扫水）——
                                 #       「离我最近的钓点」仍每次现算（见 `_im_fish` 的 doc）。
                                 fish=_im_fish(state, _caps),
+                                # 🐄🧵 2026-10-06 那两档新菜单的账（判据全在 `_im_animals`/`_im_tailor`）：
+                                #    买动物菜单开着的"能买哪些/各自多少钱/缺钱还是缺棚"、
+                                #    缝纫机的左右槽+产出预览+背包里能放哪一槽。
+                                animals_for_sale=_animals,
+                                tailor=_tailor,
+                                # 📋🎟 镇上那两个顺手办（恒 2026-10-06 追加）：
+                                #    「查看社区特别任务 → 接左边/接右边」与「领取兑奖券×n」。
+                                orders=_order,
+                                vouchers=_vouchers,
                                 worn=worn)
 
 
@@ -27147,6 +27599,199 @@ def _im_doors_op(args: dict) -> dict:
             "entries": _ents, "bad": _bad, "left": flip.get("left") or []}
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# 🐄🧵🎟 2026-10-06 那几行的**执行侧**（单子敲下去走这里；判据仍在上面 `_im_*` 那一处）
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def _im_buy_animal(animal, name="") -> dict:
+    """🐄 在**开着的买动物菜单**上买一只 → C# `/menu/click` 的原始 dict。
+
+    ⚠️ 手势全在 C# 那一侧（照游戏自己的 `receiveLeftClick` + `textBoxEnter` 那条路，
+       见 `HandleMenuClick` 里 `animal != ""` 那段的一大段注释）—— 这一层只负责
+       **钉住 AI 端口**（`_ai_post`）+ 两道跟买货同一套的闸门。
+    ⚠️ 跟 `_im_buy`（商店货）**同一个形状**：真花钱的动作要让"共享钱包掉了"这件事
+       别跟恒那边的变化串成假新闻（`_peer_econ_mute`）。
+    """
+    if not animal:
+        return {"ok": False,
+                "error": "缺 animal（要买哪一只）—— 先 `menu ops=read` 看 animalShop.animals 里的名字"}
+    _ensure_background()
+    _peer_econ_mute()
+    body = {"animal": animal}
+    if name:
+        body["animal_name"] = name
+    return api._ai_post("/menu/click", body)
+
+
+def _im_recovery_take(item) -> dict:
+    """🎟 在**开着的马龙失物招领**上取回一件（**花钱**）→ C# `/menu/click` 的原始 dict。
+
+    ⚠️ 它就是一家普通 `ShopMenu`（`Utility.cs:4216`）⇒ **走买货那条现成的路**（按 id/名点那格，
+       C# 会自己翻页、把成交的东西放进背包）。这一层不另写一套。
+    ⚠️ 一次只取一件：每个丢件是**独立的一条货**，"整摞"在这儿没有意义 ⇒ `quantity=1`。
+    ⚠️ **不退不换**：这里是真扣钱（取回价 = 游戏算的卖店价，读过马龙那本书就是半价）。
+    """
+    if not item:
+        return {"ok": False, "error": "缺 item（要取回哪一件）—— 先 `menu ops=read` 看货架"}
+    return _im_buy(item, 1)
+
+
+def _im_tailor_op(args) -> str:
+    """🧵 摆弄开着的缝纫机（`/tailor_set`）→ 一句话（**带回读事实**）。
+
+    参数（都从单子那行带过来，这一层**不替它挑**）：
+      · `place` = 要放进槽的那件（名/限定 id）+ `slot` = `left`/`right`（缺省 left）；
+      · `action` = `start`（开缝）/ `take`（把光标上的产物收进背包）/ `clear`（两槽退回背包）。
+    ⚠️ 走 `helpers`（回一句话）：回执要的是"槽里现在是什么 / 能不能开缝 / 产物收进没"，
+       不是把 `/tailor_set` 那坨原始 dict 摊给 AI 看。
+    ⚠️ **回读照抄端点自己算的那几个字段**（`left/right/result/canStart/heldItem`）——
+       这一层不另判"成没成"（同 `_im_reforge` 那条规矩）。
+    """
+    body = {}
+    act = str((args or {}).get("action") or "").strip().lower()
+    place = str((args or {}).get("place") or "").strip()
+    slot = str((args or {}).get("slot") or "left").strip().lower()
+    if place:
+        if slot not in ("left", "right"):
+            return f"❌ 槽位只认 left/right（收到 `{slot}`）"
+        body[slot] = place
+    if act:
+        if act not in ("start", "take", "clear"):
+            return f"❌ action 只认 start/take/clear（收到 `{act}`）"
+        body["action"] = act
+    if not body:
+        return "❌ 什么都没让我做（要放料就给 place+slot，要开缝/取产物/清槽就给 action）"
+    _ensure_background()
+    try:
+        r = api._ai_post("/tailor_set", body) or {}
+    except Exception as e:
+        return f"❌ 缝纫机那一下打不出去：{type(e).__name__}: {e}"
+    if not r.get("ok"):
+        return f"❌ 没成：{r.get('error') or r}"
+    bits = []
+    bits.append(f"左槽 {r.get('left') or '（空）'} / 右槽 {r.get('right') or '（空）'}")
+    if r.get("result"):
+        bits.append(f"产出预览 {r['result']}" + ("" if r.get("resultKnown") else "（游戏对没做过的配方是打问号的）"))
+    if r.get("busy"):
+        bits.append("正在缝（约 1.5 秒后产物挂到光标上）")
+    elif r.get("canStart"):
+        bits.append("现在能开缝（`action=start`）")
+    if r.get("heldItem"):
+        bits.append(f"光标上拿着 {r['heldItem']}（`action=take` 收进背包）")
+    head = "🧵 " + ("、".join(bits) if bits else "缝纫机那一下发出去了")
+    if r.get("note"):
+        head += "\n   " + str(r["note"])
+    return head
+
+
+def _voucher_pending() -> int:
+    """待领兑奖券数（`/state.player.voucherPending`）；**读不到 → -1**（不是 0 —— 0 是"没有"）。"""
+    try:
+        v = ((api._ai_get("/state") or {}).get("player") or {}).get("voucherPending")
+        return int(v) if v is not None else -1
+    except Exception:
+        return -1
+
+
+def _im_order_accept(side) -> str:
+    """📋 **走过去 → 开板 → 接下左边/右边那一单**（单子那两行的执行侧）→ 一句话。
+
+    ⚠️ 那是**两件真事**：`_tank_go`（就位判据 = 站正交邻格 + 面朝它，跟 `_im_cc_go` 同一套）
+       + 复验 `/state.activeMenu.type` 真的变成 `SpecialOrdersBoard` 才点 accept
+       （恒提醒过：这个项目刚踩过"走位没到就按"的坑）。
+    ⚠️ 成不成看**游戏自己的事实**：`/order_board` 的 `activeOrders`（= `team.specialOrders.Count`）
+       有没有涨 —— `ok:true` 不算（本项目老账）。
+    ⚠️ 板子已经开着时**不重复走位/开板**（直接点按钮）—— 跟 `menu` 域那条路一致。
+    """
+    btn = {"left": "acceptLeftQuestButton", "right": "acceptRightQuestButton"}.get(
+        str(side or "").strip().lower())
+    if not btn:
+        return f"❌ 缺 side（只认 left/right，收到 `{side}`）"
+    _ensure_background()
+    mt = _im_menu_type()
+    if mt == "?":
+        return "❌ 读不到现在开着什么界面 —— 不敢瞎走位/瞎点"
+    if mt and mt != "SpecialOrdersBoard":
+        return f"❌ 现在开着 `{mt}` 界面 —— 先关掉它（单子上有「关掉界面」）再来接单"
+    # ① 板子没开 ⇒ 走过去 + 交互开出来（就位判据 + 复验，见 docstring）
+    if mt != "SpecialOrdersBoard":
+        step = _tank_go(*ORDER_BOARD_TILE)
+        if step:
+            return step
+        api._ai_post("/interact", {"x": ORDER_BOARD_TILE[0], "y": ORDER_BOARD_TILE[1]})
+        for _ in range(10):
+            time.sleep(0.2)
+            if _im_menu_type() == "SpecialOrdersBoard":
+                break
+        else:
+            return ("⚠️ 站到板前（%d,%d）也点了，可**板子没开** —— 要么这一档还没解锁这块板"
+                    "（社区中心修好后才有）、要么点空了；先 `show` 看一眼，别当成接上了"
+                    % ORDER_BOARD_TILE)
+    # ② 点那个 accept 按钮（C# 的 `buttons[]` 名字就是它 —— 见 `/menu` 的 SpecialOrdersBoard 分支）
+    n0 = -1
+    try:
+        n0 = int((api._ai_get("/order_board", {"type": ""}) or {}).get("activeOrders"))
+    except Exception:
+        n0 = -1
+    r = api._ai_post("/menu/click", {"button": btn}) or {}
+    if not r.get("ok"):
+        return f"❌ 接单那一下没点成：{r.get('error') or r}"
+    # ③ 回读：`team.specialOrders` 涨了没（**唯一算数的证据**）
+    for _ in range(6):
+        time.sleep(0.25)
+        try:
+            n1 = int((api._ai_get("/order_board", {"type": ""}) or {}).get("activeOrders"))
+        except Exception:
+            n1 = -1
+        if n0 < 0 or n1 < 0:
+            break
+        if n1 > n0:
+            return f"✅ 接下来了（特别订单 {n0} → {n1} 单）—— 板子还开着，看完就 `关掉界面`"
+    return ("⚠️ 点了接单按钮，可**没看到订单数增加** —— 多半这一边没有可接的单、或者已经接过了"
+            "（看单子的时候是有的，这一刻可能变了）；别当成接上了，自己看一眼")
+
+
+def _im_voucher_take() -> str:
+    """🎟 **走过去 + 连点**把板旁领奖箱里待领的兑奖券全领了（单子那行的执行侧）→ 一句话。
+
+    ⚠️ 一次交互**只给一张**（游戏 `GameLocation.cs:9006-9020` 每次 `Decrement` 1）⇒ 按 `n` 次。
+    ⚠️ 成不成看**那个统计数掉没掉**（`/state.player.voucherPending`）—— 不看 `ok:true`。
+    ⚠️ 背包满时游戏**只弹一句红字、数不扣**（`:9015-9018`）⇒ 一旦某次没掉就**停手**，
+       如实说"剩下的多半是背包满了"，别硬按（按一百下也还是那些）。
+    """
+    _ensure_background()
+    mt = _im_menu_type()
+    if mt == "?":
+        return "❌ 读不到现在开着什么界面 —— 不敢瞎走位/瞎点"
+    if mt:
+        return f"❌ 现在开着 `{mt}` 界面 —— 先关掉它再来领券（点箱子会被界面吃掉）"
+    n0 = _voucher_pending()
+    if n0 < 0:
+        return "❌ 读不到待领券数（`/state.player.voucherPending`）—— 不敢瞎点"
+    if n0 == 0:
+        return "❌ 这一刻**没有待领的兑奖券**（待领 0）"
+    step = _tank_go(*VOUCHER_TILE)
+    if step:
+        return step
+    cur = n0
+    for _ in range(n0):
+        api._ai_post("/interact", {"x": VOUCHER_TILE[0], "y": VOUCHER_TILE[1]})
+        time.sleep(0.35)
+        now = _voucher_pending()
+        if now < 0 or now >= cur:
+            break                      # 没掉 ⇒ 停手（多半背包满 —— 游戏只弹红字、不扣数）
+        cur = now
+    got = n0 - max(cur, 0)
+    if got <= 0:
+        return ("⚠️ 站到领奖箱前（%d,%d）了也点了，可**一张都没领到** —— 多半是背包没空格"
+                "（游戏只弹一句红字、数不扣）；腾个格再来" % VOUCHER_STAND)
+    tail = ""
+    if cur > 0:
+        tail = f"；还剩 {cur} 张没领（多半背包满了，腾格再来敲一次）"
+    return f"🎟 领到 {got} 张兑奖券（待领 {n0} → {max(cur, 0)}）{tail}"
+
+
 def _im_run(op, args):
     """单子敲下去**要执行的那一下**（合同：`(op 名, 参数字典) -> dict`）。
 
@@ -27341,6 +27986,15 @@ def _im_run(op, args):
         #    ⚠️ 坐标 (`x/y` 岸格 + `wx/wy` 水格 + `dir`) **全从被点的那一行带过来** ——
         #       这一层**不许**再自己去账里挑一个"最近/默认"的（本项目有过"按 A 缸的判断动 B 缸"的事故）。
         "fish": lambda: _im_fish_go(args),
+        # 🧵 缝纫机（2026-10-06 恒「两三个槽位也不复杂，跟锻造台差不多」）：单子那行的执行侧。
+        #    ⚠️ 走 `helpers`（回一句话）：回执要的是"槽里现在是什么 / 能不能开缝 / 产物收进没"，
+        #       不是把 `/tailor_set` 那坨原始 dict 摊给 AI 看（同 `reforge`）。
+        "tailor": lambda: _im_tailor_op(args),
+        # 📋 接特别订单（2026-10-06 恒追加的「顺手办」）：**走过去 + 开板 + 点 accept + 回读**。
+        #    ⚠️ 走 `helpers`（回一句话）：判据是 `team.specialOrders` 涨没涨，不是那几发 `ok:true`。
+        "order_accept": lambda: _im_order_accept(args.get("side")),
+        # 🎟 领兑奖券（同上）：走到板旁领奖箱 + 连点 + **看统计数掉没掉**。
+        "voucher": lambda: _im_voucher_take(),
     }
     # 🛒 买卖走**裸端点**（回 dict，回执要逐条报数字），只是外面多两道闸门。
     raw_ops = {
@@ -27360,6 +28014,11 @@ def _im_run(op, args):
         #    ⚠️ 回 dict（不是一句话）：回执要逐条报"进去几个 / 到手几个"。
         "store": lambda: _im_chest_op("store", args),
         "chest_take": lambda: _im_chest_op("chest_take", args),
+        # 🐄 买动物（2026-10-06）：单子那行的执行侧 —— **回 dict**（回执要说清花了多少、
+        #    进了哪栋棚、那栋现在几只；这些数只有端点自己的回读有）。
+        "animal": lambda: _im_buy_animal(args.get("animal"), args.get("name") or ""),
+        # 🎟 从马龙的失物招领取回一件：**回 dict**（同族 —— `quantity`/`ok` 都要原样报）。
+        "recovery": lambda: _im_recovery_take(args.get("item")),
     }
     if op in raw_ops:
         try:
