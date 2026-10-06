@@ -368,8 +368,27 @@ try:
     M._FISH_CACHE.update({"key": None, "ts": 0.0, "raw": None})
     _a = FakeApi(_state("Forest", in_hand=True), fish_areas=_f)
     M.api = _a
-    ck("`spots[].fishable:false`（游戏说这格水抛不出去）⇒ 那一区**不上单子**",
-       M._im_fish(_a._state, {"fish_areas": True, "water_fishable": True}) == {}, "应当为 {}")
+    # 🔴 2026-10-06 恒：「**那就用我们标的那两个森林钓点？一个河流一个湖泊的**」——
+    #    ⚠️ 这一格**正是实况**：`/fish_areas` 自己挑给 Forest `River` 的是 `(21,76)`/站 `(20,76)`，
+    #    而它 `fishable:false`（游戏说那格抛不出去）……可**恒的校准点就是同一处**、真机 `isFishing=True` 还进了小游戏 ✓
+    #    （根因：鱼区那档按矩形挑水格挑错了，不是水不对）。
+    #    ⇒ 规矩改成一对：**该水域有校准点 ⇒ 一律用校准点（`fishable` 不参与）；没有才按 `fishable` 筛**。
+    _pick_cal = (M._im_fish(_a._state, {"fish_areas": True, "water_fishable": True}) or {}).get("picks") or []
+    ck("🎣 有校准点的水域：`spots[].fishable:false` **照样出一行**（用校准点，`fishable` 不参与）",
+       bool(_pick_cal) and (_pick_cal[0] or {}).get("standX") == 20 and (_pick_cal[0] or {}).get("standY") == 76
+       and (_pick_cal[0] or {}).get("dir") == 1,
+       str(_pick_cal[:1]))
+    # 反面：**没有校准点**的水域 ⇒ `fishable:false` 仍然"整区不上单子"（宁缺勿编，那条硬规矩没被放松）
+    _f_nocal = {"ok": True, "location": "Desert", "hasFishAreaData": True, "count": 1,
+                "areas": [{"id": "BottomPond", "displayName": None, "position": None,
+                           "waterTiles": 9, "spotsFound": 1, "spotsTruncated": False,
+                           "spots": [{"waterX": 21, "waterY": 76, "standX": 20, "standY": 76,
+                                      "dir": 1, "fishable": False}]}]}
+    M._FISH_CACHE.update({"key": None, "ts": 0.0, "raw": None})
+    _a2 = FakeApi(_state("Desert", in_hand=True), fish_areas=_f_nocal)
+    M.api = _a2
+    ck("⛔ 没有校准点的水域：`spots[].fishable:false` ⇒ 那一区**不上单子**（硬规矩没放松）",
+       M._im_fish(_a2._state, {"fish_areas": True, "water_fishable": True}) == {}, "应当为 {}")
     _f2 = {"ok": True, "location": "Forest", "hasFishAreaData": True, "count": 1,
            "areas": [{"id": "River", "displayName": None, "position": None,
                       "waterTiles": 9, "spotsFound": 1, "spotsTruncated": False,
