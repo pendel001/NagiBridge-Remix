@@ -6476,7 +6476,22 @@ public class ModEntry : Mod
                 targetY = l.DestY
             }).ToList();
         }
-        return new { ok = true, maps = result };
+        // 🚪 2026-10-06：**室内（instanced interior）不在 `Game1.locations` 里** ⇒ 上面那张总图
+        //    看不见它们的出口格（小屋内部曾报 0 个），而恒指出「那个缺口就是出小屋门的传送」。
+        //    `location.warps` 是**这张图自己的 warp 表**（`FindMapPath` 早就偷偷补过同一手）
+        //    ⇒ 这里并进当前图（总图里已有就不动）。**这是"小屋出口格"的唯一数据源**。
+        var cur = Game1.player?.currentLocation;
+        if (cur != null && !result.ContainsKey(cur.Name))
+        {
+            result[cur.Name] = cur.warps
+                .Where(w => !string.IsNullOrEmpty(w.TargetName))
+                .Select(w => (object)new
+                {
+                    x = w.X, y = w.Y, targetLocation = w.TargetName,
+                    targetX = w.TargetX, targetY = w.TargetY
+                }).ToList();
+        }
+        return new { ok = true, maps = result, currentLocation = cur?.Name };
     }
 
     /// <summary>
@@ -24690,6 +24705,20 @@ var tcs = new TaskCompletionSource<object>();
             if (b.tileX.Value + hd.X == x && b.tileY.Value + hd.Y == y)
             {
                 why = $"建筑门格 humanDoor（{b.buildingType.Value} @ {b.tileX.Value},{b.tileY.Value} + {hd.X},{hd.Y}）";
+                return true;
+            }
+        }
+
+        // ⑤ 地图**自己的 warp 表**（`GameLocation.warps`）—— ★ 2026-10-06 恒：
+        //    「**那个缺口是，出小屋门的传送**」。
+        //    小屋/农舍的**室内是 instanced interior、不在 `Game1.locations` 里** ⇒ `/warps` 那张总图
+        //    **看不见它的出口格**（本图当时报 0 个），可 `location.warps` 是有的：**出小屋门那一格就在里面**。
+        //    ⛔ 不认它，同图走位就会从门口**穿出去**（真机：屋里一路走到屋外空地 `(55,12)`）。
+        foreach (var w in loc.warps)
+        {
+            if (w.X == x && w.Y == y)
+            {
+                why = $"地图 warp 表({w.TargetName} {w.TargetX},{w.TargetY})";
                 return true;
             }
         }

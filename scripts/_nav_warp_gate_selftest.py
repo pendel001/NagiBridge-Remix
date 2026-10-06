@@ -257,6 +257,12 @@ try:
        '"walk_warp_blocked", "walk_teleport"' in _nav_src)
     ck("…`/passable_rect` 与 `/dump_tile` 都报 `hasFloor`（地板探测字段，先只报数）",
        '["hasFloor"] = loc.hasTileAt(' in _cs and 'result["hasFloor"] = loc.hasTileAt(' in _cs)
+    # ⑤ 地图**自己的 warp 表**（恒：「那个缺口是，出小屋门的传送」）—— 室内不在 Game1.locations 里，
+    #    总图看不见它的出口格，只能从 `location.warps` 拿。
+    ck("…闸门认 `GameLocation.warps`（小屋出口格唯一数据源）",
+       "foreach (var w in loc.warps)" in _gate_code and "地图 warp 表(" in _gate_code)
+    ck("…`/warps` 把**当前图**自己的 warp 表并进回包（室内不再报 0）",
+       "result[cur.Name] = cur.warps" in _cs and "currentLocation = cur?.Name" in _cs)
 finally:
     for _k, _v in _real.items():
         setattr(N, _k, _v)
