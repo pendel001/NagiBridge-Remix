@@ -536,9 +536,11 @@ try:
     ck("…紧邻那档（校准点 face 目标，1 格）⇒ **照旧放行**（别把鱼区那档一起收紧）",
        bool(scripts) and scripts[0][0] == "fish_run", out)
 
-    print("\n⑦b 🎣 矿井钓点（20/60/100 层 · 站位与朝向照抄 7842 的当下站位）")
-    # 恒 2026-10-06：「位于这些层时也给对应的钓鱼选项，抛竿位置在**现在 7842 的站位和朝向**」。
-    # 真机那一刻：7842 在 UndergroundMine100 (26,13) facing=1；朝右第 7 格 (33,13) 实测 `fishable:true`。
+    print("\n⑦b 🎣 矿井钓点（20/60/100 层 · 站位这几层同一格：恒亲站的 (26,13) 朝右）")
+    # 恒 2026-10-06：「位于这些层时也给对应的钓鱼选项，抛竿位置在现在 7842 的站位和朝向」
+    #              + 「站位应该这几层都是一样的，**包括困难模式的矿井**站位也是一样的」
+    # 真机那一刻：7842 在 UndergroundMine100 (26,13) facing=1；朝右第 7 格 (33,13) 实测 `fishable:true`；
+    # 随后他在 **UndergroundMine60 也是 (26,13) facing=1** ⇒ 同格被两层坐实。
     FISH_MINE = {"ok": True, "location": "UndergroundMine100", "hasFishAreaData": False,
                  "count": 0, "areas": []}
     HOST_M = {"location": {"name": "UndergroundMine100"},
@@ -548,7 +550,7 @@ try:
                   fish_areas=FISH_MINE, water=_mw, passable={(26, 13): True}, host=HOST_M)
     acct_m = _acct(api)
     pk_m = acct_m.get("picks") or []
-    ck("矿井那三层：照抄 7842 的站位 (26,13) + 朝向 1，落点 = 朝右 D=7 ⇒ (33,13)",
+    ck("矿井那三层：他**也在同一层**时用他的**当下**站位 (26,13) 朝向 1 ⇒ 落点 = 朝右 D=7 ⇒ (33,13)",
        acct_m.get("mode") == "host" and len(pk_m) == 1
        and (pk_m[0].get("standX"), pk_m[0].get("standY")) == (26, 13)
        and pk_m[0].get("dir") == 1
@@ -562,12 +564,23 @@ try:
        IM._fish_subs(IM.ctx_from(_state("UndergroundMine100", x=20, y=13, in_hand=True),
                                  {}, caps={"fish_areas": True}, fish=acct_m), [None]) is None, "")
 
+    # 🔑 恒："站位这几层都一样" ⇒ **他不在场也能给行**（用常量 `_FISH_MINE_SPOT`）
+    for _lv in (20, 60, 100):
+        M._FISH_CACHE.update({"key": None, "ts": 0.0, "raw": None})
+        _a = FakeApi(_state("UndergroundMine%d" % _lv, x=6, y=10, in_hand=True, wh=(50, 22)),
+                     fish_areas=FISH_MINE, water=_mw, passable={(26, 13): True},
+                     host={"location": {"name": "FarmHouse"},
+                           "player": {"x": 29, "y": 27, "facingDirection": 0}})   # 他不在矿井
+        _ac = _acct(_a)
+        _p = (_ac.get("picks") or [{}])[0]
+        ck("…他**不在场**也照样给行（第 %d 层）：用常量 (26,13)/朝右 ⇒ 落点 (33,13)" % _lv,
+           _ac.get("mode") == "host"
+           and (_p.get("standX"), _p.get("standY"), _p.get("dir")) == (26, 13, 1)
+           and (_p.get("waterX"), _p.get("waterY")) == (33, 13), str(_ac))
+
     # 三道闸：任何一道过不去 ⇒ **如实不给行**
     for _h, _p, _w, _why in (
-            ({"location": {"name": "UndergroundMine60"},
-              "player": {"x": 26, "y": 13, "facingDirection": 1}}, {(26, 13): True}, _mw,
-             "他**不在同一层**（换层了）"),
-            (HOST_M, {(26, 13): False}, _mw, "他站的那格**走不过去**"),
+            (HOST_M, {(26, 13): False}, _mw, "站格**走不过去**"),
             (HOST_M, {(26, 13): True}, {(33, 13): [{"x": 33, "y": 13, "fishable": False}]},
              "落点**不是能钓的水**")):
         M._FISH_CACHE.update({"key": None, "ts": 0.0, "raw": None})
@@ -575,9 +588,14 @@ try:
                      fish_areas=FISH_MINE, water=_w, passable=_p, host=_h)
         _ac = _acct(_a)
         ck(f"…{_why} ⇒ 矿井那一行**不给**（宁可不给，也不给假门）", _ac == {}, str(_ac))
-    ck("…那三层**只在这三层**：别的矿层（如 UndergroundMine21）不走这条路",
-       M._FISH_MINE_MAPS == ("UndergroundMine20", "UndergroundMine60", "UndergroundMine100"),
-       str(M._FISH_MINE_MAPS))
+    # 层号解析（照抄游戏 `MineShaft.cs:4864 GetLevelName`：`…<层>` 或 `…<层>:<强制布局>`）
+    ck("…层号解析认 `:布局` 那种写法（困难模式/强制布局）⇒ 100 / 20 都认得出",
+       M._fish_mine_level("UndergroundMine100") == 100
+       and M._fish_mine_level("UndergroundMine100:1") == 100
+       and M._fish_mine_level("undergroundmine20:3") == 20, str(M._fish_mine_level("UndergroundMine100:1")))
+    ck("…⛔ 不是那三层就不走这条路（21 层 / 空名 / 别的图 ⇒ None）",
+       [M._fish_mine_level(x) for x in ("UndergroundMine21", "UndergroundMine", "Mine", "Farm")] == [None] * 4,
+       str([M._fish_mine_level(x) for x in ("UndergroundMine21", "UndergroundMine", "Mine", "Farm")]))
 
     print("\n⑦ 按鱼区校准表（`FISHING_AREA_TARGETS`）：三条映射 + 老路一字不变 + 无校准就退回游戏 spots")
     import fish_run as FR

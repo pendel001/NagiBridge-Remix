@@ -24981,10 +24981,14 @@ _FISH_MAX_PICKS = 8           # 第二层最多几行（防病态地图把单子
 #     那时**先关、再查**，别让它带着假门跑。
 _FISH_WATER_SWEEP_ENABLED = True
 # 🎣 **矿井有鱼的水池层**（恒 2026-10-06 查 wiki 给的：20 / 60 / 100 层）——
-#    这几层给「垂钓」行，**站位与朝向照抄 7842 的当下站位**（他站哪朝哪，我们就去哪朝哪；
-#    理由与三道闸见 `_fish_mine_pick`）。⚠️ 图名 = 游戏自己的 `UndergroundMine<层>`，
-#    别写成 "Mine"/"矿井" 那种（那会命中整座矿）。
-_FISH_MINE_MAPS = ("UndergroundMine20", "UndergroundMine60", "UndergroundMine100")
+#    这几层给「垂钓」行。**站位与朝向**：恒 2026-10-06 亲口确认「这几层都是一样的，**包括困难模式的矿井**」，
+#    且真机两层实测同格 ⇒ 记成常量 `_FISH_MINE_SPOT`（他当场站过的那一格）；
+#    他若**正好也在同一层**，则优先用他的**当下站位**（最新标定优先，见 `_fish_mine_pick`）。
+#    ⚠️ 层号解析照抄游戏 `MineShaft.IsGeneratedLevel/GetLevelName`（`MineShaft.cs:4864/4930`）：
+#       名字 = `UndergroundMine<层>` 或 `UndergroundMine<层>:<强制布局>`（困难模式/强制布局走后者）
+#       ⇒ 取前缀后的数字、**冒号前面的那段**，两种写法都能认。
+_FISH_MINE_LEVELS = (20, 60, 100)
+_FISH_MINE_SPOT = (26, 13, 1)   # (x, y, facing) —— 恒亲站；20/60/100 层同一格、朝右
 
 
 def _fish_rod_in_hand(state: dict) -> bool:
@@ -25155,23 +25159,44 @@ def _fish_host_spot() -> dict:
         return {}
 
 
-def _fish_mine_pick(state: dict, loc_name: str) -> dict:
-    """🎣 矿井那三层的钓点行（恒 2026-10-06 拍板要做）—— 返回 `_im_fish` 那种账，给不了就 `{}`。
+def _fish_mine_level(loc_name: str):
+    """是"有鱼的矿井层"就给层号（`20`/`60`/`100`），否则 `None`。
 
-    站位/朝向**照抄 7842 的当下站位**；落点 = 他的站格 + 他的朝向 × D，**必须**是游戏说 `fishable` 的水。
+    判据**照抄游戏**（`MineShaft.cs:4864 GetLevelName` / `:4930 IsGeneratedLevel`）：
+      `UndergroundMine<层>` 或 **`UndergroundMine<层>:<强制布局>`**（困难模式/强制布局是后者）
+      ⇒ 砍掉前缀、取**冒号前**那段整数。⚠️ 别只做字符串相等（`…100:1` 那种会漏，恒特意提醒过困难模式）。
+    """
+    s = str(loc_name or "")
+    if not s.lower().startswith("undergroundmine"):
+        return None
+    head = s[len("UndergroundMine"):].split(":", 1)[0]
+    try:
+        lv = int(head)
+    except Exception:
+        return None
+    return lv if lv in _FISH_MINE_LEVELS else None
+
+
+def _fish_mine_pick(state: dict, loc_name: str) -> dict:
+    """🎣 矿井那三层的钓点行 —— 返回 `_im_fish` 那种账，给不了就 `{}`。
+
+    **站位从哪来**（恒 2026-10-06：「这几层都是一样的，包括困难模式」+ 他当场站过）：
+      ① 他**正好也在同一层** ⇒ 用他**当下**的站位与朝向（最新标定优先）；
+      ② 否则 ⇒ 用常量 `_FISH_MINE_SPOT`（就是他当年站的那一格；真机 60/100 两层实测同格）。
     三道闸（任何一道过不去 ⇒ `{}`，如实不给行）：
-      ① 他也**在同一层**（不在 ⇒ 这个"标定"根本不在场，别猜）；
-      ② 他那格 `/passable`（走不过去的位置给了也是假门）；
-      ③ 落点那格 `/water` 回 `fishable: true`（问他那端也行、问我们自己这端也行 —— 同一张图）。
-    ⛔ 鱼种一个字都不印（恒 2026-10-05 的老规矩）；这一行的"名字"用**游戏自己的图名**
-      （`UndergroundMine100` —— 原样透传，里面就带层号）。
+      ① 站格 `/passable`（走不过去的给了也是假门）；② 落点 = 站格 + 朝向 × D 那格 `/water` 回
+      `fishable: true`（D 走 `_fish_cast_d`：实测优先）；③ D 算得出来（没量过抛竿距离就不给）。
+    ⛔ 鱼种一个字都不印（恒 2026-10-05 的老规矩）；行的名字用**游戏自己的图名**
+      （`UndergroundMine100` —— 原样透传，层号就在里面）。
     """
     hp = _fish_host_spot()
-    if not hp or hp.get("loc") != loc_name:
-        return {}
-    hx, hy, hf = hp.get("x"), hp.get("y"), hp.get("face")
-    if not isinstance(hx, int) or not isinstance(hy, int) or hf not in (0, 1, 2, 3):
-        return {}
+    if (hp.get("loc") == loc_name and isinstance(hp.get("x"), int)
+            and isinstance(hp.get("y"), int) and hp.get("face") in (0, 1, 2, 3)):
+        hx, hy, hf = hp["x"], hp["y"], hp["face"]
+        src = "恒当下站位(7842)"
+    else:
+        hx, hy, hf = _FISH_MINE_SPOT
+        src = "恒亲站·这几层同一格"
     axis = "h" if hf in (1, 3) else "v"
     lv = (((state or {}).get("player") or {}).get("fishing") or {}).get("fishingLevel")
     D = _fish_cast_d(lv, axis)
@@ -25180,7 +25205,7 @@ def _fish_mine_pick(state: dict, loc_name: str) -> dict:
     wx, wy = hx + (0, 1, 0, -1)[hf] * D, hy + (-1, 0, 1, 0)[hf] * D
     try:
         if not api._post("/passable", {"x": hx, "y": hy}).get("passable"):
-            return {}                                 # 他站的那格走不过去 ⇒ 不给行
+            return {}                                 # 站的那格走不过去 ⇒ 不给行
     except Exception:
         return {}
     try:
@@ -25195,7 +25220,7 @@ def _fish_mine_pick(state: dict, loc_name: str) -> dict:
             "picks": [{"area": loc_name, "standX": hx, "standY": hy,
                        "waterX": wx, "waterY": wy, "dir": int(hf),
                        "waterTiles": None, "spotsFound": None,
-                       "calibrated": "恒站位(7842)"}]}
+                       "calibrated": src}]}
 
 
 def _fish_water_scan(state: dict, caps: dict = None) -> list:
@@ -25388,12 +25413,9 @@ def _im_fish(state: dict, caps: dict = None) -> dict:
     loc_name = ((state or {}).get("location") or {}).get("name") or ""
     if not loc_name:
         return {}                                     # 图名读不到 ⇒ 缓存键都拼不出来 ⇒ 不猜
-    # 🎣 **矿井钓点优先**（恒 2026-10-06）：20/60/100 层那三处水池 —— 站位/朝向**用 7842 的当下站位**
-    #    （恒原话：「位于这些层时也给对应的钓鱼选项，抛竿位置在**现在 7842 的站位和朝向**」）。
-    #    为什么走这条路而不是水格扫描：那几层**没有 FishAreas 数据**（游戏按矿层给鱼），而恒人能站到、
-    #    亲手验过的地方就是权威 ⇒ **他站哪朝哪，我们就去哪朝哪**；⛔ 不自己算矿洞钓点。
-    #    ⚠️ 一律过三道闸才给行：同在一层 · 落点 = 他站格 + 他朝向 × D 是 `fishable` 的水 · 他那格可站。
-    if loc_name in _FISH_MINE_MAPS:
+    # 🎣 **矿井钓点优先**（恒 2026-10-06）：20/60/100 层那三处水池 —— 站位/朝向见 `_FISH_MINE_SPOT`
+    #    （恒亲站的那一格；他正好在同一层时用他的**当下**站位）。层号解析认 `…:布局` 那种写法（困难模式）。
+    if _fish_mine_level(loc_name) is not None:
         return _fish_mine_pick(state, loc_name)
     now = time.time()
     raw = None
