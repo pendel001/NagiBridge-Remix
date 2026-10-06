@@ -943,11 +943,80 @@ def farm_buildings():
     return _get("/farm_buildings")
 
 
-def warp(location, x=None, y=None):
+def warp(location, x=None, y=None, check=True):
+    """传送到 (location, x, y)；`check=True`（默认）时做**落地校验**。
+
+    🔴 2026-10-06 恒：「**记得校验站位！！这不是真机能到达的地方吧**」——
+       真机事故：我给 `/warp` 喂了一个**自验夹具里的假坐标**（`Farm (40,32)`），
+       那格在真机上是**水面** ⇒ 小人**卡在水中央**（`/passable=false`、`isMoving` 恒 false）。
+    这一层补的**落地校验**（四步，宁可不猜也不假装成功）：
+      ① 落地后读 `/state` 确认真到了哪 —— ⚠️ **别信 `/warp` 回包的 `actual`**：
+         真机实测它印的是**落地前**的位置（我 warp 进 FarmHouse 了，回包还写 `Farm(40,32)`）；
+      ② 落点 `passable=false` ⇒ 在**四邻**（再八邻）找一格能站的、用 `/position` 挪过去，
+         并**如实说**"落点站不住、已挪到 (x,y)"；四邻都没有就退回该图**默认落点**（再读一次确认）；
+      ③ ⚠️ `/passable` **只看当前图** ⇒ **跨图目标没法事先验**，只能落地后验（所以叫"落地校验"）；
+      ④ 读不到位置/可站性（游戏卡住等）⇒ **不猜**：照原样返回结果，附一句"没能校验落点"。
+    ⚠️ 这是**Python 侧的护栏**（护脚本/探针）；**真·发射前校验得在 C# 的 `/warp` 里做**（记在待办里，见 CHANGELOG 补45）。
+    """
     data = {"location": location}
     if x is not None: data["x"] = x
     if y is not None: data["y"] = y
-    return _post("/warp", data)
+    r = _post("/warp", data)
+    if not check:
+        return r
+    # ── 落地校验 ──
+    # ⚠️ **全程用 `_post`/`_get`**（跟上面那发 `/warp` **同一套基址**）——
+    #    我第一版在这里混用了 `_ai_post`/`_ai_get`：MCP 进程里 `_set_roles` 之后两者恰好同指 AI 还好，
+    #    但**独立脚本进程**里 `_post` 走 `NAGI_URL`（默认 7842=**恒**）而 `_ai_post` 才是 AI
+    #    ⇒ 会出现"传的是 A 的角色、验的是 B 的站位"这种**最坏的假校验**（自验里也是这么炸的）。
+    try:
+        time.sleep(1.0)
+        st = _get("/state")
+        loc = (st.get("location") or {}).get("name") or ""
+        p = st.get("player") or {}
+        ax, ay = p.get("x"), p.get("y")
+    except Exception:
+        return {**(r if isinstance(r, dict) else {}), "landing": "⚠️ 没能校验落点（读不到位置）"}
+    note = ""
+    if loc and loc != location:
+        note = f"⚠️ 没到 {location}（现在在 {loc}）"
+    # 落点能不能站
+    ok_tile = None
+    try:
+        ok_tile = bool(_post("/passable", {"x": ax, "y": ay}).get("passable"))
+    except Exception:
+        ok_tile = None
+    if ok_tile is False:
+        # 四邻 → 八邻，找一格真能站的
+        cands = [(ax + dx, ay + dy) for dx, dy in ((0, -1), (0, 1), (-1, 0), (1, 0),
+                                                   (-1, -1), (1, -1), (-1, 1), (1, 1))]
+        moved = None
+        for cx, cy in cands:
+            try:
+                if _post("/passable", {"x": cx, "y": cy}).get("passable"):
+                    if _post("/position", {"x": cx, "y": cy}).get("ok"):
+                        moved = (cx, cy)
+                        break
+            except Exception:
+                continue
+        if moved:
+            note = (f"⚠️ **落点 ({ax},{ay}) 站不住**（水/墙）⇒ 已挪到能站的 ({moved[0]},{moved[1]})"
+                    f"（原地会被卡住：`isMoving` 恒 false）")
+        else:
+            # 退路：该图默认落点
+            try:
+                _post("/warp", {"location": location})
+                time.sleep(1.0)
+                st2 = _get("/state")
+                p2 = st2.get("player") or {}
+                note = (f"⚠️ **落点 ({ax},{ay}) 站不住**、四邻也没有能站的 ⇒ 已退回 {location} 默认落点"
+                        f"（现在 ({p2.get('x')},{p2.get('y')})）")
+            except Exception:
+                note = f"⚠️ **落点 ({ax},{ay}) 站不住**，且退回默认落点也失败 —— 人可能卡住了，快看一眼"
+    out = dict(r) if isinstance(r, dict) else {"ok": True}
+    if note:
+        out["landing_note"] = note
+    return out
 
 
 # ── 🛋️ 计划/兜底辅助（2026-08-14 全自动一天）──
