@@ -3271,14 +3271,46 @@ _NPC_HINT_SEEN = {"loc": None, "names": None, "ts": 0.0}
 _NPC_HINT_GAP = 300.0      # 秒：同一批 NPC 最多 5 分钟重播一次（够 AI 看见，又不至于每发都刷）
 
 
-def _menu_claim_label(active_menu: dict) -> str:
-    """🎓 菜单里**这一刻能领的东西** → 那一行的标题（`""` = 没得领）。
+def _bag_is_full():
+    """背包**占满了吗** → `(True/False, used, cap)`；读不到 ⇒ `(None, None, None)`（⛔ 不猜成"没满"）。
 
-    ⚠️ 判据**复用现成那份**：`/state.activeMenu.mastery.canClaim` —— 跟抬头那句
+    ⚠️ 判据是**占格数 vs `maxItems`**（家具 `Stack` 可能是 0，别按数量求和 —— 同 `_inv_slots` 那条）。
+    """
+    try:
+        st = api.state() or {}
+        inv = st.get("inventory") or []
+        cap = int((st.get("player") or {}).get("maxItems") or 36)
+        used = sum(1 for _i in inv if _i)
+        return (used >= cap), used, cap
+    except Exception:
+        return None, None, None
+
+
+def _bag_total() -> int:
+    """背包里**物品个数之和**（领东西前后比大小用；读不到 ⇒ -1）。"""
+    try:
+        n = 0
+        for _i in (api.state().get("inventory") or []):
+            if _i:
+                n += int(_i.get("stack") or 1)
+        return n
+    except Exception:
+        return -1
+
+
+def _menu_claim_label(active_menu: dict) -> str:
+    """🎓/🎁 菜单里**这一刻能领的东西** → 那一行的标题（`""` = 没得领）。
+
+    ⚠️ 精通那条判据**复用现成那份**：`/state.activeMenu.mastery.canClaim` —— 跟抬头那句
        「精通**XX**碑，**可以领**：…」**同源**（`C# BuildMasteryInfo`，`/state` 与 `/menu` 共用）。
        别在这儿另判一套（本项目老病：同一件事写两遍必漂）。
     ⚠️ 恒 2026-10-02「补一下缺门」：那一刻单子上原来**只有「关掉界面」** ——
        抬头喊"可以领"、单子却没有那行 ⇒ AI 只看单子就会把正事错过去。
+    🎁 2026-10-06 恒（**满包接鱼那件事**）：「这个东西我们得**做上单子**了，确实难操作」
+       ⇒ 领取侧（`ItemGrabMenu`：钓鱼/矿井宝箱/节日奖励…）也出行。判据 = `/menu.items`
+       （C# 的 `grabItems`，「读领取侧 actualInventory 真物品」，`ModEntry.cs:14784`）。
+       ⚠️ 满包时**照样给行**，但标题里点明"得先腾一格" —— 点下去会**如实拒**（见 `_menu_claim_now`），
+          ⛔ 不是"点了就掉地上"（2026-10-06 真机：满包点 claim 会把东西**挂到光标上**，再点 ok 就掉地上）。
     """
     mt = ((active_menu or {}).get("type") or "").lower()
     if mt == "masterytrackermenu":
@@ -3288,18 +3320,71 @@ def _menu_claim_label(active_menu: dict) -> str:
             _rw = [x.get("name") or x.get("id") for x in (mt2.get("rewards") or []) if x]
             _tail = ("（" + "、".join(str(x) for x in _rw[:3]) + "）") if _rw else ""
             return f"领 {_who}碑的奖励{_tail}"
+    if mt == "itemgrabmenu":
+        try:
+            m = api._ai_get("/menu") or {}
+            if ((m.get("type") or "").lower() != "itemgrabmenu"):
+                return ""
+            items = [x for x in (m.get("items") or [])
+                     if isinstance(x, dict) and x.get("name")]
+            if not items:
+                return ""                      # 空的领取侧 ⇒ 只有"关掉界面"那一行（原样）
+            it = items[0]
+            try:
+                c = int(it.get("count") or it.get("stack") or 1) or 1
+            except Exception:
+                c = 1
+            more = f" 等 {len(items)} 样" if len(items) > 1 else ""
+            full, used, cap = _bag_is_full()
+            tail = f"（⚠️ 包满 {used}/{cap}：得先丢一样腾格）" if full else ""
+            return f"领 {it.get('name')}×{c}{more}{tail}"
+        except Exception:
+            return ""
     return ""
 
 
 def _menu_claim_now() -> str:
-    """🎓 领下当前精通碑的奖励（单子那行「领取」的执行侧）→ 一句话。
+    """单子那行「领取」的执行侧 → 一句话。
 
-    底层 = 现成端点 `menu click(button=mainButton)`（2026-10-02 真机亲测：钱/奖励到手、
-    碑变 ✅、菜单自己关）；这一层只做**回读**：领完这块碑该亮了、名额该少一个。
+    · `MasteryTrackerMenu` ⇒ `menu click(button=mainButton)`（2026-10-02 真机亲测）+ 回读碑亮没亮；
+    · 🎁 领取侧 `ItemGrabMenu` ⇒ `action=claim`，**先过满包闸**（2026-10-06 真机：满包点下去东西会挂到
+      光标上、一关菜单就掉地上；水边还有放生风险）⇒ 满了**当场拒并给正解**；能领就领 + **回读**。
     """
     try:
         st = api.state(light=True)
         am = st.get("activeMenu") or {}
+    except Exception:
+        am = {}
+    if ((am.get("type") or "").lower() == "itemgrabmenu"):
+        full, used, cap = _bag_is_full()
+        if full:
+            return (f"🚫 **包满了（{used}/{cap}），我这一下没点** —— 满包时点领取会把东西"
+                    f"**挂到光标上**，这时一关菜单它就**掉地上**（水边还有**放生**风险）。\n"
+                    f"   先腾一格再敲这行：`menu click action=discard item=<低价值物>`（丢垃圾桶）"
+                    f"或 `scene drop`（注意别朝着水面丢）。")
+        before = _bag_total()
+        try:
+            r = api._ai_post("/menu/click", {"action": "claim"}) or {}
+        except Exception as e:
+            return f"❌ 领取出错：{type(e).__name__}: {e}"
+        if not r.get("ok"):
+            return f"❌ 没领成：{r.get('error') or r}"
+        time.sleep(0.35)
+        try:
+            _held = ((api.state().get("activeMenu") or {}).get("heldItem")) or None
+        except Exception:
+            _held = None
+        if _held:
+            _hn = _held.get("displayName") or _held.get("name") or "?"
+            return (f"🖐️ 「{_hn}」**挂在光标上了**（包里没地方）—— 先丢一样腾格，它自己会进包；"
+                    f"⛔ **别点 ok**（那等于扔地上）。")
+        _after = _bag_total()
+        if before >= 0 and _after > before:
+            return f"🎁 领到了（{r.get('item') or '?'}）—— 回读：包里多出来了 ✓"
+        return (f"⚠️ 点了领取（`{r.get('item') or '?'}`），可**回读包里没多出来** ⇒ 这一下"
+                f"**可能没接住** —— 别当拿到了，看一眼菜单里还在不在。")
+    # ── 精通碑（原路） ──
+    try:
         before = (am.get("mastery") or {})
         r = api._ai_post("/menu/click", {"button": "mainButton"}) or {}
         if not r.get("ok"):
@@ -20923,7 +21008,19 @@ def read_menu() -> str:
                 #    「而且好像操作通用？暂时没想到要分支的场景」⇒ 收成三条，**ok 升成通用项**。
                 lines.append("  🎁 领: menu click action=claim item=名（或 slot=序号 选哪件）；多领加 quantity=N（999=全领）")
                 lines.append("  🗑️ 背包满领不动: 先 menu click action=discard item=低价值物 丢桶腾格，再领")
-                lines.append("  ✅ 领够了/先不领: menu click(button=ok) 关掉 —— 下次再来照样能领")
+                # 🔴 2026-10-06 恒**当场纠正**了这句（原来是「下次再来照样能领」）：
+                #    「下次再来照样能领的说法，对于**钓鱼/矿井宝箱/节日奖励都是不正确的**，对于**吉尔**是对的。
+                #     所以**不能回头才是常态**。」⇒ 这句话以前会让 AI/人放心走开，回来发现东西没了。
+                #    ⛔ 不许再写回来。
+                lines.append("  ✅ 领够了/先不领: menu click(button=ok) 关掉")
+                lines.append("     ⚠️ **关掉通常就没了**（钓鱼/矿井宝箱/节日奖励这类**不能回头**）——"
+                             "只有**吉尔的领奖处**才是「下次再来照样能领」。别空手走开：要么现在领，"
+                             "要么先 discard 腾格再领。")
+                # 💡 满包时 `action=claim` 会发生什么（2026-10-06 真机踩过）：东西**挂到光标上**（heldItem），
+                #    这时候点 ok 关菜单 = **把它丢在地上**（我们那条石鱼就是这么掉出去的）。
+                lines.append("     💡 满包时点了 claim：东西会**挂在光标上** —— 这时**先丢一样腾格**"
+                             "（`scene drop` 或 `menu click action=discard`），它**自己会进包**；"
+                             "⛔ **别点 ok**（那等于把它扔地上，扔在水边还有**放生**的风险）。")
         if m.get("letterTitle"):
             lines.append(f"  📧 {m['letterTitle']}: {m.get('letterBody')}")
         return _with_state("\n".join(lines))
@@ -21313,6 +21410,33 @@ def menu_click(option: int = -1, button: str = "", x: int = -1, y: int = -1, ite
                 _mt_before = ((api.state().get("activeMenu") or {}).get("type") or "")
             except Exception:
                 _mt_before = ""
+        # 🎁 领东西前先看**背包有没有位**（2026-10-06 真机踩到**真损失**：背包满时 `action=claim`
+        #    **点下去东西当场就没了** —— 矿井 GrabMenu 里那条石鱼消失、地上也找不到，
+        #    而回执写着「已领取」= **假成功 + 真丢件**，两样都是本项目最恨的）。
+        #    ⇒ 满包时**当场拒**（并给腾格的路），**不让那一下点出去**；能领时留一份"领之前的账"，
+        #      领完**回读核对**（多出来才算真领到）。
+        _claim_before = None
+        if (action or "").lower() == "claim" or slot >= 0:
+            _inv0, _cap0 = [], 36
+            try:
+                _st0 = api.state() or {}
+                _inv0 = _st0.get("inventory") or []
+                _cap0 = int((_st0.get("player") or {}).get("maxItems") or 36)
+            except Exception:
+                _inv0 = []
+            if _inv0:
+                _used0 = sum(1 for _i in _inv0 if _i)
+                if _used0 >= _cap0:
+                    return _with_state(
+                        f"🚫 **背包满了（{_used0}/{_cap0}），领不进来** —— 这一下点了东西会**当场消失**"
+                        f"（真机实测过，回执还会瞎说「已领取」），所以我**没点**。\n"
+                        f"   先腾一格再领：`menu click action=discard item=<低价值物>`（丢垃圾桶）"
+                        f"或 `storage` 存箱子（⚠️ `item=` 要写 `/state.inventory` 里那个名字）。")
+                _claim_before = {}
+                for _i in _inv0:
+                    if _i:
+                        _k = str(_i.get("itemId") or _i.get("name") or "")
+                        _claim_before[_k] = _claim_before.get(_k, 0) + int(_i.get("stack") or 1)
         data = {}
         if option >= 0: data["option"] = option
         if button: data["button"] = button
@@ -21389,7 +21513,35 @@ def menu_click(option: int = -1, button: str = "", x: int = -1, y: int = -1, ite
                     # 空槽 = no-op（C# 特意回 claimed=false，防伪报"领成功了"）
                     return _with_state(f"⚠️ 领取菜单第 {r.get('slot')} 格是空的，**没领到东西**"
                                        f"（换 slot=序号 或直接 quantity=999 全领）")
-                return _with_state(f"🖱️ 已领取「{_nm}」")
+                # 🔎 **回读核对**（2026-10-06）：领之前留了账 ⇒ 领完数一遍包里的东西有没有变多。
+                #    ⛔ 不回读就有可能"嘴上说领到了、其实没进包"（真机那天就是这么丢了一条石鱼）。
+                _land_tail = ""
+                if _claim_before is not None:
+                    try:
+                        _after = {}
+                        for _i in (api.state().get("inventory") or []):
+                            if _i:
+                                _k = str(_i.get("itemId") or _i.get("name") or "")
+                                _after[_k] = _after.get(_k, 0) + int(_i.get("stack") or 1)
+                        _land_tail = ("（回读：包里确实多出来了 ✓）"
+                                      if sum(_after.values()) > sum(_claim_before.values())
+                                      else "⚠️ **可回读发现包里没多出来** ⇒ 这一下**没接住**（别当拿到了）")
+                    except Exception:
+                        _land_tail = "（回读没读成 —— 到底进没进包，**不确定**，别当拿到了）"
+                # 🖐️ 2026-10-06 真机：满包时 `action=claim` 会把东西**挂到光标上**（heldItem）。
+                #    这时**点 ok 关菜单 = 把它丢在地上**（我们那条石鱼就是这么掉出去的，扔在水边还有放生风险）。
+                #    ⇒ 回执必须当场点破，并给"腾一格它自己会进包"的正解。
+                try:
+                    _held = ((api.state().get("activeMenu") or {}).get("heldItem")) or None
+                except Exception:
+                    _held = None
+                if _held:
+                    _hn = _held.get("displayName") or _held.get("name") or "?"
+                    return _with_state(
+                        f"🖐️ 「{_hn}」**挂在光标上了**（包里没地方放）—— 它**还没进包**。\n"
+                        f"   正解：**先丢一样腾格**（`scene drop` 或 `menu click action=discard item=…`）"
+                        f"⇒ 它自己会进包；⛔ **别点 ok**（那等于把它扔地上，水边还有放生风险）。")
+                return _with_state(f"🖱️ 已领取「{_nm}」{_land_tail}")
             if _close_btn:
                 # 🚪 回读核实（理由见上面 `_close_btn` 那段注释）：最多 3 敲，中间让动画散掉。
                 _last = None
