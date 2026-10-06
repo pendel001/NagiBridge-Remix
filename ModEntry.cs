@@ -17371,6 +17371,24 @@ var tcs = new TaskCompletionSource<object>();
                     {
                         if (spot?.item == null) continue;
                         var it = spot.item;
+                        // 🎽 2026-10-06 恒真机逮到的**复制 bug**（我这边造成的）：缝纫机允许把
+                        //    **身上穿的那件**（`player.pantsItem/shirtItem/hat` 的**同一个实例**）拎进料槽；
+                        //    而 `addItemToInventoryBool(it)` 会把这**同一个实例**再挂进背包一次
+                        //    ⇒ 存档里就成了两件（恒的长裙当场被复制出一件）。
+                        //    ⇒ 判据：**它本来就装备着** ⇒ 只清槽、**不进背包、不落地**（它还穿在身上）。
+                        bool equipped = false;
+                        try { equipped = Game1.player.IsEquippedItem(it); } catch { }
+                        if (equipped)
+                        {
+                            returned.Add(new Dictionary<string, object?>
+                            {
+                                ["name"] = it.DisplayName,
+                                ["id"] = it.QualifiedItemId,
+                                ["to"] = "留在身上（它本来就穿着 —— 不能再往背包塞一份）",
+                            });
+                            spot.item = null;
+                            continue;
+                        }
                         bool intoBag = Game1.player.addItemToInventoryBool(it);
                         if (!intoBag)
                             Game1.createItemDebris(it, Game1.player.getStandingPosition(), Game1.player.FacingDirection);

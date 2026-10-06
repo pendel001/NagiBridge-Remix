@@ -119,6 +119,13 @@ ck("…读侧还兜 `_heldItem`（私有 backing field，`GetField` 不穿基类
 ck("…写侧**同顺序**（字段 → 属性 → `_heldItem`），否则会「读得到、写不回」",
    'GetProperty("heldItem"' in _sh and '_heldItem", F' in _sh and "BaseType" in _sh)
 
+print("⑧ 🎽 `clear` 不许把**身上那件**再塞进背包（恒真机当场被复制出一条长裙）")
+_clr = _block('if (action == "clear")', "// 📥 放料：先校验")
+ck("…先判 `Game1.player.IsEquippedItem(it)`", "IsEquippedItem(it)" in _clr)
+ck("…装备着的那件：只清槽、**不进背包**（文案点明「留在身上」）", "留在身上" in _clr)
+ck("…非装备的照旧进背包／掉脚边（老路没被砍）", "addItemToInventoryBool(it)" in _clr
+   and "createItemDebris(it" in _clr)
+
 print()
 if FAIL:
     print(f"❌ 失败 {len(FAIL)} 项: {FAIL}")
