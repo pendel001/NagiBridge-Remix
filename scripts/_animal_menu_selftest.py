@@ -215,6 +215,28 @@ try:
        not any(r.verb.key == "buy" for r in M.intent_menu._LAST_ROWS),
        str([r.verb.key for r in M.intent_menu._LAST_ROWS]))
 
+    # ⑧ 🔴 2026-10-06 真机逮到（玛妮柜台）：**AI 那扇门根本没接上**
+    #    `menu read` 的指引写着「下单走 `menu click(animal=名字…)`」，C# 的 `/menu/click`
+    #    也**早就有** `animal`/`animal_name` 分支 —— 可 Python 的 `menu_click()` **没有这两个参数**
+    #    ⇒ `_ops_run` 的"参数白名单"把它们**静默丢掉**、回包只提一句「忽略了无法识别的参数 ['animal']」，
+    #    然后**点了一下菜单正中央**（真机实测；菜单还开着、什么都没买）。⇒ 现在把它接上，并钉死。
+    print("\n⑧ `menu click(animal=…)` 真能走到 C#（⛔ 别再被参数白名单丢掉）")
+    _seen = {}
+    _saved_api_click = api.menu_click
+    api.menu_click = lambda **kw: (_seen.update(kw), {"ok": True, "clicked": "animal_buy"})[1]
+    try:
+        M.menu_click(animal="White Chicken", animal_name="小鸡一号")
+        ck("`animal` 传到了 `menu_click` 底下那层（`api.menu_click`）",
+           _seen.get("animal") == "White Chicken", str(_seen))
+        ck("…`animal_name` 也一起传到（起名那半）",
+           _seen.get("animal_name") == "小鸡一号", str(_seen))
+        _seen.clear()
+        M.menu_click(button="close")
+        ck("…不带 animal 时**不多发**这两个键（别污染别的点击）",
+           "animal" not in _seen and "animal_name" not in _seen, str(_seen))
+    finally:
+        api.menu_click = _saved_api_click
+
     print("\n" + ("=" * 46))
     print("❌ 失败 " + str(len(FAIL)) + " 项: " + ", ".join(FAIL) if FAIL else "✅ 全过（0 失败）")
 finally:

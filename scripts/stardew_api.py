@@ -809,10 +809,13 @@ def menu():
     return _get("/menu")
 
 
-def menu_click(option=None, button=None, x=None, y=None, item=None, right=None, quantity=1, action=None, real=False, slot=None, category=None, move_mouse=None):
+def menu_click(option=None, button=None, x=None, y=None, item=None, right=None, quantity=1, action=None, real=False, slot=None, category=None, move_mouse=None, animal=None, animal_name=None):
     # 🖱️ move_mouse（2026-09-26 恒："别动我的鼠标"）：-1/None=自动（服务端按菜单名单，现已清空 ⇒ 不动）、
     #    0=绝不挪、1=强制挪。**这是逃生口**：万一某个界面点了没反应（它真读 Game1.getMouseX），
     #    传 1 就能恢复老行为，**不用重编 DLL**。平时别传。
+    # 🐄 animal/animal_name（2026-10-06 真机逮到）：`/menu/click` 的买动物分支（`ModEntry.cs:15685`）
+    #    要这两位 —— **这一层原来没有** ⇒ Python 侧 `menu click(animal=…)` 在这里 TypeError 被吞成
+    #    「点击失败」，AI 照着 `menu read` 的指引下单**永远下不成**（假门，两层都没接上）。
     data = {}
     if move_mouse: data["move_mouse"] = move_mouse
     if option is not None: data["option"] = option
@@ -826,6 +829,8 @@ def menu_click(option=None, button=None, x=None, y=None, item=None, right=None, 
     if real: data["real"] = True
     if slot is not None: data["slot"] = slot
     if category is not None: data["category"] = category
+    if animal: data["animal"] = animal
+    if animal_name: data["animal_name"] = animal_name
     return _post("/menu/click", data)
 
 

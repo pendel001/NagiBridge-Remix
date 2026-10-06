@@ -21675,12 +21675,13 @@ def _maybe_egg_run_auto(data) -> str:
         return ""
 
 
-def menu_click(option: int = -1, button: str = "", x: int = -1, y: int = -1, item: str = "", right: bool = False, quantity: int = 1, action: str = "", real: bool = False, slot: int = -1, category: int = -1, move_mouse: int = 0) -> str:
+def menu_click(option: int = -1, button: str = "", x: int = -1, y: int = -1, item: str = "", right: bool = False, quantity: int = 1, action: str = "", real: bool = False, slot: int = -1, category: int = -1, move_mouse: int = 0, animal: str = "", animal_name: str = "") -> str:
     """🖱️ 自适应点击当前菜单（商店/背包/奖励）
     按菜单类型自动适配：
     - 商店菜单：item 买 N 个（quantity）· 免翻页
     - 背包菜单：action=split 拆 N 个 / action=discard 丢垃圾桶（自动找物品槽）
     - 奖励/箱子/接鱼菜单：item 领取 / slot 领指定格（read 看 items 序号）
+    - 🐄 买动物屏（`PurchaseAnimalsMenu`）：animal 下单一整只（读法：`menu read` 的 `animalShop.animals`）
     也支持：对话选 option、点按钮（close/ok/upArrow/downArrow/trashCan）、精确坐标 (x,y)、右键。
 
     Args:
@@ -21696,6 +21697,8 @@ def menu_click(option: int = -1, button: str = "", x: int = -1, y: int = -1, ite
         action: 背包专用——split=拆堆叠取 N / discard=拿起后丢垃圾桶；奖励菜单=claim 领取
         slot: 领/点指定槽位序号（ItemGrabMenu 的 read items 下标，不想要1想要4就 slot=4；比坐标稳、不挪OS光标）
         category: 🗂️ ShippingMenu 按类目序号钻入（0农作/1采集/2钓鱼/3矿/4其他；比坐标稳、跟分辨率无关）
+        animal: 🐄 买动物屏要买的**那一只**（名字照 `menu read` 的 `animalShop.animals[].name` 写）
+        animal_name: 🐄 给这只起的名字（不给就由游戏自己起）
     """
     global _look_verified   # 🔒 捏人确认门禁：本函数会读+重置它（2026-08-22 恒）
     try:
@@ -21774,6 +21777,13 @@ def menu_click(option: int = -1, button: str = "", x: int = -1, y: int = -1, ite
         if real: data["real"] = True
         if slot >= 0: data["slot"] = slot
         if category >= 0: data["category"] = category
+        # 🐄 2026-10-06 真机逮到（玛妮柜台）：C# 那边 `/menu/click` **早就有** `animal`/`animal_name`
+        #    分支（`ModEntry.cs:15685`），可**这一层没这两个参数** ⇒ `_ops_run` 的"参数白名单"
+        #    把它们**静默丢掉**、再点一下菜单**正中央**，而 AI 看到的指引正是
+        #    「下单走 `menu click(animal=名字…)`」（`_menu_advice` 那句）⇒ **假门**：
+        #    照着敲 = 什么也没买、还可能误点别的东西。
+        if animal: data["animal"] = animal
+        if animal_name: data["animal_name"] = animal_name
         # 🖱️ 逃生口（2026-09-26 恒："别动我的鼠标"）：默认不发 ⇒ 服务端绝不挪他的 OS 光标。
         #    只有显式 move_mouse=1 才强制挪（万一某界面真读 Game1.getMouseX、点了没反应时用）。
         if move_mouse: data["move_mouse"] = move_mouse
