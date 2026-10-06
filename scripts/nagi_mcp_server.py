@@ -25804,12 +25804,47 @@ def _fish_rod_in_hand(state: dict) -> bool:
       手持没有就退回背包里升级最高的那根 ⇒ **它在 = 这个人有竿可钓**）。
     ⚠️ 执行侧不需要它先在手：`fish_run` 自己会 `select` 竿（恒早就拍过这条）⇒ "有竿"就够开这一行。
     ⚠️ 读不到 `rod` 段（老 DLL）⇒ **False**（⇒ 那行不出现，宁缺勿编）。
-    ⚠️ **水格扫描那档另有一层**：它算落点距离 D 要用**钓鱼等级**，而等级只随"竿在手"的
-      `player.fishing` 一起来 ⇒ 竿在包里时那一档自然算不出 D ⇒ **不给行**（如实，不猜）。
-      鱼区/校准点那两档不依赖 D ⇒ 照给 ✓（所以这条放松对它们是真收益）。
+    ⚠️ **水格扫描/矿井那两档另外要"钓鱼等级"**（算落点距离 D）—— 而 `/state.player.fishing`
+      **只在竿是当前工具时才有**（`ModEntry.cs:6215-6236`）⇒ 竿在包里时那一格读不到。
+      ⇒ 等级改走 `_fish_level`（先 `/state`、再兜底 `GET /profile`），⛔ **绝不拿"读不到"当 0 级**
+      （2026-10-06 查实：`_fish_cast_d(None, …)` 会按 0 级算出 4 格，而 10 级真值 7 格 ⇒ 假门）。
     """
     rod = ((state or {}).get("player") or {}).get("rod")
     return bool(isinstance(rod, dict) and (rod.get("inHand") is True or rod.get("name") or rod.get("id")))
+
+
+_FISH_LEVEL_CACHE = {"ts": 0.0, "lv": None}   # `/profile` 兜底那发的缓存（见 `_fish_level`）
+_FISH_LEVEL_TTL = 60.0
+
+
+def _fish_level(state: dict):
+    """这一刻的**钓鱼等级**（`int`）—— 先读 `/state`，读不到就问 `GET /profile` 兜底；都没有 ⇒ `None`。
+
+    🔴 **为什么非要有这一手**（2026-10-06 查实，别删）：`/state` 的 `player.fishing` 是
+      **"竿是当前工具"才吐**的（`ModEntry.cs:6215-6236`：`farmer.CurrentTool is FishingRod rod ? new {…} : null`），
+      而「垂钓」那行**竿在包里就出现**（恒 2026-10-06：「包里有竿子就行，不用在手」）⇒ 那一档读不到等级。
+      `_fish_cast_d(None, …)` **不报错**：它按 0 级算（`_fish_added_distance(None)=0`）⇒ 10 级的人算出
+      **4 格**（真值 7 格）⇒ 挑出来的"站格＋朝向"落点是错的 ⇒ 按下去白跑一趟（**假门**）。
+    ⇒ 兜底走 `GET /profile`（`ModEntry.cs:18266` 的 `skills.fishing`，**与手上拿什么无关**）——
+      缓存 `_FISH_LEVEL_TTL` 秒（`intent show` 一屏一发，不能每屏都打）；**失败也缓存**（免得连打）。
+    ⛔ 两处都读不到 ⇒ `None`（消费侧**如实不给行**，⛔ 绝不当 0 级用）。
+    """
+    lv = (((state or {}).get("player") or {}).get("fishing") or {}).get("fishingLevel")
+    if isinstance(lv, int):
+        return lv
+    now = time.time()
+    if (now - _FISH_LEVEL_CACHE.get("ts", 0.0)) < _FISH_LEVEL_TTL:
+        return _FISH_LEVEL_CACHE.get("lv")
+    got = None
+    try:
+        r = api._ai_get("/profile") or {}
+        _lv = ((r.get("skills") or {}).get("fishing"))
+        if isinstance(_lv, int):
+            got = _lv
+    except Exception:
+        got = None
+    _FISH_LEVEL_CACHE.update(ts=now, lv=got)
+    return got
 
 
 def _fish_xy_dist(ax, ay, px, py) -> int:
@@ -25878,6 +25913,33 @@ def _fish_calibrated_poi(area: dict, loc_name: str):
     return spot
 
 
+def _fish_calibrated_map(loc_name: str):
+    """**这张图**有没有按图校准的钓点（`fish_run.FISHING_TARGETS`）→ spot dict / `None`。
+
+    🔴 **为什么必须单独有这么一条**（2026-10-06 查实，别删）：没有鱼区/鱼区给不出钓点的图
+      （`/fish_areas` `count=0`：姜岛南岸、海盗湾、山湖、镇子…）走的是**水格扫描**那档，
+      而那一档原来是用 `_fish_calibrated_poi({"id": ""}, loc)` 去问按图表 —— 那个函数**第二条路**
+      要拿**鱼区矩形**证明"这个 POI 属于本区"，可我们传进去的是个**没有 `position` 的假区**
+      ⇒ `not isinstance(pos, dict)` ⇒ **恒返回 `None`**（实测：Forest/Beach/Mountain/姜岛两张图
+      **五张全 None**）⇒ 「**优先走校准点**」那句注释是**死的**，一个点都路由不到 ⇒ 假门 ✗。
+    ⇒ 按图那张表**本身就是"这张图的校准点"**（没有"属哪个水域"的问题），直接用它，**不做矩形验证**。
+      ⚠️ 只认 `FISHING_TARGETS` 里的图（`spot` 必须带 `poi`）——
+         ⛔ 别把 `get_spot` 最后那层**弃用的** `FISHING_SPOTS`（原版作者手抄坐标）当校准点。
+      ⚠️ 优先于扫描 ≠ 不验证"能不能钓"：执行侧到点还会逐格问 `/water` 的 `fishable`
+        （`_im_fish_go` ②b）＋ `fish_run` 开局判定（抛不出去就收手）⇒ 真钓不了**不会假成功**。
+    """
+    try:
+        from fish_run import FISHING_TARGETS, get_spot
+    except Exception:
+        return None
+    if str(loc_name or "") not in FISHING_TARGETS:
+        return None
+    spot = get_spot(loc_name)
+    if not isinstance(spot, dict) or not spot.get("poi"):
+        return None                                   # 没走 POI（= 弃用的手抄表）⇒ 当没有
+    return _fish_spot_from_calib(spot)
+
+
 def _fish_areas_raw() -> dict:
     """问游戏要**当前图**的鱼区盘点（`GET /fish_areas`，`ModEntry.cs:17133`）→ dict。
 
@@ -25935,12 +25997,16 @@ def _fish_cast_d(level, axis: str):
 
     ⛔ **绝不写死 7**（恒 2026-10-06：「这个落点也得自动算哦，因为**前期会有变化**」）：
        等级每跨 1/4/8/15 一档距离就变；模组 `CastDistance` 一改蓄力就变。
+    🔴 **等级读不出来 ⇒ 直接 `None`**（2026-10-06 修）：原来 `int(None)` 抛异常被吞掉 ⇒ 按 **0 级**
+       算（`_fish_added_distance(None)=0`）⇒ 10 级的人算出 4 格（真值 7）⇒ 「站格＋朝向×D」挑出来的
+       落点是错的。**"读不到"就必须如实算不出来**，⛔ 不许默默降级成 0 级（假门）。
     """
-    raw = _fish_cast_dist_raw()
     try:
-        lv = str(int(level))
+        _lv_i = int(level)
     except Exception:
-        lv = ""
+        return None                                   # 等级读不到 ⇒ 不猜（消费侧如实不给行）
+    raw = _fish_cast_dist_raw()
+    lv = str(_lv_i)
     obs = (raw.get("obs") or {}).get(lv) or {}
     v = obs.get(axis)
     if isinstance(v, int) and v >= 1:
@@ -26006,7 +26072,7 @@ def _fish_mine_pick(state: dict, loc_name: str) -> dict:
         hx, hy, hf = _FISH_MINE_SPOT
         src = "恒亲站·这几层同一格"
     axis = "h" if hf in (1, 3) else "v"
-    lv = (((state or {}).get("player") or {}).get("fishing") or {}).get("fishingLevel")
+    lv = _fish_level(state)                           # `/state` → 兜底 `/profile`（竿在包里时前者没有）
     D = _fish_cast_d(lv, axis)
     if not isinstance(D, int):
         return {}                                     # 抛竿距离还没量过 ⇒ 算不出落点
@@ -26074,7 +26140,7 @@ def _fish_water_scan(state: dict, caps: dict = None) -> list:
     #    ⇒ 所以候选 = 「从这个站格朝这个方向抛，**正好落到那格 `fishable` 的水上**」。
     #    ⚠️ D 由 `_fish_cast_d` **实测优先 / 否则按游戏公式＋实测蓄力现算**（⛔ 绝不写死 7：
     #       等级跨 1/4/8/15 四档就变，模组蓄力也可能被改）。两个轴向缺一个 ⇒ **连水都不扫**（省一趟）。
-    lv = ((p.get("fishing") or {}).get("fishingLevel"))
+    lv = _fish_level(state)           # `/state` → 兜底 `/profile`（竿在包里时 `/state` 那段是 null）
     dh, dv = _fish_cast_d(lv, "h"), _fish_cast_d(lv, "v")
     if not isinstance(dh, int) or not isinstance(dv, int):
         return []                     # 还没量过抛竿距离（或读不到等级）⇒ 如实不给行
@@ -26194,11 +26260,14 @@ def _fish_picks_from_raw(raw: dict, state: dict) -> list:
 
     if mode == "water":
         # 🎣 2026-10-06 恒：「**应该大部分钓点都有校准点了，优先找到并路由那些**」
-        #    ⇒ 水格扫描这档**先问校准表**（按图那张 `FISHING_TARGETS`；鱼区那档走的是
-        #      `(图名, 鱼区 id)` 那张，见上面 —— 两张表分工，别混）：命中就**只用它**（⛔ 不掺扫描点，
-        #      免得同一个地方摆两行、AI 还得猜哪个是真的）；没有（或读不出来）才退回 `/water` 那批对。
+        #    ⇒ 水格扫描这档**先问按图那张校准表**（`_fish_calibrated_map`；按**鱼区**那张走的是
+        #      上面 `areas` 那支的 `_fish_calibrated_poi` —— 两张表分工，别混）。
+        #    ⚠️ 注意：`_im_fish` 造 `raw` 时**已经**优先过一遍（命中就根本不走扫描）——
+        #       这里再留一道是给"缓存里那些**修好之前**造的 `pairs`"用的（60s 窗口内的老账），
+        #       ⛔ 不许因此就改成 `_fish_calibrated_poi({"id": ""}, …)`（那条路**恒为 None**，
+        #       2026-10-06 查实 —— 它要鱼区矩形，而我们没有鱼区）。
         try:
-            _cal_w = _fish_calibrated_poi({"id": ""}, loc_name)
+            _cal_w = _fish_calibrated_map(loc_name)
         except Exception:
             _cal_w = None
         if _cal_w:
@@ -26223,16 +26292,21 @@ def _im_fish(state: dict, caps: dict = None) -> dict:
     """🎣 「垂钓」那行的账（`intent_menu.Ctx.fish` 的形状见那儿）。
 
     三道闸门，**任何一道过不去 ⇒ `{}`（整行不出现）**：
-      ① `rod.inHand is True`（`ModEntry.cs:6825`）—— 竿不在手 = 没有钓鱼意图；
+      ① `rod` 非空（`_fish_rod_in_hand`）—— **包里有竿就行**（恒 2026-10-06 亲口纠的，"不用在手"）；
       ② `caps["fish_areas"]`（`/status.caps`；`ModEntry.cs:3314`）—— 老 DLL 没这个端点；
       ③ 游戏答得出来吗：`/fish_areas` 的**有钓点水域**（`spots` 非空）；
-         一个都没有时退回**水格扫描**（`/water` 多锚点 + `/passable`）——
+         **一个都没有时先问按图那张校准表**（`_fish_calibrated_map`，恒 2026-10-06：
+         「应该大部分钓点都有校准点了，优先找到并路由那些」）⇒ 命中就直用、连 `/water` 都不打；
+         没命中才退回**水格扫描**（`/water` 多锚点 + `/passable`）——
          连岸位都找不到（或图上压根没水）⇒ `{}`。
       🔴 ④ **水格扫描那一档（没有鱼区的图）**：`caps["water_fishable"]` ＋ 逐格 `fishable`
          （游戏抛竿判据 `isTileFishable`，`GL:2330`）＋ **按落点挑位**（落点 = 站格 + 朝向 × D，
          D 由 `_fish_cast_d` **自动**来：实测优先／游戏公式＋实测蓄力，见那个函数的注释）。
          这一档的历史与两段根因写在 `_fish_water_scan` 的 docstring 里（恒 2026-10-05 点破"抛到对岸"）。
          ⚠️ D 两个轴向有一个算不出来 ⇒ **整档不给行**（宁可不给，也不给按下去去不了的）。
+      ⚠️ **钓鱼等级**（D 要用）一律走 `_fish_level`：`/state.player.fishing` 只在**竿是当前工具**时才有
+         （`ModEntry.cs:6215-6236`）⇒ 竿在包里时兜底问 `GET /profile`；两处都读不到 ⇒ 如实不给行
+         （⛔ 不许当 0 级算 —— 那会把 10 级的 7 格算成 4 格，挑出个钓不到的"钓点"）。
 
     ⚠️ **原样印 id**：这一层把 `areas[].id` 当**显示名**用（恒 2026-10-05 拍板）；
        `/fish_areas` 回的 `displayName` 实测九个区**全是 null**，所以连"优先用它"这条路都省了。
@@ -26277,10 +26351,12 @@ def _im_fish(state: dict, caps: dict = None) -> dict:
             #    （Town 的 Fountain 水格 0）**都走这一支**：鱼区那条路给不出能站的钓点，
             #    就如实退回"水格扫描"——**不是**"这张图不能钓"。
             # 🎣 2026-10-06 恒：「**应该大部分钓点都有校准点了，优先找到并路由那些**」
-            #    ⇒ **先问按图那张校准表**（`FISHING_TARGETS`）：命中就**直接用它**，连 `/water` 扫描
-            #      都不打（省一发大图逐格扫描 ✓ 也不受"扫描挑位"影响 —— 姜岛南岸就是这么救回来的：
-            #      扫描一个点都没挑出来 ⇒ `pairs` 空 ⇒ 连 `mode=water` 都进不去 ⇒ 校准点永远轮不到）。
-            _cal_w = _fish_calibrated_poi({"id": ""}, loc_name)
+            #    ⇒ **先问按图那张校准表**（`_fish_calibrated_map`）：命中就**直接用它**，连 `/water`
+            #      扫描都不打（省一发大图逐格扫描 ✓）。
+            #    🔴 2026-10-06 修：这里原来写的是 `_fish_calibrated_poi({"id": ""}, loc_name)` ——
+            #      那个函数**恒返回 `None`**（它第二路要"鱼区矩形"，我们传的是没有 `position` 的假区）
+            #      ⇒ 「优先校准点」**一次都没生效过**（姜岛南岸/海盗湾/山湖/镇子全走扫描）。
+            _cal_w = _fish_calibrated_map(loc_name)
             if _cal_w:
                 raw = {"mode": "water", "pairs": [dict(_cal_w)]}
             else:
@@ -26396,7 +26472,7 @@ def _im_fish_go(args: dict) -> str:
             if _cheb > 4:
                 _d_dir = args.get("dir")
                 _axis = "h" if _d_dir in (1, 3) else "v"
-                _lv = ((st.get("player") or {}).get("fishing") or {}).get("fishingLevel")
+                _lv = _fish_level(st)      # 与出单子那侧同一来源（`/state` → 兜底 `/profile`）
                 _exp = _fish_cast_d(_lv, _axis)
                 _fdir = _face_dir(px, py, wx, wy)
                 _name = {0: "上", 1: "右", 2: "下", 3: "左"}

@@ -40,12 +40,14 @@ def ck(name, cond, extra=""):
 
 # ── 假 api：只回答这次要问的（`/fish_areas` / `/water` / `/passable` / `/face` / `/state`）──────
 class FakeApi:
-    def __init__(self, state=None, fish_areas=None, water=None, passable=None, host=None):
+    def __init__(self, state=None, fish_areas=None, water=None, passable=None, host=None,
+                 profile=None):
         self._state = state if state is not None else {}
         self.fish_areas = fish_areas          # None = 端点挂了/老 DLL
         self.water = water or {}              # (锚点x, 锚点y) -> [水格 dict]
         self.passable = passable or {}        # (x, y) -> True/False
         self.host = host or {}                # 7842 的 `/state` 回包（矿井那档用；`{}` = 读不到）
+        self.profile = profile                # `GET /profile`（钓鱼等级兜底那档；None = 没有这一位）
         self.gets, self.posts = [], []
 
     def state(self, **kw):
@@ -69,6 +71,12 @@ class FakeApi:
             p = params or {}
             return {"ok": True, "count": 0,
                     "water": list(self.water.get((p.get("x"), p.get("y"))) or [])}
+        if ep == "/profile":
+            # 🎣 钓鱼等级的兜底来源（`ModEntry.cs:18266`）：`/state.player.fishing` 只在**竿是当前工具**
+            #    时才有 ⇒ 竿在包里时走这一发。⚠️ 老 DLL / 读不到 ⇒ 抛（消费侧如实不给行）。
+            if self.profile is None:
+                raise RuntimeError("no such endpoint")
+            return self.profile
         raise RuntimeError("unexpected GET " + ep)
 
     def _ai_post(self, ep, data=None):
@@ -128,9 +136,12 @@ try:
     }
     # 水格扫描那档（**有鱼区数据但一个区都没有** ⇒ 退回 `/water`）。
     # 🔴 2026-10-06 恒拍板「**撤掉农场的钓鱼选项单**」之后，这里**不能再用 Farm** 当夹具
-    #    （农场现在整行不给，见下面那根"农场不给行"的钉子）⇒ 换**同类形状**的 `Mountain`
-    #    （`_im_fish` 里那条注释自己写着 `Farm/Mountain… hasFishAreaData=True, count=0`）。
-    FISH_NOAREA = {"ok": True, "location": "Mountain", "hasFishAreaData": True, "count": 0, "areas": []}
+    #    （农场现在整行不给，见下面那根"农场不给行"的钉子）⇒ 换**同类形状**的 `Desert`。
+    # ⚠️ 2026-10-06 又改：原来用的是 `Mountain` —— 可 `Mountain` **在按图校准表里有条目**
+    #    （`(68,24) 山湖钓鱼点(左)`）⇒ 修好「优先走校准点」之后它**根本不进水格扫描**了。
+    #    这一档要的是"**没有校准点**的图"，所以夹具图名换成 `Desert`（按图/按区两张表都轮不到它：
+    #    `get_spot("Desert")` = None）。
+    FISH_NOAREA = {"ok": True, "location": "Desert", "hasFishAreaData": True, "count": 0, "areas": []}
     # 农场载荷（**只用来验"整行不出现"**）：形状跟上面一样 —— 单看数据它是"能扫出落点"的。
     FISH_FARM = {"ok": True, "location": "Farm", "hasFishAreaData": True, "count": 0, "areas": []}
     FISH_CABIN = {"ok": True, "location": "Cabin", "hasFishAreaData": False, "count": 0, "areas": []}
@@ -139,8 +150,9 @@ try:
         return {"location": {"name": loc, "mapWidth": wh[0], "mapHeight": wh[1]},
                 "player": {"x": x, "y": y, "stamina": stamina, "maxStamina": 300,
                            "rod": {"name": "铱金鱼竿", "upgrade": 4, "inHand": bool(in_hand)},
-                           # ⚠️ 竿在手时 `/state.player.fishing` 才有（补36 加了 `fishingLevel`）——
-                           #    "按落点挑位"要拿它算 D（等级跨档距离就变）
+                           # ⚠️ `/state.player.fishing` **只在竿是当前工具时**才有
+                           #    （`ModEntry.cs:6215-6236`）⇒ `in_hand=False` 这一支正是"竿在包里"，
+                           #    等级得靠 `GET /profile` 兜底（见 `_fish_level`）。
                            "fishing": ({"isFishing": False, "fishingLevel": level}
                                        if in_hand else None)},
                 "activeMenu": None}
@@ -152,6 +164,7 @@ try:
            水格扫描那档整趟不扫（老 DLL 的行为，另有专测）。
         """
         M._FISH_CACHE.update({"key": None, "ts": 0.0, "raw": None})
+        M._FISH_LEVEL_CACHE.update({"ts": 0.0, "lv": None})   # 等级缓存也要清（跨用例会串）
         M.api = api
         return M._im_fish(api._state,
                           caps if caps is not None
@@ -234,11 +247,11 @@ try:
     # 水格 (31,31)（fishable）⇒ 只有"站 (38,31) 面左"这一对能把鱼漂丢到它上面（D_h=7）
     water = {(30, 30): [{"x": 31, "y": 31, "canCrabPot": False, "fishable": True}]}
     passable = {(38, 31): True}
-    api = FakeApi(_state("Mountain", x=40, y=32, in_hand=True, wh=(80, 65)),
+    api = FakeApi(_state("Desert", x=40, y=32, in_hand=True, wh=(80, 65)),
                   fish_areas=FISH_NOAREA, water=water, passable=passable)
     acct_w = _acct(api)
     picks_w = acct_w.get("picks") or []
-    ctx_w, menu_w = _sheet(acct_w, loc="Mountain", px=40, py=32)
+    ctx_w, menu_w = _sheet(acct_w, loc="Desert", px=40, py=32)
     ck("0 个有钓点但图上有水 ⇒ **一层**且给得出钓点（走 `/water` 扫描）",
        len(picks_w) == 1 and "垂钓…" not in menu_w, str(acct_w) + " || " + menu_w)
     ck("…挑出来的是**落点那一对**：站 (38,31) 面左 3 ⇒ 鱼漂飞 7 格正好落在水 (31,31) 上",
@@ -254,7 +267,7 @@ try:
        not any(isinstance(p.get("area"), str) and p.get("area") for p in picks_w), str(picks_w))
 
     # 🔴 假门闸①：老 DLL 的 `/water` **不吐 `fishable`** ⇒ 这一档**整趟不扫**（宁可不给行）
-    api_old = FakeApi(_state("Mountain", x=40, y=32, in_hand=True, wh=(80, 65)),
+    api_old = FakeApi(_state("Desert", x=40, y=32, in_hand=True, wh=(80, 65)),
                       fish_areas=FISH_NOAREA, water=water, passable=passable)
     acct_old = _acct(api_old, caps={"fish_areas": True})           # 只给了老的两位
     ck("老 DLL（caps 没有 `water_fishable`）⇒ 水格扫描那档**一行都不给**",
@@ -266,7 +279,7 @@ try:
                         "`fishable:false`（真机：农场池塘北沿那排就是这个）"),
                        ({"x": 31, "y": 31, "canCrabPot": True},
                         "**缺 `fishable` 键**（老 DLL 的回包）")):
-        _a = FakeApi(_state("Mountain", x=40, y=32, in_hand=True, wh=(80, 65)),
+        _a = FakeApi(_state("Desert", x=40, y=32, in_hand=True, wh=(80, 65)),
                      fish_areas=FISH_NOAREA, water={(30, 30): [_bad]},
                      passable={(38, 31): True})
         _ac = _acct(_a)
@@ -275,7 +288,7 @@ try:
 
     # 📏 落点距离 **D 算不出来 ⇒ 整档不给行**（⛔ 宁可空着，也不拿"旁边那格"糊一个）
     M._fish_cast_dist_raw = lambda: {}                 # 从没量过
-    _a = FakeApi(_state("Mountain", x=40, y=32, in_hand=True, wh=(80, 65)),
+    _a = FakeApi(_state("Desert", x=40, y=32, in_hand=True, wh=(80, 65)),
                  fish_areas=FISH_NOAREA, water=water, passable=passable)
     _ac = _acct(_a)
     ck("📏 从没量过抛竿距离（`_fish_cast_dist.json` 空）⇒ 那一档**一行都不给**",
@@ -288,10 +301,10 @@ try:
     water2 = {(30, 30): [{"x": 31, "y": 31, "fishable": True},
                          {"x": 28, "y": 29, "fishable": True}]}
     passable2 = {(38, 31): True, (35, 29): True}       # (28,29) 的落点对：站 (35,29) 面左 7 格
-    api = FakeApi(_state("Mountain", x=40, y=32, in_hand=True, wh=(80, 65)),
+    api = FakeApi(_state("Desert", x=40, y=32, in_hand=True, wh=(80, 65)),
                   fish_areas=FISH_NOAREA, water=water2, passable=passable2)
     acct_w2 = _acct(api)
-    ctx_w2, menu_w2 = _sheet(acct_w2, loc="Mountain", px=40, py=32)
+    ctx_w2, menu_w2 = _sheet(acct_w2, loc="Desert", px=40, py=32)
     ck("…扫出**两处**岸位也只给一层（没名字 ⇒ 第二层就是几行同名，恒拍板这档只有一层）",
        len(acct_w2.get("picks") or []) == 2 and "垂钓…" not in menu_w2
        and IM._fish_subs(ctx_w2, [None]) is None, str(acct_w2) + " || " + menu_w2)
@@ -310,13 +323,83 @@ try:
     #    ⇒ 那一档改成**按落点挑位**（见上面那组检查）；`_FISH_WATER_SWEEP_ENABLED` 现在只当**紧急开关**。
     #    这条钉子钉的是"开关关掉就真不给行"（真机又验出它在骗人时，先关再查）。
     M._FISH_WATER_SWEEP_ENABLED = False
-    api_off = FakeApi(_state("Mountain", x=40, y=32, in_hand=True, wh=(80, 65)),
+    api_off = FakeApi(_state("Desert", x=40, y=32, in_hand=True, wh=(80, 65)),
                       fish_areas=FISH_NOAREA, water=water, passable=passable)
     acct_off = _acct(api_off)
-    ck("⛔ 紧急开关 `_FISH_WATER_SWEEP_ENABLED=False` ⇒ 没有鱼区的图（Mountain）**一行都不给**",
+    ck("⛔ 紧急开关 `_FISH_WATER_SWEEP_ENABLED=False` ⇒ 没有鱼区/也没校准点的图（Desert）**一行都不给**",
        acct_off == {} and not any(ep == "/water" for ep, _ in api_off.gets),
        str(acct_off) + " || " + str(api_off.gets[:2]))
     M._FISH_WATER_SWEEP_ENABLED = True   # 后面的检查继续钉"逻辑本身"（见上面那段说明）
+
+    # 🎣🔴 2026-10-06 修：**「优先走校准点」原来是一次都没生效的死码** ——
+    #    那一档问的是 `_fish_calibrated_poi({"id": ""}, loc)`，而那个函数第二路要"鱼区矩形"证据
+    #    （`area["position"]`），我们传的假区**没有 `position`** ⇒ `not isinstance(pos, dict)` ⇒
+    #    **恒返回 None**（实测 Forest/Beach/Mountain/IslandSouth/IslandSouthEastCave 五张全 None）。
+    #    ⇒ 没有鱼区的图（`/fish_areas count=0`：姜岛南岸、海盗湾、山湖、镇子…）**从来没用过校准点**，
+    #      全去跑水格扫描；扫描挑不出落点时就"一行都没有"（恒的 (26,34)/(6,8)/(68,24) 白标了）。
+    #    现在改走 `_fish_calibrated_map`（按图那张表**自己就声明了"这是本图的校准点"**，不做矩形验证）。
+    for _loc, _sx, _sy, _dir, _poi in (
+            ("Mountain", 68, 24, 2, "山湖钓鱼点(左)"),
+            ("Beach", 52, 25, 2, "海滩钓鱼点(码头)"),
+            ("Town", 3, 93, 2, "镇鲶鱼钓点"),
+            ("IslandSouth", 26, 34, 2, "姜岛南岸海钓点"),
+            ("IslandSouthEastCave", 6, 8, 1, "海盗湾内钓点")):
+        _a = FakeApi(_state(_loc, x=40, y=32, in_hand=True, wh=(80, 65)),
+                     fish_areas=FISH_NOAREA, water=water, passable=passable)
+        _ac = _acct(_a)
+        _pk = _ac.get("picks") or []
+        ck(f"🎣 没有鱼区的图 `{_loc}` ⇒ **直接用按图校准点** "
+           f"({_sx},{_sy}) 朝{_dir}「{_poi}」（⛔ 不再靠水格扫描挑）",
+           len(_pk) == 1 and (_pk[0].get("standX"), _pk[0].get("standY")) == (_sx, _sy)
+           and _pk[0].get("dir") == _dir and _pk[0].get("calibrated") == _poi, str(_ac))
+        ck(f"…`{_loc}` **连 `/water` 都不打**（省一发大图逐格扫描）",
+           not any(ep == "/water" for ep, _ in _a.gets), str(_a.gets[:2]))
+    # ⛔ 反面：**没有校准点**的图不许凭空"变"一个出来（⛔ 尤其别把弃用的 `FISHING_SPOTS` 当校准点）
+    _a = FakeApi(_state("Desert", x=40, y=32, in_hand=True, wh=(80, 65)),
+                 fish_areas=FISH_NOAREA, water=water, passable=passable)
+    ck("⛔ 没有校准点的图（Desert）⇒ `_fish_calibrated_map` 给 `None`（照旧走扫描，不编点）",
+       M._fish_calibrated_map("Desert") is None and M._fish_calibrated_map("") is None,
+       str(M._fish_calibrated_map("Desert")))
+
+    # 🎣🔴 2026-10-06 修：**钓鱼等级不能"读不到就当 0 级"** ——
+    #    `/state.player.fishing` 只在**竿是当前工具**时才有（`ModEntry.cs:6215-6236`），
+    #    而「垂钓」那行**竿在包里就出现**（恒：「包里有竿子就行，不用在手」）⇒
+    #    竿在包里时老代码 `int(None)` 抛异常被吞 ⇒ 按 **0 级**算 D（`_fish_added_distance(None)=0`）
+    #    ⇒ 10 级的人算出 4 格（真值 7）⇒ 挑出来的"站格＋朝向"落点是错的（按下去白跑 = 假门）。
+    #    ⇒ 现在兜底问 `GET /profile`（`skills.fishing`，与手上拿什么无关）；两处都没有 ⇒ 如实不给行。
+    M._fish_cast_dist_raw = lambda: {"power": 1.0, "obs": {}}      # 没实测 ⇒ 只能靠"等级"现算
+    _bag = _state("Desert", x=40, y=32, in_hand=False, wh=(80, 65))  # 竿在包里 ⇒ 没有 fishing 段
+    _a = FakeApi(_bag, fish_areas=FISH_NOAREA, water=water, passable=passable,
+                 profile={"ok": True, "skills": {"fishing": 10}})
+    _ac = _acct(_a)
+    _pk = _ac.get("picks") or []
+    ck("🎣 竿在包里（`/state` 没有 `player.fishing`）⇒ 等级兜底走 `GET /profile`："
+       "10 级算出 D_h=7 ⇒ 站 (38,31) 面左落 (31,31) 仍能出这一行",
+       any(ep == "/profile" for ep, _ in _a.gets)
+       and _pk and (_pk[0].get("standX"), _pk[0].get("standY")) == (38, 31), str(_ac) + str(_a.gets[:3]))
+    ck("…而**不是**按 0 级算（0 级 D_h=4 ⇒ 会给站 (35,31) 那种错位；⛔ 这正是原来那个假门）",
+       bool(_pk) and _pk[0].get("standX") != 35, str(_pk[:1]))
+    # ⛔ 两条路都读不到等级 ⇒ **整档不给行**（⛔ 绝不默默当 0 级）
+    M._FISH_LEVEL_CACHE.update({"ts": 0.0, "lv": None})
+    _a = FakeApi(_bag, fish_areas=FISH_NOAREA, water=water, passable=passable)   # profile=None ⇒ 端点不存在
+    _ac = _acct(_a)
+    ck("⛔ `GET /profile` 也读不到（老 DLL）⇒ 水格扫描那档**一行都不给**（如实，不按 0 级猜）",
+       _ac == {}, str(_ac))
+    ck("📏 `_fish_cast_d(level=None, …)` ⇒ **None**（⛔ 不许默默降级成 0 级：10 级真值 7 格）",
+       M._fish_cast_d(None, "h") is None and M._fish_cast_d(None, "v") is None,
+       str((M._fish_cast_d(None, "h"), M._fish_cast_d(None, "v"))))
+    # 等级那发**要缓存**（`intent show` 一屏一发，不能每屏都打 `/profile`）
+    M._FISH_LEVEL_CACHE.update({"ts": 0.0, "lv": None})
+    _a = FakeApi(_bag, fish_areas=FISH_NOAREA, water=water, passable=passable,
+                 profile={"ok": True, "skills": {"fishing": 10}})
+    M.api = _a
+    M._fish_level(_bag)
+    _a.gets[:] = []
+    M._fish_level(_bag)
+    ck("…等级那一发**有 60s 缓存**（同一屏重复渲染不再打 `/profile`）",
+       not any(ep == "/profile" for ep, _ in _a.gets), str(_a.gets[:2]))
+    M._FISH_LEVEL_CACHE.update({"ts": 0.0, "lv": None})
+    M._fish_cast_dist_raw = lambda: {"power": 1.0, "obs": {"10": {"h": 7, "v": 6}}}
 
     # 🚫🏡 恒 2026-10-06：「**除了河流农场之外应该就一两个水潭子，而且只有森林农场钓得木跃鱼，
     #    其他农场钓上来都是垃圾** ⇒ 我建议**撤掉农场的钓鱼选项单**，实在需要的时候让 ai 自己调用 fish 抛。」
