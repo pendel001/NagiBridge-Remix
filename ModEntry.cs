@@ -14568,10 +14568,20 @@ public class ModEntry : Mod
                                 }
                             }
                             catch { }
+                            // 🧭 侧边图标的**屏幕坐标**（诊断用）：恒真机发现"点击没打到图标"时，
+                            //    这一格就是唯一的尺子（菜单自己的位置也一并报在 `menuAt`）。
+                            int icx = -1, icy = -1;
+                            try
+                            {
+                                foreach (var ic in tm.equipmentIcons)
+                                    if (string.Equals(ic.name, key, StringComparison.OrdinalIgnoreCase))
+                                    { icx = ic.bounds.Center.X; icy = ic.bounds.Center.Y; }
+                            }
+                            catch { }
                             wornSide.Add(new
                             {
                                 slot = key, name = it.DisplayName ?? it.Name, id = it.QualifiedItemId,
-                                left = wL, right = wR
+                                left = wL, right = wR, iconX = icx, iconY = icy
                             });
                         }
                         AddWorn("hat", Game1.player.hat?.Value);
@@ -14594,7 +14604,10 @@ public class ModEntry : Mod
                         // 👕 **身上穿的三件**（同一个判据、同一张缓存）——
                         //    `slot` = hat/shirt/pants；`left/right` = 能不能进哪个槽；
                         //    要用它们当料：`menu tailor place=<slot名> slot=left`（走游戏自己的点击，见 `/tailor_set`）。
-                        worn = wornSide
+                        worn = wornSide,
+                        // 🧭 菜单自己的位置/尺寸（诊断"点击打没打到"用；恒真机逮到过点击不生效）
+                        menuAt = new { x = tm.xPositionOnScreen, y = tm.yPositionOnScreen,
+                                       w = tm.width, h = tm.height }
                     };
                     // 底部背包槽位（跟锻造台同一条写法）
                     foreach (var fT3 in menu.GetType().GetFields(tmFlags))
@@ -16866,23 +16879,50 @@ var tcs = new TaskCompletionSource<object>();
     {
         try
         {
-            var f = menu.GetType().GetField("heldItem",
-                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic |
-                System.Reflection.BindingFlags.Instance);
-            return f?.GetValue(menu) as Item;
+            var t = menu.GetType();
+            const System.Reflection.BindingFlags F = System.Reflection.BindingFlags.Public
+                | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+            // ① 真·字段（`ShopMenu` 自己那个 `new ISalable heldItem`；老版本/别的菜单也可能是字段）
+            var f = t.GetField("heldItem", F);
+            if (f != null) return f.GetValue(menu) as Item;
+            // ② 🚨 **属性** —— `MenuWithInventory`（缝纫机/锻造台/商店…）是这样声明的：
+            //    `private Item _heldItem;` + `public Item heldItem { get; set; }`（`MenuWithInventory.cs:14/44`）
+            //    ⇒ ⛔ 老写法 `GetField("heldItem")` 拿**属性名当字段名找**、**永远 null**。
+            //    2026-10-06 恒真机撞出来的后果（三处一起）：
+            //      · 「光标上还有东西」那道闸形同虚设（轮回光标上拿着三重冕，我们读到 null）；
+            //      · `menu tailor action=take` 会说「光标上没有东西可收」＝**假失败**；
+            //      · 缝纫机那段 `if (base.heldItem == null)` 的抓取分支走不进去 ⇒ 点侧边图标没反应。
+            var p = t.GetProperty("heldItem", F);
+            if (p != null && p.CanRead) return p.GetValue(menu) as Item;
+            // ③ 私有 backing field（`MenuWithInventory._heldItem` 是 private、`GetField` 不穿基类，得自己走）
+            for (var b = t; b != null; b = b.BaseType)
+            {
+                var fb = b.GetField("_heldItem", F);
+                if (fb != null) return fb.GetValue(menu) as Item;
+            }
+            return null;
         }
         catch { return null; }
     }
 
-    /// <summary>反射写当前菜单的光标物品（ShopMenu 的 ISalable 字段用 Item 也能赋，Item 实现 ISalable）。</summary>
+    /// <summary>反射写当前菜单的光标物品（ShopMenu 的 ISalable 字段用 Item 也能赋，Item 实现 ISalable）。
+    /// ⚠️ 顺序与 `GetMenuHeldItem` **必须一致**（字段 → 属性 → `_heldItem`），否则会出现"读得到、写不回"。</summary>
     private static void SetMenuHeldItem(IClickableMenu menu, Item? item)
     {
         try
         {
-            var f = menu.GetType().GetField("heldItem",
-                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic |
-                System.Reflection.BindingFlags.Instance);
-            if (f != null) f.SetValue(menu, item);
+            var t = menu.GetType();
+            const System.Reflection.BindingFlags F = System.Reflection.BindingFlags.Public
+                | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+            var f = t.GetField("heldItem", F);
+            if (f != null) { f.SetValue(menu, item); return; }
+            var p = t.GetProperty("heldItem", F);
+            if (p != null && p.CanWrite) { p.SetValue(menu, item); return; }
+            for (var b = t; b != null; b = b.BaseType)
+            {
+                var fb = b.GetField("_heldItem", F);
+                if (fb != null) { fb.SetValue(menu, item); return; }
+            }
         }
         catch { }
     }
@@ -17365,44 +17405,86 @@ var tcs = new TaskCompletionSource<object>();
                         _ => ""
                     };
                 };
-                Func<string, ClickableComponent?, (bool ok, string err)> placeWorn = (key, spot) =>
+                Func<string, ClickableComponent?, (bool ok, string via, string err)> placeWorn = (key, spot) =>
                 {
-                    if (spot == null) return (false, "料槽不在（菜单状态怪）");
+                    if (spot == null) return (false, "", "料槽不在（菜单状态怪）");
                     ClickableComponent? icon = null;
                     foreach (var ic in tm.equipmentIcons)
                         if (string.Equals(ic.name, key, StringComparison.OrdinalIgnoreCase)) icon = ic;
-                    if (icon == null) return (false, "菜单里没有侧边图标（这版游戏结构变了？）");
                     Item? worn = key switch
                     {
                         "hat" => Game1.player.hat?.Value,
                         "shirt" => Game1.player.shirtItem?.Value,
                         _ => Game1.player.pantsItem?.Value
                     };
-                    if (worn == null) return (false, $"身上没穿{key}");
-                    if (GetMenuHeldItem(tm) is Item) return (false, "光标上还拿着东西 —— 先放回背包再弄");
-                    tm.receiveLeftClick(icon.bounds.Center.X, icon.bounds.Center.Y);
-                    var held = GetMenuHeldItem(tm) as Item;
-                    if (held == null)
-                        return (false, $"点了侧边图标，但游戏没把身上那件抓起来（它可能不是可用的料）—— 料槽没动");
-                    tm.receiveLeftClick(spot.bounds.Center.X, spot.bounds.Center.Y);
+                    if (worn == null) return (false, "", $"身上没穿{key}");
+                    if (GetMenuHeldItem(tm) is Item) return (false, "", "光标上还拿着东西 —— 先放回背包再弄");
+
+                    // ① 首选：**真点击**（图标中心 → 料槽中心），跟玩家自己点一模一样
+                    if (icon != null)
+                    {
+                        tm.receiveLeftClick(icon.bounds.Center.X, icon.bounds.Center.Y);
+                        if (GetMenuHeldItem(tm) is Item)
+                        {
+                            tm.receiveLeftClick(spot.bounds.Center.X, spot.bounds.Center.Y);
+                            if (spot.item != null) return (true, "click", "");
+                            return (false, "", "抓起来了，但没进料槽 —— ⚠️ 光标上还拿着东西，先处理它");
+                        }
+                    }
+                    // ② 点击没生效（恒真机 2026-10-06：点图标那把裙子没被抓起来）⇒ **退一档**：
+                    //    照游戏自己那段代码**调它自己的方法**（`:435-445`/`:468-478`/`:501-511` 的抓取
+                    //    + `_leftIngredientSpotClicked` 放槽），并沿用 `:404-421` 那条"放进去就脱下来"的规矩。
+                    //    ⛔ 仍然**不直接写 `spot.item`**；`via` 会如实告诉调用方**是哪一档成的**。
+                    if (!tm.HighlightItems(worn))
+                        return (false, "", $"点了侧边图标没反应，且游戏自己的 `HighlightItems` 说这{key}当不了料"
+                                           + "（AnySlot=false）—— 料槽没动");
+                    Item? grabbed2 = null;
+                    try { grabbed2 = Utility.PerformSpecialItemGrabReplacement(worn); } catch { }
+                    if (grabbed2 == null) return (false, "", "游戏自己的抓取 helper 回了空 —— 料槽没动");
+                    SetMenuHeldItem(tm, grabbed2);
+                    try
+                    {
+                        var mi = typeof(StardewValley.Menus.TailoringMenu)
+                            .GetMethod(ReferenceEquals(spot, tm.leftIngredientSpot)
+                                       ? "_leftIngredientSpotClicked" : "_rightIngredientSpotClicked", F);
+                        mi?.Invoke(tm, null);
+                    }
+                    catch { }
                     if (spot.item == null)
-                        return (false, "抓起来了，但没进料槽 —— ⚠️ 光标上还拿着东西，先处理它");
-                    return (true, "");
+                    {
+                        SetMenuHeldItem(tm, null);   // 没进槽 ⇒ 把光标清干净，别留个悬着的件
+                        return (false, "", "抓起来了，但游戏自己的料槽方法没收下 —— 料槽没动");
+                    }
+                    // 🎽 沿 `receiveLeftClick`（`:404-421`）那条规矩：那件原本**穿在身上** ⇒ 脱下来
+                    try
+                    {
+                        if (Game1.player.IsEquippedItem(spot.item))
+                        {
+                            if (key == "hat") Game1.player.Equip(null, Game1.player.hat);
+                            else if (key == "shirt") Game1.player.Equip(null, Game1.player.shirtItem);
+                            else Game1.player.Equip(null, Game1.player.pantsItem);
+                        }
+                    }
+                    catch { }
+                    return (true, "method", "");
                 };
+                var wornVia = new List<string>();
                 var wornL = wornKeyOf(left);
                 var wornR = wornKeyOf(right);
                 if (wornL != "" || wornR != "")
                 {
                     if (wornL != "")
                     {
-                        var (okL2, errL2) = placeWorn(wornL, tm.leftIngredientSpot);
+                        var (okL2, viaL2, errL2) = placeWorn(wornL, tm.leftIngredientSpot);
                         if (!okL2) { tcs.SetResult(new { ok = false, error = errL2 }); return; }
+                        wornVia.Add($"{wornL}→左槽（{viaL2}）");
                         left = "";      // 这一侧已经办完，别让下面的"背包取件"再插一手
                     }
                     if (wornR != "")
                     {
-                        var (okR2, errR2) = placeWorn(wornR, tm.rightIngredientSpot);
+                        var (okR2, viaR2, errR2) = placeWorn(wornR, tm.rightIngredientSpot);
                         if (!okR2) { tcs.SetResult(new { ok = false, error = errR2 }); return; }
+                        wornVia.Add($"{wornR}→右槽（{viaR2}）");
                         right = "";
                     }
                 }
@@ -17511,6 +17593,9 @@ var tcs = new TaskCompletionSource<object>();
                 try { known = isDye || (resNow != null && Game1.player.HasTailoredThisItem(resNow)); } catch { }
                 var heldNow = GetMenuHeldItem(tm) as Item;
                 tcs.SetResult(new { ok = true, note,
+                    // 👕 身上那三件这一发是怎么进去的：`click` = 真点击成的；
+                    //    `method` = 点击没生效、退到"照游戏代码调它自己的方法"（**如实报，别混过去**）
+                    wornVia = (wornVia.Count > 0 ? string.Join("、", wornVia) : null),
                     left = liNow?.DisplayName, leftId = liNow?.QualifiedItemId,
                     right = riNow?.DisplayName, rightId = riNow?.QualifiedItemId,
                     result = resNow?.DisplayName, resultId = resNow?.QualifiedItemId,

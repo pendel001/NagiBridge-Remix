@@ -83,16 +83,41 @@ ck("…图标按**名字**找（Hat/Shirt/Pants）",
    "string.Equals(ic.name, key, StringComparison.OrdinalIgnoreCase)" in _set)
 
 print("⑤ 写侧：⛔ 那条路不许写 `spot.item`")
-_pw = _block("Func<string, ClickableComponent?, (bool ok, string err)> placeWorn", "var wornL = wornKeyOf(left)")
+_pw = _block("Func<string, ClickableComponent?, (bool ok, string via, string err)> placeWorn", "var wornVia = new List<string>()")
 ck("…`placeWorn` 里**没有** `spot.item =`（只读它判成没成）",
    not re.search(r"spot\.item\s*=(?!=)", _pw),
    "又在直接写字段了 —— 那就是绕开游戏手势")
 ck("…它只**读** `spot.item == null` 判断进没进", "spot.item == null" in _pw)
 
+print("⑤b 写侧：点击没生效时的**退路**（恒真机：点图标没把裙子抓起来）")
+ck("…先判游戏自己的 `HighlightItems(worn)` 才敢抓", "tm.HighlightItems(worn)" in _pw)
+ck("…用游戏自己的抓取 helper（`PerformSpecialItemGrabReplacement`）",
+   "Utility.PerformSpecialItemGrabReplacement(worn)" in _pw)
+ck("…调游戏自己的槽方法（`_leftIngredientSpotClicked`/`_rightIngredientSpotClicked`，反射）",
+   "_leftIngredientSpotClicked" in _pw and "_rightIngredientSpotClicked" in _pw)
+ck("…沿 `:404-421` 那条「原本穿在身上 ⇒ 放进去就脱下来」",
+   "Game1.player.IsEquippedItem(spot.item)" in _pw and "Game1.player.Equip(null" in _pw)
+ck("…`via` 如实报**是哪一档成的**（click / method）",
+   '"click"' in _pw and '"method"' in _pw and "wornVia.Add(" in _set)
+
+print("⑤c 读侧：把**图标坐标 + 菜单位置**吐出来（诊断「点击打没打到」）")
+ck("…`worn` 每条带 `iconX`/`iconY`", "iconX = icx" in _read and "iconY = icy" in _read)
+ck("…`tailor` 里带 `menuAt`（菜单自己的位置/尺寸）", "menuAt = new {" in _read)
+
 print("⑥ 写侧：失败都如实报（三段文案在）")
-ck("…「游戏没把身上那件抓起来」那段在", "但游戏没把身上那件抓起来" in _set)
+ck("…「点了侧边图标没反应」那段（含 HighlightItems 的原话）在",
+   "点了侧边图标没反应" in _set and "HighlightItems" in _set)
 ck("…「抓起来了，但没进料槽」那段在", "抓起来了，但没进料槽" in _set)
 ck("…「身上没穿」那段在", "身上没穿" in _set)
+
+print("⑦ 🚨 `heldItem` 是**属性**不是字段（MenuWithInventory.cs:14/44）—— 反射读字段恒 null")
+_gh = _block("private static Item? GetMenuHeldItem(IClickableMenu menu)", "private static void SetMenuHeldItem")
+_sh = _block("private static void SetMenuHeldItem(IClickableMenu menu, Item? item)", "\n    /// <summary>\n    /// POST /menu_close")
+ck("…读侧走 `GetProperty(\"heldItem\"`", 'GetProperty("heldItem"' in _gh)
+ck("…读侧还兜 `_heldItem`（私有 backing field，`GetField` 不穿基类 ⇒ 自己走 BaseType）",
+   '_heldItem", F' in _gh and "BaseType" in _gh)
+ck("…写侧**同顺序**（字段 → 属性 → `_heldItem`），否则会「读得到、写不回」",
+   'GetProperty("heldItem"' in _sh and '_heldItem", F' in _sh and "BaseType" in _sh)
 
 print()
 if FAIL:
