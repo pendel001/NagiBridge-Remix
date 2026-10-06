@@ -3078,6 +3078,13 @@ public class ModEntry : Mod
                 "/menu_close" => HandleMenuClose(),
                 "/open_questlog" => HandleOpenQuestLog(),   // 📜 程序化开任务日志(QuestLog)：绕开按键/焦点，AI 自主看日志领奖（2026-08-29 恒）
                 "/forge_set" => HandleForgeSet(ctx),
+                // 🧵 2026-10-06 缝纫机（`TailoringMenu`）：左右料槽 + 开缝 + 取产物。
+                //    跟 `/forge_set` 同一档写法（直接摆槽位字段、调游戏自己的校验），
+                //    理由也一样：靠菜单点击放料在后台不稳（见 `HandleForgeSet` 那段注释）。
+                "/tailor_set" => HandleTailorSet(ctx),
+                // 📋 2026-10-06 特别订单板**这一刻的状态**（只读）：单子在镇上要能判"还没接取"，
+                //    而那时板子还没开 ⇒ 判据得在板下读得到（见 `HandleOrderBoard` 的注释）。
+                "/order_board" => HandleOrderBoard(ctx),
                 "/dump_tile" => HandleDumpTile(ctx),
                 "/pool" => HandlePool(ctx),            // ♨️ 浴场泡水/换装状态：swimming/bathingClothes/canOnlyWalk（2026-09-10 浴室专题②）
                 "/tile_props" => HandleTileProps(ctx), // 🗺️ 地图瓦片属性：单格全属性 / 全图扫某属性值（Action/TouchAction/Water…）
@@ -3317,6 +3324,19 @@ public class ModEntry : Mod
                 //    ⚠️ 消费侧（`_fish_water_scan`）**必须先看这一位**：老 DLL 上没有它 ⇒ 那一趟扫水
                 //       一格都不该信（恒的规矩：宁可不给行，也不给按下去去不了的假门）。
                 ["water_fishable"] = true,
+                // 📋🐄🧵 2026-10-06 那几档新菜单：
+                //    · `order_board` = `/order_board` 这个端点**在不在**（特别订单板的状态：
+                //      `accepted`/`left`/`right`/`boardUnlocked`）。⚠️ 消费侧（`_im_order_read`）
+                //      **必须先看这一位**：老 DLL 上它 404 ⇒ 少了这一位就会拿一次失败的 HTTP
+                //      当"板子没东西"（而且每次 `intent show` 都白烧一发）。
+                //    · `menu_animal_shop` = `/menu` 认 `PurchaseAnimalsMenu` 并吐 `animalShop`；
+                //    · `menu_tailor` = `/menu` 认 `TailoringMenu` 并吐 `tailor`；`/tailor_set` 也在。
+                //    · `menu_shop_id` = `/menu` 的商店那一份多吐 `shopId`（认「马龙的失物招领」要用它）。
+                //    ⚠️ 照上面那条规矩：**只陈述"会不会吐这些键"**，不陈述游戏规则。
+                ["order_board"] = true,
+                ["menu_animal_shop"] = true,
+                ["menu_tailor"] = true,
+                ["menu_shop_id"] = true,
             }
         };
     }
@@ -13766,6 +13786,20 @@ public class ModEntry : Mod
                 //    还是直接点 rewardBox"：`questPage != -1` 时**点卡只会退回列表**（`QuestLog.cs:453`），
                 //    所以领奖那条路没有它就是靠"点两下碰运气"。2026-10-04 恒「先做领奖」时加。
                 int questPageVal = -1;
+                // 🏪 **这是哪一家店**（`ShopMenu.ShopId`，public 字段，反编译 `ShopMenu.cs:188/280`）——
+                //    Python 侧靠它认出**马龙的失物招领**（`Game1.shop_adventurersGuildItemRecovery`
+                //    = `"AdventureGuildRecovery"`，`Game1.cs:194`；开它的那行在 `GameLocation.cs:12291`
+                //    `Utility.TryOpenShopMenu("AdventureGuildRecovery", "Marlon")`）。
+                //    ⚠️ 光看菜单类型分不出这家店和皮埃尔/威利（都是 `ShopMenu`）⇒ 必须把 id 报出去，
+                //       否则 Python 只能靠"货架上有没有东西"猜 —— 那是编判据。
+                string? shopId = null;
+                // 🐄 **买动物菜单**（`PurchaseAnimalsMenu`，2026-10-06）：/menu 原先对它只有
+                //    `shopItems:null` ⇒ 单子读不出"能买哪些、各多少钱"。这一档把
+                //    `animalsToPurchase` 摊开（判据全取游戏自己的字段，见下面的分支注释）。
+                object? animalShop = null;
+                // 🧵 **缝纫机**（`TailoringMenu`，2026-10-06）：左/右料槽 + 产出槽 + 能不能开缝。
+                //    跟 `ForgeMenu` 同一档形状（`shopItems` 那一栏带槽内容），便于同一个消费侧读懂。
+                object? tailor = null;
 
                 if (menu is DialogueBox db)
                 {
@@ -13807,6 +13841,8 @@ public class ModEntry : Mod
                 }
                 else if (menu is ShopMenu shop)
                 {
+                    // 🏪 这家店的 id（见上面 `shopId` 的账）。读不到就留 `null`（宁缺勿编）。
+                    try { shopId = shop.ShopId; } catch { shopId = null; }
                     shopItems = new List<object>();
                     var forSale = shop.forSale;
                     var itemPriceAndStock = shop.itemPriceAndStock;
@@ -14176,6 +14212,268 @@ public class ModEntry : Mod
                                 var fcc2 = fim.inventory[i];
                                 if (fcc2 == null) continue;
                                 grabSlots.Add(new { index = i, x = fcc2.bounds.Center.X, y = fcc2.bounds.Center.Y });
+                            }
+                            if (grabSlots.Count == 0) grabSlots = null;
+                            break;
+                        }
+                    }
+                }
+
+                else if (menu is StardewValley.Menus.PurchaseAnimalsMenu pam)
+                {
+                    // 🐄 2026-10-06 恒：「买动物菜单 /menu 读不出来（shopItems:null）⇒ 单子没法给行」。
+                    //    这一档照 `ShopMenu`/`StorageContainer` 的写法把**货架**摊出来，字段来源逐个讲清：
+                    //      · 动物清单 = `pam.animalsToPurchase`（`List<ClickableTextureComponent>`，
+                    //        反编译 `PurchaseAnimalsMenu.cs:34`，由 ctor `:86-115` 按 `stock` 铺）；
+                    //      · **每只的 id** = 组件的 `hoverText`（ctor 传的正是 `stock[i].Name`，
+                    //        而 `Utility.getPurchaseAnimalStock` 把 `Name` 设成 `Data/FarmAnimals` 的键，
+                    //        `Utility.cs:4941-4956`）⇒ 它就是 `FarmAnimal.GetDisplayName(id, forShop)` 吃的 id；
+                    //      · **价格** = `(cc.item as Object).salePrice()`（ctor 里那个 Object 的
+                    //        `PurchasePrice`，`Utility.cs:4946`；菜单自己也是这么取的，`:470`）；
+                    //      · **能不能买** = `!pam.readOnly && (cc.item as Object).Type == null`
+                    //        —— 一字不差照游戏那条点击守卫（`PurchaseAnimalsMenu.cs:466`）：
+                    //        `Type != null` 正是**缺必需建筑**（`Utility.cs:4951-4953` 塞的
+                    //        `ShopMissingBuildingDescription`），`Type` 里那句就是缺哪栋；
+                    //      · **有没有空棚** = 拿 `BuildingData.ValidOccupantTypes` 对
+                    //        `Game1.farmAnimalData[id].House`（= 游戏 `FarmAnimal.CanLiveIn` 的两条判据，
+                    //        `FarmAnimal.cs:1227-1235`）+ `AnimalHouse.isFull()`（`:410-411` 那条红字）。
+                    //        ⚠️ **不 new FarmAnimal 来探**：ctor 会 `Dialogue.randomName()` +
+                    //        强制重载贴图 + 吃 `Game1.random`（`FarmAnimal.cs:347-390`）——
+                    //        只读端点里那等于偷偷掷骰子、还白读一次资源。
+                    var pamFlags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
+                        | System.Reflection.BindingFlags.Instance;
+                    var animalList = new List<object>();
+                    bool pamReadOnly = false;
+                    try { pamReadOnly = pam.readOnly; } catch { }
+                    string pamTarget = "";
+                    try { pamTarget = pam.TargetLocation?.NameOrUniqueName ?? ""; } catch { }
+                    for (int ai = 0; ai < pam.animalsToPurchase.Count; ai++)
+                    {
+                        var ccA = pam.animalsToPurchase[ai];
+                        if (ccA == null) continue;
+                        string aId = ccA.hoverText ?? "";
+                        string aDisplay = "";
+                        try { aDisplay = FarmAnimal.GetDisplayName(aId, true) ?? ""; } catch { }
+                        if (string.IsNullOrEmpty(aDisplay)) aDisplay = aId;
+                        var aObj = ccA.item as StardewValley.Object;
+                        int aPrice = 0;
+                        try { if (aObj != null) aPrice = aObj.salePrice(); } catch { }
+                        // 缺建筑：`Type` 有字 = 缺（字就是游戏写的那句"你没有 XX 棚"）
+                        string? aMissing = null;
+                        try { aMissing = aObj?.Type; } catch { }
+                        bool aCanBuy = !pamReadOnly && aMissing == null;
+                        // 这只住的棚类型 + 农场上有没有能住它、还有空位的棚
+                        string aHouse = "";
+                        try
+                        {
+                            if (Game1.farmAnimalData.TryGetValue(aId, out var aData))
+                                aHouse = aData?.House ?? "";
+                        }
+                        catch { }
+                        string? aFreeHouse = null;
+                        if (aCanBuy && aHouse != "")
+                        {
+                            try
+                            {
+                                foreach (var bA in pam.TargetLocation.buildings)
+                                {
+                                    if (bA == null) continue;
+                                    var bdA = bA.GetData();
+                                    if (bdA?.ValidOccupantTypes == null
+                                        || !bdA.ValidOccupantTypes.Contains(aHouse)) continue;
+                                    if (bA.isUnderConstruction()) continue;
+                                    if (bA.indoors.Value is AnimalHouse ahA && !ahA.isFull())
+                                    {
+                                        aFreeHouse = bA.buildingType.Value;
+                                        break;
+                                    }
+                                }
+                            }
+                            catch { aFreeHouse = null; }
+                        }
+                        animalList.Add(new
+                        {
+                            index = ai,
+                            id = aId,
+                            name = aDisplay,
+                            price = aPrice,
+                            canBuy = aCanBuy,
+                            // 💰 买得起吗（钱包是共享的，用 `Game1.player` = 本进程那个角色）
+                            affordable = aPrice > 0 && Game1.player.Money >= aPrice,
+                            // 🏠 `missingText` 非 null = **缺必需建筑**（游戏自己给的那句话）
+                            missingBuilding = aMissing != null,
+                            missingText = aMissing,
+                            house = aHouse,
+                            freeHouse = aFreeHouse,
+                            visible = ccA.visible,
+                            bounds = new { x = ccA.bounds.Center.X, y = ccA.bounds.Center.Y,
+                                           w = ccA.bounds.Width, h = ccA.bounds.Height }
+                        });
+                    }
+                    // 📍 这一刻菜单**停在哪一阶段**（游戏自己的两个字段）：
+                    //    `onFarm=true` 表示已经选好动物、正在农场画面上挑棚（`PurchaseAnimalsMenu.cs:51/275`）。
+                    bool pamOnFarm = false, pamNaming = false;
+                    try { pamOnFarm = pam.onFarm; } catch { }
+                    try { pamNaming = pam.namingAnimal; } catch { }
+                    string? pamChosen = null;
+                    int pamChosenPrice = 0;
+                    try { pamChosen = pam.animalBeingPurchased?.displayType; } catch { }
+                    try { pamChosenPrice = pam.priceOfAnimal; } catch { }
+                    animalShop = new
+                    {
+                        readOnly = pamReadOnly,
+                        targetLocation = pamTarget,
+                        money = Game1.player.Money,
+                        onFarm = pamOnFarm,
+                        namingAnimal = pamNaming,
+                        chosen = pamChosen,
+                        chosenPrice = pamChosenPrice,
+                        animals = animalList
+                    };
+                    // 底部背包槽位（跟锻造台同一条写法：点背包格 = 拿起，用于后续自定义手势）
+                    foreach (var fA in menu.GetType().GetFields(pamFlags))
+                    {
+                        if (fA.GetValue(menu) is InventoryMenu fimA && fimA.inventory != null)
+                        {
+                            grabSlots = new List<object>();
+                            for (int i = 0; i < fimA.inventory.Count; i++)
+                            {
+                                var fccA = fimA.inventory[i];
+                                if (fccA == null) continue;
+                                grabSlots.Add(new { index = i, x = fccA.bounds.Center.X, y = fccA.bounds.Center.Y });
+                            }
+                            if (grabSlots.Count == 0) grabSlots = null;
+                            break;
+                        }
+                    }
+                }
+
+                else if (menu is StardewValley.Menus.TailoringMenu tm)
+                {
+                    // 🧵 2026-10-06 恒：「缝纫机两三个槽位也不复杂，跟锻造台差不多」——
+                    //    照 `ForgeMenu` 那一档的写法（穷举 ClickableComponent 当按钮表 + 槽内容），
+                    //    字段来源全部照反编译 `TailoringMenu.cs`：
+                    //      · 左料槽 `leftIngredientSpot`（`myID=998`，`:58`）/ 右料槽 `rightIngredientSpot`
+                    //        （`997`）/ 产出槽 `craftResultDisplay`（`995`）/ 开缝按钮 `startTailoringButton`
+                    //        （`996`）—— 都是 public 字段（`:82-90`）；
+                    //      · 槽里那件 = 组件的 `.item`（游戏自己就是这么放的，`:344-378`）；
+                    //      · **能不能开缝** = `IsValidCraft(左,右)`（`:790-812`，游戏自己的判据）
+                    //        + `CanFitCraftedItem()`（`:983-990`，背包放得下吗）+ `!IsBusy()`（`:249-252`）；
+                    //      · **产出预览** = `craftResultDisplay.item`（`_ValidateCraft` 算好的，`:656`）。
+                    //        ⚠️ 游戏在"没做过这件"时**故意不显示**它（`:1139` `_isDyeCraft ||
+                    //        HasTailoredThisItem`）⇒ 我们额外报一位 `resultKnown`，把游戏那条
+                    //        显示规则如实带出去，让消费侧自己决定要不要说（**不替游戏藏、也不假装知道**）。
+                    var tmFlags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
+                        | System.Reflection.BindingFlags.Instance;
+                    var tmCCs = new List<object>();
+                    foreach (var fT in menu.GetType().GetFields(tmFlags))
+                    {
+                        try
+                        {
+                            if (fT.GetValue(menu) is ClickableComponent fccT && fccT != null)
+                            {
+                                tmCCs.Add(new
+                                {
+                                    field = fT.Name,
+                                    name = fccT.name ?? "",
+                                    x = fccT.bounds.Center.X,
+                                    y = fccT.bounds.Center.Y,
+                                    w = fccT.bounds.Width,
+                                    h = fccT.bounds.Height
+                                });
+                            }
+                        }
+                        catch { }
+                    }
+                    if (tmCCs.Count > 0)
+                    {
+                        buttons = tmCCs;
+                        menuIsChoice = true;
+                    }
+                    object? SlotOf(Item? it) => it == null ? null
+                        : new { name = it.DisplayName ?? it.Name, id = it.QualifiedItemId, stack = it.Stack };
+                    var tmLeft = tm.leftIngredientSpot?.item;
+                    var tmRight = tm.rightIngredientSpot?.item;
+                    var tmResult = tm.craftResultDisplay?.item;
+                    bool tmBusy = false, tmCanFit = false, tmValid = false, tmKnown = false;
+                    try { tmBusy = tm.IsBusy(); } catch { }
+                    try { tmCanFit = tm.CanFitCraftedItem(); } catch { }
+                    try { tmValid = tm.IsValidCraft(tmLeft, tmRight); } catch { }
+                    try
+                    {
+                        bool isDye = false;
+                        var fDye = typeof(StardewValley.Menus.TailoringMenu).GetField("_isDyeCraft", tmFlags);
+                        if (fDye != null) isDye = (bool)(fDye.GetValue(tm) ?? false);
+                        tmKnown = isDye || (tmResult != null && Game1.player.HasTailoredThisItem(tmResult));
+                    }
+                    catch { }
+                    // 光标那件（开缝跑完产物就挂在这儿，`TailoringMenu.cs:1061` `base.heldItem = item`）
+                    object? tmHeld = null;
+                    try { tmHeld = SlotOf(GetMenuHeldItem(menu) as Item); } catch { }
+                    // 🎒 **背包里哪一件能进哪一槽** —— 判据是**游戏自己那把尺子**：
+                    //    `BuildHighlightCache()`（public，`:278-338`）会把每件物品算成
+                    //    `TailorHighlight(左, 右, 装备)`；结果存在**私有**字段 `ItemHighlightCache`
+                    //    （`:109`）⇒ 反射读那张表（只读，不改世界）。
+                    //    ⚠️ 不自己重写"什么能当料"：那套判据里有 `color_prismatic`/`dye_*` 上下文标签
+                    //       + `Data/TailoringRecipes` 的 First/SecondItemTags（`:319-336`），抄一份必烂。
+                    //    ⚠️ 这会**顺带把缓存建起来**（等于帮游戏把悬停高亮也算好了）—— 无副作用、只多花一点 CPU。
+                    var tmPlaceable = new List<object>();
+                    try
+                    {
+                        tm.BuildHighlightCache();
+                        var cacheField = typeof(StardewValley.Menus.TailoringMenu)
+                            .GetField("ItemHighlightCache", tmFlags);
+                        var cache = cacheField?.GetValue(tm) as System.Collections.IDictionary;
+                        // ⚠️ 菜单的背包就是**玩家背包**：`MenuWithInventory` 建 `InventoryMenu` 时
+                        //    `playerInventory:false` 但 `actualInventory=null` ⇒ 那个 ctor 会把它设成
+                        //    `Game1.player.Items`（`InventoryMenu.cs:87-90`）⇒ 引用同一个列表。
+                        var bagList = tm.inventory?.actualInventory ?? (IList<Item>)Game1.player.Items;
+                        foreach (var itB in bagList)
+                        {
+                            if (itB == null) continue;
+                            object? hl = null;
+                            try { if (cache != null && cache.Contains(itB)) hl = cache[itB]; } catch { }
+                            bool okL = false, okR = false;
+                            try
+                            {
+                                if (hl != null)
+                                {
+                                    var ht = hl.GetType();
+                                    okL = (bool)(ht.GetField("LeftSlot")?.GetValue(hl) ?? false);
+                                    okR = (bool)(ht.GetField("RightSlot")?.GetValue(hl) ?? false);
+                                }
+                            }
+                            catch { }
+                            if (!okL && !okR) continue;
+                            tmPlaceable.Add(new { name = itB.DisplayName ?? itB.Name,
+                                id = itB.QualifiedItemId, stack = itB.Stack, left = okL, right = okR });
+                        }
+                    }
+                    catch { }
+                    tailor = new
+                    {
+                        left = SlotOf(tmLeft),
+                        right = SlotOf(tmRight),
+                        result = SlotOf(tmResult),
+                        resultKnown = tmKnown,
+                        busy = tmBusy,
+                        canFit = tmCanFit,
+                        canStart = tmValid && tmCanFit && !tmBusy && tmResult != null,
+                        heldItem = tmHeld,
+                        // 🎒 背包里能进左/右槽的那几件（游戏自己算的，见上面那段账）
+                        placeable = tmPlaceable
+                    };
+                    // 底部背包槽位（跟锻造台同一条写法）
+                    foreach (var fT3 in menu.GetType().GetFields(tmFlags))
+                    {
+                        if (fT3.GetValue(menu) is InventoryMenu fimT && fimT.inventory != null)
+                        {
+                            grabSlots = new List<object>();
+                            for (int i = 0; i < fimT.inventory.Count; i++)
+                            {
+                                var fccT = fimT.inventory[i];
+                                if (fccT == null) continue;
+                                grabSlots.Add(new { index = i, x = fccT.bounds.Center.X, y = fccT.bounds.Center.Y });
                             }
                             if (grabSlots.Count == 0) grabSlots = null;
                             break;
@@ -14907,7 +15205,16 @@ public class ModEntry : Mod
                     shippingCategories, shippingCurrentPage,
                     mastery,   // 🎓 MasteryTrackerMenu 内容（2026-09-16）
                     // 📜 QuestLog 停在列表还是某张卡的详情页（-1 = 列表；≥0 = 那张卡的下标）
-                    questPage = questPageVal
+                    questPage = questPageVal,
+                    // 🏪🐄🧵 2026-10-06 那三档（判据/字段来源见上面各自的分支注释）：
+                    //    · `shopId` = 这是哪一家店（认「马龙的失物招领」要用它，`shopItems` 分不出来）；
+                    //    · `animalShop` = 买动物菜单的货架 + 菜单此刻停在哪一阶段；
+                    //    · `tailor` = 缝纫机左右槽/产出预览/能不能开缝。
+                    //    ⚠️ 三者**只在对应的菜单开着时才非 null**（别的菜单上原样是 null，
+                    //       Python 侧因此天然不会误判 —— 跟 `shopItems` 那几档同一个约定）。
+                    shopId,
+                    animalShop,
+                    tailor
                 });
             }
             catch (Exception ex)
@@ -15371,6 +15678,12 @@ public class ModEntry : Mod
         var slotIdx = GetParamOr(p, "slot", -1);     // 按背包槽位 index 直点（不依赖坐标，恒 2026-08-10）
         var category = GetParamOr(p, "category", -1);  // 🗂️ ShippingMenu 按类目 index 钻入（不依赖坐标/分辨率）
         var real = GetParamOr(p, "real", false);     // real=true: 对话选项走真实 receiveLeftClick 响应（createQuestionDialogue 用，如跳舞邀请；跳过 event.answerDialogueQuestion）
+        // 🐄 2026-10-06 买动物菜单（`PurchaseAnimalsMenu`）专用：`animal` = 要哪一只
+        //    （`Data/FarmAnimals` 的键，或 `/menu` 报出来的商店显示名），`animal_name` = 给它起的名。
+        //    ⚠️ 跟 `item` **分开两个参数名**：`item` 在别处已经是"商店货/背包里那件"的语义
+        //       （见下面 `item != "" && menu is ShopMenu` 那段），混用会让同一次调用落到两条路上。
+        var animal = GetParamOr(p, "animal", "");
+        var animalName = GetParamOr(p, "animal_name", "");
         // 🖱️ 挪不挪**真人 OS 光标**：-1=自动（只对真读鼠标位的菜单挪）/ 0=绝不挪 / 1=强制挪（万一名单漏了）
         var moveMouse = GetParamOr(p, "move_mouse", -1);
 
@@ -15734,6 +16047,169 @@ var tcs = new TaskCompletionSource<object>();
                         }
                     }
                     tcs.SetResult(new { ok = false, error = $"「{item}」不匹配当前 bundle 的槽位（先 read_menu 看要什么）" });
+                    return;
+                }
+
+                // 🐄 2026-10-06 恒：「买动物菜单 /menu 读不出来 ⇒ 单子没法给行」——
+                //    读那一半在 `HandleMenu` 的 `PurchaseAnimalsMenu` 分支（`animalShop`）；
+                //    这一半是**点中某一只**（`/menu/click { animal, animal_name? }`）。
+                //
+                // 手势 = **游戏自己那条路**（反编译 `PurchaseAnimalsMenu.cs:464-496` 逐条对照）：
+                //   ① 找到那一只的组件（按 id / 商店显示名 / 内部名找，同商店那套按名找组件的范式）；
+                //   ② 校验（一字不差照游戏那条点击守卫 `:466-471`）：`readOnly` / `Type != null`（缺建筑）/ 钱不够；
+                //   ③ 造 `animalBeingPurchased` + `priceOfAnimal`（`AlternatePurchaseTypes` 那条也照抄
+                //      `:477-490`，包括 `GameStateQuery.CheckConditions` 与 `ChooseFrom`）；
+                //   ④ 找一栋**能住它、还没满**的棚（游戏在农场画面上点棚时用的正是
+                //      `animalBeingPurchased.CanLiveIn(building)` + `AnimalHouse.isFull()`，`:403-409`）；
+                //   ⑤ 落袋走**游戏自己的 `textBoxEnter(textBox)`**（`:220-246`）：它自己会
+                //      `adoptAnimal` + 扣 `priceOfAnimal` + 收尾回 AnimalShop。
+                //      ⇒ 我们**不重写**"怎么算买成了"这件事，只把三个字段摆好（`newAnimalHome` /
+                //        `namingAnimal` / `textBox.Text`）—— 这三个位在 ctor 里就是 public 的。
+                //
+                // ⚠️ **故意跳过**"淡出 → 农场视图 → 手点棚"那一段（游戏 `setUpForAnimalPlacement`）：
+                //    那一段把 `Game1.currentLocation` 换成农场、冻结视口、隐藏玩家，而我们没有
+                //    "在农场画面上点某栋棚"的端点 ⇒ 走进去就是**半路卡住**。跳过之后语义等价：
+                //    动物进的就是游戏自己会**建议**的那栋（`GetSuggestedBuilding` 的判据同源）。
+                // ⚠️ 名字撞车（`areThereAnyOtherAnimalsWithThisName`）时 `textBoxEnter` 会**静默返回**，
+                //    什么都没做 ⇒ 这里的回读是**钱包掉了没**（`moneyBefore/After`），
+                //    没掉就如实报"没买成"，不假装成功。
+                if (animal != "" && menu is StardewValley.Menus.PurchaseAnimalsMenu pamBuy)
+                {
+                    bool pamBusyPhase = false;
+                    try { pamBusyPhase = pamBuy.onFarm || pamBuy.namingAnimal; } catch { }
+                    if (pamBusyPhase)
+                    {
+                        tcs.SetResult(new { ok = false,
+                            error = "这个买动物菜单**已经进了「挑棚」阶段**（onFarm）—— 这一刻它不在货架上，"
+                                  + "先把它收掉（menu click(button=upperRightCloseButton) 或关掉界面）再重来" });
+                        return;
+                    }
+                    if (pamBuy.readOnly)
+                    {
+                        tcs.SetResult(new { ok = false,
+                            error = "这是**只读**的买动物菜单（readOnly）—— 游戏不让在这上面下单" });
+                        return;
+                    }
+                    ClickableTextureComponent? ccBuy = null;
+                    foreach (var c in pamBuy.animalsToPurchase)
+                    {
+                        if (c == null) continue;
+                        string cid = c.hoverText ?? "";
+                        string cdisp = "";
+                        try { cdisp = FarmAnimal.GetDisplayName(cid, true) ?? ""; } catch { }
+                        if (cid.Equals(animal, StringComparison.OrdinalIgnoreCase)
+                            || cdisp.Equals(animal, StringComparison.OrdinalIgnoreCase))
+                        { ccBuy = c; break; }
+                    }
+                    if (ccBuy == null)
+                    {
+                        var names = pamBuy.animalsToPurchase
+                            .Where(c => c != null)
+                            .Select(c => { string d = ""; try { d = FarmAnimal.GetDisplayName(c.hoverText ?? "", true) ?? ""; } catch { } return d == "" ? (c.hoverText ?? "?") : d; });
+                        tcs.SetResult(new { ok = false,
+                            error = $"这个买动物菜单里没有「{animal}」——先 menu ops=read 看 animalShop.animals 里的实际名字。"
+                                  + $"现有：{string.Join("、", names)}" });
+                        return;
+                    }
+                    var objBuy = ccBuy.item as StardewValley.Object;
+                    if (objBuy == null)
+                    {
+                        tcs.SetResult(new { ok = false, error = "这只动物的货位读不出价格（item 不是 Object）——不敢下单" });
+                        return;
+                    }
+                    // 缺必需建筑（游戏自己塞的 `ShopMissingBuildingDescription`）⇒ 明说不买
+                    if (objBuy.Type != null)
+                    {
+                        tcs.SetResult(new { ok = false,
+                            error = $"**没买、钱没动**：这只现在买不了 —— 缺建筑。游戏原话：{objBuy.Type}" });
+                        return;
+                    }
+                    int priceBuy = objBuy.salePrice();
+                    if (Game1.player.Money < priceBuy)
+                    {
+                        tcs.SetResult(new { ok = false,
+                            error = $"**没买、钱没动**：钱不够（要 {priceBuy}g，有 {Game1.player.Money}g）" });
+                        return;
+                    }
+                    // ④ 造动物 —— 照 `receiveLeftClick` 那段（`PurchaseAnimalsMenu.cs:477-490`）
+                    string aType = ccBuy.hoverText ?? "";
+                    try
+                    {
+                        if (Game1.farmAnimalData.TryGetValue(aType, out var aData)
+                            && aData?.AlternatePurchaseTypes != null)
+                        {
+                            foreach (var alt in aData.AlternatePurchaseTypes)
+                            {
+                                if (GameStateQuery.CheckConditions(alt.Condition))
+                                {
+                                    // ⚠️ 用**全限定的静态调用**而不是 `Game1.random.ChooseFrom(...)`：
+                                    //    那个扩展方法在 `StardewValley.Extensions` 命名空间里，而本文件
+                                    //    **没有** `using StardewValley.Extensions;` —— 加那句 using 会把
+                                    //    一整套扩展方法引进本文件的解析范围（可能跟 `System.Linq` 撞名），
+                                    //    只为一个方法不值得。全限定调用**行为一字不差**
+                                    //    （`RandomExtensions.ChooseFrom` = `options[random.Next(Count)]`，
+                                    //    反编译 `StardewValley.Extensions/RandomExtensions.cs:77-84`）。
+                                    var picked = StardewValley.Extensions.RandomExtensions.ChooseFrom(
+                                        Game1.random, alt.AnimalIds);
+                                    if (!string.IsNullOrEmpty(picked)) aType = picked;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+                    var newAnimal = new FarmAnimal(aType, Game1.Multiplayer.getNewID(), Game1.player.UniqueMultiplayerID);
+                    // ⑤ 找空棚（照 `:403-409` 那两条判据）
+                    Building? homeBuy = null;
+                    foreach (var bB in pamBuy.TargetLocation.buildings)
+                    {
+                        if (bB == null) continue;
+                        bool fits = false;
+                        try { fits = newAnimal.CanLiveIn(bB); } catch { }
+                        if (!fits) continue;
+                        if (bB.indoors.Value is AnimalHouse ahB && !ahB.isFull()) { homeBuy = bB; break; }
+                    }
+                    if (homeBuy == null)
+                    {
+                        tcs.SetResult(new { ok = false,
+                            error = $"**没买、钱没动**：农场上没有能住「{newAnimal.displayType}」的空棚"
+                                  + $"（要 {newAnimal.displayHouse}，而且得有床位）—— 卖一只或去木匠铺盖一间" });
+                        return;
+                    }
+                    var indoorsBuy = homeBuy.indoors.Value as AnimalHouse;
+                    int limitBuy = indoorsBuy?.animalLimit.Value ?? 0;
+                    int moneyBeforeBuy = Game1.player.Money;
+                    // 把游戏自己那三个字段摆好（ctor 里就是 public；值就是游戏点棚/输名字时会设的）
+                    pamBuy.clickedAnimalButton = ccBuy.myID;
+                    pamBuy.animalBeingPurchased = newAnimal;
+                    pamBuy.priceOfAnimal = priceBuy;
+                    pamBuy.newAnimalHome = homeBuy;
+                    pamBuy.namingAnimal = true;
+                    pamBuy.textBox.Text = string.IsNullOrEmpty(animalName) ? newAnimal.displayName : animalName;
+                    string wantName = pamBuy.textBox.Text;
+                    try { pamBuy.textBoxEnter(pamBuy.textBox); }
+                    catch (Exception exBuy)
+                    {
+                        tcs.SetResult(new { ok = false,
+                            error = $"落袋那一步抛异常了（{exBuy.Message}）—— 别当买成了，自己看一眼背包/棚" });
+                        return;
+                    }
+                    int moneyAfterBuy = Game1.player.Money;
+                    int cntAfterBuy = indoorsBuy?.animals.Count() ?? 0;
+                    int spentBuy = moneyBeforeBuy - moneyAfterBuy;
+                    if (spentBuy <= 0)
+                    {
+                        // 名字撞车/棚满之类 ⇒ `textBoxEnter` 静默返回，**一件事都没发生**
+                        tcs.SetResult(new { ok = false,
+                            error = $"**没买成、钱没动**：游戏没收这一单。最常见的原因是**名字「{wantName}」已经有别的动物用了**"
+                                  + "（换一个 `animal_name` 再来），或者那栋棚刚好满了。" });
+                        return;
+                    }
+                    tcs.SetResult(new { ok = true, clicked = "animal_buy",
+                        animal = aType, name = wantName, price = priceBuy, cost = spentBuy,
+                        building = homeBuy.buildingType.Value,
+                        animals = $"{cntAfterBuy}/{limitBuy}",
+                        money = moneyAfterBuy });
                     return;
                 }
 
@@ -16608,6 +17084,263 @@ var tcs = new TaskCompletionSource<object>();
                     left = forge.leftIngredientSpot.item?.Name,
                     right = forge.rightIngredientSpot.item?.Name,
                     shardCost, shardsHave });
+            }
+            catch (Exception ex)
+            {
+                tcs.SetResult(new { ok = false, error = ex.Message });
+            }
+        });
+        return tcs.Task.GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// POST /tailor_set { left?, right?, action? } — 直接摆弄已经开着的缝纫机（TailoringMenu）。
+    ///
+    /// 为什么跟 `/forge_set` 同一档写法（而不是让 AI 一格一格点）：后台点背包格放料那条路
+    /// 在 2026-08-11 就被证过不可靠（`/state` 背包快照陈旧 ⇒ 点错格整组被拿起），
+    /// 而"摆槽位字段 + 调游戏自己的校验"没有那类竞态。
+    ///
+    /// 参数（`left`/`right` 都空 = 只读快照）：
+    ///   · `left`  / `right` = 物品名 / 限定 id → **从背包取 1 个**放进那一槽（空串 = 这一槽不动）；
+    ///   · `action` = `"clear"` 两槽的料退回背包 / `"start"` 开缝 / `"take"` 把光标上的产物收进背包。
+    ///
+    /// ⚠️ 判据**全用游戏自己的**（`IsValidCraft` / `IsValidCraftIngredient` / `CanFitCraftedItem` /
+    ///    `IsBusy`）—— 我们**不**另写一套"这两件能不能配"。`action=start` 只做一件事：
+    ///    把 `_timeUntilCraft` 置成游戏自己的 `CRAFT_TIME`，剩下的 1.5 秒由游戏自己的 `update()`
+    ///    跑完（它会 `CraftItem` 并把产物挂到 `heldItem`，`TailoringMenu.cs:1017-1076`）。
+    ///    ⇒ 开缝之后**要等一会儿**再 `action=take`，不然光标上还没有东西。
+    /// </summary>
+    private object HandleTailorSet(HttpListenerContext ctx)
+    {
+        var p = ReadJson(ctx);
+        var left = GetParamOr(p, "left", "");
+        var right = GetParamOr(p, "right", "");
+        var action = (GetParamOr(p, "action", "") ?? "").ToLowerInvariant();
+
+        if (!Context.IsWorldReady)
+            throw new InvalidOperationException("World not ready");
+
+        var tcs = new TaskCompletionSource<object>();
+        EnqueueMainThread(() =>
+        {
+            try
+            {
+                if (Game1.activeClickableMenu is not StardewValley.Menus.TailoringMenu tm)
+                {
+                    tcs.SetResult(new { ok = false, error = "缝纫机没开" });
+                    return;
+                }
+                const System.Reflection.BindingFlags F = System.Reflection.BindingFlags.Public
+                    | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+
+                // 🗑️ clear：两槽的料退回背包（放不下就掉在脚边 —— 跟 `/forge_set` 清槽那条一致）
+                if (action == "clear")
+                {
+                    foreach (var spot in new[] { tm.leftIngredientSpot, tm.rightIngredientSpot })
+                    {
+                        if (spot?.item == null) continue;
+                        var it = spot.item;
+                        if (!Game1.player.addItemToInventoryBool(it))
+                            Game1.createItemDebris(it, Game1.player.getStandingPosition(), Game1.player.FacingDirection);
+                        spot.item = null;
+                    }
+                }
+
+                // 📥 放料：先校验（游戏自己的"能不能当料"），再取 1 个放进槽；失败回滚已放的那一槽
+                if (left != "")
+                {
+                    var li = FindItemByNameOrId(left);
+                    if (li == null || !tm.IsValidCraftIngredient(li))
+                    {
+                        tcs.SetResult(new { ok = false, error = $"背包里没有能放进缝纫机的「{left}」（或它压根不能当料）" });
+                        return;
+                    }
+                    tm.leftIngredientSpot.item = TakeOne(li);
+                }
+                if (right != "")
+                {
+                    var ri = FindItemByNameOrId(right);
+                    if (ri == null || !tm.IsValidCraftIngredient(ri))
+                    {
+                        if (left != "" && tm.leftIngredientSpot.item != null)
+                        {
+                            Game1.player.addItemToInventoryBool(tm.leftIngredientSpot.item);
+                            tm.leftIngredientSpot.item = null;
+                        }
+                        tcs.SetResult(new { ok = false, error = $"背包里没有能放进缝纫机的「{right}」（或它压根不能当料）" });
+                        return;
+                    }
+                    tm.rightIngredientSpot.item = TakeOne(ri);
+                }
+
+                // ♻️ 刷新（`_ValidateCraft` 是 protected，反射调 —— 同 `/forge_set` 那一发）
+                //    它会把 `craftResultDisplay.item` 按当前两槽重新算出来（`:631-672`）。
+                try
+                {
+                    typeof(StardewValley.Menus.TailoringMenu)
+                        .GetMethod("_ValidateCraft", F)?.Invoke(tm, null);
+                }
+                catch { }
+
+                string note = "";
+                if (action == "start")
+                {
+                    if (tm.IsBusy())
+                    {
+                        tcs.SetResult(new { ok = false, error = "缝纫机**正在缝**（等它自己跑完那 1.5 秒）" });
+                        return;
+                    }
+                    if (GetMenuHeldItem(tm) is Item)
+                    {
+                        tcs.SetResult(new { ok = false, error = "你光标上还拿着东西 —— 先放回背包再开缝" });
+                        return;
+                    }
+                    if (!tm.CanFitCraftedItem())
+                    {
+                        tcs.SetResult(new { ok = false, error = "**背包放不下产物**（先腾个格）" });
+                        return;
+                    }
+                    if (!tm.IsValidCraft(tm.leftIngredientSpot.item, tm.rightIngredientSpot.item))
+                    {
+                        tcs.SetResult(new { ok = false, error = "这两件配不出东西（游戏自己的 IsValidCraft 说不成）—— 别开空炉" });
+                        return;
+                    }
+                    // 照游戏开始按钮那条分支（`:589-596`）唯一的实质动作：置计时器，交给 update() 跑
+                    typeof(StardewValley.Menus.TailoringMenu)
+                        .GetField("_timeUntilCraft", F)?.SetValue(tm, StardewValley.Menus.TailoringMenu.CRAFT_TIME);
+                    try { Game1.playSound("bigSelect"); } catch { }
+                    note = $"开缝了（约 {StardewValley.Menus.TailoringMenu.CRAFT_TIME / 1000} 秒后产物会挂到光标上，"
+                         + "再 `menu tailor action=take` 收进背包）";
+                }
+                else if (action == "take")
+                {
+                    var h = GetMenuHeldItem(tm) as Item;
+                    if (h == null)
+                    {
+                        tcs.SetResult(new { ok = false,
+                            error = "光标上**没有东西**可收 —— 开缝之后要等它跑完（约 1.5 秒）再看" });
+                        return;
+                    }
+                    if (Game1.player.addItemToInventoryBool(h))
+                    {
+                        SetMenuHeldItem(tm, null);
+                        note = $"产物「{h.DisplayName}」已收进背包";
+                    }
+                    else
+                    {
+                        tcs.SetResult(new { ok = false, error = $"**背包满**，收不下「{h.DisplayName}」—— 先腾格再来" });
+                        return;
+                    }
+                }
+                else if (action != "")
+                {
+                    tcs.SetResult(new { ok = false,
+                        error = $"不认识的 action「{action}」（只有 clear / start / take，留空 = 只摆料）" });
+                    return;
+                }
+
+                // 📸 快照（槽内容 + 预览 + 三个游戏判据）—— 消费侧拿它核实"真进去了没"
+                var liNow = tm.leftIngredientSpot?.item;
+                var riNow = tm.rightIngredientSpot?.item;
+                var resNow = tm.craftResultDisplay?.item;
+                bool isDye = false;
+                try { isDye = (bool)(typeof(StardewValley.Menus.TailoringMenu)
+                    .GetField("_isDyeCraft", F)?.GetValue(tm) ?? false); } catch { }
+                bool known = false;
+                try { known = isDye || (resNow != null && Game1.player.HasTailoredThisItem(resNow)); } catch { }
+                var heldNow = GetMenuHeldItem(tm) as Item;
+                tcs.SetResult(new { ok = true, note,
+                    left = liNow?.DisplayName, leftId = liNow?.QualifiedItemId,
+                    right = riNow?.DisplayName, rightId = riNow?.QualifiedItemId,
+                    result = resNow?.DisplayName, resultId = resNow?.QualifiedItemId,
+                    resultKnown = known,
+                    busy = tm.IsBusy(),
+                    canStart = tm.IsValidCraft(liNow, riNow) && tm.CanFitCraftedItem() && !tm.IsBusy(),
+                    heldItem = heldNow?.DisplayName });
+            }
+            catch (Exception ex)
+            {
+                tcs.SetResult(new { ok = false, error = ex.Message });
+            }
+        });
+        return tcs.Task.GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// GET /order_board?type= — **特别订单板这一刻的状态**（只读，不碰世界）。
+    ///
+    /// 为什么要它：单子要在**鹈鹕镇**上就能给「查看社区特别任务 → 接左边/接右边」那两层，
+    /// 而那一刻板子**还没开**（`/menu` 什么都没有）⇒ 判据必须能在板下读到。
+    ///
+    /// 三条判据**全是游戏自己的**（反编译出处写在每一条旁边）：
+    ///   · 左边/右边有没有可接的单 = `FarmerTeam.GetAvailableSpecialOrder(0/1, type)`
+    ///     （`FarmerTeam.cs:705-719`；板子 ctor 用的就是它，`SpecialOrdersBoard.cs:72-73`）；
+    ///     ⚠️ 那份 `availableSpecialOrders` **每天开局就刷**（`Game1.cs:8259-8260`
+    ///        对 `""` 与 `"Qi"` 各刷一次）⇒ **板子没开也读得到**，不是只有开板才有。
+    ///   · **"还没接取"** = `team.acceptedSpecialOrderTypes.Contains(type)`
+    ///     —— 这正是 `SpecialOrdersBoard.UpdateButtons` 把两个 accept 按钮藏掉的那一条
+    ///     （`SpecialOrdersBoard.cs:94-98`，字段声明 `FarmerTeam.cs:99`）。
+    ///     ⚠️ **不许拿"板上有没有卡"当"接没接"**：接单只往 `specialOrders` 加、**不从
+    ///        `availableSpecialOrders` 移除**（`SpecialOrdersBoard.cs:130-132`）⇒ 卡还在板上。
+    ///   · `orderType`：社区布告栏 = `""`（`GameLocation.cs:9021-9024` 建的就是默认构造），
+    ///     齐先生板 = `"Qi"`（`:8997`），沙漠节马龙板 = `"DesertFestivalMarlon"`（`DesertFestival.cs:939`）。
+    /// </summary>
+    private object HandleOrderBoard(HttpListenerContext ctx)
+    {
+        var orderType = ctx.Request.QueryString["type"] ?? "";
+        if (!Context.IsWorldReady)
+            throw new InvalidOperationException("World not ready");
+
+        var tcs = new TaskCompletionSource<object>();
+        EnqueueMainThread(() =>
+        {
+            try
+            {
+                var team = Game1.player?.team;
+                if (team == null)
+                {
+                    tcs.SetResult(new { ok = false, error = "读不到 player.team" });
+                    return;
+                }
+                StardewValley.SpecialOrders.SpecialOrder? leftOrder = null, rightOrder = null;
+                bool haveList = true;
+                try { leftOrder = team.GetAvailableSpecialOrder(0, orderType); } catch { haveList = false; }
+                try { rightOrder = team.GetAvailableSpecialOrder(1, orderType); } catch { haveList = false; }
+                bool accepted = false;
+                try { accepted = team.acceptedSpecialOrderTypes.Contains(orderType); } catch { }
+                object? Desc(StardewValley.SpecialOrders.SpecialOrder? so)
+                {
+                    if (so == null) return null;
+                    string key = "", nm = "", who = "";
+                    try { key = so.questKey?.Value ?? ""; } catch { }
+                    try { nm = so.GetName() ?? ""; } catch { }
+                    try { who = so.requester?.Value ?? ""; } catch { }
+                    return new { questKey = key, name = nm, requester = who };
+                }
+                int active = -1;
+                try { active = team.specialOrders.Count; } catch { }
+                // 🔴 2026-10-06 恒拍板：**已接取的那张卡标题要标「（已接取）」** ⇒ 光有"数量"不够
+                //    （数量说不出**是哪一张**）⇒ 多报一份**已接订单的 questKey 键列表**给消费侧比对。
+                //    ⚠️ `activeOrders`（数量）**保留不动** —— 老消费侧可能在读它。
+                var activeKeys = new List<string>();
+                try
+                {
+                    foreach (var so in team.specialOrders)
+                    {
+                        try { activeKeys.Add(so.questKey?.Value ?? ""); } catch { }
+                    }
+                }
+                catch { }
+                // 这两格瓦片**存不存在**看它（`Town.cs:534-555`：整块 `if` 就是它把关的，
+                // 板子 (61~63,93) 和领奖箱 (60,93) **同生同死**）—— 没解锁时 `/interact` 是打空。
+                bool unlocked = false;
+                try { unlocked = StardewValley.SpecialOrders.SpecialOrder.IsSpecialOrdersBoardUnlocked(); } catch { }
+                tcs.SetResult(new { ok = true, orderType, accepted,
+                    // `haveList=false` = 那两位读不出来（老 DLL/异常）⇒ 消费侧不许把它当"没有"
+                    readable = haveList,
+                    boardUnlocked = unlocked,
+                    left = Desc(leftOrder), right = Desc(rightOrder),
+                    activeOrders = active, activeKeys });
             }
             catch (Exception ex)
             {

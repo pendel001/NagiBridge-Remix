@@ -382,6 +382,7 @@
 | `shop` / `sell` / `bin` | 逛店 / 卖商店 / 投出货箱 |
 | `craft` / `recipes` / `craftables` | 合成 / 菜谱 / 配方 |
 | `forge` | 锻造台 |
+| `tailor`(place=… slot=left/right action=start/take/clear) | 🧵 **缝纫机**（只认**已经开着**的 `TailoringMenu`）：place=放进槽那件、slot=left/right、action=start 开缝 / take 取产物 / clear 退料；槽里有什么、背包哪件能进哪一槽看 `menu read` 的 `tailor` 栏 |
 | `geode` / `geodes` | 砸晶球（×1 / 批量）|
 | `customize` | 捏人弹窗（起名/喜好）|
 | `bundle` | 社区中心献祭板（实地读板看缺口）|
@@ -410,6 +411,7 @@
 | `bin` | `name`("") `sell_all`(False) | 投出货箱 |
 | `craft` | `item_name`（必填）`count`(1) | 合成 |
 | `forge` | `item1`（必填）`item2`("") `mode`("combine") `target`(0) | 锻造台附魔/合成 |
+| `tailor` | `place`("") `slot`("left") `action`("") | 🧵 缝纫机：`place`=放进槽那件（名/限定 id）、`slot`=`left`/`right`、`action`=`start`/`take`/`clear`（留空=只放料）|
 | `geodes` | `count`(1) | 批量砸晶球 |
 | `customize` | `name` `farmname` `favorite`（全 None） | 捏人弹窗（起名/农场名/喜好）|
 | `bundle` | `area`("") | 献祭板；不传=当前 |

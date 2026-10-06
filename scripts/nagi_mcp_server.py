@@ -24994,21 +24994,44 @@ def _im_order_board(state: dict, raw: dict = None) -> dict:
       · `boardUnlocked` = `SpecialOrder.IsSpecialOrdersBoardUnlocked()`（社区中心修好后才有板子；
         没解锁时那两格瓦片**根本不存在** ⇒ `/interact` 是打空）。
     ⚠️ 三档：**不在镇上** / 读不到 / 没解锁 ⇒ `{}`（整行不出现）。
-       ⚠️ 已经接过了（`accepted=True`）⇒ 也返回 `{}`：那一刻**板子上只剩"关闭"**
-       （两个 accept 按钮被游戏自己藏了），而"关闭"是**板子开着时**才有的行
-       （`CLOSE_V` 本来就在）—— 摆一行"走过去看一个没有可接单的板"就是劝 AI 白跑一趟。
+    🔴 2026-10-06 恒拍板（**推翻**"已接取就整行不出现"那版）：
+       「**接过单而且没有券的情况下应该就只是显示一下菜单上的内容，在接取的任务标题打上（已接取）而已。
+         详细的截止时间之类让它去看它的任务栏**」
+       ⇒ 已接取时**照样给这一行**：下级/理由栏**照板子上的内容摆**（两张卡），
+          **已接取的那张标「（已接取）」**；⛔ **截止时间/进度不上单子**（AI 自己 `check what=quest` 看）。
     """
     r = raw if isinstance(raw, dict) else {}
     if not r or r.get("readable") is False or r.get("boardUnlocked") is not True:
         return {}
-    if r.get("accepted") is True:
-        return {}
     sides = [s for s in ("left", "right") if r.get(s)]
     if not sides:
         return {}
+    # 「哪张已经接了」：C# 的 **`activeKeys`**（= `team.specialOrders` 里每单的 `questKey`）。
+    #   ⚠️ 2026-10-06 补：原来 C# 只报 `activeOrders`（**数量**）⇒ 数量说不出"是哪一张" ⇒
+    #      恒要的「已接取的那张标（已接取）」根本做不到。已加 `activeKeys`；老 DLL 没这一位 ⇒
+    #      退回"只要 `accepted` 就整体标"（宁可粗一点，也不编具体是哪张）。
+    _act = set()
+    for _x in (r.get("activeKeys") or []):
+        if isinstance(_x, dict):
+            _k = _x.get("questKey") or _x.get("key") or ""
+        else:
+            _k = _x
+        if _k:
+            _act.add(str(_k))
+
+    def _kn(side):
+        return str((r.get(side) or {}).get("questKey") or "")
+
+    _taken = [s for s in sides if _kn(s) and _kn(s) in _act]
+    if not _taken and r.get("accepted") is True and not r.get("activeKeys"):
+        _taken = list(sides)          # 老回包（只有数量）：只能整体标，别假装知道是哪张
     return {"sides": sides,
+            "accepted": bool(r.get("accepted")),
             "left": (r.get("left") or {}).get("name") or "",
-            "right": (r.get("right") or {}).get("name") or ""}
+            "right": (r.get("right") or {}).get("name") or "",
+            "taken": _taken,
+            "activeOrders": r.get("activeOrders"),
+            "activeKeys": sorted(_act)}
 
 
 def _im_vouchers(state: dict, raw: dict = None) -> dict:

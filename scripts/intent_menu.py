@@ -401,6 +401,39 @@ class Ctx:
     #    ⛔ `picks[].area` **原样印**（九个区的 `displayName` 实测全是 null ⇒ 恒拍板印 id）——
     #       在这里写"湖泊/河流"就是把我们发明的词塞回单子，恒明确否掉了。
     fish: dict = field(default_factory=dict)
+    # 🐄 **买动物菜单**（`PurchaseAnimalsMenu`，2026-10-06）开着的账。
+    #    `{}` = **不给那一行**（菜单没开 / 读不出来 / 一只都不能买）。
+    #    有值时形如：
+    #      `{"money": 12000, "phase": "browsing", "target": "Farm",
+    #        "buy":  [{"name":"鸭", "id":"Duck", "price":4000, "house":"Big Coop"}],
+    #        "nobuy":[{"name":"猪", "why":"钱不够（要 16000g，有 12000g）"}]}`
+    #    ⚠️ **判据全在服务器**（`_im_animals`）：`canBuy`（游戏那条点击守卫）+ `affordable`
+    #       + **农场上有没有能住它、还没满的棚**（游戏自己的 `CanLiveIn`/`isFull`）——
+    #       这一层只做成员判断、不打 HTTP（同 `shop`/`doors`/`tailor` 的形状）。
+    #    ⚠️ `buy` 里那几只 = **三条件全过**（"出现的那条，按了就成"）；`nobuy` 只给理由栏用。
+    animals_for_sale: dict = field(default_factory=dict)
+    # 🧵 **缝纫机**（`TailoringMenu`，2026-10-06）这一刻的账。`{}` = 不给那一行。
+    #    有值时形如：
+    #      `{"left":{"name","id","stack"}|None, "right":…, "result":…|None,
+    #        "resultKnown": bool, "busy": bool, "canStart": bool, "canFit": bool,
+    #        "heldItem":…|None,
+    #        "placeable":[{"name","id","stack","left":bool,"right":bool}]}`
+    #    ⚠️ **由服务器算好递进来**（`_im_tailor`，判据全在游戏那边：`IsValidCraft`/
+    #       `CanFitCraftedItem`/`BuildHighlightCache`）—— 这一层不打 HTTP、也不自己判"什么能当料"。
+    #    ⚠️ `resultKnown=False` = **游戏对没做过的配方打问号**（`_isDyeCraft ||
+    #       HasTailoredThisItem`，反编译 `TailoringMenu.cs:1139`）—— 照它说，别替游戏剧透。
+    tailor: dict = field(default_factory=dict)
+    # 📋 **社区特别任务板**（2026-10-06 恒追加的「顺手办」）。`{}` = 不给那一行
+    #    （不在镇上 / 板子没解锁 / **已经接过了** / 读不到 / 两边都没卡）。
+    #    有值时：`{"sides": ["left","right"], "left": "订单名", "right": "订单名"}`。
+    #    ⚠️ **判据在服务器**（`_im_order_board` → `/order_board`）："还没接取" =
+    #       游戏自己的 `team.acceptedSpecialOrderTypes.Contains("")`（板子藏 accept 按钮用的
+    #       **正是这一条**）；⛔ **不是**"板上有没有卡"（接单不从 `availableSpecialOrders` 移卡）。
+    orders: dict = field(default_factory=dict)
+    # 🎟 **板旁领奖箱里待领的兑奖券**（同上那批）。`{}` = 不给那一行（不在镇上 / 板子没解锁 /
+    #    待领 0 张 / 读不到）。有值时 `{"n": N}`，N = `/state.player.voucherPending`。
+    #    ⚠️ 一次交互**只给一张**（游戏 `GameLocation.cs:9006-9020` 每次减 1）⇒ 行上印 `×N`。
+    vouchers: dict = field(default_factory=dict)
 
     def zh_of(self, name: str) -> str:
         return (self.zh or {}).get(name) or name
@@ -2621,8 +2654,12 @@ def _buy_can(ctx, t):
 
     ⚠️ 不在商店里**不该出现"买"**（铁律：单子上的字都得从游戏读出来；
        "买"对着空气说就是编）。所以判据是 `ctx.shop` 存在，不是"附近有没有店"。
+    🎟 2026-10-06：**马龙的失物招领**是另一种语义（**花钱把丢的东西取回来**）⇒
+       那家店不给这一行，改由「取回失物」那行干活 —— 同一件事两行两种措辞 = 噪音。
     """
     if ctx.shop is None:
+        return CAN_NO
+    if isinstance(ctx.shop, dict) and ctx.shop.get("recovery"):
         return CAN_NO
     goods = _shop_goods(ctx)
     if goods is None:
@@ -3730,6 +3767,354 @@ SELL_V = Verb("sell", "卖", 74, _sell_can, _sell_reason, lambda c, t: "卖", "w
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# 🐄🧵🎟 2026-10-06 四档「新菜单 / 顺手办」的行（恒：「读取 + 引导 + 意图单子行」一起做）
+# ═══════════════════════════════════════════════════════════════════════
+# 规矩跟 买/卖/重铸 一字不差：**判据全在服务器**
+# （`Ctx.animals_for_sale` / `Ctx.shop` 的 `recovery` 位 / `Ctx.tailor` / `Ctx.orders` /
+#  `Ctx.vouchers`），这一层**不打 HTTP**、不认菜单名、不编价格 —— 只做成员判断与摆行。
+#
+# ⚠️ **别跟「买…」那行混**：`BUY_V` 是**商店货架专用**（`_buy_can` 判 `ctx.shop`），
+#    而买动物菜单的 `activeMenu.type` 是 `PurchaseAnimalsMenu`（**不含 "shop" 子串**）⇒
+#    `ctx.shop` 是 `None`，两行**结构性不会同屏**。马龙那家店反过来：它是真 `ShopMenu`，
+#    所以我们**主动**把 `_buy_can` 在那家店上关掉，改由「取回失物」干活。
+
+# ── 🐄 买动物 ──────────────────────────────────────────────────────────
+def _animal_buyable(ctx):
+    """这一刻**真能买**的那几只（服务器三条件全过：能买 + 买得起 + 有空棚）。"""
+    if not isinstance(ctx.animals_for_sale, dict):
+        return []
+    return ctx.animals_for_sale.get("buy") or []
+
+
+def _animal_can(ctx, t):
+    """🐄 买动物：**有能买的**才给这一行。
+
+    ⚠️ "能买"这三个字**不是这一层判的** —— 服务器 `_im_animals` 已经拿游戏的尺子量过
+       （`canBuy` = 游戏那条点击守卫 + 缺建筑原文；`affordable` = 钱；`freeHouse` =
+       `CanLiveIn` + `AnimalHouse.isFull()`）⇒ 这一层只问"那份清单空不空"。
+    ⚠️ 菜单已经在"挑棚"阶段 / 读不出来 ⇒ 服务器给的是空 `buy` ⇒ 整行不出现（对）。
+    """
+    return CAN_YES if _animal_buyable(ctx) else CAN_NO
+
+
+def _animal_show(ctx, t):
+    return "买动物"
+
+
+def _animal_reason(ctx, t):
+    """理由栏 = 审计面：钱包 + **买不了的那几只为什么**（只报第一类原因，不铺开）。"""
+    nb = (ctx.animals_for_sale or {}).get("nobuy") or []
+    why = f" · 另有 {len(nb)} 只买不了（{nb[0].get('why')}）" if nb else ""
+    return f"钱包 {ctx.money}g{why}"
+
+
+def _animal_count(ctx, targets):
+    return f"{len(_animal_buyable(ctx))} 只"
+
+
+def _animal_subs(ctx, targets):
+    """一只一行（**钱从共享钱包扣**）；敲了当场买（没有数量层 —— 一次一只）。"""
+    rows = []
+    for a in _animal_buyable(ctx):
+        rows.append(Row(ANIMAL_V, [dict(a)], f"买 {a.get('name')}",
+                        f"{a.get('price')}g · 住 {a.get('house') or '?'}", 0, where=""))
+    if not rows:
+        return None
+    return Level(rows, title="🐄 买哪一只？（**钱从共享钱包扣**；动物直接进那栋空棚，名字由游戏起）",
+                 mode="pick", verb=ANIMAL_V, exec_on_pick=True)
+
+
+def _exec_animal_multi(ctx, pairs, run):
+    """🐄 买动物：逐条报**游戏回读的事实**（花了多少 / 进了哪栋棚 / 那栋现在几只）。
+
+    ⚠️ 回执一律拿端点回包里的**回读值**说话（`cost`/`building`/`animals`），
+       不拿单子上那份预览当结果 —— 世界可能变了（价格/棚满）。没买成就照它给的原文报。
+    """
+    lines, ok_n = [], 0
+    for row, _cnt in pairs:
+        a = row.targets[0] or {}
+        r = run("animal", {"animal": a.get("id") or a.get("name")}) or {}
+        if r.get("ok"):
+            ok_n += 1
+            lines.append(f"  · {r.get('animal') or a.get('name')}「{r.get('name')}」"
+                         f"花了 {r.get('cost') or r.get('price')}g → 进 {r.get('building')}"
+                         f"（现在 {r.get('animals')}）")
+        else:
+            lines.append(f"  · {a.get('name')} —— **没买成**（游戏回：{r.get('error') or '没回话'}）")
+    return render_receipt("买动物", f"{len(pairs)} 只", ok_n > 0, note="\n".join(lines))
+
+
+ANIMAL_V = Verb("animal", "买动物", 68, _animal_can, _animal_reason, _animal_show, "world",
+                subs=_animal_subs, count=_animal_count, exec_multi=_exec_animal_multi,
+                menu_ok=True)
+
+
+# ── 🎟 马龙的失物招领 ──────────────────────────────────────────────────
+def _recover_items(ctx):
+    """这一刻能取回的丢件 → `list` / `None`（**判不出来**，跟"没有"分开）。"""
+    if not isinstance(ctx.shop, dict) or not ctx.shop.get("recovery"):
+        return None
+    if "items" not in ctx.shop:
+        return None
+    return ctx.shop.get("items") or []
+
+
+def _recover_can(ctx, t):
+    """🎟 取回失物：**马龙的失物招领开着 + 货架上真有东西**才给这一行。
+
+    ⚠️ 货架空 = 这一刻没有丢件可找回（`ITEMS_LOST_ON_DEATH` 查的就是
+       `Game1.player.itemsLostLastDeath`）⇒ 整行不出现（`CAN_NO`）。
+    ⚠️ 读不出来（没有 `items` 键）⇒ `CAN_MAYBE` = 不上单子（同 `_buy_can` 那条三档）。
+    """
+    if ctx.shop is None or not isinstance(ctx.shop, dict) or not ctx.shop.get("recovery"):
+        return CAN_NO
+    items = _recover_items(ctx)
+    if items is None:
+        return CAN_MAYBE
+    return CAN_YES if items else CAN_NO
+
+
+def _recover_show(ctx, t):
+    return "取回失物"
+
+
+def _recover_reason(ctx, t):
+    """理由栏要把**代价**说清（恒 2026-10-06：「标题/理由写清『花钱取回一件』这种代价」）。"""
+    return f"**花钱取回**（价 = 游戏算的卖店价）· 一次一件 · 钱包 {ctx.money}g"
+
+
+def _recover_count(ctx, targets):
+    return f"{len(_recover_items(ctx) or [])} 件"
+
+
+def _recover_subs(ctx, targets):
+    """丢件一件一行；单价用 `_price_text`（易货/库存那两截跟商店那套同一个尺子）。"""
+    rows = []
+    for g in (_recover_items(ctx) or []):
+        if not isinstance(g, dict):
+            continue
+        cn = g.get("displayName") or g.get("name") or "?"
+        rows.append(Row(RECOVER_V, [{"good": g}], cn, _price_text(g), 0, where=""))
+    if not rows:
+        return None
+    return Level(rows, title="🎟 取回哪一件？（**要花钱**；一次一件）",
+                 mode="pick", verb=RECOVER_V, exec_on_pick=True)
+
+
+def _exec_recover_multi(ctx, pairs, run):
+    """🎟 逐条报：哪件取回了（`quantity` 是端点回读的成交数）。"""
+    lines, ok_n = [], 0
+    for row, _cnt in pairs:
+        g = row.targets[0]["good"]
+        cn = g.get("displayName") or g.get("name")
+        r = run("recovery", {"item": g.get("id") or g.get("name")}) or {}
+        if r.get("ok") and int(r.get("quantity") or 0) > 0:
+            ok_n += 1
+            lines.append(f"  · {cn} 取回了（花了 {g.get('price')}g）")
+        else:
+            lines.append(f"  · {cn} —— **没取回**（游戏回：{r.get('error') or '没回话'}）")
+    return render_receipt("取回失物", f"{len(pairs)} 件", ok_n > 0, note="\n".join(lines))
+
+
+RECOVER_V = Verb("recover", "取回失物", 70, _recover_can, _recover_reason, _recover_show, "world",
+                 subs=_recover_subs, count=_recover_count, exec_multi=_exec_recover_multi,
+                 menu_ok=True)
+
+
+# ── 🧵 缝纫机 ──────────────────────────────────────────────────────────
+def _tailor_acts(ctx):
+    """🧵 这一刻**能做的缝纫动作** → `[目标字典, …]`（从服务器递来的账里挑，不判"能不能"）。
+
+    每一行都是**一个具体动作**（`exec_on_pick` ⇒ 敲了当场做）：
+      · 放料（`placeable` 里那一件**游戏说能进哪一槽**就摆哪一槽的行）；
+      · 开缝（`canStart`，游戏自己的 `IsValidCraft` + `CanFitCraftedItem` + 不在忙）；
+      · 收产物（光标上真有东西，`heldItem`）；
+      · 退料（槽里真有料 —— 不想做了别让料卡在槽里）。
+    ⚠️ **没得做就返回空** ⇒ 那一行不出现（宁缺勿编，别摆一行按了不成的）。
+    """
+    t = ctx.tailor if isinstance(ctx.tailor, dict) else {}
+    if not t:
+        return []
+    acts = []
+    for p in (t.get("placeable") or []):
+        if not isinstance(p, dict):
+            continue
+        nm = p.get("name") or "?"
+        if p.get("left"):
+            acts.append({"place": p.get("id") or nm, "slot": "left",
+                         "label": f"放 {nm} 进左槽"})
+        if p.get("right"):
+            acts.append({"place": p.get("id") or nm, "slot": "right",
+                         "label": f"放 {nm} 进右槽"})
+    if t.get("canStart"):
+        acts.append({"action": "start", "label": "开缝"})
+    if t.get("heldItem"):
+        acts.append({"action": "take", "label": f"收下产物 {t['heldItem'].get('name')}"})
+    if t.get("left") or t.get("right"):
+        acts.append({"action": "clear", "label": "把槽里的料退回来"})
+    return acts
+
+
+def _tailor_can(ctx, t):
+    return CAN_YES if _tailor_acts(ctx) else CAN_NO
+
+
+def _tailor_show(ctx, t):
+    return "缝纫"
+
+
+def _tailor_reason(ctx, t):
+    """理由栏 = 审计面：两个槽里是什么 + 游戏自己算的产出预览（没做过就说没做过）。"""
+    tl = ctx.tailor if isinstance(ctx.tailor, dict) else {}
+    l = (tl.get("left") or {}).get("name") or "空"
+    r = (tl.get("right") or {}).get("name") or "空"
+    bits = [f"左 {l} / 右 {r}"]
+    res = (tl.get("result") or {}).get("name")
+    if res:
+        bits.append(f"产出 {res}" + ("" if tl.get("resultKnown") else "（没做过，游戏打问号）"))
+    if tl.get("busy"):
+        bits.append("正在缝")
+    return " · ".join(bits)
+
+
+def _tailor_subs(ctx, targets):
+    """一个动作一行；敲了当场做（`exec_on_pick`，没有数量层）。"""
+    rows = []
+    for a in _tailor_acts(ctx):
+        hint = ""
+        if a.get("slot"):
+            hint = "左槽=布/可染的衣服" if a.get("slot") == "left" else "右槽放配方对应的那件（染料/材料）"
+        elif a.get("action") == "start":
+            hint = "约 1.5 秒后产物跑到光标上"
+        elif a.get("action") == "take":
+            hint = "收进背包（要有空位）"
+        elif a.get("action") == "clear":
+            hint = "原样退回背包"
+        rows.append(Row(TAILOR_V, [dict(a)], a.get("label") or "缝纫", hint, 0, where=""))
+    if not rows:
+        return None
+    return Level(rows, title="🧵 缝纫机这一步做哪个？（敲了当场做）",
+                 mode="pick", verb=TAILOR_V, exec_on_pick=True)
+
+
+def _exec_tailor_multi(ctx, pairs, run):
+    """🧵 逐条把端点自己的那句话带回来（**不替它下结论**：成没成看它的开头三档）。"""
+    parts = []
+    for row, _cnt in pairs:
+        t = row.targets[0] or {}
+        args = {k: v for k, v in t.items() if k != "label"}
+        r = run("tailor", args) or {}
+        parts.append(str(r.get("text") or r.get("error") or "（没回话）").strip())
+    return render_receipt("缝纫", f"{len(pairs)} 个动作", True, note="\n".join(parts))
+
+
+TAILOR_V = Verb("tailor", "缝纫", 66, _tailor_can, _tailor_reason, _tailor_show, "world",
+                subs=_tailor_subs, exec_multi=_exec_tailor_multi, menu_ok=True)
+
+
+# ── 📋 社区特别任务板 / 🎟 领兑奖券（恒 2026-10-06 追加的两个"顺手办"）────────────
+def _order_sides(ctx):
+    o = ctx.orders if isinstance(ctx.orders, dict) else {}
+    return o.get("sides") or []
+
+
+def _order_can(ctx, t):
+    """📋 **板上读得到就给这一行**（服务器已按游戏那条判过解锁/可读）。
+
+    🔴 2026-10-06 恒拍板：**已经接过单也照样给**（"只是显示一下菜单上的内容，在接取的任务标题打上（已接取）"）
+    —— 原来那版"已接取就整行不出现"被推翻。
+    """
+    return CAN_YES if _order_sides(ctx) else CAN_NO
+
+
+def _order_show(ctx, t):
+    return "查看社区特别任务"
+
+
+def _order_reason(ctx, t):
+    """这一行怎么念：**照板子上的内容**（恒原话），已接取的那张加「（已接取）」。
+
+    ⛔ **截止时间/进度不上单子** —— 恒：「详细的截止时间之类让它去看它的**任务栏**」。
+    """
+    o = ctx.orders if isinstance(ctx.orders, dict) else {}
+    taken = set(o.get("taken") or [])
+    parts = []
+    for side, cn in (("left", "左"), ("right", "右")):
+        if side not in _order_sides(ctx):
+            continue
+        nm = o.get(side) or "（读不出名字）"
+        parts.append(f"{cn}边「{nm}」" + ("（**已接取**）" if side in taken else ""))
+    _tail = "；截止/进度看自己的任务栏" if taken or o.get("accepted") else ""
+    return "板上：" + "、".join(parts) + _tail
+
+
+def _order_subs(ctx, targets):
+    """接左边 / 接右边 —— 各一行（走过去 + 开板 + 接下那一单，全在服务器那侧包办）。
+
+    ⚠️ 恒 2026-10-06：**已经接过单的**那张卡**不给"接"这一行**（游戏自己也把 accept 按钮藏了），
+       那一刻这一行**只摆内容**（内容在理由栏）⇒ 下级不出现（`None`），别摆一个按不动的假行。
+    """
+    o = ctx.orders if isinstance(ctx.orders, dict) else {}
+    taken = set(o.get("taken") or [])
+    if o.get("accepted"):
+        return None
+    rows = []
+    for side, cn in (("left", "左"), ("right", "右")):
+        if side not in _order_sides(ctx) or side in taken:
+            continue
+        nm = o.get(side) or ""
+        rows.append(Row(ORDER_V, [{"side": side}], f"接{cn}边的订单" + (f"（{nm}）" if nm else ""),
+                        "接了进任务日志；做完走领奖链（日志领钱 + 板旁领券）", 0, where=""))
+    if not rows:
+        return None
+    return Level(rows, title="📋 接哪一边？（会**自己走过去**把板开出来再接）",
+                 mode="pick", verb=ORDER_V, exec_on_pick=True)
+
+
+def _exec_order_multi(ctx, pairs, run):
+    parts = []
+    for row, _cnt in pairs:
+        r = run("order_accept", {"side": (row.targets[0] or {}).get("side")}) or {}
+        parts.append(str(r.get("text") or r.get("error") or "（没回话）").strip())
+    return render_receipt("接特别订单", f"{len(pairs)} 单", True, note="\n".join(parts))
+
+
+ORDER_V = Verb("order", "查看社区特别任务", 74, _order_can, _order_reason, _order_show, "world",
+               subs=_order_subs, exec_multi=_exec_order_multi, menu_ok=True)
+
+
+def _voucher_n(ctx):
+    try:
+        return int(((ctx.vouchers or {}).get("n")) or 0)
+    except Exception:
+        return 0
+
+
+def _voucher_can(ctx, t):
+    """🎟 **有券可领**才给这一行（服务器按 `voucherPending > 0` + 板子解锁判过）。"""
+    return CAN_YES if _voucher_n(ctx) > 0 else CAN_NO
+
+
+def _voucher_show(ctx, t):
+    # ⚠️ `×N` 直接写进标题（恒要的形状）：**这一按会把 N 张都领了**（执行器循环 N 次）
+    #    —— 语义跟 `Verb.batch` 那条规矩一致（真会全做才许印 ×N）。
+    return f"领取兑奖券×{_voucher_n(ctx)}"
+
+
+def _voucher_reason(ctx, t):
+    return "板旁领奖箱 (60,94) 站 · 朝上交互 (60,93) · 一次一张 · 背包要有空位"
+
+
+def _exec_voucher(ctx, targets, run):
+    """🎟 走过去把待领的券全领了（服务器那侧连点；回执拿**它自己那句话**）。"""
+    return _receipt_from_helper("领取兑奖券", "", run("voucher", {}))
+
+
+VOUCHER_V = Verb("voucher", "领取兑奖券", 72, _voucher_can, _voucher_reason, _voucher_show,
+                 "world", exec=_exec_voucher, batch=True, menu_ok=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # 🚪🐄 放牧（开棚门）/ 关棚门 —— 2026-10-01 恒：「放牧（开关畜棚鸡舍门）做进选项了吗？」
 # ═══════════════════════════════════════════════════════════════════════
 # 当时**没做进单子**：只有 `farm doors`（关），而且 `farm` 域把 `放牧` 错接到了 `pet_walk`（摸动物）。
@@ -4498,6 +4883,10 @@ VERBS: list = [
     # ⚠️ 权重压在 `collect`(88)/`chest`(80) 之下、`eat`(50) 之上：站在柜台前，买卖是正事；
     #    但商店**开着**的时候才会出现，所以它不会跟农场那批抢第一屏。
     SELL_V, BUY_V,
+    # 🐄🧵🎟 2026-10-06 恒「一起做了」的那四档（买动物 / 缝纫机 / 取回失物 / 镇上两个顺手办）。
+    #    判据全在服务器（见上面那一大段的账）；四条都 `menu_ok`（它们**本来就是菜单里/菜单旁的事**，
+    #    菜单态过滤时不许把它们的行滤掉）。
+    ANIMAL_V, RECOVER_V, TAILOR_V, ORDER_V, VOUCHER_V,
     # 🚪 界面出口（**菜单态专属**，见上面 `CLOSE_V` 那段）。放最后只为读着顺——
     #    排序走权重（30），跟它在列表里的位置无关。
     CLOSE_V,
@@ -5597,7 +5986,9 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
              hay: dict = None, pick: dict = None,
              ponds: dict = None, statue: dict = None, tank: dict = None,
              quests: dict = None, levelup: dict = None, cc: dict = None,
-             cc_board: dict = None, museum_go: dict = None, fish: dict = None) -> Ctx:
+             cc_board: dict = None, museum_go: dict = None, fish: dict = None,
+             animals_for_sale: dict = None, tailor: dict = None,
+             orders: dict = None, vouchers: dict = None) -> Ctx:
     """把 `/state`(**full**) + `/surroundings`(+`/machines`/`/scan_chests`) 拼成 Ctx。
 
     ⚠️ 只搬运，**不补默认值**：缺什么就让它缺着（`can()` 遇到缺失自然回 假/？）。
@@ -5715,6 +6106,12 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
                # 🎣 「垂钓」那行的账（同上：服务器 `_im_fish` 算好递进来 —— 这一层不认水域名、
                #    不打 HTTP、**更不配中英对照表**：恒拍板原样印游戏给的 `areas[].id`）。
                fish=fish or {},
+               # 🐄🧵📋🎟 2026-10-06 那四档新菜单/顺手办的账（同上：服务器算好递进来 ——
+               #    这一层只做成员判断与摆行，不打 HTTP、不认菜单名、不编价格/数量）。
+               animals_for_sale=animals_for_sale or {},
+               tailor=tailor or {},
+               orders=orders or {},
+               vouchers=vouchers or {},
                sitting=bool(((seats or {}).get("me") or {}).get("sitting")),
                worn=(worn or {}),
                pets=pets,
