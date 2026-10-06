@@ -26945,6 +26945,9 @@ def _im_ctx():
                                 #    缝纫机的左右槽+产出预览+背包里能放哪一槽。
                                 animals_for_sale=_animals,
                                 tailor=_tailor,
+                                # 🧵 「缝纫」那一行（恒 2026-10-06：「工作台那两行后面加个缝纫」）：
+                                #    **只负责开机器** —— 判据 = 本图有没有大制成品 `(BC)247`。
+                                sewing=_sewing_machine_probe(state),
                                 # 📋🎟 镇上那两个顺手办（恒 2026-10-06 追加）：
                                 #    「查看社区特别任务 → 接左边/接右边」与「领取兑奖券×n」。
                                 orders=_order,
@@ -27831,6 +27834,75 @@ def _im_reforge_probe(state: dict, machines: list) -> dict:
         return {}
 
 
+# 🧵 2026-10-06 恒：「工作台：铁砧（饰品锻造）、锻造（武器附魔）**后面加个缝纫**」——
+#    单子上多一行「缝纫」，**只负责把缝纫机打开**（放料/开缝/收产物仍走 `menu tailor`）。
+#    判据 = **本图真有缝纫机**：大制成品 `(BC)247`。
+#    ⚠️ 缝纫机**没有 Action 属性**（不能像灶台那样扫 `/tile_props?scan=Action`）⇒ 只能扫逐格 `objId`，
+#       数据源 = `/passable_rect`（它本来就逐格吐 `object/objId`）。缓存 60 秒/张图。
+_SEWING_CACHE: dict = {}
+
+
+def _sewing_machine_probe(state: dict = None) -> dict:
+    """本图缝纫机在哪 → `{"x":..,"y":..,"name":"缝纫机"}`；没有/读不到 → `{}`（那一行就不出现）。"""
+    try:
+        st = state if isinstance(state, dict) and state else (api._ai_get("/state") or {})
+        loc = st.get("location") or {}
+        name = str(loc.get("name") or "")
+        if not name:
+            return {}
+        hit = _SEWING_CACHE.get(name)
+        if hit and (time.time() - hit[0]) < 60:
+            return dict(hit[1])
+        w, h = int(loc.get("mapWidth") or 0), int(loc.get("mapHeight") or 0)
+        out: dict = {}
+        if w and h:
+            r = api._ai_get("/passable_rect",
+                            {"x1": 0, "y1": 0, "x2": min(w - 1, 95), "y2": min(h - 1, 95)}) or {}
+            for t in (r.get("tiles") or []):
+                if str(t.get("objId") or "") == "(BC)247":
+                    out = {"x": t.get("x"), "y": t.get("y"), "name": "缝纫机"}
+                    break
+        _SEWING_CACHE[name] = (time.time(), dict(out))
+        return out
+    except Exception:
+        return {}
+
+
+def _im_sewing(x=None, y=None) -> str:
+    """🧵 走到缝纫机旁 + 把它打开（**只开机器**：不放料、不开缝、不收产物）。→ 一句话。
+
+    ⚠️ 判据只认**菜单真开了没有**（`/state.activeMenu == TailoringMenu`）——
+       `actionTriggered:true` **不等于**开成了（同 `_im_reforge` 那条教训）。
+    """
+    try:
+        xi, yi = int(x), int(y)
+    except (TypeError, ValueError):
+        return f"❌ 缺缝纫机坐标（x={x} y={y}）—— 不敢瞎点"
+    _ensure_background()
+    try:
+        st = api._ai_get("/state") or {}
+        p = st.get("player") or {}
+        px, py = int(p.get("x", -999)), int(p.get("y", -999))
+        if abs(px - xi) + abs(py - yi) > 1:      # 已经贴着它就别多此一举
+            navigation.walk_to(x=xi, y=yi)
+    except Exception as e:
+        return f"❌ 走不到缝纫机 ({xi},{yi})：{type(e).__name__}: {e}"
+    try:
+        api._ai_post("/interact", {"x": xi, "y": yi})
+    except Exception as e:
+        return f"❌ 交互那一下打不出去：{type(e).__name__}: {e}"
+    time.sleep(0.7)
+    try:
+        st2 = api._ai_get("/state") or {}
+        t = str(((st2.get("activeMenu") or {}).get("type")) or "")
+    except Exception:
+        t = ""
+    if t == "TailoringMenu":
+        return f"🧵 缝纫机开了（({xi},{yi})）—— 接着 `menu read` 看这屏：放料 / 开缝 / 收产物"
+    return (f"⚠️ 点了 ({xi},{yi})，但**菜单没开**（activeMenu={t or 'None'}）——"
+            "多半是没站到它旁边、或那格不是缝纫机；⛔ 别当成开成了")
+
+
 def _im_reforge(x, y, item) -> str:
     """🔨 在铁砧上重铸一件饰品（拿在手上 → 走过去 → 交互），**回读核实**。→ 一句话。
 
@@ -28584,6 +28656,9 @@ def _im_run(op, args):
         #    ⚠️ 走 `helpers`（回一句话）：回执要的是"进去了没 / 扣了几块铱锭"，
         #       不是把几个端点的原始 dict 摊给 AI 看。
         "reforge": lambda: _im_reforge(args.get("x"), args.get("y"), args.get("item")),
+        # 🧵 缝纫（2026-10-06 恒：「工作台那两行后面加个缝纫」）：**只开机器**那一下走这里
+        #    （放料/开缝/收产物仍走 `menu tailor` —— 单子上那两行分工见 `intent_menu.SEWING_V`）。
+        "sewing": lambda: _im_sewing(args.get("x"), args.get("y")),
         # 🧺🔁 收放（2026-10-01 恒拍板 (b)：单子那条「收放…」挑完料按下去走这里）。
         #    ⚠️ 走 `machine_loader --here` = **只伺候脚下这间屋**的**拟人收放一条过**：
         #       好了的收、空着的放，**料用尽只停放、继续收**（恒那三种状况在脚本里，不在这层）。

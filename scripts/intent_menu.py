@@ -445,6 +445,11 @@ class Ctx:
     #    ⚠️ `resultKnown=False` = **游戏对没做过的配方打问号**（`_isDyeCraft ||
     #       HasTailoredThisItem`，反编译 `TailoringMenu.cs:1139`）—— 照它说，别替游戏剧透。
     tailor: dict = field(default_factory=dict)
+    # 🧵 **缝纫机在哪**（2026-10-06 恒：「工作台：铁砧（饰品锻造）、锻造（武器附魔）**后面加个缝纫**」）。
+    #    `{}` = 这张图没有缝纫机（或读不到）⇒ 那一行不出现；有值：`{"x":..,"y":..,"name":"缝纫机"}`。
+    #    ⚠️ **判据在服务器**（扫大制成品 `(BC)247`）：缝纫机**没有 Action 属性**（不能像灶台那样扫 Action），
+    #       而且每栋小屋/农舍的位置都不同 ⇒ 这一层**不认坐标、也不打 HTTP**。
+    sewing: dict = field(default_factory=dict)
     # 📋 **社区特别任务板**（2026-10-06 恒追加的「顺手办」）。`{}` = 不给那一行
     #    （不在镇上 / 板子没解锁 / **已经接过了** / 读不到 / 两边都没卡）。
     #    有值时：`{"sides": ["left","right"], "left": "订单名", "right": "订单名"}`。
@@ -4051,6 +4056,43 @@ TAILOR_V = Verb("tailor", "缝纫", 66, _tailor_can, _tailor_reason, _tailor_sho
                 subs=_tailor_subs, exec_multi=_exec_tailor_multi, menu_ok=True)
 
 
+# ── 🧵 「开缝纫机」那一行（2026-10-06 恒：「工作台：铁砧（饰品锻造）、锻造（武器附魔）**后面加个缝纫**」）──
+# ⛔ 这一行**只做一件事：走到缝纫机旁把它打开**（不放料、不开缝、不收产物 —— 那些等菜单开了
+#    由上面 `TAILOR_V`（`menu tailor`）接手）。形状照 `OPEN_DOORS_V`：`world` + `exec=`（单发）。
+# ⚠️ 判据 = **本图真有缝纫机**（服务器扫大制成品 `(BC)247` 递进来；缝纫机没有 Action 属性，
+#    不能像灶台那样扫 Action；每栋屋子的位置都不同 ⇒ 这一层不认坐标）。
+def _sewing_can(ctx, t):
+    # ⛔ **机器已经开着就收起来**（`ctx.tailor` 有值＝TailoringMenu 开着）——
+    #    不然菜单态里会同时出现两行「缝纫」（一行"开机器"、一行"放料/开缝"），恒最烦同名两行。
+    #    ⚠️ 这是**成员判断**、不打 HTTP（`ctx.tailor` 是服务器算好的账）。
+    if ctx.tailor:
+        return CAN_NO
+    return CAN_YES if (ctx.sewing or {}).get("x") is not None else CAN_NO
+
+
+def _sewing_reason(ctx, t):
+    s = ctx.sewing or {}
+    return (f"({s.get('x')},{s.get('y')}) 有台缝纫机 —— 过去开它"
+            "（开了才有放料/开缝/收产物那些行）")
+
+
+def _sewing_show(ctx, t):
+    return "缝纫"
+
+
+def _exec_sewing(ctx, targets, run):
+    """🧵 走过去开缝纫机（**只开机器**）；回执用它自己的话（服务器 `_im_sewing` 会回读菜单态）。"""
+    s = ctx.sewing or {}
+    if s.get("x") is None:
+        return render_receipt("缝纫", "本图没有缝纫机", False)
+    r = run("sewing", {"x": s.get("x"), "y": s.get("y")}) or {}
+    return _receipt_from_helper("缝纫", "开缝纫机", r)
+
+
+SEWING_V = Verb("sewing", "缝纫", 74, _sewing_can, _sewing_reason, _sewing_show, "world",
+                exec=_exec_sewing)
+
+
 # ── 📋 社区特别任务板 / 🎟 领兑奖券（恒 2026-10-06 追加的两个"顺手办"）────────────
 def _order_sides(ctx):
     o = ctx.orders if isinstance(ctx.orders, dict) else {}
@@ -5029,6 +5071,9 @@ VERBS: list = [
     #    两条的判据都**问游戏**（`is_geode` / `/machine_reqs` 的只问不做探针）——
     #    老 DLL 没这些位 ⇒ **两行都不出现**（宁可不给，也不给一行按了不成的）。
     GEODE_V, REFORGE_V,
+    # 🧵 2026-10-06 恒：「工作台：铁砧（饰品锻造）、锻造（武器附魔）**后面加个缝纫**」
+    #    ⇒ 紧挨着 `REFORGE_V` 摆（同一档"工作台前的活"）。⛔ 它只负责**开机器**，放料/开缝在 `TAILOR_V`。
+    SEWING_V,
     # 🚪🐄 2026-10-01（恒：「放牧（开关畜棚鸡舍门）做进选项了吗？」）：**放牧（开棚门）**与**关棚门**。
     #    两条互斥（钟点分，见上面那段的账）：早上 06:00–15:00 给开、≥17:00/<06:00 给关，
     #    16:00 那一小时两行都不给。判据全在 `Ctx.doors`（服务器递进来），这一层不打 HTTP。
@@ -6095,7 +6140,8 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
              quests: dict = None, levelup: dict = None, cc: dict = None,
              cc_board: dict = None, museum_go: dict = None, fish: dict = None,
              animals_for_sale: dict = None, tailor: dict = None,
-             orders: dict = None, vouchers: dict = None, prizes: dict = None) -> Ctx:
+             orders: dict = None, vouchers: dict = None, prizes: dict = None,
+             sewing: dict = None) -> Ctx:
     """把 `/state`(**full**) + `/surroundings`(+`/machines`/`/scan_chests`) 拼成 Ctx。
 
     ⚠️ 只搬运，**不补默认值**：缺什么就让它缺着（`can()` 遇到缺失自然回 假/？）。
@@ -6217,6 +6263,8 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
                #    这一层只做成员判断与摆行，不打 HTTP、不认菜单名、不编价格/数量）。
                animals_for_sale=animals_for_sale or {},
                tailor=tailor or {},
+               # 🧵 缝纫机在哪（同上：服务器扫 `(BC)247` 递进来）—— 只给"开机器"那一行用。
+               sewing=sewing or {},
                orders=orders or {},
                vouchers=vouchers or {},
                # 🎰 手头那几张券（同批新增）：跟上面 `vouchers` **不是同一件事**
