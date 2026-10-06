@@ -721,6 +721,13 @@ public class ModEntry : Mod
     private int _walkSegIdx;
     private bool _walkSegmentStarted;
     private bool _warpPending; // prevents duplicate warp queuing
+    // 🚪🧭 2026-10-06：**这条路线起步时人在哪张图** + **它期不期待换图**。
+    //   `_walkExpectWarp=true` = 跨图路线（`/walk_to` 带别图 location、或中途要踩出口格）——
+    //     换图是**它的正常一步**，由下面"自然换图 → 推进下一段"照旧处理。
+    //   `_walkExpectWarp=false` = **同图坐标走位**（`map ops=walk x= y=` 那条）——
+    //     它半路被换图 = 踩上了传送格/门格，**必须立刻停手**（见 `AbortWalkIfMapChanged`）。
+    private string? _walkMapAtStart;
+    private bool _walkExpectWarp;
 
     // Warp graph for cross-map pathfinding (lazy-built)
     private Dictionary<string, List<WarpLink>>? _warpGraph;
@@ -1169,7 +1176,14 @@ public class ModEntry : Mod
         Game1.viewport.Y = Math.Max(0, Math.Min(maxY, vy));
     }
 
-    private void EnqueueAlert(string type, string message, string severity = "info", string source = "bridge")
+    /// <param name="extra">
+    /// 🧾 可选：把**结构化字段**并进这条警报（消费侧不用再解析中文文案）。
+    /// 2026-10-06 加：`/walk_to` 是**发射后不管**的（布好路线就返回，人还在走），
+    /// 走位半路出的事只能靠警报送回调用方 —— 所以 `{ok:false, changed_map:true, …}`
+    /// 这份"回包"就挂在这里（见 `AbortWalkIfMapChanged`）。
+    /// </param>
+    private void EnqueueAlert(string type, string message, string severity = "info", string source = "bridge",
+        Dictionary<string, object?>? extra = null)
     {
         if (string.IsNullOrWhiteSpace(message))
             return;
@@ -1183,14 +1197,23 @@ public class ModEntry : Mod
                 return;
             _lastAlertTimes[key] = now;
 
-            _alertQueue.Enqueue(new Dictionary<string, object?>
+            var alert = new Dictionary<string, object?>
             {
                 ["timeUtc"] = now.ToString("O"),
                 ["type"] = type,
                 ["severity"] = severity,
                 ["source"] = source,
                 ["message"] = message
-            });
+            };
+            if (extra != null)
+            {
+                foreach (var kv in extra)
+                {
+                    if (kv.Key is "timeUtc" or "type" or "severity" or "source" or "message") continue;
+                    alert[kv.Key] = kv.Value;
+                }
+            }
+            _alertQueue.Enqueue(alert);
 
             while (_alertQueue.Count > 100)
                 _alertQueue.Dequeue();
@@ -2163,6 +2186,10 @@ public class ModEntry : Mod
         // and advances to the next route segment automatically.
         if (_walkRoute != null && Context.IsWorldReady && Game1.player != null)
         {
+            // 🚪🧭 2026-10-06：**同图坐标走位半路被换图 ⇒ 立刻停手**（元凶见 HandleWalkTo 那段注释）。
+            //    必须放在这一块的最前面：换图之后 `_walkRoute[_walkSegIdx]` 里存的是**旧图**的坐标，
+            //    再往下走任何一格，都是在**新图上按旧图坐标**迈步。
+            if (AbortWalkIfMapChanged()) return;
             var farmer = Game1.player;
             var seg = _walkRoute[_walkSegIdx];
 
@@ -16195,7 +16222,16 @@ var tcs = new TaskCompletionSource<object>();
                         return;
                     }
                     int moneyAfterBuy = Game1.player.Money;
-                    int cntAfterBuy = indoorsBuy?.animals.Count() ?? 0;
+                    // 🐄 2026-10-06 恒真机：**占用数要数"这栋棚养着几只"，不是"屋里有几只"**。
+                    //    原来数的是 `AnimalHouse.animals` —— 那是**屋内实例表**，放牧时动物全在外面
+                    //    ⇒ 只有屋里那几只 ⇒ 报「现在 1/12」，可那栋棚其实是**满的**（恒当场看出来的假数）。
+                    //    游戏自己判满用的是 `animalsThatLiveHere.Count >= animalLimit`
+                    //    （`AnimalHouse.cs:53-55` 的 `isFull()`；字段声明 `:20`，
+                    //     "这棚养着谁"由 `:147 animalsThatLiveHere.Add(...)` 维护）。
+                    //    ⇒ 两个字段的区别：`animals` = **此刻在屋里的实例**（放牧就空），
+                    //      `animalsThatLiveHere` = **归属这栋棚的名单**（放不放牧都在）。同一件事问游戏要名单。
+                    //    ⚠️ 回包字段名仍是 `animals`（消费侧一个字不用改）。
+                    int cntAfterBuy = indoorsBuy?.animalsThatLiveHere.Count ?? 0;
                     int spentBuy = moneyBeforeBuy - moneyAfterBuy;
                     if (spentBuy <= 0)
                     {
@@ -16220,6 +16256,16 @@ var tcs = new TaskCompletionSource<object>();
                 {
                     int qty = Math.Max(1, Math.Min(quantity, 999));
                     int bought = 0;
+                    // 🪦 2026-10-06 恒真机（马龙的失物招领）：**成交了，但背包当场不会多东西**。
+                    //    买中那一刻游戏走 `Item.actionWhenPurchased`（`Item.cs:578-594`）：
+                    //      清空 `player.itemsLostLastDeath` → 把东西塞进 `player.recoveredItem`
+                    //      → `Game1.addMailForTomorrow("MarlonRecovery")`（**明早放邮箱**）
+                    //      → `exitActiveMenu()`（菜单当场关掉）。
+                    //    ⇒ 东西**不进背包**，下面 `shop.heldItem is Item` 恒为 false ⇒ `bought` 停在 0
+                    //      ⇒ 旧代码回「一件都没成交，**钱没动**」——可钱真掉了（−250g）、东西也真取回了。
+                    //    所以：**先记下"失物件数 + 钱"两个数**，点完按游戏自己的字段判成交。
+                    int lostBefore = Game1.player.itemsLostLastDeath.Count;   // Farmer.cs:304
+                    int moneyBeforeShop = Game1.player.Money;
                     for (int q = 0; q < qty; q++)
                     {
                         var match = shop.forSale.FirstOrDefault(it =>
@@ -16253,11 +16299,40 @@ var tcs = new TaskCompletionSource<object>();
                     //    （`match == null` 直接 break、bought 还是 0，照样 `clicked:"shop_item"`）
                     //    ⇒ Python 侧 `if r.get("ok"): 报"已购买 X"` = 又一个"工具说成功但事没发生"。
                     //    ⇒ 一件都没成交 = **失败**；少买了 = 报明只到几件。
+                    //
+                    // 🪦 2026-10-06：**失物招领这一支要先判**（判据在 `Item.actionWhenPurchased`）：
+                    //    成交的**唯一证据**是游戏自己动了那两个字段之一 ——
+                    //      `itemsLostLastDeath.Count` 变少（`:582` 清了表），或
+                    //      `player.recoveredItem` 有值（`:584` 把东西挂在这，明早才放邮箱）。
+                    //    ⚠️ 判据只认游戏字段，**不认"钱掉没掉"**：钱掉也可能是别的收费，
+                    //      而这一支恰恰是"钱掉了、东西没进包"。
+                    int moneyAfterShop = Game1.player.Money;
+                    int lostAfter = Game1.player.itemsLostLastDeath.Count;
+                    bool recoveredItem = lostAfter < lostBefore || Game1.player.recoveredItem != null;
+                    if (recoveredItem)
+                    {
+                        // 东西**取回了**，但游戏把它排在**明早的邮箱**里（`Game1.addMailForTomorrow("MarlonRecovery")`）
+                        // ⇒ 如实说"取回了、明早到"，⛔ 别说"没成交/钱没动"。
+                        tcs.SetResult(new { ok = true, clicked = "shop_item", item = item,
+                            recovered = true, mailed = true,
+                            lost = $"{lostBefore} → {lostAfter}",
+                            cost = moneyBeforeShop - moneyAfterShop,
+                            money = moneyAfterShop,
+                            note = "马龙：明天早上我会把它放在你的邮箱里" });
+                        return;
+                    }
                     if (bought <= 0)
                     {
+                        int spentShop = moneyBeforeShop - moneyAfterShop;
+                        // 💬 只有钱**真的没动**才许说「钱没动」——
+                        //    钱真掉了就必须把实数报出来（恒 2026-10-06：不许再出现"钱没动"却扣了钱的假话）。
                         tcs.SetResult(new { ok = false,
-                            error = $"商店里没买成「{item}」（一件都没成交，**钱没动**）"
-                                  + "——先 menu ops=read 看 shopItems 里的实际名字，别按印象传" });
+                            error = spentShop == 0
+                                ? $"商店里没买成「{item}」（一件都没成交，**钱没动**）"
+                                  + "——先 menu ops=read 看 shopItems 里的实际名字，别按印象传"
+                                : $"商店里没买成「{item}」（一件都没成交，但**钱掉了 {spentShop}g**："
+                                  + $"{moneyBeforeShop} → {moneyAfterShop}）—— 别当没发生，回一句 check 核对钱和背包",
+                            cost = spentShop, money = moneyAfterShop });
                     }
                     else if (bought < qty)
                     {
@@ -17136,14 +17211,32 @@ var tcs = new TaskCompletionSource<object>();
                 // 🗑️ clear：两槽的料退回背包（放不下就掉在脚边 —— 跟 `/forge_set` 清槽那条一致）
                 if (action == "clear")
                 {
+                    // ⚠️ 2026-10-06 恒真机：这里**原来没有 return** —— 两个槽清完还继续往下走到
+                    //    `else if (action != "")` ⇒ 回「不认识的 action「clear」」：
+                    //    **活干了、话是错的**（恒实测木头确实退回包里了，却收到"不认识的 action"）。
+                    //    ⇒ 清完就当场回包：退了哪些 + 两个槽现在剩什么。
+                    var returned = new List<Dictionary<string, object?>>();
                     foreach (var spot in new[] { tm.leftIngredientSpot, tm.rightIngredientSpot })
                     {
                         if (spot?.item == null) continue;
                         var it = spot.item;
-                        if (!Game1.player.addItemToInventoryBool(it))
+                        bool intoBag = Game1.player.addItemToInventoryBool(it);
+                        if (!intoBag)
                             Game1.createItemDebris(it, Game1.player.getStandingPosition(), Game1.player.FacingDirection);
+                        returned.Add(new Dictionary<string, object?>
+                        {
+                            ["name"] = it.DisplayName,
+                            ["id"] = it.QualifiedItemId,
+                            ["to"] = intoBag ? "背包" : "脚边（背包满了）",
+                        });
                         spot.item = null;
                     }
+                    var liClear = tm.leftIngredientSpot?.item;
+                    var riClear = tm.rightIngredientSpot?.item;
+                    tcs.SetResult(new { ok = true, action = "clear", returned,
+                        left = liClear?.DisplayName, right = riClear?.DisplayName,
+                        note = returned.Count == 0 ? "两个槽本来就是空的" : $"退回 {returned.Count} 件" });
+                    return;
                 }
 
                 // 📥 放料：先校验（游戏自己的"能不能当料"），再取 1 个放进槽；失败回滚已放的那一槽
@@ -24278,6 +24371,10 @@ var tcs = new TaskCompletionSource<object>();
         // 🪙 2026-08-29 恒拍板：淘金/蟹笼走位传 allowWater=true → 允许落水格(站水上淘)，淘完回原位。
         //    每次 /walk_to 都重设(不传=按普通走位排水格)，避免残留影响下一次。
         _walkAllowWater = GetParamOr(p, "allowWater", false);
+        // 🚪 2026-10-06：目标格**是门/传送格**时默认**拒**（`allowWarp` 缺省 false）——见下面入口校验。
+        //    跨图导航（走门/踩出口格）由 Python 侧显式传 `allowWarp=true` 放行；
+        //    AI 直调的坐标走位**不传** ⇒ 闸门就在这一层。
+        bool allowWarp = GetParamOr(p, "allowWarp", false);
 
         if (!Context.IsWorldReady)
             throw new InvalidOperationException("World not ready");
@@ -24309,10 +24406,22 @@ var tcs = new TaskCompletionSource<object>();
         //    现在：越界直接 ok:false 拒绝；地图内但站不住 → 退到最近可走格并在返回里注明 adjusted。
         //    ⚠️ IsTilePassable 要遍历 furniture/objects，必须主线程读（同 /surroundings 主线程化教训），
         //    所以整段校验塞进 EnqueueMainThread 再取回结果。
+        //
+        // 🚪 2026-10-06 恒真机补的第四种拒绝：**门/传送格**。
+        //    真机现场：`map walk x=55 y=12` —— 那格**正好是小屋的门格**，上面三条校验**全都放行**
+        //    （在界内、站得住、无需就近改格），于是人被游戏 warp 进屋，而执行器继续在新图上
+        //    按旧坐标收尾 ⇒ 落在小屋室内 (55,12) ＝ 房间外的空白画布（屋子只占 x 20~41）。
+        //    判据（反编译挑的重载）：`GameLocation.doesTileHaveProperty(int,int,string,string,bool)`
+        //    （`GameLocation.cs:13153`，返回 `string?`，null = 没这个属性；
+        //     它内部也会问 `Building.doesTileHaveProperty`，`:13157-13168`）
+        //    ＋ `Building.humanDoor`（"没有门"＝ `Point(-1,-1)`，游戏自己的判据在 `:16704`）。
+        //    ⛔ **不是**"一刀切禁掉传送格"：`map ops=go` 本来就靠踩出口格换图，
+        //       所以跨图那几处由调用方传 `allowWarp=true` 放行（缺省 false 只挡 AI 直调的坐标走位）。
         {
             var vtcs = new TaskCompletionSource<(string kind, int a, int b)>();
             string vErr = "";
             int vx = x, vy = y;
+            string vWhy = "";
             EnqueueMainThread(() =>
             {
                 try
@@ -24321,6 +24430,13 @@ var tcs = new TaskCompletionSource<object>();
                     if (tgt?.Map == null) { vtcs.SetResult(("notfound", 0, 0)); return; }
                     int mw = tgt.Map.DisplayWidth / 64, mh = tgt.Map.DisplayHeight / 64;
                     if (vx < 0 || vy < 0 || vx >= mw || vy >= mh) { vtcs.SetResult(("oob", mw, mh)); return; }
+                    // 🚪 门/传送格（只查**请求的那一格**，不查"就近改"之后那格 ——
+                    //    改到传送格上属于另一条路，由 `AbortWalkIfMapChanged` 兜住）
+                    if (!allowWarp && IsWarpOrDoorTile(tgt, vx, vy, out vWhy))
+                    {
+                        vtcs.SetResult(("warp", 0, 0));
+                        return;
+                    }
                     var near = FindNearestPassableTile(tgt, new Point(vx, vy));
                     vtcs.SetResult(near == null ? ("blocked", mw, mh) : ("ok", near.Value.X, near.Value.Y));
                 }
@@ -24333,6 +24449,14 @@ var tcs = new TaskCompletionSource<object>();
                 return new { ok = false, error = $"walk_to 校验出错: {vErr}" };
             if (kind == "oob")
                 return new { ok = false, error = $"目标 ({x},{y}) 越界：{location} 只有 {a}x{b} 格（0..{a - 1}, 0..{b - 1}）" };
+            if (kind == "warp")
+                return new
+                {
+                    ok = false,
+                    warp_tile = true,
+                    error = "那格是门/传送格（踩上去会换图）—— 要进门请用 interact；跨图请用 map ops=go",
+                    detail = vWhy,
+                };
             if (kind == "blocked")
                 return new { ok = false, error = $"目标 ({x},{y}) 及周围 8 圈都站不住（被墙/物体/牲畜堵死）" };
             if (a != x || b != y)
@@ -24353,6 +24477,11 @@ var tcs = new TaskCompletionSource<object>();
             _walkSegIdx = 0;
             _walkSegmentStarted = false;
             _warpPending = false;
+            // 🚪🧭 同图坐标走位 ⇒ **不期待换图**：半路被换图就停手（`AbortWalkIfMapChanged`）。
+            //    ⚠️ `allowWarp=true` 只是**放行门/传送格**（矿井入口那类"踩上去就是入口"的 POI），
+            //       换图停手**照样生效** —— 人已经被游戏送过去了，这一串同图坐标就该作废。
+            _walkMapAtStart = fromLoc;
+            _walkExpectWarp = false;
             return new { ok = true, action = "walk_to", destination = new { location, x, y }, segments = 1 };
         }
 
@@ -24386,6 +24515,10 @@ var tcs = new TaskCompletionSource<object>();
         EnqueueMainThread(() => { Game1.warpFarmer(ResolveWarpTarget(location), entryX, entryY, false); });
         _walkRoute = new List<WalkSegment> { new WalkSegment(location, x, y) };
         _walkSegIdx = 0; _walkSegmentStarted = false; _warpPending = true;
+        // 🚪🧭 跨图路线 ⇒ **期待换图**：中途换图是它的正常一步，`AbortWalkIfMapChanged` 直接放行，
+        //    由上面"自然换图 → 推进下一段"照旧处理（`map ops=go` 就是靠这个踩出口格换图的）。
+        _walkMapAtStart = fromLoc;
+        _walkExpectWarp = true;
         EnqueueAlert("walk_started", $"Warp to {location} entry→walk ({x},{y})", "info", "walk");
 
         return new
@@ -24395,6 +24528,116 @@ var tcs = new TaskCompletionSource<object>();
             destination = new { location, x, y },
             warp = new { from = fromLoc, to = location }
         };
+    }
+
+    /// <summary>
+    /// 🚪🧭 同图坐标走位**半路被换图 ⇒ 立刻停手**（2026-10-06 恒真机：小屋门格）。
+    ///
+    /// 元凶（真机 + 反编译双证）：
+    ///   `map ops=walk x=55 y=12` 那格**正好是小屋的门格** —— 人踩上去被**游戏自己**warp 进屋，
+    ///   而"走到 (55,12)"那串执行器**没停**，继续在**新图的同坐标**上收尾
+    ///   ⇒ 落点变成小屋室内 (55,12)，那是**房间外的空白画布**（屋子只占 x 20~41）
+    ///   ＝ 恒嘴里那句「怎么又飞墙外」。
+    ///
+    /// 判据 = **起步时那张图**（`_walkMapAtStart`）+ **现在这张图**（显示名/唯一名任一相等即算同图，
+    /// 同 `HandleWalkTo` 里 `sameMap` 那套：小屋靠唯一名、畜棚靠显示名）。
+    ///
+    /// ⛔ **只对"不指望换图"的路线生效**（`_walkExpectWarp == false`）：
+    ///    `map ops=go` 的跨图步骤**故意**要踩传送格（它靠踩上去换图），
+    ///    那种由下面"自然换图 → 推进下一段"照旧处理 —— 这里一个字都不动。
+    ///    所以**不是**"一刀切禁掉传送格"。
+    ///
+    /// 回包（`/walk_to` 是发射后不管的，只能走警报这条道）：
+    ///   `{ok:false, changed_map:true, from:&lt;旧图&gt;, to:&lt;新图&gt;, error:"走到一半换图了…"}`。
+    /// </summary>
+    /// <returns>true = 换了图、已经停手（调用方立刻 return，别再走这一步）。</returns>
+    private bool AbortWalkIfMapChanged()
+    {
+        if (_walkExpectWarp) return false;                       // 跨图路线：换图是它的正常一步
+        if (string.IsNullOrEmpty(_walkMapAtStart)) return false;  // 没记起步图（不是坐标走位）⇒ 不管
+        var cur = Game1.player?.currentLocation;
+        if (cur == null) return false;
+        var curUnique = cur.NameOrUniqueName ?? "";
+        var curName = cur.Name ?? "";
+        if (string.Equals(curUnique, _walkMapAtStart, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(curName, _walkMapAtStart, StringComparison.OrdinalIgnoreCase))
+            return false;                                        // 还在起步那张图 ⇒ 一切照旧
+
+        var from = _walkMapAtStart;
+        var to = string.IsNullOrEmpty(curUnique) ? curName : curUnique;
+
+        // 清移动状态（路线 + 队列 + 分段游标，一处不漏）
+        _walkRoute = null;
+        _walkSegIdx = 0;
+        _walkSegmentStarted = false;
+        _pathQueue = null;
+        _walkMapAtStart = null;
+
+        const string err = "走到一半换图了（踩到传送格）—— 已停手；跨图请用 map ops=go";
+        EnqueueAlert("walk_changed_map", $"{err}（{from} → {to}）", "warning", "walk",
+            new Dictionary<string, object?>
+            {
+                ["ok"] = false,
+                ["changed_map"] = true,
+                ["from"] = from,
+                ["to"] = to,
+                ["error"] = err,
+            });
+        return true;
+    }
+
+    /// <summary>
+    /// 🚪 这格是不是**门/传送格**（踩上去会让游戏换图）？给 `HandleWalkTo` 入口校验用。
+    ///
+    /// 三条判据**全是游戏自己的数据**（反编译出处写在旁边）：
+    ///   · `Action` / `TouchAction` / `Warp` 地图属性 —— 查 `Buildings` 与 `Back` 两层
+    ///     （`InteriorDoor.cs:72-80` 就是给带 `Action: Door` 的格子补 `TouchAction: Door …`，
+    ///      那一句正说明"室内隔间门"是靠 TouchAction 踩上去触发的）。
+    ///   · 某个 `Building` 的 `humanDoor` 瓦片 —— "这栋楼没门"的游戏判据是 `Point(-1,-1)`
+    ///     （`GameLocation.cs:16704`），门格 = `tileX/tileY + humanDoor`。
+    ///   · 重载挑的是 `GameLocation.doesTileHaveProperty(int,int,string,string,bool)`
+    ///     （`GameLocation.cs:13153`，返回 `string?`，null = 没这属性；内部也问建筑，`:13157-13168`）。
+    ///
+    /// ⚠️ 它**只回答"这格危不危险"**，不决定放不放行 —— 放行与否看调用方传的 `allowWarp`
+    ///    （跨图导航故意要踩出口格）。`why` 只用来在拒绝时告诉调用方**是哪条判据命中的**。
+    /// </summary>
+    private bool IsWarpOrDoorTile(GameLocation? loc, int x, int y, out string why)
+    {
+        why = "";
+        if (loc?.Map == null) return false;
+        if (!loc.isTileOnMap(x, y)) return false;   // 图外不问（越界那条校验在前，这是双保险）
+
+        foreach (var layer in new[] { "Buildings", "Back" })
+        {
+            if (loc.doesTileHaveProperty(x, y, "Action", layer) != null)
+            {
+                why = $"Action({layer}) = {loc.doesTileHaveProperty(x, y, "Action", layer)}";
+                return true;
+            }
+            if (loc.doesTileHaveProperty(x, y, "TouchAction", layer) != null)
+            {
+                why = $"TouchAction({layer}) = {loc.doesTileHaveProperty(x, y, "TouchAction", layer)}";
+                return true;
+            }
+            if (loc.doesTileHaveProperty(x, y, "Warp", layer) != null)
+            {
+                why = $"Warp({layer}) = {loc.doesTileHaveProperty(x, y, "Warp", layer)}";
+                return true;
+            }
+        }
+
+        foreach (var b in loc.buildings)
+        {
+            if (b == null) continue;
+            var hd = b.humanDoor.Value;
+            if (hd == new Point(-1, -1)) continue;   // 游戏自己判"没门"的那条（GameLocation.cs:16704）
+            if (b.tileX.Value + hd.X == x && b.tileY.Value + hd.Y == y)
+            {
+                why = $"建筑门格 humanDoor（{b.buildingType.Value} @ {b.tileX.Value},{b.tileY.Value} + {hd.X},{hd.Y}）";
+                return true;
+            }
+        }
+        return false;
     }
 
     /// <summary>

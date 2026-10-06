@@ -549,6 +549,11 @@ def _walk_to_coord(x: int, y: int) -> str:
     except Exception as e:
         return _with_state(f"❌ 走位请求失败: {e}")
     if isinstance(r, dict) and r.get("ok") is False:
+        # 🚪 门/传送格闸门（2026-10-06）：mod 入口校验直接拒了，原话已经是给 AI 的指引
+        #    （「要进门请用 interact；跨图请用 map ops=go」）—— 照转，别自己另编一句。
+        if r.get("warp_tile"):
+            _walk_log(loc_before, x, y, x, y, "门/传送格被拒")
+            return _with_state(f"🚪 ({x},{y}) 走位被拒：{r.get('error') or r}")
         return _with_state(f"❌ 走不过去 ({x},{y})：{r.get('error') or r}")
     # ⚠️ 等**游戏回包里的**坐标：`/walk_to` 会把站不住的目标格就近改掉
     #    （`ModEntry.cs:19782`，详见 `_walk_and_wait`）。等我们请求的那个 ⇒ 必然是满 30s 超时。
@@ -572,6 +577,15 @@ def _walk_to_coord(x: int, y: int) -> str:
     px = (st2.get("player") or {}).get("x")
     py = (st2.get("player") or {}).get("y")
     if loc_after != loc_before:
+        # 🚪 2026-10-06：mod 侧现在**半路换图就停手**，并把结构化原因挂进 `walk_changed_map` 警报
+        #    （`{ok:false, changed_map:true, from, to, error}`）。有它就用**游戏自己的原话**
+        #    （判据来源是游戏，不是我们猜）；没收到（4 秒同文案去重／人已离开但警报还没排到）
+        #    就退回下面这句按状态读出来的话 —— **如实**，两条都不是兜底。
+        _cm = _walk_changed_map_alert(_t_sent)
+        if _cm:
+            return _with_state(
+                f"⚠️ {_cm.get('error')}（「{_cm.get('from')}」→「{_cm.get('to')}」）。"
+                f"坐标走位只管同图；要跨图请用 `map ops=go`。")
         return _with_state(
             f"⚠️ ({x},{y}) 那格是**传送点** —— 已经离开「{loc_before}」、到了「{loc_after}」。"
             f"跨图该用 `map ops=go`（走门/出口/交通由它负责）；坐标走位只管同图。")
@@ -1209,6 +1223,33 @@ def _wait_arrival(target_loc: str, target_x: int, target_y: int, timeout: int = 
     return False
 
 
+def _walk_changed_map_alert(since):
+    """🚪 取"**本次走位开始之后**游戏报的 `walk_changed_map`"（= 同图坐标走位半路被换图、**已停手**）。
+
+    · 游戏那条警报（`ModEntry.cs:AbortWalkIfMapChanged`）除了中文文案，还挂着**结构化字段**
+      `{ok:false, changed_map:true, from:<旧图>, to:<新图>, error:"走到一半换图了…"}` ——
+      `/walk_to` 是发射后不管的，只能靠警报把这份"回包"送回来。
+    · 与 `_walk_failed_alert` 同规矩：`since=None` ⇒ 旁路整个关掉；必须 `peek=True`（别消费状态条的队列）；
+      必须比 `timeUtc`（队列里可能还躺着上一次走位的那条）。
+    """
+    if since is None:
+        return None
+    try:
+        a = api.alerts(peek=True)
+    except Exception:
+        return None
+    _best, _best_t = None, None
+    for _al in ((a or {}).get("alerts") or []):
+        if str((_al or {}).get("type") or "") != "walk_changed_map":
+            continue
+        _t = _alert_epoch_utc(_al)
+        if _t is None or _t <= since:
+            continue
+        if _best_t is None or _t > _best_t:
+            _best, _best_t = _al, _t
+    return _best
+
+
 def _walk_log(loc: str, x: int, y: int, ax, ay, verdict: str):
     """🧾 每次走位**无条件**打一行到 stdout（MCP 的 stdout 落到 `_mcp_out.log`）。
 
@@ -1249,6 +1290,15 @@ def _walk_and_wait(loc: str, x: int, y: int, timeout: int = 25):
       这不是"放宽容差"那种兜底 —— 是**换成语义上就对的数源**：那个数本来就是游戏
       告诉我们"我实际去了哪"。容差 ±2 一个字没动。
 
+    🚪 **门/传送格放行**（2026-10-06）：本函数的**每一个调用方都是导航内部**
+      —— POI 落点、`_enter_building_door` 的门格、`_walk_trigger_warp` 的出口格、
+      售票机站位、`_walk_on_map`…… 这些格**本来就可能是门/传送格**（矿井入口、帐篷、地窖楼梯
+      都是"踩上去就是入口"的 warp 格）⇒ 一律带 `allowWarp=true`，行为跟加闸门之前**一模一样**。
+      ⛔ 闸门（不传 `allowWarp`）留给 **AI 直调的坐标走位** `_walk_to_coord` ——
+         它才是"踩门格 → 被游戏送走 → 在新图同坐标收尾 = 飞墙外"那条路。
+      ⚠️ 放行**不等于**不禁换图：同图坐标走位半路被换图，mod 侧照样**立刻停手**
+         （`ModEntry.cs:AbortWalkIfMapChanged`）。
+
     **返回契约**：`(ok, note)`
       · `ok=True`  → `note` 是 ""，或"目标被调整"的提示（`（⚠️ (x,y) 站不住，游戏就近改到 (ax,ay)）`）
       · `ok=False` → `note` **一定是可直接展示的失败原因**，调用方 `return note` 就行，别再自己编。
@@ -1262,7 +1312,8 @@ def _walk_and_wait(loc: str, x: int, y: int, timeout: int = 25):
     """
     _t_sent = time.time()          # 🕒 发车时刻（失败警报旁路的时间闸，见 _wait_arrival docstring）
     try:
-        r = api._post("/walk_to", {"location": loc, "x": x, "y": y})
+        # 🚪 `allowWarp=true`：导航内部站点允许落在门/传送格上（见 docstring「门/传送格放行」）
+        r = api._post("/walk_to", {"location": loc, "x": x, "y": y, "allowWarp": True})
     except Exception as e:
         _walk_log(loc, x, y, x, y, "请求就炸了")      # 🧾 留痕（见 _walk_log）
         return False, f"walk_to 出错: {e}"

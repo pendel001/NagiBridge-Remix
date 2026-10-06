@@ -2048,11 +2048,22 @@ def position(x, y):
     """直接传送玩家到指定瓦片坐标（跳过寻路）。"""
     return _post("/position", {"x": x, "y": y})
 
-def walk_to_coord(location, x, y):
+def walk_to_coord(location, x, y, allow_warp=False):
     """使用游戏自带的 /walk_to 接口导航到目标坐标。
     自动跨地图、找有效落点。返回后需轮询等待到达。
+
+    🚪 `allow_warp`（2026-10-06 加，缺省 **False** ＝ 闸门关着）：
+      目标格是**门/传送格**（`Action`/`TouchAction`/`Warp` 属性，或某栋楼的 `humanDoor` 格）时，
+      mod 的入口校验会直接回 `{ok:false, warp_tile:true}`（**不踩**）—— 因为踩上去会被游戏 warp 换图，
+      而"走到 (x,y)"那串执行器会在**新图的同坐标**上收尾（恒真机：小屋门格 (55,12) → 落房间外空白画布）。
+      **跨图导航故意要踩出口格**（`map_go` 靠它换图）⇒ 那几处由调用方显式传 `allow_warp=True` 放行；
+      **AI 直调的坐标走位**（`navigation._walk_to_coord`）**不传** —— 闸门就设在这一层。
+      ⚠️ `allow_warp=True` 只是"放行门格"，**换图停手照样生效**（`ModEntry.cs` `AbortWalkIfMapChanged`）。
     """
-    return _post("/walk_to", {"location": location, "x": x, "y": y})
+    payload = {"location": location, "x": x, "y": y}
+    if allow_warp:
+        payload["allowWarp"] = True
+    return _post("/walk_to", payload)
 
 # ── 🦶 站位格（2026-09-19 恒：「初级布局无论什么等级都用逐格」那次真机逮到的产物）──
 # 「站在目标格**正上方**、面向下、用道具」是锄地/播种/撒化肥共用的动作模式。
