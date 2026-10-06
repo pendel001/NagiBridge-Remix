@@ -4668,7 +4668,16 @@ def _fish_reason(ctx, t):
         return ""
     if len(picks) == 1:
         p = picks[0]
-        where = f"「{p.get('area')}」" if p.get("area") else "（水格扫描）"
+        # 🔴 2026-10-06 真机逮到（姜岛南岸）：**没有鱼区**但有**按图校准点**时，这一行原来印
+        #    「（水格扫描）」—— 可那个坐标根本不是扫描出来的，是 `fish_run.FISHING_TARGETS` 里
+        #    恒亲标的点（`calibrated` 字段带着名字）⇒ 文案在**撒谎**（同族：假门/假出处）。
+        #    ⚠️ 有鱼区 id 的照旧印 id（恒 2026-10-05：「原样印 id」），只有"没有区"这档才换出处。
+        if p.get("area"):
+            where = f"「{p.get('area')}」"
+        elif p.get("calibrated"):
+            where = f"校准钓点「{p.get('calibrated')}」"
+        else:
+            where = "（水格扫描）"
         return (f"本图只有{where}一处能下竿 · 钓点 {_fish_spot_of(p)} · "
                 f"按下去：走过去 → 朝水 → 开钓（`fish_run` 自己找水抛竿/收竿）")
     return f"本图 {len(picks)} 处能下竿 · 点开挖**去哪一处**"
@@ -4705,11 +4714,21 @@ def _fish_subs(ctx, targets):
 
 
 def _fish_run_pick(p: dict, run) -> str:
-    """把**被点的那一行**的坐标交给服务器（`_im_fish_go`）—— 一处判断、一处动作，同源。"""
-    desc = str(p.get("area") or "") or f"水格扫描的岸位 {_fish_spot_of(p)}"
+    """把**被点的那一行**的坐标交给服务器（`_im_fish_go`）—— 一处判断、一处动作，同源。
+
+    ⚠️ 出处那一截同上：有鱼区 id 印 id，没有区但**是校准点**就印校准点的名字，
+       ⛔ 别把校准点的坐标说成"水格扫描的岸位"（2026-10-06 姜岛南岸真机逮到的假出处）。
+    """
+    if p.get("area"):
+        desc = str(p.get("area"))
+    elif p.get("calibrated"):
+        desc = f"校准钓点「{p.get('calibrated')}」"
+    else:
+        desc = f"水格扫描的岸位 {_fish_spot_of(p)}"
     r = run("fish", {"x": p.get("standX"), "y": p.get("standY"),
                      "wx": p.get("waterX"), "wy": p.get("waterY"),
-                     "dir": p.get("dir"), "area": p.get("area") or ""})
+                     "dir": p.get("dir"), "area": p.get("area") or "",
+                     "calibrated": p.get("calibrated") or ""})
     return _receipt_from_helper("垂钓", desc, r)
 
 

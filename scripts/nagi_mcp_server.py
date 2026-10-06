@@ -25913,7 +25913,7 @@ def _fish_calibrated_poi(area: dict, loc_name: str):
     return spot
 
 
-def _fish_calibrated_map(loc_name: str):
+def _fish_calibrated_map(loc_name: str, state: dict = None):
     """**这张图**有没有按图校准的钓点（`fish_run.FISHING_TARGETS`）→ spot dict / `None`。
 
     🔴 **为什么必须单独有这么一条**（2026-10-06 查实，别删）：没有鱼区/鱼区给不出钓点的图
@@ -25925,8 +25925,17 @@ def _fish_calibrated_map(loc_name: str):
     ⇒ 按图那张表**本身就是"这张图的校准点"**（没有"属哪个水域"的问题），直接用它，**不做矩形验证**。
       ⚠️ 只认 `FISHING_TARGETS` 里的图（`spot` 必须带 `poi`）——
          ⛔ 别把 `get_spot` 最后那层**弃用的** `FISHING_SPOTS`（原版作者手抄坐标）当校准点。
-      ⚠️ 优先于扫描 ≠ 不验证"能不能钓"：执行侧到点还会逐格问 `/water` 的 `fishable`
-        （`_im_fish_go` ②b）＋ `fish_run` 开局判定（抛不出去就收手）⇒ 真钓不了**不会假成功**。
+    🔴 **`waterX/waterY` 必须是"落点"那一格**（2026-10-06 姜岛南岸真机逮到，别改回邻格）：
+      这一档跟**水格扫描 / 矿井**那两档同族（`area == ""`）—— 报的是"站这里、朝这个方向抛"，
+      游戏判"抛得出去没"判的是**落点**（`FishingRod.cs:411-414` 的 `isTileFishable(落点)`），
+      ⛔ 不是站格旁边那一格。真机实据：恒的姜岛南岸点 `(26,34)` 面下，**邻格 `(26,35)` `fishable:false`**
+      （那排只有 x≥27 能钓）可**落点 `(26,40)` `fishable:true`** —— 按邻格报 ⇒ 执行侧 ②b 当场把
+      这一行判成"游戏现在不许下竿"，恒**验过的点反而按不动**（假门长在我们自己身上）。
+      落点 = 站格 + 朝向 × D（`_fish_cast_d`，实测优先）；D 算不出来 ⇒ 退回邻格（老口径，执行侧照旧把关）。
+    ⚠️ 优先于扫描 ≠ 不验证"能不能钓"：执行侧到点还会逐格问 `/water` 的 `fishable`
+      （`_im_fish_go` ②b）＋ `fish_run` 开局判定（抛不出去就收手）⇒ 真钓不了**不会假成功**。
+    ⚠️ **按鱼区**那两张表走的是 `_fish_calibrated_poi`（那条路**不动**：那边的 `waterX/waterY`
+      是游戏 `spots[]` 同款的"邻格"，执行侧 ④ 按"离人 ≤4 格"分流语义）。
     """
     try:
         from fish_run import FISHING_TARGETS, get_spot
@@ -25937,7 +25946,17 @@ def _fish_calibrated_map(loc_name: str):
     spot = get_spot(loc_name)
     if not isinstance(spot, dict) or not spot.get("poi"):
         return None                                   # 没走 POI（= 弃用的手抄表）⇒ 当没有
-    return _fish_spot_from_calib(spot)
+    spot = _fish_spot_from_calib(spot)
+    if not spot or state is None:
+        return spot
+    face = spot["dir"]
+    axis = "h" if face in (1, 3) else "v"
+    D = _fish_cast_d(_fish_level(state), axis)
+    if isinstance(D, int) and D >= 1:
+        spot = dict(spot,
+                    waterX=spot["standX"] + (0, 1, 0, -1)[face] * D,
+                    waterY=spot["standY"] + (-1, 0, 1, 0)[face] * D)
+    return spot
 
 
 def _fish_areas_raw() -> dict:
@@ -26267,7 +26286,7 @@ def _fish_picks_from_raw(raw: dict, state: dict) -> list:
         #       ⛔ 不许因此就改成 `_fish_calibrated_poi({"id": ""}, …)`（那条路**恒为 None**，
         #       2026-10-06 查实 —— 它要鱼区矩形，而我们没有鱼区）。
         try:
-            _cal_w = _fish_calibrated_map(loc_name)
+            _cal_w = _fish_calibrated_map(loc_name, state)
         except Exception:
             _cal_w = None
         if _cal_w:
@@ -26356,7 +26375,8 @@ def _im_fish(state: dict, caps: dict = None) -> dict:
             #    🔴 2026-10-06 修：这里原来写的是 `_fish_calibrated_poi({"id": ""}, loc_name)` ——
             #      那个函数**恒返回 `None`**（它第二路要"鱼区矩形"，我们传的是没有 `position` 的假区）
             #      ⇒ 「优先校准点」**一次都没生效过**（姜岛南岸/海盗湾/山湖/镇子全走扫描）。
-            _cal_w = _fish_calibrated_map(loc_name)
+            #    ⚠️ 必须把 `state` 传下去：这一档的"水格"是**落点**（站格+朝向×D），要等级算 D。
+            _cal_w = _fish_calibrated_map(loc_name, state)
             if _cal_w:
                 raw = {"mode": "water", "pairs": [dict(_cal_w)]}
             else:
@@ -26390,6 +26410,7 @@ def _im_fish_go(args: dict) -> str:
       `wx/wy` = 那一格要朝的水格（`picks[].waterX/waterY`）
       `dir`   = 游戏给的方向码（0上 1右 2下 3左；`/fish_areas` 的 `spots[].dir`）
       `area`  = 水域 id（**只用于回执**，原样印；水格扫描那档是 `""`）
+      `calibrated` = 按图校准点的 POI 名（**只用于回执**的出处那一截；没有就不带）
     """
     args = dict(args or {})
     x, y = args.get("x"), args.get("y")
@@ -26397,7 +26418,16 @@ def _im_fish_go(args: dict) -> str:
         return "❌ 这一行没带钓点坐标 —— 敲 `show` 重开一张（号不跨屏，别按着旧号敲）"
     wx, wy = args.get("wx"), args.get("wy")
     area = str(args.get("area") or "")
-    where = f"「{area}」" if area else "水格扫描那一处"
+    # 🔴 出处那一截**不许撒谎**（2026-10-06 姜岛南岸真机）：没有鱼区 id 但这一行是**按图校准点**
+    #    （`calibrated` = POI 名，由 `intent_menu._fish_run_pick` 一起传下来）⇒ 就印校准点的名字，
+    #    ⛔ 别把恒亲标的坐标说成「水格扫描那一处」（同族：假出处 / 假门）。
+    _cal_name = str(args.get("calibrated") or "")
+    if area:
+        where = f"「{area}」"
+    elif _cal_name:
+        where = f"校准钓点「{_cal_name}」"
+    else:
+        where = "水格扫描那一处"
 
     out = _fish_stamina_block()
     if out:

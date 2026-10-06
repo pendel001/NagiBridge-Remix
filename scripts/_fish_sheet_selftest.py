@@ -338,12 +338,18 @@ try:
     #    ⇒ 没有鱼区的图（`/fish_areas count=0`：姜岛南岸、海盗湾、山湖、镇子…）**从来没用过校准点**，
     #      全去跑水格扫描；扫描挑不出落点时就"一行都没有"（恒的 (26,34)/(6,8)/(68,24) 白标了）。
     #    现在改走 `_fish_calibrated_map`（按图那张表**自己就声明了"这是本图的校准点"**，不做矩形验证）。
-    for _loc, _sx, _sy, _dir, _poi in (
-            ("Mountain", 68, 24, 2, "山湖钓鱼点(左)"),
-            ("Beach", 52, 25, 2, "海滩钓鱼点(码头)"),
-            ("Town", 3, 93, 2, "镇鲶鱼钓点"),
-            ("IslandSouth", 26, 34, 2, "姜岛南岸海钓点"),
-            ("IslandSouthEastCave", 6, 8, 1, "海盗湾内钓点")):
+    #    🔴 还有第二刀（**真机当场逮到的**）：这一档的 `waterX/waterY` 必须是**落点**那一格
+    #      （站格 + 朝向 × D），⛔ 不是站格旁边那格 —— 游戏判"抛得出去没"判的是落点
+    #      （`FishingRod.cs:411-414` 的 `isTileFishable(落点)`）。真机实据：恒的姜岛南岸点
+    #      `(26,34)` 面下，**邻格 `(26,35)` `fishable:false`**、**落点 `(26,40)` `fishable:true`**
+    #      ⇒ 按邻格报，执行侧 ②b 会把恒**验过的点**判成"游戏现在不许下竿"（我自己造的假门）。
+    #      下面每条都钉住落点坐标（10 级实测 h=7 / v=6）。
+    for _loc, _sx, _sy, _dir, _poi, _wx, _wy in (
+            ("Mountain", 68, 24, 2, "山湖钓鱼点(左)", 68, 30),
+            ("Beach", 52, 25, 2, "海滩钓鱼点(码头)", 52, 31),
+            ("Town", 3, 93, 2, "镇鲶鱼钓点", 3, 99),
+            ("IslandSouth", 26, 34, 2, "姜岛南岸海钓点", 26, 40),
+            ("IslandSouthEastCave", 6, 8, 1, "海盗湾内钓点", 13, 8)):
         _a = FakeApi(_state(_loc, x=40, y=32, in_hand=True, wh=(80, 65)),
                      fish_areas=FISH_NOAREA, water=water, passable=passable)
         _ac = _acct(_a)
@@ -352,14 +358,26 @@ try:
            f"({_sx},{_sy}) 朝{_dir}「{_poi}」（⛔ 不再靠水格扫描挑）",
            len(_pk) == 1 and (_pk[0].get("standX"), _pk[0].get("standY")) == (_sx, _sy)
            and _pk[0].get("dir") == _dir and _pk[0].get("calibrated") == _poi, str(_ac))
+        ck(f"…`{_loc}` 的「水格」是**落点** ({_wx},{_wy})（站格+朝向×D；⛔ 不是邻格）",
+           bool(_pk) and (_pk[0].get("waterX"), _pk[0].get("waterY")) == (_wx, _wy), str(_pk[:1]))
         ck(f"…`{_loc}` **连 `/water` 都不打**（省一发大图逐格扫描）",
            not any(ep == "/water" for ep, _ in _a.gets), str(_a.gets[:2]))
+        # 🔴 2026-10-06 真机逮到（姜岛南岸）：出处那一截原来印「（水格扫描）」——
+        #    可那个坐标**不是扫出来的**，是按图表里恒亲标的点 ⇒ 文案撒谎（假出处）。
+        _c, _m = _sheet(_ac, loc=_loc, px=40, py=32)
+        ck(f"…`{_loc}` 的理由栏必须说**校准钓点**（⛔ 不许再印「水格扫描」冒充出处）",
+           "校准钓点" in _m and "水格扫描" not in _m and _poi in _m, _m)
     # ⛔ 反面：**没有校准点**的图不许凭空"变"一个出来（⛔ 尤其别把弃用的 `FISHING_SPOTS` 当校准点）
     _a = FakeApi(_state("Desert", x=40, y=32, in_hand=True, wh=(80, 65)),
                  fish_areas=FISH_NOAREA, water=water, passable=passable)
     ck("⛔ 没有校准点的图（Desert）⇒ `_fish_calibrated_map` 给 `None`（照旧走扫描，不编点）",
        M._fish_calibrated_map("Desert") is None and M._fish_calibrated_map("") is None,
        str(M._fish_calibrated_map("Desert")))
+    # …而**真·水格扫描**那一档照旧如实标「水格扫描」（改了出处文案别把这一档也带跑）
+    _ac = _acct(_a)
+    _c, _m = _sheet(_ac, loc="Desert", px=40, py=32)
+    ck("…真·水格扫描挑出来的那一行仍如实标「水格扫描」（⛔ 别改成「校准钓点」）",
+       "水格扫描" in _m and "校准钓点" not in _m, _m)
 
     # 🎣🔴 2026-10-06 修：**钓鱼等级不能"读不到就当 0 级"** ——
     #    `/state.player.fishing` 只在**竿是当前工具**时才有（`ModEntry.cs:6215-6236`），
@@ -664,6 +682,19 @@ try:
     a, nav, scripts, out = _go_w(st, _NEAR, {(34, 26): [{"x": 34, "y": 26, "fishable": True}]})
     ck("…紧邻那档（校准点 face 目标，1 格）⇒ **照旧放行**（别把鱼区那档一起收紧）",
        bool(scripts) and scripts[0][0] == "fish_run", out)
+    # 🔴 回执的出处那一截也不许撒谎（2026-10-06 姜岛南岸真机：回执印「去**水格扫描那一处**的岸格」
+    #    可那一行是**按图校准点**）⇒ `calibrated` 由单子一起传下来，回执就印它的名字。
+    st = _state("IslandSouth", x=26, y=34, in_hand=True, wh=(80, 65))
+    a, nav, scripts, out = _go_w(st, {"x": 26, "y": 34, "wx": 26, "wy": 40, "dir": 2, "area": "",
+                                      "calibrated": "姜岛南岸海钓点"},
+                                 {(26, 40): [{"x": 26, "y": 40, "fishable": True}]})
+    ck("🎣 回执的出处跟着这一行走：按图校准点 ⇒ 印「校准钓点「姜岛南岸海钓点」」"
+       "（⛔ 不许印成「水格扫描那一处」）",
+       bool(scripts) and "校准钓点" in out and "水格扫描" not in out, out)
+    a, nav, scripts, out = _go_w(st, {"x": 26, "y": 34, "wx": 26, "wy": 40, "dir": 2, "area": ""},
+                                 {(26, 40): [{"x": 26, "y": 40, "fishable": True}]})
+    ck("…而**真·水格扫描**那档照旧印「水格扫描那一处」（改了出处别把这一档带跑）",
+       bool(scripts) and "水格扫描" in out, out)
 
     print("\n⑦b 🎣 矿井钓点（20/60/100 层 · 站位这几层同一格：恒亲站的 (26,13) 朝右）")
     # 恒 2026-10-06：「位于这些层时也给对应的钓鱼选项，抛竿位置在现在 7842 的站位和朝向」
