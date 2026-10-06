@@ -22679,29 +22679,33 @@ def _go_to_kitchen():
             f"❌ 这张图（{loc}）没有厨房，做不了菜 —— 升级房屋、或借他人小屋的厨房再试试吧。"
             + _NL
             + f"   有厨房的：{_kitchens_elsewhere()} —— map_go 过去、站到灶台旁再 cook。")
-    # 已就位：**任一**灶台格够得着就行 —— 灶台常是一整排（恒家 `19-23,23` 共 5 格），
-    # 只认第一格会让站在另一头的人被判"没走到"。
-    if any(abs(px - tx) <= 1 and abs(py - ty) <= 1 for tx, ty in tiles):
+    # ① 已就位：**正邻格**（上下左右）够得着 ⇒ 什么都不做
+    #    （恒 2026-09-11「已在厨房就什么都不做」；2026-10-06 补：**斜角不算就位**——
+    #     "走到斜角去了"看着很不习惯；`abs+abs == 1` 就是把斜角排除在外的那把尺子）。
+    if any(abs(px - tx) + abs(py - ty) == 1 for tx, ty in tiles):
         return None
-    # 灶台本身不可走 → 遍历灶台格，挑一个**离自己最近**的可站 8 邻格（`/passable` 读 body，必须 _post）
-    best = None
+    # ② 要挪就**站到这一排的中间**（恒 2026-10-06：「整个厨房五格长都可以交互，**一般我会站中间**，
+    #    刚刚走到旁边去了、看着不习惯」）：候选 = **正邻格**（⛔ 不收斜角），
+    #    先按"离灶台簇中点近"、同分再按"离自己近"；顺带把**该朝哪边**一起定下来。
+    #    ⚠️ 为什么必须扫地图算中点、不能写死：农舍/小屋/岛屋厨房布局与长度都不同（见本函数开头）。
+    mid_x = sum(t[0] for t in tiles) / len(tiles)
+    mid_y = sum(t[1] for t in tiles) / len(tiles)
+    cands = []   # (离中点距离, 离自己距离, 站x, 站y, 面朝)
     for kx, ky in tiles:
-        for dx in (-1, 0, 1):
-            for dy in (-1, 0, 1):
-                if dx == 0 and dy == 0:
+        for dx, dy, face in ((0, 1, 0), (0, -1, 2), (-1, 0, 1), (1, 0, 3)):
+            cx, cy = kx + dx, ky + dy
+            try:
+                if not api._post("/passable", {"x": cx, "y": cy}).get("passable"):
                     continue
-                cx, cy = kx + dx, ky + dy
-                try:
-                    if api._post("/passable", {"x": cx, "y": cy}).get("passable"):
-                        d = abs(px - cx) + abs(py - cy)
-                        if best is None or d < best[0]:
-                            best = (d, cx, cy)
-                except Exception:
-                    continue
-    if best is None:
+            except Exception:
+                continue
+            cands.append((abs(cx - mid_x) + abs(cy - mid_y),
+                          abs(px - cx) + abs(py - cy), cx, cy, face))
+    if not cands:
         kx, ky = tiles[0]
         return _with_state(f"❌ 灶台 ({kx},{ky}) 周围没有可站的格——过不去")
-    _, tx, ty = best
+    cands.sort()
+    _, _, tx, ty, _face = cands[0]
     # 底座用 `/walk_to`（= map walk 的坐标版）；老的 move_to_tile 走 /move+BFS，已退役
     out = navigation.walk_to(x=tx, y=ty)
     # ⚠️ 判据落在"人真的到那儿了吗"，别靠字符串找 "✅"（状态条里到处都是 ✅ / ⚠️）
@@ -22709,6 +22713,12 @@ def _go_to_kitchen():
         _me2 = (api.state().get("player") or {})
         if (int(_me2.get("x", -9)), int(_me2.get("y", -9))) != (tx, ty):
             return _with_state(f"❌ 没走到灶台旁 ({tx},{ty})：{out.splitlines()[0] if out else '无响应'}")
+    except Exception:
+        pass
+    # 🧭 到位后**摆正朝向**（面朝灶台那格）：光"够得着"不等于"正对着"
+    #    （恒 2026-10-06 真机：站到旁边/斜角看着不习惯）。朝向失败**不拦**做菜（它只是个朝向）。
+    try:
+        api._post("/face", {"direction": _face})
     except Exception:
         pass
     return None
