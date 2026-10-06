@@ -21022,9 +21022,39 @@ def read_menu() -> str:
             else:
                 lines.append("  🎒 背包里**没有**能放进去的东西"
                              "（左槽要布/可染的衣服，右槽要配方对应的染料/材料）")
+            # 👕 2026-10-06（恒红框那列）：**身上穿的那三件**也能当料 —— C# 从
+            #    `player.hat/shirtItem/pantsItem` + **同一张** `ItemHighlightCache` 读的。
+            #    ⛔ 别跟背包那批混在一起：它们**不在包里**，拿它们当料要走"游戏自己的点击"那条路
+            #    （`place=<slot名>`），这里点明，省得 AI 去背包里找一件根本没有的东西。
+            _tworn = _tl.get("worn") or []
+            if _tworn:
+                _seg = []
+                for _p in _tworn:
+                    _w = "、".join(_x for _x, _ok in (("左槽", _p.get("left")),
+                                                      ("右槽", _p.get("right"))) if _ok)
+                    _cn = {"hat": "帽子", "shirt": "衬衫", "pants": "裤子"}.get(
+                        str(_p.get("slot")), str(_p.get("slot")))
+                    _seg.append("%s「%s」%s" % (_cn, _tslot(_p), ("→ " + _w) if _w else "（**当不了料**）"))
+                lines.append("  👕 身上穿的（同一把尺子算的）：" + " ｜ ".join(_seg))
+                _okslots = [str(_p.get("slot")) for _p in _tworn
+                            if _p.get("left") or _p.get("right")]
+                if _okslots:
+                    lines.append("    ↳ 拿身上的当料：`menu tailor place=%s slot=left|right`"
+                                 "（走**游戏自己的点击**：先把那件抓到手上、再放进槽）"
+                                 % "/".join(_okslots))
             lines.append("  🧭 放料: `menu tailor place=物品名 slot=left|right`；"
                          "开缝: `menu tailor action=start`；取产物: `menu tailor action=take`；"
                          "把料退回来: `menu tailor action=clear`")
+            # ⚠️ 2026-10-06 恒真机逮到的**误导**：上面那些箭头是**单件判据**（"这槽收它"），
+            #    **不代表配对顺序** —— 两槽都空时，染料会被标成"→右槽"、衣服标成"→左槽"，
+            #    可游戏的 `IsValidCraft`（`TailoringMenu.cs:790-812`）要的是
+            #    **左槽 = 衣服（`Clothing && dyeable`）/ 右槽 = 染料**，反着放游戏会弹
+            #    「当前材料不能用于缝制物品！」（`canStart=false`）。⇒ 两槽都空时点明一句。
+            if not _tl.get("left") and not _tl.get("right"):
+                lines.append("  ⚠️ 两槽都空时，上面那些箭头只是**单件判据**（哪槽收它），**不代表配对顺序**；"
+                             "按游戏自己的规矩：**主件（衣服/布料）放左槽、染料/副料放右槽** ——"
+                             "反着放游戏会弹「当前材料不能用于缝制物品！」。"
+                             "拿不准就**先放一件**，再看这份 read 会给另一件标哪一槽。")
             return _with_state("\n".join(lines))
         # 🎓 精通山洞的碑/基座（MasteryTrackerMenu, 2026-09-16 恒）
         #    ⚠️ 数据只在 `/menu` 的 `mastery` 键里；`/state` 的 activeMenu **不带**它
