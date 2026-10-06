@@ -26190,6 +26190,16 @@ def _fish_picks_from_raw(raw: dict, state: dict) -> list:
         return picks
 
     if mode == "water":
+        # 🎣 2026-10-06 恒：「**应该大部分钓点都有校准点了，优先找到并路由那些**」
+        #    ⇒ 水格扫描这档**先问校准表**（按图那张 `FISHING_TARGETS`；鱼区那档走的是
+        #      `(图名, 鱼区 id)` 那张，见上面 —— 两张表分工，别混）：命中就**只用它**（⛔ 不掺扫描点，
+        #      免得同一个地方摆两行、AI 还得猜哪个是真的）；没有（或读不出来）才退回 `/water` 那批对。
+        try:
+            _cal_w = _fish_calibrated_poi({"id": ""}, loc_name)
+        except Exception:
+            _cal_w = None
+        if _cal_w:
+            return [dict(_cal_w, area="", waterTiles=None, spotsFound=None)]
         pairs = [q for q in ((raw or {}).get("pairs") or []) if isinstance(q, dict)]
         pairs.sort(key=lambda q: _fish_xy_dist(q.get("standX"), q.get("standY"), px, py))
         return [dict(q, area="", waterTiles=None, spotsFound=None) for q in pairs]
@@ -26263,8 +26273,16 @@ def _im_fish(state: dict, caps: dict = None) -> dict:
             # ⚠️ `hasFishAreaData=True, count=0` 的图（Farm/Mountain…）与"有鱼区但都没钓点"的图
             #    （Town 的 Fountain 水格 0）**都走这一支**：鱼区那条路给不出能站的钓点，
             #    就如实退回"水格扫描"——**不是**"这张图不能钓"。
-            pairs = _fish_water_scan(state, caps)
-            raw = {"mode": "water", "pairs": pairs} if pairs else {}
+            # 🎣 2026-10-06 恒：「**应该大部分钓点都有校准点了，优先找到并路由那些**」
+            #    ⇒ **先问按图那张校准表**（`FISHING_TARGETS`）：命中就**直接用它**，连 `/water` 扫描
+            #      都不打（省一发大图逐格扫描 ✓ 也不受"扫描挑位"影响 —— 姜岛南岸就是这么救回来的：
+            #      扫描一个点都没挑出来 ⇒ `pairs` 空 ⇒ 连 `mode=water` 都进不去 ⇒ 校准点永远轮不到）。
+            _cal_w = _fish_calibrated_poi({"id": ""}, loc_name)
+            if _cal_w:
+                raw = {"mode": "water", "pairs": [dict(_cal_w)]}
+            else:
+                pairs = _fish_water_scan(state, caps)
+                raw = {"mode": "water", "pairs": pairs} if pairs else {}
         _FISH_CACHE.update(key=loc_name, ts=now, raw=raw or {})
     picks = _fish_picks_from_raw(raw or {}, state)
     if not picks:
