@@ -115,9 +115,14 @@ def _water_rect(x1, y1, x2, y2):
     s = f"  ✅ tool_area 蓄力浇 ({x1},{y1})-({x2},{y2})｜挥壶 {_swings} 次"
     if _rel:
         s += "（" + "、".join(f"{x.get('tiles')}格/power{x.get('power')}" for x in _rel) + "）"
-    s += f"｜补漏直写 {patches} 格"
+    # 🔴 2026-10-06 恒：「那个**作弊补漏不要**的话，那就是报"**剩几格**"了。」
+    #    ⇒ 一律**先报还剩几格**（`still_missing` 是 C# 回包里的真清单，不是我们算的）；
+    #      C# 那条"不挥壶/不费水/不走位，直接把地块写成湿的"（`ModEntry.PatchMissingOnMain` 水分支）
+    #      **还没撤** ⇒ 撤之前**照实说它补了几格**（别让外面以为那几格是我们自己浇的）。
+    s += f"｜**还剩 {len(still)} 格**"
+    if patches:
+        s += f"（其中 C# 作弊直写补了 {patches} 格 —— 待撤：撤后这几格得靠真浇水）"
     if still:
-        s += f"，仍漏 {len(still)} 格"
         for m in still[:3]:
             rsn = m.get('reason') or ''
             s += f" ({m.get('x')},{m.get('y')})「{rsn}」" if rsn else f" ({m.get('x')},{m.get('y')})"
