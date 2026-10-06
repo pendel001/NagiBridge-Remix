@@ -25797,16 +25797,19 @@ _FISH_MINE_SPOT = (26, 13, 1)   # (x, y, facing) —— 恒亲站；20/60/100 �
 
 
 def _fish_rod_in_hand(state: dict) -> bool:
-    """🎣 **手上有竿**吗 —— 权威判据 = `/state.player.rod.inHand`（`ModEntry.cs:6825`
-    `inHand = ReferenceEquals(f.CurrentTool, rod)`）。
+    """🎣 **有竿就行**（手上 or 背包里）—— 恒 2026-10-06 亲口纠正：
+    「**我记得我说的是包里有竿子就行，不用在手**」⇒ 原来卡的 `rod.inHand is True` **做严了** ✗。
 
-    ⛔ **不能**用 `player.rod` 非空：`RodInfo`（`ModEntry.cs:6806`）走的是 `FindFishingRod`
-       （`ModEntry.cs:6787`），**手持没有就退回背包里升级最高的那根** ⇒ 竿在包里 ≠ 竿在手。
-    ⚠️ 读不到这一位（老 DLL）⇒ **False**（⇒ 那行不出现）。方向与体力闸**相反**：
-       体力是"别白跑一趟"，竿是"给了一行按了必须成" ⇒ 宁缺勿编。
+    判据 = `/state.player.rod` 非空（`RodInfo`，`ModEntry.cs:6806`：走 `FindFishingRod`，
+      手持没有就退回背包里升级最高的那根 ⇒ **它在 = 这个人有竿可钓**）。
+    ⚠️ 执行侧不需要它先在手：`fish_run` 自己会 `select` 竿（恒早就拍过这条）⇒ "有竿"就够开这一行。
+    ⚠️ 读不到 `rod` 段（老 DLL）⇒ **False**（⇒ 那行不出现，宁缺勿编）。
+    ⚠️ **水格扫描那档另有一层**：它算落点距离 D 要用**钓鱼等级**，而等级只随"竿在手"的
+      `player.fishing` 一起来 ⇒ 竿在包里时那一档自然算不出 D ⇒ **不给行**（如实，不猜）。
+      鱼区/校准点那两档不依赖 D ⇒ 照给 ✓（所以这条放松对它们是真收益）。
     """
     rod = ((state or {}).get("player") or {}).get("rod")
-    return bool(isinstance(rod, dict) and rod.get("inHand") is True)
+    return bool(isinstance(rod, dict) and (rod.get("inHand") is True or rod.get("name") or rod.get("id")))
 
 
 def _fish_xy_dist(ax, ay, px, py) -> int:

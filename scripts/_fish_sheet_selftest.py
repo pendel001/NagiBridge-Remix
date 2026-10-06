@@ -182,10 +182,14 @@ try:
     api = FakeApi(_state("Forest", in_hand=False), fish_areas=FISH_FOREST)
     acct2 = _acct(api)
     ctx2, menu2 = _sheet(acct2)
-    ck("竿在背包/不在手（rod.inHand=false）⇒ **整行不出现**", "垂钓" not in menu2, menu2)
-    ck("…也没白问游戏（竿闸在 `/fish_areas` **之前**）",
-       not any(ep == "/fish_areas" for ep, _ in api.gets), str(api.gets))
-    ck("…`_im_fish` 直接回 `{}`（那行算不出来）", acct2 == {}, str(acct2))
+    # 🔴 2026-10-06 恒纠正：「**我记得我说的是包里有竿子就行，不用在手**」——
+    #    原来这里钉的是"不在手 ⇒ 整行不出现"（我把它做严了 ✗）。现在：**有竿就给**
+    #    （鱼区/校准点那两档不依赖落点距离 D）；只有**水格扫描**那档因为要钓鱼等级算 D 才给不出来。
+    ck("竿在背包/不在手（`rod.inHand=false`）⇒ **照样出「垂钓」**（恒：有竿就行）",
+       "垂钓" in menu2, menu2)
+    ck("…而且**真去问了游戏**（竿闸只要求「有竿」）",
+       any(ep == "/fish_areas" for ep, _ in api.gets), str(api.gets))
+    ck("…账里有那一档（不再直接回 `{}`）", bool(acct2), str(acct2))
 
     api = FakeApi(_state("Forest", in_hand=True), fish_areas=FISH_FOREST)
     acct3 = _acct(api, caps={})          # 老 DLL：`/status.caps` 没有 fish_areas
@@ -526,8 +530,10 @@ try:
 
     st = _state("Forest", x=80, y=80, in_hand=False)
     a, nav, scripts, out = _go(st, ARGS, land=(34, 25))
-    ck("执行前发现**竿已不在手** ⇒ 什么都不做（走位/脚本都没有）",
-       scripts == [] and nav.calls == [] and "竿" in out, out)
+    # 🔴 2026-10-06 恒：「**包里有竿子就行，不用在手**」⇒ 执行侧**也不该因为"不在手"就不动**
+    #    （`fish_run` 自己会 select 竿）。这里钉成：**照走照钓**（有竿 = 能干）。
+    ck("执行前**竿在包里**（不在手）⇒ **照样走位开钓**（恒：有竿就行；`fish_run` 自己选竿）",
+       bool(scripts) and bool(nav.calls) and "竿" not in (out or ""), out)
 
     st = _state("Forest", x=80, y=80, in_hand=True)
     a, nav, scripts, out = _go(st, {"wx": 34, "wy": 26, "area": "Lake"}, land=(34, 25))
