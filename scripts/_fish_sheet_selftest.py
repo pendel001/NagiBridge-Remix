@@ -122,10 +122,14 @@ try:
     FISH_FARM = {"ok": True, "location": "Farm", "hasFishAreaData": True, "count": 0, "areas": []}
     FISH_CABIN = {"ok": True, "location": "Cabin", "hasFishAreaData": False, "count": 0, "areas": []}
 
-    def _state(loc="Forest", x=80, y=80, in_hand=True, stamina=300, wh=(100, 100)):
+    def _state(loc="Forest", x=80, y=80, in_hand=True, stamina=300, wh=(100, 100), level=10):
         return {"location": {"name": loc, "mapWidth": wh[0], "mapHeight": wh[1]},
                 "player": {"x": x, "y": y, "stamina": stamina, "maxStamina": 300,
-                           "rod": {"name": "铱金鱼竿", "upgrade": 4, "inHand": bool(in_hand)}},
+                           "rod": {"name": "铱金鱼竿", "upgrade": 4, "inHand": bool(in_hand)},
+                           # ⚠️ 竿在手时 `/state.player.fishing` 才有（补36 加了 `fishingLevel`）——
+                           #    "按落点挑位"要拿它算 D（等级跨档距离就变）
+                           "fishing": ({"isFishing": False, "fishingLevel": level}
+                                       if in_hand else None)},
                 "activeMenu": None}
 
     def _acct(api, caps=None):
@@ -201,17 +205,18 @@ try:
     ck("…`_fish_subs` 确实返回 None（判据就是「能去的水域 ≤1」）",
        IM._fish_subs(ctx1, [None]) is None, str(acct1))
 
-    # 0 个有钓点 + 图上有水 ⇒ 一层（水格扫描）
-    # ⚠️ 2026-10-05 恒提醒（「10 级**抛到对岸也算没水**」）⇒ 核了游戏代码：
-    #    落点在 `FishingRod.cs:1950` 的 `max(128, 蓄力×(等级加成+4)×64)` 之外（10 级⇒+3⇒满蓄力≈7 格），
-    #    **"水格四邻 + 朝向"这个模型整体是错的** ⇒ 那一档已**整档关死**（`_FISH_WATER_SWEEP_ENABLED`）。
-    #    下面的检查用 `= True` **把逻辑本身钉住**（将来把落点模型做对了，翻回 True 即可），
-    #    同时另有一条钉子钉住"默认必须是关的"。
+    # 0 个有钓点 + 图上有水 ⇒ 一层（水格扫描，**按落点挑位**）
+    # ⚠️ 2026-10-06（恒：「这个落点也得自动算哦，因为前期会有变化」）：那一档现在按
+    #    「站格 + 朝向 × D = 落点必须是 `fishable` 的水」挑位，D 由 `_fish_cast_d` 自动来
+    #    （实测优先／游戏公式＋实测蓄力）。下面把实测账**打桩**成 10 级 h=7/v=6、蓄力 1.0
+    #    —— 就是今天真机四方向量出来的那组数（不是编的）。
     M._FISH_WATER_SWEEP_ENABLED = True
-    # ⚠️ 2026-10-05：`/water` 的每格**必须**带 `fishable`（游戏自己的抛竿判据 `isTileFishable`，
-    #    `GL:2330`）——这一档只认 `fishable is True` 的格（假门闸②，见 `_fish_water_scan` 的注释）。
+    M._fish_cast_dist_raw = lambda: {"power": 1.0, "obs": {"10": {"h": 7, "v": 6}}}
+    # ⚠️ `/water` 的每格**必须**带 `fishable`（游戏自己的抛竿判据 `isTileFishable`，`GL:2330`）
+    #    ——这一档只认 `fishable is True` 的格（假门闸②，见 `_fish_water_scan` 的注释）。
+    # 水格 (31,31)（fishable）⇒ 只有"站 (38,31) 面左"这一对能把鱼漂丢到它上面（D_h=7）
     water = {(30, 30): [{"x": 31, "y": 31, "canCrabPot": False, "fishable": True}]}
-    passable = {(32, 31): True}
+    passable = {(38, 31): True}
     api = FakeApi(_state("Farm", x=40, y=32, in_hand=True, wh=(80, 65)),
                   fish_areas=FISH_FARM, water=water, passable=passable)
     acct_w = _acct(api)
@@ -219,9 +224,12 @@ try:
     ctx_w, menu_w = _sheet(acct_w, loc="Farm", px=40, py=32)
     ck("0 个有钓点但图上有水 ⇒ **一层**且给得出钓点（走 `/water` 扫描）",
        len(picks_w) == 1 and "垂钓…" not in menu_w, str(acct_w) + " || " + menu_w)
-    ck("…扫描出来的岸位就是 `/passable` 认的那一格 (32,31)、面朝水（dir=3 左）",
-       bool(picks_w) and picks_w[0].get("standX") == 32 and picks_w[0].get("standY") == 31
-       and picks_w[0].get("dir") == 3 and picks_w[0].get("area") == "", str(picks_w))
+    ck("…挑出来的是**落点那一对**：站 (38,31) 面左 3 ⇒ 鱼漂飞 7 格正好落在水 (31,31) 上",
+       bool(picks_w) and picks_w[0].get("standX") == 38 and picks_w[0].get("standY") == 31
+       and picks_w[0].get("dir") == 3 and picks_w[0].get("waterX") == 31
+       and picks_w[0].get("waterY") == 31 and picks_w[0].get("area") == "", str(picks_w))
+    ck("…⛔ 不是「四邻那一格」（老错模型会给 (32,31) ⇒ 鱼漂会飞过头）",
+       bool(picks_w) and picks_w[0].get("standX") != 32, str(picks_w))
     ck("…是多锚点拼的（`/water` 带上了半径上限 `_FISH_WATER_RADIUS`）",
        any(ep == "/water" and a.get("radius") == M._FISH_WATER_RADIUS for ep, a in api.gets),
        str(api.gets[:3]))
@@ -243,15 +251,26 @@ try:
                         "**缺 `fishable` 键**（老 DLL 的回包）")):
         _a = FakeApi(_state("Farm", x=40, y=32, in_hand=True, wh=(80, 65)),
                      fish_areas=FISH_FARM, water={(30, 30): [_bad]},
-                     passable={(32, 31): True})
+                     passable={(38, 31): True})
         _ac = _acct(_a)
         ck(f"…{_why} ⇒ 那一格水**不算钓点**（整行不出现，⛔ 连 `canCrabPot` 都不拿来当理由）",
            _ac == {}, str(_ac))
 
+    # 📏 落点距离 **D 算不出来 ⇒ 整档不给行**（⛔ 宁可空着，也不拿"旁边那格"糊一个）
+    M._fish_cast_dist_raw = lambda: {}                 # 从没量过
+    _a = FakeApi(_state("Farm", x=40, y=32, in_hand=True, wh=(80, 65)),
+                 fish_areas=FISH_FARM, water=water, passable=passable)
+    _ac = _acct(_a)
+    ck("📏 从没量过抛竿距离（`_fish_cast_dist.json` 空）⇒ 那一档**一行都不给**",
+       _ac == {}, str(_ac))
+    ck("…而且**连水都不扫**（算不出 D 就早退，不白打 `/water`）",
+       not any(ep == "/water" for ep, _ in _a.gets), str(_a.gets[:2]))
+    M._fish_cast_dist_raw = lambda: {"power": 1.0, "obs": {"10": {"h": 7, "v": 6}}}
+
     # 水格扫描那档**永远只给一层**（那些钓点没有名字 ⇒ 第二层会变成几行同名）
     water2 = {(30, 30): [{"x": 31, "y": 31, "fishable": True},
                          {"x": 28, "y": 29, "fishable": True}]}
-    passable2 = {(32, 31): True, (29, 29): True}
+    passable2 = {(38, 31): True, (35, 29): True}       # (28,29) 的落点对：站 (35,29) 面左 7 格
     api = FakeApi(_state("Farm", x=40, y=32, in_hand=True, wh=(80, 65)),
                   fish_areas=FISH_FARM, water=water2, passable=passable2)
     acct_w2 = _acct(api)
@@ -271,16 +290,45 @@ try:
        any(ep == "/water" for ep, _ in api.gets), str(api.gets[:2]))
 
     # 🔴 恒 2026-10-05：「河流农场有很多小河，而轮回的钓鱼等级是 10，抛到对岸也会算没水」
-    #    ⇒ 水格扫描那一档**整体关死**（鱼漂落点在 7 格外，不是"旁边那一格"；见常量上的长注释）。
-    #    这条钉子钉的就是"默认必须是关的"——将来谁把模型做对了要翻回 True，**必须同时改这条**。
+    #    ⇒ 那一档改成**按落点挑位**（见上面那组检查）；`_FISH_WATER_SWEEP_ENABLED` 现在只当**紧急开关**。
+    #    这条钉子钉的是"开关关掉就真不给行"（真机又验出它在骗人时，先关再查）。
     M._FISH_WATER_SWEEP_ENABLED = False
     api_off = FakeApi(_state("Farm", x=40, y=32, in_hand=True, wh=(80, 65)),
                       fish_areas=FISH_FARM, water=water, passable=passable)
     acct_off = _acct(api_off)
-    ck("⛔ 默认 `_FISH_WATER_SWEEP_ENABLED=False` ⇒ 没有鱼区的图（Farm）**一行都不给**",
+    ck("⛔ 紧急开关 `_FISH_WATER_SWEEP_ENABLED=False` ⇒ 没有鱼区的图（Farm）**一行都不给**",
        acct_off == {} and not any(ep == "/water" for ep, _ in api_off.gets),
        str(acct_off) + " || " + str(api_off.gets[:2]))
     M._FISH_WATER_SWEEP_ENABLED = True   # 后面的检查继续钉"逻辑本身"（见上面那段说明）
+
+    # 📏 落点距离 D 的算法（**自动**：实测优先 → 公式＋实测蓄力 → 算不出给 None）
+    M._fish_cast_dist_raw = lambda: {"power": 1.0, "obs": {"10": {"h": 7, "v": 6}}}
+    ck("📏 10 级有实测 ⇒ 直接用**实测**（h=7 / v=6，不是拿公式现算）",
+       M._fish_cast_d(10, "h") == 7 and M._fish_cast_d(10, "v") == 6,
+       str((M._fish_cast_d(10, "h"), M._fish_cast_d(10, "v"))))
+    M._fish_cast_dist_raw = lambda: {"power": 1.0, "obs": {}}
+    ck("📏 本等级没实测、但有实测蓄力 ⇒ 按游戏公式现算：10 级 h=7 / v=6（加成 +3）",
+       M._fish_cast_d(10, "h") == 7 and M._fish_cast_d(10, "v") == 6,
+       str((M._fish_cast_d(10, "h"), M._fish_cast_d(10, "v"))))
+    ck("📏 **等级跨档要跟着变**（前期就在变）：1 级加成+1 ⇒ h=5/v=4 · 4 级 ⇒ h=6/v=5 · 15 级 ⇒ h=8/v=7",
+       (M._fish_cast_d(1, "h"), M._fish_cast_d(1, "v")) == (5, 4)
+       and (M._fish_cast_d(4, "h"), M._fish_cast_d(4, "v")) == (6, 5)
+       and (M._fish_cast_d(15, "h"), M._fish_cast_d(15, "v")) == (8, 7),
+       str([(lv, M._fish_cast_d(lv, "h"), M._fish_cast_d(lv, "v")) for lv in (0, 1, 4, 8, 15)]))
+    ck("📏 蓄力小 ⇒ 落到**下限 2 格**（`Math.Max(128f, …)`，128px=2 格）",
+       M._fish_cast_d(0, "h") == 4 and M._fish_cast_d(0, "v") == 3, "0 级加成=0 ⇒ 4/3")
+    M._fish_cast_dist_raw = lambda: {"power": 0.2}
+    ck("📏 蓄力 0.2 ⇒ 撞下限：h=v=2（不是 0/1）",
+       M._fish_cast_d(0, "h") == 2 and M._fish_cast_d(0, "v") == 2,
+       str((M._fish_cast_d(0, "h"), M._fish_cast_d(0, "v"))))
+    M._fish_cast_dist_raw = lambda: {}
+    ck("📏 蓄力也没量过 ⇒ **None**（消费侧据此整档不给行，⛔ 不许拿 7 顶替）",
+       M._fish_cast_d(10, "h") is None and M._fish_cast_d(10, "v") is None,
+       str((M._fish_cast_d(10, "h"), M._fish_cast_d(10, "v"))))
+    ck("📏 等级加成逐字照抄游戏（`FishingRod.cs:357`）：≥15⇒4 / ≥8⇒3 / ≥4⇒2 / ≥1⇒1 / 0⇒0",
+       [M._fish_added_distance(v) for v in (0, 1, 3, 4, 7, 8, 14, 15, 20)] == [0, 1, 1, 2, 2, 3, 3, 4, 4],
+       str([M._fish_added_distance(v) for v in (0, 1, 3, 4, 7, 8, 14, 15, 20)]))
+    M._fish_cast_dist_raw = lambda: {"power": 1.0, "obs": {"10": {"h": 7, "v": 6}}}
 
     # 🎣 鱼区那档的 `fishable` 口径（2026-10-05）：**只丢游戏明说钓不了的**，缺键的照旧留着
     _f = {"ok": True, "location": "Forest", "hasFishAreaData": True, "count": 1,
@@ -460,6 +508,19 @@ try:
     a, nav, scripts, out = _go_w(st, ARGS, {})          # 老 DLL：回包里压根没有 fishable 这一位
     ck("…回包**没有** `fishable` 这一位（老 DLL）⇒ 鱼区那档**不因此变红**（Forest/Town/Beach/Desert 今天能用）",
        bool(scripts) and scripts[0][0] == "fish_run", out)
+
+    # 📏 水格扫描那一档的"到点复核"必须按**落点**判（2026-10-06 真机踩到：旧尺子"≤4 格"把
+    #    正确的行 (站 29,21 → 落点 29,27，D=6) 判成"够不着"，白走一趟）
+    _SW = {"x": 29, "y": 21, "wx": 29, "wy": 27, "dir": 2, "area": ""}   # 落点在正下 6 格（D_v=6）
+    st = _state("Farm", x=29, y=21, in_hand=True, wh=(80, 65))
+    a, nav, scripts, out = _go_w(st, _SW, {(29, 27): [{"x": 29, "y": 27, "fishable": True}]})
+    ck("📏 水格扫描档：站 (29,21) 落点 (29,27) = 正下 6 格 ⇒ **照常开钓**（旧的「≤4 格」闸会误拦）",
+       bool(scripts) and scripts[0][0] == "fish_run" and ("/face", {"direction": 2}) in a.posts, out)
+    _BAD = dict(_SW, wy=25)                                              # 落点对不上（只有 4 格）
+    st = _state("Farm", x=29, y=21, in_hand=True, wh=(80, 65))
+    a, nav, scripts, out = _go_w(st, _BAD, {(29, 25): [{"x": 29, "y": 25, "fishable": True}]})
+    ck("…落点距离对不上 D（只有 4 格）⇒ **当场拒**、不发这一竿",
+       scripts == [] and "对不上" in out, out)
 
     print("\n⑦ 按鱼区校准表（`FISHING_AREA_TARGETS`）：三条映射 + 老路一字不变 + 无校准就退回游戏 spots")
     import fish_run as FR

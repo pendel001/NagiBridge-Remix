@@ -12,6 +12,7 @@
     --max-casts     抛 N 竿就收手（0=不限，钓到体力<20/背包满/太晚/抛不出去停）
 """
 
+import os
 import sys
 import time
 import argparse
@@ -58,6 +59,52 @@ FISHING_SPOTS = {
     "Mountain": {"x": 69, "y": 14, "face": 2},
     "Forest": {"x": 69, "y": 28, "face": 2},
 }
+
+# 📏 抛竿**落点距离**的实测账（2026-10-06 恒：「这个落点也得自动算，前期会有变化」）。
+#    为什么必须实测 + 现算、**绝不写死 7**：
+#      · 距离 = `max(128, 蓄力 × (等级加成+4) × 64)` px（`FishingRod.cs:1950` 左右 / `:1976` 上下）
+#      · 等级加成 `getAddedDistance`（`:357`）≥15⇒4 / **≥8⇒3** / ≥4⇒2 / ≥1⇒1 / 否则 0
+#        ⇒ 等级每跨一档，距离就变（**前期一直在变**）
+#      · 蓄力由 Fishbot 的 `CastDistance` 决定（实测顶到 1.0）—— 他改了配置，距离也变
+#    ⇒ 所以每次抛竿都把「这一竿的落点距离 + 当时的蓄力 + 等级」写进下面这个文件；
+#      消费侧（`nagi_mcp_server._fish_cast_d`）**实测优先**、没有实测才按公式＋实测蓄力现算。
+CAST_DIST_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_fish_cast_dist.json")
+
+
+def save_cast_obs(axis, dist, power, level):
+    """把一竿的实测落点距离存进 `_fish_cast_dist.json`（按**等级**和**轴向**分开记）。
+
+    ⚠️ 轴向由**观测到的位移**判（`h` = 左右向、`v` = 上下向），⛔ 不靠"当时朝哪"——朝向会变，
+       而落点位移不会骗人（真机：(29,23) 面左 → 落点 (22,24)，|dx|=7>|dy|=1 ⇒ h）。
+    ⚠️ 一个等级要**两个轴向**都量过才算齐（横向 `+4`、纵向 `+3`，公式不一样）。
+    ⚠️ 写文件失败**绝不影响钓鱼**（全 try 包住）。返回存下来之后的那个 dict（给日志用）。
+    """
+    if axis not in ("h", "v"):
+        return {}
+    try:
+        data = {}
+        try:
+            with open(CAST_DIST_FILE, encoding="utf-8") as f:
+                data = json.load(f) or {}
+        except Exception:
+            data = {}
+        obs = dict(data.get("obs") or {})
+        lv = str(int(level if level is not None else -1))
+        cur = dict(obs.get(lv) or {})
+        cur[axis] = int(dist)
+        obs[lv] = cur
+        if isinstance(power, (int, float)) and power > 0:
+            data["power"] = round(float(power), 3)
+        data["obs"] = obs
+        data["last_level"] = int(level) if level is not None else None
+        data["last_axis"] = axis
+        data["last_d"] = int(dist)
+        data["ts"] = time.time()
+        with open(CAST_DIST_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=1)
+        return data
+    except Exception:
+        return {}
 
 
 def get_spot(location, area_id=None):
@@ -524,6 +571,7 @@ def run(port, location, max_casts=0, no_sleep=False):
     _menu_hits = 0
     _menu_types = []
     _obs = {}                      # 📏 观测到的最远鱼漂落点（量"这孩子能扔多远"，见 :1950 那段注释）
+    _maxpow = 0.0                  # 这一趟见到的**最大蓄力**（= Fishbot 的 CastAmount；量距离要连它一起记）
     while time.time() < _deadline and time.time() < _hard_end:
         time.sleep(0.3)
         _st = bot.state()
@@ -544,10 +592,15 @@ def run(port, location, max_casts=0, no_sleep=False):
         #    ⇒ 抛成功与否都读得到。取**最远的那次**（同一趟可能抛了两竿），把距离/蓄力/等级/离岸一起记下。
         try:
             _bx, _by = _f.get("bobberX"), _f.get("bobberY")
+            _pw = _f.get("castingPower")
+            if isinstance(_pw, (int, float)) and _pw > _maxpow:
+                _maxpow = float(_pw)          # 蓄力会从 0 爬到 1（实测顶到 1.0）⇒ 记峰值
             if isinstance(_bx, int) and isinstance(_by, int):
-                _d = max(abs(_bx - int(_p0.get("x", 0))), abs(_by - int(_p0.get("y", 0))))
+                _ddx, _ddy = _bx - int(_p0.get("x", 0)), _by - int(_p0.get("y", 0))
+                _d = max(abs(_ddx), abs(_ddy))
                 if _d > _obs.get("d", -1):
                     _obs = {"d": _d, "x": _bx, "y": _by,
+                            "axis": "h" if abs(_ddx) >= abs(_ddy) else "v",
                             "power": _f.get("castingPower"),
                             "level": _f.get("fishingLevel"),
                             "clear": _f.get("clearWaterDistance")}
@@ -626,6 +679,14 @@ def run(port, location, max_casts=0, no_sleep=False):
             _verdict = "面前这条线**没问成**（读不到）⇒ 这一句断不了。"
         log(f"🚫 没能抛出竿（`isFishing` 未建立 —— 这**不等于**「方向没有水」）：{_facts}。\n"
             f"   {_land_txt}{_verdict}")
+        if _obs:
+            # 📏 抛失败也把落点量下来（这正是最需要它的场合：**落点那格不是水**才失败的）
+            _sv = save_cast_obs(_obs.get("axis"), _obs["d"], _maxpow,
+                                _obs.get("level"))
+            log(f"  📏 已记账：落点距离 {_obs['d']} 格（朝向 {_p.get('facingDirection')} · "
+                f"蓄力 {_maxpow} · 等级 {_obs.get('level')}）→ `_fish_cast_dist.json`"
+                + (f"（该等级实测：{_sv.get('obs', {}).get(str(_obs.get('level')))}）" if _sv else
+                   "（写文件失败，不影响这次收手）"))
         bot.fishbot("off")
         # 收杆兜底：鱼漂若在空中/甩着，按 cancel 收回
         for _ in range(4):
@@ -642,6 +703,10 @@ def run(port, location, max_casts=0, no_sleep=False):
         #    （⛔ 别拿公式反推：公式只是解释，实测才是据；两者不一致时以实测为准并回头查公式）
         log(f"  📏 本竿落点 ({_obs['x']},{_obs['y']}) = 距站格 **{_obs['d']} 格**"
             f"（蓄力 {_obs.get('power')} · 等级 {_obs.get('level')} · 离岸 {_obs.get('clear')}）")
+        _sv = save_cast_obs(_obs.get("axis"), _obs["d"], _maxpow, _obs.get("level"))
+        if _sv:
+            log(f"  📏 已记账 → `_fish_cast_dist.json`：蓄力={_sv.get('power')} "
+                f"各等级实测={_sv.get('obs')}")
 
     # monitor loop（max_casts=0 不限竿数 → 钓到体力<20 / 背包满 / 太晚才停）
     # 2026-09-01 恒拍板：0.6.1 fishbot 自动玩，靠"体力降/8"估抛竿的旧法（每轮降幅<8→恒0）已废 → 计数恒 0。
