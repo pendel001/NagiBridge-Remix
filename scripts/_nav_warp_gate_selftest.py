@@ -12,7 +12,7 @@
   · Python 侧：**跨图/导航内部**的走位（`_walk_and_wait` 的每一个调用方）带 `allowWarp=true` 放行；
     **AI 直调的坐标走位**（`_walk_to_coord`）**不传** ＝ 闸门就设在这一层。
 
-钉六条：
+钉七条：
   ① 导航内部走位（`_walk_and_wait`）发 `/walk_to` 时**带 `allowWarp: true`**（放行门格，行为不倒退）
   ② AI 直调坐标走位（`_walk_to_coord`）**不带**（源码级 + 运行时两把尺子）
   ③ `warp_tile` 拒绝 ⇒ 原话照转，并提示该用 `interact` / `map ops=go`
@@ -23,6 +23,12 @@
      **不许**被拒（老判据是"带 Action 就算"⇒ 拒了还报"踩上去会换图"，**理由不准**）。
      这把尺子读 `ModEntry.cs` 原文，从 `IsDoorOrWarpAction`/`IsDoorOrWarpTouchAction` 里**抠出取值表**再逐值对表
      （不是我自己另抄一份名单）；同时钉住 ④「建筑 `humanDoor` 门格」那条**没被顺手删掉**（小屋门 Farm(55,12) 靠它）。
+  ⑦ **2026-10-06 恒：「途径踩上了那些 warp 边界就切换地图」** —— 同图走位把门/传送格**当障碍**
+     （`FindPath(..., blockWarps)` ← `!_walkExpectWarp`）：能绕就绕；**唯一的路要穿传送格** ⇒
+     发 `walk_warp_blocked` 并**如实停手**（⛔ 不许掉进"兜底瞬移"那条）。跨图走位**保持原样**
+     （照旧"终点落在出口格上换图"）。另钉三样附带的诚实性：兜底瞬移的连通闸门也认传送格、
+     Python 把 `walk_warp_blocked`/`walk_teleport` 都当"**没走成**"（瞬移不算走到）、
+     `/passable_rect`＋`/dump_tile` 报了 `hasFloor`（＝Back 层有没有瓦片，给"室内落点必须在房间里"当地基）。
 """
 import inspect
 import os
@@ -226,6 +232,31 @@ try:
        _mirror("Warp Cellar2", _touch_lits, False) is True)
     ck("…⛔ 反例 `TouchAction: ChangeIntoSwimsuit`（浴室更衣格，只换衣服）⇒ **放行**",
        not any(_mirror(v, _touch_lits, False) for v in ("ChangeIntoSwimsuit", "ChangeOutOfSwimsuit")))
+
+    # ── ⑦ 同图走位把门/传送格当障碍 + 不许用"兜底瞬移"糊过去（2026-10-06 恒） ──
+    _fp = _method(r"private Queue<Point>\? FindPath\(")
+    _bfs = _method(r"private Dictionary<Point, Point> BfsParents\(")
+    ck("…`FindPath` 有 `blockWarps` 开关（默认 false：老调用点形状不变）",
+       "bool blockWarps = false" in _fp)
+    ck("…`BfsParents` 把 `blockWarps` 传下去，**邻居扩展那层真拦**",
+       "bool blockWarps = false" in _bfs and "blockWarps && IsWarpOrDoorTile(" in _bfs)
+    ck("…走位 tick 按 `!_walkExpectWarp` 传（**同图拦、跨图放**）",
+       "var blockWarps = !_walkExpectWarp;" in _cs
+       and "FindPath(farmer.currentLocation, start, target, blockWarps)" in _cs
+       and "path = FindPath(farmer.currentLocation, start, adj, blockWarps)" in _cs)
+    # ⚠️ 比对顺序时必须用**代码**那一处做锚：`BFS failed, teleporting to` 在**注释里**先出现过一次
+    #    （解释 2026-09-13 那条假警报），拿裸字符串比会把自己判红——我第一版就是这么错的。
+    _tele = 'EnqueueAlert("walk_teleport", $"BFS failed, teleporting to'
+    ck("…「唯一的路要穿传送格」⇒ 发 `walk_warp_blocked` 且**排在兜底瞬移之前**（顺序即语义）",
+       'EnqueueAlert("walk_warp_blocked"' in _cs and _tele in _cs
+       and _cs.index('EnqueueAlert("walk_warp_blocked"') < _cs.index(_tele))
+    ck("…**兜底瞬移**的连通闸门也认传送格（不许从传送格上跳过去）",
+       "blockWarps: blockWarps" in _cs and "blockWarps && IsWarpOrDoorTile(loc, np.X, np.Y" in _cs)
+    _nav_src = open(os.path.join(HERE, "navigation.py"), encoding="utf-8").read()
+    ck("…Python 侧：`walk_warp_blocked` 与 `walk_teleport` 都算「没走成」（瞬移不算走到）",
+       '"walk_warp_blocked", "walk_teleport"' in _nav_src)
+    ck("…`/passable_rect` 与 `/dump_tile` 都报 `hasFloor`（地板探测字段，先只报数）",
+       '["hasFloor"] = loc.hasTileAt(' in _cs and 'result["hasFloor"] = loc.hasTileAt(' in _cs)
 finally:
     for _k, _v in _real.items():
         setattr(N, _k, _v)

@@ -2233,7 +2233,9 @@ public class ModEntry : Mod
                 _walkSegmentStarted = true;
                 var start = farmer.TilePoint;
                 var target = new Point(seg.TargetX, seg.TargetY);
-                var path = FindPath(farmer.currentLocation, start, target);
+                // 🚪 同图走位把门/传送格当障碍（跨图 `_walkExpectWarp=true` 照旧要踩出口格换图）
+                var blockWarps = !_walkExpectWarp;
+                var path = FindPath(farmer.currentLocation, start, target, blockWarps);
 
                 // If the exact warp tile isn't reachable (e.g. door tiles),
                 // try walking to the nearest adjacent passable tile instead.
@@ -2245,7 +2247,7 @@ public class ModEntry : Mod
                     {
                         var adj = new Point(target.X + dx[dir], target.Y + dy[dir]);
                         if (adj == start) { path = new Queue<Point>(); break; }
-                        path = FindPath(farmer.currentLocation, start, adj);
+                        path = FindPath(farmer.currentLocation, start, adj, blockWarps);
                         if (path != null) break;
                     }
                 }
@@ -2269,6 +2271,23 @@ public class ModEntry : Mod
                     _walkSegIdx = 0;
                     _walkSegmentStarted = false;
                     _pathQueue = null;
+                }
+                else if (path == null && blockWarps
+                         && FindPath(farmer.currentLocation, start, target, blockWarps: false) != null)
+                {
+                    // 🚪 2026-10-06 恒：「**途径踩上了那些 warp 边界就切换地图**」——
+                    //    同图走位不许穿门/传送格：绕不开就**如实停手**，
+                    //    ⛔ 不许掉进下面那条"兜底瞬移"（那等于穿墙过去、连动画都没有）。
+                    //    判据：**不拦 warp 时能算出路** ⇒ 说明"唯一的路要穿传送格"，正是这一支。
+                    EnqueueAlert("walk_warp_blocked",
+                        $"🚪 走不到 ({target.X},{target.Y})：**唯一的路要穿过门/传送格**（踩上去会换图）—— 已停手；"
+                        + "要过去请用 `map ops=go`（跨图），或换个落点",
+                        "warning", "walk");
+                    _walkRoute = null;
+                    _walkSegIdx = 0;
+                    _walkSegmentStarted = false;
+                    _pathQueue = null;
+                    return;
                 }
                 else if (path == null)
                 {
@@ -2296,7 +2315,8 @@ public class ModEntry : Mod
                         ? tp
                         : FindNearestPassableTile(farmer.currentLocation, tp, 4);
                     if (dest != null
-                        && !IsReachableByWalking(farmer.currentLocation, farmer.TilePoint, dest.Value))
+                        && !IsReachableByWalking(farmer.currentLocation, farmer.TilePoint, dest.Value,
+                                                 blockWarps: blockWarps))
                     {
                         // 🗣️ 2026-09-27(164) 恒真机：「既然能 position 到，那要不静默掉」——
                         //    没静默（这条是**真的**：两把尺子 `/passable` 全屋 + `/surroundings` 互证过），
@@ -4906,6 +4926,10 @@ public class ModEntry : Mod
                         tiles.Add(new Dictionary<string, object?>
                         {
                             ["x"] = tx, ["y"] = ty, ["passable"] = passable,
+                            // 🧱 2026-10-06（恒：「小屋里这么走出界居然不拦着吗」）：**这格有没有地板**
+                            //    = Back 层有没有瓦片。屋里地板有贴图、屋外那片黑区没有 ⇒ 想拿它当
+                            //    "室内落点必须在房间里"的通用判据（先只报字段，**验完再决定要不要当闸**）。
+                            ["hasFloor"] = loc.hasTileAt(tx, ty, "Back"),
                             ["object"] = objName, ["objId"] = objId, ["objType"] = objType,
                             ["terrain"] = terrainName, ["largeTerrain"] = largeTerrainName,
                             ["resource"] = resourceName
@@ -17552,6 +17576,8 @@ var tcs = new TaskCompletionSource<object>();
                 //    mapPassable 留原始地图图层判定，排查"是墙挡的还是东西挡的"时用。
                 result["passable"] = IsTilePassable(loc, new Point(x, y));
                 result["mapPassable"] = loc.isTilePassable(tv);
+                // 🧱 2026-10-06：**这格有没有地板**（Back 层瓦片）——见 `/passable_rect` 同一句注释
+                result["hasFloor"] = loc.hasTileAt(x, y, "Back");
                 result["isWater"] = loc.isWaterTile(x, y);   // 🦀 蟹笼部署找水用（2026-08-16）
                 // 🦀 蟹笼内部状态（2026-08-16 诊断饵挂不上）：bait/readyForHarvest/owner
                 if (loc.objects.TryGetValue(tv, out var obj2) && obj2 is StardewValley.Objects.CrabPot cp)
@@ -25238,14 +25264,17 @@ var tcs = new TaskCompletionSource<object>();
     /// <summary>
     /// Simple BFS pathfinding on the game map.
     /// </summary>
-    private Queue<Point>? FindPath(GameLocation location, Point start, Point end)
+    /// <param name="blockWarps">🚪 true = **把门/传送格当障碍**（同图走位用）——
+    /// 踩上去会换图，不能像普通地板那样穿过去；跨图走位（`map go`）传 false：
+    /// 它**故意**要落在出口传送格上让游戏换图（见 `_walkExpectWarp`）。</param>
+    private Queue<Point>? FindPath(GameLocation location, Point start, Point end, bool blockWarps = false)
     {
         if (start == end) return new Queue<Point>();
 
         // 一次 BFS 铺满可达区（父指针表）。命中终点就**早退**（近目标照样便宜）；
         // 没命中说明终点不可站/进不去，顺手拿**同一份**表去够它的邻居 ——
         // 不再像旧代码那样对每个候选邻居各跑一整趟 BFS（那是最坏 5 趟全图搜索）。
-        var parents = BfsParents(location, start, end);
+        var parents = BfsParents(location, start, end, blockWarps);
         var direct = Rebuild(parents, start, end);
         if (direct != null) return direct;
 
@@ -25260,6 +25289,7 @@ var tcs = new TaskCompletionSource<object>();
             var cand = new Point(end.X + ndx[i], end.Y + ndy[i]);
             if (cand == start) return new Queue<Point>();
             if (!IsTilePassable(location, cand)) continue;
+            if (blockWarps && IsWarpOrDoorTile(location, cand.X, cand.Y, out _)) continue;
             var d = Math.Abs(start.X - cand.X) + Math.Abs(start.Y - cand.Y);
             if (d >= bestDist) continue;
             var p = Rebuild(parents, start, cand);
@@ -25288,7 +25318,8 @@ var tcs = new TaskCompletionSource<object>();
     /// 修法：**父指针回溯**（只记 parent，命中后再倒推）+ 上限放到地图格数 W*H
     /// （130×110 的镇子才 1.4 万格，时间和内存都是 O(W*H)）。
     /// </summary>
-    private Dictionary<Point, Point> BfsParents(GameLocation location, Point start, Point stopAt)
+    private Dictionary<Point, Point> BfsParents(GameLocation location, Point start, Point stopAt,
+                                               bool blockWarps = false)
     {
         int maxSteps = Math.Max(location.Map.DisplayWidth / 64 * (location.Map.DisplayHeight / 64), 1024);
 
@@ -25311,6 +25342,11 @@ var tcs = new TaskCompletionSource<object>();
                 if (visited.Contains(next)) continue;
                 // 🚪 门格（关着也 passable=false）当作「可跨越」放行——走位循环会在踩上它时先推门。
                 if (!IsTilePassable(location, next) && !IsInteriorDoor(location, next)) continue;
+                // 🚪 同图走位（blockWarps=true）：**门/传送格一律当障碍**（恒 2026-10-06
+                //    「途径踩上了那些 warp 边界就切换地图」）—— 踩上去会换图，
+                //    当普通地板穿过去 = 被游戏拽走（真机：小屋内部走位一路穿到屋外）。
+                //    要么绕开，要么由调用方**如实停手**；跨图走位传 false，照旧"终点落在出口格换图"。
+                if (blockWarps && IsWarpOrDoorTile(location, next.X, next.Y, out _)) continue;
 
                 visited.Add(next);
                 parents[next] = pos;
@@ -25674,7 +25710,8 @@ var tcs = new TaskCompletionSource<object>();
     /// ⚠️ `ignoreTransient=true` 把**牲畜**排除在外：动物会走，构不成"结构性屏障"，
     ///    否则满屋子动物的畜棚会被判成"和外面不连通"，把原本正常的兜底瞬移也一并毙掉。
     /// </summary>
-    private bool IsReachableByWalking(GameLocation loc, Point from, Point to, int cap = 40000)
+    private bool IsReachableByWalking(GameLocation loc, Point from, Point to, int cap = 40000,
+                                     bool blockWarps = false)
     {
         if (from == to) return true;
         var seen = new HashSet<Point> { from };
@@ -25691,6 +25728,8 @@ var tcs = new TaskCompletionSource<object>();
                 var np = new Point(p.X + dx[i], p.Y + dy[i]);
                 if (seen.Contains(np)) continue;
                 if (!IsTilePassable(loc, np, ignoreTransient: true)) continue;
+                // 🚪 同一把尺子：这条是"兜底瞬移"的连通闸门，问了它就不能让瞬移跨过传送格
+                if (blockWarps && IsWarpOrDoorTile(loc, np.X, np.Y, out _)) continue;
                 if (np == to) return true;
                 seen.Add(np);
                 q.Enqueue(np);

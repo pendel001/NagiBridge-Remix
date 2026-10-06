@@ -1122,7 +1122,11 @@ def _walk_failed_alert(since):
     · ⚠️ **必须比时间戳**：队列里可能还躺着**上一次**走位的失败警报
       （游戏在 update 里补发的、或我们用自己 timeout 提前收工时它才发出来）
       ⇒ 只认 `timeUtc` **晚于** `since` 的那条，否则会把旧失败当"这次没到"（假失败）。
-    · 只看 `walk_failed` / `walk_blocked` 两种（`ModEntry.cs:2294/2281`）；
+    · 认四种（`ModEntry.cs:2294/2281` ＋ 2026-10-06 新加的两种）：
+      `walk_failed`（落点附近全堵）/ `walk_blocked`（不在同一连通区）/
+      **`walk_warp_blocked`**（同图走位**唯一的路要穿门/传送格** ⇒ 我们主动停手）/
+      **`walk_teleport`**（BFS 走不通、C# **直接改 `Position` 瞬移**过去——⚠️ 那**不算走到**：
+      拟人走位不许 position 穿墙，而且它连动画都没有 ⇒ 如实当**没走成**，把游戏原话带给 AI）。
       **不看** `walk_completed` —— "收到完成就判成功"是另一回事，本批不做（成功判据一个字没动）。
     """
     if since is None:
@@ -1133,7 +1137,8 @@ def _walk_failed_alert(since):
         return None
     _best, _best_t = None, None
     for _al in ((a or {}).get("alerts") or []):
-        if str((_al or {}).get("type") or "") not in ("walk_failed", "walk_blocked"):
+        if str((_al or {}).get("type") or "") not in ("walk_failed", "walk_blocked",
+                                                      "walk_warp_blocked", "walk_teleport"):
             continue
         _t = _alert_epoch_utc(_al)
         if _t is None or _t <= since:
