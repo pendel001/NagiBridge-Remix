@@ -666,7 +666,7 @@ MAP_LINKS = {
     "Sunroom": [{"tile": [5, 14], "target": "SeedShop", "kind": "warp", "arrive": [32, 4], "note": "📋 2026-10-06 按 `/warps` 总表补（原表缺这条 ⇒ `map go` 到不了）"}],
     "IslandWestCave1": [{"tile": [6, 12], "target": "IslandWest", "kind": "warp", "arrive": [61, 5], "note": "📋 2026-10-06 按 `/warps` 总表补（原表缺这条 ⇒ `map go` 到不了）"}],
     "IslandSouthEastCave": [{"tile": [0, 7], "target": "IslandSouthEast", "kind": "warp", "arrive": [30, 19], "note": "📋 2026-10-06 按 `/warps` 总表补（原表缺这条 ⇒ `map go` 到不了）"}],
-    "IslandSouthEast": [{"tile": [31, 18], "target": "IslandSouthEastCave", "kind": "warp", "arrive": [1, 8], "note": "📋 2026-10-06 按 `/warps` 总表补（原表缺这条 ⇒ `map go` 到不了）"}, {"tile": [0, 28], "target": "IslandSouth", "kind": "warp", "arrive": [43, 29], "note": "📋 2026-10-06 按 `/warps` 总表补（原表缺这条 ⇒ `map go` 到不了）；⚠️ 出口瓦片 x<0（边界外）⇒ 取边界内可达格"}],
+    "IslandSouthEast": [{"tile": [31, 18], "target": "IslandSouthEastCave", "kind": "warp", "arrive": [1, 8], "note": "📋 2026-10-06 按 `/warps` 总表补（原表缺这条 ⇒ `map go` 到不了）"}, {"tile": [0, 28], "target": "IslandSouth", "kind": "warp", "arrive": [42, 29], "note": "📋 2026-10-06 按 `/warps` 总表补（原表缺这条 ⇒ `map go` 到不了）；⚠️ 出口瓦片 x<0（边界外）⇒ 取边界内可达格"}],
     "DesertFestival": [{"tile": [8, 5], "target": "SkullCave", "kind": "warp", "arrive": [7, 8], "note": "📋 2026-10-06 按 `/warps` 总表补（原表缺这条 ⇒ `map go` 到不了）"}, {"tile": [18, 26], "target": "BusStop", "kind": "warp", "arrive": [22, 10], "note": "📋 2026-10-06 按 `/warps` 总表补（原表缺这条 ⇒ `map go` 到不了）"}],
     "Cellar": [{"tile": [3, 1], "target": "FarmHouse", "kind": "warp", "arrive": [19, 34], "note": "📋 2026-10-06 按 `/warps` 总表补（原表缺这条 ⇒ `map go` 到不了）"}],
     "CaptainRoom": [{"tile": [0, 5], "target": "IslandWest", "kind": "warp", "arrive": [59, 92], "note": "📋 2026-10-06 按 `/warps` 总表补（原表缺这条 ⇒ `map go` 到不了）；⚠️ 出口瓦片 x<0（边界外）⇒ 取边界内可达格"}],
@@ -791,7 +791,7 @@ MAP_LINKS = {
     # ⚠️ 2026-08-15 用实时 /warps 校准：岛的结构是 IslandSouth 为枢纽——西桥→IslandWest、东桥→IslandEast、北边→IslandNorth(火山区)。
     #    ❌ 不存在 IslandWest↔IslandNorth / IslandEast↔IslandNorth 直连（之前误加已删）；岛内快捷=金核桃解锁的鹦鹉特快（见 LOCKED_MAPS.parrotExpress）
     "IslandSouth": [
-        {"tile": [43, 28], "target": "IslandSouthEast", "kind": "warp", "arrive": [0, 29], "note": "📋 2026-10-06 按 `/warps` 总表补（原表缺这条 ⇒ `map go` 到不了）"}, {"tile": (0, 11), "target": "IslandWest", "kind": "warp", "note": "西桥头→姜岛农场(105,41)"},
+        {"tile": [42, 28], "target": "IslandSouthEast", "kind": "warp", "arrive": [0, 29], "note": "📋 2026-10-06 按 `/warps` 总表补（原表缺这条 ⇒ `map go` 到不了）"}, {"tile": (0, 11), "target": "IslandWest", "kind": "warp", "note": "西桥头→姜岛农场(105,41)"},
         {"tile": (36, 12), "target": "IslandEast", "kind": "warp", "note": "东桥头→丛林/度假村(0,46)"},
         {"tile": (18, 0), "target": "IslandNorth", "kind": "warp", "arrive": (36, 89), "note": "北边小路站格(18,0)→/warp 火山入口区(36,89)。原出口(18,-1) y=-1 边界外"},
         # ⚠️ `tile` 必须是**站得住的格**（本表契约：`_map_go_walk` 拿它当"走到这再 /warp"的出口站格）。
