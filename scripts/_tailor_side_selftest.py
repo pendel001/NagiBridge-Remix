@@ -133,6 +133,12 @@ ck("…抓身上那件之前也先重建一次（`BuildHighlightCache` 顺带会
    _pw.count("BuildHighlightCache") >= 1)
 ck("…注释里写明根因（「陈旧」＋ `HighlightItems`）", "陈旧" in _set and "HighlightItems" in _set)
 
+print("⑩ ♻️ 清槽后**必须让游戏重算**（恒截图逮到：槽空着却还挂着'你将制作：长裙'的陈旧预览）")
+_clr2 = _block('if (action == "clear")', "// 👕🧵 **身上那三件当料**")
+ck("…clear 分支里调了 `_ValidateCraft`（按当前两槽重算/清掉产出预览）",
+   "_ValidateCraft" in _clr2, "清槽没重算 ⇒ 会留陈旧预览")
+ck("…顺带也重建了高亮缓存（`BuildHighlightCache`）", "BuildHighlightCache" in _clr2)
+
 print()
 if FAIL:
     print(f"❌ 失败 {len(FAIL)} 项: {FAIL}")

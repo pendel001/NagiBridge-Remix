@@ -17402,6 +17402,16 @@ var tcs = new TaskCompletionSource<object>();
                     }
                     var liClear = tm.leftIngredientSpot?.item;
                     var riClear = tm.rightIngredientSpot?.item;
+                    // ♻️ 2026-10-06 恒真机截图逮到：**清槽后没让游戏重算** ⇒ 两槽都空了、
+                    //    "你将制作："却还挂着上一次的产出（**陈旧预览**：`canStart=false` 但显示是错的）。
+                    //    ⇒ 清完槽照放料后那对动作补上重算（`_ValidateCraft` 会按当前两槽重算/清掉产出预览）。
+                    try
+                    {
+                        typeof(StardewValley.Menus.TailoringMenu)
+                            .GetMethod("_ValidateCraft", F)?.Invoke(tm, null);
+                    }
+                    catch { }
+                    try { tm.BuildHighlightCache(); } catch { }
                     tcs.SetResult(new { ok = true, action = "clear", returned,
                         left = liClear?.DisplayName, right = riClear?.DisplayName,
                         note = returned.Count == 0 ? "两个槽本来就是空的"
