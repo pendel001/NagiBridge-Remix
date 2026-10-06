@@ -14516,6 +14516,12 @@ public class ModEntry : Mod
                     //       + `Data/TailoringRecipes` 的 First/SecondItemTags（`:319-336`），抄一份必烂。
                     //    ⚠️ 这会**顺带把缓存建起来**（等于帮游戏把悬停高亮也算好了）—— 无副作用、只多花一点 CPU。
                     var tmPlaceable = new List<object>();
+                    // 👕🧵 **侧边那一列（身上穿的三件）** —— 恒 2026-10-06 红框问的就是这一列。
+                    //    数据源：`player.hat / shirtItem / pantsItem`（`TailoringMenu.cs:203-227` 那三个图标
+                    //    名字就叫 `Hat`/`Shirt`/`Pants`，`:928-941` 悬停读的也是这三件）；
+                    //    "能不能当料" = **同一张 `ItemHighlightCache`** —— `BuildHighlightCache()`
+                    //    （`:281-286`）建缓存时就把这三件一起算进去了（原先我们只翻 `bagList` ⇒ 身上三件从不上单）。
+                    var wornSide = new List<object>();
                     try
                     {
                         tm.BuildHighlightCache();
@@ -14546,6 +14552,31 @@ public class ModEntry : Mod
                             tmPlaceable.Add(new { name = itB.DisplayName ?? itB.Name,
                                 id = itB.QualifiedItemId, stack = itB.Stack, left = okL, right = okR });
                         }
+                        // 👕 身上那三件（**同一张缓存**判"能不能当料"；`bag=false` 让消费侧一眼分清在哪）
+                        void AddWorn(string key, Item? it)
+                        {
+                            if (it == null) return;
+                            bool wL = false, wR = false;
+                            try
+                            {
+                                if (cache != null && cache.Contains(it))
+                                {
+                                    var hl2 = cache[it];
+                                    var ht2 = hl2.GetType();
+                                    wL = (bool)(ht2.GetField("LeftSlot")?.GetValue(hl2) ?? false);
+                                    wR = (bool)(ht2.GetField("RightSlot")?.GetValue(hl2) ?? false);
+                                }
+                            }
+                            catch { }
+                            wornSide.Add(new
+                            {
+                                slot = key, name = it.DisplayName ?? it.Name, id = it.QualifiedItemId,
+                                left = wL, right = wR
+                            });
+                        }
+                        AddWorn("hat", Game1.player.hat?.Value);
+                        AddWorn("shirt", Game1.player.shirtItem?.Value);
+                        AddWorn("pants", Game1.player.pantsItem?.Value);
                     }
                     catch { }
                     tailor = new
@@ -14559,7 +14590,11 @@ public class ModEntry : Mod
                         canStart = tmValid && tmCanFit && !tmBusy && tmResult != null,
                         heldItem = tmHeld,
                         // 🎒 背包里能进左/右槽的那几件（游戏自己算的，见上面那段账）
-                        placeable = tmPlaceable
+                        placeable = tmPlaceable,
+                        // 👕 **身上穿的三件**（同一个判据、同一张缓存）——
+                        //    `slot` = hat/shirt/pants；`left/right` = 能不能进哪个槽；
+                        //    要用它们当料：`menu tailor place=<slot名> slot=left`（走游戏自己的点击，见 `/tailor_set`）。
+                        worn = wornSide
                     };
                     // 底部背包槽位（跟锻造台同一条写法）
                     foreach (var fT3 in menu.GetType().GetFields(tmFlags))
@@ -17248,6 +17283,11 @@ var tcs = new TaskCompletionSource<object>();
     ///
     /// 参数（`left`/`right` 都空 = 只读快照）：
     ///   · `left`  / `right` = 物品名 / 限定 id → **从背包取 1 个**放进那一槽（空串 = 这一槽不动）；
+    ///     ⚠️ 2026-10-06 起这两格也收**身上穿的那三件**：`hat` / `shirt` / `pants`
+    ///     （中文别名 帽子 / 衬衫 / 上衣 / 裤 / 裤子）—— 那条路**走游戏自己的点击**：
+    ///     空光标点侧边图标 ⇒ 那件进光标（`TailoringMenu.cs:435-445`/`:468-478`/`:501-511`），
+    ///     再点料槽 ⇒ 进槽（`_leftIngredientSpotClicked`）。⛔ **不是**直接写 `spot.item`
+    ///     （直接写字段不改 UI/不建缓存，恒真机见过"数据变了、界面没动"）。
     ///   · `action` = `"clear"` 两槽的料退回背包 / `"start"` 开缝 / `"take"` 把光标上的产物收进背包。
     ///
     /// ⚠️ 判据**全用游戏自己的**（`IsValidCraft` / `IsValidCraftIngredient` / `CanFitCraftedItem` /
@@ -17308,6 +17348,63 @@ var tcs = new TaskCompletionSource<object>();
                         left = liClear?.DisplayName, right = riClear?.DisplayName,
                         note = returned.Count == 0 ? "两个槽本来就是空的" : $"退回 {returned.Count} 件" });
                     return;
+                }
+
+                // 👕🧵 **身上那三件当料**（恒 2026-10-06 红框问的那一列）：`left`/`right` 给 `hat`/`shirt`/`pants`
+                //    ⇒ **走游戏自己的点击**（⛔ 不是写字段）：空光标点侧边图标 ⇒ 那件进光标；再点料槽 ⇒ 进槽。
+                //    判据全交给游戏：它自己会 `HighlightItems(...)` 才抓（`TailoringMenu.cs:435/468/501`），
+                //    抓不起来 / 进不了槽都**如实报**，绝不假装成功。
+                Func<string, string> wornKeyOf = (v) =>
+                {
+                    var s = (v ?? "").Trim().ToLowerInvariant();
+                    return s switch
+                    {
+                        "hat" or "帽子" => "hat",
+                        "shirt" or "衬衫" or "上衣" => "shirt",
+                        "pants" or "裤" or "裤子" => "pants",
+                        _ => ""
+                    };
+                };
+                Func<string, ClickableComponent?, (bool ok, string err)> placeWorn = (key, spot) =>
+                {
+                    if (spot == null) return (false, "料槽不在（菜单状态怪）");
+                    ClickableComponent? icon = null;
+                    foreach (var ic in tm.equipmentIcons)
+                        if (string.Equals(ic.name, key, StringComparison.OrdinalIgnoreCase)) icon = ic;
+                    if (icon == null) return (false, "菜单里没有侧边图标（这版游戏结构变了？）");
+                    Item? worn = key switch
+                    {
+                        "hat" => Game1.player.hat?.Value,
+                        "shirt" => Game1.player.shirtItem?.Value,
+                        _ => Game1.player.pantsItem?.Value
+                    };
+                    if (worn == null) return (false, $"身上没穿{key}");
+                    if (GetMenuHeldItem(tm) is Item) return (false, "光标上还拿着东西 —— 先放回背包再弄");
+                    tm.receiveLeftClick(icon.bounds.Center.X, icon.bounds.Center.Y);
+                    var held = GetMenuHeldItem(tm) as Item;
+                    if (held == null)
+                        return (false, $"点了侧边图标，但游戏没把身上那件抓起来（它可能不是可用的料）—— 料槽没动");
+                    tm.receiveLeftClick(spot.bounds.Center.X, spot.bounds.Center.Y);
+                    if (spot.item == null)
+                        return (false, "抓起来了，但没进料槽 —— ⚠️ 光标上还拿着东西，先处理它");
+                    return (true, "");
+                };
+                var wornL = wornKeyOf(left);
+                var wornR = wornKeyOf(right);
+                if (wornL != "" || wornR != "")
+                {
+                    if (wornL != "")
+                    {
+                        var (okL2, errL2) = placeWorn(wornL, tm.leftIngredientSpot);
+                        if (!okL2) { tcs.SetResult(new { ok = false, error = errL2 }); return; }
+                        left = "";      // 这一侧已经办完，别让下面的"背包取件"再插一手
+                    }
+                    if (wornR != "")
+                    {
+                        var (okR2, errR2) = placeWorn(wornR, tm.rightIngredientSpot);
+                        if (!okR2) { tcs.SetResult(new { ok = false, error = errR2 }); return; }
+                        right = "";
+                    }
                 }
 
                 // 📥 放料：先校验（游戏自己的"能不能当料"），再取 1 个放进槽；失败回滚已放的那一槽
