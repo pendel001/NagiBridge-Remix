@@ -247,9 +247,17 @@ try:
     # ⚠️ 比对顺序时必须用**代码**那一处做锚：`BFS failed, teleporting to` 在**注释里**先出现过一次
     #    （解释 2026-09-13 那条假警报），拿裸字符串比会把自己判红——我第一版就是这么错的。
     _tele = 'EnqueueAlert("walk_teleport", $"BFS failed, teleporting to'
-    ck("…「唯一的路要穿传送格」⇒ 发 `walk_warp_blocked` 且**排在兜底瞬移之前**（顺序即语义）",
-       'EnqueueAlert("walk_warp_blocked"' in _cs and _tele in _cs
-       and _cs.index('EnqueueAlert("walk_warp_blocked"') < _cs.index(_tele))
+    ck("…绕不开门/传送格 ⇒ **不再停手**，改成照原路走（`walk_cross_warp`）",
+       'EnqueueAlert("walk_cross_warp"' in _cs and "walk_warp_blocked" not in _code_only(_cs))
+    ck("…`walk_cross_warp` 仍**排在兜底瞬移之前**（顺序即语义：不许穿墙糊过去）",
+       'EnqueueAlert("walk_cross_warp"' in _cs and _tele in _cs
+       and _cs.index('EnqueueAlert("walk_cross_warp"') < _cs.index(_tele))
+    # 恒选 **(b)**：踩到**本图原生 warp** ⇒ 用**游戏自己的数据**发这一发（不是我们算的兜底 warp）
+    ck("…踩到本图原生 warp ⇒ `walk_native_warp` ＋ `warpFarmer(w.TargetName, w.TargetX, w.TargetY)`",
+       'EnqueueAlert("walk_native_warp"' in _cs and "foreach (var w in here.warps)" in _cs
+       and "Game1.warpFarmer(w.TargetName, w.TargetX, w.TargetY, false)" in _cs)
+    ck("…原生 warp 防重复发：记住 `图|格`，且**新路线清零**（`_nativeWarpFired`）",
+       "_nativeWarpFired" in _cs and "_nativeWarpFired = null;" in _cs)
     ck("…**兜底瞬移**的连通闸门也认传送格（不许从传送格上跳过去）",
        "blockWarps: blockWarps" in _cs and "blockWarps && IsWarpOrDoorTile(loc, np.X, np.Y" in _cs)
     _nav_src = open(os.path.join(HERE, "navigation.py"), encoding="utf-8").read()

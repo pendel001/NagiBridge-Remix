@@ -728,6 +728,11 @@ public class ModEntry : Mod
     //     它半路被换图 = 踩上了传送格/门格，**必须立刻停手**（见 `AbortWalkIfMapChanged`）。
     private string? _walkMapAtStart;
     private bool _walkExpectWarp;
+    // 🚪 2026-10-06 恒选 **(b)**：「**触犯了游戏的原生 warp 就用它换图**」——
+    //   我们的走位是**直接改 `farmer.Position`**，**不触发游戏自己的 warp 检查**
+    //   （真机实据：小屋出口 `(27,31)→Farm(55,13)` 那格被"走过去"了却没换图）。
+    //   这里记住"刚发过原生 warp 的是哪张图的哪一格"，防同一格重复发（换图后重置）。
+    private string? _nativeWarpFired;
 
     // Warp graph for cross-map pathfinding (lazy-built)
     private Dictionary<string, List<WarpLink>>? _warpGraph;
@@ -2191,6 +2196,36 @@ public class ModEntry : Mod
             //    再往下走任何一格，都是在**新图上按旧图坐标**迈步。
             if (AbortWalkIfMapChanged()) return;
             var farmer = Game1.player;
+
+            // 🚪 2026-10-06 恒选 **(b)**：「**触犯了游戏的原生 warp 就用它换图**」——
+            //    站到**本图原生 warp 格**（`GameLocation.warps`，小屋出口 `(27,31)` 就是它）上时，
+            //    **用游戏自己的数据**发这一发（`TargetName/TargetX/TargetY`），
+            //    ⛔ 不是我们算的兜底 warp（`ResolveWarpTarget` 那套），也不是"绕开/停手"。
+            //    动机：我们的走位直接改 `Position`，游戏自己的 warp 检查**根本不会跑**
+            //      ⇒ 不补这一发，人就会**从出口格走过去**（真机：小屋里一路穿到屋外空地）。
+            //    换图之后由上面 `AbortWalkIfMapChanged()`（同图走位 → 如实停手）
+            //    或下面 `!onSegMap`（跨图走位 → 推进下一段）接手。
+            try
+            {
+                var here = farmer?.currentLocation;
+                var key = here == null ? null : $"{here.NameOrUniqueName}|{farmer.TilePoint.X},{farmer.TilePoint.Y}";
+                if (here != null && key != _nativeWarpFired)
+                {
+                    foreach (var w in here.warps)
+                    {
+                        if (w.X != farmer.TilePoint.X || w.Y != farmer.TilePoint.Y) continue;
+                        if (string.IsNullOrEmpty(w.TargetName)) continue;
+                        _nativeWarpFired = key;
+                        EnqueueAlert("walk_native_warp",
+                            $"🚪 踩到**本图原生 warp** ({w.X},{w.Y}) → {w.TargetName} ({w.TargetX},{w.TargetY})：按游戏规则换图",
+                            "info", "walk");
+                        Game1.warpFarmer(w.TargetName, w.TargetX, w.TargetY, false);
+                        return;
+                    }
+                }
+            }
+            catch { }
+
             var seg = _walkRoute[_walkSegIdx];
 
             // ⚠️ 2026-08-14：地点名比较用 NameOrUniqueName（真实名）。小屋 Name="Cabin" 但真实名
@@ -2273,21 +2308,18 @@ public class ModEntry : Mod
                     _pathQueue = null;
                 }
                 else if (path == null && blockWarps
-                         && FindPath(farmer.currentLocation, start, target, blockWarps: false) != null)
+                         && (path = FindPath(farmer.currentLocation, start, target, blockWarps: false)) != null)
                 {
-                    // 🚪 2026-10-06 恒：「**途径踩上了那些 warp 边界就切换地图**」——
-                    //    同图走位不许穿门/传送格：绕不开就**如实停手**，
-                    //    ⛔ 不许掉进下面那条"兜底瞬移"（那等于穿墙过去、连动画都没有）。
-                    //    判据：**不拦 warp 时能算出路** ⇒ 说明"唯一的路要穿传送格"，正是这一支。
-                    EnqueueAlert("walk_warp_blocked",
-                        $"🚪 走不到 ({target.X},{target.Y})：**唯一的路要穿过门/传送格**（踩上去会换图）—— 已停手；"
-                        + "要过去请用 `map ops=go`（跨图），或换个落点",
+                    // 🚪 2026-10-06 恒选 **(b)**：「**触犯了游戏的原生 warp 就用它换图**」——
+                    //    绕不开门/传送格时**不再停手**：照原路走，踩上那格**原生 warp** 时
+                    //    由 tick 开头那个钩子按**游戏自己的数据**发这一发
+                    //    （真机：小屋出口 `(27,31)→Farm(55,13)`）。
+                    //    ⛔ 仍然不许掉进下面那条"兜底瞬移"（那是穿墙、连动画都没有）。
+                    EnqueueAlert("walk_cross_warp",
+                        $"🚪 到 ({target.X},{target.Y}) 的**唯一的路要穿过门/传送格** —— 照原路走；"
+                        + "踩上那格原生 warp 时**按游戏规则换图**（不是我们自己算的兜底 warp）",
                         "warning", "walk");
-                    _walkRoute = null;
-                    _walkSegIdx = 0;
-                    _walkSegmentStarted = false;
-                    _pathQueue = null;
-                    return;
+                    _pathQueue = path;
                 }
                 else if (path == null)
                 {
@@ -24513,6 +24545,8 @@ var tcs = new TaskCompletionSource<object>();
         // Cancel any ongoing movement
         _pathQueue = null;
         _walkRoute = null;
+        // 🚪 新路线开始 ⇒ 原生 warp 的"刚发过"记忆清零（不然同图再走一次会不发）
+        _nativeWarpFired = null;
 
         // Same map → just walk
         if (sameMap)
