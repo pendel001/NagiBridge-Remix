@@ -7720,6 +7720,7 @@ public class ModEntry : Mod
                         x = a.TilePoint.X,
                         y = a.TilePoint.Y,
                         wasPetToday = a.wasPet.Value,
+                        wasAutoPet = a.wasAutoPet.Value,   // 🖐️ 抚摸机摸过没（`FarmAnimal.cs:113`）；手摸标记是上面那个 `wasPet`
                         productReady = a.currentProduce.Value != null && a.currentProduce.Value != "-1"
                     });
                 }
@@ -10502,6 +10503,35 @@ public class ModEntry : Mod
 
                 ClearMovementState();
 
+                // 🔴 2026-10-06 恒：「**我勒个在水中央  记得校验站位！！这不是真机能到达的地方吧**」
+                //    —— 当天我给 `/warp` 喂了一个**自验夹具里的假坐标**（`Farm (40,32)`），
+                //    真机上那是**水面** ⇒ 小人 `isMoving` 恒 false，**卡在水中央**。
+                //    ⇒ **发射前**校验目标格：用寻路同款 `IsTilePassable(loc, …)`（它吃 `loc` 参数
+                //      ⇒ **跨图也验得了**，这是 Python 侧做不到的那半）；站不住就**如实拒**
+                //      （并在四邻/八邻里挑一格能站的**报给调用方**，⛔ **不自己乱挪** —— 恒的规矩"宁报错别兜底"）。
+                if (x >= 0 && y >= 0 && !IsTilePassable(targetLoc, new Point(x, y)))
+                {
+                    // ⚠️ 这里**不用 `dynamic` 去读匿名类型字段**（能编，但多一层运行时绑定、没必要）：
+                    //    能站的邻格直接拼成字符串报出去，AI 照抄即可。
+                    var altTxt = new List<string>();
+                    var altXY = new List<object>();
+                    foreach (var (dx, dy) in new[] { (0, -1), (0, 1), (-1, 0), (1, 0),
+                                                     (-1, -1), (1, -1), (-1, 1), (1, 1) })
+                    {
+                        if (IsTilePassable(targetLoc, new Point(x + dx, y + dy)))
+                        {
+                            altTxt.Add($"({x + dx},{y + dy})");
+                            altXY.Add(new { x = x + dx, y = y + dy });
+                            if (altTxt.Count >= 3) break;
+                        }
+                    }
+                    var near = altTxt.Count > 0 ? "；旁边能站的：" + string.Join("、", altTxt) : "";
+                    tcs.SetResult(new { ok = false, skipped_warp = true,
+                        error = $"目标格 ({x},{y}) 站不住（水/墙/障碍）—— **没传，人在原地**{near}",
+                        requested = new { location, x, y }, standable_near = altXY });
+                    return;
+                }
+
                 // If no coordinates given, try to find a reasonable entry point
                 if (x < 0 || y < 0)
                 {
@@ -10536,12 +10566,17 @@ public class ModEntry : Mod
                 }
 
                 var f = Game1.player;
+                // 🔴 2026-10-06：原来这里读 `f.currentLocation/f.TilePoint` 当 `actual` —— **是假话**：
+                //    `Game1.warpFarmer` 只是**排队**，真正的换图/落位在**下一个 tick** ⇒ 这里读到的
+                //    永远是**落地前**的位置（真机实测：warp 进 FarmHouse 了，回包还写 `Farm(40,32)`）。
+                //    ⇒ 不在这一发里假装知道落点：如实说"下一 tick 生效"，落点一律以 `/state` 为准。
                 tcs.SetResult(new
                 {
                     ok = true,
                     action = "warped",
                     requested = new { location, x, y },
-                    actual = new { location = f.currentLocation.Name, x = f.TilePoint.X, y = f.TilePoint.Y }
+                    landing = "pending_tick",
+                    note = "落点下一 tick 才生效 —— 要确认落地请读 /state（或轮询 location 变成目标图）"
                 });
             }
             catch (Exception ex)
@@ -20997,6 +21032,7 @@ var tcs = new TaskCompletionSource<object>();
                             x = a.TilePoint.X,
                             y = a.TilePoint.Y,
                             wasPetToday = a.wasPet.Value,
+                            wasAutoPet = a.wasAutoPet.Value,   // 🖐️ 抚摸机摸过没（`FarmAnimal.cs:113`）；手摸标记是上面那个 `wasPet`
                             friendship = a.friendshipTowardFarmer.Value,
                             happiness = a.happiness.Value,
                             fullness = a.fullness.Value,
@@ -21098,6 +21134,7 @@ var tcs = new TaskCompletionSource<object>();
                             x = a.TilePoint.X,
                             y = a.TilePoint.Y,
                             wasPetToday = a.wasPet.Value,
+                            wasAutoPet = a.wasAutoPet.Value,   // 🖐️ 抚摸机摸过没（`FarmAnimal.cs:113`）；手摸标记是上面那个 `wasPet`
                             productReady = a.currentProduce.Value != null && a.currentProduce.Value != "-1",
                             product = a.currentProduce.Value
                         });
