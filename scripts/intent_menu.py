@@ -87,6 +87,9 @@ def scan_backpack(state: dict) -> list:
             "sellable": i.get("sellable", True),
             # 下面几个**原样搬，不猜**：字段不在就是 None，跟着走 CAN_MAYBE
             "cat_num": i.get("catNum"),
+            # 📖 2026-10-06：`itemId` 也搬进来 —— 「读了会被消耗」的第二把尺子（`(O)Book_` 前缀）。
+            #    ⚠️ 老 DLL 没这个键 ⇒ None ⇒ 退回"名字/问不出来"那两档，**不比改动前差**。
+            "item_id": i.get("itemId"),
             "edible": i.get("edibleValue"),
             "health": i.get("healthRecovered"),
             # 🗑️ **能不能投出货箱**（C# 的 `Item.canBeShipped()`）。
@@ -109,14 +112,33 @@ def scan_backpack(state: dict) -> list:
 #    2026-09-27 那次把状态条的判据从**名字名单**改成问游戏就是这个：
 #    `Jewels Of The Sea` 在旧名单里零命中，AI 白丢一条提示。
 BOOK_CAT = -102
+# 📖 2026-10-06 恒：「背包有**秘密纸条、日记残页、书本**时，出现在选项单，可以包办」——
+#    ⚠️ 原来 `is_book` **只认 `catNum == -102`**，可**秘密纸条/日记残页不是 -102**
+#    （服务端 `_is_readable_item` 一直得靠**名字**把它们兜住，就是这个原因）⇒ 那两类**上不了单子**。
+#    ⚠️ 名字用**中英都收**：`/state` 的 `name` 是**内部英文名**（实测 `Smallmouth Bass`），
+#       而 `displayName` 才是中文 ⇒ 两个字段各查一遍（调用方传进来的是哪个就查哪个）。
+SECRET_NOTE_NAMES = ("Secret Note", "Journal Scrap", "秘密纸条", "日记残页")
+BOOK_ID_PREFIX = "(O)Book_"
 
 
 def is_book(slot: dict):
-    """🟢 识别层：这东西**是不是**一本书。→ True / False / None(问不出来)"""
-    c = slot.get("cat_num")
-    if c is None:
+    """🟢 识别层：这东西**是不是"读了会被消耗"的那类**（技能书 / 秘密纸条 / 日记残页）。
+    → True / False / None(问不出来)
+
+    判据与服务端 `_is_readable_item` **同口径**（钉子做交叉对照防漂移）：
+      ① 游戏标的 `catNum == -102`（书类） ② id 前缀 `(O)Book_` ③ 名字是秘密纸条/日记残页
+    三样都问不出来（老 DLL：没 catNum、没 id）⇒ **CAN_MAYBE** —— 不猜，照旧进单子（读没读过要读了才知道）。
+    """
+    if not slot:
         return CAN_MAYBE
-    return c == BOOK_CAT
+    c = slot.get("cat_num")
+    iid = str(slot.get("item_id") or "")
+    nm = str(slot.get("name") or "")
+    if c == BOOK_CAT or iid.startswith(BOOK_ID_PREFIX) or nm in SECRET_NOTE_NAMES:
+        return True
+    if c is None and not iid:
+        return CAN_MAYBE      # 老 DLL 只有名字 ⇒ 名字不像书/纸条也**不判死**
+    return False
 
 
 # 👕 「这东西能穿」+「是哪一类」——**游戏自己的分类号**。
