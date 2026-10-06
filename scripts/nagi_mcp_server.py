@@ -27784,17 +27784,56 @@ def _im_buy_animal(animal, name="") -> dict:
     return api._ai_post("/menu/click", body)
 
 
-def _im_recovery_take(item) -> dict:
-    """🎟 在**开着的马龙失物招领**上取回一件（**花钱**）→ C# `/menu/click` 的原始 dict。
+def _recovery_probe() -> dict:
+    """🎟 失物招领**前后**要比的三样：丢件条数 / 钱包 / 此刻的对话正文（全从游戏读，不猜）。
 
-    ⚠️ 它就是一家普通 `ShopMenu`（`Utility.cs:4216`）⇒ **走买货那条现成的路**（按 id/名点那格，
-       C# 会自己翻页、把成交的东西放进背包）。这一层不另写一套。
-    ⚠️ 一次只取一件：每个丢件是**独立的一条货**，"整摞"在这儿没有意义 ⇒ `quantity=1`。
-    ⚠️ **不退不换**：这里是真扣钱（取回价 = 游戏算的卖店价，读过马龙那本书就是半价）。
+    ⚠️ `/state.player.deathCount` 这个**名字骗人** —— 它其实是"**上一次死亡掉了哪几件**"的条数
+      （`ModEntry.cs:6206`：`farmer.itemsLostLastDeath.Count`），不是"死过几次"。这里正是要它。
+    ⚠️ 读不到就给 `None`/`0`/空串（消费侧**不许**拿它当"没变化"的证据，见 `_im_recovery_take`）。
+    """
+    n, money = 0, None
+    try:
+        pl = ((api._ai_get("/state") or {}).get("player")) or {}
+        n = int(pl.get("deathCount") or 0)
+        if isinstance(pl.get("money"), int):
+            money = pl["money"]
+    except Exception:
+        pass
+    try:
+        dlg = str(((api._ai_get("/menu") or {}).get("dialogue")) or "")
+    except Exception:
+        dlg = ""
+    return {"n": n, "money": money, "dlg": dlg}
+
+
+def _im_recovery_take(item) -> dict:
+    """🎟 在**开着的马龙失物招领**上取回一件（**花钱**）→ 回 dict（**判据 = 游戏自己的信号**）。
+
+    🔴 **不能拿"背包里多没多出来"当判据**（2026-10-06 真机踩到，别删）：游戏这条路的实现是
+      `Item.actionWhenPurchased`（`Item.cs:578-590`）—— 买中的那一刻它
+      **清空 `itemsLostLastDeath`**、把这一件塞进 `farmer.recoveredItem`、
+      `Game1.addMailForTomorrow("MarlonRecovery")`（**明早寄到邮箱**）并 `Game1.exitActiveMenu()`
+      ⇒ **背包当场什么都不会多**。老代码照 `_im_buy` 的 `quantity` 判 ⇒ 回执印
+      「**没取回**（一件都没成交，钱没动）」——可钱真掉了（真机 −250g）、东西也真取回了
+      （马龙原话：「好，我看看今晚能不能找到你丢失的装饰垃圾桶。**明天早上我会把它放在你的邮箱里**。」）
+      ⇒ **假失败 + 假话**（跟"假成功"一个家族）。
+    ✅ 判据（都是游戏自己的，任一成立即"成交"）：① 丢件表**变短了**；② **钱掉了**且马龙那句话**真出来了**。
+      ⛔ 两者都不成立才照搬端点原话报失败（例如钱不够 —— 那时钱和表都不动，回执才对）。
     """
     if not item:
         return {"ok": False, "error": "缺 item（要取回哪一件）—— 先 `menu ops=read` 看货架"}
-    return _im_buy(item, 1)
+    before = _recovery_probe()
+    r = _im_buy(item, 1)
+    after = _recovery_probe()
+    gone = before["n"] - after["n"]                      # 丢件表短了几条（买中会整表清空）
+    paid = (before["money"] - after["money"]
+            if isinstance(before["money"], int) and isinstance(after["money"], int) else 0)
+    if gone > 0 or (paid > 0 and after["dlg"]):
+        # 回执 = **马龙那句话**（真实经过：明早寄邮箱）+ 花掉的钱（别让"钱去哪了"变成谜）
+        said = after["dlg"] or "马龙收下了这一单"
+        return {"ok": True, "quantity": max(gone, 1), "spent": paid,
+                "text": said + (f"（花了 {paid}g）" if paid > 0 else "")}
+    return r
 
 
 def _im_tailor_op(args) -> str:

@@ -64,10 +64,21 @@ MENU_PIERRE = {
 }
 CALLS = []
 TAKE_RESULT = {"ok": True, "clicked": "shop_item", "item": "(O)226", "quantity": 1}
+# 🔴 2026-10-06 真机：马龙这条路**成交了也不进背包**（游戏 `Item.cs:578-590`：清丢件表 +
+#    记 `recoveredItem` + `addMailForTomorrow("MarlonRecovery")` **明早寄邮箱** + 关菜单）
+#    ⇒ C# 那边照"背包有没有多出来"判 ⇒ 回一句「没取回（一件都没成交，**钱没动**）」——
+#    可钱真掉了、东西也真取回了。下面这把桩就照真机那一下摆：POST 之后 `lost` 归 0、
+#    `money` 少 250、`/menu` 变成马龙那句对话。
+POST_STATE = {"on": False, "arm": False, "lost": 0, "after_money": 4750,
+              "dialogue": "好，我看看今晚能不能找到你丢失的铱十字镐。明天早上我会把它放在你的邮箱里。"}
 
 
-def _stub(menu=None, menu_raises=False, take_result=None):
+def _stub(menu=None, menu_raises=False, take_result=None, post_effect=False):
+    """`post_effect=True` = 照真机那一发／`/menu/click` **之后**世界真的变了（丢件表清空 + 钱掉了
+    + 马龙那句话出来）—— 钉子 ⑨ 用它钉"别把成功报成失败"；默认 False = 老用例那种"什么都没变"。"""
     CALLS.clear()
+    POST_STATE["on"] = False
+    POST_STATE["arm"] = bool(post_effect)
     st = dict(STATE)
     if menu is None:
         st["activeMenu"] = None
@@ -77,8 +88,15 @@ def _stub(menu=None, menu_raises=False, take_result=None):
     def g(ep, params=None):
         CALLS.append(("GET", ep, params))
         if ep == "/state":
+            if POST_STATE["on"]:
+                return dict(st, player=dict(st.get("player") or {},
+                                            deathCount=POST_STATE["lost"],
+                                            money=POST_STATE["after_money"]))
             return st
         if ep == "/menu":
+            if POST_STATE["on"]:
+                return {"ok": True, "open": True, "type": "DialogueBox",
+                        "dialogue": POST_STATE["dialogue"]}
             if menu_raises:
                 raise RuntimeError("模拟：商店开着但 /menu 读不出来")
             return MENU_RECOVERY if menu == "ShopMenu" else {}
@@ -89,6 +107,8 @@ def _stub(menu=None, menu_raises=False, take_result=None):
     def p(ep, data=None):
         CALLS.append(("POST", ep, data))
         if ep == "/menu/click":
+            # 真机：这一下之后商店关了、马龙那句对话出来了 —— 只有 `post_effect=True` 的桩才真变
+            POST_STATE["on"] = POST_STATE["arm"]
             return dict(take_result if take_result is not None else TAKE_RESULT)
         return {"ok": True}
 
@@ -193,6 +213,24 @@ try:
     ck("`ctx.shop == {}`（开着但读不出来）", ctx.shop == {}, str(ctx.shop))
     M.intent(ops="show", kw={"n": 40})
     ck("…「取回失物」不出现", "recover" not in _rows(), str(_rows()))
+
+    # ⑨ 🔴 2026-10-06 真机（这一条是照现场抄的）：马龙这条路**成交了也不进背包** ——
+    #    游戏 `Item.cs:578-590`：清丢件表 + `recoveredItem` + **明早寄邮箱** + 关菜单
+    #    ⇒ C# 照"背包多没多"判 ⇒ 回 `ok:false` + 「一件都没成交，**钱没动**」。
+    #    可事实上：丢件表清空了、钱包掉了 250g、马龙那句话真出来了 ⇒ **必须报成功**，
+    #    ⛔ 不许回「没取回」（假失败 + 假话，和"假成功"一个家族）。
+    print("\n⑨ 真机那一发：端点回 `ok:false`（钱没动），但**丢件表清空+钱掉了+马龙那句话出来**")
+    _stub(menu="ShopMenu", post_effect=True,
+          take_result={"ok": False,
+                       "error": "商店里没买成「(T)IridiumPickaxe」（一件都没成交，**钱没动**）"})
+    M.intent(ops="show", kw={"n": 40})
+    M.intent(ops="do", kw={"code": str(next(r.no for r in M.intent_menu._LAST_ROWS
+                                            if r.verb.key == "recover"))})
+    got = M.intent(ops="do", kw={"code": "1"})
+    ck("照**游戏自己的信号**判成交（丢件表短了）⇒ 回执**不当失败**", "没取回" not in got, got)
+    ck("…把**马龙那句话**原样带回来（明早寄邮箱，不是「已进背包」）",
+       "明天早上" in got and "邮箱" in got, got)
+    ck("…**花掉多少也印出来**（钱真掉了，别让「钱去哪了」成谜）", "250g" in got, got)
 
     print("\n" + ("=" * 46))
     print("❌ 失败 " + str(len(FAIL)) + " 项: " + ", ".join(FAIL) if FAIL else "✅ 全过（0 失败）")

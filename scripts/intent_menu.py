@@ -3836,9 +3836,13 @@ def _exec_animal_multi(ctx, pairs, run):
         r = run("animal", {"animal": a.get("id") or a.get("name")}) or {}
         if r.get("ok"):
             ok_n += 1
+            # ⚠️ `animals` 现在报的是**屋内**那几只（C# 用的是 `AnimalHouse.animals`）——
+            #    放牧时动物都在外面 ⇒ 真机印出「现在 1/12」，可那栋棚其实是满的（游戏自己的
+            #    `isFull()` 按 `animalsThatLiveHere` 算）⇒ 标签必须写明是**屋内**，
+            #    ⛔ 别让它读成"这栋棚只有 1 只"。C# 换成 `animalsThatLiveHere` 记在待办里。
             lines.append(f"  · {r.get('animal') or a.get('name')}「{r.get('name')}」"
                          f"花了 {r.get('cost') or r.get('price')}g → 进 {r.get('building')}"
-                         f"（现在 {r.get('animals')}）")
+                         f"（屋内 {r.get('animals')}，满没满看农场的棚）")
         else:
             lines.append(f"  · {a.get('name')} —— **没买成**（游戏回：{r.get('error') or '没回话'}）")
     return render_receipt("买动物", f"{len(pairs)} 只", ok_n > 0, note="\n".join(lines))
@@ -3902,7 +3906,12 @@ def _recover_subs(ctx, targets):
 
 
 def _exec_recover_multi(ctx, pairs, run):
-    """🎟 逐条报：哪件取回了（`quantity` 是端点回读的成交数）。"""
+    """🎟 逐条报：哪件取回了（`quantity` 是端点回读的成交数）。
+
+    🔴 2026-10-06 真机：马龙这条路**成交了也不进背包**（游戏 `Item.cs:582-588`：清丢件表 +
+      记 `recoveredItem` + **明早寄邮箱** + 关菜单）⇒ 端点现在会带一句 `text`（马龙的原话）。
+      ⇒ **优先印它**（真实经过），别只印我们自己拼的「取回了（花了 Ng）」。
+    """
     lines, ok_n = [], 0
     for row, _cnt in pairs:
         g = row.targets[0]["good"]
@@ -3910,7 +3919,8 @@ def _exec_recover_multi(ctx, pairs, run):
         r = run("recovery", {"item": g.get("id") or g.get("name")}) or {}
         if r.get("ok") and int(r.get("quantity") or 0) > 0:
             ok_n += 1
-            lines.append(f"  · {cn} 取回了（花了 {g.get('price')}g）")
+            own = str(r.get("text") or "").strip()
+            lines.append("  · " + (own or f"{cn} 取回了（花了 {g.get('price')}g）"))
         else:
             lines.append(f"  · {cn} —— **没取回**（游戏回：{r.get('error') or '没回话'}）")
     return render_receipt("取回失物", f"{len(pairs)} 件", ok_n > 0, note="\n".join(lines))

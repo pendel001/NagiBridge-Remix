@@ -162,6 +162,11 @@ try:
        hits and hits[0].get("animal") == "White Chicken", str(hits))
     ck("回执逐条报**游戏回读的事实**（花了多少/进哪栋/现在几只）",
        "800g" in r and "Coop" in r and "4/4" in r, r)
+    # 🔴 2026-10-06 真机（玛妮柜台）：那一串 `animals` 是 C# 用 `AnimalHouse.animals.Count()` 算的
+    #    = **屋内**那几只；放牧时动物都在外面 ⇒ 真机印出「现在 1/12」，可那栋棚其实是**满的**
+    #    （游戏 `AnimalHouse.isFull()` 按 `animalsThatLiveHere` 算，`:53-55`）
+    #    ⇒ 标签必须写明"屋内"，⛔ 别让它被读成"这栋棚只有 1 只"。
+    ck("…⚠️ 那一串是**屋内**数（标签写明，别读成「这栋棚只有 1 只」）", "屋内" in r, r)
 
     # ④ 端点说没买成 ⇒ 回执**不许装成功**
     print("\n④ 端点回 `ok:false` ⇒ 回执如实报、不装成功")
