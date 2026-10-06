@@ -3298,6 +3298,103 @@ def _bag_total() -> int:
         return -1
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 🗑️➡️🎁 满包领取的"换件"三件套（恒 2026-10-06 亲口拍的形）
+# ══════════════════════════════════════════════════════════════════════════════
+# 恒的原话：**"满包菜单就这样做：1.领取→（如果不满直接都弄进来，如果满包）要和什么替换？（下级列表）
+#   → 自动包办替换  2.腾格（传哪格丢哪格） 3.ok/算了（关掉菜单，放弃物品）"**
+# ⚠️ 同一条消息里他还纠了我一个**危险做法**：**"你不要丢地上，丢地上容易被吸附回来。扔垃圾桶里最好。"**
+#    ⇒ 腾格**一律走菜单垃圾桶**（C# `ModEntry.cs:15831`：领取菜单里 `action=discard item=`
+#      = 拿起背包那件 → 点菜单垃圾桶；**没桶就放回**并如实报错 ⇒ 丢不成就照实说，绝不偷偷丢地上）。
+_BAG_JUNK_IDS = {
+    "(O)168", "(O)169", "(O)170", "(O)171", "(O)172", "(O)167", "(O)174",   # 垃圾类（CD/眼镜/垃圾/浮木/报纸…）
+    "(O)151", "(O)152", "(O)153", "(O)157",                                  # 海草/海藻/绿藻/白藻（便宜杂物）
+}
+# 🧱 **不列进换件候选的前缀**（恒 2026-10-06 真机第一版就逮到："Furnace / Rarecrow / Barbed Hook 也摆出来当可扔的"）：
+#    `(BC)`=机器/大工艺品（熔炉、稻草人…）· `(F)`=家具 · `(T)`=工具 · `(W)`=武器 · `(H)`=帽子 · `(S)`=衣服 · `(B)`=靴子/戒指
+#    —— 这些**不是"包满了随手扔一件"的东西**，列出来就是诱导 AI 把自己的家当扔了。
+_BAG_NEVER_IDS_PREFIX = ("(T)", "(W)", "(BC)", "(F)", "(H)", "(S)", "(B)", "(TR)")
+# 🪨 **常见消耗品**（这些标"普通"就够了；其余 `(O)` 一律标「⚠️ 可能值钱」让 AI 自己掂量）
+_BAG_COMMON_IDS = {
+    "(O)388", "(O)390", "(O)92", "(O)771", "(O)330", "(O)382",              # 木头/石头/树液/纤维/黏土/煤
+    "(O)378", "(O)380", "(O)384", "(O)386",                                  # 铜/铁/金/铱矿石
+    "(O)535", "(O)536", "(O)537", "(O)749", "(O)750",                        # 晶球/万象/Omni/铁匠/金矿点
+    "(O)309", "(O)310", "(O)311", "(O)428",                                  # 橡木/枫糖/松焦油/晒干的可乐？
+}
+_CLAIM_MAX_SUBS = 8      # 最多列几条换件候选（同 `_FISH_MAX_PICKS` 的理由：别把单子撑爆）
+
+
+def _menu_claim_subs() -> list:
+    """「**和什么替换？**」的候选（背包里**可以扔掉腾格**的）→ `[{slot,name,id,stack,why}, …]`。
+
+    判据（宁可少给，绝不给出错的）：
+      ① ⛔ **工具/武器/机器/家具/穿的一律不列**（`_BAG_NEVER_IDS_PREFIX`）——
+         2026-10-06 真机第一版把 `Furnace / Rarecrow / Barbed Hook` 都摆出来了，那是**诱导 AI 扔家当**；
+      ② 已知垃圾优先（按 **itemId** 认，不按中文名 —— 同一件东西两种语言都出现过，吃过亏）；
+      ③ 其余按**堆叠小的优先**（换一格就是一格，先扔少的）；
+      ④ `why` 实话实说：`垃圾` / `普通` / `⚠️ 可能值钱`（**只给警，不替 AI 决定**）；
+      ⑤ 最多 `_CLAIM_MAX_SUBS` 条。
+    ⚠️ 判据**只在本函数**（同"判据只有一处"）—— 单子那层只负责把 `Ctx.menu_claim_subs` 摆出来。
+    """
+    try:
+        st = api.state() or {}
+        inv = (st.get("inventory") or [])
+        cap = int(((st.get("player") or {}).get("maxItems")) or 36)
+    except Exception:
+        return []
+    out = []
+    for i, it in enumerate(inv):
+        if not it:
+            continue
+        iid = str(it.get("itemId") or "")
+        nm = it.get("name") or "?"
+        if any(iid.startswith(_p) for _p in _BAG_NEVER_IDS_PREFIX):
+            continue
+        if iid in _BAG_JUNK_IDS:
+            why = "垃圾"
+        elif iid in _BAG_COMMON_IDS:
+            why = "普通"
+        else:
+            why = "⚠️ 可能值钱"
+        out.append({"slot": i, "name": nm, "id": iid,
+                    "stack": int(it.get("stack") or 1), "why": why})
+    out.sort(key=lambda x: (0 if x["why"] == "垃圾" else (1 if x["why"] == "普通" else 2), x["stack"]))
+    return out[:_CLAIM_MAX_SUBS]
+
+
+def _menu_discard_now(name: str = "") -> str:
+    """🗑️ 把背包那件**扔进菜单垃圾桶**（恒：「别丢地上，扔垃圾桶里最好」）→ 一句话。
+
+    底层 = C# `menu click action=discard item=`（拿起 → 点菜单垃圾桶；没桶**放回**并报错）。
+    ⚠️ 用**物品名或 id** 都行（C# 认 `Name`/`DisplayName`/`QualifiedItemId` 三样，`ModEntry.cs:15841`）；
+      传 id 最稳（中英名字漂移吃过亏）。**不是** `scene drop`（那是丢地上 ✗）。
+    """
+    if not name:
+        return "❌ 没说扔哪件（`item=` 必填）"
+    try:
+        r = api._ai_post("/menu/click", {"action": "discard", "item": name}) or {}
+        if r.get("ok") and r.get("clicked") == "itemgrab_discard":
+            return f"🗑️ 已把「{r.get('item')}」扔进垃圾桶（背包第 {r.get('slot')} 格腾出来了）"
+        return (f"⚠️ 没扔掉：{r.get('error') or r}\n"
+                f"   （⛔ 别改用 `scene drop` —— 恒 2026-10-06：「丢地上容易被吸附回来」）")
+    except Exception as e:
+        return f"❌ 扔东西出错：{type(e).__name__}: {e}"
+
+
+def _menu_claim_replace(name: str = "") -> str:
+    """🗑️➡️🎁 **自动包办替换**（恒 2026-10-06：「领取 → 和什么替换？ → 自动包办替换」）→ 一句话。
+
+    两步，**都回读、话分开说**：① 把那件扔进垃圾桶腾格（`_menu_discard_now`）；
+    ② 领领取侧那件（`_menu_claim_now`）。
+    ⚠️ **没扔掉就绝不领**（不然又是"挂光标 / 一关菜单掉地上"那条老路）。
+    """
+    d = _menu_discard_now(name)
+    if not d.startswith("🗑️"):
+        return d
+    time.sleep(0.35)
+    return d + "\n" + _menu_claim_now()
+
+
 def _menu_claim_label(active_menu: dict) -> str:
     """🎓/🎁 菜单里**这一刻能领的东西** → 那一行的标题（`""` = 没得领）。
 
@@ -3336,7 +3433,9 @@ def _menu_claim_label(active_menu: dict) -> str:
                 c = 1
             more = f" 等 {len(items)} 样" if len(items) > 1 else ""
             full, used, cap = _bag_is_full()
-            tail = f"（⚠️ 包满 {used}/{cap}：得先丢一样腾格）" if full else ""
+            # ✅ 不满 ⇒ 就是原来那句（执行侧会把**装得下的都弄进来**）；
+            #    ⚠️ 满包 ⇒ 标题改成恒要的那个问句「**和什么替换？**」（点开是下级列表，见 `_menu_claim_subs`）。
+            tail = f"（⚠️ 包满 {used}/{cap}：**和什么替换？**）" if full else ""
             return f"领 {it.get('name')}×{c}{more}{tail}"
         except Exception:
             return ""
@@ -3358,13 +3457,43 @@ def _menu_claim_now() -> str:
     if ((am.get("type") or "").lower() == "itemgrabmenu"):
         full, used, cap = _bag_is_full()
         if full:
+            # 🚫 满包**一下都不点**（真机教训：点下去东西挂光标、一关菜单掉地上）
             return (f"🚫 **包满了（{used}/{cap}），我这一下没点** —— 满包时点领取会把东西"
                     f"**挂到光标上**，这时一关菜单它就**掉地上**（水边还有**放生**风险）。\n"
-                    f"   先腾一格再敲这行：`menu click action=discard item=<低价值物>`（丢垃圾桶）"
-                    f"或 `scene drop`（注意别朝着水面丢）。")
+                    f"   两条正路（恒 2026-10-06 拍的形）：`menu` 那行**「腾格」**（传哪件丢哪件，"
+                    f"统一**扔垃圾桶**）腾出一格；或者**点开这一行的下级**挑一件"
+                    f"「**和什么替换？**」→ 我来**包办**（扔桶 + 领取）。\n"
+                    f"   ⛔ **别用 `scene drop`** —— 恒：「丢地上容易被吸附回来」。")
         before = _bag_total()
+        # ⚠️ **必须带 `slot=` / `item=` / `quantity>1`** —— 2026-10-06 真机抓到我自己的 bug：
+        #    只发 `action=claim` ⇒ C# 当场拒「领取需指定 item=名称 或 slot=序号 或 quantity>1」
+        #    （`ModEntry.cs:15881`）。
+        # ✅ 恒的口径：「**如果不满直接都弄进来**」⇒ 装得下就**一次领完**（`quantity=N`，N=待领件数），
+        #    只装得下一件就用 `slot=<第一件槽号>`（`/menu.items[].index`，`ModEntry.cs:14795`）。
+        #    ⛔ 绝不用 `quantity=999` —— 那会把光标塞满（= 又踩"挂光标/掉地上"）。
+        _idx, _nm0, _n = None, "", 0
         try:
-            r = api._ai_post("/menu/click", {"action": "claim"}) or {}
+            _m = api._ai_get("/menu") or {}
+            _its = [x for x in (_m.get("items") or []) if isinstance(x, dict)]
+            _n = len(_its)
+            if _its:
+                _idx = _its[0].get("index")
+                _nm0 = _its[0].get("name") or ""
+        except Exception:
+            pass
+        _free = (cap - used) if (isinstance(cap, int) and isinstance(used, int)) else 1
+        _body = {"action": "claim"}
+        if _n > 1:
+            _body["quantity"] = max(2, min(_n, max(1, _free)))   # C# 认 `quantity>1`；别超空格数
+        elif isinstance(_idx, int) and _idx >= 0:
+            _body["slot"] = _idx
+        elif _nm0:
+            _body["item"] = _nm0
+        else:
+            return ("❌ 读不到领取侧有哪一件（`/menu` 没给槽号也没给名字）—— 先 `menu read` 看一眼，"
+                    "再用 `menu click action=claim slot=<序号>` 手动领")
+        try:
+            r = api._ai_post("/menu/click", _body) or {}
         except Exception as e:
             return f"❌ 领取出错：{type(e).__name__}: {e}"
         if not r.get("ok"):
@@ -25868,6 +25997,11 @@ def _im_ctx():
                                 shop=_shop, beds=_im_beds(state),
                                 menu_exit=_menu_exit_of(_mt),
         menu_claim=_menu_claim_label((state or {}).get("activeMenu") or {}),
+                                # 🗑️ 「和什么替换？」的候选（恒 2026-10-06 的满包菜单形）：
+                                #    **只在领取菜单开着时才去读背包**（没那场景就一个字都不多花，
+                                #    同下面 `menu_content` 那条的省法）。
+                                menu_claim_subs=(_menu_claim_subs()
+                                                 if ((_mt or "").lower() == "itemgrabmenu") else []),
                                 menu_hint=(_close_hint(_mt, content_on_sheet=_content_shown)
                                            if _mt else ""),
                                 # 📋 菜单里的东西（2026-10-01 · P-menus）：**只有菜单开着时
@@ -27007,6 +27141,13 @@ def _im_run(op, args):
         #       没事件时 `skipEvent()` 会退化成"按 ESC 关菜单"（另一件事），
         #       而 `skip_event()` 会把这种情况如实报出来。
         "menu_claim": lambda: _menu_claim_now(),
+        # 🗑️➡️🎁 恒 2026-10-06 拍的满包菜单形（见 `_menu_claim_subs` 上面那段）：
+        #   `menu_discard` = 「腾格（传哪格丢哪格）」那一行的执行侧（**扔菜单垃圾桶**，不是丢地上）；
+        #   `menu_claim_replace` = 「和什么替换？→ 自动包办替换」的**下级行**执行侧（扔桶 + 领取）。
+        #   ⚠️ 参数是**哪一件**（`item=` 名字或 id），不是槽号 —— C# 的背包丢弃按名字/id 认
+        #      （`ModEntry.cs:15841`），槽号那条路只对"领取侧指定格"有效（`slot=`）。
+        "menu_discard": lambda: _menu_discard_now(str(args.get("item") or "")),
+        "menu_claim_replace": lambda: _menu_claim_replace(str(args.get("item") or "")),
         # 📜 2026-10-04 恒「先做领奖」：任务日志里"已完成 + 有钱"的任务**一键领完**，
         #    回执按恒给的形状逐条报（名字 · 详细页描述 · 金额）。
         #    ⚠️ 走 `helpers`（回**一句话**）：判据是"那张卡的钱还在不在"，

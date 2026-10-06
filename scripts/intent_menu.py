@@ -197,6 +197,12 @@ class Ctx:
     #    `menu_claim` = 服务器算好的**那一行的标题**（`""` = 这个菜单没有可领的）。
     #    判据在服务器（`/state.activeMenu.mastery.canClaim`，跟抬头那句话**同源**），这一层只消费。
     menu_claim: str = ""
+    # 🗑️ 2026-10-06 恒拍的**满包菜单形**：「1.领取→（不满直接都弄进来；满包）**要和什么替换？**（下级列表）
+    #    → 自动包办替换  2.腾格（传哪格丢哪格）  3.ok/算了」。
+    #    `menu_claim_subs` = 服务器挑好的**换件候选**（`[{slot,name,id,stack,why}, …]`，垃圾优先、
+    #    **绝不列工具**；判据在服务器 `_menu_claim_subs`）—— 这一层只把它们摆成下级行。
+    #    ⚠️ 候选为空（或没开领取菜单）⇒ **下级不出现**，那行就还是原来的一行（宁缺勿编）。
+    menu_claim_subs: list = field(default_factory=list)
     # 📜 2026-10-04 恒：「**先做领奖**」——任务日志里"已完成、有钱、还没领"的任务。
     #    `{}` = 没开日志 / 这一刻一条都没有（⇒ 整行不出现）；有值时：
     #      `{"items":[{"index","name","description","money","x","y","source"}],
@@ -2856,10 +2862,78 @@ CLOSE_V = Verb("close_menu", "关掉界面", 30, _close_can, _close_reason, _clo
 #       否则 AI 的注意力（和它的手）就只剩"关掉界面"。
 _CLAIM_V = Verb("menu_claim", "领取", 78,
                 lambda c, t: CAN_YES if (c.menu_claim or "") else CAN_NO,
-                lambda c, t: f"{c.menu_claim} · 敲了就去领（领完这块就点亮了）",
+                lambda c, t: (f"{c.menu_claim} · 敲了就去领（装得下的**一次都弄进来**）"
+                              if not (c.menu_claim_subs or []) else
+                              f"{c.menu_claim} · 敲了就去领；**点开挑一件替换**也行（下级列表）"),
                 lambda c, t: c.menu_claim or "领取", "world",
                 exec=lambda c, t, run: _exec_chore(c, t, run, "menu_claim", "领取"),
+                subs=lambda c, t: _claim_swap_level(c),
                 menu_ok=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🗑️ 满包领取的"换件"两行（恒 2026-10-06 亲口拍的形）
+# ══════════════════════════════════════════════════════════════════════════════
+# 恒原话：「满包菜单就这样做：1.领取→（如果不满直接都弄进来，如果满包）**要和什么替换？**（下级列表）
+#   →自动包办替换  2.**腾格**（传哪格丢哪格）  3.ok/算了（关掉菜单，放弃物品）」
+#   · 「3.ok/算了」= 现成的 `_MENU_EXIT_V`（「关掉界面」）✓ 不用新做；
+#   · 「1.」的**下级** = `_claim_swap_level`（候选由**服务器**挑好：垃圾优先、**绝不列工具**）；
+#   · 「2.腾格」= `_TIDY_V`（点开挑一件 → 只扔垃圾桶，**不领**）—— 跟"替换"分成两行，
+#     因为恒把"替换"（有目的：换这一件进来）和"腾格"（纯清包）当两件事。
+# ⚠️ **丢桶不是丢地上**：恒当场纠过「**你不要丢地上，丢地上容易被吸附回来。扔垃圾桶里最好。**」
+#    ⇒ 两条都走 C# 的 `action=discard`（拿起 → 点菜单垃圾桶；没桶就放回并如实报错）。
+_SWAP_V = Verb("menu_claim_replace", "换", 0,
+               lambda c, t: CAN_YES,
+               lambda c, t: (f"扔「{(t or {}).get('name')}」进垃圾桶 → {c.menu_claim}"),
+               lambda c, t: str((t or {}).get("name") or "换"), "world",
+               # ⚠️ exec 的第二个参数是**被点那一行的 targets 列表**（不是单个 dict）——
+               #    `_exec_fish_area` 就是 `dict((targets or [{}])[0] or {})` 这个范本。
+               #    2026-10-06 真机：我写成 `(t or {}).get(...)` ⇒ 当场 `AttributeError: 'list' object has no attribute 'get'`。
+               exec=lambda c, targets, run: _receipt_from_helper(
+                   "换件",
+                   f"{((targets or [{}])[0] or {}).get('name')} → {c.menu_claim}",
+                   run("menu_claim_replace",
+                       # ⚠️ 传**名字**优先：回执里念得出来（真机第一次只传 id ⇒ 印成 `(O)172`）。
+                       #    C# 认 `Name`/`DisplayName`/`QualifiedItemId` 三样（`ModEntry.cs:15841`），
+                       #    而 `/state` 报的 `name` 就是 DisplayName ⇒ 传名字稳；id 兜底。
+                       {"item": ((targets or [{}])[0] or {}).get("name")
+                                or ((targets or [{}])[0] or {}).get("id") or ""})),
+               menu_ok=True)
+
+_TIDY_V = Verb("menu_tidy", "腾格", 70,
+               lambda c, t: CAN_YES if (c.menu and (c.menu_claim_subs or [])) else CAN_NO,
+               lambda c, t: "扔垃圾桶腾格（**点开挑哪一件**）—— 传哪件丢哪件，不领东西",
+               lambda c, t: "腾格", "world",
+               exec=lambda c, targets, run: _receipt_from_helper(
+                   "腾格", "",
+                   run("menu_discard",
+                       {"item": ((targets or [{}])[0] or {}).get("name")
+                                or ((targets or [{}])[0] or {}).get("id") or ""})),
+               subs=lambda c, t: _tidy_level(c), menu_ok=True)
+
+
+def _claim_swap_level(c):
+    """「领取」点开的下级 = 「**和什么替换？**」（恒 2026-10-06）。候选空 ⇒ 不给下级（宁缺勿编）。"""
+    subs = c.menu_claim_subs or []
+    if not subs:
+        return None
+    rows = [Row(_SWAP_V, [dict(s)],
+                f"丢 {s.get('name')}×{s.get('stack')}" + (f"（{s.get('why')}）" if s.get("why") else ""),
+                f"扔垃圾桶 → {c.menu_claim}", 0, where="")
+            for s in subs]
+    return Level(rows, title="包满了：**和什么替换？**（挑一件扔垃圾桶，我包办「扔 + 领」）")
+
+
+def _tidy_level(c):
+    """「腾格」点开的下级 = 背包里可扔的那些（**同一份候选**，只扔不领）。"""
+    subs = c.menu_claim_subs or []
+    if not subs:
+        return None
+    rows = [Row(_TIDY_V, [dict(s)],
+                f"丢 {s.get('name')}×{s.get('stack')}" + (f"（{s.get('why')}）" if s.get("why") else ""),
+                "扔进菜单垃圾桶（不是丢地上）", 0, where="")
+            for s in subs]
+    return Level(rows, title="腾格：**丢哪件说哪件**（统一扔垃圾桶）")
 
 
 # 📜 「领取奖励」（**任务日志里的一次性正事**）—— 恒 2026-10-04：
@@ -4466,6 +4540,10 @@ VERBS: list = [
     BERRY_V, SPOT_V, CRAB_V, PAN_V, MILK_V,
     # 🎓 2026-10-02 恒「补一下缺门」：菜单里的一次性正事（精通碑领取）也要有行。
     _CLAIM_V,
+    # 🗑️ 2026-10-06 恒拍的满包菜单形第 2 条：**腾格（传哪格丢哪格，扔垃圾桶）**。
+    #    ⚠️ 跟「领取」分开两行：领取那条是"换件"（有目的），这条是"纯清包"。
+    #    （`_SWAP_V` 是**下级**那个动词，不进 VERBS —— 同 `FISH_AREA_V`。）
+    _TIDY_V,
     # 📜 2026-10-04 恒「先做领奖」：**任务日志里的一件领取**（已完成+有钱的任务，一次全领、
     #    回执逐条报 名字·详细页描述·金额）。判据 = `Ctx.quests`（服务器只在日志开着时读 `/menu`）。
     QUEST_CLAIM_V,
@@ -5510,7 +5588,8 @@ def scan_world(surr: dict, machines: list = None, chests: list = None,
 def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None,
              caps: dict = None, seats: dict = None, furniture: dict = None,
              animals: dict = None, shop: dict = None, beds: list = None,
-             menu_exit: str = "", menu_hint: str = "", menu_claim: str = "", worn: dict = None,
+             menu_exit: str = "", menu_hint: str = "", menu_claim: str = "",
+             menu_claim_subs: list = None, worn: dict = None,
              menu_data: dict = None, reforge: dict = None, mwork: dict = None,
              doors: dict = None, chores: dict = None, clint_open: bool = False,
              hay: dict = None, pick: dict = None,
@@ -5590,6 +5669,9 @@ def ctx_from(state: dict, surr: dict, machines: list = None, chests: list = None
                event=(state or {}).get("activeEvent"),
                # 🚪 界面出口（服务器算好的；`""` = 这一刻不该给这一行）。
                menu_exit=menu_exit or "", menu_hint=menu_hint or "", menu_claim=menu_claim or "",
+               # 🗑️ 「和什么替换？」的候选（恒 2026-10-06 的满包菜单形）：**服务器挑好递进来**，
+               #    这一层只摆出来（判据只有一处 = `nagi_mcp_server._menu_claim_subs`）。
+               menu_claim_subs=list(menu_claim_subs or []),
                # 📋 菜单内容（同上：服务器挑好递进来，这里**不猜**）。
                menu_data=menu_data or {},
                # 🔨 铁砧能不能重铸（同上：服务器探针算好递进来，「铱锭要几块」这种数**不在这儿编**）。
