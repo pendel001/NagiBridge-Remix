@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -21829,6 +21829,14 @@ var tcs = new TaskCompletionSource<object>();
                         if (!equipAvoided.Exists(e => e.x == d.Item1 && e.y == d.Item2))
                             equipAvoided.Add((d.Item1, d.Item2, lbl));
                     }
+                    // 🧾 2026-10-07（补87 恒）**站位格自己压着设备**也要记账 —— 那一刻 `dirtyFull`（满级波及格）
+                    //    可能**是空的**：站位的 (ax,ay) 根本不在 `GetToolAffectedTiles` 那片里（那片从 ay+1 起），
+                    //    它只挡"站"、不挡"挥" ⇒ 回执印「让开设备 **0** 处」，读起来像什么都没躲。
+                    //    真机那次（`POST /tool_area till (48,42)-(49,42)`）就是**避雷针 (49,41) 把站位逼到了 (48,41)**，
+                    //    机器一根没动，回执却报 0 处 —— 这是"记账没说全"，不是功能错。
+                    if (loc != null && HoeWouldPickUp(loc, ax, ay)
+                        && !equipAvoided.Exists(e => e.x == ax && e.y == ay))
+                        equipAvoided.Add((ax, ay, HoePickUpLabel(loc, ax, ay)));
                     if (!placed)
                     {
                         anchorsSkippedByEquip++;

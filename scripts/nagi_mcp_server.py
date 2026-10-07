@@ -29554,13 +29554,26 @@ if __name__ == "__main__":
         # Streamable HTTP mode (modern MCP protocol, compatible with Claude Desktop/Code)
         print()
         print(f"  NagiBridge MCP Server | HTTP: http://{MCP_HOST}:{MCP_PORT}")
+        # 🌐 局域网 IP：**跟启动器用同一把尺子**（`launcher_check.get_lan_ip`：hostname → ipconfig 逐网卡，
+        #    **跳过 VMware/VirtualBox/WSL/Docker 等虚拟网卡**）。以前只 `gethostbyname(gethostname())`，
+        #    多网卡机器上会印出虚拟网卡的 IP ⇒ 照着填连不上（而 .bat 那边印的是对的那个，两处打架）。
+        #    ⚠️ launcher_check 的"GBK 就包 stdout"副作用已挪进它的 `__main__`（2026-10-07），import 干净。
+        _ip = ""
         try:
-            import socket
-            _ip = socket.gethostbyname(socket.gethostname())
-            if _ip.startswith("127."):
-                _ip = "本机IP(查 ipconfig)"   # 无局域网 IP 时提示
+            from launcher_check import get_lan_ip
+            _ip = get_lan_ip() or ""
+            if _ip == "查 ipconfig":        # 那把尺子自己也没认出来 ⇒ 退到老办法，别把提示词当 IP 印
+                _ip = ""
         except Exception:
-            _ip = "本机IP"
+            _ip = ""
+        if not _ip:
+            try:
+                import socket
+                _ip = socket.gethostbyname(socket.gethostname())
+            except Exception:
+                _ip = ""
+        if not _ip or _ip.startswith("127."):
+            _ip = "本机IP(查 ipconfig)"   # 无局域网 IP 时提示
         print(f"  📱 手机/Claude Code 连（同一网络）: http://{_ip}:{MCP_PORT}/mcp")
         try:
             _tool_count = len(mcp._tool_manager.list_tools())

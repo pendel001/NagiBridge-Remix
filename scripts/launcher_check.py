@@ -14,10 +14,18 @@ import shutil
 import subprocess
 from datetime import datetime
 
-# ⚠️ Windows GBK 控制台 + 中文/emoji 会崩 → 强制 stdout/stderr 走 utf-8（照 test_mapgo.py:18 模式）
-if sys.stdout.encoding and sys.stdout.encoding.lower().startswith("gbk"):
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
+# ⚠️ Windows GBK 控制台 + 中文/emoji 会崩 → 跑起来时把 stdout/stderr 换成 utf-8（照 test_mapgo.py:18 模式）。
+#    🔴 2026-10-07：这段**必须只在"当脚本跑"时执行**（挪进 `__main__`）——
+#       以前写在模块级 ⇒ **一 import 就换掉调用方的 `sys.stdout`**。而现在 MCP 服务器要
+#       `from launcher_check import get_lan_ip` 借这把"跳虚拟网卡"的尺子（横幅印局域网 IP 用），
+#       万一哪天走 `--stdio`（MCP 拿 stdout 当协议通道），被换掉就是当场炸。
+def _force_utf8_console():
+    try:
+        if sys.stdout.encoding and sys.stdout.encoding.lower().startswith("gbk"):
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
+    except Exception:
+        pass
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(SCRIPT_DIR)
@@ -400,4 +408,5 @@ def main():
 
 
 if __name__ == "__main__":
+    _force_utf8_console()          # ⚠️ 只在当脚本跑时换 stdout（见上面那条注释）
     sys.exit(main())
