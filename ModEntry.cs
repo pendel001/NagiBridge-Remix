@@ -711,6 +711,11 @@ public class ModEntry : Mod
     private int _toolAreaToolW = 1, _toolAreaToolH = 1;
     private int _toolAreaChargeFrames = 0, _toolAreaUpgradeLevel = 0;
     private int _toolAreaTotalSwings = 0;
+    // 🚫⚙️ 2026-10-07 恒真机（「锄头没跳设备」）：本轮 tool_area **因为蓄力范围压着设备而让开**的格
+    //    （锚点整条不发 ⇒ 那几格交给 DLL 补漏直写土，**设备一根没动**）。回包带出去给 Python 如实报。
+    private List<(int x, int y, string what)> _toolAreaEquipAvoided = new();
+    private int _toolAreaAnchorsSkipped = 0;
+    private int _toolAreaAnchorsDowngraded = 0;
 
     // Time freeze state
     private bool _timeFrozen;
@@ -3196,6 +3201,7 @@ public class ModEntry : Mod
                 //    而那时板子还没开 ⇒ 判据得在板下读得到（见 `HandleOrderBoard` 的注释）。
                 "/order_board" => HandleOrderBoard(ctx),
                 "/dump_tile" => HandleDumpTile(ctx),
+                "/crop_seasons" => HandleCropSeasons(),
                 "/pool" => HandlePool(ctx),            // ♨️ 浴场泡水/换装状态：swimming/bathingClothes/canOnlyWalk（2026-09-10 浴室专题②）
                 "/tile_props" => HandleTileProps(ctx), // 🗺️ 地图瓦片属性：单格全属性 / 全图扫某属性值（Action/TouchAction/Water…）
                 "/mine_rock" => HandleMineRock(),   // 🧱 矮人商店堵路石（(BC)78 在 Mine(27,8)）是否还在=未炸（cross-map 读，2026-08-23 恒）
@@ -3408,6 +3414,10 @@ public class ModEntry : Mod
                 //       那个说"端点**收**不收 slot"，这个说"一览**给**不给格号"。
                 //       消费方要的是后者（拿不到号就没法指），并成一个键以后只改一头就会骗人。
                 ["scan_chests_item_slot"] = true,
+                // 🌱 2026-10-07：`/crop_seasons`（种子→可种季节，读 `Game1.cropData[...].Seasons`）
+                //    —— 箱子一览给当季种子打标用（恒：「箱子里当季的种子给标一下」）。
+                //    老 DLL 没这个键 ⇒ 消费侧**不打标也不报错**（少一行而不是骗一行）。
+                ["crop_seasons"] = true,
                 // 🗑️ /state **背包物品层**带 `shippable`（游戏 `Item.canBeShipped()`）。
                 //    ⚠️ 2026-10-01 为什么单独立这一位：`sellable`（`IsSellable`）**不等于**能投出货箱 ——
                 //       前者只排除 工具/武器/靴/戒（-99/-98/-97/-96），而游戏那把尺子
@@ -8425,6 +8435,50 @@ public class ModEntry : Mod
     /// </summary>
     private static bool IsDiggableSpot(StardewValley.Object o)
         => o != null && (o.QualifiedItemId == "(O)590" || o.QualifiedItemId == "(O)SeedSpot");
+
+    /// <summary>
+    /// 🚫⚙️ 这一格上的物件，会不会被**锄头的蓄力波及**收走？（2026-10-07 恒真机：
+    /// 「**锄头没跳设备**，一把把熔炉全部拍下来了」——`farm till` 6×4 那次，收工背包里多了 2 台熔炉。）
+    ///
+    /// 反编译定论（`Hoe.cs:66-85` + `Object.cs:1092-1352`）：锄头挥下去，游戏拿 `tilesAffected(...)`
+    /// **把整个蓄力范围逐格 `performToolAction`**；其中 `Object.cs:1350` 那条
+    /// `Type == "Crafting" && !(t is MeleeWeapon) && t.isHeavyHitter()`（锄头在 `Tool.cs:428-435`
+    /// 里**正是** heavy hitter）会把机器/箱子**收走**变成地面 debris（`Hoe.cs:79-84`），
+    /// 人站在旁边就进背包。⇒ 我们**只筛"目标格"是不够的**：蓄力会波及的每一个格都得筛。
+    ///
+    /// 判据逐条对齐游戏自己的分支顺序（宁误拦不放过 —— 同 `_is_device` 那条闸的口径）：
+    ///   · 没物件、或 `Category == -999`（杂草/树枝/石头这一族杂物）⇒ 游戏走的是割草/砍/砸那几条分支，
+    ///     **不是"收走"** ⇒ 不拦。（不这么写的话，田边一根杂草就能让整片锚点降档/跳过。）
+    ///   · 远古斑点 / 种子斑点 ⇒ `Object.cs:1310-1337` 那条是**挖它**的分支，锄头正是去挖它 ⇒ 不拦。
+    ///   · 洒水器 ⇒ `Object.cs:1352` 游戏**专门豁免锄头** ⇒ 不拦（洒水器原地不动，实测也是它活下来）。
+    ///   · `fragility == 2` ⇒ `Object.cs:1346` 直接 `return false`，游戏自己也不收 ⇒ 不拦。
+    ///   · 剩下 `Type == "Crafting"`（或 bigCraftable）= 机器/箱子/火把/花盆… ⇒ **拦**。
+    /// </summary>
+    private static bool HoeWouldPickUp(GameLocation loc, int x, int y)
+    {
+        if (loc == null) return false;
+        if (!loc.objects.TryGetValue(new Vector2(x, y), out var o) || o == null) return false;
+        if (o.Category == -999) return false;                       // 杂物：游戏不收走它们
+        if (IsDiggableSpot(o)) return false;                        // 斑点：锄头正是去挖它
+        try { if (o.IsSprinkler()) return false; } catch { }         // 洒水器：游戏豁免（Object.cs:1352）
+        try { if (o.Fragility == 2) return false; } catch { }        // 游戏自己也不收（Object.cs:1346）
+        return o.Type == "Crafting" || o.bigCraftable.Value;
+    }
+
+    /// <summary>🚫⚙️ 报告用名字：这格那个"锄头会收走"的东西叫什么（只在 `HoeWouldPickUp` 为真时有意义）。</summary>
+    private static string HoePickUpLabel(GameLocation loc, int x, int y)
+    {
+        try
+        {
+            if (loc != null && loc.objects.TryGetValue(new Vector2(x, y), out var o) && o != null)
+            {
+                var nm = SafeDisplayName(o);
+                if (!string.IsNullOrWhiteSpace(nm)) return nm;
+            }
+        }
+        catch { }
+        return "设备";
+    }
 
     /// <summary>
     /// 🎯 till 目标格的两道门 + **斑点例外**（2026-09-19）。
@@ -17793,6 +17847,43 @@ var tcs = new TaskCompletionSource<object>();
         return tcs.Task.GetAwaiter().GetResult();
     }
 
+    /// <summary>
+    /// GET /crop_seasons
+    /// 🌱 种子 → 能种的季节（**问游戏**：`Game1.cropData[种子id].Seasons`，1.6 的 `Data/Crops`）。
+    ///
+    /// ⚠️ 为什么不手抄一张种子→季节表：本项目早拍板"**手抄表改成问游戏**"（见 `_farm_plant` 种草那条），
+    ///    而且 1.6 加了一堆跨季/新作物，手抄必漂。
+    /// ⚠️ 只报"**露天**能不能种"这一层事实；温室/姜岛全年可种是**地点**的规则（`SeedsIgnoreSeasonsHere`），
+    ///    消费侧（Python 的状态条/箱子一览）自己带那句话，别把它塞进这张表里。
+    /// 回包：`{ ok, count, seasons: { "(O)472": ["spring"], … } }`（季节小写英文，与 Python 侧同款）
+    /// </summary>
+    private object HandleCropSeasons()
+    {
+        var tcs = new TaskCompletionSource<object>();
+        EnqueueMainThread(() =>
+        {
+            try
+            {
+                var map = new Dictionary<string, List<string>>();
+                foreach (var kv in Game1.cropData)
+                {
+                    var seasons = kv.Value?.Seasons;
+                    if (seasons == null || seasons.Count == 0) continue;
+                    var list = new List<string>();
+                    foreach (var s in seasons)
+                    {
+                        var n = s.ToString().ToLowerInvariant();
+                        if (!list.Contains(n)) list.Add(n);
+                    }
+                    if (list.Count > 0) map["(O)" + kv.Key] = list;
+                }
+                tcs.SetResult(new { ok = true, count = map.Count, seasons = map });
+            }
+            catch (Exception ex) { tcs.SetResult(new { ok = false, error = ex.Message }); }
+        });
+        return tcs.Task.GetAwaiter().GetResult();
+    }
+
     private object HandleDumpTile(HttpListenerContext ctx)
     {
         var qs = ctx.Request.QueryString;
@@ -21469,7 +21560,12 @@ var tcs = new TaskCompletionSource<object>();
                 { calcTcs.SetResult(new { ok = false, error = $"No {(operation == "water" ? "unwatered crops" : "diggable tiles")} nearby" }); return; }
 
                 // Calculate anchors (蓄力锚点生成，till/water 共用；补漏轮次也用它)
-                var commands = BuildToolAreaCommands(targetTiles, toolW, toolH, chargeFrames, upgradeLevel);
+                // 🚫⚙️ 2026-10-07：till 的蓄力范围**会连设备一起收走**（反编译见 `HoeWouldPickUp`）
+                //    ⇒ 锚点生成时按游戏几何逐格筛"波及格"，脏的就降档/整条不发（`loc` 传进去才筛得动）。
+                _toolAreaEquipAvoided = new List<(int x, int y, string what)>();
+                var commands = BuildToolAreaCommands(targetTiles, toolW, toolH, chargeFrames, upgradeLevel,
+                                                     loc, operation, _toolAreaEquipAvoided, out _toolAreaAnchorsSkipped,
+                                                     out _toolAreaAnchorsDowngraded);
                 int minX = targetTiles.Min(t => t.tx), maxX = targetTiles.Max(t => t.tx);
                 int minY = targetTiles.Min(t => t.ty), maxY = targetTiles.Max(t => t.ty);
 
@@ -21544,6 +21640,12 @@ var tcs = new TaskCompletionSource<object>();
                 ["still_missing"] = stillList,
                 // 💧 2026-09-23：壶空了、队列中途停手 ⇒ 让 Python 知道"这不是浇完了，是没水了"（含下一步：打水后重浇）
                 ["out_of_water"] = _toolAreaOutOfWater,
+                // 🚫⚙️ 2026-10-07 恒真机（「锄头没跳设备，一把把熔炉全部拍下来了」）：
+                //    "蓄力范围压着设备 ⇒ 这个锚点让开" 的**如实账**——让开了几格、是些什么东西。
+                ["equipment_avoided"] = _toolAreaEquipAvoided
+                    .Select(e => new { x = e.x, y = e.y, what = e.what }).ToList(),
+                ["anchors_skipped_by_equipment"] = _toolAreaAnchorsSkipped,
+                ["anchors_downgraded_by_equipment"] = _toolAreaAnchorsDowngraded,
                 ["result"] = result
             };
         }
@@ -21555,8 +21657,12 @@ var tcs = new TaskCompletionSource<object>();
     /// 面向下蓄力：toolW=垂直宽, toolH=面向距离（实测 1→3距离, 2→5, 4→6距离×3宽）。
     /// 锚点站耕地外上方（ay = tile_y - 1），charge 释放时覆盖 forward 范围。</summary>
     private static List<Dictionary<string, object?>> BuildToolAreaCommands(
-        List<(int tx, int ty)> targetTiles, int toolW, int toolH, int chargeFrames, int upgradeLevel)
+        List<(int tx, int ty)> targetTiles, int toolW, int toolH, int chargeFrames, int upgradeLevel,
+        GameLocation? loc, string operation, List<(int x, int y, string what)> equipAvoided,
+        out int anchorsSkippedByEquip, out int anchorsDowngradedByEquip)
     {
+        anchorsSkippedByEquip = 0;
+        anchorsDowngradedByEquip = 0;
         int minX = targetTiles.Min(t => t.tx), maxX = targetTiles.Max(t => t.tx);
         int minY = targetTiles.Min(t => t.ty), maxY = targetTiles.Max(t => t.ty);
         int nx = (int)Math.Ceiling((double)(maxX - minX + 1) / toolW);
@@ -21614,18 +21720,65 @@ var tcs = new TaskCompletionSource<object>();
                     if (col == end) break;
                     continue;
                 }
-                anchorsKept++;
+                // 🚫⚙️ 2026-10-07 恒真机（「锄头没跳设备，一把把熔炉全部拍下来了」）：**发命令之前先筛"波及格"**。
+                //    上面那句只保证"这一锚点喷得到真目标"；可游戏释放时 `tilesAffected` 是**整片**逐格
+                //    `performToolAction`（`Hoe.cs:66-85`）—— 范围里的机器/箱子会被一起收走。
+                //    ① 满级蓄力干净 ⇒ 照旧（绝大多数锚点走这条，零行为变更）；
+                //    ② 脏 ⇒ **逐级降 power**（4→3→2→1→0），挑"盖得住全部真目标、且范围干净"的最大那一档
+                //       （降档只缩范围、不动站位；`charge` 命令的 `power` 本来就是逐条读的，见 `case "charge"`）；
+                //    ③ 连一格都降不动（每档要么盖不住真目标、要么照样脏）⇒ **这个锚点整条不发**，如实记账，
+                //       那几格由 DLL 补漏走 `terrainFeatures[vec] = new HoeDirt()`（不挥锄、设备不动）。
+                int usePower = upgradeLevel;
+                if (loc != null && operation == "till" && chargeFrames > 0)
+                {
+                    var fullAoe = GetToolAffectedTiles(ax, ay, 2, upgradeLevel);
+                    var dirtyFull = fullAoe.FindAll(t => HoeWouldPickUp(loc, t.Item1, t.Item2));
+                    if (dirtyFull.Count > 0)
+                    {
+                        usePower = -1;
+                        for (int pw = upgradeLevel - 1; pw >= 0; pw--)
+                        {
+                            var aoe = GetToolAffectedTiles(ax, ay, 2, pw);
+                            // ⚠️ 这里是 `continue` **不是** `break`：低档的形状**不是**高档的子集
+                            //    （power2 是"1 宽 × 5 深"、power3 是"3 宽 × 3 深" ⇒ 3 盖不住的，2 可能盖得住）。
+                            if (!hit.All(t => aoe.Contains(t))) continue;
+                            if (aoe.Exists(t => HoeWouldPickUp(loc, t.Item1, t.Item2))) continue;
+                            usePower = pw;
+                            break;
+                        }
+                        if (usePower < 0)
+                        {
+                            anchorsSkippedByEquip++;
+                            foreach (var d in dirtyFull)
+                            {
+                                var lbl = HoePickUpLabel(loc, d.Item1, d.Item2);
+                                if (!equipAvoided.Exists(e => e.x == d.Item1 && e.y == d.Item2))
+                                    equipAvoided.Add((d.Item1, d.Item2, lbl));
+                            }
+                            ModEntry.Instance?.Monitor.Log(
+                                $"[build-cmds] 🚫 锚点({ax},{ay}) 整条不发：满级 3×{toolH} 范围里有设备 " +
+                                string.Join(" ", dirtyFull.Select(d => $"({d.Item1},{d.Item2})")), LogLevel.Info);
+                            if (col == end) break;
+                            continue;
+                        }
+                        anchorsDowngradedByEquip++;
+                        ModEntry.Instance?.Monitor.Log(
+                            $"[build-cmds] ⚠️ 锚点({ax},{ay}) 蓄力降档 {upgradeLevel}→{usePower}（满级范围里有设备）", LogLevel.Info);
+                    }
+                }
                 commands.Add(new Dictionary<string, object?> { ["action"] = "move", ["x"] = ax, ["y"] = ay });
                 commands.Add(new Dictionary<string, object?> { ["action"] = "face", ["direction"] = 2 });
+                anchorsKept++;
                 // targets 给**喷到的真目标**（不是整块几何范围）——逐锚点验证只该验真的目标格。
                 if (chargeFrames > 0)
-                    commands.Add(new Dictionary<string, object?> { ["action"] = "charge", ["frames"] = chargeFrames, ["power"] = upgradeLevel, ["targets"] = hit });
+                    commands.Add(new Dictionary<string, object?> { ["action"] = "charge", ["frames"] = chargeFrames, ["power"] = usePower, ["targets"] = hit });
                 else
                     commands.Add(new Dictionary<string, object?> { ["action"] = "use", ["targets"] = hit });
                 if (col == end) break;
             }
         }
-        ModEntry.Instance?.Monitor.Log($"[build-cmds] 锚点 {anchorsKept}/{anchorsAll} 个留（喷到空地的 {anchorsAll - anchorsKept} 个已丢）⇒ {anchorsKept} swings", LogLevel.Info);
+        ModEntry.Instance?.Monitor.Log($"[build-cmds] 锚点 {anchorsKept}/{anchorsAll} 个留（喷到空地的 {anchorsAll - anchorsKept} 个已丢；"
+            + $"因设备让开：跳过 {anchorsSkippedByEquip} 个、降档 {anchorsDowngradedByEquip} 个）⇒ {anchorsKept} swings", LogLevel.Info);
         return commands;
     }
 

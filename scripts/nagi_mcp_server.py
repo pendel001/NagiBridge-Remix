@@ -7393,6 +7393,19 @@ def _till_rect(x1: int, y1: int, x2: int, y2: int) -> str:
         h = abs(y2 - y1) + 1
         lines = [f"🌾 蓄力锄地 ({min(x1,x2)},{min(y1,y2)})-({max(x1,x2)},{max(y1,y2)}) {w}x{h} | 锄头{level}级({shape})"]
         lines.append(f"  ✅ tool_area 完成 | ⚙️ 蓄力命令 {executed} 条")
+        # 🚫⚙️ 2026-10-07 恒真机（「锄头没跳设备，一把把熔炉全部拍下来了」）：
+        #    C# 侧现在**发命令前先筛"蓄力波及格"**——范围压着机器/箱子就降档或整条不发。
+        #    这里把它**如实报出来**（让开了几格、让开的是些什么），别让 AI 以为那片地锄全了。
+        _eq = r.get("equipment_avoided") or []
+        if _eq or r.get("anchors_skipped_by_equipment") or r.get("anchors_downgraded_by_equipment"):
+            _names = "、".join(f"{e.get('what') or '设备'}({e.get('x')},{e.get('y')})" for e in _eq[:6])
+            if len(_eq) > 6:
+                _names += f" 等{len(_eq)}处"
+            lines.append(f"  🚫 让开设备 {len(_eq)} 处" + (f"：{_names}" if _names else "")
+                         + f"（跳过锚点 {r.get('anchors_skipped_by_equipment', 0)} 个"
+                         + (f"、降档 {r.get('anchors_downgraded_by_equipment')} 个"
+                            if r.get("anchors_downgraded_by_equipment") else "")
+                         + "）——**那些东西一根没动**；让开的格由补漏直接落土（不挥锄）")
         if patches:
             lines.append(f"  🔧 取余补站位自动补漏 {patches} 格（DLL 蓄力补，不直接改地块）")
         if fail_cnt:
@@ -19037,12 +19050,70 @@ def emote(name: str = "爱心") -> str:
 #  箱子 & 背包
 # ═══════════════════════════════════════════
 
+# ═══════════════════════════════════════════════════════════════
+#  🌱 种子 → 可种季节（**问游戏，不手抄表**）
+#  ═══════════════════════════════════════════════════════════════
+# 2026-10-07 恒：「优化一下箱子里**当季的种子**给标一下当季可种或者春夏秋冬吧」
+#   · 数据源 = C# `/crop_seasons`（读 `Game1.cropData[种子id].Seasons`，即 1.6 的 `Data/Crops`）。
+#     ⚠️ **不许**在 Python 手抄一张种子→季节表：本项目早拍板"手抄表改成问游戏"
+#        （见 `_farm_plant` 里种草那条），而 1.6 加了一堆跨季/新作物，手抄必漂。
+#   · ⚠️ 这张表只说明"**露天**能不能种"；温室/姜岛 `SeedsIgnoreSeasonsHere()` ⇒ 全年可种
+#        （那句话照旧由状态条/播种回执去说，别塞进这张表）。
+#   · ⚠️ 老 DLL 没这个端点 ⇒ `_crop_seasons()` 回 `{}` ⇒ **一个标都不打、也不报错**
+#        （少一行，而不是骗一行）。
+_SEASON_ICON_CN = {"spring": "🌸春", "summer": "☀️夏", "fall": "🍂秋", "winter": "❄️冬"}
+_SEED_SEASON_CACHE = {"ts": 0.0, "map": {}, "ok": False}
+_SEED_SEASON_TTL = 1800.0     # 半小时。作物表是**游戏数据**，一局里不会变
+
+
+def _crop_seasons() -> dict:
+    """`{"(O)472": ["spring"], …}` —— 读不到就是 `{}`（调用方必须忍得了空表）。"""
+    _now = time.time()
+    if _SEED_SEASON_CACHE["ok"] and _now - _SEED_SEASON_CACHE["ts"] < _SEED_SEASON_TTL:
+        return _SEED_SEASON_CACHE["map"]
+    try:
+        d = api._get("/crop_seasons") or {}
+        if d.get("ok"):
+            _SEED_SEASON_CACHE["map"] = d.get("seasons") or {}
+            _SEED_SEASON_CACHE["ok"] = True
+            _SEED_SEASON_CACHE["ts"] = _now
+    except Exception:
+        pass
+    return _SEED_SEASON_CACHE["map"]
+
+
+def _season_now() -> str:
+    """当前季节（小写英文 spring/summer/fall/winter）；读不到回 `""`（宁缺勿编）。"""
+    try:
+        return str(((api.state(light=True).get("time") or {}).get("season")) or "").lower()
+    except Exception:
+        return ""
+
+
+def _seed_season_tag(qualified_id: str) -> str:
+    """这一格的种子该带什么季节标：`" ☀️夏 ✅当季可种"` / `" 🌸春"` / `" 🌸春·🍂秋"` / `""`。
+
+    ⚠️ 非种子（表里查不到）一律回空串 —— cropData 的键**只有种子**，所以不用另判类目。
+    """
+    _m = _crop_seasons()
+    if not _m or not qualified_id:
+        return ""
+    _ss = _m.get(str(qualified_id))
+    if not _ss:
+        return ""
+    _names = "·".join(_SEASON_ICON_CN.get(s, s) for s in _ss)
+    _cur = _season_now()
+    _mark = " ✅当季可种" if _cur and _cur in _ss else ""
+    return " " + _names + _mark
+
+
 @mcp.tool()
 def scan_chests(chest: int = -1) -> str:
     """📦 扫描当前地图上所有箱子
     chest=-1: 所有箱子摘要（位置/容量/物品数，一箱一行省 token）
     chest=N:   第 N 个箱子的完整物品清单（一箱一页，防截断——2026-08-15 恒：装箱决策要看到全部物品）
     在做存放决策前先调这个看全局。
+    🆕 种子会带**可种季节**（🌸春/☀️夏/🍂秋/❄️冬），当前季节可种的额外标 **✅当季可种**。
     """
     try:
         data = api._get("/scan_chests")
@@ -19060,8 +19131,10 @@ def scan_chests(chest: int = -1) -> str:
             if not items:
                 lines.append("  (空)")
             for i in items:
-                lines.append(f"  · {i['name']}x{i['count']}")
+                lines.append(f"  · {i['name']}x{i['count']}{_seed_season_tag(i.get('qualifiedId'))}")
             lines.append(f"💡 共 {len(items)} 种；其他箱子用 check chests chest=N 看")
+            if _crop_seasons():
+                lines.append("   🌱 季节标 = **露天**能不能种（温室/姜岛全年可种，不看它）")
             return "\n".join(lines)
         # 摘要模式
         lines = [f"当前地图: {data['location']} | 共 {len(chests)} 个箱子（scan_chests(chest=N) 看单箱全清单；【类目标签】=内容过半自动归类）"]
@@ -19081,7 +19154,9 @@ def scan_chests(chest: int = -1) -> str:
             nmtxt = f" {nm}" if nm else ""
             items = c.get("items", [])
             if items:
-                item_str = ", ".join(f"{i['name']}x{i['count']}" for i in items[:5])
+                # 🌱 种子的名字后面挂可种季节（当季的加 ✅）——只在一览的前 5 条里标，别把行撑长
+                item_str = ", ".join(f"{i['name']}x{i['count']}{_seed_season_tag(i.get('qualifiedId'))}"
+                                     for i in items[:5])
                 if len(items) > 5:
                     item_str += f"... 共{len(items)}种"
             else:
