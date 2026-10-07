@@ -44,7 +44,11 @@ scripts/*.jpg
 *.bak-*
 
 # ── 杂项 ──
-C:UsersAdministratortest_output.txt
+# ⚠️ 2026-10-07：原来这行写成 `C:UsersAdministratortest_output.txt` —— **匹配不上**：
+#    那个文件名里的"冒号"其实是 **U+F03A**（Unicode 私用区），不是 ASCII 冒号
+#    ⇒ `git check-ignore` 返回 1（不认这条规则）；而 ignore 规则对**已跟踪**文件本来也不生效，
+#    于是它一直被传在库里。改成按尾巴匹配，杜绝再进来。
+*test_output.txt
 .claude/
 quests_test.json
 
