@@ -2,8 +2,6 @@
 
 > ⚠️ 本仓库是 **NagiBridge 的二次修改版**（SDV 1.6 × AI 整合，经原作授权开源分享），**并非原作官方版本**。原作版权归原作者 **里奈**（小红书 @里奈 · GitHub [anqinou-art](https://github.com/anqinou-art)），本版基于其源码与授权修改，改动与 AI 整合由恒 · Deepseek 完成。
 >
-> 🏷️ **名字对正**：模组名里的 **Nagi** 是**里奈家 Claude 的名字**（不是人名）；原作者署名还是 **里奈**。本版署名沿用**同一格式「人 · AI」**：**恒 · Deepseek**（原作者那侧即 **里奈 · Nagi**）。
->
 > 🐙 **本版作者**：[GitHub @pendel001](https://github.com/pendel001) ｜ 小红书 @高冷 腿长 偷感重　　**本版仓库**：[pendel001/NagiBridge-Remix](https://github.com/pendel001/NagiBridge-Remix)　（mod 游戏内显示名：**【SDV1.6 × AI】NagiBridge二改版**）
 >
 > 📄 **协议**：本仓库采用 [PolyForm Noncommercial License 1.0.0](LICENSE)（源码可用 · 非商用 · 允许署名二改）。

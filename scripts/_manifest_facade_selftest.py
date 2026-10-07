@@ -41,10 +41,20 @@ ck("Author 里有本人（恒）", "恒" in (d.get("Author") or ""), d.get("Auth
 ck("Author 点名原作**人**（里奈）", "里奈" in (d.get("Author") or ""), d.get("Author"))
 ck("Author 里的 Nagi 是**她那侧 AI**（沿「人 · AI」格式对正）",
    "Nagi" in (d.get("Author") or "") and "里奈 · Nagi" in (d.get("Author") or ""), d.get("Author"))
-ck("Description 点名原作 + 写明「Nagi 是她家 Claude」，并给出两个 ID",
-   "里奈" in (d.get("Description") or "") and "Claude" in (d.get("Description") or "")
-   and ORIG_ID in (d.get("Description") or ""),
-   (d.get("Description") or "")[:80])
+ck("Description 点名原作 + 给出两个 ID", "里奈" in (d.get("Description") or "")
+   and ORIG_ID in (d.get("Description") or ""), (d.get("Description") or "")[:80])
+# 🚫 恒 2026-10-07：「『她家 Claude 的名字』这个不要，搞得像那种情侣介绍人一样的，太八卦了」
+#    ⇒ 对外文本（manifest / LICENSE / README）里**不许**出现这类八卦注解 —— 钉住它。
+_gossip = ("她家", "Claude", "因此得名", "情侣")
+# ⚠️ README 里 **Claude 是正经内容**（教人怎么接 Claude Code / Claude Desktop），
+#    所以那份**只看真正的八卦措辞**，不查 "Claude" 这个词本身。
+_gossip_readme = ("她家", "因此得名", "情侣")
+for _f, _txt, _words in (
+        ("manifest.json", json.dumps(d, ensure_ascii=False), _gossip),
+        ("LICENSE", open(os.path.join(ROOT, "LICENSE"), encoding="utf-8").read(), _gossip),
+        ("README.md", open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()[:2000], _gossip_readme)):
+    _hit = [w for w in _words if w in _txt]
+    ck(f"{_f} 里没有八卦注解（她家/因此得名…）", not _hit, str(_hit))
 ck("EntryDll 还是 NagiBridge.dll（文件夹/DLL 名本来就不用改）",
    d.get("EntryDll") == "NagiBridge.dll", d.get("EntryDll"))
 
