@@ -52,7 +52,7 @@
 ## 5 条坑（与 CLAUDE.md 同源）
 
 1. 导航：地面 / `walk_to`、矿洞 / `position`、跨图 / `map_go`；别用 `/move+BFS`
-2. 改 `ModEntry.cs` 必须 `rm -rf bin obj` 重编 + DLL **C+F 双盘复制**，否则"改了没生效"
+2. 改 `ModEntry.cs` 必须 `rm -rf bin obj` 重编 + DLL **两份游戏目录都复制**，否则"改了没生效"
 3. 对话推进用 `/click(no_mouse)` 或 `press_key(ok)`，别用 `key confirm`
 4. 敲一下 → 检查 → 碎了停，不硬编码次数
 5. 长脚本自动注入 `--port` AI 端口（防挪到房主身上）

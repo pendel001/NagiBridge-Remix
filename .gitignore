@@ -62,3 +62,8 @@ scripts/.fresh_pack_broadcast
 scripts/_batch_calls.json
 scripts/_batch_c_calls.json
 scripts/_copy_review_packets.json
+
+# ── 内部知识库：不随仓库发布（本机保留；2026-10-07 恒拍板）──
+#   它是我们自己的开发账（含大量原话/坐标/过程），公开版不带它；
+#   代码与文档里写「见 CHANGELOG」的地方，对外读者请以代码/README 为准。
+CHANGELOG.md

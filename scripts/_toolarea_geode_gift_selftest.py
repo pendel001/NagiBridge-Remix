@@ -19,7 +19,9 @@ os.environ.setdefault("NAGI_URL", "http://localhost:7843")
 
 ROOT = os.path.dirname(HERE)
 CS = os.path.join(ROOT, "ModEntry.cs")
-DECOMP = r"G:\wingheng\Claude\NagiBridge\decomp\c1615\full\StardewValley.Tools"
+# 🔬 反编译目录（**本机自备、不随仓库走**）：设 `NAGI_DECOMP=<反编译根目录>`（脚本自己接 `/StardewValley.Tools`），
+#    没设就 ⏭ 跳过那几条证据核对。
+DECOMP = os.path.join(os.environ.get("NAGI_DECOMP", ""), "StardewValley.Tools")
 
 FAIL = []
 

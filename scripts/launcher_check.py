@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """NagiBridge 保姆级启动器——组件检测 + 全自动补齐（MCP 启动前的清单检查）。
 launcher（启动NagiBridge.bat）先跑本脚本：查 Python/依赖库/SMAPI/mod 部署/Fishbot/局域网IP/防火墙，
-缺的尽量自动装（pip 装库 + 复制 DLL 到 C+F），只有必须人工的（SMAPI 本体/第三方 Fishbot/管理员防火墙）才给指引。
+缺的尽量自动装（pip 装库 + 复制 DLL 到各份游戏目录），只有必须人工的（SMAPI 本体/第三方 Fishbot/管理员防火墙）才给指引。
 用法: python scripts/launcher_check.py   （退出码：全OK=0，有必须人工的=1）
 输出末尾给「手机/Claude Code 连: http://<IP>:8000/mcp」+ 防火墙状态。
 """
@@ -39,16 +39,15 @@ FIREWALL_RULE = f"NagiBridge MCP {MCP_PORT}"
 
 
 # ── 游戏目录探测（2026-09-22 开源普适性）──
-# ⚠️ 以前这里写死 `C:\Program Files (x86)\Steam\...` + `F:\Stardew Valley 2nd` 两条（恒本机的两盘）。
+# ⚠️ 以前这里写死两条**本机路径**（Steam 默认 + 本机第二份副本）。
 #    后果：**别人把游戏装在别的盘/别的 Steam 库，三项检查全 ✗ → 退出码 1 → .bat 直接不给启动服务器**，
-#    还指引他去 C 盘那个并不存在的目录装 SMAPI（指错路）。而 csproj 那边的 ModBuildConfig
+#    还指引他去 那个并不存在的默认目录装 SMAPI（指错路）。而 csproj 那边的 ModBuildConfig
 #    早就会自己找游戏了（find-game-folder.targets：注册表 + Steam 库 + 各盘常见路径）——只有这层漏了。
 # 顺序：① NAGI_GAME_DIRS 环境变量（分号/逗号分隔，最高优先，给"探测不到"当逃生口）
 #       ② 注册表 + Steam 库自动探测  ③ 已知候选兜底
 # ⚠️ 探测结果**必须打印出来**（见 main）：宁可让人一眼看出"找错了"，也别静默挑一个用。
 _GAME_DIR_FALLBACK = [
     r"C:\Program Files (x86)\Steam\steamapps\common\Stardew Valley",   # Steam 默认位置
-    r"F:\Stardew Valley 2nd",                                          # 恒本机的手动副本（别人机器上没有，自动跳过）
 ]
 
 
@@ -208,7 +207,7 @@ def check_smapi():
     return _no(hint)
 
 
-# ── 4. mod 部署（缺/旧→自动复制 bin 产物到 C+F, 旧备份成 .bak-日期）──
+# ── 4. mod 部署（缺/旧→自动复制 bin 产物到各份游戏目录, 旧备份成 .bak-日期）──
 def check_mod():
     # ⚠️ 2026-08-26 恒：以前写死 bin/Release/net6.0——但 `dotnet build` 不带 -c 出的是 **Debug**，
     #    实际两盘部署的一直都是 Debug 产物。结果这步永远走 "先 dotnet build -c Release" 的死路，

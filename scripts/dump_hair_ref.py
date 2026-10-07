@@ -7,7 +7,7 @@
 1.6 里通常 = [0,1,...,55] + [100,101,...,117]，共 74 款（56~99 是空号，不出现）。
 
 ⚠️ 前提：游戏已用含 /hair_ref 端点的新 DLL 重启，且世界已加载（Context.IsWorldReady）。
-   先按 CHANGELOG 把 DLL 复制到 C+F 双盘并重启游戏。
+   先按 CHANGELOG 把 DLL 复制到 两份游戏目录并重启游戏。
 用法：
     python scripts/dump_hair_ref.py            # AI 端口 7843
     python scripts/dump_hair_ref.py --port 7842

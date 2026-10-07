@@ -22,7 +22,9 @@ os.environ.setdefault("NAGI_URL", "http://localhost:7843")
 
 ROOT = os.path.dirname(HERE)
 CS = os.path.join(ROOT, "ModEntry.cs")
-DECOMP = r"G:\wingheng\Claude\NagiBridge\decomp\c1615\full"
+# 🔬 反编译目录（**本机自备、不随仓库走**）：设 `NAGI_DECOMP=<反编译根目录>` 才会跑下面那几条证据核对，
+#    没设就 ⏭ 跳过（刻意不写死任何本机路径）。
+DECOMP = os.environ.get("NAGI_DECOMP", "")
 
 FAIL = []
 

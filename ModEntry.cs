@@ -537,7 +537,7 @@ public class ModEntry : Mod
     /// <summary>构建标记（防倒退：/status 报这个，部署/重启后核对，旧 DLL/原作者版会不同）。
     /// 🔧 2026-09-11 恒：原先是**手写死的 const**——改代码忘了改它就等于没有。改成由 csproj 的
     ///   `&lt;InformationalVersion&gt;` 注入（每次 `dotnet build` 求值 = 那次编译的时刻）。
-    ///   ⚠️ **为什么不用"读自己 DLL 的 mtime"**：mtime 随文件走，C 盘/F 盘两次拷贝会得到两个值，
+    ///   ⚠️ **为什么不用"读自己 DLL 的 mtime"**：mtime 随文件走，两份拷贝会得到两个值，
     ///   而这里报的是**烤进 DLL 内部**的常量 ⇒ 同一个二进制到哪都报同一个值，才是"防倒退"该有的样子。
     ///   取不到 = 不是 MSBuild 编的 ⇒ 如实报出来，**不假装**（宁报错别兜底）。</summary>
     // 🪨 2026-10-01(194)：砸晶球单价 —— **只这一处**（下面两个 handler 用它，`/status` 也报给 Python）。
@@ -12825,7 +12825,7 @@ public class ModEntry : Mod
     ///
     /// ⚠️ **拟人那条在调用方（Python）**：先 `/walk_to` 走到箱子边、手够得着，再敲这个端点。
     ///    这里**只管开** —— 端点里不做走位（走位是导航的活，两处各写一份必然漂）。
-    /// 机制（反编译 `Chest.cs:919`，C 盘 1.6.15）：`ShowMenu()` 是 `public virtual`，
+    /// 机制（反编译 `Chest.cs:919`，1.6.15）：`ShowMenu()` 是 `public virtual`，
     ///    本体只是按 `SpecialChestType` 挂一个 `ItemGrabMenu` 到 `Game1.activeClickableMenu`
     ///    —— **没有**距离前置条件、也**不吃** `GetMutex()`（那套是"玩家右键碰箱子"走的路）。
     /// ⚠️ 恒 2026-09-28 拍板「**开完不关**」：① 很多操作本来就要点菜单

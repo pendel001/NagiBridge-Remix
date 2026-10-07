@@ -49,7 +49,7 @@ AI 每次调工具，返回都自动附带"状态速报"（眼睛）：位置/�
 # ══════════════════════════════════════════════════════════════════════════
 
 FILE_STRUCTURE = {
-    # ── C# mod（编译进游戏，改完必须 rm -rf bin obj 重编 + DLL 双盘复制）──
+    # ── C# mod（编译进游戏，改完必须 rm -rf bin obj 重编 + 两份游戏目录都复制）──
     "ModEntry.cs": "SMAPI mod 主文件：HTTP API 服务器（~120 端点）+ Harmony 补丁（IsActive/表情/聊天/节日提示/Lidgren 端口）+ 拾取检测 + 结算/升级菜单自动确认",
     "ModConfig.cs": "mod 配置（mode/端口/LLM 等）",
     "NagiBridge.csproj": "C# 工程文件",
@@ -371,13 +371,13 @@ AI 的整个动作空间收敛成一样：`do(号)` 敲单子第几行。
 
     "长脚本便利（防坑）": """
 · 便利工具长脚本自动转后台 + 自动注入 --port AI 端口
-· DLL 改动要 rm -rf bin obj 重编 + C/F 双盘复制（否则"改了没生效"）
+· DLL 改动要 rm -rf bin obj 重编 + 两份游戏目录复制（否则"改了没生效"）
 · Windows GBK 编码坑：终端跑 Python 加 PYTHONIOENCODING=utf-8（emoji 会炸 GBK）
 """,
 
     "已知坑（CLAUDE.md 5 条）": """
 1. 导航：地面/walk_to、矿洞/position、跨图/map_go；别用 /move+BFS
-2. DLL 必须 C+F 两处复制
+2. DLL 必须 两份游戏目录复制
 3. 对话推进用 /click(no_mouse) 或 press_key(ok)，别用 key confirm
 4. 敲一下→检查→碎了停，不硬编码次数
 5. 长脚本自动注入 --port AI 端口
@@ -398,7 +398,7 @@ DEPENDENCIES = {
     "目标框架 / 构建": (".NET SDK 8.0.422 构建；csproj `TargetFramework=net6.0`",
         "编出 net6.0 产物；`Lidgren.Network` 从 `$(GamePath)` 直接引（10048 端口修复用）"),
     "ModBuildConfig": ("Pathoschild.Stardew.ModBuildConfig 4.*",
-        "自动找游戏目录（注册表 / Steam 库 / 各盘常见路径）+ **编译后自动把 mod 拷进 `Mods/NagiBridge`**（所以 build 完 C 盘就有了；F 盘那份要手拷）"),
+        "自动找游戏目录（注册表 / Steam 库 / 各盘常见路径）+ **编译后自动把 mod 拷进 `Mods/NagiBridge`**（所以 build 完**默认那份**就有了；其它份要手拷）"),
     "Python": ("3.12.10", "launcher 要求 **3.10+**；Windows 跑脚本要 `PYTHONIOENCODING=utf-8`（否则 emoji/中文炸 GBK）"),
     "mcp（MCP 服务器库）": ("1.28.1",
         "⚠️ 管线相关：FastMCP 对**同步**工具是**在事件循环里直接调**的（无 threadpool）⇒ 我们注册的是「丢工作线程」版（见 `scripts/_tool_thread_selftest.py` 顶端那段注释与 CHANGELOG 补43）。换 mcp 新版前先跑那条钉子"),

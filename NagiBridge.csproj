@@ -2,7 +2,8 @@
   <PropertyGroup>
     <TargetFramework>net6.0</TargetFramework>
     <EnableHarmony>true</EnableHarmony>
-    <GamePath>C:\Program Files (x86)\Steam\steamapps\common\Stardew Valley</GamePath>
+    <!-- GamePath 不写死：ModBuildConfig 会自动找（注册表 / Steam 库 / 各盘常见路径），
+         找不到时用环境变量 GAME_PATH 或在这里加一行 <GamePath>...</GamePath>。-->
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -10,7 +11,7 @@
     <!-- 2026-09-11 恒：构建标记自动化。原先 ModEntry.cs 里是**手写死的 const**，改代码忘了改它就等于没有。
          这里在每次 `dotnet build` 求值 = 那次编译的时刻，由 SDK 的 GenerateAssemblyInfo 写进
          AssemblyInformationalVersionAttribute；ModEntry.BuildStamp 读它，/status 报出来。
-         值**烤进 DLL 本身**——同一个二进制拷到 C/F 双盘报同一个值，才是"防倒退"该有的样子
+         值**烤进 DLL 本身**——同一个二进制拷到 两份游戏目录报同一个值，才是"防倒退"该有的样子
          （读文件 mtime 会随拷贝走，两份不一样）。
          ⚠️ 精确到秒：同一天连着编两次也分得清（分钟精度会撞）。 -->
     <InformationalVersion>$([System.DateTime]::Now.ToString("yyyy-MM-dd HH:mm:ss"))</InformationalVersion>

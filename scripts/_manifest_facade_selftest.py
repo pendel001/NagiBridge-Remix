@@ -14,8 +14,10 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 REPO = os.path.join(ROOT, "manifest.json")
-GAME = [r"C:\Program Files (x86)\Steam\steamapps\common\Stardew Valley\Mods\NagiBridge\manifest.json",
-        r"F:\Stardew Valley 2nd\Mods\NagiBridge\manifest.json"]
+# 🧭 **不写死本机路径**：直接用启动器那把「自动探测游戏目录」的尺子（注册表 / Steam 库 / 各盘常见路径，
+#    也可用 NAGI_GAME_DIRS 覆盖）——别的机器上探测不到就自动跳过那几条（见下面的 `os.path.exists` 守卫）。
+import launcher_check as _L
+GAME = [os.path.join(g, "Mods", "NagiBridge", "manifest.json") for g in _L.GAME_DIRS]
 ORIG_ID = "Nagi.NagiBridge"
 
 FAIL = []

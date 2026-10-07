@@ -177,7 +177,7 @@ python bomb_mine.py --target 80   # 或 --no-resume --start 1 / --bomb 'Mega Bom
 - 兼容多种 ID 格式（ItemId / QualifiedItemId / 裸ID）
 
 ## 🔧 编译陷阱（2026-07-26 血的教训）
-- **DLL复制路径**：游戏跑在 F:\Stardew Valley 2nd\，不是 C:\Program Files\！
+- **DLL复制路径**：游戏跑在**本机第二份安装目录**（不是 Steam 默认那份）！
 - **编译缓存**：`dotnet build` 太快（<2s）说明用了缓存，必须 `rm -rf bin obj` 再编
 - **`ArchaeologyHouse` 类被移除**：SDV 1.6 没有 `StardewValley.Locations.ArchaeologyHouse`，改用 `Game1.netWorldState.Value.MuseumPieces`
 - **MuseumPieces 键类型**：`Add(Vector2, string)` 第二个参数是字符串 itemId
@@ -352,14 +352,14 @@ petall()                         → 作弊摸所有动物
 
 **⑤ 后台窗口固定操作问题（Python + DLL 已部署）**
 - `_advance_story` 事件对话：**优先进程内 `key confirm`**（不碰 OS 鼠标、不抢前台），连续 2 轮无推进才退 `/click`（事件 receiveLeftClick 兜底）。
-- **DLL 根治（2026-08-16 已部署）**：`/click` 加 `no_mouse` 参数——no-menu 分支不再用 OS `SetCursorPos`+`mouse_event` 点屏幕中心（后台可能点到错误窗口=AI 操作到 7842 的根因），改用进程内 `currentEvent.receiveActionPress` / `Game1.pressActionButton`（IsActive 补丁下失焦也能推进）。Python `_advance_story` 退 `/click` 时传 `no_mouse=true`。BuildStamp = `2026-08-16-click-nomouse`；C/F 双盘 DLL 已同步（md5 一致），需重启游戏生效。
+- **DLL 根治（2026-08-16 已部署）**：`/click` 加 `no_mouse` 参数——no-menu 分支不再用 OS `SetCursorPos`+`mouse_event` 点屏幕中心（后台可能点到错误窗口=AI 操作到 7842 的根因），改用进程内 `currentEvent.receiveActionPress` / `Game1.pressActionButton`（IsActive 补丁下失焦也能推进）。Python `_advance_story` 退 `/click` 时传 `no_mouse=true`。BuildStamp = `2026-08-16-click-nomouse`；两份游戏目录 DLL 已同步（md5 一致），需重启游戏生效。
 
 **⑥ POI 结构化站位+朝向（walk_to 到点自动朝向，2026-08-16 恒）**
 - `locations.POI_FACE`（18 条固定可交互 POI）：`{poi: {"face": 0上/1右/2下/3左, "stand": 玩家站位(默认=pos)}}`。宠物水碗朝右站位(51,7)、矿车/售票机/锻造台/柜台朝上。
 - `walk_to` / `map_go` 到 POI 后自动 `_apply_poi_stand_face()`：先走/挪到 stand（不同则 move_to）→ `face(朝向)` → 返回"站位X，朝Y"提示；**交互交给 AI**（interact / interact_at）。幂等，双调无害。
 - ⚠️ **农场设施（建筑/可移动物：畜棚/温室/图腾柱/出货箱）不在此表**——走 `go_to`/`_resolve_place` 动态检测（`/farm_buildings`），硬编码坐标会随建筑搬家失效。钓点/导航地标是纯位置不需要朝向。
 
-**⑦ 🐟 鱼塘交互（2026-08-16，需重编译 DLL，已部署 C/F 双盘，重启生效）**
+**⑦ 🐟 鱼塘交互（2026-08-16，需重编译 DLL，已部署 两份游戏目录，重启生效）**
 - **发现**：鱼塘 `checkAction` 被 `didPlayerJustRightClick()` 卡着（API 没点鼠标右键不触发）——实测只有门瓦片 action=True 但不开菜单。**SDV 1.6 FishPond 交互入口是 `doAction(Vector2, Farmer)`（不是 checkForAction）**。
 - **ModEntry `/interact` 鱼塘 bypass**：`TryFishPondInteract` 瓦片落在 FishPond footprint → 直接 `fp.doAction(tile, farmer)`（放鱼/喂食/领产出/开 PondQueryMenu 全走游戏原生逻辑，不手动复制消耗逻辑）。响应带 `fishPond` 字段。**实测 collect 成功**：AI 在 Cabin 也能交互，Legend II Roe×2 进背包（金色框=动物饼干双倍）。
 - **`POST /fish_pond` 状态端点**：`{x?, y?, action?}`——`list`(全部)/`status`(指定x,y)/`fish`(服务端直钓)。**SDV1.6 FishPond 真实字段**：`fishType`=NetString(合格ID)、`FishCount`=属性(读 currentOccupants)、容量=`maxOccupants`、任务=`neededItem`(NetRef<Item>)+`neededItemCount`、完成=`hasCompletedRequest`、产出=`output`(NetRef<Item>)、天数=`daysSinceSpawn`、**金色框=`goldenAnimalCracker`**（没有 fishCount/GetMaxFishes/hasFinishedRequest/daysSinceProduction！反编译确认）。
@@ -379,10 +379,10 @@ petall()                         → 作弊摸所有动物
 ⏳ 玩家自定义箱子/酒桶/小屋位置
 
 ## 开发环境
-- 配置文件在 F:\Stardew Valley 2nd\ 不在 C 盘
+- 配置文件在**本机第二份安装目录**、不在 Steam 默认目录
 - 端口：谁先开谁占7842，后开的占7843（host=小恒=7842，AI=DeepSeek=7843）
 - 编译：`dotnet build -c Release -p:ModDeploy=false --output bin/out`
-- DLL复制：需复制到 C:\Program Files...\Mods\NagiBridge\ 和 F:\Stardew Valley 2nd\Mods\NagiBridge\
+- DLL复制：**两份游戏的 Mods/NagiBridge/ 都要复制**（具体路径看启动器自检打印的「游戏目录」）
 
 ## 启动步骤
 1. 开星露谷（确保 NagiBridge MOD 运行）

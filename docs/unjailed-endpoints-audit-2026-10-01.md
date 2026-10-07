@@ -307,7 +307,7 @@ L11616:    —— **没有**距离前置条件、也**不吃** `GetMutex()`（�
 
 **另外两个便宜的对照（不用真机）**：
 - `grep -n "GetFacingTile\|TilePoint\|Math.Abs\|Intersects" ModEntry.cs` 自己数一遍那 5 处门（本报告的基线），若数量变了说明 DLL 比这份报告新。
-- 比三处 DLL 哈希（`bin\Debug\net6.0` / C 盘 Mods / **F 盘 `F:\Stardew Valley 2nd\Mods`**，本机活的那份在 F 盘）——**报告的行号只对得上某个特定编译版本**，换版本后行号会漂，先对哈希再引用行号。
+- 比三处 DLL 哈希（`bin\Debug\net6.0` / **本机各份安装的 Mods**，本机活的那份不一定在 Steam 默认目录）——**报告的行号只对得上某个特定编译版本**，换版本后行号会漂，先对哈希再引用行号。
 
 ### D. 本文件的使用边界
 

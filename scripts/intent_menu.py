@@ -142,7 +142,7 @@ def is_book(slot: dict):
 
 
 # 👕 「这东西能穿」+「是哪一类」——**游戏自己的分类号**。
-#    逐个从反编译核过（`G:\wingheng\Claude\NagiBridge\decomp\full\StardewValley\Object.cs:243-259`）：
+#    逐个从反编译核过（`Object.cs:243-259`，反编译目录本机自备）：
 #      · `hatCategory=-95` · `ringCategory=-96` · `bootsCategory=-97`
 #      · `clothingCategory=-100` · `trinketCategory=-101`
 #    ⚠️⚠️ **没有 `pantsCategory`** —— 我一度以为裤子是 `-101`，那是**饰品 Trinket**。
@@ -151,7 +151,7 @@ def is_book(slot: dict):
 #    ⚠️ 为什么不"问 C# 要类型"：`TryEquip`（`ModEntry.cs:6255`）判的是 **CLR 类型**
 #       （`item is Clothing` / `is Hat` / …），Python 看不见类型 —— 而 `catNum` 就是
 #       `Item.Category`（`ModEntry.cs:5193` 原样吐出来），是**同一件事的可读投影**。
-#       ⇒ 这一条**不需要改 DLL**（改 DLL 要恒关游戏，本机活的那份在 F 盘且被锁着）。
+#       ⇒ 这一条**不需要改 DLL**（改 DLL 要恒关游戏，本机真正跑的那份可能被游戏锁着）。
 WEARABLE_CATS = {-95: "帽子", -96: "戒指", -97: "靴子", -100: "衣服", -101: "饰品"}
 
 # 👕 `/worn` 的槽位 → 中文。⚠️ **槽名必须跟 C# 一致**：权威清单就是 `TryTakeOff`
@@ -2067,7 +2067,7 @@ def _exec_read(ctx, targets, run):
 # ═══════════════════════════════════════════════════════════════════════
 # 📦 容器（箱子 / 冰箱）—— 166 ⑤
 # ═══════════════════════════════════════════════════════════════════════
-# 🔬 「容器收什么」的判据（2026-09-29 反编译 **C 盘 1.6.15.24356** 实锤）
+# 🔬 「容器收什么」的判据（2026-09-29 反编译 **1.6.15.24356** 实锤）
 #
 #   `Chest.ShowMenu()` 按 `SpecialChestType` 挂筛子：
 #     · 迷你出货箱 → `Utility.highlightShippableObjects`（只收可出货的）

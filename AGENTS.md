@@ -44,7 +44,7 @@ AI **不需要**重新学这套端点怎么用——直接调 MCP 域工具：
 
 | 想查什么 | 去哪 |
 |---|---|
-| 某机制怎么实现 / 有哪些坑和坐标 | `CHANGELOG.md`（完整知识库，改前必读） |
+| 某机制怎么实现 / 有哪些坑和坐标 | **内部 `CHANGELOG.md`（⚠️ 不随仓库发布，本机保留）**——改前必读 |
 | 某 MCP 工具/域的 ops | `scripts/TOOL_INVENTORY.md` |
 | 全端点清单 / 逐文件职责 / 核心范式 | `PROJECT_PANORAMA.py`（`python PROJECT_PANORAMA.py` 打印） |
 | 怎么装怎么连 / 连不上 | `README.md` 第 4、5 节 |
@@ -55,26 +55,24 @@ AI **不需要**重新学这套端点怎么用——直接调 MCP 域工具：
 
 ## 跨会话记忆库（在仓库外 · 开局必读）
 
-记忆库**不在 repo 里**（过程记录 / 当前进行中 / 用户偏好），路径：
+记忆库**不在 repo 里**（过程记录 / 当前进行中 / 用户偏好）。它放在**本机、仓库外的一个目录**里
+（各人机器不一样，路径由你本地的 AI 工具配置决定；⚠️ **别照抄任何写死的路径**——写死过一版，换机就误导）：
 
-```
-C:\Users\Administrator\.claude\projects\G--wingheng-Claude-NagiBridge-NagiBridge-main\memory\
-```
-
-- **开局先读 `MEMORY.md`**（索引）。技术细节一律以仓库 `CHANGELOG.md` 为准，索引只放 repo 记不住的。
-- 要细节再 `grep` 那个目录或 read 单个文件 —— 文件名＝「主题-日期.md」，如 `pending-restart-0924-and-ghost-chests.md`（验收总账）。
+- **开局先读那份索引 `MEMORY.md`**。技术细节一律以**内部 `CHANGELOG.md`（不随仓库发布）**为准，索引只放 repo 记不住的。
+- 要细节再 `grep` 那个目录或 read 单个文件 —— 文件名＝「主题-日期.md」。
 - **新记忆写回同一目录**，沿用同一命名；**别在 repo 里另起一份**（两份会漂移）。索引里对应加一行。
 - ⚠️ 这份记忆是**平台无关**的：Claude Code 与 DSH 共用，谁改都写这里。
 
 ## 关键不变量（坑 · 改了几处会"没生效"）
 
 1. 导航：地面 `walk_to` / 矿洞 `position` / 跨图 `map_go`；别用 `/move+BFS`
-2. **改 `ModEntry.cs`（C#）必须 `rm -rf bin obj` 重编 + DLL 复制到 C+F 双盘**，否则"改了没生效"
-   - 📌 **判据**：`Get-FileHash` 比三处（`bin\Debug\net6.0` / C盘 Mods / **F盘 `F:\Stardew Valley 2nd\Mods`**），
-     **必须同一个哈希**（⚠️ 本机**活的那份在 F 盘**）
-   - ⚠️ **游戏跑着时 F 盘拷不进去**（`文件正由另一进程使用` —— DLL 被游戏锁着）
-     ⇒ 只能**先拷 C 盘，等恒关了游戏再补拷 F 盘**（2026-09-30 现场踩过）。**别催他关游戏**，他会挑时候
-   - ⚠️ **覆盖前先把 F 盘那份备份**进 `_dll_backup/NagiBridge.<hash8>.dll`
+2. **改 `ModEntry.cs`（C#）必须 `rm -rf bin obj` 重编 + DLL 复制到每一份游戏目录**，否则"改了没生效"
+   - 📌 **判据**：`Get-FileHash` 比三处（`bin\Debug\net6.0` / **两份 Mods 目录**）——具体的两处路径看
+     **启动器自检打印的「游戏目录」那几行**（它自动探测；也可用 `NAGI_GAME_DIRS` 指路），
+     **必须同一个哈希**（⚠️ 本机真正跑的那份**不一定在默认目录**）
+   - ⚠️ **游戏跑着时被锁的那份拷不进去**（`文件正由另一进程使用` —— DLL 被游戏锁着）
+     ⇒ 只能**先拷没被锁的那份，等游戏关了再补拷另一份**（2026-09-30 现场踩过）。**别催他关游戏**，他会挑时候
+   - ⚠️ **覆盖前先把要覆盖的那份备份**进 `_dll_backup/NagiBridge.<hash8>.dll`
      （2026-09-30 漏过一次：把"真机验过的"那版直接覆盖了，想回滚只能回到更早的）
 3. 对话推进用 `/click(no_mouse)` 或 `press_key(ok)`，别用 `key confirm`
 4. 敲一下 → 检查 → 碎了停，不硬编码次数
@@ -95,9 +93,9 @@ C:\Users\Administrator\.claude\projects\G--wingheng-Claude-NagiBridge-NagiBridge
 |---|---|
 | **连不上** | `README.md` 第 5 节：curl 自测 / Streamable HTTP（不是 SSE）/ 防火墙放行 8000 / 同局域网 |
 | **改的 tools/引导不生效** | **重启 MCP 服务器**（Python 启动时 import） |
-| **改了 mod 没效果** | 确认 DLL **C+F 两处**都复制了：`C:\Program Files (x86)\Steam\steamapps\common\Stardew Valley\Mods\NagiBridge\` + **`F:\Stardew Valley 2nd\Mods\NagiBridge\`**（⚠️**本机活的那份在 F 盘**；两边 `Get-FileHash` 比一下最快） |
+| **改了 mod 没效果** | 确认 DLL **每一份游戏安装的 Mods 都复制了**（本机路径看启动器自检打印的「游戏目录」；⚠️ **本机真正跑的那份不一定是 Steam 默认目录**；两边 `Get-FileHash` 比一下最快）|
 | **手机 java 报错 / 404** | URL 少了 `/mcp` 或客户端用了 SSE → 补 `/mcp` + 传输改 Streamable HTTP |
 | **AI 状态条慢 / token 大** | 看 `scripts/sessions/session_log.jsonl`（工具返回字节）；`settings ops=status` 看配置/退役 |
 | **双开 10048 端口冲突** | 确认两个窗口用不同端口（Harmony Lidgren 补丁已修常规竞态） |
 
-> 一句话：**先定位是"游戏 mod"还是"MCP 侧"的问题**——游戏 mod 问题要重编 DLL + 重启游戏；MCP 问题改完重启 MCP 即可。**改任何东西前先查 `CHANGELOG.md`。**
+> 一句话：**先定位是"游戏 mod"还是"MCP 侧"的问题**——游戏 mod 问题要重编 DLL + 重启游戏；MCP 问题改完重启 MCP 即可。**改任何东西前先查内部 `CHANGELOG.md`**（⚠️ 那份**不随仓库发布**，仓库里看到「见 CHANGELOG」的引用以代码/README 为准）。

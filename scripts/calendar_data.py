@@ -475,7 +475,7 @@ FESTIVAL_GUIDE = {
 
 # 🎯 节日备战明细（2026-08-20 恒：**不注入**状态条——只在 AI 想备战/规划时调 festival prep 看）
 # key=(season,day) → wiki 详细评分表/攻略。FESTIVAL_GUIDE 只留精要+prep 指针，详细放这里省 token。
-# 数据来源：G:\wingheng\Claude\NagiBridge\festival\（恒收集的中文 wiki 原文）
+# 数据来源：仓库外的 `festival/`（中文 wiki 原文，本机目录、不随仓库走）
 FESTIVAL_PREP = {
     ("summer", 11): """🏖️ 夏威夷宴会·百乐汤评分（提前准备）
 【机制】加1个**生的可食用**食材→州长按**最差**食材打分（联机全员都要放）；判分=品质+基础价值+体力回复（手工匠不加成）。
