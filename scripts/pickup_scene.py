@@ -336,7 +336,22 @@ def main(radius=30, max_n=30, dry_run=False):
         return
 
     picked = 0
-    for x, y, obj in uniq[:max_n]:
+    # 🧭 2026-10-07 恒真机（海滩捡贝壳）：「**左一下右一下**……一开始以为是有些采集物种类不认，
+    #    后来感觉就只是单纯的**不会就近**：一下在这片，这片没捡完又过桥去捡那片，**如钟摆一样往复**。」
+    #    病根：`uniq` 是**扫描那一刻**按「离扫描中心」排好的（`scan_pickables()` 里那次 sort），
+    #    之后**再也不重排** ⇒ 人一走开，下一件可能在对岸的另一个簇里 ⇒ 来回摆。
+    #    ⇒ 改成**每捡一件都按"现在站哪"重挑最近的那件**（贪心最近邻；几十件而已，O(n²) 无所谓）。
+    #    ⚠️ 失败的那件**不塞回去**（走不到就是走不到，塞回去 = 死循环）；跟旧 for 循环同语义。
+    _pending = list(uniq)
+    while _pending and picked < max_n:
+        try:
+            _s = requests.get(f"{base}/state", timeout=10).json()
+            _p = _s.get("player", {}) or {}
+            _px, _py = _p.get("x", 0), _p.get("y", 0)
+        except Exception:
+            _px, _py = cx, cy          # 读不到就用扫描中心（退回旧行为，但**不猜位置**）
+        _pending.sort(key=lambda t: abs(t[0] - _px) + abs(t[1] - _py))
+        x, y, obj = _pending.pop(0)
         if pick_up_object(x, y):
             picked += 1
             time.sleep(0.1)

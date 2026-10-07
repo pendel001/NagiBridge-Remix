@@ -284,10 +284,13 @@ def load_one(m, items, skip_enter=False, holding=""):
             if not enter_building(loc, b):
                 return False, f"进门失败: {loc}", False, holding
         else:
-            wr = api.warp_into(loc)
-            if not wr.get("ok"):
-                return False, f"warp 失败: {wr.get('error', '')}", False, holding
-            time.sleep(0.5)
+            # 🚨 2026-10-07 同 `run()` 那处：**已经在这张图就别 warp**（恒真机："无论捡蜂蜜还是捡电池，
+            #    ai 都先瞬移到了农场右口"）；注释一直写着"已在同屋则跳过"，这里才是真的跳过。
+            if not _already_here(loc):
+                wr = api.warp_into(loc)
+                if not wr.get("ok"):
+                    return False, f"warp 失败: {wr.get('error', '')}", False, holding
+                time.sleep(0.5)
 
     # 2. 依次尝试机器**八方向邻格**，walk_natural 走过去（/move 游戏 BFS 真走路；走不到才 position 兜底）
     # ⚠️ 2026-08-13：原 walk_to 对鱼饵机"纯粹没走过去"（长距离 interact 装上了）——改 walk_natural 强制走路
@@ -537,12 +540,14 @@ def run(items, machine_type="", location="", count=0, no_enter=False, here=False
                     skipped += len(ms)
                     continue
             else:
-                wr = api.warp_into(loc)
-                if not wr.get("ok"):
-                    api.log(f"⚠️ warp 进 {loc} 失败，跳过这一组 {len(ms)} 台")
-                    skipped += len(ms)
-                    continue
-                time.sleep(0.5)
+                # 🚨 2026-10-07 恒真机：**已经在这张图就别 warp**（见 `_already_here` 的注释）
+                if not _already_here(loc):
+                    wr = api.warp_into(loc)
+                    if not wr.get("ok"):
+                        api.log(f"⚠️ warp 进 {loc} 失败，跳过这一组 {len(ms)} 台")
+                        skipped += len(ms)
+                        continue
+                    time.sleep(0.5)
 
         aisles = _aisle_map(ms)
         p = api.state().get("player", {})
@@ -628,6 +633,24 @@ def _bag_full() -> bool:
         inv = st.get("inventory") or []
         maxi = int(((st.get("player") or {}).get("maxItems")) or 0)
         return bool(maxi) and len(inv) >= maxi
+    except Exception:
+        return False
+
+
+def _already_here(loc):
+    """人**已经在这张图里**吗？
+
+    🚨 2026-10-07 恒真机排除法（他先在现场做了实验）：「**无论捡蜂蜜还是捡电池，ai 都先瞬移到了
+       农场右口再走过去**」。他原本怀疑"农场太乱 ⇒ BFS 走不到 ⇒ 兜底瞬移"，实测**否**：
+       从现场 (46,43) 走到最近的避雷针 (46,41) ok=True；一路走到蜂房 (48,8) 也 **ok=True**
+       （落点 (47,8)，因为 (48,8) 是机器格站不住）⇒ **路是通的，BFS 没失败**。
+    真因：本脚本对**露天机器（没有 building/doorX）**那两处是**无条件** `api.warp_into(loc)`，
+       而脚本自己的注释写着"已在同屋则跳过（避免重复进门）"—— **代码里根本没有这个判断**
+       ⇒ 人在农场里也会被先瞬移到 Farm 入口（恒说的"农场右口"）再走。
+    ⇒ 补上这个判断：**已经在这张图就一步都不瞬移**，直接走过去（拟人优先）。
+    """
+    try:
+        return api.current_location() == loc
     except Exception:
         return False
 
