@@ -14062,8 +14062,8 @@ def _joja_form(fresh: bool = False) -> dict:
             #      ⇒ 这条分支**不多打一发 HTTP**；读不到 ⇒ 不否决（不误伤）。
             if "MovieTheater" not in _locked_maps():
                 val["form"] = "theater"
-                val["why"] = ("读到旧的 JojaMart 形态（瓦片 %s），但**电影院已解锁** ⇒ "
-                              "判为地图覆盖没落地的旧读数（恒：这档这里已经是电影院）" % _ti)
+                val["why"] = ("⚠️ 门那格还是旧的 JojaMart 形态（瓦片 %s），但**电影院已解锁** ⇒ "
+                              "判为地图覆盖没落地的**旧读数**（恒：这档这里已经是电影院）" % _ti)
             else:
                 val["form"] = "jojamart"
         elif _ti in (2032, 2033) and "JojaMart" not in _act:

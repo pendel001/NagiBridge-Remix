@@ -3703,10 +3703,16 @@ def _map_go_body(destination: str = "", npc: str = "") -> str:
                 except Exception:                                  # noqa: BLE001
                     _jf = {}          # 读不到就只说"形态闸拦的"，不编形态
                 _cn = {"theater": "电影院", "jojamart": "Joja 超市", "abandoned": "废弃超市"}
-                _why = _jf.get("why") or (f"瓦片 {_jf.get('tileIndex')}" if _jf.get("tileIndex") else "读不到门那格")
+                _form = _jf.get("form")
+                if not _form:
+                    _tail = f"（{_jf.get('why') or '读不到门那格'}）"      # 认不出：把原话带出来
+                elif _jf.get("why"):
+                    _tail = f"（{_jf['why']}）"                        # 否决票/覆盖没落地：说明为什么这么判
+                else:
+                    _tail = ""
                 return _with_state(
                     f"❌ {destination} 现在不给：那栋楼（Town 95,50）此刻读到的是**"
-                    f"{_cn.get(_jf.get('form'), '认不出的形态')}**（{_why}）"
+                    f"{_cn.get(_form, '认不出的形态')}**{_tail}"
                     f" ⇒ 三种形态的 POI 只放行当场读到的那种")
             if _p.get("require_order"):
                 return _with_state(f"❌ {destination} 现在不给：得**已接取对应的特别订单**（进行中）才放行交付点")
