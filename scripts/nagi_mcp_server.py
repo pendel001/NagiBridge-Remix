@@ -5334,7 +5334,20 @@ _ASYNC_SCRIPTS = {"mine_run", "fish_run", "bomb_mine", "bomb_volcano",
                   # 🛏 2026-09-29 恒：躺床**回满再唤醒**（他想的那条："睡好再唤醒 AI"）。
                   #    ⚠️ **>20:00 那一脚不在这儿**（在 `_lie_rest_flow`，且只踢今天第一次）——
                   #    放脚本里会把"执意第二次躺"也踹掉，**跟恒的原话相反**。
-                  "lie_rest"}
+                  "lie_rest",
+                  # 🐾 2026-10-07 恒：「**加进异步名单去吧**」—— 起因是真机事故：零背景 AI 试跑时
+                  #    「摸动物」把那条 MCP 会话**整条搞死**了。机理（现在写清楚，别再踩）：
+                  #    · FastMCP 对**同步**工具是**在事件循环里直接调**的（见 `_bg_block_until_wake` 那段）
+                  #      ⇒ 同步跑多久，:8000 就多久不接请求；`pet_walk` 那次是 `timeout=300`。
+                  #    · 前端默认超时 **150s** ⇒ 300s 的同步调用**必然**被客户端放弃 ⇒
+                  #      客户端取消 + 我们的 handler 还在跑 ⇒ mcp 库 `AssertionError: Request already
+                  #      responded to` ⇒ **TaskGroup 崩 ⇒ 会话被清**（前端拿着死 session id 一路 404）。
+                  #    ⇒ 治疗办法就是进白名单：异步 = `_bg_start` + `_bg_block_until_wake`，
+                  #      **单片封顶 `_BG_PARK_SLICE`（30s）** ⇒ 工具一定在客户端超时之前返回。
+                  #    ⚠️ 只加**能整条当"一个 op"跑完**的（走路型长活）；像 `feed_hay`/`trash_run`
+                  #      这样**被多个内部流程复用**的先只进名单、**不改调用点**（内部流程要同步结果，
+                  #      嵌套异步会变成"两拨东西同时指挥角色"——那正是这次事故的另一半）。
+                  "pet_walk", "moss_run", "spot_run", "rock_run", "walnut_run", "trash_run", "feed_hay"}
 
 
 def async_config(show: bool = False, add: str = "", remove: str = "", enable: str = "",
@@ -7615,15 +7628,25 @@ def _pet_digest(out: str, limit: int = 500) -> str:
     return s[-limit:] if len(s) > limit else s
 
 
-def _pet_animals_in_building() -> str:
+def _pet_animals_in_building(async_ok: bool = False):
     """摸当前建筑内牲畜（牛羊鸡鸭，2026-08-24 恒）：拟人自然走路摸（pet_walk 已改读 /animals 物理位置）。
-    室内空则提示可能跑 Farm 放牧（室外放牧动物交给 _grazing_care / care_animals）。"""
+    室内空则提示可能跑 Farm 放牧（室外放牧动物交给 _grazing_care / care_animals）。
+
+    ⚠️ **`async_ok` 只有"单子上那行/单个 op"该传 True**（走后台异步：回执 ≤30s 就回来，不会把
+    客户端拖超时 —— 2026-10-07 那次会话崩就是这条同步跑 300s 造成的，见 `_ASYNC_SCRIPTS` 那段）。
+    **内部流程（`care_animals` 一栋一栋走）必须 False**：它要拿"摸完了"的结果才决定进下一栋。
+    返回：同步 ⇒ 一句话；异步已起 ⇒ **dict**（`st=maybe`，⛔ 不许说成"摸完了"）。
+    """
     try:
         data = api.animals()
         all_a = data.get("animals", [])
         if not all_a:
             return "没有动物（可能跑 Farm 放牧了——farm animals 会去 Farm 处理室外放牧动物）"
-        out = _run_script("pet_walk", [], timeout=300)
+        out = _run_script("pet_walk", [], timeout=300, async_ok=async_ok)
+        if async_ok and str(out).lstrip().startswith(("🚀", "⏳")):
+            # 后台已起/还在跑 ⇒ **照原样交出去**，但档位必须落 ⚠️（`_im_run` 只看开头判档；
+            # 不给 ⚠️ 的话单子头一行会印 ✅ = "嘴上说成功"，同 water_crops 那条老账）。
+            return {"ok": False, "st": "maybe", "text": str(out)}
         return f"🐄 摸牲畜：\n{_pet_digest(out)}"
     except Exception as e:
         return f"摸动物出错: {e}"
@@ -9740,7 +9763,7 @@ def rock_dig(dig: bool = True, radius: int = 14, max_break: int = 0, break_stone
         args_list += ["--max", str(max_break)]
     if break_stone:
         args_list.append("--break-stone")
-    out = _run_script("rock_run", args_list, timeout=600)
+    out = _run_script("rock_run", args_list, timeout=600, async_ok=True)   # ⛏️ 2026-10-07：同上
     return _with_state(f"⛏️ 室外镐击报告：\n{out[:900]}")
 
 
@@ -9771,7 +9794,7 @@ def spot_run() -> str:
     # ⚠️ 2026-09-19：原来 `out[:600]` 只截**头**，16 个斑点时正好把最后的
     #    「✅ 挖成 N 个 / 为什么没挖动」汇总切掉 —— 而那行才是 AI 下一步要读的东西。
     #    改成"留头也留尾"，中间省略。
-    out = _run_script("spot_run", timeout=300)
+    out = _run_script("spot_run", timeout=300, async_ok=True)              # 🔴 2026-10-07：同上
     txt = out if len(out) <= 1200 else out[:500] + "\n…（中间略）…\n" + out[-700:]
     return _with_state(f"🪱 挖斑点/姜报告：\n{txt}")
 
@@ -9796,7 +9819,7 @@ def walnut_run(radius: int = 0, max_count: int = 1, dry_run: bool = False) -> st
     args_list = ["--radius", str(radius), "--max", str(max_count)]
     if dry_run:
         args_list.append("--dry-run")
-    out = _run_script("walnut_run", args_list, timeout=300)
+    out = _run_script("walnut_run", args_list, timeout=300, async_ok=True)  # 🌰 2026-10-07：同上
     txt = out if len(out) <= 1200 else out[:500] + "\n…（中间略）…\n" + out[-700:]
     return _with_state(f"🌰 金核桃报告：\n{txt}")
 
@@ -9831,7 +9854,7 @@ def moss_run(radius: int = 25, target_max: int = 80, rounds: int = 5, dry_run: b
     args_list = ["--radius", str(radius), "--max", str(target_max), "--rounds", str(rounds)]
     if dry_run:
         args_list.append("--dry-run")
-    out = _run_script("moss_run", args_list, timeout=600)
+    out = _run_script("moss_run", args_list, timeout=600, async_ok=True)   # 🌿 2026-10-07：走路型长活，进异步
     # ⚠️ 2026-10-02：原来 `out[:800]` 只截**头** —— 而每棵苔藓树就是一行
     #    （真机 30 棵 ⇒ 头 800 字全是「🌿 长苔藓树 (x,y) 刮1下」），
     #    **真正要读的收尾汇总（处理了几个 / 还剩没剩）被切掉了**。
@@ -9982,7 +10005,7 @@ def pet_walk(include_petted: bool = False) -> str:
     args_list = []
     if include_petted:
         args_list.append("--include-petted")
-    out = _run_script("pet_walk", args_list, timeout=180)
+    out = _run_script("pet_walk", args_list, timeout=180, async_ok=True)   # 🐾 2026-10-07 恒：进异步白名单
     return _with_state(f"🐾 摸动物报告：\n{out[:600]}")
 
 
@@ -28713,7 +28736,7 @@ def _im_run(op, args):
         # 🗑 投出货箱（2026-10-01）：单子「投出货箱…」点开那行走这里（`name` = 内部名）。
         "bin": lambda: sell_to_bin(name=args.get("name") or ""),
         "furniture_pickup": lambda: furniture_pickup(args.get("x"), args.get("y")),
-        "pet_animals": lambda: _pet_animals_in_building(),
+        "pet_animals": lambda: _pet_animals_in_building(async_ok=True),
         # ⚠️ 调**底层那个不带状态条**的（`pet_pet()` 外面裹了 `_with_state`）——
         #    回执里再嵌一条状态条 = 一屏两张条，反而看不清「这次到底干了啥」。
         # 🔀 2026-10-04 恒：「摸猫狗留一个就行了」。这个键原来叫 `pet_pets` —— 那是 2026-08-16 退役的
@@ -28884,6 +28907,11 @@ def _im_run(op, args):
         #    （把"成功带告示"误判成 ⚠️ 只是难看；把"没成"误判成 ✅ 是骗人）。
         t = txt.lstrip()
         st = "no" if t.startswith("❌") else ("maybe" if t.startswith("⚠") else "yes")
+        # 🚀🕳️ 2026-10-07：**"已后台启动/还在跑"绝不算成** —— 异步那套返回的是
+        #    「🚀 已后台启动 job N…」/「⏳ …还在跑…」，按上面那条开头的规则会被判成 **yes ⇒ 单子头一行印 ✅**
+        #    = "嘴上说成功"（`water_crops` 那条老账的同一形状）。判据**偏保守**：只在"没干完"的方向纠正。
+        if any(_k in txt for _k in ("已后台启动", "还在跑", "唤醒点")):
+            st = "maybe"
         return {"ok": st == "yes", "st": st, "text": txt}
     try:
         if op in _IM_POST_OPS:

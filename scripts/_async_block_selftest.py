@@ -141,6 +141,34 @@ try:
     ck("wake=45 → 接受并回执", "45" in o, o)
     ck("…且真的写进了配置", M._bg_cfg["wake_interval"] == 45, str(M._bg_cfg["wake_interval"]))
 
+    print("\n⑦ 长走路型脚本进白名单 + 「已后台启动」**不许说成做完了**（2026-10-07 会话崩那次）")
+    _want = ("pet_walk", "moss_run", "spot_run", "rock_run", "walnut_run", "trash_run", "feed_hay")
+    ck("这些脚本都在 `_ASYNC_SCRIPTS` 里", all(w in M._ASYNC_SCRIPTS for w in _want),
+       str(sorted(M._ASYNC_SCRIPTS)))
+    import inspect as _insp
+    _sig = str(_insp.signature(M._pet_animals_in_building))
+    ck("`_pet_animals_in_building` 有 `async_ok` 参数（默认 False = 内部流程同步）",
+       "async_ok" in _sig and "False" in _sig, _sig)
+    _saved_rs, _saved_an = M._run_script, getattr(M.api, "animals", None)
+    try:
+        M.api.animals = lambda: {"animals": [{"animal": {"type": "White Chicken"}}]}
+        M._run_script = lambda name, args=None, timeout=0, async_ok=False: (
+            "🚀 已后台启动 job 7（脚本 pet_walk）—— 跑完自动播报"
+            if async_ok else "🐾 [pet] 摸了 3 只")
+        _r_async = M._pet_animals_in_building(async_ok=True)
+        ck("异步已起 ⇒ 回的是 dict、档位 **maybe**（单子头一行会是 ⚠️ 不是 ✅）",
+           isinstance(_r_async, dict) and _r_async.get("st") == "maybe"
+           and "已后台启动" in str(_r_async.get("text")), str(_r_async)[:120])
+        _r_sync = M._pet_animals_in_building()
+        ck("同步那条路**仍然回一句话**（内部流程要拿结果决定进下一栋）",
+           isinstance(_r_sync, str) and _r_sync.startswith("🐄"), str(_r_sync)[:60])
+    finally:
+        M._run_script = _saved_rs
+        if _saved_an is not None:
+            M.api.animals = _saved_an
+    ck("`_im_run` 里那条保守判据在（已后台启动/还在跑/唤醒点 ⇒ maybe）",
+       "已后台启动" in _insp.getsource(M._im_run), "")
+
     print("\n" + ("=" * 46))
     print("❌ 失败 " + str(len(FAIL)) + " 项: " + ", ".join(FAIL) if FAIL else "✅ 全过（0 失败）")
 finally:
