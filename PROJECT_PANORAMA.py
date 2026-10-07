@@ -7,9 +7,15 @@
 ╚══════════════════════════════════════════════════════════════════════════╝
 
 一句话：SMAPI C# mod（HTTP API，端口 7842/7843）+ Python MCP 服务器
-（17 个工具，streamable-http 8000）让 AI 像真人一样操控星露谷——拟人走位、
-受限动作、自主决策。域工具模式恒开，只露这一套 17 个（15 域入口 + 2 独立工具），
-`--full` 已退役（2026-09-06）；`advance_story`/`profile`/`which_role` 已收编进 menu/check 域（2026-09-11）。
+（16 个工具，streamable-http 8000）让 AI 像真人一样操控星露谷——拟人走位、
+受限动作、自主决策。域工具模式恒开，只露这一套 16 个（13 域入口 + 3 独立工具：
+`intent`/`screenshot`/`help`），`--full` 已退役（2026-09-06）。
+
+⚠️ **两套接口并存**（2026-09-29 起，这是那之后最重要的结构变化）：
+  · **域工具（陈述式）** `域名(ops, kw={...})` —— 在参数空间里找路；老路，仍在，13 个域入口。
+  · 🎯 **意图选项单（祈使式）** `intent` —— **看单子 → 敲编号**，把"这一刻能做的事"列成一屏。
+收编记录：`advance_story`→menu、`profile`/`which_role`→check（09-11）；
+`session`→settings、`cabin`→scene/farm/daily/check（10-01）。
 
 角色映射（由端口决定，不写死）：
   · 7842 = 人（host）   —— 检测/广播走这个端口
@@ -24,12 +30,15 @@ PROJECT_OVERVIEW = """
 ──────────────────────────────────────────────────────
 玩家(host)开一个星露谷联机房 → AI(farmhand) 加入同一张图 → MCP 服务器暴露
 工具让 AI 做任何真人能做的事：走位/对话/商店/钓鱼/下矿/种地/节日。
-（20 个注册工具，域模式恒开，只露这一套；`--full` 已退役。
+（16 个注册工具 = 13 域入口 + 3 独立，域模式恒开，只露这一套；`--full` 已退役。
 
-分三层：
+分四层：
   [游戏层]  Stardew Valley 1.6.15（SMAPI 4.5.2）+ NagiBridge C# mod
   [桥接层]  ModEntry.cs —— HTTP API（每个玩家一个端口 7842/7843）+ Harmony 补丁
-  [智能层]  scripts/nagi_mcp_server.py —— MCP 服务器（17 工具/15 域入口）+ 状态注入 + 心跳）
+  [智能层]  scripts/nagi_mcp_server.py —— MCP 服务器（16 工具/13 域入口）+ 状态注入 + 心跳
+  [交互层]  scripts/intent_menu.py —— 🎯 意图选项单（**看单子 → 敲编号**）：
+            把"这一刻能做的事"（背包/地图/机器/箱子/原生菜单）算成一屏可敲的行，
+            AI 不再碰工具名和参数。域工具那套（陈述式）与它并存。
 
 AI 每次调工具，返回都自动附带"状态速报"（眼睛）：位置/时间/天气/背包/体力/
 待办/节日/新闻。状态条分层：每天第一次全量，之后精简，省 token。
@@ -47,7 +56,8 @@ FILE_STRUCTURE = {
     "ChatHud.cs / LlmClient.cs / server.ts / index.ts": "⚠️ 原作者遗留，已 .claudeignore 忽略，勿改",
 
     # ── Python MCP 服务器（核心智能层）──
-    "scripts/nagi_mcp_server.py": "MCP 服务器（streamable-http:8000 或 --stdio）：17 个工具 + 状态注入(_with_state) + 心跳 + 节日/导航/脚本编排。15 域入口(check/farm/mine/cabin/social/scene/menu/storage/daily/map/festival/fish/settings + script/session；care→farm、quest→menu 已于 09-02 合并)，域模式恒开只露这套。wear→daily ops，bundle_kb/donate/read_book→menu ops(2026-08-22 收编)；advance_story→menu ops、profile/which_role→check ops(2026-09-11 收编，20→17)",
+    "scripts/nagi_mcp_server.py": "MCP 服务器（streamable-http:8000 或 --stdio）：16 个工具 + 状态注入(_with_state) + 心跳 + 节日/导航/脚本编排。13 域入口(check/farm/mine/social/scene/menu/storage/daily/map/festival/fish/settings + script；care→farm、quest→menu 09-02 合并；session→settings、cabin→scene/farm/daily/check 10-01 撤出) + 3 独立(intent/screenshot/help)，域模式恒开只露这套。wear→daily ops，bundle_kb/donate/read_book→menu ops(2026-08-22)；advance_story→menu ops、profile/which_role→check ops(2026-09-11，20→17)，2026-10-01 再撤 session/cabin 两个顶层域名(→17→16)",
+    "scripts/intent_menu.py": "🎯 意图选项单（交互层，senses 分支 2026-09-29 起）：扫世界(背包/地图/机器/箱子/原生菜单) → 跑『动词表 × 能不能』→ 渲染成一屏可敲的行；`intent_menu.render_menu/render_at/do_row`。三条铁律=单子上每个字都从游戏读出来 / 不许静默截断(还有K项如实报) / 槽位是短命句柄(当场重读+回执回显对象和数量)",
     "scripts/stardew_api.py": "HTTP API 封装层：Python 侧调 7842/7843 的 /xxx 端点，port↔角色自动检测",
     "scripts/player_activity.py": "行为检测 + 心跳：发呆检测/同场景玩家检测/窗口判定，描述房主活动给 AI 看",
     "scripts/locations.py": "地图知识库：MAP_LINKS(门/出口瓦片) + MAP_FEATURES(地点功能) + POI(兴趣点) + POI_FACE(结构化站位朝向) + SHOP_HOURS",
@@ -70,10 +80,16 @@ FILE_STRUCTURE = {
     "scripts/berry_run.py / blessing_statue.py / chop_trees.py / clear_area.py / machine_loader.py / check_design.py": "其他自动化：浆果/祝福像/砍树/清地/装机器(装载失败列机器需求给AI自查,机器type→输入种类表_MACHINE_NEED)/设计检查",
     "scripts/chat_watcher.py / chat_overlay.py / channel_server.py": "聊天监听/悬浮/通道服务（广播/聊天联动）",
 
+    # ── 启动器（一键启动：自检 → 起 MCP 服务器）──
+    "启动NagiBridge.bat": "一键启动（双击）：跑 scripts/launcher_check.py 自检 → 全绿才 `python scripts/nagi_mcp_server.py`。⚠️ **纯 ASCII**（CMD 混 `chcp 65001` + 多字节文本会错位解析，中文一律放 launcher_check.py）；必须待在仓库里（靠 %~dp0 找 scripts\\），要桌面图标就用快捷方式",
+    "scripts/launcher_check.py": "启动前自检（8 项）：Python 版本 / pip 依赖(缺则自动装) / SMAPI 本体 / mod 部署(旧了自动拷 bin 产物到各游戏盘并备份) / Fishbot(可选不阻断) / 局域网IP / 防火墙 8000(无管理员给命令) / 端口被占(硬停防重复双击)。游戏目录靠注册表+Steam库+常见路径探测，`NAGI_GAME_DIRS` 可覆盖；退出码 0=全绿 1=需人工 2=端口被占",
+
     # ── 文档（新知识写这里，别写回 CLAUDE.md）──
-    "CHANGELOG.md": "完整知识库（35k 字符）：所有机制/坐标/坑/变更记录，改代码前先查",
+    "CHANGELOG.md": "完整知识库（全项目最大的一份，所有机制/坐标/坑/变更记录，改代码前先查）",
     "CLAUDE.md": "精简指引（≤500 字四段式）：概述/结构/规范/5 条坑",
     "TOOL_INVENTORY.md": "MCP 工具手册（域工具大白话说明书）",
+    "INTENT-MENU.md": "🎯 意图选项单**给人看**的简版（为什么改/两条接口对照/五条规则/现状），工程细节在 CHANGELOG 165~167；代码 scripts/intent_menu.py",
+    "scripts/_intent_wiring_selftest.py": "🎯 单子**接线**自验（不吃游戏）：`intent` 工具 → 拉世界快照 → intent_menu → 敲号 → 执行器；网络层全打桩（桩回包形状照抄 C# 真字段）",
     "PROJECT.md": "项目总览（薄的人间向概览，末尾指到本文件/AGENTS/CHANGELOG）",
     "README.md": "玩家向：安装 + 游戏内聊天 + MCP 连接（含连不上速查）",
     "PROJECT_PANORAMA.py": "本全景图数据源，`python PROJECT_PANORAMA.py` 打印全文，import 本文件读数据",
@@ -101,6 +117,7 @@ ENDPOINTS = {
         "/worn":         ("已装备", "戒指/鞋/帽等"),
         "/debris":       ("周围可拾取物", "地上物品"),
         "/scan /scan_chests": ("扫描箱子/物品", "场景内箱子内容（颜色/名字/坐标）"),
+        "/crop_seasons": ("种子→季节表(2026-10-07)", "读 `Game1.cropData[key].Seasons`（键=不带限定符的种子 id），返回 `{\"(O)472\":[\"spring\"]}`；给「箱子里的当季种子」打 `☀️夏 ✅当季可种` 标用。caps 里 `crop_seasons=true`"),
         "/farm_buildings": ("农场建筑", "位置/类型，动态检测设施"),
         "/festival":     ("节日实况", "festivalName/location/actors(NPC坐标)"),
         "/festival_data":("节日数据", "今天节日原始数据"),
@@ -154,7 +171,7 @@ ENDPOINTS = {
         "/weapon_diag":  ("武器诊断", "wtype 0剑/1匕/2锤/3格挡剑镰 + 挥击速度"),
         "/till_area /water /clear_ground /harvest /ripen /sprinklers": ("农活", "锄地区域/浇水/清地/收获/催熟/洒水器"),
         "/toggle_doors": ("开关畜棚门", "门 —— 🧭 2026-10-03 起只翻**玩家同图 4 格内**的门，够不着的进 `skipped` 点名；可用 doorX/doorY 精确点名一栋"),
-        "/silo /mastery /mastery_claim /carpenter": ("设施", "干草塔/精通/木匠升级"),
+        "/silo /mastery /carpenter": ("设施", "干草塔/精通/木匠升级"),
         # 🗑️ `/petall` `/waterbowl` 已于 2026-10-03 删除（零调用点；一个反射直写 wasPet/假签收、
         #    一个反射猜字段名从来没成功过）。拟人路：`pet_walk.py` / `_pet_pets_natural` / `pet_water`。
         "/petbowl": ("宠物", "宠物水碗只读（4 个碗的坐标 + watered）"),
@@ -187,10 +204,23 @@ ENDPOINTS = {
         "/mine_debug /museum_diag /museum_donate /museum_remove /museum_tiles": ("矿洞/博物馆调试", "捐赠/移除/瓦片"),
         "/mine/elevator": ("读矿井电梯可达层(2026-08-22)", "⚠️内部自动读,不给AI直调:接「深处的危险」会重置电梯,脚本 mine_run/bomb_mine 启动时自动读 maxFloor 判可达,重置态=maxFloor=1"),
         "/qi_shop /qi_buy /process_geode_batch": ("齐先生商店/批量晶球", ""),
-        "/unlock_debug /mastery_claim": ("调试解锁", ""),
+        "/unlock_debug": ("调试解锁", "⚠️ `/mastery_claim` 已于 2026-09-16 删（它什么也不领却回 ok:true，是个期望陷阱）"),
         "/hud":          ("HUD 控制", "⚠️ 推送统一走聊天框不走 HUD"),
         "/fishbot":      ("钓鱼自动化", "Fishbot mod 控制"),
         "/farm_buildings": ("农场建筑枚举", "动态设施定位（图腾柱等）"),
+    },
+    # ⚠️ **全量对齐**（2026-10-07 对着 ModEntry.cs 路由表数过）：C# 一共 **174** 条路由 ——
+    #    上面按用途写清了 **123** 条，下面 **51** 条只列名字（名字是从路由表里抓的，语义一个字都没猜），
+    #    123 + 51 = 174，一条不多一条不少。要用哪条去 ModEntry.cs 搜路由名（`"/xxx" => HandleXxx()`）。
+    #    下面这些大多是域工具的**内层**端点：AI 走 MCP 域工具 / intent 单子，一般不直调。
+    "📎 其余端点（只列名 · 语义查 ModEntry.cs 路由表）：": {
+        "/achievements /appearance_creation /bombs /bundles /chest_color /chest_open /chest_take_list "
+        "/crab_pots /crab_retract /decor /dig_spot /doors /drop_item /event_state /fish_areas /fish_pond "
+        "/forge_set /gsq /guard /hair_ref /levelup_choose /machine_load /machine_reqs /map "
+        "/menu/claim_swap /menu/number /mine_rock /minecarts /minigame_click /minigame_state /museum_debug "
+        "/nuts /open_questlog /order_board /pan /passable /passable_rect /pool /profile /progress "
+        "/quest_accept /resume /rod /screenshot_portrait /sittable /special_items /stand /stop "
+        "/tailor_set /tank /tile_props": ("其余 51 条路由（只列名，不做解释——这里不猜语义）", ""),
     },
 }
 
@@ -272,14 +302,65 @@ Python 侧：
 设计原则：连通域分析把设施/杂草/树纳入地块；蓄力用 tool_area；浇水失败根因=use_item 无释放，只用 /tool_area。
 """,
 
-    "域工具收敛（2026-08-22，15 域入口 + 2 独立；域模式恒开）": """
-所有工具收敛成 15 个域入口 + 2 独立工具（域模式恒开，只露这 17 个；--full 已退役）：
-· 15 域 = check/farm/mine/cabin/social/scene/menu/storage/daily/map/festival/fish/settings + script/session
+    "域工具收敛（2026-10-01 后：13 域入口 + 3 独立 = 16；域模式恒开）": """
+所有工具收敛成 13 个域入口 + 3 个独立工具（域模式恒开，只露这 16 个；--full 已退役）：
+· 13 域 = check/farm/mine/social/scene/menu/storage/daily/map/festival/fish/settings + script
 · care→farm、quest→menu 已于 09-02 合并（不再单列）
 · 改名/合并：settings 域合并「捏脸」(appearance)+外观参考进来(不再拆)；scene 因 interact 占用改名；fish 域曾缺注册不可达(2026-08-22 修复)
+· 3 独立 = **intent（🎯 意图选项单，见下一条）** / screenshot / help（判据以 `nagi_mcp_server.py` 的 `_KEEP_TOOLS` 为准）
 · 退役：plan(计划模式)/accept_quest/buy_item 已下线；festival bot 体系全删；🗑️ bomb_escort（独立协同脚本 + MCP 工具）**2026-10-03 真删**——协同是 bomb_mine 内联的 _run_cooperate，那脚本全仓没有启动点
 · 收编：wear/lie_bed → daily ops；bundle_kb/donate/read_book → menu ops；rock/挖石 → scene ops(2026-08-29 室外镐击)
-· 🗜️ 2026-09-11 再收编（20→17）：advance_story → menu ops(menu 的 dispatch 本就直指同一函数，留着=两条路做同一件事)；profile/which_role → check(what="profile"/"role")(都是"查我自己"归查询域)。⚠️改 keep-set 必须同步改引导文案(状态条/menu/check/fish/daily 的 help)，否则 AI 照旧文案调隐藏名=当场卡死
+· 🗜️ 2026-09-11 再收编（20→17）：advance_story → menu ops(menu 的 dispatch 本就直指同一函数，留着=两条路做同一件事)；profile/which_role → check(what="profile"/"role")(都是"查我自己"归查询域)
+· 🏠 2026-10-01 恒拍板再撤两个顶层域名（17→16）：**session → settings**（不是简化是消除重复：`settings status` 早在印会话设置，且改的是同一个变量）；**cabin → scene/farm/daily/check**（能收就收：cook/sleep→daily、statue→farm、interact/place/break/furniture/decor/pickup→scene、enum→check(what="machines")）
+· ⚠️ 收编一个域要**同时**做四件事（`AGENTS.md` 有那张单）：① `_KEEP_TOOLS` 去掉它 ② 新家 dispatch 能调到 ③ 删 `_DOMAIN_GUIDES` 条目 + 改 `_HELP_ALIAS`/`_INTENT_INDEX`/状态条文案 ④ `domain_selftest._SUBSUMED_DOMAINS` 逐 op 写替代路（**不许**塞 `_KNOWN_SUBSUMED` 走后门）。**留一处 = AI 照旧文案调隐藏名 = 当场卡死**
+""",
+
+    "🎯 意图选项单（intent 层 · 2026-09-29 落地 · 交互层的正身）": """
+**为什么**：把 130 个工具缩成 20 个域工具，成本没消失、只是换了地方 ——
+从「在工具列表里找路」变成「在参数空间里找路」（传错/忘传/大小写对不上/count 没带，都还在）。
+⇒ 转身：**不再让 AI 挑工具，改成让 AI 做选择题。**
+· 旧接口**陈述式**：「背包里有草莓」→ AI 自己想怎么卖
+· 新接口**祈使式**：「 1  卖 草莓×5 」→ AI 只需要说 "1"
+AI 的整个动作空间收敛成两样：`do(号)` 敲单子第几行 · `at x y` 指哪打哪（逃生口）。
+**工具名、参数名、传参格式 —— AI 这辈子都不需要看见。**
+
+**怎么算出来**：下层是**动作原语**（走/用/交互/选格，"手"永远这么几样，恒定不长）；
+上层是**每次现算的选项单** —— 每次看世界（背包/地图/机器/箱子/原生菜单），跑一遍
+「动词表 × 能不能」，把"现在能做的事"渲染成一屏。所以单子是**处境算出来的，不是写死的文档**。
+
+**三条铁律**（这一层的风险全在这三条上，改代码前先读）：
+1. **单子上每个字都必须从游戏读出来**。推出来的（哪怕很有把握）要么标 `？`，要么不上单子。
+   理由：**一键跳转把「AI 做错」变成「我们做错」，而 AI 会照做、不会怀疑**。
+2. **不许静默截断**：被前 N 条挤掉的必须如实报「还有 K 项」（静默砍 = 手工制造新的"够不着"）。
+3. **槽位是短命句柄，不是持久 ID**（背包一整理/一吃东西位次就漂）⇒ 永远当场重读，
+   回执必须**回显对象和数量**，让 AI 靠眼睛纠错。
+
+**几条规则**：
+· 行分两种：**动作行**（说完了：`收 3 台桶 → 上古水果酒 ×3`，按了就成）/ **目录行**（句尾 `…`，点开是下一层）
+· **号是当场发的、不跨屏**：目录行只报数量（`取出…（4 件）`），点开才把号印在眼前 ⇒ AI 永不数数、号也不过期
+· **多选**：`do 1,4` 选哪几样（集合，顺序无所谓）；`do 1=2,4=7` 各多少（**号=数量，必须配对** ——
+  只写号就得靠位置对齐，**写反了不报错**：会买对东西、买错数量，这是最危险的那种错）
+· **逃生口 `at x,y`**：只管**一个点**（一片/一类/一堆一律走行，那是我们算的活）；坐标 AI 自己查只读层
+· **能算出来的，既不许写成文案，也不许写成参数**（一个推成"你得记住"，一个推成"你得会传"）
+· `can()` 三档：CAN_YES 进单子 / CAN_NO 不进（人也不列做不到的事）/ **CAN_MAYBE（问不出来）也不进**
+  （登记在 PENDING 等接线）—— 宁可这条不出现，也不给一个可能错的选项
+
+**接进服务的形状**：工具 **`intent`**（`ops=show` 看单子 / `do` 敲编号 / `at` 指哪打哪 / `help`）。
+⚠️ 名字**不能叫 `menu`**（"界面/菜单域"早占了），所以这一层叫 `intent`。
+**动词全部接上执行**（没有一个"看得见按不动"的）：收机器 · 箱子取/存 · 吃 · 看 · 捡 · 收作物 ·
+锄 · 坐 · 搬家具 · 摸动物/猫狗 · **买/卖** · 献祭一件件捧上槽位 · 缝纫 · 铁砧重铸 · 门 · 鱼缸/鱼塘 …
+**形状是查出来的**：捡/收作物是聚合行（端点语义本来就不是逐格），锄是逐格。
+**买卖层数不一样，是游戏决定的**：买 `quantity=N` 要几个是几个；卖是**单击卖整个堆叠**
+⇒ 给卖长一屏"能填数量"的界面就是**骗 AI**（填了不生效、还不报错）。
+**审计友好**：每行带一截理由（`← 2 处 · 最近 2 步 · Diamond×2`）—— 理由错了 = 判据错了，一眼现形。
+
+**两条老规矩因此退休**：「报错必须给下一步」「文案不许写改动史」——
+它们存在的唯一理由就是"接口只陈述、不下令"；AI 只在合法选项里选，失败被从设计里删掉了。
+
+**文件/账**：`scripts/intent_menu.py`（机制 + 它自己那份 `__main__` 自验）·
+`scripts/_intent_wiring_selftest.py`（接线自验，不吃游戏）· `INTENT-MENU.md`（给人看的简版）·
+工程细节 CHANGELOG 165~167。演进：09-29 机制通/真机验/容器行落地 → 买卖上单 → 之后各类菜单
+（献祭板/缝纫/铁砧/任务日志/门/鱼缸/商店）陆续上单；**上单的判据就是上面三条铁律 + can() 三档**。
 """,
 
     "长脚本便利（防坑）": """
@@ -295,6 +376,33 @@ Python 侧：
 4. 敲一下→检查→碎了停，不硬编码次数
 5. 长脚本自动注入 --port AI 端口
 """,
+}
+
+# ══════════════════════════════════════════════════════════════════════════
+# 4️⃣ 依赖版本参照 —— 我们这套东西是拿哪些版本跑出来的（2026-10-07 本机实测）
+# ══════════════════════════════════════════════════════════════════════════
+# ⚠️ 判据：能读文件的读文件（exe/dll 的 FileVersion、manifest.json、csproj），
+#    能问运行时的问运行时（python -V / pip show / import）。**不写"大概"。**
+#    换依赖换代时**回来改这张表** —— 它是"我们验过的是什么版本"的唯一凭证。
+DEPENDENCIES = {
+    "星露谷 Stardew Valley": ("1.6.15（1.6.15.24356）",
+        "mod 面向 **1.6+**（1.6 的 Crop/机器/Data 结构决定了很多判据，比如 1.6 矿节点 Name 全报 Stone、宝石藏在 objId）"),
+    "SMAPI": ("4.5.2（StardewModdingAPI.exe 文件版本 4.5.2.0）",
+        "README 对外声明 **SDV 1.6+ / SMAPI 4.0+**。⚠️ 但 `manifest.json` 的 `MinimumApiVersion` 仍写 **3.0.0**（3.x 对应 1.5）—— 与 1.6/4.0+ 不符，待拍板改不改"),
+    "目标框架 / 构建": (".NET SDK 8.0.422 构建；csproj `TargetFramework=net6.0`",
+        "编出 net6.0 产物；`Lidgren.Network` 从 `$(GamePath)` 直接引（10048 端口修复用）"),
+    "ModBuildConfig": ("Pathoschild.Stardew.ModBuildConfig 4.*",
+        "自动找游戏目录（注册表 / Steam 库 / 各盘常见路径）+ **编译后自动把 mod 拷进 `Mods/NagiBridge`**（所以 build 完 C 盘就有了；F 盘那份要手拷）"),
+    "Python": ("3.12.10", "launcher 要求 **3.10+**；Windows 跑脚本要 `PYTHONIOENCODING=utf-8`（否则 emoji/中文炸 GBK）"),
+    "mcp（MCP 服务器库）": ("1.28.1",
+        "⚠️ 管线相关：FastMCP 对**同步**工具是**在事件循环里直接调**的（无 threadpool）⇒ 我们注册的是「丢工作线程」版（见 `scripts/_tool_thread_selftest.py` 顶端那段注释与 CHANGELOG 补43）。换 mcp 新版前先跑那条钉子"),
+    "requests": ("2.34.2", "Python 侧 HTTP —— **这是真依赖**（scripts 里 30+ 处 `import requests`）"),
+    "httpx": ("0.28.1", "mcp 的传递依赖，我们不直接调。⚠️ README 4.1 让装的是 `pip install mcp httpx`，而 launcher 检查的是 **mcp + requests** —— 两边不一致，待拍板统一"),
+    "Pillow（PIL）": ("12.3.0", "**可选**：只给截图降采样用；缺了 MCP 照跑（launcher 只提示不装、不阻断）"),
+    "Fishbot（AdroSlice.Fishbot）": ("0.6.1（Nexus 36115，MinimumApiVersion 4.0.0）",
+        "**可选**第三方 mod：只有钓鱼自动化（go_fishing / fish_run）要它；缺了不阻断启动"),
+    "仓库 / 分支": ("本机分支 `senses`；origin 默认分支是 `master`",
+        "⚠️ 推之前先确认推哪个分支（本机 `senses` 暂无对应的 origin 分支）"),
 }
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -316,6 +424,11 @@ def _render():
     out.append("\n" + "=" * 70 + "\n3️⃣ 核心模式\n" + "─" * 70)
     for k, v in CORE_PATTERNS.items():
         out.append(f"\n▌{k}\n{v}")
+    out.append("\n" + "=" * 70 + "\n4️⃣ 依赖版本参照（本机实测）\n" + "─" * 70)
+    for k, (ver, note) in DEPENDENCIES.items():
+        out.append(f"  · {k}：{ver}")
+        if note:
+            out.append(f"      {note}")
     return "\n".join(out)
 
 

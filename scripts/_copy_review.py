@@ -58,7 +58,7 @@ PROMPT = """你是星露谷里的一个 AI 农工，靠 MCP 工具操控角色�
 
 
 def _tools_block() -> str:
-    """AI 真看到的 17 个工具：名字 + 描述（就是注入进它上下文的那份）。"""
+    """AI 真看到的 16 个工具（13 域 + intent/screenshot/help）：名字 + 描述（就是注入进它上下文的那份）。"""
     keep = set(getattr(M, "_KEEP_TOOLS", []) or [])
     out = []
     for t in sorted(M.mcp._tool_manager.list_tools(), key=lambda x: x.name):
