@@ -49,25 +49,29 @@ j = src.find("private static List<Dictionary<string, object?>> BuildToolAreaComm
 b2 = src[j:src.find("/// <summary>主线程自检漏格", j)] if j >= 0 else ""
 ck("锚点生成收到了 loc/operation（不筛就没法筛）", "GameLocation? loc, string operation" in b2)
 ck("满级脏 ⇒ 先算脏格", "HoeWouldPickUp(loc, t.Item1, t.Item2)" in b2)
-ck("**逐级降 power**（4→3→2→1→0）那条在", "for (int pw = upgradeLevel - 1; pw >= 0; pw--)" in b2)
-ck("降档**不要求覆盖全部真目标**（盖不到的交补漏；要求全覆盖 = 田里一台机器就让整片一寸不挥）",
-   "if (!hit.Any(t => aoe.Contains(t))) continue;" in b2
-   and "if (!hit.All(t => aoe.Contains(t))) continue;" not in b2)
-ck("降档循环注释点明「低档形状不是高档子集」（power2 比 power3 更深）",
-   "形状**不是**高档的子集" in b2)
-ck("**站位格自己**压着设备 ⇒ 整条不发（瞬移保底会让蓄力落到别处）",
-   "bool standBlocked = HoeWouldPickUp(loc, ax, ay);" in b2 and "if (standBlocked) dirtyFull.Insert(0, (ax, ay));" in b2)
-ck("降档那条**也**记账（否则回执只说'降档 1 个'、不说是谁）",
-   b2.find("anchorsDowngradedByEquip++;") > b2.find("foreach (var d in dirtyFull)"))
+ck("🚫 **改成「改站位重挥」**（恒真机「第一拍一列，第二拍绝对不止三列」：降档 = 动画和效果对不上）",
+   "anchorsMovedByEquip++" in b2 and "GetToolAffectedTiles(c.x, c.y, 2, upgradeLevel)" in b2)
+ck("⛔ **不许**把「逐级降 power」重新加回来", "for (int pw = upgradeLevel - 1; pw >= 0; pw--)" not in b2)
+ck("候选顺序：原位 → 左右 → 上下 → 左上/右上（先横后竖）",
+   "(ax, ay), (ax - 1, ay), (ax + 1, ay), (ax, ay - 1), (ax, ay + 1)," in b2)
+ck("候选的满级范围必须**干净**才在那儿挥", "if (aoe.Exists(t => HoeWouldPickUp(loc, t.Item1, t.Item2))) continue;" in b2)
+ck("候选还要**盖得到至少一格真目标**", "if (!hit.Any(t => aoe.Contains(t))) continue;" in b2)
+ck("charge 的 power **永远满级**（动画=效果）", "int usePower = upgradeLevel;      // ⚠️ 永远满级" in b2)
+ck("**站位格自己**压着设备 ⇒ 换候选（不硬站、不靠瞬移保底）",
+   "if (HoeWouldPickUp(loc, c.x, c.y)) continue;" in b2)
+ck("四个方向都躲不开 ⇒ 整条不发（如实记账）", "anchorsSkippedByEquip++;" in b2 and "if (!placed)" in b2)
+ck("挪站位/跳过**都要记账**（回执要说出让开了哪些设备）",
+   "foreach (var d in dirtyFull)" in b2 and "equipAvoided.Add((d.Item1, d.Item2, lbl));" in b2
+   and b2.find("foreach (var d in dirtyFull)") < b2.find("if (!placed)"))
 ck("🚨 空队列不许挂在 `Wait(10 分钟)`（真机：客户端 180s 超时、地里一格没动）",
    "if (commands.Count == 0)" in src and "CompleteCommandQueue();" in src
    and src.find("if (commands.Count == 0)") > src.find("_toolAreaTotalSwings = commands.Count / 3;"))
 ck("都脏 ⇒ 整个锚点不发（continue，不发 move/face/charge）", "anchorsSkippedByEquip++;" in b2 and "continue;" in b2)
-ck("charge 命令用的是**降档后**的 power", '["power"] = usePower' in b2)
 ck("回包带 equipment_avoided", '["equipment_avoided"] = _toolAreaEquipAvoided' in src)
-ck("回包带两个计数（跳过/降档）",
+ck("回包带两个计数（跳过 / 挪站位）",
    '["anchors_skipped_by_equipment"] = _toolAreaAnchorsSkipped' in src
-   and '["anchors_downgraded_by_equipment"] = _toolAreaAnchorsDowngraded' in src)
+   and '["anchors_moved_by_equipment"] = _toolAreaAnchorsMoved' in src
+   and "anchors_downgraded_by_equipment" not in src)
 ck("每轮开工先清账（别把上一轮让开的格报到这一轮）",
    "_toolAreaEquipAvoided = new List<(int x, int y, string what)>();" in src)
 
@@ -225,15 +229,16 @@ try:
                    "still_missing": [], "out_of_water": False,
                    "equipment_avoided": [{"x": 60, "y": 24, "what": "熔炉"},
                                          {"x": 63, "y": 24, "what": "重型熔炉"}],
-                   "anchors_skipped_by_equipment": 2, "anchors_downgraded_by_equipment": 1,
+                   "anchors_skipped_by_equipment": 2, "anchors_moved_by_equipment": 1,
                    "result": {"executed": 8, "results": []}}
     _bak = M.api
     M.api = TillApi(payload_new)
     _out = M._till_rect(58, 22, 63, 25)
     ck("报出「让开设备 2 处」", "让开设备 2 处" in _out, _out[:400])
     ck("报出设备坐标+名字", "(60,24)" in _out and "熔炉" in _out, _out[:400])
-    ck("报出跳过锚点 2 / 降档 1", "跳过锚点 2" in _out and "降档 1" in _out, _out[:400])
+    ck("报出跳过锚点 2 / **挪站位** 1", "跳过锚点 2" in _out and "挪站位 1" in _out, _out[:400])
     ck("明说「那些东西一根没动」", "一根没动" in _out, _out[:400])
+    ck("明说改站位那几挥**照旧满级**（动画不变）", "照旧满级" in _out, _out[:400])
 
     payload_old = {"ok": True, "operation": "till", "swings": 8, "patches": 3,
                    "still_missing": [], "out_of_water": False, "result": {"executed": 8, "results": []}}

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -717,7 +717,7 @@ public class ModEntry : Mod
     //    （锚点整条不发 ⇒ 那几格交给 DLL 补漏直写土，**设备一根没动**）。回包带出去给 Python 如实报。
     private List<(int x, int y, string what)> _toolAreaEquipAvoided = new();
     private int _toolAreaAnchorsSkipped = 0;
-    private int _toolAreaAnchorsDowngraded = 0;
+    private int _toolAreaAnchorsMoved = 0;
 
     // Time freeze state
     private bool _timeFrozen;
@@ -21606,7 +21606,7 @@ var tcs = new TaskCompletionSource<object>();
                 _toolAreaEquipAvoided = new List<(int x, int y, string what)>();
                 var commands = BuildToolAreaCommands(targetTiles, toolW, toolH, chargeFrames, upgradeLevel,
                                                      loc, operation, _toolAreaEquipAvoided, out _toolAreaAnchorsSkipped,
-                                                     out _toolAreaAnchorsDowngraded);
+                                                     out _toolAreaAnchorsMoved);
                 int minX = targetTiles.Min(t => t.tx), maxX = targetTiles.Max(t => t.tx);
                 int minY = targetTiles.Min(t => t.ty), maxY = targetTiles.Max(t => t.ty);
 
@@ -21697,7 +21697,7 @@ var tcs = new TaskCompletionSource<object>();
                 ["equipment_avoided"] = _toolAreaEquipAvoided
                     .Select(e => new { x = e.x, y = e.y, what = e.what }).ToList(),
                 ["anchors_skipped_by_equipment"] = _toolAreaAnchorsSkipped,
-                ["anchors_downgraded_by_equipment"] = _toolAreaAnchorsDowngraded,
+                ["anchors_moved_by_equipment"] = _toolAreaAnchorsMoved,
                 ["result"] = result
             };
         }
@@ -21711,10 +21711,10 @@ var tcs = new TaskCompletionSource<object>();
     private static List<Dictionary<string, object?>> BuildToolAreaCommands(
         List<(int tx, int ty)> targetTiles, int toolW, int toolH, int chargeFrames, int upgradeLevel,
         GameLocation? loc, string operation, List<(int x, int y, string what)> equipAvoided,
-        out int anchorsSkippedByEquip, out int anchorsDowngradedByEquip)
+        out int anchorsSkippedByEquip, out int anchorsMovedByEquip)
     {
         anchorsSkippedByEquip = 0;
-        anchorsDowngradedByEquip = 0;
+        anchorsMovedByEquip = 0;
         int minX = targetTiles.Min(t => t.tx), maxX = targetTiles.Max(t => t.tx);
         int minY = targetTiles.Min(t => t.ty), maxY = targetTiles.Max(t => t.ty);
         int nx = (int)Math.Ceiling((double)(maxX - minX + 1) / toolW);
@@ -21775,77 +21775,85 @@ var tcs = new TaskCompletionSource<object>();
                 // 🚫⚙️ 2026-10-07 恒真机（「锄头没跳设备，一把把熔炉全部拍下来了」）：**发命令之前先筛"波及格"**。
                 //    上面那句只保证"这一锚点喷得到真目标"；可游戏释放时 `tilesAffected` 是**整片**逐格
                 //    `performToolAction`（`Hoe.cs:66-85`）—— 范围里的机器/箱子会被一起收走。
-                //    ① 满级蓄力干净 ⇒ 照旧（绝大多数锚点走这条，零行为变更）；
-                //    ② 脏 ⇒ **逐级降 power**（4→3→2→1→0），挑"范围干净、且至少盖得到一格真目标"的最大那一档
-                //       （降档只缩范围、不动站位；`charge` 命令的 `power` 本来就是逐条读的，见 `case "charge"`）；
-                //       ⚠️ **不要求覆盖全部真目标**：盖不到的由逐锚点验证/DLL 补漏落土——那本来就是既有路子
-                //       （取余漏格走的就是它）。真机 2026-10-07 反例：要"全覆盖"的话，田里有一台机器
-                //       （哪怕在 AoE 最远的第 6 行）就会把整个锚点整个丢掉 ⇒ **满田一寸不挥、土全靠补漏长出来**
-                //       （恒最烦的那种"作弊感"）。改成"能盖多少锄多少"。
-                //    ③ 一档都挑不出来（站位格/面前那格就压着设备）⇒ **这个锚点整条不发**，如实记账，
-                //       那几格由 DLL 补漏走 `terrainFeatures[vec] = new HoeDirt()`（不挥锄、设备不动）。
-                int usePower = upgradeLevel;
+                //
+                // 🚨🚨 2026-10-07 晚 恒真机第二轮（「**第一拍一列，第二拍绝对不止三列**」「很诡异吧」）——
+                //    **上一版"降档"的设计是错的**，现场读数（探针 `_probe_watch.py` 每 80ms 采一次）：
+                //      · 第一拍只出 **1 列**（x=59 的 y22/23/24/26）——因为那一锚点满级 3 宽会压到**火把(58,22)**
+                //        和熔炉排 ⇒ 一路降到 `power 2`（1 宽 × 5 深）才干净；
+                //      · 第二拍**一次出 16 格**＝满级那一挥(9) **＋ 收工补漏直写(8)**，看着就是"凭空一大块"。
+                //    病根两条：① **动画和效果对不上** —— 蓄力动画是"满级那一套"，可落到地上只有一列；
+                //              ② 降档缩小了覆盖 ⇒ 盖不到的格全靠补漏**直写**（成片冒出来）。
+                //    ✅ 正解 = **改站位重挥**（保持满级 `power`，把站位挪一格去躲设备）：动画永远=满级、
+                //       覆盖不缩水、补漏只在"实在躲不开"时才兜底。
+                //       候选顺序：原位 → 左右各一格 → 上/下一格 → 左上/右上（先横后竖，尽量保住原来那几行）。
+                //       一个候选都不行（四个方向都被设备堵死）⇒ **这个锚点整条不发**，如实记账。
+                int usePower = upgradeLevel;      // ⚠️ 永远满级：动画=效果（见上）
+                int bx = ax, by = ay;             // 实际站位（挪过就 ≠ (ax,ay)）
+                List<(int tx, int ty)> aoeChosen = null!;
                 if (loc != null && operation == "till" && chargeFrames > 0)
                 {
-                    // ⚠️ **站立格自己**也要查：站位格上压着机器 ⇒ `case "move"` 的 BFS 失败 ⇒ **瞬移保上去**
-                    //    （`ModEntry.cs` 的 move 分支），蓄力就从"别的地方"放出去 ⇒ 我们按 (ax,ay) 算的波及格
-                    //    **全不作数**（可能是别处的一整片）。这种锚点一律不发（跟"波及格脏"同一个下场）。
-                    bool standBlocked = HoeWouldPickUp(loc, ax, ay);
-                    var fullAoe = GetToolAffectedTiles(ax, ay, 2, upgradeLevel);
-                    var dirtyFull = fullAoe.FindAll(t => HoeWouldPickUp(loc, t.Item1, t.Item2));
-                    if (standBlocked) dirtyFull.Insert(0, (ax, ay));
-                    if (dirtyFull.Count > 0)
+                    var cands = new (int x, int y)[]
                     {
-                        usePower = -1;
-                        if (!standBlocked)
+                        (ax, ay), (ax - 1, ay), (ax + 1, ay), (ax, ay - 1), (ax, ay + 1),
+                        (ax - 1, ay - 1), (ax + 1, ay - 1),
+                    };
+                    var dirtyFull = GetToolAffectedTiles(ax, ay, 2, upgradeLevel)
+                        .FindAll(t => HoeWouldPickUp(loc, t.Item1, t.Item2));
+                    bool needMove = dirtyFull.Count > 0 || HoeWouldPickUp(loc, ax, ay);
+                    bool placed = false;
+                    if (!needMove)
+                    {
+                        bx = ax; by = ay; aoeChosen = GetToolAffectedTiles(ax, ay, 2, upgradeLevel); placed = true;
+                    }
+                    else
+                    {
+                        foreach (var c in cands)
                         {
-                            for (int pw = upgradeLevel - 1; pw >= 0; pw--)
-                            {
-                                var aoe = GetToolAffectedTiles(ax, ay, 2, pw);
-                                // ⚠️ 这里是 `continue` **不是** `break`：低档的形状**不是**高档的子集
-                                //    （power2 是"1 宽 × 5 深"、power3 是"3 宽 × 3 深" ⇒ 3 盖不住的，2 可能盖得住）。
-                                if (!hit.Any(t => aoe.Contains(t))) continue;   // 这一档一格真目标都盖不到 ⇒ 没意义
-                                if (aoe.Exists(t => HoeWouldPickUp(loc, t.Item1, t.Item2))) continue;
-                                usePower = pw;
-                                break;
-                            }
-                        }
-                        // 🧾 **不管跳过还是降档，都如实记账**（2026-10-07 真机：降档那条原先不记账 ⇒
-                        //    `equipment_avoided` 空 ⇒ 回执只说"降档 1 个"、**不说是谁**，等于没报）。
-                        foreach (var d in dirtyFull)
-                        {
-                            var lbl = HoePickUpLabel(loc, d.Item1, d.Item2);
-                            if (!equipAvoided.Exists(e => e.x == d.Item1 && e.y == d.Item2))
-                                equipAvoided.Add((d.Item1, d.Item2, lbl));
-                        }
-                        if (usePower < 0)
-                        {
-                            anchorsSkippedByEquip++;
+                            // 站位格自己也要能站：上面压着"锄头会收走的东西"就换（顺便避开"瞬移保底"）
+                            if (HoeWouldPickUp(loc, c.x, c.y)) continue;
+                            var aoe = GetToolAffectedTiles(c.x, c.y, 2, upgradeLevel);
+                            if (aoe.Exists(t => HoeWouldPickUp(loc, t.Item1, t.Item2))) continue;  // 满级范围必须干净
+                            if (!hit.Any(t => aoe.Contains(t))) continue;                          // 至少盖到一格真目标
+                            bx = c.x; by = c.y; aoeChosen = aoe; placed = true;
+                            if (c.x != ax || c.y != ay) anchorsMovedByEquip++;
                             ModEntry.Instance?.Monitor.Log(
-                                $"[build-cmds] 🚫 锚点({ax},{ay}) 整条不发"
-                                + (standBlocked ? "（**站位格自己**压着设备，瞬移保底会让蓄力落到别处）" : "：满级范围里有设备")
-                                + " " + string.Join(" ", dirtyFull.Select(d => $"({d.Item1},{d.Item2})")), LogLevel.Info);
-                            if (col == end) break;
-                            continue;
+                                $"[build-cmds] ↩ 锚点({ax},{ay}) → 站位改到 ({bx},{by}) 躲设备"
+                                + $"（原位满级范围里有：{string.Join(" ", dirtyFull.Select(d => $"({d.Item1},{d.Item2})"))}）", LogLevel.Info);
+                            break;
                         }
-                        anchorsDowngradedByEquip++;
-                        var aoeChosen = GetToolAffectedTiles(ax, ay, 2, usePower);
+                    }
+                    // 🧾 不管"挪站位"还是"整条不发"，都把**原位会扫到的设备**如实记账
+                    foreach (var d in dirtyFull)
+                    {
+                        var lbl = HoePickUpLabel(loc, d.Item1, d.Item2);
+                        if (!equipAvoided.Exists(e => e.x == d.Item1 && e.y == d.Item2))
+                            equipAvoided.Add((d.Item1, d.Item2, lbl));
+                    }
+                    if (!placed)
+                    {
+                        anchorsSkippedByEquip++;
                         ModEntry.Instance?.Monitor.Log(
-                            $"[build-cmds] ⚠️ 锚点({ax},{ay}) 蓄力降档 {upgradeLevel}→{usePower}（满级范围里有设备；"
-                            + $"盖得到的真目标 {hit.Count(t => aoeChosen.Contains(t))}/{hit.Count} 格，剩下的交给补漏）", LogLevel.Info);
+                            $"[build-cmds] 🚫 锚点({ax},{ay}) 整条不发（四个方向都躲不开设备："
+                            + string.Join(" ", dirtyFull.Select(d => $"({d.Item1},{d.Item2})")) + "）", LogLevel.Info);
+                        if (col == end) break;
+                        continue;
                     }
                 }
-                commands.Add(new Dictionary<string, object?> { ["action"] = "move", ["x"] = ax, ["y"] = ay });
+                else
+                {
+                    aoeChosen = GetToolAffectedTiles(ax, ay, 2, upgradeLevel);
+                }
+                commands.Add(new Dictionary<string, object?> { ["action"] = "move", ["x"] = bx, ["y"] = by });
                 commands.Add(new Dictionary<string, object?> { ["action"] = "face", ["direction"] = 2 });
                 anchorsKept++;
                 // targets 给**这一挥真盖得到的真目标**（不是整块几何范围）——逐锚点验证只该验"挥到的格"。
-                // 🚨 2026-10-07 恒真机（「没在范围的格子也被锄到」）：降档之后 `usePower` 的范围比满级小，
-                //    而 targets 原来给的是**满级几何**的那一份 ⇒ 验证把"这一挥根本没够到的格"判成漏 ⇒
-                //    **当场补土**（恒看到的就是"格子被'锄'到了、可锄头没往那儿挥"）。
-                //    ⇒ 现在只报**这一挥真盖得到的**；盖不到的留给收工那轮补漏（那是既有的"取余漏格"路子，
-                //      而且会在 `still_missing` 里如实报出来）。
-                var chargeTargets = (loc != null && operation == "till" && chargeFrames > 0 && usePower != upgradeLevel)
-                    ? hit.FindAll(t => GetToolAffectedTiles(ax, ay, 2, usePower).Contains(t))
+                // 🚨 2026-10-07 恒真机（「没在范围的格子也被锄到」）：`targets` 原来给的是**满级几何**，
+                //    可实际落地的范围（改站位后）是 `aoeChosen` ⇒ 验证把"这一挥根本没够到的格"判成漏
+                //    ⇒ **当场补土**（恒看到的就是"格子被'锄'到了、可锄头没往那儿挥"）。
+                //    ⇒ 只报**`aoeChosen` 真盖得到的**；盖不到的留给收工那轮补漏（既有的"取余漏格"路子，
+                //      并会在 `still_missing` 里如实报出来）。
+                var chargeTargets = (loc != null && operation == "till" && chargeFrames > 0)
+                    ? hit.FindAll(t => aoeChosen.Contains(t))
                     : hit;
                 if (chargeFrames > 0)
                     commands.Add(new Dictionary<string, object?> { ["action"] = "charge", ["frames"] = chargeFrames, ["power"] = usePower, ["targets"] = chargeTargets });
@@ -21855,7 +21863,7 @@ var tcs = new TaskCompletionSource<object>();
             }
         }
         ModEntry.Instance?.Monitor.Log($"[build-cmds] 锚点 {anchorsKept}/{anchorsAll} 个留（喷到空地的 {anchorsAll - anchorsKept} 个已丢；"
-            + $"因设备让开：跳过 {anchorsSkippedByEquip} 个、降档 {anchorsDowngradedByEquip} 个）⇒ {anchorsKept} swings", LogLevel.Info);
+            + $"因设备让开：跳过 {anchorsSkippedByEquip} 个、挪站位 {anchorsMovedByEquip} 个）⇒ {anchorsKept} swings", LogLevel.Info);
         return commands;
     }
 

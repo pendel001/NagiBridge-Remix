@@ -7394,18 +7394,26 @@ def _till_rect(x1: int, y1: int, x2: int, y2: int) -> str:
         lines = [f"🌾 蓄力锄地 ({min(x1,x2)},{min(y1,y2)})-({max(x1,x2)},{max(y1,y2)}) {w}x{h} | 锄头{level}级({shape})"]
         lines.append(f"  ✅ tool_area 完成 | ⚙️ 蓄力命令 {executed} 条")
         # 🚫⚙️ 2026-10-07 恒真机（「锄头没跳设备，一把把熔炉全部拍下来了」）：
-        #    C# 侧现在**发命令前先筛"蓄力波及格"**——范围压着机器/箱子就降档或整条不发。
-        #    这里把它**如实报出来**（让开了几格、让开的是些什么），别让 AI 以为那片地锄全了。
+        #    C# 侧**发命令前先筛"蓄力波及格"**——范围压着机器/箱子就**改站位重挥**（满级不变），
+        #    四个方向都躲不开才整条不发。这里把它**如实报出来**（让开了几格、让开的是些什么），
+        #    别让 AI 以为那片地锄全了。
+        #    ⚠️ 2026-10-07 晚 恒真机第二轮（「第一拍一列，第二拍绝对不止三列」）⇒ 旧版"降档"改成"挪站位"：
+        #       降档会**动画和效果对不上**（蓄力动画是满级那套、落到地上只有一列）+ 盖不到的格成片补土。
         _eq = r.get("equipment_avoided") or []
-        if _eq or r.get("anchors_skipped_by_equipment") or r.get("anchors_downgraded_by_equipment"):
+        _moved = r.get("anchors_moved_by_equipment")
+        _by = "挪站位" if _moved is not None else "降档"          # 老 DLL 只有 downgraded 那位
+        if _moved is None:
+            _moved = r.get("anchors_downgraded_by_equipment")
+        if _eq or r.get("anchors_skipped_by_equipment") or _moved:
             _names = "、".join(f"{e.get('what') or '设备'}({e.get('x')},{e.get('y')})" for e in _eq[:6])
             if len(_eq) > 6:
                 _names += f" 等{len(_eq)}处"
             lines.append(f"  🚫 让开设备 {len(_eq)} 处" + (f"：{_names}" if _names else "")
                          + f"（跳过锚点 {r.get('anchors_skipped_by_equipment', 0)} 个"
-                         + (f"、降档 {r.get('anchors_downgraded_by_equipment')} 个"
-                            if r.get("anchors_downgraded_by_equipment") else "")
-                         + "）——**那些东西一根没动**；让开的格由补漏直接落土（不挥锄）")
+                         + (f"、{_by} {_moved} 个" if _moved else "")
+                         + "）——**那些东西一根没动**"
+                         + ("；改站位那几挥**照旧满级**（动画不变）" if _by == "挪站位" else "")
+                         + "；实在躲不开的格由补漏直接落土（不挥锄）")
         if patches:
             lines.append(f"  🔧 取余补站位自动补漏 {patches} 格（DLL 蓄力补，不直接改地块）")
         if fail_cnt:
