@@ -35,6 +35,8 @@ import nagi_mcp_server as M          # noqa: E402
 import _kw_doc_check as K            # noqa: E402  复用它的文档解析器（同源，别另写一份）
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# 📦 2026-10-07：`scripts/"TOOL_TEST_CHECKLIST.md"` 那份被**归档**进 `docs/history/`（发布日期清仓）。
+#    生成器照旧写这里（**下次跑会重新长出一份**）；要看当年那份（含 09-19/09-20 手改的行）去 docs/history/。
 OUT_PATH = os.path.join(SCRIPT_DIR, "TOOL_TEST_CHECKLIST.md")
 # 📁 2026-09-12：`session_log.jsonl` 挪进 `scripts/sessions/`（scripts/ 根目录被 238 个
 #    `session_*.jsonl` 堆脏了）。⚠️ 存档里旧报告写的 `session_log:NNN` 行号**依然有效**——
