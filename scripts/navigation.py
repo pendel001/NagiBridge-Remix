@@ -2401,6 +2401,48 @@ def _exit_farm_building(frm: str, nxt: str) -> bool:
     return False
 
 
+def _step_into_warp(frm: str, nxt: str, link: dict):
+    """👣 **走进"踩上去就换图"的入口瓦片**（矿井/头骨矿洞/农场洞穴/帐篷/秘密森林/隧道/赌场）。
+
+    2026-10-07 恒真机（零背景 AI 试跑）原话：
+      「**map go 进矿井/头骨矿洞口会报『游戏没让进』，得走到门格上方再走回来触发原生 warp**」
+
+    病根 = 这两类入口被 `MAP_LINKS` 记成 `kind="door"`，于是走的是"站到门口 → **interact 推门**"，
+    可它们的真身是 **warp 瓦片、不吃 interact**（实证）：
+      · `scene at 54 4`（Mountain→Mine 那格）自己回：「是 `/warps` 里的**出口瓦片**（→ Mine）」
+        ——而 `map go 矿井` 只走到门口 **(54,5)** 就推门 ⇒ 推了个空。
+      · 头骨矿洞：`map go` 走到 (8,6) 推门（空）；AI 自己 `map walk 8 4` **一次就进去了**
+        ⇒ 真 warp 在 (8,4)/(8,5) 那一列。
+    ⇒ 这里改道：**走进 warp 瓦片、让游戏自己换图**，换成了才算到（不谎报）。
+
+    候选格 = `link['tile']`（MAP_LINKS 标的）＋它**上下各一格**（头骨矿洞那张图实测是**两格连着**的，
+    而我们只标了一格）。返回 `(是否已换到 nxt, 说明)`；返回 `True` 时调用方**必须** `continue` 走下一段。
+    """
+    t = link.get("tile")
+    if not t or t[0] < 0 or t[1] < 0:
+        bd = (getattr(locations, "BUILDING_DOORS", {}) or {}).get(nxt)
+        if not bd:
+            return False, f"{nxt} 既没标 warp 瓦片、也没有门口格"
+        t = bd[1]
+    bx, by = int(t[0]), int(t[1])
+    cands = [(bx, by), (bx, by - 1), (bx, by + 1)]
+    notes = []
+    for cx, cy in cands:
+        ok, note = _walk_and_wait(frm, cx, cy, timeout=45)
+        if note:
+            notes.append(f"({cx},{cy}) {note}")
+        # 站定后给游戏 3 秒把换图跑完（warp 是踩上那一帧触发的，落点在下一图）
+        for _ in range(15):
+            time.sleep(0.2)
+            now = api.current_location()
+            if now == nxt:
+                return True, f"({cx},{cy})"
+            if now and now != frm:
+                notes.append(f"({cx},{cy}) 换到了 `{now}`（不是 {nxt}）")
+                break
+    return False, "；".join(notes[-2:]) if notes else f"({bx},{by}) 及上下邻格都没触发换图"
+
+
 def _walk_trigger_warp(frm: str, nxt: str, ex: int, ey: int, wx: int, wy: int, exact: bool = False) -> bool:
     """可靠版传送（恒 2026-08-13 拍板）：走到出口"前一格"（可达自然走）→ 确认人到 → /warp。
     ⚠️ 实测：walk_to 到 warp 瓦片本身(53,110)或往中心偏移(52,109)会 position 瞬移；
@@ -3416,6 +3458,26 @@ def _map_go_walk(path, destination: str, dest: str, lead_log: str = "", npc_targ
                 _NAV_FAILED["v"] = True
                 return _with_state("\n".join(log) + f"\n⚠️ 到 {nxt} 失败")
         elif kind == "door":
+            # 👣 2026-10-07 恒真机：「map go 进矿井/头骨矿洞口会报『游戏没让进』，**得走到门格上方再走回来
+            #    触发原生 warp**」—— `_DOOR_WARP_ENTRANCES` 那七张图（矿井/头骨矿洞/农场洞穴/帐篷/秘密森林/
+            #    隧道/赌场）的入口**真身是 warp 瓦片、不吃 interact**，可它们被记成 `kind="door"`
+            #    ⇒ 老代码"站门口 → 推门"必然推空（回话是那句含糊的「走到门格也推了门，游戏没让进」）。
+            #    ⇒ 改道：**走进 warp 瓦片让游戏自己换图**（`_step_into_warp`）；换成了才 `continue`。
+            #    走不进（被人挡住/那格站不住）才退回老的门流程，退回时**如实写一句**，别装作没试过。
+            if nxt in _DOOR_WARP_ENTRANCES:
+                _stepped, _snote = _step_into_warp(frm, nxt, link)
+                if _stepped:
+                    log[-1] += f"（👣 踩上 {_snote} 的原生 warp 换图）"
+                    continue
+                # ⛑ 二级兜底：其余跨图段一直是「走到口 → /warp」这个写法（`_walk_trigger_warp`），
+                #   这里照办，别让"踩不上 warp"直接变成"去不了矿井"（如实写清走的是哪条路）。
+                _lt = link.get("tile") or ()
+                _ar = (getattr(locations, "ARRIVE", {}) or {}).get(nxt)
+                if len(_lt) == 2 and _ar and _walk_trigger_warp(
+                        frm, nxt, int(_lt[0]), int(_lt[1]), _ar[0], _ar[1], exact=True):
+                    log[-1] += f"（👣 没能踩上 warp：{_snote} → 按「走到口 + /warp」收尾）"
+                    continue
+                log[-1] += f"（👣 没能踩上 warp：{_snote} → 退回推门流程）"
             ok, why, dtile, dnote = _enter_building_door(nxt)
             # 🔎 2026-09-10 恒：**推门成功**和**兜底 warp 硬进**结局一样（都落在目标图里），
             #    日志也一模一样 → 恒看不出到底推门了没（"我都没见小人正对过门"）。分开标出来。

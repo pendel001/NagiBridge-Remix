@@ -1356,8 +1356,39 @@ public class ModEntry : Mod
     /// </summary>
     private static void DoFunctionHere(Tool tool, GameLocation loc, int px, int py, int power, Farmer farmer)
     {
+        // ══════════════════════════════════════════════════════════════════════════
+        // 🚨 2026-10-07 —— **"蓄力"一直是假的：只喷面前 1 格**（恒真机："洒水 2*3 范围好像只浇单格"）
+        // ══════════════════════════════════════════════════════════════════════════
+        // 🔴 反编译实据（`decomp\c1615\full\StardewValley.Tools\`）：
+        //    · `WateringCan.cs:149-154`：
+        //        `public override void DoFunction(GameLocation location, int x, int y, int power, Farmer who)`
+        //        `{ base.DoFunction(...); power = who.toolPower.Value;`  ← **把传进来的 power 直接丢掉**
+        //        `  List<Vector2> list = tilesAffected(new Vector2(x/64, y/64), power, who);`
+        //    · `Hoe.cs:48-66`：**一模一样**（`power = who.toolPower.Value;` 然后 `tilesAffected(vector, power, who)`）
+        //    ⇒ 光把 `power` 当**参数**传进来没用！这两个 `DoFunction` **只认 `who.toolPower.Value`**。
+        //    ⚠️ 而 `toolPower` 我们**从来没设过**（全仓只有注释提到它）⇒ 恒为 0
+        //       ⇒ `tilesAffected(..., 0, who)` = **只吐 1 格** = 面前那格。
+        //    📌 现场对照（2026-10-07 零背景 AI 试跑）：对 (44,49)-(46,50) 六格连浇两遍，
+        //       回话是「挥壶 1 次（18格/power4）｜**还剩 5 格**」，`check status` 也是「已浇水 **1/6**」
+        //       —— **恰好就是面前那一格**，而报告头上还写着"18 格/power4" = 教科书级"工具说谎"。
+        // ✅ 正解：游戏在**真实蓄力释放**那一刻，`toolPower.Value` 就是升级等级（玩家按住不放涨上去的，
+        //    `Farmer.cs:6932 toolPowerIncrease()` 里就是 `toolPower.Value++`；字段虽然 readonly，
+        //    但 `.Value` 是 NetInt 的值，**可写**）。⇒ 我们自己在调 `DoFunction` 前后**临时**把它摆成 power，
+        //    玩完还原 ⇒ till / water **两条一起修好**，而且体力/水耗也回到**真实蓄力**的量
+        //    （`WateringCan.cs:169` 的 `2*(power+1)-...`、`:191` 的 `WaterLeft -= power+1`）。
+        // ⛔ 别改成"永久的"：`toolPower` 是**同步字段**，留在 4 会让后面游戏自己那发也按满范围落地。
+        // ══════════════════════════════════════════════════════════════════════════
         _suppressAnimToolUse = false;                       // 🧹 先清：**我们自己这一发绝不能被按掉**
-        tool.DoFunction(loc, px, py, power, farmer);        // 我们这一发（权威）
+        int powerBefore = farmer.toolPower.Value;
+        try
+        {
+            farmer.toolPower.Value = power;                 // ← 这一行就是"蓄力"的真身（见上面实据）
+            tool.DoFunction(loc, px, py, power, farmer);    // 我们这一发（权威）
+        }
+        finally
+        {
+            farmer.toolPower.Value = powerBefore;           // 还回去（默认 0）
+        }
         _suppressAnimToolUse = true;                        // 之后紧跟着来的那一发（动画/游戏自己的）按掉
         _suppressAnimTicks = 90;                            // ⏱️ 兜底超时（没来就自己解除）
     }
@@ -12234,7 +12265,15 @@ public class ModEntry : Mod
                 }
 
                 // ── 1) 目标是 NPC（当前地图）→ 真实好感度送礼 ──
-                var npc = loc.characters.FirstOrDefault(c => c is NPC n && n.Name == target) as NPC;
+                // 🌐 2026-10-07 恒（零背景 AI 试跑）：「**到了 npc 面前贴脸却说找不到**，后面换成英文名又送成了」
+                //    病根：这里原来只比**内部英文名**（`n.Name == target`）⇒ 中文 displayName（"山姆"）一律落空，
+                //    而 `map npc 山姆` 能找到（Python 侧认 displayName）、`social chat 山姆` 也能搭话
+                //    ⇒ **同一个名字，三条路口径不一**（跟 09-25「`map lookup` 只认英文图名」是同一族）。
+                //    ⇒ 这里补上 displayName（大小写不敏感、两边都 trim）。Python 侧另有一层同名解析（双保险）。
+                var _targetTrim = (target ?? "").Trim();
+                var npc = loc.characters.FirstOrDefault(c => c is NPC n
+                    && (string.Equals(n.Name, _targetTrim, StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(n.displayName, _targetTrim, StringComparison.OrdinalIgnoreCase))) as NPC;
                 if (npc != null)
                 {
                     if (!npc.CanReceiveGifts())
@@ -19456,6 +19495,42 @@ var tcs = new TaskCompletionSource<object>();
         }
     }
 
+    /// <summary>
+    /// 🚧 砸晶球的**门禁**（2026-10-07 恒：「**克林特不在柜台前也能砸晶球**」）。
+    ///
+    /// 🔴 病根：`/process_geode` / `/process_geode_batch` 是**自己模拟**砸晶球
+    ///    （扣 25g → `Utility.getTreasureFromGeode` → 塞进背包），**一点都没问"游戏会不会让你砸"**。
+    ///    于是"**人不在铁匠铺、克林特也不在店里**"照样能砸 —— 恒抓到的正是这个
+    ///    （📌 现场：AI 那次是 `intent do code="1=5"`，回「⛏️ 砸开 5 颗晶球 (花费 125g)」，
+    ///      而同一时段 `check status` 写的是「🏪休: 铁匠铺 (Clint)」，那格状态条里**一个 NPC 都没有**）。
+    ///
+    /// ✅ 判据（**不编时刻表** —— 营业时间/节假日交给游戏自己的门与 NPC 日程）：
+    ///    ① 人在**铁匠铺**里；
+    ///    ② 克林特**就在这张图**（他不在 = 店没开，没人给你砸）；
+    ///    ③ 人**在柜台附近**（曼哈顿距离 ≤ 8 格）。
+    ///    三条任一不满足 ⇒ **明确拒绝**（宁报错别兜底：恒拍过板的边界），并说清"东西没动、钱没扣"。
+    ///
+    /// ⚠️ 为什么不用"柜台那格带 `Action=Blacksmith_Process`"当判据（`GameLocation.cs:12345` 就是它开 `GeodeMenu`）：
+    ///    那张图的 Action 属性得先解包 `.xnb` 才能核对字符串，**没核过的东西不敢写进闸门**；
+    ///    而"克林特在不在、离得远不远"现场就能读、也正好对上恒说的那句话。哪天核过柜台格了，可以再加一条硬的。
+    /// </summary>
+    private static string? GeodeGateError()
+    {
+        var farmer = Game1.player;
+        var loc = farmer?.currentLocation;
+        if (farmer == null || loc == null) return "世界没准备好";
+        if (loc.Name != "Blacksmith")
+            return $"🚧 砸晶球得在**铁匠铺**里（现在在 {loc.Name}）——先 `map go 铁匠铺` 走到柜台前再砸。**东西没动、钱没扣。**";
+        var clint = loc.characters.FirstOrDefault(n => n != null && n.Name == "Clint");
+        if (clint == null)
+            return "🚧 **克林特不在店里**（他这会儿不在铁匠铺）——他不在就没人给你砸晶球（营业 9:00~16:00）。"
+                 + "**东西没动、钱没扣**；等他回柜台再来（`check(what=\"status\")` 的 🏪 那行会写店开没开）。";
+        int dist = Math.Abs(clint.TilePoint.X - farmer.TilePoint.X) + Math.Abs(clint.TilePoint.Y - farmer.TilePoint.Y);
+        if (dist > 8)
+            return $"🚧 离克林特还有 {dist} 格（他在 ({clint.TilePoint.X},{clint.TilePoint.Y})）——走到柜台前再砸。**东西没动、钱没扣。**";
+        return null;
+    }
+
     private object HandleProcessGeode(HttpListenerContext ctx)
     {
         if (!Context.IsWorldReady)
@@ -19470,6 +19545,9 @@ var tcs = new TaskCompletionSource<object>();
             try
             {
                 var farmer = Game1.player;
+                // 🚧 门禁（2026-10-07 恒：「克林特不在柜台前也能砸晶球」）——理由见 GeodeGateError
+                var gate = GeodeGateError();
+                if (gate != null) { tcs.SetResult(new { ok = false, error = gate }); return; }
                 // ⚠️ 2026-08-16 恒：砸晶球列表加 金色椰子(791)/谜之盒(887)/金色谜之盒(891)
                 // 🆕 2026-10-01：**手抄的 id 名单换成游戏自己的判据** `Utility.IsGeode()`
                 //    （`Utility.cs:6508`，`GeodeMenu.HighlightItems` 用的就是它 —— 同一把尺子）。
@@ -19543,6 +19621,9 @@ var tcs = new TaskCompletionSource<object>();
             try
             {
                 var farmer = Game1.player;
+                // 🚧 门禁（2026-10-07 恒）：与 `/process_geode` 同一道闸，理由见 GeodeGateError
+                var gate = GeodeGateError();
+                if (gate != null) { tcs.SetResult(new { ok = false, error = gate }); return; }
                 // 🆕 2026-10-01：同 `/process_geode` —— 手抄 id 名单换成游戏自己的 `Utility.IsGeode()`。
                 const int COST = GeodeCost;        // 🪨 见字段定义处（唯一来源）
 

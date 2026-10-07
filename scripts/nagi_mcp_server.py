@@ -20017,7 +20017,23 @@ def gift_npc(npc_name: str, item_name: str) -> str:
             if abs(ax - sx) + abs(ay - sy) > 1:
                 return (f"❌ 没走到「{nname}」身边（挑好的站位 ({sx},{sy})，人停在 ({ax},{ay})）。\n"
                         f"   **没送，东西还在我包里** —— 别当已经送出去了")
-        r = api._post("/gift", {"target": npc_name, "item": item_name})
+        # 🌐 2026-10-07 恒（零背景 AI 试跑）：「**到了 npc 面前贴脸却说找不到**，后面换成英文名又送成了」
+        #    实据（`sessions/session_log.jsonl` 12:47~12:55）：同一个人 `map npc 山姆` → 找到 @Town(14,90)、
+        #    `social chat 山姆` → **能搭话**，可 `social gift 山姆/莱纳斯/乔治` → **三次全**「找不到目标」，
+        #    换成 `gift Sam` 立刻成功（+49）。
+        #    病根：上面 `find_npc` 认 displayName（所以走位没问题），但 C# `/gift` 是
+        #    `loc.characters.FirstOrDefault(n => n.Name == target)`（**内部英文名**精确匹配，见 `ModEntry.cs` 送礼段）
+        #    ⇒ 必须在这儿把 AI 说的名字翻成**游戏内部名**再发。
+        #    ⚠️ C# 那边也补了 displayName 匹配（同一次提交）；这里保留一层是**双保险**：
+        #       万一游戏没重启（C# 改动没生效），只重启 MCP 也能立刻好。
+        _internal = npc_name
+        try:
+            _fr3 = api.find_npc(npc_name)
+            if _fr3.get("npcs"):
+                _internal = _fr3["npcs"][0].get("name") or npc_name
+        except Exception:
+            pass
+        r = api._post("/gift", {"target": _internal, "item": item_name})
         if not r.get("ok"):
             return f"送礼失败: {r.get('error', r)}"
         d = r.get("delta", 0)
