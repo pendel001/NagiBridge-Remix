@@ -5420,7 +5420,8 @@ _SUB_N = 60
 
 
 _LEVEL_HINT = {
-    "act": "> 敲编号，或 at x,y",
+    # 🔒 2026-10-07：`at x,y` 封存 ⇒ 提示行也不提它（一切 AI 面都不许再露那个门牌）。
+    "act": "> 敲编号",
     "pick": "> 敲编号，可以多选（`1,4`）",
     "qty": "> 写「号=数量」（`1=1,4=4`）—— **只写号不认**",
 }
@@ -5561,9 +5562,9 @@ def _render_level(ctx: Ctx, lv: Level, n: int = 5) -> str:
         else:
             fact = _addressable_fact(ctx)
             if fact:
-                lines.append(f"  （这一刻没有可做的 · 本图另有 {fact} —— at x,y 指过去）")
+                lines.append(f"  （这一刻没有可做的 · 本图另有 {fact}）")
             else:
-                lines.append("  （这一刻没有可做的动作——试试 at(x,y) 指一样东西）")
+                lines.append("  （这一刻没有可做的动作）")
 
     hidden = len(lv.rows) - len(shown)
     if hidden > 0:
@@ -5588,7 +5589,9 @@ def _render_level(ctx: Ctx, lv: Level, n: int = 5) -> str:
         if shown and ctx.menu_hint:
             lines.append(f"  📄 {ctx.menu_hint}")
     else:
-        lines.append(" 0  做点别的…  （at x,y 指哪打哪）")
+        # 🔒 2026-10-07 恒拍板封存 `at x,y`（指哪打哪）⇒ **这行不再挂那个门牌**。
+        #    它现在只表示"这些都不是"；敲了会得到一句如实的话 + 下一步（见 `do_row` 的 0 分支）。
+        lines.append(" 0  做点别的…")
     # 提示优先取这一层自己的（`exec_on_pick` 那类形态跟默认不一样，得说清怎么敲）。
     if lv.hint:
         lines.append(lv.hint)
@@ -5641,7 +5644,7 @@ def _parse_code(code):
         return [(code, None)], None
     s = str(code if code is not None else "").strip().replace("，", ",")
     if not s:
-        return None, "❌ 敲个编号（如 `1`），或者 at x,y 指过去"
+        return None, "❌ 敲个编号（如 `1`；多选 `1,4`；各多少 `1=2,4=7`）"
     out, forms = [], set()
     for part in s.split(","):
         part = part.strip()
@@ -5859,7 +5862,9 @@ def do_row(code, run: Callable, ctx: Ctx = None) -> str:
             _mt = (ctx.menu or {}).get("type") or "?"
             return (f"👌 好。⚠️ 界面还开着（{_mt}）—— 这一刻**指哪一格都按不动**，"
                     f"先把界面处理掉：\n   {ctx.menu_hint or '走 menu 域处理它'}")
-        return "👌 好，做点别的去 —— 想指哪一样东西，用 at x,y"
+        # 🔒 2026-10-07 封存 `at x,y` ⇒ 这句话**不能再把人指过去**；如实说"单子上没有的走域工具"。
+        return ("👌 好，做点别的去。\n"
+                "   单子之外的事走对应域工具：`scene` 点格子/交互 · `farm` 农活 · `storage` 箱子 · `menu` 界面。")
 
     if lv.mode == "qty":
         return _do_qty(ctx, lv, sel, run)
@@ -5907,7 +5912,7 @@ def do_row(code, run: Callable, ctx: Ctx = None) -> str:
                 r = _row_by_no(lv, no)
                 if r is None:
                     return (f"❌ 这一层只有 {_nos(lv)} 号 —— 没有 {no} 号。\n"
-                            f"   想指别的东西，用 at x,y")
+                            f"   敲 `show` 重开一张单子（号当场重发）。")
                 rows.append((r, None))
             # 🔍 复验（同 act 那条；`exec_on_pick` 是"选完直接做"，一样会碰到世界变了的号）
             for _r, _c in rows:
@@ -5924,7 +5929,7 @@ def do_row(code, run: Callable, ctx: Ctx = None) -> str:
     row = _row_by_no(lv, no)
     if row is None:
         return (f"❌ 这一层只有 {_nos(lv)} 号 —— 没有 {no} 号。\n"
-                f"   想指别的东西，用 at x,y")
+                f"   敲 `show` 重开一张单子（号当场重发）。")
 
     # 🗂 目录行：点开下一层（**本身不执行任何东西**）
     # ⚠️ 子层用 `_SUB_N`（不是 5）：这是"AI 刚点开的那一摞"，**要能看完**
@@ -5946,6 +5951,14 @@ def do_row(code, run: Callable, ctx: Ctx = None) -> str:
 
 def render_at(ctx: Ctx, x: int, y: int) -> str:
     """🎯 指哪打哪——AI 自己指定目标，**绕过排序**，无损。
+
+    🔒 **2026-10-07 恒拍板：封存（暂时不开）** —— 「sense at 好像没做了，但是也没有退役…
+       暂时封存，不要暴露给 MCP 和一切介绍资料」。来历：2026-10-05 恒已叫停这套设计
+       （「暂时退役 at 指哪打哪的工具构想，专注维护我们现在已有的成果」），但 op 一直留着、还在露脸。
+    ⇒ **这份代码留着不删**（封存不是删除，将来开箱不用重写；它自己那份自验也照旧跑），
+       但**没有任何 AI 可达的路**：唯一入口 `nagi_mcp_server.intent()` 的 `at` 分支已改成如实回一句"封存"，
+       单子/提示行/help 指南里的 `at x,y` 字样一并清掉了。
+    ⚠️ 要复活只能恒开箱（见记忆 `verbs-at-retired-focus-maintenance-2026-10-05.md`：**我不许因"判据齐了/顺手"自己加回来**）。
 
     ⚠️ 指到**没账**的（`ctx.tiles` 里没有这一格）就如实说「我这儿没有这一格的账」，
        **绝不给"附近有什么"** —— 编一个像样的答案比报错危害大得多。
@@ -6587,7 +6600,9 @@ def _selftest():
     # ⚠️ 越界那条要**回顶层**再敲（上面刚执行过，层级已经不是顶层了）
     reset_menu()
     render_menu(ctx, n=40)
-    ok.append(("敲越界的号 → 拒绝并给出路", "at x,y" in do_row(len(_LAST_ROWS) + 5, fake_mwork, ctx)))
+    # 🔒 2026-10-07：出路**不再**是 `at x,y`（封存了）⇒ 改成"让你重开一张单子"。
+    _oob = do_row(len(_LAST_ROWS) + 5, fake_mwork, ctx)
+    ok.append(("敲越界的号 → 拒绝并给出路", ("没有" in _oob) and ("show" in _oob) and ("at x,y" not in _oob)))
 
     # ⑧ ⚠️ 2026-10-01：回执**照原样转述脚本的话**（脚本报"没收完"时不许替它编成功）
     def warn_mwork(ep, payload):
@@ -6614,7 +6629,8 @@ def _selftest():
     render_menu(ctx, n=5)
     ok.append(("act 层写数量 → 拒", "没有数量要填" in do_row("1=1", fake_run, ctx)))
     ok.append(("act 层多选 → 拒", "一次只能敲一个" in do_row("1,2", fake_run, ctx)))
-    ok.append(("越界的号 → 拒并给出路", "at x,y" in do_row(97, fake_run, ctx)))
+    _oob2 = do_row(97, fake_run, ctx)
+    ok.append(("越界的号 → 拒并给出路", ("没有" in _oob2) and ("show" in _oob2) and ("at x,y" not in _oob2)))
 
     # ⑪ 📦 容器（166 ⑤ / 2026-09-29 恒：**箱子合一**）
     #    顶层只一行「箱子…」→ 点开是**一览**（一行一箱）→ 再点才是动作面（取/存）。

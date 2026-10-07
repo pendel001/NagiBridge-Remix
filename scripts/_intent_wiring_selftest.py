@@ -664,22 +664,22 @@ def main():
                   any(c[0] == "POST" and c[1] == "/chest_take" for c in CALLS)))
     res.append(ok("取 回执回显对象和数量", "钻石" in r_take and "×2" in r_take))
 
-    # ⑤ at：指哪打哪
+    # ⑤ at：**已封存**（2026-10-07 恒：「暂时封存，不要暴露给 MCP 和一切介绍资料」）
+    #    ⇒ 这里从"验它能指路"改成"验它**够不着**"：如实回一句封存 + 给下一步，
+    #      并且**工具 docstring / help 指南里不许再出现 `at` 这个入口**（免得 AI 照旧去敲）。
     _stub()
     M.intent_menu.reset_menu()
     at = M.intent(ops="at", kw={"x": 13, "y": 12})
-    res.append(ok("at 指到野莓 → 出「捡」", "捡" in at))
-    at2 = M.intent(ops="at", kw={"x": 99, "y": 99})
-    # 🔴 2026-10-04 真机改口径：原来要求「什么都没说」——可那句话是**对世界的断言**，
-    #    而 `tile` 表根本不含建筑层/水/雕像（真机：出货箱/鱼塘/脚下那格全报"什么都没有"，
-    #    雕像还印「这里没有它能做的动作」而单子上明明有「摸 雕像」）。
-    #    ⇒ 钉子改成：**说清是我这儿没账** + **不许再断言"那里什么都没有"** + 指路 `show`。
-    res.append(ok("at 指到没账的格 → 说「没有这一格的账」，**不编**也不给附近",
-                  "没有这一格的账" in at2 and "附近" not in at2))
-    res.append(ok("🔴 at 没账时**不许**再断言「那里什么都没有」（那是说世界的）",
-                  "什么都没有" not in at2 and "show" in at2))
-    res.append(ok("at 缺坐标 → 报错 + 说清要什么",
-                  "❌" in M.intent(ops="at", kw={})))
+    res.append(ok("🔒 at 已封存 → 如实说封存（不装「没这个 op」、也不假成功）",
+                  "封存" in at and "❌" not in at))
+    res.append(ok("🔒 at 封存回执**给下一步**（show + 域工具）",
+                  "show" in at and "域工具" in at))
+    res.append(ok("🔒 缺坐标也一样是封存那句话（不再报「要 x y」）",
+                  "封存" in M.intent(ops="at", kw={})))
+    res.append(ok("🔒 工具 docstring 里**不再列** at 这个 ops",
+                  "at    指哪打哪" not in (M.intent.__doc__ or "")))
+    res.append(ok("🔒 help(intent) 指南里**不再**出现 intent(ops=\"at\"",
+                  'ops="at"' not in (M._DOMAIN_GUIDES.get("intent") or "")))
 
     # ⑥ 高阶层动作走的是**拟人那条**（不是裸端点）
     _stub()
