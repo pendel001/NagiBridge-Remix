@@ -53,7 +53,7 @@ FILE_STRUCTURE = {
     "ModEntry.cs": "SMAPI mod 主文件：HTTP API 服务器（~120 端点）+ Harmony 补丁（IsActive/表情/聊天/节日提示/Lidgren 端口）+ 拾取检测 + 结算/升级菜单自动确认",
     "ModConfig.cs": "mod 配置（mode/端口/LLM 等）",
     "NagiBridge.csproj": "C# 工程文件",
-    "ChatHud.cs / LlmClient.cs / server.ts / index.ts": "⚠️ 原作者遗留，已 .claudeignore 忽略，勿改",
+    "ChatHud.cs / LlmClient.cs / ModConfig.cs": "**mod 内的游戏内聊天面板**：`ChatHud`（面板/模式选择：API 模式直连大模型 或 Channel 模式连本地 CC）+ `LlmClient`（API 模式的对话客户端，聊天历史落在 **mod 目录的 `chat_history.json`**，不在仓库）+ `ModConfig`（Mode/ChannelServerUrl/ApiKey/Model 等）。⚠️ ChatHud/LlmClient 是原作者遗留（`.claudeignore`），**别动**（`server.ts`/`index.ts` 那类原作者的 TS 文件**已不在仓库**）；⚠️ Channel 模式要的 `channel_server.py`（:9000）**也不在仓库**（README 第 3 节已注明自备）",
 
     # ── Python MCP 服务器（核心智能层）──
     "scripts/nagi_mcp_server.py": "MCP 服务器（streamable-http:8000 或 --stdio）：16 个工具 + 状态注入(_with_state) + 心跳 + 节日/导航/脚本编排。13 域入口(check/farm/mine/social/scene/menu/storage/daily/map/festival/fish/settings + script；care→farm、quest→menu 09-02 合并；session→settings、cabin→scene/farm/daily/check 10-01 撤出) + 3 独立(intent/screenshot/help)，域模式恒开只露这套。wear→daily ops，bundle_kb/donate/read_book→menu ops(2026-08-22)；advance_story→menu ops、profile/which_role→check ops(2026-09-11，20→17)，2026-10-01 再撤 session/cabin 两个顶层域名(→17→16)",
@@ -74,11 +74,13 @@ FILE_STRUCTURE = {
     "scripts/mine_run.py": "矿洞/头骨矿冲层脚本（逐层+整理背包）——08-29 _rock_name 三级(object名>ORE_NODE_IDS>dump_tile真名)认隐藏名宝石/放射矿,ore_score 关键词(放射>宝石),mine_rock 校验改目标格有object",
     "scripts/rock_run.py / rock_scan.py": "室外镐击：采石场/挖掘场/蚌矿场 敲可破物(骨/黏土/蚌/矿点/宝石/煤/放射矿)，只跳普通石。默认只扫不敲(--dig 才敲)，目标按 objId+dump_tile 真名认(1.6 节点 Name 全报 'Stone' 只 objId 可信)；MCP scene ops=rock",
     "scripts/fish_run.py": "钓鱼自动化（walk_to 到钓点→拿竿→抛竿，--max-casts 收手）+ 拿竿后自动补饵/钓具",
-    "scripts/farm_row.py / fruit_round.py / harvest.py / scythe_crops.py / keg_manager.py / furnace_manager.py": "农活：行田/果树圈收/收获/作物收获(拟人逐个走位,镰刀 or 手摘)/酒桶管理/熔炉（`building_round.py` 2026-10-03 随'收放兼容之外的口全删'删除）",
-    "scripts/pet_animals.py / feed_hay.py / pet_walk.py": "养动物：摸宠/喂干草/遛宠",
+    "scripts/farm_row.py / fruit_round.py / harvest.py / scythe_crops.py / machine_loader.py": "农活：行田/果树圈收/收获/作物收获(拟人逐个走位,镰刀 or 手摘)/**机器装料**(替代了早年那些 keg_manager/furnace_manager 单机脚本)",
+    "scripts/pet_walk.py / feed_hay.py": "养动物：拟人遛宠(顺手摸)/喂干草（早年的 pet_animals.py 已不在仓库）",
     "scripts/pickup_scene.py / scan_entries.py": "场景拾取/扫描",
-    "scripts/berry_run.py / blessing_statue.py / chop_trees.py / clear_area.py / machine_loader.py / check_design.py": "其他自动化：浆果/祝福像/砍树/清地/装机器(装载失败列机器需求给AI自查,机器type→输入种类表_MACHINE_NEED)/设计检查",
-    "scripts/chat_watcher.py / chat_overlay.py / channel_server.py": "聊天监听/悬浮/通道服务（广播/聊天联动）",
+    "scripts/berry_run.py / blessing_statue.py / chop_trees.py / clear_area.py / check_design.py": "其他自动化：浆果/祝福像/砍树/清地/设计检查",
+    # ⚠️ 早年那套「聊天监听/悬浮/通道服务」脚本（chat_watcher / chat_overlay / channel_server）**已全删**，
+    #    别再按名字去找：聊天走 mod 内的 `ChatHud.cs` 面板 + MCP 侧 `social send` / `/chat/push`（host 7842 广播）。
+    #    同理已删的还有 keg_manager / furnace_manager / pet_animals / shop_buy（单机脚本，现在都走 machine_loader + farm 域 op）。
 
     # ── 启动器（一键启动：自检 → 起 MCP 服务器）──
     "启动NagiBridge.bat": "一键启动（双击）：跑 scripts/launcher_check.py 自检 → 全绿才 `python scripts/nagi_mcp_server.py`。⚠️ **纯 ASCII**（CMD 混 `chcp 65001` + 多字节文本会错位解析，中文一律放 launcher_check.py）；必须待在仓库里（靠 %~dp0 找 scripts\\），要桌面图标就用快捷方式",

@@ -54,19 +54,21 @@ NagiBridge 是一个 **[星露谷](https://www.stardewvalley.net/)（Stardew Val
 
 ## 2. 安装（玩家）
 
-> ### 📥 [**Download the latest release →**](https://github.com/anqinou-art/NagiBridge/releases/latest)
+> ### 📥 [**Download the latest release →**](https://github.com/pendel001/NagiBridge-Remix/releases/latest)
 >
-> Grab `NagiBridge.zip` from the link above — it already contains the compiled `NagiBridge.dll`. **You do not need to build anything.**
+> Grab the latest zip (currently `NagiBridge 0.9.0.zip`) from the link above — it already contains the compiled `NagiBridge.dll`. **You do not need to build anything.**
 
 1. Install [SMAPI](https://smapi.io/)
-2. Download `NagiBridge.zip` from [**Releases**](https://github.com/anqinou-art/NagiBridge/releases/latest) and unzip it
+2. Download the latest zip from [**Releases**](https://github.com/pendel001/NagiBridge-Remix/releases/latest) and unzip it
 3. Move the unzipped `NagiBridge` folder into your `Stardew Valley/Mods/` folder
    (so you end up with `Stardew Valley/Mods/NagiBridge/NagiBridge.dll` + `manifest.json`)
 4. Launch the game through SMAPI
 
 First launch auto-generates `config.json`. The mod is built for **Stardew Valley 1.6+ / SMAPI 4.0+** and the same `.dll` works on **Windows, macOS and Linux**.
 
-> **Cloning the source repo?** There is **no `.dll` in the source tree** — it ships only in [Releases](https://github.com/anqinou-art/NagiBridge/releases/latest). If you cloned/downloaded the code and SMAPI says it can't find `NagiBridge.dll`, download the release zip above, or build it yourself (see [6. 开发者](#6-开发者)).
+> **Cloning the source repo?** There is **no `.dll` in the source tree** — it ships only in [Releases](https://github.com/pendel001/NagiBridge-Remix/releases/latest). If you cloned/downloaded the code and SMAPI says it can't find `NagiBridge.dll`, download the release zip above, or build it yourself (see [6. 开发者](#6-开发者)).
+>
+> 🙏 原作者的 [NagiBridge](https://github.com/anqinou-art/NagiBridge)（**本版不是它**，见页首说明）。
 
 ---
 
@@ -154,15 +156,10 @@ The provider is auto-detected from the URL. Custom URLs use OpenAI-compatible fo
 
 #### Tool Calling Agent (Optional)
 
-For LLMs that support tool calling (function calling), a standalone Python agent lets the AI actually play the game:
+想让 AI **真的进游戏操作**（走位/种地/下矿），走的是 **MCP 服务器**那条路 —— 见 [4. 进阶：让 AI 跟你一起玩（MCP 连接）](#4-进阶让-ai-跟你一起玩mcp-连接)。
+AI 眼里只有 16 个工具（13 个域入口 + `intent` / `screenshot` / `help`），完整清单见 [scripts/TOOL_INVENTORY.md](scripts/TOOL_INVENTORY.md)。
 
-```bash
-python scripts/tool_agent.py --provider deepseek --key sk-xxx --port 7842
-```
-
-The AI can use 17 game tools: `get_state`, `warp`, `move_to`, `use_tool`, `farm`, `mine`, `harvest`, etc.
-
-See [scripts/tool_agent.py](scripts/tool_agent.py) for details.
+> ⚠️ 早期版本附过一个独立脚本 `scripts/tool_agent.py`，**它已不在本仓库**；现在是"域工具 + `intent` 意图单子"那条路。
 
 ### Channel Mode (Claude Code)
 
@@ -171,28 +168,23 @@ For connecting to Claude Code (CC). CC controls the game via HTTP API and chats 
 #### Architecture
 
 ```
-Game ChatHud → POST → channel_server.py (:9000) → inbox file → CC Monitor → CC responds
-                                                                               ↓
-Game ChatHud ← /chat/push (:7842) ←────────────────────────────────────────────┘
+Game ChatHud → POST → <你的 channel 服务 (:9000)> → inbox file → CC Monitor → CC responds
+                                                                       ↓
+Game ChatHud ← /chat/push (:7842) ←─────────────────────────────────────┘
 ```
 
 #### Setup (Claude Code side)
 
-Each new CC session needs two things:
+> ⚠️ **这段要自备服务**：原作者那两个脚本 `scripts/channel_server.py` / `scripts/start_channel.sh`
+> **不在本仓库**（mod 侧还留着这个开关：`Mode: "cc"` + `ChannelServerUrl`，聊天会 POST 过去）。
+> 本仓库现在的主力是 MCP 那条路（第 4 节）。
 
-**1. Start channel server:**
-```bash
-bash ~/source/NagiBridge/scripts/start_channel.sh
-```
-Or manually:
-```bash
-cd scripts && python channel_server.py &
-```
+**1. 起你自己的 channel 服务**（监听 :9000，把聊天写进一个 jsonl 供 CC 读）
 
-**2. Start message monitor** (CC tool):
+**2. Start message monitor** (CC tool) —— 盯你自己那个服务写出来的 jsonl：
 ```
 Monitor(description="stardew chat", persistent=true,
-        command="tail -f ~/nagi/overlay_inbox.jsonl | grep --line-buffered text")
+        command="tail -f <你的 channel 服务写出的>.jsonl | grep --line-buffered text")
 ```
 
 **3. Reply to player** via API:
@@ -229,7 +221,7 @@ When `Mode` is `"cc"`, the chat panel opens directly in Channel mode (skips mode
 |---|---|
 | 已装 NagiBridge 游戏 mod | 见 [2. 安装](#2-安装玩家)，先让游戏能跑 |
 | Python 3.10+ | 跑 MCP 服务器用 |
-| 装 `mcp` + `httpx` 库 | `pip install mcp httpx`（建议 `pip install "mcp[cli]"`） |
+| 装 `mcp` + `requests` 库 | `pip install mcp requests`（`mcp` 是服务器本体，`requests` 是 Python 侧调游戏 API 用的；建议 `pip install "mcp[cli]"`。截图降采样可选装 `pillow`） |
 | 游戏**已启动**且进档 | MCP 服务器要读游戏状态，游戏没开会显示「游戏进程未就绪」 |
 | （手机连的话）同一 Wi-Fi | 手机和电脑要在**同一个局域网**，手机不能在外面用流量连 |
 
@@ -259,12 +251,12 @@ python scripts/nagi_mcp_server.py
 ```
 NagiBridge MCP Server | HTTP: http://0.0.0.0:8000
 📱 手机/Claude Code 连（同一网络）: http://<你的局域网IP>:8000/mcp
-  20 tools registered | schema 估算 ~xxxxx 字符
+  16 tools registered | schema 估算 ~xxxx 字符
 ✅ 角色映射: AI(xxx)=7843 | host(xxx)=7842
 ```
 
 - `0.0.0.0` 表示**本机 + 局域网都能连**（默认就是它）。
-- `<你的局域网IP>` 是你电脑的**局域网 IP**（手机要填这个，看 4.4）。
+- `<你的局域网IP>` 是你电脑的**局域网 IP**（手机要填这个，看 4.4）——它会**自动跳过 VMware/VirtualBox 这类虚拟网卡**，跟启动器自检印的那个是同一个。
 - 默认控制 **AI 角色(7843)**；想控制房主(7842) 就用 `NAGI_URL=http://localhost:7842` 启动。
 
 ### 4.3 从手机连（最常见「java 报错」的出处）
@@ -364,7 +356,7 @@ curl -i -X POST http://localhost:8000/mcp \
 | `java... 报错 / 404` | URL 少了 `/mcp`，或客户端用了 SSE | 补上 `/mcp`；传输改成 Streamable HTTP |
 | `Connection refused` | 服务器没起 / 游戏没开 / 端口被占 | 确认 4.2 启动日志；换 `NAGI_MCP_PORT` |
 | 手机 `timeout` | 不同网 / 防火墙拦 / DHCP 客户端隔离 | 确认同一 Wi-Fi；放行 8000；关掉路由器「AP隔离」 |
-| 能连但报「没有工具 / 工具不全」 | 服务器是**域工具模式**（恒开，只留 17 个） | 确认用本仓库 `.mcp.json`（域模式恒开，无 `--full` 回退） |
+| 能连但报「没有工具 / 工具不全」 | 服务器是**域工具模式**（恒开，只留 **16** 个：13 域 + `intent`/`screenshot`/`help`） | 确认用本仓库 `.mcp.json`（域模式恒开，无 `--full` 回退） |
 | 改了 tools/引导**不生效** | `calendar_data.py` 等是启动时 import 的 | **重启 MCP 服务器** |
 | 桌面 Claude Code 连不上 | `.mcp.json` 用 `localhost`，只适用于同机 | 同机 `localhost:8000/mcp` 即可；跨机才用 IP |
 
@@ -384,9 +376,12 @@ The project uses [`Pathoschild.Stardew.ModBuildConfig`](https://github.com/Patho
 
 ### HTTP API
 
-Game starts an HTTP server on `localhost:7842` (host) / `7843` (farmhand).
+Game starts an HTTP server on `localhost:7842` (host) / `7843` (farmhand)；MCP 服务器在 `:8000`（`/mcp`）。
 
-Full endpoint list: see [AGENTS.md](AGENTS.md)
+> ⚠️ **写 `localhost`，别写 `127.0.0.1`** —— mod 的 HttpListener 前缀就是 `localhost`，`127.0.0.1` 一律被拒（回非 JSON）。
+> 角色由"**谁先开游戏**"决定：先开的那个拿 7842，另一个拿 7843 ⇒ 换人开局会**翻转**，动角色前用 `check(what="role")` 核一下。
+
+Full endpoint list: see [AGENTS.md](AGENTS.md)（全量端点/逐文件职责/核心范式：`python PROJECT_PANORAMA.py`）
 
 ### Automation Scripts
 
@@ -399,14 +394,17 @@ pip install requests
 | Script | Usage |
 |--------|-------|
 | `farm_row.py` | `python farm_row.py 64 18 10 --seed "Melon Seeds" --rows 3` |
-| `water_crops.py` | `python water_crops.py --port 7842` |
+| `water_crops.py` | `python water_crops.py --port 7843` |
 | `harvest.py` | `python harvest.py 60 17 70 20 --sell` |
-| `mine_run.py` | `python mine_run.py --start-level 1 --max-levels 5` |
+| `mine_run.py` | `python mine_run.py --mode rush --start 1 --target 20`（冲层）／`--mode farm --ore Gold`（刷矿）|
 | `chop_trees.py` | `python chop_trees.py --count 10` |
 | `clear_area.py` | `python clear_area.py 60 15 70 25` |
-| `pet_animals.py` | `python pet_animals.py` |
-| `keg_manager.py` | `python keg_manager.py --fruit "Ancient Fruit"` |
-| `furnace_manager.py` | `python furnace_manager.py --ore "Copper Ore"` |
-| `shop_buy.py` | `python shop_buy.py --items "493:10,491:6"` |
+| `pet_walk.py` | `python pet_walk.py` |
+| `machine_loader.py` | `python machine_loader.py "Ancient Fruit" --type "Keg"` |
+| `rock_run.py` | `python rock_run.py --radius 14`（默认只扫不敲，加 `--dig` 才敲）|
+| `berry_run.py` / `spot_run.py` | `python berry_run.py` / `python spot_run.py` |
+| `fish_run.py` | `python fish_run.py --location Beach --max-casts 5` |
 
-All scripts default to `--port 7842`. Add `PYTHONIOENCODING=utf-8` on Windows.
+⚠️ **这些脚本默认打 `--port 7842`（房主角色）** —— 想让 AI 角色（farmhand / 7843）去做，**必须显式 `--port 7843`**
+（MCP 侧调用时服务器会自动注入，不用你管；只有手工跑才要注意）。
+Windows 上加 `PYTHONIOENCODING=utf-8`（否则 emoji/中文会炸 GBK）。
