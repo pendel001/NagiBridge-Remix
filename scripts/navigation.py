@@ -178,6 +178,25 @@ def _apply_poi_stand_face(poi_name: str) -> str:
         cfg = getattr(locations, "POI_FACE", {}).get(poi_name)
         if not cfg:
             return ""
+        # ══════════════════════════════════════════════════════════════════════════
+        # 🚨 2026-10-07 恒真机：「**怎么飞到了不可走格**」
+        # ══════════════════════════════════════════════════════════════════════════
+        # 现场：`map walk 铁匠铺(柜台)` 时人在 **Town**、铁匠铺门锁着（08:30，营业 9:00~16:00），
+        #   可本函数**照样** `api.position(3, 15)` —— 那是**铁匠铺室内柜台**的站位格
+        #   ⇒ 人被瞬移到 `Town(3,15)`，而那格 `passable=false`（**墙里**，实测 `/dump_tile`）。
+        # 病根两条：① 本函数**从不核"人在不在这张图"**；② 调用处（`walk_to` 跨图分支）
+        #   在 `map_go` **失败**（门锁着/门禁/走不到）之后**照样**调它。
+        # ⇒ 这里先核地图：POI 的 `map` ≠ 当前图 ⇒ **一步都不动**（不 position、不 face），只如实说一句。
+        #    📌 同族的坑这已经是第 N 次（`_step_into_building` 早就有这个核）：**跨图绝不摆站位**。
+        _poi_map = (locations.POI.get(poi_name) or {}).get("map")
+        if _poi_map:
+            try:
+                _cur_map = api.current_location()
+            except Exception:
+                _cur_map = ""
+            if _cur_map and _cur_map != _poi_map:
+                return (f"，⚠️**没动站位**（人在 `{_cur_map}`，而「{poi_name}」在 `{_poi_map}`）"
+                        f"——跨图不摆站位（旧版会把人瞬移到那张图的站位格上，墙里也照瞬）")
         logs = []
         stand = cfg.get("stand")
         if stand:
@@ -655,9 +674,25 @@ def walk_to(poi_name: str = "", x: int = None, y: int = None) -> str:
             cur = (api.state().get("location") or {}).get("name", "")
             if cur != poi_map:
                 go = map_go(poi_name)
-                face_log = _apply_poi_stand_face(poi_name)
+                # 🚨 2026-10-07 恒真机（「怎么飞到了不可走格」）：`map_go` **可能没成功**
+                #    （门锁着 / 门禁 / 走不到）——那时候**绝不能**再摆 POI 站位：那个站位是**目标图里**的格，
+                #    人还在原图 ⇒ `position()` 会把角色瞬移到原图的同坐标上（现场就是 `Town(3,15)`＝墙里）。
+                #    判据 = **现读**人在哪（不猜"它应该到了"）。不在目标图 ⇒ face_log 留空。
+                try:
+                    _now_map = api.current_location()
+                except Exception:
+                    _now_map = ""
+                face_log = _apply_poi_stand_face(poi_name) if _now_map == poi_map else ""
                 # map_go 自带状态条 → 取正文，face_log 接后，最后统一 _with_state
                 base = go.split(_STATE_SEP)[0] if _STATE_SEP in go else go
+                # 🧹 2026-10-07：别报两遍——`map_go` 到达 POI 时**自己也摆过一次站位/朝向**
+                #    （`:3656` 那条 `return True, _apply_poi_stand_face(destination) …`）
+                #    ⇒ 真机回执里出现「✅ 到达 铁匠铺(柜台)（(3, 15)），朝上，**朝上**」。
+                #    去重：face_log 里**已经在 base 里出现过的片段**就不再说一遍。
+                if face_log and base:
+                    _parts = [p for p in face_log.strip("，").split("，")
+                              if p and f"，{p}" not in base and p not in base]
+                    face_log = ("，" + "，".join(_parts)) if _parts else ""
                 return _with_state(base + face_log)
         # 🏠 动态别名（回家 / 自己小屋 / 我的小屋）→ 走**同进程**的 go_to()，别丢给子进程。
         #    go_to() 认得这些别名（回家=`_go_home(door_only=True)` **推门进屋就停**；裸"小屋"=`_nav_home_door()` 只到门外），

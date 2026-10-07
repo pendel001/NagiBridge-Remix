@@ -121,6 +121,58 @@ first_walk = state["walks"][0] if state["walks"] else None
 ck(f"第一次走位奔的是**离自己最近**那件 (5,0)，而不是扫描中心那件 (0,0)", first_walk == (5, 0), f"实际 {first_walk}")
 print(f"   （走位序列：{state['walks']}）")
 
+print("\n③ 跨图**不许**摆 POI 站位（恒 2026-10-07 真机：「**怎么飞到了不可走格**」）")
+import navigation as NAV  # noqa: E402
+
+nsrc = open(os.path.join(HERE, "navigation.py"), encoding="utf-8").read()
+ck("_apply_poi_stand_face 里核了地图", "_cur_map != _poi_map" in nsrc)
+ck("调用处只在**到了目标图**才摆站位", 'if _now_map == poi_map else ""' in nsrc)
+
+_stand_want = None
+try:
+    import locations as _LOC
+    _cfg = (_LOC.POI_FACE or {}).get("铁匠铺(柜台)") or {}
+    _stand_want = tuple(_cfg.get("stand")) if _cfg.get("stand") else None
+except Exception:
+    pass
+ck("铁匠铺(柜台) 的站位格 = (3,15)（这就是被瞬移过去的那格）", _stand_want == (3, 15), str(_stand_want))
+
+_real_api = NAV.api
+_real_mark = getattr(NAV, "_mark_festival_poi_name", None)
+_calls = []
+
+
+class _FakeNavApi:
+    loc = "Town"
+
+    def current_location(self):
+        return self.loc
+
+    def player_tile(self):
+        return (0, 0)
+
+    def position(self, x, y):
+        _calls.append(("position", x, y))
+
+    def face(self, d):
+        _calls.append(("face", d))
+
+
+NAV.api = _FakeNavApi()
+NAV._mark_festival_poi_name = lambda n: None
+try:
+    note = NAV._apply_poi_stand_face("铁匠铺(柜台)")
+    ck("人在 Town、POI 在 Blacksmith ⇒ **一次 position/face 都不发**", _calls == [], str(_calls))
+    ck("并如实说「没动站位」", "没动站位" in note, note)
+    _FakeNavApi.loc = "Blacksmith"
+    _calls.clear()
+    NAV._apply_poi_stand_face("铁匠铺(柜台)")
+    ck("真到了 Blacksmith ⇒ 照旧摆站位 (3,15)", ("position", 3, 15) in _calls, str(_calls))
+finally:
+    NAV.api = _real_api
+    if _real_mark is not None:
+        NAV._mark_festival_poi_name = _real_mark
+
 print()
 if FAIL:
     print(f"❌ {len(FAIL)} 项不过：" + " / ".join(FAIL))
