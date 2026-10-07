@@ -246,6 +246,27 @@ finally:
     M.api = _bak if '_bak' in dir() else _real_api
     M._stamina_now = _old
 
+print("\n⑥ 蓄力落地/验证的时序（恒 2026-10-07：「斜右下格在抬手就被改」「没在范围的格子也被锄到」）")
+# 两条旧账：① 先 DoFunction（土立刻变）再 EndUsingTool（才起手挥）② `charge` 是异步命令，
+# 而逐锚点验证在 **dispatch 那一拍**就跑了 ⇒ 还没落地就把 targets 全补成土（比抬手还早）。
+ck("`charge` 命令**不再**在 dispatch 时验证（改成存起来）",
+   'else if (action == "charge") _pendingChargeCmd = cmd;' in src
+   and 'if (action == "use" || action == "charge")' not in src)
+ck("待验证的蓄力命令有地方存（字段 `_pendingChargeCmd`）",
+   "private Dictionary<string, object?>? _pendingChargeCmd;" in src)
+ck("落地挪进 `DelayedAction`（挥下去那一帧 ≈200ms）",
+   "DelayedAction.functionAfterDelay(() =>" in src and "}, 200);" in src)
+ck("旧的「释放即落地」写法已删（先 DoFunction 再 EndUsingTool）",
+   "if (_chargeOp == \"till\" && tool is Hoe hoe2)" not in src)
+ck("按掉标记在 `EndUsingTool()` **之前**挂（动画自己 frame68 那发照旧按掉）",
+   src.find("_suppressAnimToolUse = true;\n                            _suppressAnimTicks = 90;\n                            farmer.EndUsingTool();") > 0)
+ck("队列结账搬进回调（否则最后一锚点会在落地前结账、补漏把整片土直接写上）",
+   "if (_commandQueue == null || _commandQueue.Count == 0) CompleteCommandQueue();\n                                }\n                            }, 200);" in src)
+ck("动画超时兜底也能结账（DelayedAction 万一没跑到，别让 HTTP 悬 10 分钟）",
+   "if (_commandQueue != null && _commandQueue.Count == 0) CompleteCommandQueue();" in src)
+ck("降档时 charge 的 targets **只报这一挥真盖得到的**（盖不到的留给收工补漏）",
+   "var chargeTargets = (loc != null && operation == \"till\"" in src and '["targets"] = chargeTargets' in src)
+
 print(f"\n{0 if FAIL else 1} 组结论：{'全部通过' if not FAIL else '有失败'}  （{len(FAIL)} 条未过）")
 if FAIL:
     print("  未过：" + " / ".join(FAIL))

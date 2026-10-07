@@ -711,6 +711,8 @@ public class ModEntry : Mod
     private int _toolAreaToolW = 1, _toolAreaToolH = 1;
     private int _toolAreaChargeFrames = 0, _toolAreaUpgradeLevel = 0;
     private int _toolAreaTotalSwings = 0;
+    /// <summary>🎬 待验证的蓄力命令（`charge` 是异步的：dispatch 那一拍还没落地 ⇒ 验证推迟到释放落地之后跑）。</summary>
+    private Dictionary<string, object?>? _pendingChargeCmd;
     // 🚫⚙️ 2026-10-07 恒真机（「锄头没跳设备」）：本轮 tool_area **因为蓄力范围压着设备而让开**的格
     //    （锚点整条不发 ⇒ 那几格交给 DLL 补漏直写土，**设备一根没动**）。回包带出去给 Python 如实报。
     private List<(int x, int y, string what)> _toolAreaEquipAvoided = new();
@@ -2608,20 +2610,50 @@ public class ModEntry : Mod
                             // 🚫 2026-09-23 恒真机（"浇水双判体力扣除"）：`EndUsingTool()` 放出的挥舞动画，
                             //    自己的 frame68 会再落地一发（固定"面前 1 格"）——蓄力这条上我们已经落了满范围，
                             //    动画那发纯属白扣（水 +1、体力 +1 份）⇒ 走 `DoFunctionHere`（自己落 + 按掉它那发）。
-                            if (_chargeOp == "till" && tool is Hoe hoe2)
-                                DoFunctionHere(hoe2, farmer.currentLocation, px, py, _chargePower, farmer);
-                            else if (_chargeOp == "water" && tool is WateringCan wc2)
-                                DoFunctionHere(wc2, farmer.currentLocation, px, py, _chargePower, farmer);
-                            farmer.EndUsingTool();   // ⚠️ 必须有——否则蓄力姿势不关，累计放大力
-                            _toolAnimWait = 150;     // 🎬 ≈36 tick 动画 + 余量；到 0 强制放行（防"动画卡住不动"）
+                            // 🎬🚨 2026-10-07 恒真机（「修了之后拍的地块很奇怪：**斜右下格在抬手就被改**，
+                            //    中途还出现了**没在范围的格子也被锄到**」）——两条旧账凑成了这个观感：
+                            //    ① **落地比动画早**：原来是先 `DoFunctionHere`（土立刻变）再 `EndUsingTool()`（这才起手挥）
+                            //       ⇒ 屏幕上就是"抬手那一刻土已经变了，然后对着翻好的地挥锄"。
+                            //    ② **逐锚点验证跑在"发命令"那一拍**：`charge` 命令是**异步**的（这里才开始数 tick），
+                            //       而 `VerifyToolAreaAnchor(cmd)` 是在 dispatch 时调的（见命令队列末尾）⇒ 那会儿**还没落地**，
+                            //       于是这一锚点的 `targets` 全被判成"漏"⇒ **整片当场补土**（比抬手还早约 1.3 秒）。
+                            //       ⇒ 恒看到的"没在范围的格子也被锄到"是**补土写的**，不是挥到的。
+                            //    ✅ 现在：**先起手 → 到挥下去那一帧（≈200ms）才落地 + 才验证**（`DelayedAction`）。
+                            //       ⚠️ `_suppressAnimToolUse` 必须在 `EndUsingTool()` **之前**挂上（动画自己 frame68 那发照旧按掉，
+                            //       理由见 09-23 那条长注释："浇水双判体力扣除"）。
+                            _suppressAnimToolUse = true;
+                            _suppressAnimTicks = 90;
+                            farmer.EndUsingTool();             // ① 先起手（举锄 → 挥过 → frame68 落地 → 停顿 → 收招）
+                            _toolAnimWait = 150;               // 🎬 等它播完才放行下一条命令（到 0 强制放行）
+                            var _pendCmd = _pendingChargeCmd;  // ② 这一锚点的"逐锚点验证"要等落地之后才跑
+                            _pendingChargeCmd = null;
+                            var _loc2 = farmer.currentLocation;
+                            var _pw2 = _chargePower;
+                            var _op2 = _chargeOp;
+                            DelayedAction.functionAfterDelay(() =>
+                            {
+                                try
+                                {
+                                    // ③ 挥下去那一帧才真落地（`DoFunctionHere` 自己会清/重挂"按掉动画那发"的标记）
+                                    if (_op2 == "till" && tool is Hoe _h) DoFunctionHere(_h, _loc2, px, py, _pw2, farmer);
+                                    else if (_op2 == "water" && tool is WateringCan _w) DoFunctionHere(_w, _loc2, px, py, _pw2, farmer);
+                                    if (_pendCmd != null) VerifyToolAreaAnchor(_pendCmd);
+                                }
+                                catch (Exception ex) { Monitor.Log($"[charge-release] 落地异常: {ex.Message}", LogLevel.Warn); }
+                                finally
+                                {
+                                    if (_commandQueue == null || _commandQueue.Count == 0) CompleteCommandQueue();
+                                }
+                            }, 200);
                             var sft = farmer.TilePoint;
                             var stiles = GetToolAffectedTiles(sft.X, sft.Y, farmer.FacingDirection, _chargePower);
                             _commandResults.Add(new
                             {
                                 ok = true, action = "charge_release", tool = tool.Name,
-                                power = _chargePower, tiles = stiles.Count, affected = stiles.Count, dofunction = true
+                                power = _chargePower, tiles = stiles.Count, affected = stiles.Count,
+                                dofunction = "delayed", land_ms = 200
                             });
-                            ModEntry.Instance?.Monitor.Log($"[charge-release] 释放即 apply op={_chargeOp} 落地完 stamina={farmer.Stamina:0}", LogLevel.Info);
+                            ModEntry.Instance?.Monitor.Log($"[charge-release] 先起手、落地排在 +200ms（op={_op2} power={_pw2}）stamina={farmer.Stamina:0}", LogLevel.Info);
                         }
                         catch (Exception)
                         {
@@ -2631,7 +2663,9 @@ public class ModEntry : Mod
                         }
                     }
                     _commandDelay = 3;
-                    if (_commandQueue == null || _commandQueue.Count == 0) CompleteCommandQueue();
+                    // ⚠️ 这里**不再** `CompleteCommandQueue()`：队列结账已经挪进上面那个 +200ms 的回调
+                    //    （不挪的话：最后一锚点会在**落地之前**就结账 ⇒ HTTP 线程立刻去跑补漏、把整片土直接写上，
+                    //     等于把①的"抬手就改"原样搬回来）。
                 }
             }
             return;
@@ -2695,6 +2729,9 @@ public class ModEntry : Mod
                 //    ②记录 frame68 那一刻 `toolPower` 到底剩多少（若为 0 = 证实"落地不能交给动画"）。
                 ModEntry.Instance?.Monitor.Log($"[tool-anim] 动画收尾 放行下一条 UsingTool={Game1.player?.UsingTool} toolPower={Game1.player?.toolPower.Value} left={_toolAnimWait}", LogLevel.Info);
                 _toolAnimWait = 0;
+                // 🛟 2026-10-07：落地/验证现在排在 `DelayedAction`（+200ms）里，**队列结账也在那儿**。
+                //    万一那一发没跑到（换图会清掉 DelayedAction、异常被吞…），这里兜一下，别让 HTTP 悬着。
+                if (_commandQueue != null && _commandQueue.Count == 0) CompleteCommandQueue();
             }
 
             // Wait for delay between commands
@@ -2962,8 +2999,12 @@ public class ModEntry : Mod
 
             // 逐锚点验证"落地"（2026-08-15 恒：挥完检查覆盖格状态，漏的当场补漏，再走下一锚点——
             //    覆盖基础/铜/铁/金/铱所有等级，防"没落地就飞下一格"）
-            if (action == "use" || action == "charge")
-                VerifyToolAreaAnchor(cmd);
+            // 🚨 2026-10-07 恒真机修正：`charge` 是**异步**命令（这一拍只是"开始蓄力"），
+            //    原来在这儿就 `VerifyToolAreaAnchor(cmd)` ⇒ **还没落地就把 targets 全补成土**
+            //    （恒看到的"抬手/甚至更早，整片土就变了"就是它）⇒ 现在**存起来，等释放落地后再验**
+            //    （见蓄力释放块里的 `DelayedAction` 回调）。
+            if (action == "use") VerifyToolAreaAnchor(cmd);
+            else if (action == "charge") _pendingChargeCmd = cmd;
 
             // All commands done? Return results
             if (_commandQueue.Count == 0 && !_isChargingTool)
@@ -21797,9 +21838,17 @@ var tcs = new TaskCompletionSource<object>();
                 commands.Add(new Dictionary<string, object?> { ["action"] = "move", ["x"] = ax, ["y"] = ay });
                 commands.Add(new Dictionary<string, object?> { ["action"] = "face", ["direction"] = 2 });
                 anchorsKept++;
-                // targets 给**喷到的真目标**（不是整块几何范围）——逐锚点验证只该验真的目标格。
+                // targets 给**这一挥真盖得到的真目标**（不是整块几何范围）——逐锚点验证只该验"挥到的格"。
+                // 🚨 2026-10-07 恒真机（「没在范围的格子也被锄到」）：降档之后 `usePower` 的范围比满级小，
+                //    而 targets 原来给的是**满级几何**的那一份 ⇒ 验证把"这一挥根本没够到的格"判成漏 ⇒
+                //    **当场补土**（恒看到的就是"格子被'锄'到了、可锄头没往那儿挥"）。
+                //    ⇒ 现在只报**这一挥真盖得到的**；盖不到的留给收工那轮补漏（那是既有的"取余漏格"路子，
+                //      而且会在 `still_missing` 里如实报出来）。
+                var chargeTargets = (loc != null && operation == "till" && chargeFrames > 0 && usePower != upgradeLevel)
+                    ? hit.FindAll(t => GetToolAffectedTiles(ax, ay, 2, usePower).Contains(t))
+                    : hit;
                 if (chargeFrames > 0)
-                    commands.Add(new Dictionary<string, object?> { ["action"] = "charge", ["frames"] = chargeFrames, ["power"] = usePower, ["targets"] = hit });
+                    commands.Add(new Dictionary<string, object?> { ["action"] = "charge", ["frames"] = chargeFrames, ["power"] = usePower, ["targets"] = chargeTargets });
                 else
                     commands.Add(new Dictionary<string, object?> { ["action"] = "use", ["targets"] = hit });
                 if (col == end) break;
