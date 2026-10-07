@@ -68,7 +68,10 @@ print("\n④ 导航：矿井/头骨矿洞这类入口要**踩上 warp 瓦片**�
 nav_src = open(os.path.join(HERE, "navigation.py"), encoding="utf-8").read()
 ck("_step_into_warp 已定义", "def _step_into_warp(" in nav_src)
 ck("door 分支对 _DOOR_WARP_ENTRANCES 改道", "if nxt in _DOOR_WARP_ENTRANCES:" in nav_src)
-ck("失败时有「走到口 + /warp」二级兜底", "按「走到口 + /warp」收尾" in nav_src)
+_blk_i = nav_src.find("if nxt in _DOOR_WARP_ENTRANCES:")
+_blk = nav_src[_blk_i:nav_src.find("ok, why, dtile, dnote = _enter_building_door(nxt)", _blk_i)]
+ck("⛔ 这个分支里**不许**出现 /warp 瞬移（会绕过头骨钥匙 / 钢斧那类门禁）",
+   "_walk_trigger_warp(" not in _blk and "api.warp(" not in _blk, _blk[-200:])
 ck("_walk_and_wait 仍带 allowWarp（踩门格是它本来就放行的）",
    '"allowWarp": True' in nav_src)
 
@@ -105,6 +108,56 @@ try:
 finally:
     navigation._walk_and_wait = _real_walk
     navigation.api = _real_api
+
+print("\n⑤ 炸矿分区：**人在头骨就该按头骨走**（不能因为 target=5 掉进城镇矿）")
+bm_src = open(os.path.join(HERE, "bomb_mine.py"), encoding="utf-8").read()
+ck("有「头骨绝对层」硬拦", "头骨矿洞的层号是**绝对层**" in bm_src)
+ck("硬拦里算给 AI「该填的数」（_base + target - 1）", "_base + target - 1" in bm_src)
+ck("起始层分支改按 in_skull（不再按 target<121）", "if not in_skull:" in bm_src
+   and "    if target < 121:" not in bm_src)
+
+# 真跑一发：桩一个 /state 说"人在 SkullCave"，`--target 5` 必须**当场拒绝**、且不许进矿
+import http.server          # noqa: E402
+import json                 # noqa: E402
+import socketserver         # noqa: E402
+import subprocess           # noqa: E402
+import threading            # noqa: E402
+
+
+class _Stub(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):  # noqa: N802
+        body = json.dumps({"location": {"name": "SkullCave", "mapWidth": 10, "mapHeight": 10},
+                           "player": {"x": 7, "y": 8, "name": "轮回"}}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):  # noqa: N802
+        self.do_GET()
+
+    def log_message(self, *a):
+        pass
+
+
+_srv = socketserver.TCPServer(("127.0.0.1", 0), _Stub)
+_srv.allow_reuse_address = True
+_port = _srv.server_address[1]
+threading.Thread(target=_srv.serve_forever, daemon=True).start()
+try:
+    pr = subprocess.run([sys.executable, os.path.join(HERE, "bomb_mine.py"),
+                         "--port", str(_port), "--target", "5"],
+                        capture_output=True, text=True, encoding="utf-8", timeout=60)
+    out = (pr.stdout or "") + (pr.stderr or "")
+    ck("桩机跑：target=5 在头骨 ⇒ 当场拒绝", "绝对层" in out, out[-300:])
+    ck("桩机跑：明说「根本没启动」（不许谎报炸过）", "根本没启动" in out, out[-300:])
+    ck("桩机跑：给出该填的绝对层 (121+5-1=125)", "target=125" in out, out[-300:])
+    ck("桩机跑：**没有**去动城镇矿（不提「电梯」/「城镇普通矿井最高」）",
+       "电梯当前" not in out and "城镇普通矿井最高" not in out, out[-300:])
+finally:
+    _srv.shutdown()
+    _srv.server_close()
 
 print()
 if FAIL:

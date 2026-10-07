@@ -1120,6 +1120,26 @@ def main():
 
     target = args.target
     target_was_default = False   # 是否走了"未指定→默认"的兜底（城镇：没设→120电梯顶；头骨：没设→500深层目标）
+    # 🚨 2026-10-07 恒真机：「**炸矿没有改变过主意，它就是单纯地，开始启动炸矿脚本时，就路由到了
+    #    鹈鹕镇矿井的第一层**（理应为 **121** 才是头骨矿洞第一层）」
+    #    病根：**分区（城镇/头骨）原来是按 `target` 判的**（下面那句 `if target < 121:`），
+    #    不是按「人在哪」判的。现场：人在 `SkullCave`（`in_skull=True`）、AI 传 `--target 5`
+    #    （它想的是"往下五层"）⇒ `5 < 121` ⇒ 走了**城镇**那条分支 ⇒ `_town_elevator_start()` = 电梯 1 层
+    #    ⇒ 直接下到**鹈鹕镇矿井第 1 层**开炸（头骨里根本没有"第 5 层"）。
+    #    ⇒ 现在：① **分区只看人在哪（`in_skull`）**；② 头骨的层号是**绝对层**（第一层 = 121），
+    #      传 1~120 **一律明确拒绝**并把该填的数算给它（宁报错别兜底 —— 别再悄悄换去城镇矿）。
+    if in_skull and 0 < target < 121:
+        try:
+            _auto = resume_start_level(port)
+        except Exception:
+            _auto = 0            # 读不到就按第一层算（这句只用来算"该填哪个数"，不影响判断）
+        _base = _auto if _auto > 1 else 121
+        log(f"  ❌ 头骨矿洞的层号是**绝对层**：第一层 = **121**。你报的 target={target} 是"
+            f"「城镇矿井」那种层号 —— 头骨里**没有第 {target} 层**。")
+        log(f"     👉 想「从 {_base} 再往下走 {target} 层」就写 `target={_base + target - 1}`；"
+            f"想一口气往下冲就 `target=0`（=500）。")
+        log(f"     ⛔ 这一趟**根本没启动**（没进矿、没放炸弹、没动你的矿）——别当成已经炸过。")
+        return
     # 🔥 2026-09-06 恒：城镇普通矿井【最高120层】，target >120 = 到不了的层，**硬拦**（不是提示，防 AI 误设）；
     #   头骨矿洞(≥121)无限制（从121连续深挖，想冲多深都行）。
     if not in_skull and target > 120:
@@ -1146,7 +1166,9 @@ def main():
     #   头骨(≥121)从121连续深挖，start=要爬到的起点（resume 在坑里原地续/不在坑回121）。
     # ⚠️ maxFloor 可能受"深处的危险"重置影响（重置后电梯=1），动态读。
     start = args.start
-    if target < 121:
+    # 🚨 2026-10-07：这一句原来是 `if target < 121:` —— **分区被 target 决定了**（见上面那段）。
+    #    现在跟分区同源：**人在头骨/沙漠就走头骨那条**（层号绝对、从 resume 的 121+ 续）。
+    if not in_skull:
         # ── 城镇：基准=电梯当前到 ──
         elev = _town_elevator_start(port)
         if args.resume and start <= 1:

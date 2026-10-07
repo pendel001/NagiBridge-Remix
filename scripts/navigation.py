@@ -3469,14 +3469,13 @@ def _map_go_walk(path, destination: str, dest: str, lead_log: str = "", npc_targ
                 if _stepped:
                     log[-1] += f"（👣 踩上 {_snote} 的原生 warp 换图）"
                     continue
-                # ⛑ 二级兜底：其余跨图段一直是「走到口 → /warp」这个写法（`_walk_trigger_warp`），
-                #   这里照办，别让"踩不上 warp"直接变成"去不了矿井"（如实写清走的是哪条路）。
-                _lt = link.get("tile") or ()
-                _ar = (getattr(locations, "ARRIVE", {}) or {}).get(nxt)
-                if len(_lt) == 2 and _ar and _walk_trigger_warp(
-                        frm, nxt, int(_lt[0]), int(_lt[1]), _ar[0], _ar[1], exact=True):
-                    log[-1] += f"（👣 没能踩上 warp：{_snote} → 按「走到口 + /warp」收尾）"
-                    continue
+                # ⛔ **不许在这里补 `/warp` 瞬移**（2026-10-07 想加、当场否掉）：
+                #    这七张图里混着**游戏自己带门禁**的入口 —— 头骨矿洞首次要**头骨钥匙**
+                #    （恒 2026-10-07：「除了头骨矿洞有门禁（头骨钥匙），在第一次进入时需要」）、
+                #    秘密森林要**钢斧**（Forest→Woods 也是 `kind="door"` 且 Woods 在本表里）。
+                #    `/warp` 是 `Game1.warpFarmer` 直切 —— 会把这两道闸整个绕掉（= 穿墙作弊，
+                #    跟 2026-09-10「公会门禁被兜底 warp 绕掉」同一个坑）。踩不上就**如实说**，
+                #    再退回下面的推门流程（游戏自己的门禁该说话就让它说话）。
                 log[-1] += f"（👣 没能踩上 warp：{_snote} → 退回推门流程）"
             ok, why, dtile, dnote = _enter_building_door(nxt)
             # 🔎 2026-09-10 恒：**推门成功**和**兜底 warp 硬进**结局一样（都落在目标图里），
