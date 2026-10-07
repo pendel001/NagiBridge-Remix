@@ -7,7 +7,7 @@
 > 📄 **协议**：本仓库采用 [PolyForm Noncommercial License 1.0.0](LICENSE)（源码可用 · 非商用 · 允许署名二改）。
 >
 > ⭐ **在星露谷里，有个 AI 伙伴跟你一起玩。**
-> 🎮 游戏里按 **`**（键盘左上角波浪号）打开聊天面板，一个 **会记住你们的 AI 伙伴** 就住在农场里——陪你聊天、陪你过日子、陪你经营农场。它**会记得你们聊过什么、一起经历过什么**；结束游戏后，这份记忆还能带走、同步到别处接着聊。
+> 🎮 装好 mod、起好 MCP 服务器，AI 就**以农场工（farmhand）的身份住进你的农场**——你们在**游戏原生的聊天框**里说话（按 **`T`**），陪你聊天、陪你过日子、陪你经营农场。它**会记得你们聊过什么、一起经历过什么**；结束游戏后，这份记忆还能带走、同步到别处接着聊。
 
 NagiBridge 是一个 **[星露谷](https://www.stardewvalley.net/)（Stardew Valley）SMAPI mod**，底层是一个控制游戏 + 游戏内 AI 聊天的工具集。它在游戏中放一个可被外部 AI（如 Claude Code）操控的 farmhand，让 AI 像真实玩家一样**住在你的农场里、跟你一起玩**。
 
@@ -46,9 +46,11 @@ NagiBridge 是一个 **[星露谷](https://www.stardewvalley.net/)（Stardew Val
 
 1. **装好** mod（见 [2. 安装](#2-安装玩家)）
 2. 用 **SMAPI 启动游戏**（进 `Stardew Valley` 文件夹双击 `StardewModdingAPI.exe`）
-3. 游戏里按 **`** 打开聊天面板 → 选个模式、起个名字 → AI 就开门了
+3. 起 **MCP 服务器**（见 [4. 进阶](#4-进阶让-ai-跟你一起玩mcp-连接)），AI 会以 **farmhand** 的身份进你的世界
+4. 聊天就用**游戏原生的聊天框**：按 **`T`** 打字发送 —— AI 说的话也会出现在同一个聊天框里
 
-> **第一次打开**会问你两个东西：选 **API Mode**（游戏内直接连大模型聊天，需要 API Key）还是 **Channel Mode**（连本地 Claude Code，由它控制游戏）。选完按 **Enter** 连上；想换模式就**清空输入框后按 Tab**。细节看 [3. 游戏里聊天](#3-游戏里聊天)。
+> **第一次装的玩家注意**：本版**不用**原作者那套「按 `` ` `` 打开的独立聊天面板 / API Mode / Channel Mode」
+> —— 聊天回到**游戏原生 T 聊天**，AI 由外部 MCP 那条路驱动。细节看 [3. 游戏里聊天](#3-游戏里聊天)。
 
 ---
 
@@ -74,136 +76,20 @@ First launch auto-generates `config.json`. The mod is built for **Stardew Valley
 
 ## 3. 游戏里聊天
 
-Press **`** (backtick, keyboard top-left) to open the chat panel.
+**本版聊天走游戏原生的聊天框**（原作者的独立面板本版不走）：
 
-### First Open — Mode Selection
+| 谁 | 怎么发 | 对方怎么看到 |
+|---|---|---|
+| 🧑 你（房主）| 按 **`T`** 打字发送（游戏原生聊天）| 你说的话会进 AI 的「MCP 状态条」——它下一回合就看得见；**你按 `Y` 发表情，它也看得到** |
+| 🤖 AI（farmhand）| 由 MCP 侧 `social send` 发（或 `/chat/push` 广播）| 会**以 farmhand 的身份出现在左上角那个原生聊天框**里 —— 跟你自己发的一样 |
 
-```
-┌─────────────────────────┐
-│  Nagi Chat              │
-│                         │
-│  > API Mode             │
-│    Channel Mode         │
-│                         │
-│  Up/Down = Select       │
-│  Enter = OK             │
-└─────────────────────────┘
-```
-
-- **API Mode** — Connect to an LLM API (Claude, DeepSeek, OpenAI, or any compatible endpoint). The AI chats with you in-game.
-- **Channel Mode** — Connect to Claude Code via a local channel server. Claude Code controls the game and chats through the panel.
-
-After selecting a mode, you'll be prompted to enter a **display name** for the AI (default: "Nagi").
-
-### Switching Modes
-
-Press **Tab** (when input is empty) in the chat panel to return to mode selection. Switch between API and Channel at any time.
-
-### Chat Panel Controls
-
-| Key | Action |
-|-----|--------|
-| **`** | Open / close chat panel |
-| **Enter** | Send message |
-| **Tab** | Switch mode (when input is empty) |
-| **Ctrl+V** | Paste from clipboard |
-| **Scroll** | Browse message history |
-
-### Preview
-
-When the chat panel is closed, the last 2 messages are shown as a preview above the toolbar (bottom-left corner).
-
-### API Mode (in-game)
-
-For chatting with an LLM directly in-game. No external tools required.
-
-#### Setup
-
-1. Select **API Mode** → enter display name → press Enter
-2. **API Key** — Paste your key with `Ctrl+V` (shown as `****abcd`)
-3. **URL** — Auto-filled based on provider. Custom endpoints supported.
-4. Press **Enter** to connect
-
-#### Supported Providers
-
-| Provider | URL | Model |
-|----------|-----|-------|
-| DeepSeek | `https://api.deepseek.com/v1/chat/completions` | `deepseek-chat` |
-| Claude | `https://api.anthropic.com/v1/messages` | `claude-sonnet-4-6-20250514` |
-| OpenAI | `https://api.openai.com/v1/chat/completions` | `gpt-4o` |
-| Custom | Any OpenAI-compatible endpoint | Any model name |
-
-The provider is auto-detected from the URL. Custom URLs use OpenAI-compatible format.
-
-#### Config (config.json)
-
-```json
-{
-  "Mode": "",
-  "ApiProvider": "deepseek",
-  "ApiUrl": "",
-  "ApiKey": "",
-  "Model": "deepseek-chat",
-  "SystemPrompt": "You are a friendly AI companion in Stardew Valley...",
-  "MaxHistoryMessages": 20
-}
-```
-
-- **API key is saved locally** after first entry. Next launch auto-fills (masked with stars).
-- **Chat history persists** across game restarts in `chat_history.json`.
-- **SystemPrompt** — Customize the AI's personality.
-- **MaxHistoryMessages** — How many turns to include in API calls (memory window).
-
-#### Tool Calling Agent (Optional)
-
-想让 AI **真的进游戏操作**（走位/种地/下矿），走的是 **MCP 服务器**那条路 —— 见 [4. 进阶：让 AI 跟你一起玩（MCP 连接）](#4-进阶让-ai-跟你一起玩mcp-连接)。
-AI 眼里只有 16 个工具（13 个域入口 + `intent` / `screenshot` / `help`），完整清单见 [scripts/TOOL_INVENTORY.md](scripts/TOOL_INVENTORY.md)。
-
-> ⚠️ 早期版本附过一个独立脚本 `scripts/tool_agent.py`，**它已不在本仓库**；现在是"域工具 + `intent` 意图单子"那条路。
-
-### Channel Mode (Claude Code)
-
-For connecting to Claude Code (CC). CC controls the game via HTTP API and chats through the panel.
-
-#### Architecture
-
-```
-Game ChatHud → POST → <你的 channel 服务 (:9000)> → inbox file → CC Monitor → CC responds
-                                                                       ↓
-Game ChatHud ← /chat/push (:7842) ←─────────────────────────────────────┘
-```
-
-#### Setup (Claude Code side)
-
-> ⚠️ **这段要自备服务**：原作者那两个脚本 `scripts/channel_server.py` / `scripts/start_channel.sh`
-> **不在本仓库**（mod 侧还留着这个开关：`Mode: "cc"` + `ChannelServerUrl`，聊天会 POST 过去）。
-> 本仓库现在的主力是 MCP 那条路（第 4 节）。
-
-**1. 起你自己的 channel 服务**（监听 :9000，把聊天写进一个 jsonl 供 CC 读）
-
-**2. Start message monitor** (CC tool) —— 盯你自己那个服务写出来的 jsonl：
-```
-Monitor(description="stardew chat", persistent=true,
-        command="tail -f <你的 channel 服务写出的>.jsonl | grep --line-buffered text")
-```
-
-**3. Reply to player** via API:
-```bash
-curl -X POST http://localhost:7842/chat/push \
-  -H "Content-Type: application/json" \
-  -d '{"sender":"Nagi","message":"Hello!"}'
-```
-
-#### Config
-
-```json
-{
-  "Mode": "cc",
-  "ChannelServerUrl": "http://localhost:9000/chat"
-}
-```
-
-When `Mode` is `"cc"`, the chat panel opens directly in Channel mode (skips mode selection).
+> 🗣️ 一句话：**按 `T` 说话就行**，不用记别的键。
+>
+> ⚠️ **原作者那套「按 `` ` `` 打开的独立聊天面板 + API Mode / Channel Mode + `chat_history.json`」本版不走**：
+> 代码还在（按 `` ` `` 可能还能弹出旧面板），但它的定位与设置**我们不再维护**，别用它聊天。
+> `config.json` 里那几个老键（`Mode` / `ApiKey` / `Model` / `SystemPrompt` / `MaxHistoryMessages`）同理，留着但不影响使用。
+>
+> 🤖 **想让 AI 真的进游戏操作**（走位/种地/下矿/节日）→ 见 [4. 进阶：MCP 连接](#4-进阶让-ai-跟你一起玩mcp-连接)。
 
 ---
 
