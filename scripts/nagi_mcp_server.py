@@ -21818,9 +21818,7 @@ def _festival_sentinel_tick():
         return
     if note:
         try:
-            _plan_notices.append(note)          # 结果走既有通知缓冲，注入到 AI 的下次工具返回
-            if len(_plan_notices) > 20:
-                del _plan_notices[:len(_plan_notices) - 20]
+            _plan_notify(note)                  # 结果走既有通知缓冲，注入到 AI 的下次工具返回（带时刻、会过期）
         except Exception:
             pass
 
@@ -23587,7 +23585,8 @@ _AUTOPILOT_FAST = 2          # 🕐 姜岛挤床快线周期（秒）——窗�
 _PLAN_TIME_MARGIN = 30       # 任务 until 前多少游戏分钟还够跑？（存档）
 _plan_data = plan_engine.new_plan()   # 存档：计划数据（state 恒 idle，不参与执行）
 _plan_lock = _threading.Lock()
-_plan_notices = []           # 计划/兜底事件 → 注入给 AI 的缓冲（兜底睡觉通知仍走这）
+_plan_notices = []           # [(发出时刻, 文本)] 计划/兜底事件 → 注入给 AI 的缓冲（兜底睡觉通知仍走这）
+_PLAN_NOTICE_TTL = 300.0     # ⏳ 超过 5 分钟还没被取走 ⇒ **整条丢掉**（见 `_plan_drain_notices`：过时的会冒充"刚发生"）
 _fallback_busy = False       # 兜底 go_sleep 进行中防重入
 _fallback_last_fail_ts = 0.0 # 兜底爬床失败时间（冷却用，防反复杀脚本+乱跑）
 _FALLBACK_FAIL_COOLDOWN = 300  # 爬床失败后冷却秒数（5 分钟）——失败不重试，避免反复打断脚本
@@ -23670,23 +23669,37 @@ def _plan_load_state():
             _plan_data["state"] = "aborted"
             _plan_data["abort_reason"] = "服务器重启（上次计划执行中断）"
             _plan_save_state()
-            _plan_notices.append("🔄 上次计划执行因服务器重启中断，已中止——plan show 看现状，plan write 重排")
+            _plan_notify("🔄 上次计划执行因服务器重启中断，已中止——plan show 看现状，plan write 重排")
 
 
 def _plan_notify(msg: str):
     with _plan_lock:
-        _plan_notices.append(msg)
+        _plan_notices.append((time.time(), msg))
         if len(_plan_notices) > 20:
             del _plan_notices[:len(_plan_notices) - 20]
 
 
 def _plan_drain_notices() -> str:
+    """把缓冲里的通知交给 AI —— **每条带发出时刻**（`[HH:MM]`），**过期的整条丢掉**。
+
+    ⚠️ 2026-10-07 恒真机撞到（他问「兜底睡觉一直谎报，现在还在持续吗？」）：
+      那条「💤 已睡在轮回的床上，新的一天开始了！」是 **11:18 发的**；他随后**不保存重进这一天**
+      （世界倒回夏19日）⇒ 这句话在**后来那次工具回执**里读起来就像"谎报"。
+      根因**不是内容错**：`wait_night()` 的判据是**季节/日/年三元组真的变了**（`stardew_api.py:1807-1816`）
+      —— 发那一刻日期确实翻页了，是**之后**世界被倒回去的。
+      真正的毛病是：**通知既没有时间戳、也永不过期** ⇒ 一句过时的话照样甩给 AI/恒，看起来就像刚发生。
+      ⇒ ① 每条前缀发出时刻（一眼看出"这是半小时前的旧事"）
+        ② 超过 `_PLAN_NOTICE_TTL` 的直接丢（**过时的通知比没有更坏**：它会冒充"刚刚发生"）。
+    """
     with _plan_lock:
         if not _plan_notices:
             return ""
-        out = "\n".join(_plan_notices)
+        now = time.time()
+        keep = [(t, m) for (t, m) in _plan_notices if now - t <= _PLAN_NOTICE_TTL]
         _plan_notices.clear()
-    return out
+    if not keep:
+        return ""
+    return "\n".join("%s %s" % (time.strftime("[%H:%M]", time.localtime(t)), m) for t, m in keep)
 
 
 def _plan_describe(tasks) -> str:
