@@ -21581,6 +21581,17 @@ var tcs = new TaskCompletionSource<object>();
                 _toolAreaToolW = toolW; _toolAreaToolH = toolH;
                 _toolAreaChargeFrames = chargeFrames; _toolAreaUpgradeLevel = upgradeLevel;
                 _toolAreaTotalSwings = commands.Count / 3;
+                // 🚨 2026-10-07 真机逮到（**"锄头让开设备"那一版自己引入的**）：命令队列**一条都没有**时，
+                //    队列驱动那段是 `if (_commandQueue != null && _commandQueue.Count > 0)`（见 OnUpdateTicked），
+                //    **空队列永远走不进去** ⇒ `CompleteCommandQueue()` 没人调 ⇒ `_commandQueueTcs` 悬着，
+                //    下面 HTTP 线程 `Wait(10 分钟)` —— 真机现场：`/tool_area` 客户端 180s 超时、地里一格没动。
+                //    （以前只有"所有锚点都喷到空地"能撞上这条，很罕见；现在"设备让开 ⇒ 整片锚点不发"是**正经出路**，
+                //     所以必须堵死。）⇒ 空队列当场结账，后面那段补漏照跑（**让开的格就该由补漏落土**）。
+                if (commands.Count == 0)
+                {
+                    ModEntry.Instance?.Monitor.Log("[tool-area] ⚠️ 命令队列为空（锚点全被让开/丢空）⇒ 当场结账，不再等 10 分钟", LogLevel.Info);
+                    CompleteCommandQueue();
+                }
 
                 calcTcs.SetResult(new
                 {
@@ -21724,46 +21735,63 @@ var tcs = new TaskCompletionSource<object>();
                 //    上面那句只保证"这一锚点喷得到真目标"；可游戏释放时 `tilesAffected` 是**整片**逐格
                 //    `performToolAction`（`Hoe.cs:66-85`）—— 范围里的机器/箱子会被一起收走。
                 //    ① 满级蓄力干净 ⇒ 照旧（绝大多数锚点走这条，零行为变更）；
-                //    ② 脏 ⇒ **逐级降 power**（4→3→2→1→0），挑"盖得住全部真目标、且范围干净"的最大那一档
+                //    ② 脏 ⇒ **逐级降 power**（4→3→2→1→0），挑"范围干净、且至少盖得到一格真目标"的最大那一档
                 //       （降档只缩范围、不动站位；`charge` 命令的 `power` 本来就是逐条读的，见 `case "charge"`）；
-                //    ③ 连一格都降不动（每档要么盖不住真目标、要么照样脏）⇒ **这个锚点整条不发**，如实记账，
+                //       ⚠️ **不要求覆盖全部真目标**：盖不到的由逐锚点验证/DLL 补漏落土——那本来就是既有路子
+                //       （取余漏格走的就是它）。真机 2026-10-07 反例：要"全覆盖"的话，田里有一台机器
+                //       （哪怕在 AoE 最远的第 6 行）就会把整个锚点整个丢掉 ⇒ **满田一寸不挥、土全靠补漏长出来**
+                //       （恒最烦的那种"作弊感"）。改成"能盖多少锄多少"。
+                //    ③ 一档都挑不出来（站位格/面前那格就压着设备）⇒ **这个锚点整条不发**，如实记账，
                 //       那几格由 DLL 补漏走 `terrainFeatures[vec] = new HoeDirt()`（不挥锄、设备不动）。
                 int usePower = upgradeLevel;
                 if (loc != null && operation == "till" && chargeFrames > 0)
                 {
+                    // ⚠️ **站立格自己**也要查：站位格上压着机器 ⇒ `case "move"` 的 BFS 失败 ⇒ **瞬移保上去**
+                    //    （`ModEntry.cs` 的 move 分支），蓄力就从"别的地方"放出去 ⇒ 我们按 (ax,ay) 算的波及格
+                    //    **全不作数**（可能是别处的一整片）。这种锚点一律不发（跟"波及格脏"同一个下场）。
+                    bool standBlocked = HoeWouldPickUp(loc, ax, ay);
                     var fullAoe = GetToolAffectedTiles(ax, ay, 2, upgradeLevel);
                     var dirtyFull = fullAoe.FindAll(t => HoeWouldPickUp(loc, t.Item1, t.Item2));
+                    if (standBlocked) dirtyFull.Insert(0, (ax, ay));
                     if (dirtyFull.Count > 0)
                     {
                         usePower = -1;
-                        for (int pw = upgradeLevel - 1; pw >= 0; pw--)
+                        if (!standBlocked)
                         {
-                            var aoe = GetToolAffectedTiles(ax, ay, 2, pw);
-                            // ⚠️ 这里是 `continue` **不是** `break`：低档的形状**不是**高档的子集
-                            //    （power2 是"1 宽 × 5 深"、power3 是"3 宽 × 3 深" ⇒ 3 盖不住的，2 可能盖得住）。
-                            if (!hit.All(t => aoe.Contains(t))) continue;
-                            if (aoe.Exists(t => HoeWouldPickUp(loc, t.Item1, t.Item2))) continue;
-                            usePower = pw;
-                            break;
+                            for (int pw = upgradeLevel - 1; pw >= 0; pw--)
+                            {
+                                var aoe = GetToolAffectedTiles(ax, ay, 2, pw);
+                                // ⚠️ 这里是 `continue` **不是** `break`：低档的形状**不是**高档的子集
+                                //    （power2 是"1 宽 × 5 深"、power3 是"3 宽 × 3 深" ⇒ 3 盖不住的，2 可能盖得住）。
+                                if (!hit.Any(t => aoe.Contains(t))) continue;   // 这一档一格真目标都盖不到 ⇒ 没意义
+                                if (aoe.Exists(t => HoeWouldPickUp(loc, t.Item1, t.Item2))) continue;
+                                usePower = pw;
+                                break;
+                            }
+                        }
+                        // 🧾 **不管跳过还是降档，都如实记账**（2026-10-07 真机：降档那条原先不记账 ⇒
+                        //    `equipment_avoided` 空 ⇒ 回执只说"降档 1 个"、**不说是谁**，等于没报）。
+                        foreach (var d in dirtyFull)
+                        {
+                            var lbl = HoePickUpLabel(loc, d.Item1, d.Item2);
+                            if (!equipAvoided.Exists(e => e.x == d.Item1 && e.y == d.Item2))
+                                equipAvoided.Add((d.Item1, d.Item2, lbl));
                         }
                         if (usePower < 0)
                         {
                             anchorsSkippedByEquip++;
-                            foreach (var d in dirtyFull)
-                            {
-                                var lbl = HoePickUpLabel(loc, d.Item1, d.Item2);
-                                if (!equipAvoided.Exists(e => e.x == d.Item1 && e.y == d.Item2))
-                                    equipAvoided.Add((d.Item1, d.Item2, lbl));
-                            }
                             ModEntry.Instance?.Monitor.Log(
-                                $"[build-cmds] 🚫 锚点({ax},{ay}) 整条不发：满级 3×{toolH} 范围里有设备 " +
-                                string.Join(" ", dirtyFull.Select(d => $"({d.Item1},{d.Item2})")), LogLevel.Info);
+                                $"[build-cmds] 🚫 锚点({ax},{ay}) 整条不发"
+                                + (standBlocked ? "（**站位格自己**压着设备，瞬移保底会让蓄力落到别处）" : "：满级范围里有设备")
+                                + " " + string.Join(" ", dirtyFull.Select(d => $"({d.Item1},{d.Item2})")), LogLevel.Info);
                             if (col == end) break;
                             continue;
                         }
                         anchorsDowngradedByEquip++;
+                        var aoeChosen = GetToolAffectedTiles(ax, ay, 2, usePower);
                         ModEntry.Instance?.Monitor.Log(
-                            $"[build-cmds] ⚠️ 锚点({ax},{ay}) 蓄力降档 {upgradeLevel}→{usePower}（满级范围里有设备）", LogLevel.Info);
+                            $"[build-cmds] ⚠️ 锚点({ax},{ay}) 蓄力降档 {upgradeLevel}→{usePower}（满级范围里有设备；"
+                            + $"盖得到的真目标 {hit.Count(t => aoeChosen.Contains(t))}/{hit.Count} 格，剩下的交给补漏）", LogLevel.Info);
                     }
                 }
                 commands.Add(new Dictionary<string, object?> { ["action"] = "move", ["x"] = ax, ["y"] = ay });

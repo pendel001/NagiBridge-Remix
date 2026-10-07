@@ -50,11 +50,18 @@ b2 = src[j:src.find("/// <summary>主线程自检漏格", j)] if j >= 0 else ""
 ck("锚点生成收到了 loc/operation（不筛就没法筛）", "GameLocation? loc, string operation" in b2)
 ck("满级脏 ⇒ 先算脏格", "HoeWouldPickUp(loc, t.Item1, t.Item2)" in b2)
 ck("**逐级降 power**（4→3→2→1→0）那条在", "for (int pw = upgradeLevel - 1; pw >= 0; pw--)" in b2)
-ck("降档必须**盖得住全部真目标**才降（盖不住就试更低那档，**不是**直接放弃）",
-   "if (!hit.All(t => aoe.Contains(t))) continue;" in b2
-   and "if (!hit.All(t => aoe.Contains(t))) break;" not in b2)
+ck("降档**不要求覆盖全部真目标**（盖不到的交补漏；要求全覆盖 = 田里一台机器就让整片一寸不挥）",
+   "if (!hit.Any(t => aoe.Contains(t))) continue;" in b2
+   and "if (!hit.All(t => aoe.Contains(t))) continue;" not in b2)
 ck("降档循环注释点明「低档形状不是高档子集」（power2 比 power3 更深）",
    "形状**不是**高档的子集" in b2)
+ck("**站位格自己**压着设备 ⇒ 整条不发（瞬移保底会让蓄力落到别处）",
+   "bool standBlocked = HoeWouldPickUp(loc, ax, ay);" in b2 and "if (standBlocked) dirtyFull.Insert(0, (ax, ay));" in b2)
+ck("降档那条**也**记账（否则回执只说'降档 1 个'、不说是谁）",
+   b2.find("anchorsDowngradedByEquip++;") > b2.find("foreach (var d in dirtyFull)"))
+ck("🚨 空队列不许挂在 `Wait(10 分钟)`（真机：客户端 180s 超时、地里一格没动）",
+   "if (commands.Count == 0)" in src and "CompleteCommandQueue();" in src
+   and src.find("if (commands.Count == 0)") > src.find("_toolAreaTotalSwings = commands.Count / 3;"))
 ck("都脏 ⇒ 整个锚点不发（continue，不发 move/face/charge）", "anchorsSkippedByEquip++;" in b2 and "continue;" in b2)
 ck("charge 命令用的是**降档后**的 power", '["power"] = usePower' in b2)
 ck("回包带 equipment_avoided", '["equipment_avoided"] = _toolAreaEquipAvoided' in src)
