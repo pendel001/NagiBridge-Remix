@@ -394,7 +394,7 @@ DEPENDENCIES = {
     "星露谷 Stardew Valley": ("1.6.15（1.6.15.24356）",
         "mod 面向 **1.6+**（1.6 的 Crop/机器/Data 结构决定了很多判据，比如 1.6 矿节点 Name 全报 Stone、宝石藏在 objId）"),
     "SMAPI": ("4.5.2（StardewModdingAPI.exe 文件版本 4.5.2.0）",
-        "README 对外声明 **SDV 1.6+ / SMAPI 4.0+**。⚠️ 但 `manifest.json` 的 `MinimumApiVersion` 仍写 **3.0.0**（3.x 对应 1.5）—— 与 1.6/4.0+ 不符，待拍板改不改"),
+        "README 对外声明 **SDV 1.6+ / SMAPI 4.0+**；`manifest.json` 的 `MinimumApiVersion` 2026-10-07 已从 3.0.0 **改成 4.0.0**（3.x 对应 1.5，跟 1.6/net6.0 的产物不符）"),
     "目标框架 / 构建": (".NET SDK 8.0.422 构建；csproj `TargetFramework=net6.0`",
         "编出 net6.0 产物；`Lidgren.Network` 从 `$(GamePath)` 直接引（10048 端口修复用）"),
     "ModBuildConfig": ("Pathoschild.Stardew.ModBuildConfig 4.*",

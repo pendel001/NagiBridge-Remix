@@ -5,6 +5,6 @@
   "Description": "Stardew 1.6 × AI：HTTP bridge(7842/7843) + MCP(8000)，让外部 AI 像真人一样操控 farmhand。NagiBridge 二改版——原作：里奈 · Nagi（小红书 @里奈 · GitHub @anqinou-art；UniqueID Nagi.NagiBridge）；本版：恒 · Deepseek（UniqueID pendel001.NagiBridge）。经原作授权开源分享。",
   "UniqueID": "pendel001.NagiBridge",
   "EntryDll": "NagiBridge.dll",
-  "MinimumApiVersion": "3.0.0",
+  "MinimumApiVersion": "4.0.0",
   "UpdateKeys": []
 }
