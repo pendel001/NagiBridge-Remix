@@ -518,6 +518,26 @@ try:
        not any(c[0] == "MAPGO" for c in CALLS), str(CALLS))
     ck("…并在屋里直接兑成", "兑了 1 张" in r, r)
 
+    # ── 📍 交付点提示表（补75：补上「皮埃尔优选」「历史的碎片」两条；坐标=游戏自己的 DropBox 瓦片）──
+    print("\n📍 交付点提示表：两条新补的要跟游戏 Action 瓦片对得上（203z补75）")
+    _dh = M._DELIVERY_HINT_BY_NAME
+    ck("`皮埃尔优选` 有交付提示、写的是 SeedShop(18,28)/(19,28)、站(19,29)",
+       "SeedShop(18,28)/(19,28)" in _dh.get("皮埃尔优选", "")
+       and "站(19,29)" in _dh.get("皮埃尔优选", ""), _dh.get("皮埃尔优选"))
+    ck("`历史的碎片` 有交付提示、写的是 ArchaeologyHouse(6,9)、站(6,10)",
+       "ArchaeologyHouse(6,9)" in _dh.get("历史的碎片", "")
+       and "站(6,10)" in _dh.get("历史的碎片", ""), _dh.get("历史的碎片"))
+    ck("……`_delivery_hint` 按卡名认得出（精确名 + 查无此单要回空串）",
+       "SeedShop" in M._delivery_hint("皮埃尔优选")
+       and "博物馆" in M._delivery_hint("历史的碎片")
+       and M._delivery_hint("查无此单") == "", M._delivery_hint("皮埃尔优选"))
+    ck("表里**每条**提示都不是空串（没有占位行）", all(str(v).strip() for v in _dh.values()), "")
+    ck("四条已真机核过的交付点（Pam/Robin/Linus/Qi）跟 2026-08-29 那批 `/scan` 结论一致",
+       "Trailer(10,6)" in _dh.get("烈酒", "")
+       and "ScienceHouse(10,19)" in _dh.get("罗宾的项目", "")
+       and "Railroad(28,36)" in _dh.get("社区清理", "")
+       and "QiNutRoom(1,4)" in _dh.get("四颗宝石", ""), "")
+
     print("\n" + ("=" * 46))
     print("❌ 失败 " + str(len(FAIL)) + " 项: " + ", ".join(FAIL) if FAIL else "✅ 全过（0 失败）")
 finally:

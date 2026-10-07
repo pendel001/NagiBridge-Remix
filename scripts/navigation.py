@@ -89,11 +89,12 @@ _FESTIVAL_ONLY_MAPS = _Unbound("_FESTIVAL_ONLY_MAPS")        # 只节日开放�
 _FESTIVAL_TEMP_MAPS = _Unbound("_FESTIVAL_TEMP_MAPS")        # 节日临时图（走不了）
 _FEST_SEASON_CN = _Unbound("_FEST_SEASON_CN")                # 季节中文
 _mark_festival_poi_name = _Unbound("_mark_festival_poi_name")  # 到达节日 POI → 记交互历史
+_joja_form = _Unbound("_joja_form")                          # 🏬 那栋楼三形态（拒绝文案要报"此刻是什么形态"）
 
 
 def bind(*, with_state, plan_notify, state_sep, festival_poi_active,
          festival_only_maps, festival_temp_maps, fest_season_cn,
-         mark_festival_poi_name):
+         mark_festival_poi_name, joja_form):
     """由 `nagi_mcp_server` 在**模块末尾**调用（必须在 `_with_state` / `_plan_notify` /
     所有 `_festival_*` 都定义之后 —— 其中 `_plan_notify` 定义得最晚）。
     全部按**引用**注入，幂等，可重复调用（测试里可重绑）。"""
@@ -106,6 +107,7 @@ def bind(*, with_state, plan_notify, state_sep, festival_poi_active,
         _FESTIVAL_TEMP_MAPS=festival_temp_maps,
         _FEST_SEASON_CN=fest_season_cn,
         _mark_festival_poi_name=mark_festival_poi_name,
+        _joja_form=joja_form,
     )
 
 # ═══════════════════════════════════════════
@@ -3692,6 +3694,28 @@ def _map_go_body(destination: str = "", npc: str = "") -> str:
                 return _with_state(f"❌ {destination} 进不去：还没学会矮人语（捐赠矮人卷轴/相关任务）——矮人说矮人语")
             _mm = _p.get("map", "")
             _sd = "、".join(f"{_FEST_SEASON_CN.get(s, s)}{d}日" for s, d in sorted(_FESTIVAL_ONLY_MAPS.get(_mm, set()), key=lambda x: (x[1], x[0])))
+            # ⚠️ 2026-10-07：以前这条**不论什么闸**都印"只在节日开放" —— 真机撞到
+            #    `map go Joja超市(店内)` 被形态闸拦下，回执却说"只在节日开放（JojaMart ）"
+            #    （那栋楼那会儿是**电影院**形态）。**说错话也是假话** ⇒ 按闸给对应的原话。
+            if _p.get("joja_form"):
+                try:
+                    _jf = _joja_form() or {}
+                except Exception:                                  # noqa: BLE001
+                    _jf = {}          # 读不到就只说"形态闸拦的"，不编形态
+                _cn = {"theater": "电影院", "jojamart": "Joja 超市", "abandoned": "废弃超市"}
+                _why = _jf.get("why") or (f"瓦片 {_jf.get('tileIndex')}" if _jf.get("tileIndex") else "读不到门那格")
+                return _with_state(
+                    f"❌ {destination} 现在不给：那栋楼（Town 95,50）此刻读到的是**"
+                    f"{_cn.get(_jf.get('form'), '认不出的形态')}**（{_why}）"
+                    f" ⇒ 三种形态的 POI 只放行当场读到的那种")
+            if _p.get("require_order"):
+                return _with_state(f"❌ {destination} 现在不给：得**已接取对应的特别订单**（进行中）才放行交付点")
+            if _p.get("season"):
+                _ss = _p["season"]
+                return _with_state(f"❌ {destination} 现在不给：它只在**{_FEST_SEASON_CN.get(_ss, _ss)}季**开放")
+            if _p.get("unlock"):
+                _u = _p["unlock"]
+                return _with_state(f"❌ {destination} 现在不给：它要**年{_u.get('year')}{_FEST_SEASON_CN.get(_u.get('season'), _u.get('season'))}{_u.get('day')}日**之后才出现")
             return _with_state(f"❌ {destination} 只在节日开放（{_mm} {_sd}）——现在去不了")
         if dest not in locations.MAP_LINKS:
             # 兜底：农场建筑（畜棚/鸡舍/温室/出货箱…）→ 动态定位门口（2026-08-15）

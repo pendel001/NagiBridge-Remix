@@ -204,6 +204,48 @@ def main():
                     bad.append(f"{loc}.{token} 的 {target} 不在 LOCKED_MAPS（这条门禁永远不会生效）")
     check("每条门禁都能对上 MAP_FEATURES 与 LOCKED_MAPS", not bad, bad)
 
+    print("⑦ 室内图 `🗺️ 可:` 只列 POI —— 同格去重 + 跟导航**同一把闸**（2026-10-07）")
+    _saved_poi = M.locations.POI
+    _saved_indoor = M.locations.INDOOR_MAPS
+    _saved_mf = M.locations.MAP_FEATURES.get("TestIndoor")
+    _saved_gate = M._festival_poi_active
+    _saved_hidden2 = M.map_feature_hidden
+    try:
+        M.locations.MAP_FEATURES["TestIndoor"] = ["测试设施"]
+        M.locations.INDOOR_MAPS = set(_saved_indoor) | {"TestIndoor"}
+        M.locations.POI = {
+            "测试店(入口)":   {"map": "TestIndoor", "pos": (3, 5)},
+            "测试店":         {"map": "TestIndoor", "pos": (3, 9)},       # ← 同格短别名（后写的那条）
+            "测试店(柜台)":   {"map": "TestIndoor", "pos": (3, 9)},
+            "测试店(交付箱)": {"map": "TestIndoor", "pos": (3, 7), "require_order": {"requester": "X"}},
+        }
+        M.map_feature_hidden = lambda loc: set()
+        _d7 = dict(FAKE_DATA)
+        _d7["location"] = {"name": "TestIndoor"}
+        _d7["player"] = dict(FAKE_DATA["player"])
+        M._festival_poi_active = lambda name, p: not (p or {}).get("require_order")
+        _s7 = M._build_state_strip(dict(_d7), full=False)
+        _l7 = [ln for ln in _s7.splitlines() if "🗺️ 可:" in ln]
+        _l7 = _l7[0] if _l7 else ""
+        check("同一格的两个名字**只印一个**", _l7.count("(3,9)") == 1, _l7)
+        check("印的是**信息量大**的那个（带括号的 `测试店(柜台)`）", "测试店(柜台)(3,9)" in _l7, _l7)
+        check("另一格照旧印", "测试店(入口)(3,5)" in _l7, _l7)
+        check("**没接单的交付点不上条**（跟导航同一把闸，不再是一行假门）", "(3,7)" not in _l7, _l7)
+        M._festival_poi_active = lambda name, p: True
+        _s7b = M._build_state_strip(dict(_d7), full=False)
+        _l7b = [ln for ln in _s7b.splitlines() if "🗺️ 可:" in ln]
+        _l7b = _l7b[0] if _l7b else ""
+        check("闸放行（接了单）⇒ 交付点那格就出现", "(3,7)" in _l7b, _l7b)
+    finally:
+        M.locations.POI = _saved_poi
+        M.locations.INDOOR_MAPS = _saved_indoor
+        if _saved_mf is None:
+            M.locations.MAP_FEATURES.pop("TestIndoor", None)
+        else:
+            M.locations.MAP_FEATURES["TestIndoor"] = _saved_mf
+        M._festival_poi_active = _saved_gate
+        M.map_feature_hidden = _saved_hidden2
+
     print()
     if FAIL:
         print(f"❌ {len(FAIL)} 项没过: {FAIL}")

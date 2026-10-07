@@ -2416,12 +2416,23 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
         #    ⚠️ 排序照旧"离我近的在前"（跟节日 POI 那条一致）；坐标查不到的条目**不印**（宁缺勿编）。
         _all_poi = False
         if _map_enum and loc_name in getattr(locations, "INDOOR_MAPS", ()):
-            _poi_here = []
+            # 🔒 2026-10-07（POI 表清洗那一趟逮到的两件事）：
+            #   ① **同一道闸**：这里以前只筛"图对不对"，**不问 `_festival_poi_active`**
+            #      ⇒ 没接单也把「XX(优选交付箱)」那类**交付点**印在状态条上（`map go`/`walk_to`
+            #        那边却拦着）= 一行的**假门**。现在跟导航共用同一把闸。
+            #   ② **同一格多名**：`POI` 表里真有"同 (map,pos) 两个名字"（如 `皮埃尔商店(柜台)`
+            #      与 `皮埃尔商店` 都在 SeedShop(4,19)）⇒ 4 个坑位被同一格占两次。
+            #      同一格只留**信息量大的那个**（带括号限定 > 短别名；再比长度，最后按名字定序保证稳定）。
+            _by_tile = {}
             for _pn, _pv in (locations.POI or {}).items():
                 _ppos = (_pv or {}).get("pos") or ()
                 if (_pv or {}).get("map") != loc_name or len(_ppos) != 2:
                     continue
-                _poi_here.append((_pn, int(_ppos[0]), int(_ppos[1])))
+                if not _festival_poi_active(_pn, _pv):
+                    continue
+                _by_tile.setdefault((int(_ppos[0]), int(_ppos[1])), []).append(_pn)
+            _poi_here = [(sorted(_names, key=lambda n: (0 if "(" in n else 1, -len(n), n))[0], _t[0], _t[1])
+                         for _t, _names in _by_tile.items()]
             if _poi_here:
                 _poi_here.sort(key=lambda t: abs(t[1] - x) + abs(t[2] - y))
                 _map_enum = [f"{n}({px},{py})" for n, px, py in _poi_here]
@@ -13901,6 +13912,11 @@ _DELIVERY_HINT_BY_NAME = {
     "齐先生的五彩农场": "📍 交付：齐先生收集箱 QiNutRoom(1,4)，站(1,5)朝上交互，放红橙黄绿蓝紫各100→button=ok 结算",
     "格斯的著名煎蛋卷": "📍 交付：酒吧冰箱 Saloon(18,16)，站(18,17)朝上交互，放蛋→button=ok 结算",
     "需要多汁的虫子":   "📍 交付：鱼店旁虫桶 Beach(37,33)，站(37,34)朝上交互，放虫肉→button=ok 结算",
+    # 🧺🦴 2026-10-07 补齐这两条（以前只有上面 6 条，皮埃尔/冈瑟的单开了也拿不到交付坐标）——
+    #    箱子格 = **游戏自己的 `DropBox` Action 瓦片**（`/tile_props?scan=Action` 当场读的，
+    #    见 CHANGELOG 203z补75；不是我们编的坐标）。
+    "皮埃尔优选":       "📍 交付：皮埃尔商店交货箱 SeedShop(18,28)/(19,28)，站(19,29)朝上交互，放25个金星蔬菜→button=ok 结算",
+    "历史的碎片":       "📍 交付：博物馆投递箱 ArchaeologyHouse(6,9)，站(6,10)朝上交互，放骨头→button=ok 结算",
 }
 
 
@@ -14035,7 +14051,21 @@ def _joja_form(fresh: bool = False) -> dict:
         if "Theater_Entrance" in _act and _ti in (2245, 2246):
             val["form"] = "theater"
         elif "LockedDoorWarp" in _act and "JojaMart" in _act and _ti in (1925, 1926):
-            val["form"] = "jojamart"
+            # 🎬 2026-10-07 真机复现了那条"重开前后读到不同值"：**同一会话内相隔约一分钟**，
+            #    先读到 `1925 + LockedDoorWarp…JojaMart`、随后稳定读成 `2245 + Theater_Entrance`
+            #    （当时人**不在镇上**，`ApplyMapOverride("Town-Theater")` 还没落到这张 Town 上）。
+            #    恒同日点破：「**这个档理应没有 joja 超市才对，因为这里已经是电影院了**」。
+            #    ⇒ 拿"**电影院已解锁**"当**否决票**：那栋楼一旦建成电影院**再也不会变回 Joja 超市**
+            #      （`Town.cs:574-590` 只往电影院方向覆盖）⇒ 这会儿读到旧形态 = 覆盖没落地，
+            #      按**电影院**给（藏 Joja 那套）比摆一整屏走空门的 Joja POI 强（假门）。
+            #    ⚠️ 判据复用**已有 30 秒缓存**的 `_locked_maps()`（`MovieTheater` 在里面 = 电影院还没解锁）
+            #      ⇒ 这条分支**不多打一发 HTTP**；读不到 ⇒ 不否决（不误伤）。
+            if "MovieTheater" not in _locked_maps():
+                val["form"] = "theater"
+                val["why"] = ("读到旧的 JojaMart 形态（瓦片 %s），但**电影院已解锁** ⇒ "
+                              "判为地图覆盖没落地的旧读数（恒：这档这里已经是电影院）" % _ti)
+            else:
+                val["form"] = "jojamart"
         elif _ti in (2032, 2033) and "JojaMart" not in _act:
             val["form"] = "abandoned"
         else:
@@ -29248,6 +29278,7 @@ navigation.bind(
     festival_temp_maps=_FESTIVAL_TEMP_MAPS,
     fest_season_cn=_FEST_SEASON_CN,
     mark_festival_poi_name=_mark_festival_poi_name,
+    joja_form=_joja_form,
 )
 
 

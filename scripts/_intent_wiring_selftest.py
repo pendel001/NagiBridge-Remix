@@ -4648,8 +4648,25 @@ def main():
                       and _FIX25["last"][1].get("x") == 95 and _FIX25["last"][1].get("y") == 50
                       and _FIX25["last"][1].get("location") == "Town", _FIX25["last"]))
         _set_form25(_act25(1925, "LockedDoorWarp 13 29 JojaMart 900 2300"))
+        # ⚠️ 补75 起 `_joja_form` 会拿 `_locked_maps()`（/unlocks 的 30 秒缓存）当**否决票** ——
+        #    钉子必须把这一位也钉住，否则桩里 `_ai_get('/unlocks')` 走的是**真网络**
+        #    （离线跑 ⇒ 读不到 ⇒ 凭"读不到不误伤"的口径变成"电影院已解锁"⇒ 把真 Joja 档判歪）。
+        _saved_locked25 = M._locked_maps
+        M._locked_maps = lambda: {"MovieTheater"}     # 电影院**还没解锁** = 真正该读 JojaMart 的档
         res.append(ok("🏬 形态判据：`LockedDoorWarp … JojaMart` + 瓦片 1925/1926 ⇒ **Joja 超市**",
                       M._joja_form(fresh=True).get("form") == "jojamart", ""))
+        # 🎬 补75（恒 2026-10-07：「这个档理应没有 joja 超市才对，因为这里已经是电影院了」）：
+        #    真机复现了"地图覆盖没落地"的旧读数（相隔约一分钟，1925+JojaMart → 2245+Theater）
+        #    ⇒ **电影院已解锁**时否决旧的 JojaMart 读数。
+        _set_form25(_act25(1925, "LockedDoorWarp 13 29 JojaMart 900 2300"))
+        M._locked_maps = lambda: set()                # 电影院已解锁（MovieTheater 不在锁定集里）
+        _jf_v = M._joja_form(fresh=True)
+        res.append(ok("🏬🎬 读到旧 `JojaMart` 形态但**电影院已解锁** ⇒ 判成电影院（覆盖没落地的旧读数），"
+                      "`why` 里说明是旧读数",
+                      _jf_v.get("form") == "theater" and "旧读数" in str(_jf_v.get("why")), _jf_v))
+        res.append(ok("🏬🎬 ……同一发读数**照旧是当场读的**（否决票不改'读哪一格'这个事实）",
+                      _FIX25["last"][0] == "/tile_props" and _FIX25["last"][1].get("x") == 95, _FIX25["last"]))
+        M._locked_maps = _saved_locked25
         _set_form25(_act25(2032, ""))
         res.append(ok("🏬 形态判据：瓦片 2032/2033 且没有那条 Action ⇒ **废弃超市**",
                       M._joja_form(fresh=True).get("form") == "abandoned", ""))
@@ -4669,6 +4686,7 @@ def main():
                       M._festival_poi_active("Joja超市(门口)", {"map": "Town", "joja_form": "jojamart"}) is False
                       and M._festival_poi_active("废弃超市(门口)", {"map": "Town", "joja_form": "abandoned"}) is False, ""))
         _set_form25(_act25(1925, "LockedDoorWarp 13 29 JojaMart 900 2300"))
+        M._locked_maps = lambda: {"MovieTheater"}     # 真 Joja 档（电影院没解锁）⇒ 不做否决
         res.append(ok("🏬 三形态闸：当场读到 **Joja超市** ⇒ 只放行 Joja 那两条，电影院/废弃超市隐藏",
                       M._festival_poi_active("Joja超市(店内)", {"map": "JojaMart", "joja_form": "jojamart"}) is True
                       and M._festival_poi_active("电影院(门口)", {"map": "Town", "joja_form": "theater"}) is False, ""))
@@ -4679,6 +4697,10 @@ def main():
                       and M._festival_poi_active("废弃超市(门口)", {"map": "Town", "joja_form": "abandoned"}) is False, ""))
     finally:
         M.api._get = _ORIG_GET25
+        try:
+            M._locked_maps = _saved_locked25      # 补75：否决票那条也钉过 ⇒ 一起还原
+        except NameError:
+            pass
         M._joja_form_memo.update({"ts": 0.0, "val": None})
     _P25 = M.locations.POI
     res.append(ok("🏬 真表：三形态各自带对 `joja_form`（电影院 5 条 / Joja 2 条 / 废弃 2 条）",
