@@ -4,8 +4,10 @@
 > 两个入口：**🎯 `intent` 意图单子**（首选：`show` 看单子 → `do` 敲编号，**不用记工具名和参数**）
 > ｜**域工具**（带参/批量/脚本那条路：`域名(ops="…", kw={…})`）。两套背后是同一批实现，走哪条都行。
 > 🔍 某域要细节 → **`help(域名)`**（docstring 精简，深度在这个兜底）；单子玩法 → `intent(ops="help")`。
-> ⚠️ 子参数收在 `kw` 里（如 `farm(ops="till", kw={"x":40,"y":20})`）；**键名必须 = 函数签名参数名**，
-> 写错会被 `_ops_run` **静默丢掉、不报错**（本项目最容易踩、最难发现的坑）。
+> ⚠️ 子参数收在 `kw` 里（如 `farm(ops="till", kw={"x":40,"y":20})`）；**键名最好 = 函数签名参数名**。
+> · 常见别名会**自动归一**：`npc`→`npc_name`、`item`→`item_name`、`name`→`npc_name/item_name/what`、`x/y`→`tile_x/tile_y`；
+> · 归一不了的键**会当场点名**（`⚠️ op「till」忽略了无法识别的参数 ['r']（此 op 可用参数: x, y, …）；你是不是想写:「r」→「radius」`），
+>   **但那一发已经按默认参数跑掉了** ⇒ 看到 ⚠️ 就当这次没生效、改对再发一次（别拿它当试错）。
 > 原始端点（`/state` `/interact` `/click` `/position` `/menu`）**不是** AI 能直调的 MCP 工具，只是文案里的坐标/动作提示。
 
 ---
@@ -16,7 +18,7 @@
 - **首选走单子**：`intent(ops="show")` 看这一刻能做的事（一行一件，`←` 后面是理由）→ `intent(ops="do", kw={"code":"1"})` 敲编号
   （`"1,4"` 多选 · `"1=2,4=7"` 各多少）。⚠️ **「单子上没有」≠「做不到」**，也可能只是这一刻不适用。
 - **域工具是底层那条路**：规划类 / 参数爆炸 / 跨图 / 长脚本 —— 单子给不了的维度都在这儿。
-- **参数一律放 `kw`**，别拼进 ops 串；键名写错 = 静默丢掉（没反应、不报错）。
+- **参数一律放 `kw`**，别拼进 ops 串；键名写错会被**当场点名**（见顶部那条，⚠️ 但那一发已按默认参数跑掉了）。
 - **长任务自动转后台 + 自动注入 AI 端口**（别手动后台，别自己拼 `--port`）；收工自动播报，不用轮询。
 
 ---
@@ -82,7 +84,7 @@
 | `pond_add` / `pond_feed` / `pond_collect` / `pond_fish` | `x`(-1) `y`(-1)；`pond_add` 另有 `item`(必填) | 鱼塘四件事（不传坐标 = 唯一/最近那口）|
 | `buy` | `animal_type` `name` `building`("") | 买动物 |
 | `petwalk` | `include_petted`(False) | 拟人遛（默认跳过已摸过的）|
-| `hay` / `doors` | `dry_run`(False) / `doorX` `doorY` | 加干草（True=只看不加）/ 只翻**同图 4 格内**够得着的门，够不着的进 `skipped` |
+| `hay` / `doors` | `dry_run`(False) / `want`("") | 加干草（True=只看不加）/ 开关畜棚鸡舍门：**不传=翻转**、`want=open`/`close`=**收敛到目标态**（只补翻没到位的）。只翻**同图 4 格内**够得着的门，够不着的进 `skipped` |
 
 > `direction` 只认两个值：`"horizontal"`(默认) / `"vertical"`（**其它字符串一律当 vertical**，别写"横"/"竖"）。
 
@@ -167,7 +169,7 @@
 
 | op | 参数（括号内=默认） | 说明 |
 |---|---|---|
-| `at` | `tile_x`,`tile_y`（**必填**） | ⚠️ 是 `tile_x`/`tile_y` **不是** `x`/`y`（写错静默丢掉）|
+| `at` | `tile_x`,`tile_y`（**必填**） | 真名是 `tile_x`/`tile_y`，但**传 `x`/`y` 会自动归一**（不用记）|
 | `use` / `select` / `face` | `name`(None) / `name`(必填) / `direction`(必填) | 不传 name = 用当前手持工具 |
 | `sit` / `seats` / `stand` | `x`,`y`(必填) `face`(None) / `radius`(12) / 无参 | 坐 / 扫可坐 / 起身 |
 | `pickup` | `tile_x`,`tile_y`（必填） | 拿起家具（⚠️ 同 `at`，是 `tile_x`）|
@@ -183,8 +185,9 @@
 | `maze` / `maze_seg` | `radius`(14/15) `gx` `gy` | 迷宫视图 / 走法链 |
 | `maze_walk` | `waypoints`("x,y x,y …") `location`(None) `max_wait`(18) `max_seg`(200) | ⚠️ **它其实是通用多段走位**，主门牌是 `map(ops="walk_multi")`；此处保留旧名兼容 |
 
-> ⚠️ **`at` 和 `pickup` 的参数名是 `tile_x`/`tile_y`**，其余走位类多是 `x`/`y`
-> —— 本项目最容易写错、且**错了不报错只是没反应**的地方。
+> ℹ️ `at` / `pickup` 的**真参数名**是 `tile_x`/`tile_y`（其余走位/农活类多是 `x`/`y`）——
+> 但**传 `x`/`y` 也行，会自动归一**（`_TARGET_ALIAS`，2026-09-24 加的那条；起因就是有人对着邮箱传了 x/y）。
+> 真正的兜底是**回执里的 ⚠️**：任何**归一不了**的键都会被点名（见本文件顶部那条）——看到 ⚠️ 就当这次没生效。
 
 ### `menu(ops)` — 菜单/界面（开 → 看 → 点）
 `menu(ops="read click key advance skip cancel shop sell bin craft recipes craftables forge tailor geode geodes customize bundle bundle_kb donate read_book journal know number display_fill display_takeback minigame minigame_state levelup_choose")`
