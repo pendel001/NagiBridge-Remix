@@ -38,9 +38,12 @@ ck("UniqueID 已**不是**原作 ID", d.get("UniqueID") != ORIG_ID, d.get("Uniqu
 ck("UniqueID = pendel001.NagiBridge", d.get("UniqueID") == "pendel001.NagiBridge", d.get("UniqueID"))
 ck("UpdateKeys 是空的（不会被更新器拉成原版覆盖）", d.get("UpdateKeys") == [], str(d.get("UpdateKeys")))
 ck("Author 里有本人（恒）", "恒" in (d.get("Author") or ""), d.get("Author"))
-ck("Author 里点名了原作", "原作" in (d.get("Author") or "") and "Nagi" in (d.get("Author") or ""), d.get("Author"))
-ck("Description 点名原作 + 写明两个 ID 的关系",
-   "原作" in (d.get("Description") or "") and ORIG_ID in (d.get("Description") or ""),
+ck("Author 点名原作**人**（里奈）", "里奈" in (d.get("Author") or ""), d.get("Author"))
+ck("Author 里的 Nagi 是**她那侧 AI**（沿「人 · AI」格式对正）",
+   "Nagi" in (d.get("Author") or "") and "里奈 · Nagi" in (d.get("Author") or ""), d.get("Author"))
+ck("Description 点名原作 + 写明「Nagi 是她家 Claude」，并给出两个 ID",
+   "里奈" in (d.get("Description") or "") and "Claude" in (d.get("Description") or "")
+   and ORIG_ID in (d.get("Description") or ""),
    (d.get("Description") or "")[:80])
 ck("EntryDll 还是 NagiBridge.dll（文件夹/DLL 名本来就不用改）",
    d.get("EntryDll") == "NagiBridge.dll", d.get("EntryDll"))
