@@ -5771,6 +5771,49 @@ def read_mail() -> str:
         return _with_state(f"❌ 读邮件失败: {e}")
 
 
+def _lookup_canon(name: str):
+    """🔎 把 `map_lookup` 收到的名字**归一到表里的键** → `(键|None, [说明行…])`。
+
+    ⚠️ 2026-10-07 真机（恒让零背景 AI 试跑任务书）：它探路先敲 `map lookup 林间小径/幻觉神龛/木匠店/矿井`
+    —— **四个全回"知识库没有"**，AI 当场把这条当"这地方不存在"。病根：`map_lookup` 原来**直接把入参当键**
+    用（`MAP_FEATURES`/`MAP_LINKS` 里都是**英文图名**），而 `map go` 那边明明认这些中文别名
+    （`navigation.SCENE_NAME_ALIAS`）和 POI 名 ⇒ **同一套名字，两条路口径不一致**。
+    ⇒ 这里跟 `map go` **共用同一套名字**：键 → 中文场景别名 → POI → 模糊（只列相近的，**不替谁挑**）。
+    """
+    s = (name or "").strip()
+    if not s:
+        return None, []
+    if s in locations.MAP_FEATURES or s in locations.MAP_LINKS:
+        return s, []                                   # 本来就是键（英文图名）
+    _al = (getattr(navigation, "SCENE_NAME_ALIAS", {}) or {}).get(s)
+    if _al:
+        return _al, [f"  🏷️ 「{s}」= `{_al}`"]
+    _p = (locations.POI or {}).get(s)
+    if _p:
+        _m = _p.get("map") or ""
+        _pos = _p.get("pos") or ()
+        _lines = [f"  📍 「{s}」是 `{_m}` 上的一个点"
+                  + (f" ({_pos[0]},{_pos[1]})" if len(_pos) == 2 else "")
+                  + f" —— 过去用 `map go {s}`"]
+        if _p.get("note"):
+            _lines.append(f"     {str(_p['note'])[:200]}")
+        if _m and (_m in locations.MAP_FEATURES or _m in locations.MAP_LINKS):
+            return _m, _lines                          # 接着按那张图讲
+        return None, _lines + [f"  ⚠️ 「{_m}」这张图没有功能表（室内小图/动态图）"]
+    _pool = [k for k in (list(locations.MAP_FEATURES) + list(locations.MAP_LINKS)
+                         + list(getattr(navigation, "SCENE_NAME_ALIAS", {}) or {})
+                         + list(locations.POI or {})) if k]
+    _cand = [k for k in _pool if s in k or k in s]
+    if not _cand:
+        import difflib as _df
+        _cand = _df.get_close_matches(s, _pool, n=6, cutoff=0.5)
+    _uniq = []
+    for _c in _cand:
+        if _c not in _uniq:
+            _uniq.append(_c)
+    return None, ([f"  🔎 相近的名字：{'、'.join(_uniq[:6])}"] if _uniq else [])
+
+
 def map_lookup(location: str) -> str:
     """🗺️ 查某个地点：能做什么 + 出口/门去哪（地图知识库）
     新到一个地方先调这个——"这能干嘛、从哪出去"。
@@ -5780,9 +5823,13 @@ def map_lookup(location: str) -> str:
         location: 地点名（Farm / Town / SeedShop / Mine…）
     """
     try:
+        _orig = location
+        _key, _extra = _lookup_canon(location)
+        if _key:
+            location = _key
         feat = locations.MAP_FEATURES.get(location)
         links = locations.MAP_LINKS.get(location)
-        lines = [f"🗺️ {location}"]
+        lines = [f"🗺️ {location}"] + list(_extra)
         if feat:
             # 🚧 同「🗺️ 可:」那套门禁（`locations.MAP_FEATURE_GATES`）：显式查询**不藏**，
             #    但把"现在去不了"标出来——否则等于换个工具接着推荐打不开的门。
@@ -5880,7 +5927,13 @@ def map_lookup(location: str) -> str:
                 tile = f"({l['tile'][0]},{l['tile'][1]})" if l.get("tile") else ("门" if l["kind"] == "door" else "边")
                 lines.append(f"    {kind_icon} {tile} → {l['target']}（{l['kind']}）{l.get('note','')}")
         if not feat and not links and not _fest_info and not _poi_shown:
-            return _with_state(f"🗺️ 知识库没有「{location}」——是建筑/矿洞/姜岛等，用 check_status 或实际走过去看")
+            # ⚠️ 别只甩一句"知识库没有"（AI 会当成"这地方不存在"）：把**相近的名字**摆出来，
+            #    并给它**下一步**（`map go` 认的别名比这里多）。
+            _msg = [f"🗺️ 知识库没有「{_orig}」"]
+            _msg += list(_extra)
+            _msg.append(f"  👉 也可以直接 `map go {_orig}`（导航认的别名更多）；"
+                        f"想按功能查（「这能干嘛」）用 `map query <功能词>`")
+            return _with_state("\n".join(_msg))
         return _with_state("\n".join(lines))
     except Exception as e:
         return _with_state(f"❌ {e}")
@@ -23661,15 +23714,21 @@ def _plan_save_state():
 
 
 def _plan_load_state():
-    """服务启动时恢复 plan.json。上次 running（服务中途挂了）→ 置 aborted 避免半途重跑。"""
+    """服务启动时恢复 plan.json。上次 running（服务中途挂了）→ 置 aborted 避免半途重跑。
+    ⚠️ **通知必须在锁外发**（2026-10-07 自查）：`_plan_notify` 自己也要拿 `_plan_lock`，
+       而 `_plan_lock` 是**非可重入**的 `threading.Lock` ⇒ 在 `with _plan_lock:` 里调它就是**死锁**
+       （补76 我改这处时踩的；只在"上次计划卡在 running"那条路上会触发 ⇒ 启动即挂、极难查）。"""
     global _plan_data
+    _interrupted = False
     with _plan_lock:
         _plan_data = plan_engine.load_plan()
         if _plan_data.get("state") == "running":
             _plan_data["state"] = "aborted"
             _plan_data["abort_reason"] = "服务器重启（上次计划执行中断）"
             _plan_save_state()
-            _plan_notify("🔄 上次计划执行因服务器重启中断，已中止——plan show 看现状，plan write 重排")
+            _interrupted = True
+    if _interrupted:
+        _plan_notify("🔄 上次计划执行因服务器重启中断，已中止——plan show 看现状，plan write 重排")
 
 
 def _plan_notify(msg: str):
