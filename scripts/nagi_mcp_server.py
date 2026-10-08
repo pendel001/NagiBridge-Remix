@@ -870,7 +870,7 @@ def _is_new_day(data: dict) -> bool:
     return False
 
 
-WELCOME_BANNER = "🌿 NagiBridge MCP 已就绪 · 基于原作者 里奈（小红书@里奈 · GitHub @anqinou-art）的MCP适配+全面二改版本。 · 二改作者：恒（小红书@高冷 腿长 偷感重 · GitHub @pendel001）"
+WELCOME_BANNER = "🌿 NagiBridge MCP 已就绪 · 基于原作者 里奈（GitHub @anqinou-art）的MCP适配+全面二改版本。 · 二改作者：恒（GitHub @pendel001）"
 
 def _player_name() -> str:
     """当前被控制角色的名字（广播兜底用）。
