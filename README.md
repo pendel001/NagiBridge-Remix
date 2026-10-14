@@ -65,6 +65,11 @@ NagiBridge 是一个 **[星露谷](https://www.stardewvalley.net/)（Stardew Val
 
 First launch auto-generates `config.json`. The mod is built for **Stardew Valley 1.6+ / SMAPI 4.0+** and the same `.dll` works on **Windows, macOS and Linux**.
 
+> 🪟 **窗口尺寸**：`config.json` 的 `WindowWidth` / `WindowHeight` **默认 `0` = 不干预**（窗口大小完全交给游戏自己决定，不动你的设置）。
+> 想固定成某个尺寸就**两个都**填正数，例如 `"WindowWidth": 1600, "WindowHeight": 900`（**只填一个不生效**）。
+> ⚠️ 0.9.0 及更早版本默认写的是 `1280`×`720`，会把这套尺寸**硬设到别人机器上**（大屏偏小、小屏可能顶边）；
+> 老 `config.json` 里那对值就是旧默认写进去的 —— 想恢复"不干预"就把它们改成 `0`。
+
 > **Cloning the source repo?** There is **no `.dll` in the source tree** — it ships only in [Releases](https://github.com/pendel001/NagiBridge-Remix/releases/latest). If you cloned/downloaded the code and SMAPI says it can't find `NagiBridge.dll`, download the release zip above, or build it yourself (see [6. 开发者](#6-开发者)).
 >
 > 🙏 原作者的 [NagiBridge](https://github.com/anqinou-art/NagiBridge)（**本版不是它**，见页首说明）。
