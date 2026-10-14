@@ -104,7 +104,7 @@ First launch auto-generates `config.json`. The mod is built for **Stardew Valley
 |---|---|
 | 已装 NagiBridge 游戏 mod | 见 [2. 安装](#2-安装玩家)，先让游戏能跑 |
 | Python 3.10+ | 跑 MCP 服务器用 |
-| 装 `mcp` + `requests` 库 | `pip install mcp requests`（`mcp` 是服务器本体，`requests` 是 Python 侧调游戏 API 用的；建议 `pip install "mcp[cli]"`。截图降采样可选装 `pillow`） |
+| 装 `mcp<2` + `requests` 库 | `pip install "mcp<2" requests`（`mcp` 是服务器本体，`requests` 是 Python 侧调游戏 API 用的。⚠️ **必须钉 `mcp<2`**：MCP SDK 2.x 把 `FastMCP` 改名成 `MCPServer`，服务器代码用的是 v1 API，装成 2.x 会在启动时报 `ModuleNotFoundError: No module named 'mcp.server.fastmcp'`。截图降采样可选装 `pillow`）<br>其实**双击 `启动NagiBridge.bat` 会自动装**（而且会钉对版本），这一行列出来只是让你知道它装了什么 |
 | 游戏**已启动**且进档 | MCP 服务器要读游戏状态，游戏没开会显示「游戏进程未就绪」 |
 | （手机连的话）同一 Wi-Fi | 手机和电脑要在**同一个局域网**，手机不能在外面用流量连 |
 
@@ -230,7 +230,9 @@ curl -i -X POST http://localhost:8000/mcp \
 | `404` | 端口或路径不对：确认 URL 是 `http://localhost:8000/mcp`（**带 `/mcp`**） |
 | `Connection refused` / 超时 | 服务器没起，或游戏没开，或端口被占（换端口） |
 
-> 仓库里的 `python scripts/mcp_test_client.py` 目前在这台机器上会因 `mcp` 库版本 bug 报 `'function' object has no attribute 'total_seconds'`——那是**客户端库**问题，不是服务器问题，不影响手机/Claude Code 连接（可 `pip install -U mcp` 试修）。
+> 仓库里的 `python scripts/mcp_test_client.py` 目前在这台机器上会因 `mcp` 库版本 bug 报 `'function' object has no attribute 'total_seconds'`——那是**客户端库**问题，不是服务器问题，不影响手机/Claude Code 连接。
+>
+> ⚠️ **不要**用 `pip install -U mcp` 去"修"它：`-U` 会把手上的 v1 升成 **mcp 2.x**，而 2.x 移除了 `mcp.server.fastmcp`（改名 `MCPServer`），**MCP 服务器会当场启动失败**（`ModuleNotFoundError: No module named 'mcp.server.fastmcp'`）。动任何依赖之前先确认仍满足 `mcp<2`：`pip install "mcp<2"`。
 
 ### 5.2 常见报错速查
 

@@ -37,6 +37,18 @@ REQUIRED_PKGS = ["mcp", "requests"]          # mcp=服务器必需, requests=sta
 OPTIONAL_PKGS = ["PIL"]                       # 截图降采样用, 缺也能跑
 FIREWALL_RULE = f"NagiBridge MCP {MCP_PORT}"
 
+# ⚠️ 2026-10-14：pip 安装时用的版本规格（键=包名，没有的项=同名）。**mcp 必须钉 <2**。
+#   原因：MCP Python SDK 2.x 把 FastMCP 改名成 MCPServer（from mcp.server.mcpserver import MCPServer），
+#   而 nagi_mcp_server.py 是按 v1 API 写的（from mcp.server.fastmcp import FastMCP）。
+#   以前这里的判据只有 `import mcp` —— **2.x 照样 import 成功** ⇒ 自检打「依赖库 ✓」全绿，
+#   然后服务器一启动就 ModuleNotFoundError: No module named 'mcp.server.fastmcp'。
+#   这是**假绿**：新人看到「✅ 全部就绪」，下一秒服务器崩，根本无从下手。
+#   （2026-10-14 在新机器上从零走一遍才暴露；而且不管用户是"双击 .bat 让它自动装"，
+#     还是"照 README 手动 pip install mcp requests"，两条路都会装成 2.x，**必踩**。）
+#   所以两件事一起做：① mcp 的判据改成"直接测服务器真正要的那个导入"（见 _mcp_v1_ok）；
+#   ② 装的时候用 mcp<2。**永远不要用 `pip install -U mcp` 去"修"任何东西** —— 那正好会升到 2.x。
+PIP_SPECS = {"mcp": "mcp<2"}
+
 
 # ── 游戏目录探测（2026-09-22 开源普适性）──
 # ⚠️ 以前这里写死两条**本机路径**（Steam 默认 + 本机第二份副本）。
@@ -160,9 +172,30 @@ def check_python():
 
 
 # ── 2. Python 依赖库（缺→自动 pip 装）──
+def _mcp_v1_ok():
+    """mcp 可用的判据 = **服务器真正要的那个导入**能不能成立。
+
+    ⚠️ 别退化成 `import mcp`：mcp 2.x 也能 import 成功，那样查不出问题、只会给出"假绿"。
+    """
+    try:
+        from mcp.server.fastmcp import FastMCP  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+# 个别包需要"能力判据"而不是"能不能 import"（原因见 PIP_SPECS 上面的说明）
+_REQUIRED_CHECKS = {"mcp": _mcp_v1_ok}
+
+
 def check_pip_pkgs():
     missing = []
     for pkg in REQUIRED_PKGS:
+        checker = _REQUIRED_CHECKS.get(pkg)
+        if checker is not None:
+            if not checker():
+                missing.append(pkg)
+            continue
         need = "PIL" if pkg == "PIL" else pkg
         try:
             __import__(need)
@@ -179,12 +212,19 @@ def check_pip_pkgs():
         if not pil_ok:
             msg += "（PIL 可选,未装,截图不缩放）"
         return _ok(msg)
-    to_install = " ".join(missing)
-    print(f"  缺依赖库: {missing} → 自动 pip 安装…")
-    code, out, err = _wrap(sys.executable, "-m", "pip", "install", "-U", *missing, encoding="utf-8")
-    if code == 0:
-        return _ok(f"已装 {', '.join(missing)} ✓")
-    return _no(f"pip 装 {missing} 失败:\n{err}\n请手动: pip install -U {' '.join(missing)}")
+    to_install = [PIP_SPECS.get(p, p) for p in missing]     # ← mcp 在这里被钉成 mcp<2
+    print(f"  缺依赖库: {missing} → 自动 pip 安装 {' '.join(to_install)}…")
+    code, out, err = _wrap(sys.executable, "-m", "pip", "install", "-U", *to_install, encoding="utf-8")
+    if code != 0:
+        return _no(f"pip 装 {missing} 失败:\n{err}\n请手动: pip install -U {' '.join(to_install)}")
+    # ⚠️ pip 返回 0 ≠ 服务器能跑：装成 mcp 2.x 时 pip 照样成功退出。
+    #    复验必须丢到**子进程**里做 —— 本进程的 sys.modules 可能已经缓存了那个失败的 mcp，
+    #    同进程重新 import 的结果不可信（会误报"还是缺"）。
+    if "mcp" in missing:
+        rc, _, _ = _wrap(sys.executable, "-c", "from mcp.server.fastmcp import FastMCP", encoding="utf-8")
+        if rc != 0:
+            return _no('装完仍然导不进 FastMCP —— mcp 很可能被装成了 2.x。请手动: pip install "mcp<2"')
+    return _ok(f"已装 {', '.join(missing)} ✓")
 
 
 # ── 3. SMAPI（本体, 只能指引不能自动装）──
