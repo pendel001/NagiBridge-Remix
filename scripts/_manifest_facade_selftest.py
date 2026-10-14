@@ -38,7 +38,17 @@ except Exception as e:  # noqa: BLE001
 print(f"\n① 仓库 manifest：{REPO}")
 ck("UniqueID 已**不是**原作 ID", d.get("UniqueID") != ORIG_ID, d.get("UniqueID"))
 ck("UniqueID = pendel001.NagiBridge", d.get("UniqueID") == "pendel001.NagiBridge", d.get("UniqueID"))
-ck("UpdateKeys 是空的（不会被更新器拉成原版覆盖）", d.get("UpdateKeys") == [], str(d.get("UpdateKeys")))
+# 🆕 2026-10-14：UpdateKeys **从"空"改成"指向我们自己的仓库"**（恒拍板）。
+#    动机：v0.9.1 修的那个坑（`pip install mcp` 装成 2.x ⇒ 服务器启动即崩）**老用户不会自动知道** ——
+#    他们下的是 release 包、不是仓库，README 改了也看不见；而 SMAPI 的更新提示是**唯一**能主动触达他们的机制。
+#    ⚠️ 原来这条写的理由「空的才不会被更新器拉成原版覆盖」**其实不成立**：SMAPI 的更新检查**只弹提示、不替换文件**。
+#    现在的判据换成两条：① 必须指向**我们自己的**仓库；② 不许出现任何指向**原作 / 第三方**的键。
+_UPDATE_KEYS = ["GitHub:pendel001/NagiBridge-Remix"]
+ck("UpdateKeys 指向我们自己的仓库（老用户才会被提示到新版）",
+   d.get("UpdateKeys") == _UPDATE_KEYS, str(d.get("UpdateKeys")))
+ck("UpdateKeys 里没有指向原作/第三方的键（不会把用户提示成原版）",
+   not any(("anqinou" in k) or k.lower().startswith("nexus") for k in (d.get("UpdateKeys") or [])),
+   str(d.get("UpdateKeys")))
 ck("Author 里有本人（恒）", "恒" in (d.get("Author") or ""), d.get("Author"))
 ck("Author 点名原作**人**（里奈）", "里奈" in (d.get("Author") or ""), d.get("Author"))
 ck("Author 里的 Nagi 是**她那侧 AI**（沿「人 · AI」格式对正）",
