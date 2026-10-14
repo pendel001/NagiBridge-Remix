@@ -43,7 +43,7 @@
 
 | 想看什么 | 去哪 |
 |---|---|
-| 完整机制 / 坐标 / 坑 / 变更史 | `CHANGELOG.md`（改代码前必读） |
+| 完整机制 / 坐标 / 坑 / 变更史 | `CHANGELOG.md`（⚠️ 内部知识库，**不随仓库发布**、本机保留；改代码前必读） |
 | MCP 工具清单 / ops（给 AI 的大白话） | `scripts/TOOL_INVENTORY.md` |
 | 全端点清单 + 逐文件职责 + 核心范式 | `PROJECT_PANORAMA.py`（`python PROJECT_PANORAMA.py` 打印） |
 | 安装 / 游戏内聊天 / MCP 连接 / 连不上速查 | `README.md` |
@@ -59,5 +59,5 @@
 
 ---
 
-> 详细内容都在 `CHANGELOG.md`（知识库）、`PROJECT_PANORAMA.py`（全端点/文件/范式）与 `AGENTS.md`（AI 排查速查）。本文件是给你快速建立认知的**薄概览**。
+> 详细内容都在 `CHANGELOG.md`（内部知识库，**不随仓库发布**）、`PROJECT_PANORAMA.py`（全端点/文件/范式）与 `AGENTS.md`（AI 排查速查）。本文件是给你快速建立认知的**薄概览**。
 > 最后更新：2026-08-23
