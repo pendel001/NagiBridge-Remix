@@ -256,7 +256,25 @@ def check_mod():
     cands = [os.path.join(ROOT_DIR, "bin", c, "net6.0", "NagiBridge.dll") for c in ("Release", "Debug")]
     cands = [p for p in cands if os.path.exists(p)]
     if not cands:
-        return _no("✗ 本地无编译产物 bin/{Release,Debug}/net6.0/NagiBridge.dll——先 dotnet build（不自动 build, 避免卡）")
+        # ⚠️ 2026-10-14：**玩家拿的是发布包、不是开发工作区** —— 发布包用 `git archive` 打，
+        #    而 `bin/` 是 gitignore 的 ⇒ 玩家解压出来**永远没有 bin\**。
+        #    以前这里直接判 ✗，而 main() 里「mod 部署」是**阻断项** ⇒ 玩家双击 .bat 会被卡在
+        #    「✗ 本地无编译产物——先 dotnet build（不自动 build, 避免卡）」，服务器根本起不来。
+        #    （2026-10-14 恒问"一键启动 bat 在哪"，我把发布包当玩家解开实测 ⇒ **exit 1 复现**。）
+        #    而且这也是**任何克隆仓库的人**都会撞上的老问题（此前它只被当成"开发机上没编译"）。
+        #    ✅ 语义修正：**"没有本地编译产物" ≠ "mod 没装好"** —— 玩家用的是发布版 DLL，
+        #       本来就没有"要同步的东西"。判据改成看**目标侧**：游戏目录里已装了 mod 就算过。
+        installed = [
+            os.path.basename(gd) for gd in GAME_DIRS
+            if os.path.exists(os.path.join(gd, "Mods", "NagiBridge", "NagiBridge.dll"))
+        ]
+        if installed:
+            return _ok("mod 部署 ✓ " + ", ".join(installed) + "（用的是发布版 DLL；本地无编译产物 ⇒ 无需同步）")
+        return _no(
+            "✗ 本地无编译产物 bin/{Release,Debug}/net6.0/NagiBridge.dll，也没在游戏目录里找到已装的 NagiBridge mod。\n"
+            "  · 玩家（拿的是发布包）：把发布包里的 `Mods\\NagiBridge\\` 整个拷进 `<游戏目录>\\Mods\\`，再跑本清单\n"
+            "  · 开发者（改过 C#）：先 dotnet build（不自动 build, 避免卡），再跑本清单"
+        )
     src = max(cands, key=os.path.getmtime)
     print(f"  产物: bin/{os.path.basename(os.path.dirname(os.path.dirname(src)))}/net6.0/NagiBridge.dll")
     src_m = os.path.getmtime(src)
