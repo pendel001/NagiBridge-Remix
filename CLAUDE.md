@@ -1,28 +1,27 @@
 # NagiBridge — 星露谷 AI 远程控制 + MCP 文游化接口
 
-## 概述
-SMAPI mod（C# HTTP API）+ Python MCP 服务器（AI 只见 **16 个工具**：13 域入口 + `intent`/`screenshot`/`help`）让 AI 像真人一样操控星露谷：拟人走位、受限、自主决策。AI=farmhand(7843)，恒=房主(7842)。
+> 📖 **入口只有一份：[`AGENTS.md`](AGENTS.md)。改任何东西之前先读它。**
+> 本文件**故意不复制**正文 —— 复制 = 两份会漂移（真漂过一次：`AGENTS.md` 被 `.claudeignore` 标成"旧文档"藏起来，Claude 就只看到半份）。
+>
+> ⚠️ "入口只有一份"**不等于**"所有文档并成一份"。这四份各司其职，谁也别取代谁：
+>
+> | 什么时候看 | 看哪 |
+> |---|---|
+> | 改代码前：三层分工 / 端口 / 不变量 8 条 / 已退役 / 排障 | [`AGENTS.md`](AGENTS.md) |
+> | **调工具时**：16 个工具、168 个 op 的参数速查（最常翻） | [`scripts/TOOL_INVENTORY.md`](scripts/TOOL_INVENTORY.md) |
+> | 摸全景：逐端点 / 逐文件职责 / 核心范式 | `python PROJECT_PANORAMA.py` |
+> | 玩的时候：玩家局怎么走、边界三条 | [`skills/stardew/SKILL.md`](skills/stardew/SKILL.md) |
 
-## 结构
-- ModEntry.cs — SMAPI mod：HTTP API/控制/聊天/导航
-- scripts/nagi_mcp_server.py — MCP 服务器(streamable-http:8000)+状态注入+心跳(工具壳/域在这里)
-- scripts/navigation.py — 导航(走位/跨图BFS/交通/门/买票/回家)；宿主服务由 server 末尾 `navigation.bind(...)` 注入
-- stardew_api.py·player_activity.py·locations.py·calendar_data.py — API封装/行为检测/地图/日历
-- mine_run/bomb_*/fish_run/farm_row 等 — 自动化脚本
-- scripts/mcp_cli.py — 一键调 MCP 工具(调试/临时动作用,不进游戏逻辑)：`python mcp_cli.py <tool> '<json>'`(详见其 docstring 的 kw 对象坑)
-- scripts/appearance_overrides.json — 捏脸默认上衣补描写(手动维护；gen 重烤自动合进 SHIRT_REF，list_shirt_ref 标※)
-- 详细知识 → **内部 CHANGELOG.md（⚠️ 不随仓库发布）**，改前先查
+## 🔴 边界（第一眼必须看到）
 
-## 规范
-- Python(标准库)+C#(SMAPI/Harmony)；中文注释+emoji 文游风
-- 操作走 7843、检测/广播走 7842(host_chat)；角色由端口定
-- 农活必走 farm 域；勿动 server.ts/ChatHud.cs/LlmClient.cs(遗留已ignore)与 plan_engine.py(退役)
-- 改 ModEntry.cs 要 rm -rf bin obj 再编；DLL 复制到每一份游戏目录
+<!-- NAGI-BOUNDARY -->
+- **玩家局：只用 MCP 的 16 个工具**（13 域入口 + `intent` / `screenshot` / `help`）。
+- **内部脚本 + HTTP 直连（`curl :7843/...`）：仅限开发排障。**
+- ⚠️ 守卫（`stardew_api.warp()` 落点校验、`machine_loader` 同图不瞬移、菜单闸门）**都在 Python 层**；
+  `curl` 打端点 = 整层跳过。跑 `scripts/xxx_run.py` 走 `stardew_api`，守卫还在，但绕过状态注入 / 单子 / 自动 `--port`。
+<!-- /NAGI-BOUNDARY -->
 
-## 关键坑(6条)
-1. 导航：地面/walk_to、矿洞/position、跨图/map_go；别用/move+BFS
-2. DLL 必须每一份游戏目录都复制，否则"改了没生效"
-3. 对话推进用/click(no_mouse)或 press_key(ok)，别用 key confirm
-4. 敲一下→检查→碎了停，不硬编码次数
-5. 长脚本便利工具自动注入 --port AI 端口，防挪恒角色
-6. 1.6 矿节点 Name 全报"Stone"(宝石/放射矿藏在 objId)，判定靠 objId、`/dump_tile` 查真名，别按名认
+## 三句话说完的结构
+
+`ModEntry.cs`（SMAPI mod，HTTP API + Harmony 补丁）← HTTP 7843 → `scripts/nagi_mcp_server.py`（MCP 服务器 :8000，16 工具）← MCP → 外部 AI。
+详细分工、规范、坑 → **AGENTS.md**。逐 op 速查 → `scripts/TOOL_INVENTORY.md`。

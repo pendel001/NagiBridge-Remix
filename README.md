@@ -191,6 +191,9 @@ New-NetFirewallRule -DisplayName "NagiBridge MCP 8000" -Direction Inbound -Proto
 ```
 本机用 `localhost` 就行；**手机/别机**才用 `<你的局域网IP>`。
 
+> 🤖 **agent 端（Claude Code / dsh 这类带 shell 的客户端）**：仓库自带 [`skills/stardew/SKILL.md`](skills/stardew/SKILL.md)。
+> 装上它，AI 就知道"先看 `intent` 单子、只用这 16 个工具、别 curl 端点"。不装也能玩，但容易乱来。
+
 ### 4.6 你们的故事存在哪（AI 的记忆，可带到别的前端）
 
 一起玩的对话、剧情、小新闻会**全程落盘**在仓库 `scripts/sessions/` 目录，文件名带**每次启动的时间戳**：
@@ -276,6 +279,9 @@ Full endpoint list: see [AGENTS.md](AGENTS.md)（全量端点/逐文件职责/�
 ### Automation Scripts
 
 Python scripts for common farm tasks. Require `requests` package.
+
+> ⚠️ 这些脚本是**开发排障工具，不是玩家接口**：它们绕过状态注入、单子（动作空间约束）和自动 `--port` 注入
+> （手跑不带 `--port` 会操作到**房主**身上）。玩家局请走 MCP 的 16 个工具 —— 详见 [AGENTS.md](AGENTS.md) 的「🔴 边界」。
 
 ```bash
 pip install requests

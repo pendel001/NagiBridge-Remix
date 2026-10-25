@@ -4,13 +4,24 @@
 > 下面是**当前事实**（2026-08-23 同步），可直接信；深挖细节去"知识地图"找对应文档。
 > 一句话：这套东西让人把 AI 像真玩家一样放进星露谷，靠的是"游戏内 mod"+"外部 MCP 服务器"两层配合。
 
+## 🔴 边界（先读这条）
+
+<!-- NAGI-BOUNDARY -->
+- **玩家局：只用 MCP 的 16 个工具**（下一节列全了）。AI 不该知道、也不该动用底下的内部件。
+- **内部脚本 + HTTP 直连（`curl :7843/...`）：仅限开发排障。** 它们是给"看得懂代码、改完会自己验"的人用的，不是给"操控角色"用的。
+- ⚠️ **为什么这条重要**：`stardew_api.warp()` 的落点校验、`machine_loader` 的同图不瞬移、菜单闸门 —— 这些守卫**全在 Python 层**。
+  `curl` 直接打端点 = **把守卫整层跳过**，直接捅进 C#（落点在水中央、该走路的瞬移过去，全都会发生）。
+  跑 `scripts/xxx_run.py` 则相反：它走 `stardew_api`，守卫还在，但绕过了状态注入 / 单子 / 自动 `--port`。
+<!-- /NAGI-BOUNDARY -->
+
 ## 这套东西是什么（三层）
 
 1. **游戏层**：Stardew Valley 1.6 + NagiBridge C# mod（SMAPI）
 2. **桥接层**：`ModEntry.cs` — HTTP API（~120 端点）+ Harmony 补丁（IsActive/表情/聊天/节日提示/10048端口修复/拾取检测）
 3. **智能层**：`scripts/nagi_mcp_server.py` — MCP 服务器（streamable-http :8000，**16 工具**/13 域入口 + 3 独立）+ 状态注入（`_with_state`）+ 心跳 + 节日/导航/脚本编排
 
-外加 `scripts/` 下大量**自动化脚本**（矿洞/炸矿/钓鱼/农夫），Python 直接调 HTTP API。
+外加 `scripts/` 下大量**自动化脚本**（矿洞/炸矿/钓鱼/农夫）——它们经 `stardew_api` 调 HTTP，
+**是开发排障工具，不是玩家接口**（见上面「边界」两行）。
 
 ## 端口约定（最容易搞错）
 
@@ -47,6 +58,7 @@ AI **不需要**重新学这套端点怎么用——直接调 MCP 域工具：
 | 某机制怎么实现 / 有哪些坑和坐标 | **内部 `CHANGELOG.md`（⚠️ 不随仓库发布，本机保留）**——改前必读 |
 | 某 MCP 工具/域的 ops | `scripts/TOOL_INVENTORY.md` |
 | 全端点清单 / 逐文件职责 / 核心范式 | `PROJECT_PANORAMA.py`（`python PROJECT_PANORAMA.py` 打印） |
+| 玩家局怎么玩（给 agent 端的 skill） | `skills/stardew/SKILL.md` |
 | 怎么装怎么连 / 连不上 | `README.md` 第 4、5 节 |
 | 当前工具 & 域结构 | 本文件 + `scripts/nagi_mcp_server.py` 的 `_KEEP_TOOLS` |
 | 工具调用日志（性能/回归） | `scripts/sessions/session_log.jsonl` |

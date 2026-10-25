@@ -28,10 +28,12 @@ scripts/shop_buy.py
 scripts/tool_agent.py
 scripts/pet_animals.py
 
-# ── 原作者遗留：旧文档（已被 CLAUDE.md / CHANGELOG.md 取代）──
-AGENTS.md
-PROJECT.md
-README.md
+# ── 文档：**故意不 ignore**（2026-10-25 修正）──
+#   AGENTS.md / CLAUDE.md / README.md / PROJECT.md 是 AI 的说明书，别藏。
+#   原来这里把 AGENTS.md 当"原作者遗留旧文档"藏了 —— 判错了：那份是**最新最全**的，
+#   而且是**唯一写着「玩家局走 MCP、直连只给排障」**的一份。藏起来 ⇒ Claude 只看得到半份，
+#   就会用 Bash 去 curl 端点 / 直接跑内部脚本 = 绕过 stardew_api 的全部守卫。
+#   判据：`scripts/_boundary_selftest.py` 三条钉子（藏回去就报红）。
 codex_task.md
 scripts/SKILLS.md
 
