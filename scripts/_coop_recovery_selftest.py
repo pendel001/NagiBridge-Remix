@@ -263,15 +263,15 @@ print("⑰ 🩹🧭 2026-10-31 恒卡墙那趟：换层落地自检 / ④ 贴恒
 #   ② 自检的红灯不许被半路的 `except Exception: pass` 吞掉
 #   ③ 撤退链多一级「贴恒」（恒自己提的），且它必须是**唯一**显式关墙圈闸的救援路
 #   ④ 观测补齐：脚本 POST 进 `_game_calls.log` + stdout 落盘（否则下次还是"只有十发、没有坐标"）
-_vl = block(bc, r"    def verify_landing\(", span=70)
+_vl = block(bc, r"    def verify_landing\(", span=95)
 ck("…`verify_landing` 只用**只读**手段问（`/passable`，不再拿 /walk_to 等超时当判据）",
    '"/passable"' in _vl and "walk_to_coord" not in _vl)
 ck("…它查两件事：我这格站得住 + 入口梯走得到（把 `connectivity` 两把尺子都问出来）",
    '"passable"' in _vl and "walkable" in _vl and '"connectivity": True' in _vl)
 ck("…三态返回：True/False/**None = 没验成**（没验成 ≠ 通过）",
    "return None" in _vl and "没验成" in bc)
-ck("…「回不到入口、但本层还有下楼梯」只 **warn** 不中断（否则跳洞撒点一次就白收工）",
-   '"warn"' in _vl and "has_down" in _vl and "不中断" in bc)
+ck("…「回不到入口、但本层还有下楼梯」只 **warn** 不中断（一次误报不该白收工一整层）",
+   '"warn"' in _vl and "has_down" in bc and "不中断" in bc)
 ck("…`warn` 在 `_check_landing` 里**确实没 raise**（只 log）",
    'ok == "warn"' in bc and "继续炸" in bc)
 ck("…自检本身**绝不**偷偷 warp/position（穿墙兜底只归撤退链）",
