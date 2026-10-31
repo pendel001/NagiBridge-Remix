@@ -28,8 +28,9 @@ os.environ.setdefault("NAGI_URL", "http://localhost:7843")
 os.environ.setdefault("NAGI_HOST_URL", "http://localhost:7842")
 
 from bomb_common import (BombMiner, log, is_mine_location, extract_mine_level,
-                         ManualChestFull, DiedInMine, parse_food_list,
-                         BOMB_RADIUS, backpack_plan, is_rock, drop_value, is_volcano)
+                         ManualChestFull, DiedInMine, LandingBad, parse_food_list,
+                         BOMB_RADIUS, backpack_plan, is_rock, drop_value, is_volcano,
+                         tee_stdout_to_log)
 
 # ═══════════ 已移除：主动打怪（2026-08-09，按user要求移到协同模式） ═══════════
 # 移除原因：position 瞬移后足够安全，bomb_mine 只炸矿不主动打怪；战斗归协同模式。
@@ -1018,6 +1019,12 @@ def main():
         except Exception:
             pass
 
+    # 🧾 2026-10-31：本趟输出**额外落一份**到 scripts/sessions/_bomb_mine_<时间戳>.log。
+    #    动机：炸矿是 MCP 后台子进程，stdout 进的是**内存**滚动缓冲，一收工就没了 ——
+    #    查「人卡进墙」那天，脚本自己的每步结论（下到第几层、哪一发 position 被拒）一个字都没留下。
+    #    ⚠️ 只是"多写一份"，MCP 那边读到的输出一个字不变；失败也不影响脚本。
+    tee_stdout_to_log("bomb_mine")
+
     parser = argparse.ArgumentParser(description="[bomb] 炸矿模式 — 自主贪心炸弹下矿")
     parser.add_argument("--port", type=int, default=None, help="AI 角色端口（默认7843）")
     parser.add_argument("--host-port", type=int, default=None, help="房主(user)端口（默认7842）")
@@ -1226,6 +1233,18 @@ def main():
         log(f"\n💀💀 **轮回在矿里死了**：{e}")
         log("   ⚠️ 脚本就此停手，**不再发任何动作**（不 retreat / 不 warp）——")
         log("      死亡剧情和掉落清单留给恒看；要捡回东西走游戏里的『失物招领』/ 复活流程。")
+        return
+    except LandingBad as e:
+        # 🩹 2026-10-31：换层落地自检没过（人落在废格 / 跟出口不连通的隔区里）⇒ **立刻停手 + 走撤退链**。
+        #    它和 `DiedInMine` **故意不同**：死了什么都别做（把游戏自己的死亡剧情留给恒看）；
+        #    这个是人还活着但**位置废了**，必须把人弄出来，而且一级一级**如实报** ——
+        #    最后那发 warp 是**穿墙**（日志里会写明"不是走出来的"），贴恒那一级同理。
+        log(f"\n🩹 {e}")
+        log("   ⚠️ 脚本就此停手，改走撤退链（① 权杖 → ② 图腾 → ③ 入口梯 → ④ 贴恒 → ⑤ warp）")
+        try:
+            bot.retreat(str(e))
+        except BaseException as e2:
+            log(f"   ⚠️ 撤退链本身也出错了：{e2!r}（如实记下，不再乱动）")
         return
     finally:
         if not args.no_guard:

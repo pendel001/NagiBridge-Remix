@@ -165,10 +165,12 @@ class VolcanoBot(BombMineBot):
     # ═══════════ 撤退 ═══════════
 
     def retreat_volcano(self, reason):
-        """🏳️ 火山撤退 → 走定案的四级链（返回权杖 > 农场图腾 > 走回入口梯 > warp）。
+        """🏳️ 火山撤退 → 走定案的五级链（返回权杖 > 农场图腾 > 走回入口梯 > 贴恒 > warp）。
         ⚠️ 火山**只有 5/10 层能走出去**（恒 2026-09-19），所以第③级"走回入口梯"在别的层
         会因为没有 entrance 自己返回 False，不会瞎走；实际靠 ①②（权杖/农场图腾任何层都能用）。
-        ④ warp 落 IslandNorth(40,24)（火山矿洞出口，沿用 VOLCANO_EXIT）。"""
+        ⚠️ 第四级"贴恒"只认**矿井**（`is_mine_location`），火山里恒多半不在 ⇒ 它会如实回
+        False 再降级；真在也照样能救（同层 `position` 到恒邻格 / 不同层先 warp 过去）。
+        ⑤ warp 落 IslandNorth(40,24)（火山矿洞出口，沿用 VOLCANO_EXIT）。"""
         if not self.is_volcano_loc(self.my_location()):
             return True
         return self.retreat(reason)

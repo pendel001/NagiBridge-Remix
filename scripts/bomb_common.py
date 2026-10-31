@@ -28,6 +28,23 @@ NAGI_URL = os.environ.get("NAGI_URL", "http://localhost:7843")
 HOST_URL = os.environ.get("NAGI_HOST_URL", "http://localhost:7842")
 
 
+def _trace_call(url, data):
+    """🧾 把这一发 POST 也写进 `_game_calls.log`（与 `stardew_api` **同一个文件、同一行格式**）。
+
+    为什么补这一步（2026-10-31 恒真机现场：炸矿到最后人卡进墙里）：
+      炸矿脚本从一开始就用**裸 `requests`**（`_post`/`_get` 自己发）⇒ 2026-10-01 建的那份
+      留痕 `_game_calls.log` **一条都不记** ⇒ 恒问"它怎么卡进去的"时，我手上只有 mod 的
+      `requests.log`（**只有 path、没有坐标/flag**）—— 十发 `POST /position` 查不出是哪一发、
+      带没带 `check_connectivity`。这不叫"查过了"，这叫"没得查"。
+    ⚠️ 只做"多写一行"：任何异常都吞掉（日志坏不能把动作弄坏，判据同 `stardew_api._call_log`）。
+    """
+    try:
+        from stardew_api import _call_log
+        _call_log(url, data)
+    except Exception:
+        pass
+
+
 class DiedInMine(RuntimeError):
     """💀 轮回在矿里**死了**（判据 = 游戏自己的 `Farmer.itemsLostLastDeath`，见 `check_death`）。
 
@@ -40,6 +57,25 @@ class DiedInMine(RuntimeError):
 class ManualChestFull(Exception):
     """开箱弹出满包领取菜单（战利品卡领取侧）→ 交 AI 手动处理（claim_swap/ok），脚本停下不撤退。
     恒 2026-08-23：满包领不走就停，不自动丢物。str(e)=战利品名列表。"""
+    pass
+
+
+class LandingBad(BaseException):
+    """🩹 **换层落地自检没过**（2026-10-31 新增）。str(e) = 人话原因（带坐标 + 两把尺子的答案）。
+
+    与 `DiedInMine` 的区别：那个是"人死了"（把死亡剧情留给恒看，什么都不做），
+    这个是"人活着，但**落在一片废格 / 跟出口不连通的隔区里**"⇒ **必须立刻停手**
+    （此时继续放炸弹/下楼只会越陷越深），并且**不许偷偷 warp** —— 交给撤退链，
+    由它一级一级如实报、最后那一发穿墙 warp 也必须留痕。
+    起因：恒 2026-10-31 炸矿演示最后一层，人卡在一片"站得住但走不到入口梯"的台地上，
+    40 秒里被飞蛇从 116 咬到 64 血 —— 而**换层那一刻没有任何人检查过落点**。
+
+    ⚠️ 父类是 `BaseException` 而**不是** `Exception` —— **故意的，别"修"成 Exception**：
+      炸矿这条路上满是 `except Exception: pass`（探索、捡物、协同那些"出错就算了"的地方），
+      用 Exception 当父类，这条"必须停手"的信号会在半路被某处 `pass` **静默吞掉**，
+      表现就是"人卡在墙里，脚本还在原地转" —— 正是这次要消灭的那个病。
+      要接它就必须**显式** `except LandingBad`（`bomb_mine.main()` 就是这么接的）。
+    """
     pass
 
 # ── 炸弹爆炸形状（⚡ 2026-09-06 恒 游戏 tooltip 实测，非 wiki 模糊数） ──
@@ -428,6 +464,72 @@ def log(msg):
             print(f"[bomb] {msg.encode(enc, errors='replace').decode(enc, errors='replace')}", flush=True)
         except Exception:
             pass
+
+
+# 已打开的日志文件句柄（`tee_stdout_to_log` 用；留着是为了 flush/排查，不参与逻辑）
+_LOG_SINKS = []
+
+
+def tee_stdout_to_log(tag="bomb"):
+    """把本进程 stdout **额外**落一份到 `scripts/sessions/_<tag>_<时间戳>.log`，返回路径（失败返回 None）。
+
+    为什么（2026-10-31）：炸矿是 MCP 后台子进程，stdout 走 PIPE 进**内存**滚动缓冲 ——
+    脚本一收工就没了。查"人卡进墙"那天，脚本自己的每步结论（`⬇️ 下到第 N 层（跳了 k 层）`、
+    `⚠️ position ... 被拒`、`🪨 敲掉挡路石头`）**一个字都查不到**，只剩 mod 侧的 path 流水。
+    ⇒ 现在起有落盘：下次同样的事，**直接读那一份 log** 就能复原现场。
+
+    ⚠️ 这不是"另存一份替代 stdout"：原有 stdout 照旧（MCP 那边读到的内容一个字不变）；
+       任何异常都吞掉（日志坏了绝不能让脚本跟着坏）。
+    """
+    try:
+        d = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sessions")
+        os.makedirs(d, exist_ok=True)
+        path = os.path.join(d, "_%s_%s.log" % (tag, time.strftime('%Y%m%d_%H%M%S')))
+        fh = open(path, "a", encoding="utf-8", buffering=1)
+        real = sys.__stdout__ if sys.__stdout__ is not None else sys.stdout
+
+        class _Tee:
+            def write(self, s):
+                try:
+                    real.write(s)
+                except UnicodeEncodeError:
+                    # 保留原来 log() 的兜底口径：终端编码装不下就替换，别把整行吞掉
+                    try:
+                        enc = getattr(real, "encoding", None) or "utf-8"
+                        real.write(s.encode(enc, errors="replace").decode(enc, errors="replace"))
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+                try:
+                    fh.write(s)
+                except Exception:
+                    pass
+                return len(s)
+
+            def flush(self):
+                for x in (real, fh):
+                    try:
+                        x.flush()
+                    except Exception:
+                        pass
+
+            def isatty(self):
+                return False
+
+            @property
+            def encoding(self):
+                return "utf-8"
+
+        sys.stdout = _Tee()
+        _LOG_SINKS.append(fh)
+        try:
+            log(f"🧾 本趟输出落盘: {path}")
+        except Exception:
+            pass
+        return path
+    except Exception:
+        return None
 
 
 def extract_mine_level(loc_name):
@@ -1073,6 +1175,7 @@ class BombMiner(WeaponMixin):
 
     def _post(self, ep, data=None, host=False):
         base = self.host if host else self.base
+        _trace_call(f"{base}{ep}", data)      # 🧾 留痕（见 `_trace_call`；别删）
         try:
             return requests.post(f"{base}{ep}", json=data or {}, timeout=10).json()
         except requests.exceptions.Timeout:
@@ -1139,12 +1242,26 @@ class BombMiner(WeaponMixin):
             d["check_connectivity"] = True
         return self._post("/position", d)
 
-    def position_safe(self, x, y, exact=False, check_passable=True, check_connectivity=False):
+    def position_safe(self, x, y, exact=False, check_passable=True, check_connectivity=True):
         """position 前检查地图内 + 后验证位置（站位不可走被游戏传送就放弃，防反复重试）。
         exact=True 时要求精确落在 (x,y)（梯子/楼梯站位必须精确，差1格 confirm 无效）。
         check_passable=True（炸矿用）时 C# 拒"不可走格"——本方法读返回，被拒立即放弃，
         否则落地验证只见位置被弹就误判成功，把 AI 留在墙/孤岛格。
         check_connectivity=True（炸矿用）时 C# 再校验墙圈连通域（防瞬移进隔区卡死）。
+
+        🔴🔴 2026-10-31：**墙圈闸（`check_connectivity`）默认也改成 True**。
+           起因（恒真机，炸矿演示最后一层）：人被瞬移进一片「**站得住、但跟本层入口梯不是
+           同一片连通区**」的小台地 ⇒ 之后每一发 `/walk_to` 都被游戏判
+           「落点和你现在站的不是同一片连通区（运行时阻挡物/墙圈）」⇒ 原地卡 40 秒、
+           被飞蛇从 116 咬到 64 血 ⇒ 只能靠撤退链的 `/warp` **穿墙**出去。
+           病根和 10-03 那次是**同族**：那晚把 `check_passable` 的默认改了，却把
+           `check_connectivity` 留在 **opt-in**（11 个调用点只有 2 个显式开）——
+           ⇒ 「这格站得住」过了，而「**传过去还回得来**」没人问。
+           ⚠️ 现在只有两处**故意**关掉，且都必须写明理由（它们本来就"明知要落不可走格"）：
+             · `descend()` 站梯子格（站上去是要传层）
+             · `use_staircase()` 站楼梯格（同上）
+           ⚠️ 闸的两把尺子别混（`/passable?connectivity=1` 现在**两个都回**）：
+             `connected`=只看地图层（岩石不算墙，能炸开）；`walkable`=完整尺（腿走不走得过）。
 
         🔴🔴 2026-10-03 深夜：**默认从 `check_passable=False` 改成 `True`**。
            起因（恒，第二次报）：「**入侵层的放梯，第一次总是传送到穿墙位置，第二次才合法**」；
@@ -2742,6 +2859,80 @@ class BombMiner(WeaponMixin):
             log(f"  ⚠️ 落点体检异常：{e}")
             return False
 
+    # ═══════════ 换层落地自检（2026-10-31）═══════════
+
+    def verify_landing(self, level=None):
+        """🩹 **换层后的落地自检** —— 这才是"落地校验"该有的样子。
+
+        起因（恒 2026-10-31 现场）：`fix_landing` 我们**做过**，但它只在 `safe_warp()`（`/warp`）之后跑
+        ⇒ `/position` 瞬移不跑、**游戏自己换层（梯子/竖井）更不跑**。那趟人换到第 148 层后落在
+        一片"站得住、但走到不了入口梯"的台地上，40 秒后被飞蛇咬掉一半血才靠 warp 出来。
+
+        查两件事，**全用只读手段**（`/passable`；别再拿"发个 `/walk_to` 等 20 秒超时"当判据 —— 那会动世界）：
+          ① 我现在这格**站得住**吗；
+          ② 本层**入口梯走得到**吗（`/passable?connectivity=1` 回来的
+             `walkable`=完整尺 / `connected`=只看墙圈）。
+        返回 `(ok, msg)`，`ok` 是**三态**：
+          · `True`  = 查过且通过（或本来就无处可验，如本层没入口梯 —— msg 里会写明）
+          · `False` = 查过且**没过**（调用方 raise `LandingBad` 停手）
+          · `None`  = **没验成**（换层还没站稳/端点没回话）—— 这是"不知道"，**不等于通过**，
+                      调用方只许如实记一笔，不许当绿灯。
+        ⚠️ 本函数**绝不偷偷 warp / position**（穿墙兜底是撤退链的事，得留痕、得恒知道）。
+        """
+        try:
+            time.sleep(0.25)      # 换层是异步的：别拿"半路的坐标"判落点
+            s = self.state()
+            p = s.get("player", {}) or {}
+            px, py = p.get("x"), p.get("y")
+            loc = s.get("location", {}).get("name", "")
+            lvl = level or extract_mine_level(loc) or 0
+            if px is None or py is None:
+                return None, f"读不到自己的坐标（loc={loc}）"
+            cur_lvl = extract_mine_level(loc)
+            if level and cur_lvl not in (None, level):
+                return None, f"刚换层还没站稳（state 还报 {loc}，等的是第 {level} 层）"
+
+            here = self._post("/passable", {"x": px, "y": py}) or {}
+            if not here.get("ok"):
+                return None, f"问 /passable 没回话（{here.get('error') or '空回包'}）"
+            if not here.get("passable"):
+                return False, (f"换到第 {lvl} 层后，我站的这格 ({px},{py}) **本身就不可站**"
+                               f"（墙/水/家具/岩石）—— 人是被塞进去的，继续炸只会越陷越深")
+
+            ent = self.find_entrance()
+            if not ent:
+                return True, f"第 {lvl} 层：我这格 ({px},{py}) 站得住；本层没报入口梯 ⇒ 跳过连通自检"
+            ex, ey = ent
+            rc = self._post("/passable", {"x": ex, "y": ey, "connectivity": True}) or {}
+            if not rc.get("ok"):
+                return None, f"问入口梯 ({ex},{ey}) 没回话（{rc.get('error') or '空回包'}）"
+            conn = rc.get("connectivity") or {}
+            if not conn.get("computed"):
+                return None, f"跨图/端点没算连通（{conn.get('why') or '没回 connectivity'}）"
+            if not conn.get("walkable"):
+                if not conn.get("connected"):
+                    extra = "**墙圈就把我和入口梯隔开了**（两把尺子都说不通）"
+                else:
+                    extra = ("墙圈说连着，但**腿走不过去**（多半是岩石/资源堆挡路 ⇒ 该先清路/炸开，"
+                             "别当永久隔区）")
+                return False, (f"换到第 {lvl} 层后，本层入口梯 ({ex},{ey}) **我走不到** —— {extra}；"
+                               f"我站在 ({px},{py})")
+            return True, f"第 {lvl} 层：落点 ({px},{py}) 站得住，入口梯 ({ex},{ey}) 走得到"
+        except Exception as e:
+            return None, f"自检抛异常（{e!r}）"
+
+    def _check_landing(self, new_level, old_level=None):
+        """换层成功后立刻跑一次 `verify_landing`：**没过就 raise `LandingBad`**，没验成只如实记一笔。"""
+        ok, why = self.verify_landing(new_level)
+        if ok is False:
+            raise LandingBad(
+                f"第 {old_level}→{new_level} 层落地自检没过：{why}"
+                "（⚠️ 停手，别再放炸弹/下楼；撤退链会逐级如实试，最后那一发 warp 会写在日志里）")
+        if ok is None:
+            log(f"  ⚠️ 落地自检**没验成**（不是通过）：{why}")
+        else:
+            log(f"  🩹 落地自检 ✓ {why}")
+
     # ═══════════ 战斗 ═══════════
 
     def nearby_monsters(self, radius=6, around=None):
@@ -2923,7 +3114,10 @@ class BombMiner(WeaponMixin):
             #      `⚠️ position (8,31) 被拒（不可走/孤岛）` ×3 ⇒ `站不上梯子` ⇒ 造楼梯 ⇒
             #      楼梯格**同样**被拒 ⇒ `撤退原因: 没梯子也没楼梯材料`（121 层就撤了）。
             #    ⇒ 这就是那条注释里说的"**明知要落不可走格**的特例"，必须显式关掉校验。
-            if not self.position_safe(lx, ly, exact=True, check_passable=False):
+            # ⚠️ 2026-10-31：墙圈闸改成默认开之后，这里同样必须显式 `check_connectivity=False` ——
+            #    梯子就是要去的**出口**，「即使它在另一胞腔，瞬移到梯子=成功逃出」（上面那条注释的原话）。
+            if not self.position_safe(lx, ly, exact=True,
+                                      check_passable=False, check_connectivity=False):
                 log(f"  ⚠️ 站不上梯子 ({lx},{ly})，重试 {attempt + 1}/3")
                 time.sleep(0.5)
                 continue
@@ -2932,6 +3126,7 @@ class BombMiner(WeaponMixin):
             if chk and chk > old_level:
                 self.mine_level = chk
                 log(f"  ⬇️ 站上梯子直接下到第 {chk} 层（跳了 {chk - old_level} 层）")
+                self._check_landing(chk, old_level)   # 🩹 换层落地自检（2026-10-31）
                 return True
             # 3. 切镐子（防 confirm 手持炸弹=放炸弹）+ confirm 下楼（竖井需交互确认"跳下去"）
             self.select_pickaxe()
@@ -2964,6 +3159,7 @@ class BombMiner(WeaponMixin):
                     self.mine_level = new_level
                     jump = f"（跳了 {new_level - old_level} 层）" if new_level - old_level > 1 else ""
                     log(f"  ⬇️ 下到第 {new_level} 层 {jump}")
+                    self._check_landing(new_level, old_level)   # 🩹 换层落地自检（2026-10-31）
                     return True
                 time.sleep(0.3)
             # 5. 没下去：下轮重试 position
@@ -2987,10 +3183,20 @@ class BombMiner(WeaponMixin):
     #   ① 返回权杖         → 落点=农场门口（游戏原生）
     #   ② 传送图腾：农场    → 落点=农场   （游戏原生）
     #   ③ 走回入口梯出矿    → 落点=矿口   （我们手写的）
-    #   ④ /warp 兜底       → 落点=矿口   （我们手写的）
+    #   ④ 贴恒             → 落点=恒身边（穿墙级；恒 2026-10-31 提议，见下面那段注释）
+    #   ⑤ /warp 兜底       → 落点=矿口   （我们手写的）
     # ⚠️ 山岭/沙漠/海滩图腾**一律不用**——恒："太远了，落到那里也不知道要干嘛"。
     # ⚠️ 每级都必须**校验落点**：`/warp` 回包里那个 `actual` 是**旧值**
     #    （2026-09-19 实测：回包写 Mine(23,8)，人其实已经在 Farm 了）⇒ 只认**另读的 /state**。
+    #
+    # 🆕 2026-10-31 恒提议 + 拍板：**③ 之后、`/warp` 之前插一级「贴恒」**（原话：
+    #    「如果玩家还在同矿井冲层能不能先传到玩家身边试试」）。理由就是那天卡墙的现场：
+    #    ① 返回权杖/② 图腾/③ 走回入口梯 全失败之后，`/warp` 会把人扔到**沙漠矿口**，
+    #    这一趟就结束了；而恒**本人就在同一个矿井里** —— 贴过去（同层直接 `position` 到恒邻格、
+    #    不同层先 `safe_warp` 到他那一层再贴）人还在矿里、还在恒身边，这趟**还能接着玩**。
+    #    ⚠️ 它与 `/warp` 是**同一类（穿墙级，不是走出来的）**，所以日志必须写明，不许含糊。
+    #    ⚠️ 它是**唯一**显式关掉墙圈闸的救援路（`check_connectivity=False`）——不关根本出不来：
+    #       闸比的永远是「目标格 vs **我当前格**」，人在墙圈里时外面任何一格都会被判"不同胞腔"。
     RETREAT_SCEPTER = "Return Scepter"
     RETREAT_TOTEM = "Warp Totem: Farm"
 
@@ -3076,7 +3282,11 @@ class BombMiner(WeaponMixin):
             p = self.state().get("player", {})
             if abs(p.get("x", 0) - ex) <= 1 and abs(p.get("y", 0) - ey) <= 1:
                 break
-            self.safe_walk_to(ex, ey, loc, timeout=20)   # 拟人：走过去，不 position
+            # 2026-10-31：走不通时**先敲挡路的石头再走**（`walk_to_with_clear`）——
+            #   "走不到入口梯"其实有两种：① 真隔区（敲也没用 ⇒ 它会如实回 False）；
+            #   ② **被岩石/矿堵住**（敲开就通）。以前这里只调 `safe_walk_to`，两种一律当"走不到"，
+            #   于是在一片还有救的台地上直接掉进 warp 兜底。
+            self.walk_to_with_clear(ex, ey)
         p = self.state().get("player", {})
         if abs(p.get("x", 0) - ex) > 1 or abs(p.get("y", 0) - ey) > 1:
             return False, f"走不到入口梯 ({ex},{ey})（现在 ({p.get('x')},{p.get('y')})）"
@@ -3097,6 +3307,55 @@ class BombMiner(WeaponMixin):
             return False, f"选了 Leave 但没出去（还在 {loc}）"
         return True, f"走出矿井→{new_pos[0]}({new_pos[1]},{new_pos[2]})"
 
+    def retreat_to_host(self):
+        """④ 贴恒（2026-10-31 恒提议 + 拍板）：同矿井就贴到他身边 —— 这趟还能接着玩。
+
+        恒的原话：「出现这种情况的时候，如果玩家还在同矿井冲层，能不能先传到玩家身边试试」。
+        为什么放在 `/warp` **之前**：`/warp` 会把人扔到**矿口/沙漠**，这一趟就结束了；
+        而恒本人就在同一个矿井里 —— 贴过去人还在矿里、还在恒身边。
+        ⚠️ 它与 `/warp` 是**同一类（穿墙级，不是走出来的）**，所以返回话术必须写明。
+        ⚠️ 必须**显式 `check_connectivity=False`**（墙圈闸默认已开）：那道闸比的永远是
+           「目标格 vs **我当前格**」，人在墙圈里时外面任何一格都会被判"不同胞腔" ⇒
+           **不关就一次都别想出去**（这正是恒担心的"会不会校验位置然后仍然 position 失败"）。
+           先例：`descend()` 站梯子格同样是"明知落不可走格 + 跨胞腔"，注释里已经讲透了。
+        返回 (ok, msg)。
+        """
+        try:
+            if not is_mine_location(self.host_location()):
+                return False, "恒不在矿井里（贴过去也没意义）"
+        except Exception:
+            return False, "读不到恒在哪（host 端口没回话）"
+        try:
+            hh = self.host_player() or {}
+            hlv = self.host_mine_level()
+            my_lvl = self.my_mine_level()
+        except Exception:
+            return False, "读不到恒的坐标/层数"
+        hx, hy = hh.get("x"), hh.get("y")
+        if hx is None or hy is None:
+            return False, "恒的坐标读不到（他没在线？）"
+        if hlv and my_lvl and hlv != my_lvl:
+            log(f"  🧭 恒在第 {hlv} 层、我在第 {my_lvl} 层 ⇒ 先 warp 到他那一层")
+            if not self.safe_warp(f"UndergroundMine{hlv}", x=5, y=5):
+                return False, f"warp 到恒那一层（第 {hlv} 层）失败或被拒"
+            time.sleep(0.8)
+            hh = self.host_player() or {}
+            hx, hy = hh.get("x"), hh.get("y")
+            if hx is None or hy is None:
+                return False, "到了恒那一层，却读不到他的坐标"
+        before = self._pos_now()
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            if not self.position_safe(hx + dx, hy + dy, check_passable=True,
+                                      check_connectivity=False):   # ★ 唯一显式 bypass，理由见 docstring
+                continue
+            now = self._pos_now()
+            if now[0] == before[0] and (now[1], now[2]) == (before[1], before[2]):
+                continue      # 位置根本没变（被拒/弹回）⇒ 不算"贴到了"
+            dist = abs((now[1] or 0) - hx) + abs((now[2] or 0) - hy)
+            return True, (f"⚠️ **穿墙级救援**：贴到恒身边 {now[0]}({now[1]},{now[2]})"
+                          f"（距他 {dist} 格；**这一下不是走出来的**，同 warp 一类）")
+        return False, f"恒旁边 ({hx},{hy}) 四个邻格都站不上/贴不过去"
+
     def _retreat_warp(self):
         """原 retreat_to_entrance 的裸 warp，补上落点校验。
         火山→IslandNorth(40,24)；头骨→Desert(8,6)；普通矿井→Mountain(54,5)。"""
@@ -3111,11 +3370,14 @@ class BombMiner(WeaponMixin):
         else:
             dest = ("Mountain", 54, 5)
         if self.safe_warp(*dest):
-            return True, f"warp 到 {dest[0]}({dest[1]},{dest[2]})"
+            # ⚠️ 2026-10-31：话术必须**如实**——这是穿墙，不是走出来的。
+            #    旧文案只写"warp 到 Desert(8,6)"，读日志的人（和 AI）会以为是一次正常收工。
+            return True, (f"⚠️ **穿墙级兜底**：warp 到 {dest[0]}({dest[1]},{dest[2]})"
+                          "（这一下**不是走出来的**；① ~ ④ 全都出不去才会走到这里）")
         return False, f"warp 到 {dest[0]} 失败或被拒"
 
     def retreat(self, reason):
-        """🏳️ 撤退：按定案四级链逐级降级，每级**校验落点**；全失败就明确报错，绝不谎报成功。
+        """🏳️ 撤退：按定案五级链逐级降级，每级**校验落点**；全失败就明确报错，绝不谎报成功。
         返回 True/False（调用方据此上报）。"""
         log(f"  🏳️ 撤退：{reason}")
         failed = []
@@ -3123,7 +3385,8 @@ class BombMiner(WeaponMixin):
             ("① 返回权杖", lambda: self._use_retreat_item(self.RETREAT_SCEPTER, "scepter", "返回权杖")),
             ("② 农场图腾", lambda: self._use_retreat_item(self.RETREAT_TOTEM, "read", "农场图腾")),
             ("③ 走回入口梯", self.retreat_leave_mine),
-            ("④ warp 兜底", self._retreat_warp),
+            ("④ 贴恒", self.retreat_to_host),
+            ("⑤ warp 兜底", self._retreat_warp),
         ):
             ok, msg = fn()
             log(f"    {label}：{msg}")
@@ -3255,7 +3518,10 @@ class BombMiner(WeaponMixin):
                     #    （是自己刚放下去的 `Staircase` 对象，站上去才会传层）⇒ 必须显式关校验。
                     #    真机现场（2026-10-03 深夜）：`position (20,19) 被拒（不可走/孤岛）` ⇒
                     #    `站不上楼梯格，放弃这轮` ⇒ `撤退原因: 没梯子也没楼梯材料`。
-                    if not self.position_safe(nx, ny, exact=True, check_passable=False):
+                    # ⚠️ 墙圈闸（2026-10-31 起默认开）这里也必须显式关：楼梯就是要去的**出口**，
+                    #    "它在另一胞腔"正是我们要过去的原因 —— 跟 `descend()` 站梯子格同一条道理。
+                    if not self.position_safe(nx, ny, exact=True,
+                                              check_passable=False, check_connectivity=False):
                         log(f"  ⚠️ 站不上楼梯格 ({nx},{ny})，放弃这轮")
                         return False
                     time.sleep(0.2)
@@ -3264,7 +3530,12 @@ class BombMiner(WeaponMixin):
                     self.key("confirm")
                     time.sleep(1.2)
                     new_level = self.my_mine_level()
-                    return new_level > 0 and new_level != old_level
+                    if new_level > 0 and new_level != old_level:
+                        # 🩹 2026-10-31：**造楼梯跳层也是"换层"** ⇒ 同样要落地自检
+                        #    （以前只有 `/warp` 之后跑 fix_landing，梯子/楼梯/竖井换层一律没人管）
+                        self._check_landing(new_level, old_level)
+                        return True
+                    return False
                 # 4 方向都不可放 → position 换落脚点（有空格的地方）再试
                 log(f"  🚶 楼梯周围放不上，position 换落脚点（第{_round+1}轮）")
                 spot = self.find_safe_spot((px, py), 3, radius=8, occupied=occupied,

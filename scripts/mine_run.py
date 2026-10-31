@@ -1528,7 +1528,7 @@ class MineBot(WeaponMixin):
         return picked
 
     def retreat(self, reason):
-        """🏳️ 撤退：复用 bomb_common 的四级链（返回权杖 > 农场图腾 > 走回入口梯 > warp）。
+        """🏳️ 撤退：复用 bomb_common 的五级链（返回权杖 > 农场图腾 > 走回入口梯 > 贴恒 > warp）。
         ⚠️ 2026-09-19：原来这里（run_rush 结尾）和 run_farm 结尾**各写死了一次**
         `warp("Mountain",54,5)`，还包在 `try/except: pass` 里——两份必然漂移，且失败也不知道。
         借 BombMiner 走同一条链（同 open_treasure_chests 的做法），落点与降级都有校验。

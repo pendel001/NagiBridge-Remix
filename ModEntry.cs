@@ -4853,6 +4853,12 @@ public class ModEntry : Mod
         var x = GetParam<int>(p, "x");
         var y = GetParam<int>(p, "y");
         bool allowWater = GetParamOr(p, "allowWater", false);
+        // 🧭 2026-10-31：可选 `connectivity=true` ⇒ 顺带回答"**从我现在站的这格，过不过得去**"。
+        //    动机（恒真机卡墙那天）：我们手上原本没有任何**只读**办法问"这一格跟我是不是同一片连通区"，
+        //    只能靠"发一发 /position 试试看"或"发 /walk_to 等 20 秒超时"——两种都会**动世界**。
+        //    有了它，换层后的落地自检（`bomb_common.verify_landing`）才能**只读**地问
+        //    "本层入口梯我走得到吗"，问完再决定要不要停。
+        bool wantConn = GetParamOr(p, "connectivity", false);
         // 🔍 2026-09-19 恒「要不要多一层保底，微调出入口的落点」：
         //    加**可选 `location`** —— 让人**不在那张图**时也能问"这格站得住吗"。
         //    动机：`MAP_LINKS`/`BUILDING_DOORS`/`ARRIVE`/`POI` 合计数百个落点，全是从 `/warps`
@@ -4934,7 +4940,43 @@ public class ModEntry : Mod
                     }
                     catch { }
                 }
-                tcs.SetResult(new { ok = true, passable, x, y, location = loc.Name, blocker });
+                // 🧭 可选 `connectivity=true`：回两个"从我现在这格过不过得去"的答案。
+                //    ⚠️ 两把尺子**故意不同**，而且都如实回 —— 别只回一个让调用方猜：
+                //      · `connected` = `ConnectedMapLayer`（**只看地图层**：墙/黑渊/建筑；
+                //        岩石/矿/水/家具**不算分界**）⇒ 这是**瞬移闸**的尺子（"传过去还回得来吗"，
+                //        矿井里石头是能炸开的，所以不算墙）。
+                //      · `walkable`  = `IsReachableByWalking`（**完整 IsTilePassable**：含岩石/矿/
+                //        资源堆/家具/水）⇒ 这是**走位**的尺子（"腿走得过去吗"）。
+                //    2026-10-31 那次卡墙，就是这两把尺子给了相反答案而**没人把两个都问出来**。
+                object? conn = null;
+                if (wantConn)
+                {
+                    var me = Game1.player;
+                    var myLoc = me?.currentLocation;
+                    if (me == null || myLoc != loc)
+                    {
+                        // 跨图问"连通"没有意义（起点在另一张图上）—— 如实说没算，别给个假答案
+                        conn = new { computed = false,
+                                     why = "起点不在该图（跨图没法算连通），只回了 passable" };
+                    }
+                    else
+                    {
+                        var cur = me!.TilePoint;
+                        bool connected, walkable;
+                        try { connected = ConnectedMapLayer(loc, cur, new Point(x, y)); }
+                        catch { connected = false; }
+                        try { walkable = IsReachableByWalking(loc, cur, new Point(x, y)); }
+                        catch { walkable = false; }
+                        conn = new
+                        {
+                            computed = true,
+                            fromX = cur.X, fromY = cur.Y,
+                            fromPassable = IsTilePassable(loc, cur, ignoreTransient: true),
+                            connected, walkable
+                        };
+                    }
+                }
+                tcs.SetResult(new { ok = true, passable, x, y, location = loc.Name, blocker, connectivity = conn });
             }
             catch (Exception ex)
             {
@@ -11152,10 +11194,43 @@ public class ModEntry : Mod
                 }
             }
             // ② 连通域：目标格必须与 AI 当前格同一个墙圈胞腔（防瞬移进隔区卡死）
+            // 🔴🔴 2026-10-31（恒真机：炸矿到最后「人卡进墙里」，靠打飞蛇 + 撤退链 warp 才出来）：
+            //    旧写法是 `if (IsTilePassable(loc, cur) && !ConnectedMapLayer(...))` ——
+            //    **起点不可站时整道闸被静默跳过**。而"站在梯子格上"是正常状态
+            //    （`descend()` 明知梯子格不可走、显式 `check_passable=False` 站上去）⇒
+            //    紧跟其后那一发瞬移**没有任何防隔区保护**，人被放进一片"站得住、但跟入口梯不是
+            //    同一片连通区"的台地里，走位尺又说"走不到" ⇒ 原地卡 40 秒被飞蛇咬到 64 血。
+            //    ⇒ 现在分三种，谁也不静默：
+            //      · 起点可站 → 正常查连通性（原行为）；
+            //      · 起点不可站但**是梯子/竖井** → 放行，回包如实标 `unverified_ladder`；
+            //      · 起点不可站、又不是梯子 → **拒绝并说明**（人真站在墙/水/家具里 = 已经出事，别再加一发瞬移）。
+            string connectivity = "checked";
             if (checkPassable && checkConnectivity)
             {
                 var cur = farmer.TilePoint;
-                if (IsTilePassable(loc, cur) && !ConnectedMapLayer(loc, cur, new Point(x, y)))
+                if (!IsTilePassable(loc, cur, ignoreTransient: true))
+                {
+                    if (IsLadderOrShaftTile(loc, cur))
+                    {
+                        connectivity = "unverified_ladder";
+                    }
+                    else
+                    {
+                        tcs.SetResult(new
+                        {
+                            ok = false,
+                            action = "position_rejected",
+                            reason = $"当前格 ({cur.X},{cur.Y}) 本身不可站（墙/水/家具/岩石），"
+                                   + "连通性没法算 ⇒ 拒绝这一发瞬移（宁报错别兜底）。"
+                                   + $"确实要落 ({x},{y})：显式传 check_connectivity=false",
+                            location = loc.Name,
+                            x = cur.X, y = cur.Y,
+                            connectivity = "unverifiable"
+                        });
+                        return;
+                    }
+                }
+                else if (!ConnectedMapLayer(loc, cur, new Point(x, y)))
                 {
                     tcs.SetResult(new
                     {
@@ -11197,7 +11272,10 @@ public class ModEntry : Mod
                 action = "positioned",
                 location = loc.Name,
                 x = farmer.TilePoint.X,
-                y = farmer.TilePoint.Y
+                y = farmer.TilePoint.Y,
+                // 🪜 只有"要求了墙圈校验"才会是 checked / unverified_ladder；
+                //    别的调用方（没要校验）拿到 null —— **别让它看起来像"验过了"**。
+                connectivity = (checkPassable && checkConnectivity) ? connectivity : (string?)null
             });
         });
         return tcs.Task.GetAwaiter().GetResult();
@@ -26145,6 +26223,58 @@ var tcs = new TaskCompletionSource<object>();
     }
 
     private static string cellKey(Point p) => p.X + "," + p.Y;
+
+    /// <summary>
+    /// 🪜 这一格是不是**梯子 / 竖井**（矿井里"站上去就传层"的那种特殊格）。
+    ///
+    /// 为什么非要单独认它（2026-10-31 落地）：`/position` 的**墙圈闸**（`check_connectivity`）
+    /// 要拿"你现在站的格"当 BFS 起点 —— 起点本身不可站时这趟 BFS 根本没法算。
+    /// 旧写法把它写成 `if (IsTilePassable(cur) &amp;&amp; !ConnectedMapLayer(...))`，
+    /// 于是**起点不可站 = 整道闸静默失效**；而"站在梯子格上"是**正常状态**
+    /// （`bomb_common.descend()` 明知它们不可走、显式 `check_passable=False` 站上去），
+    /// ⇒ 紧跟在"站梯子格"之后的那一发瞬移**完全没有防隔区保护**。
+    /// 正确做法：**认出是梯子/竖井 ⇒ 放行，但把"没验过"如实写进回包**（`connectivity: unverified_ladder`）；
+    /// 认不出的不可站 ⇒ 拒绝并说明（宁报错别兜底）。
+    ///
+    /// 判据照 `/ladder`（`HandleLadder`）：Buildings 层 **173 = 梯子 / 174 = 竖井**，
+    /// 外加 `netTileBeneathLadder`（入口梯**正下方**那格 = 人站的那格），
+    /// 以及 object 层上的梯子/竖井（打怪、敲石头爆出来的那种）。
+    /// </summary>
+    private static bool IsLadderOrShaftTile(GameLocation loc, Point tile)
+    {
+        try
+        {
+            // ① 入口梯正下方那格（/ladder 报的 entrance 就是它）
+            try
+            {
+                var f = loc.GetType().GetField("netTileBeneathLadder",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                if (f?.GetValue(loc) is Vector2 v && (int)v.X == tile.X && (int)v.Y == tile.Y)
+                    return true;
+            }
+            catch { }
+
+            // ② Buildings 层 173（下梯）/ 174（竖井）
+            var buildings = loc.Map?.GetLayer("Buildings");
+            if (buildings != null && tile.X >= 0 && tile.Y >= 0
+                && tile.X < buildings.LayerWidth && tile.Y < buildings.LayerHeight)
+            {
+                var t = buildings.Tiles[tile.X, tile.Y];
+                if (t != null && (t.TileIndex == 173 || t.TileIndex == 174)) return true;
+            }
+
+            // ③ object 层上的梯子/竖井（掉落生成的那种）
+            if (loc.objects != null
+                && loc.objects.TryGetValue(new Vector2(tile.X, tile.Y), out var obj) && obj != null)
+            {
+                var id = "";
+                try { id = obj.ItemId ?? ""; } catch { }
+                if (id == "173" || id == "174") return true;
+            }
+        }
+        catch { }
+        return false;
+    }
 
     /// <summary>
     /// 🚪 1.6 室内隔间门识别：该格是不是「同图隔间门」（非 warp，interact 开门、门格 passable false→true）。

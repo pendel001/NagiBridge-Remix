@@ -199,9 +199,9 @@ ck("…`find_safe_spot` 会问 `/passable`（**只读、不挪人**）", '"/pass
 ck("…候选按「优先 → 兜底」顺序**逐个**验", "for c in cands" in _fs and "cands.append(c)" in _fs)
 ck("…一个都不行 ⇒ `None`（宁报错别兜底）", "return None" in _fs)
 ck("…注释把恒**两次**报的现场都记着（2026-09-20 / 这次）", "2026-09-20" in _fs and "穿墙" in _fs)
-_ps = block(bc, r"    def position_safe\(", span=30)
-ck("…`position_safe` 的**默认**已改成 `check_passable=True`（堵住剩下所有入口）",
-   "check_passable=True, check_connectivity=False" in _ps)
+_ps = block(bc, r"    def position_safe\(", span=60)
+ck("…`position_safe` 的**两个闸默认全开**（可站 + 墙圈；2026-10-31 恒卡墙后堵上）",
+   "check_passable=True, check_connectivity=True" in _ps, _ps.splitlines()[0] if _ps else "(没找到)")
 ck("…注释记着「人进墙 ⇒ guard 贴不到脸 ⇒ 撤退路上被打死」这条后果",
    "guard" in _ps and "打死" in _ps)
 ck("…开箱站位 / 通用走过去 两处裸 `position` 也改了（`position_safe` + 不可站就报）",
@@ -211,10 +211,12 @@ print("⑫ 🪜 梯子格/楼梯格**必须显式关掉可站校验**（它们�
 # 真机现场（2026-10-03 深夜，我把 position_safe 默认改成校验之后**立刻**撞到）：
 #   `position (8,31) 被拒（不可走/孤岛）` ×3 ⇒ 站不上梯子 ⇒ 造楼梯 ⇒ 楼梯格同样被拒 ⇒
 #   `撤退原因: 没梯子也没楼梯材料`（恒看到的：「两个竖井，一把梯，又插一把，然后自己撤退了」）。
-ck("…梯子站位显式 `check_passable=False`",
-   "position_safe(lx, ly, exact=True, check_passable=False)" in bc)
-ck("…楼梯站位同样显式关掉",
-   "position_safe(nx, ny, exact=True, check_passable=False)" in bc)
+_ps_ladder = block(bc, r"position_safe\(lx, ly, exact=True", span=3)
+_ps_stair = block(bc, r"position_safe\(nx, ny, exact=True", span=3)
+ck("…梯子站位显式关掉**两个**闸（可站 + 墙圈；墙圈关掉的理由=梯子就是要去的出口）",
+   "check_passable=False, check_connectivity=False" in _ps_ladder, _ps_ladder[-160:])
+ck("…楼梯站位同样显式关掉两个闸",
+   "check_passable=False, check_connectivity=False" in _ps_stair, _ps_stair[-160:])
 ck("…两处注释都写明「它们本来就不可走」+ 真机现场",
    bc.count("本来就") >= 1 and bc.count("被拒（不可走/孤岛）") >= 1)
 
@@ -252,6 +254,50 @@ ck("…放之前先确认手持真是炸弹（读 `currentItem`）", "currentIte
 ck("…回包 `action == \"tool\"` 被视为「被 guard 抢了」并重选重试", '== "tool"' in _pb2 and "guard 抢" in _pb2)
 ck("…有重试次数上限（`for attempt in (1, 2, 3)`）", "for attempt in (1, 2, 3)" in _pb2)
 ck("…数炸弹兜底仍在（少了=放出去了）", "n_after < n_before" in _pb2)
+
+print("⑰ 🩹🧭 2026-10-31 恒卡墙那趟：换层落地自检 / ④ 贴恒 / 观测（防的是同一件事：人落在废格却没人知道）")
+# 现场：炸矿演示最后一层，人被瞬移进「站得住、但跟本层入口梯不是同一片连通区」的台地 ⇒
+#   之后每发 /walk_to 都被游戏判「不同连通区」⇒ 原地 40 秒、被飞蛇从 116 咬到 64 血 ⇒
+#   撤退链一路降级到 /warp 才出去（穿墙）。⇒ 四件事一起钉：
+#   ① 换层后必须自检（旧代码里 `fix_landing` **只在 /warp 之后**跑，换层根本没人管）
+#   ② 自检的红灯不许被半路的 `except Exception: pass` 吞掉
+#   ③ 撤退链多一级「贴恒」（恒自己提的），且它必须是**唯一**显式关墙圈闸的救援路
+#   ④ 观测补齐：脚本 POST 进 `_game_calls.log` + stdout 落盘（否则下次还是"只有十发、没有坐标"）
+_vl = block(bc, r"    def verify_landing\(", span=70)
+ck("…`verify_landing` 只用**只读**手段问（`/passable`，不再拿 /walk_to 等超时当判据）",
+   '"/passable"' in _vl and "walk_to_coord" not in _vl)
+ck("…它查两件事：我这格站得住 + 入口梯走得到（把 `connectivity` 两把尺子都问出来）",
+   '"passable"' in _vl and "walkable" in _vl and '"connectivity": True' in _vl)
+ck("…三态返回：True/False/**None = 没验成**（没验成 ≠ 通过）",
+   "return None" in _vl and "没验成" in bc)
+ck("…自检本身**绝不**偷偷 warp/position（穿墙兜底只归撤退链）",
+   "self.safe_warp(" not in _vl and "self.position_safe(" not in _vl)
+ck("…`descend()` 两条换层成功的路都调了自检", bc.count("self._check_landing(") >= 3)
+ck("…`LandingBad` 的父类是 **BaseException**（注释写明：用 Exception 会被半路 pass 静默吞掉）",
+   "class LandingBad(BaseException)" in bc and "静默吞掉" in bc)
+ck("…`bomb_mine.main()` 显式接住它并**走撤退链**（不是像死亡那样什么都不做）",
+   "except LandingBad" in bm and "bot.retreat(str(e))" in bm)
+ck("…撤退链真的有 ④ 贴恒，且排在 ⑤ warp **之前**",
+   '("④ 贴恒", self.retreat_to_host)' in bc
+   and 0 <= bc.find('("④ 贴恒"') < bc.find('("⑤ warp 兜底"'))
+_rh = block(bc, r"    def retreat_to_host\(", span=80)
+ck("…贴恒**显式关掉墙圈闸**（人在墙圈里时那道闸会让它 100% 失败 —— 恒担心的正是这点）",
+   "check_connectivity=False" in _rh)
+ck("…贴恒有「同层直接贴 / 不同层先 warp 过去」两条路", "hlv != my_lvl" in _rh and "safe_warp" in _rh)
+ck("…贴恒 / warp 的话术都写明「穿墙级」（不许让它看起来像走位）",
+   "穿墙级救援" in bc and "穿墙级兜底" in bc)
+ck("…③ 走回入口梯 改成「敲开挡路石头再走」（真隔区仍会如实失败，不当成功）",
+   "walk_to_with_clear(ex, ey)" in bc)
+ck("…炸矿的 POST 也进 `_game_calls.log`（`_trace_call`）",
+   "def _trace_call" in bc and '_trace_call(f"{base}{ep}", data)' in bc)
+ck("…脚本 stdout 额外落盘（`tee_stdout_to_log`）—— 下次能直接读现场",
+   "def tee_stdout_to_log" in bc and 'tee_stdout_to_log("bomb_mine")' in bm)
+ck("…C# 墙圈闸不再「起点不可站就静默跳过」，并认得梯子/竖井格",
+   "IsLadderOrShaftTile" in src(os.path.join("..", "ModEntry.cs"))
+   and "unverified_ladder" in src(os.path.join("..", "ModEntry.cs")))
+ck("…`/passable` 支持 `connectivity`（connected=墙圈尺 / walkable=走位尺，两个都回）",
+   "wantConn" in src(os.path.join("..", "ModEntry.cs"))
+   and "walkable" in src(os.path.join("..", "ModEntry.cs")))
 
 print()
 if fails:
