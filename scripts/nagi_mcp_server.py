@@ -5356,8 +5356,10 @@ def async_config(show: bool = False, add: str = "", remove: str = "", enable: st
 
     """
     global _ASYNC_SCRIPTS
-    # ⏰ wake=N：**每次"挂住等唤醒"最多挂多久**（恒 2026-09-24）。这个值同时就是**单次工具调用的时长**
-    #    —— 客户端超时小的就调小些；调小不影响结果，只是唤醒更勤、AI 多整理几次背包。
+    # ⏰ wake=N：**每次"挂住等唤醒"最多挂多久**（恒 2026-09-24）。
+    # ⚠️ 2026-10-31 更正：它**不再等于**"单次工具调用的时长" —— 真实挂住 = `min(wake, _BG_PARK_SLICE)`，
+    #    单片上限（现在 60s）是为了**让 `script stop` 进得来**（同步工具会挂住事件循环）。
+    #    ⇒ 调到超过 60 **不会更省回合**，只是写着好看；要更省回合得改架构，不是调这个数。
     if wake:
         try:
             _w = int(wake)
@@ -5367,7 +5369,10 @@ def async_config(show: bool = False, add: str = "", remove: str = "", enable: st
             return _with_state(f"❌ wake 要在 5~600 秒之间（收到 {_w}）——太长会顶到客户端超时")
         _bg_cfg["wake_interval"] = _w
         _settings_save()
-        return _with_state(f"⏰ 唤醒间隔已设为 {_w}s（脚本跑起来后，每次最多挂这么久就醒来一次）")
+        _eff = min(_w, _BG_PARK_SLICE)
+        _extra = "" if _w <= _BG_PARK_SLICE else (
+            f"；⚠️ 但单片上限是 {_BG_PARK_SLICE}s ⇒ **实际还是每 {_eff}s 醒一次**（调大它不会更省回合）")
+        return _with_state(f"⏰ 唤醒间隔已设为 {_w}s ⇒ 实际挂住 {_eff}s（脚本跑起来后，每次最多挂这么久就醒来一次）{_extra}")
     if enable:
         v = enable.strip().lower()
         if v in ("on", "1", "true", "yes", "开"):
@@ -5396,7 +5401,10 @@ def async_config(show: bool = False, add: str = "", remove: str = "", enable: st
     lines.append(f"  总开关: {'开' if _bg_cfg.get('auto_async', True) else '关'}（enable=on/off 切换；异步总开关 async on/off）")
     lines.append(f"  白名单({len(_ASYNC_SCRIPTS)}): {', '.join(sorted(_ASYNC_SCRIPTS))}")
     lines.append("  白名单脚本便利工具（go_fishing/mine_run/bomb_mine 等）自动后台跑，AI 不用手动后台")
-    lines.append(f"  唤醒间隔: {_bg_cfg.get('wake_interval', 60)}s（wake=N 改；**它同时是单次工具调用的时长**）")
+    lines.append(f"  唤醒间隔: {_bg_cfg.get('wake_interval', 60)}s（wake=N 改；"
+                 f"**实际挂住 = min(它, {_BG_PARK_SLICE}s)**）")
+    lines.append("    ⚠️ 那个 {0}s 上限的真正约束是**客户端工具超时**（默认 150s），"
+                 "不是 `script stop` —— stop 早就不受它影响了（工具已丢工作线程，补43）".format(_BG_PARK_SLICE))
     lines.append("  add=脚本名 加入 / remove=脚本名 移出")
     return _with_state("\n".join(lines))
 
@@ -10784,7 +10792,8 @@ def settings_status() -> str:
     lines.append(f"  🪓 砍树放行: {tt.allow_label(_chop_cfg.get('allow'))}"
                  f"（{tt.scope_note()}；settings chop 蘑菇树,桃花心木 / none / all）")
     lines.append(f"  ⏱️ 心跳间隔: {player_activity.get_interval()} 分钟（0=每次工具返回都显示）")
-    lines.append(f"  ⏰ 异步唤醒: {'开' if _bg_cfg.get('enabled', True) else '关'} / 间隔 {_bg_cfg.get('wake_interval', 30)}s"
+    lines.append(f"  ⏰ 异步唤醒: {'开' if _bg_cfg.get('enabled', True) else '关'} / 间隔 {_bg_cfg.get('wake_interval', 60)}s"
+                 f"（实际挂住 = min(它, {_BG_PARK_SLICE}s)；真正的约束是**客户端工具超时**）"
                  f" / 长脚本自动异步 {'开' if _bg_cfg.get('auto_async', True) else '关'}(settings async_tools)")
     lines.append(f"  🧠 会话 max_turns: {SESSION_CFG['max_turns']}")
     lines.append(f"  📤 会话导出(md): {SESSION_CFG['export_format']}"
@@ -12318,8 +12327,10 @@ def _in_thread(fn):
        **直接在事件循环里调的** —— `mcp/server/fastmcp/utilities/func_metadata.py:93-96`：
        `if fn_is_async: return await fn(**kw)` / `else: return fn(**kw)`，**没有 threadpool**。
        我们 16 个工具全是 `def` ⇒ 工具体里只要有一处长时间 `time.sleep`，**整个 :8000 一个请求都不接**。
-       最典型就是 `_bg_block_until_wake` 的"挂到唤醒"（默认 `wake_interval=180s`，见那段自己的注释
-       "这期间服务不接别的请求"）⇒ `script stop` **发不进来**、客户端超时成「❌ 无响应」。
+       最典型就是 `_bg_block_until_wake` 的"挂到唤醒"（实际挂住时长 = `min(wake_interval, _BG_PARK_SLICE)`，
+       单片上限现在是 **120s**）—— ⚠️ **但这条理由已经过期了**：工具的注册版已经丢进工作线程
+       （见 `:713-741` 那段，补43），事件循环空着 ⇒ 挂住期间 `script stop` 照样进得来。
+       现在限制挂住时长的**只剩客户端工具超时**（默认 150s）。这段留着是因为它记录了**当时**的病。
        真机：2026-10-06 钓着鱼想停，stop 那一发根本没被服务（最后是满包菜单把脚本停下的）；
        再往前 `map go` 跨图几十秒同族（恒早知道，代价一直记着）。
 
@@ -23216,11 +23227,27 @@ _BG_MAX_FINISHED = 5          # 最多留几个已完成任务（防内存膨胀
 _bg_jobs = {}                 # job_id -> _BgJob
 _bg_seq = 0
 _bg_lock = _threading.Lock()
-# ⏱️ **单片挂住上限**（秒）—— 见 `_bg_block_until_wake` 里那段长注释：
-#    同步工具的事件循环一挂住，整个 :8000 就不接请求（`script stop` 进不来）。
-#    30 = "stop 最迟半分钟进来" 与 "别把 AI 的回合切得太碎" 之间的折中；
-#    要更灵敏/更省回合，**只改这一个数**（`wake_interval` 比它短时仍以 `wake_interval` 为准）。
-_BG_PARK_SLICE = 30
+# ⏱️ **单片挂住上限**（秒）—— 见 `_bg_block_until_wake` 里那段长注释。
+#    ⚠️ 这个数**就是实际的唤醒间隔上限**：唤醒 = `min(wake_interval, _BG_PARK_SLICE)`
+#       ⇒ 就算 `wake_interval` 填 300，也是每 `_BG_PARK_SLICE` 秒醒一次。
+#
+#    📜 **它怎么来的（2026-10-31 挖 git 挖出来的，别再重复踩）**：
+#      · `e2ab1a0`（203z补41，修「钓鱼停不下来」那一笔）加的 `_BG_PARK_SLICE = 30`。
+#        当时工具全是**同步**的 ⇒ FastMCP 在事件循环里直接调 ⇒ 挂多久 `:8000` 就多久不接请求
+#        ⇒ `script stop` 递不进来。封顶 30 是那次的**唯一修法**。
+#        ⚠️ 副作用就是这一条：它把**所有**异步脚本的唤醒间隔一刀切成 30s，
+#          而 `settings.json` 里恒设的 `wake_interval=180` 从此**能设、能回执、但永远不生效**（假门）。
+#      · `394f5c5`（补43）已经把工具改成**丢工作线程**（`anyio.to_thread.run_sync`）⇒
+#        事件循环空出来了，**挂住期间 `script stop` 照样进得来**（真机判据：独立会话 3.8s 返回且脚本真停）。
+#      ⇒ **封顶的原始理由已经消失**，它现在是纯遗留。剩下唯一真正的约束是：
+#        **这一次工具调用要一直不返回，直到唤醒** ⇒ 客户端那边的**工具超时**必须比它长。
+#        代码里记的客户端超时默认 **150s** ⇒ 取 **120**（留 30s 余量）。
+#    🔧 2026-10-31 恒「**异步太频繁了，改一下间隔吧**」⇒ 30 → 60 → **120**。
+#       想上更久（他 settings 里写的是 180）：**必须先确认客户端工具超时 > 180s**，
+#       否则每次调用都会被客户端掐成「❌ 无响应」（脚本还在跑，AI 那边却只看到报错）——那是更糟的形态。
+#       ⚠️ 别再靠"调大这个数"去顶"停不下来"那件事：那件事补43 已经用**线程化**解决了，
+#          跟这个数现在没关系。
+_BG_PARK_SLICE = 120
 
 
 class _BgJob:
