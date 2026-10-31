@@ -270,6 +270,10 @@ ck("…它查两件事：我这格站得住 + 入口梯走得到（把 `connecti
    '"passable"' in _vl and "walkable" in _vl and '"connectivity": True' in _vl)
 ck("…三态返回：True/False/**None = 没验成**（没验成 ≠ 通过）",
    "return None" in _vl and "没验成" in bc)
+ck("…「回不到入口、但本层还有下楼梯」只 **warn** 不中断（否则跳洞撒点一次就白收工）",
+   '"warn"' in _vl and "has_down" in _vl and "不中断" in bc)
+ck("…`warn` 在 `_check_landing` 里**确实没 raise**（只 log）",
+   'ok == "warn"' in bc and "继续炸" in bc)
 ck("…自检本身**绝不**偷偷 warp/position（穿墙兜底只归撤退链）",
    "self.safe_warp(" not in _vl and "self.position_safe(" not in _vl)
 ck("…`descend()` 两条换层成功的路都调了自检", bc.count("self._check_landing(") >= 3)

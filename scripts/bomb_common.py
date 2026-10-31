@@ -2875,6 +2875,8 @@ class BombMiner(WeaponMixin):
         返回 `(ok, msg)`，`ok` 是**三态**：
           · `True`  = 查过且通过（或本来就无处可验，如本层没入口梯 —— msg 里会写明）
           · `False` = 查过且**没过**（调用方 raise `LandingBad` 停手）
+          · `"warn"` = 回不到入口梯、**但本层还有下楼梯** ⇒ 只警告、**继续炸**
+                       （跳竖井时游戏把落点撒成随机格，`MineShaft.cs:900-911`，落进别的口袋是常态）
           · `None`  = **没验成**（换层还没站稳/端点没回话）—— 这是"不知道"，**不等于通过**，
                       调用方只许如实记一笔，不许当绿灯。
         ⚠️ 本函数**绝不偷偷 warp / position**（穿墙兜底是撤退链的事，得留痕、得恒知道）。
@@ -2915,19 +2917,46 @@ class BombMiner(WeaponMixin):
                 else:
                     extra = ("墙圈说连着，但**腿走不过去**（多半是岩石/资源堆挡路 ⇒ 该先清路/炸开，"
                              "别当永久隔区）")
-                return False, (f"换到第 {lvl} 层后，本层入口梯 ({ex},{ey}) **我走不到** —— {extra}；"
-                               f"我站在 ({px},{py})")
+                where = f"我站在 ({px},{py})"
+                # 🚪 2026-10-31 补（恒点破 + 反编译核对）：「**回不到入口**」**不等于**「这层废了」。
+                #    反编译 `MineShaft.findLadder`（`MineShaft.cs:900-911`）：**跳竖井**时游戏会把
+                #    `tileBeneathLadder` **改成一个随机格**（判据 `isTileClearForMineObjects`：只要
+                #    "Stone 干净地面、没物体/没角色"，**完全不查连通性**）⇒ 跳洞落点经常在另一片
+                #    墙圈口袋里 —— 那是**游戏撒点**，不是我们 `/position` 塞的，而且**很常见**。
+                #    而 `descend()` 站梯子/楼梯是**显式关掉墙圈闸**的（瞬移过去 = 成功逃出）⇒
+                #    只要本层还有下楼梯/竖井，人在口袋里**照样能接着炸、照样能往下走**。
+                #    ⇒ 这一档只**大声警告、不中断**；"既回不到入口、又没有下楼梯"才是真卡死才 raise。
+                #    ⚠️ 不这么分，跳洞撒点一次就收工，会把本来能炸完的层全废掉（假失败）。
+                try:
+                    has_down = self.find_ladder() is not None
+                except Exception:
+                    has_down = None
+                if has_down:
+                    return "warn", (f"换到第 {lvl} 层后，本层入口梯 ({ex},{ey}) **我走不到** —— {extra}；"
+                                    f"{where}。⚠️ 但本层还有下楼梯 ⇒ **继续炸**"
+                                    f"（收工时出口只剩 ④贴恒 / ⑤warp，会留痕）")
+                if has_down is None:
+                    return None, f"入口梯走不到，而且问不到本层有没有下楼梯（/ladder 没回话）"
+                return False, (f"换到第 {lvl} 层后，**既走不到入口梯 ({ex},{ey})、本层也没有下楼梯** —— "
+                               f"{extra}；{where}")
             return True, f"第 {lvl} 层：落点 ({px},{py}) 站得住，入口梯 ({ex},{ey}) 走得到"
         except Exception as e:
             return None, f"自检抛异常（{e!r}）"
 
     def _check_landing(self, new_level, old_level=None):
-        """换层成功后立刻跑一次 `verify_landing`：**没过就 raise `LandingBad`**，没验成只如实记一笔。"""
+        """换层成功后立刻跑一次 `verify_landing`：**真卡死才 raise `LandingBad`**；
+        `"warn"`（回不到入口但本层还有下楼梯）只大声记一笔、**继续炸**；没验成也如实记。"""
         ok, why = self.verify_landing(new_level)
         if ok is False:
             raise LandingBad(
                 f"第 {old_level}→{new_level} 层落地自检没过：{why}"
                 "（⚠️ 停手，别再放炸弹/下楼；撤退链会逐级如实试，最后那一发 warp 会写在日志里）")
+        if ok == "warn":
+            # ⚠️ 这一档**故意不中断**：跳竖井时游戏会把落点撒成随机格（`MineShaft.cs:900-911`），
+            #    落进另一片口袋是常态；只要本层还有下楼梯，照样能炸、能往下走 ——
+            #    此时收工才需要 ④贴恒/⑤warp，日志里已经写明了。
+            log(f"  ⚠️ 落地自检**警告**（不中断，继续炸）：{why}")
+            return
         if ok is None:
             log(f"  ⚠️ 落地自检**没验成**（不是通过）：{why}")
         else:
