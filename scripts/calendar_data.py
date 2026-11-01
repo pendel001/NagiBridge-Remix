@@ -557,24 +557,42 @@ def get_next_festival(season: str, day: int) -> dict | None:
 # ═══════════════════════════════════════════
 #  NPC 生日
 # ═══════════════════════════════════════════
-
+#
+# 🔴 2026-11-01 恒真机：「**第二年才回来的肯特怎么第一年也显示生日**」——
+#    顺着这条查下去才发现：**这张表原来大面积错位**（不是只错一条）。旧表 vs wiki 四季生日表：
+#      spring 4 写成 Jas（真 **Kent**）· spring 7 写成 Vincent（真 **Lewis**）
+#      spring 10 写成 Kent（真 **Vincent**）· spring 19 写成 Pierre（真 **26**）
+#      spring 26 写成 Caroline（真 **Pierre**）· spring 27 写成 Elliott（真 **Emily**）
+#      summer 4 写成 Lewis（真 **Jas**）· summer 8 写成 Clint（真 **Gus**）
+#      summer 26 写成 Penny（真 **Leo**）· fall 2 写成 Pierre（真 **Penny**）
+#      winter 26 写成 Shane（真 **Clint**）· winter 27 写成 Emily（真 **没有 27**）
+#      **Alex 整个不在表里**（真：summer 13）
+#    ⇒ 按 wiki 四季页（Spring/Summer/Fall/Winter 各自的 Birthdays 表）**整表重建**，
+#      34 位可送礼村民，四季 8/9/8/9（夏冬各 9 —— 冬季页原话 "tied with Summer for most birthdays"）。
+#    ⚠️ 这张表**没有任何自动校验能兜住错数据**（游戏不通过 HTTP 报生日，`/state` 里也没有）⇒
+#      改它必须去 wiki 对，或者进游戏看日历。**别再凭记忆手敲。**
 BIRTHDAYS = {
-    ("spring", 4): "Jas 🎀",
-    ("spring", 7): "Vincent 🧒",
-    ("spring", 10): "Kent ⚔️（第二年才到镇上）",
+    # ── 春（8）────────────────────────────────────────────
+    ("spring", 4): "Kent ⚔️（**第一年在外服役，第二年春才回镇**）",
+    ("spring", 7): "Lewis 🧓（镇长）",
+    ("spring", 10): "Vincent 🧒",
     ("spring", 14): "Haley 👒",
-    ("spring", 19): "Pierre 🧑‍🌾",
-    ("spring", 26): "Caroline 🌸",
-    ("spring", 27): "Elliott ✍️",
-    ("summer", 4): "Lewis 🧓（镇长）",
-    ("summer", 8): "Clint 🔨（铁匠）",
+    ("spring", 18): "Pam 🚌",
+    ("spring", 20): "Shane 🐔",
+    ("spring", 26): "Pierre 🧑‍🌾",
+    ("spring", 27): "Emily ✨",
+    # ── 夏（9）────────────────────────────────────────────
+    ("summer", 4): "Jas 🎀",
+    ("summer", 8): "Gus 🍺（餐吧老板）",
     ("summer", 10): "Maru 🔬",
+    ("summer", 13): "Alex 🏈",
     ("summer", 17): "Sam 🎸",
     ("summer", 19): "Demetrius 🧪",
     ("summer", 22): "Dwarf ⛏️ (矮人)",
     ("summer", 24): "Willy 🎣（鱼店老板）",
-    ("summer", 26): "Penny 📚",
-    ("fall", 2): "Pierre 🧑‍🌾",
+    ("summer", 26): "Leo 🦜（姜岛来的孩子）",
+    # ── 秋（8）────────────────────────────────────────────
+    ("fall", 2): "Penny 📚",
     ("fall", 5): "Elliott ✍️",
     ("fall", 11): "Jodi 🏠",
     ("fall", 13): "Abigail 🎮",
@@ -582,6 +600,7 @@ BIRTHDAYS = {
     ("fall", 18): "Marnie 🐄（玛妮）",
     ("fall", 21): "Robin 🔨（木匠）",
     ("fall", 24): "George 👴",
+    # ── 冬（9）────────────────────────────────────────────
     ("winter", 1): "Krobus 👻（下水道）",
     ("winter", 3): "Linus ⛺（帐篷）",
     ("winter", 7): "Caroline 🌸",
@@ -590,10 +609,31 @@ BIRTHDAYS = {
     ("winter", 17): "Wizard 🧙（法师）",
     ("winter", 20): "Evelyn 👵",
     ("winter", 23): "Leah 🎨",
-    ("winter", 26): "Shane 🐔",
-    # 冬季额外
-    ("winter", 27): "Emily ✨",
+    ("winter", 26): "Clint 🔨（铁匠）",
 }
+
+# 🚪「**这个人什么时候才在镇上**」——生日是"人到场之后"才有意义的那件事。
+#    恒 2026-11-01：「第二年才回来的肯特怎么第一年也显示生日」。
+#    wiki《Kent》原话：away serving in the army **throughout the first year** and returns to
+#    live in the town **during spring of year two** ⇒ 第一年镇上压根没有他。
+#    ⚠️ 判据是"**他到了没有**"，不是"日历上有没有这一格"（游戏日历本身不按年份过滤）。
+#    值 = 第几年开始算他的生日。**只有肯特需要这一条**（别人都在镇上）。
+BIRTHDAY_ARRIVES_YEAR = {"Kent": 2}
+
+
+def _birthday_visible(text: str, year) -> bool:
+    """这一条生日**今年该不该显示**（Kent 第一年不显示；别人一直显示；空值不显示）。"""
+    if not text:
+        return False
+    name = str(text).split(" ")[0].strip()
+    need = BIRTHDAY_ARRIVES_YEAR.get(name)
+    if not need:
+        return True
+    try:
+        y = int(year or 1)
+    except Exception:
+        return True          # 年份读不到就别乱吞（宁可显示，也不假装"今天没人过生日"）
+    return y >= need
 
 # ═══════════════════════════════════════════
 #  商店营业时间
@@ -714,7 +754,7 @@ def get_today_info(season: str, day: int, year: int = 1) -> list:
 
     # 生日
     birthday = BIRTHDAYS.get(key)
-    if birthday:
+    if birthday and _birthday_visible(birthday, year):
         info.append(f"🎂 生日: {birthday}")
 
     return info
@@ -770,7 +810,7 @@ def build_calendar_line(season: str, day: int, day_index: int, year: int = 1) ->
 
     # 生日
     birthday = BIRTHDAYS.get((season.lower(), day))
-    if birthday:
+    if birthday and _birthday_visible(birthday, year):
         parts.append(f"🎂{birthday}")
 
     # 商店休息

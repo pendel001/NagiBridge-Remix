@@ -1563,6 +1563,23 @@ def _luck_flavor(luck) -> str:
     return "精灵非常不满"
 
 
+def _qi_gem_show(loc_name: str, menu_type: str, delta: bool) -> bool:
+    """💎 状态条上**齐钻那一行**要不要出现（判据只有这一处）。
+
+    恒 2026-11-01：「齐钻**不在核桃房**的话不用显示哦，只有核桃房买东西需要，
+    或者在矿井爆齐钻就数量变化才报」。
+    ⇒ 两个口子：
+      ① `delta` = **数量变了**（矿井爆出齐钻 / 在核桃房花掉）—— 在哪儿都报，因为那是"刚发生的事"；
+      ② 人在**核桃房**且**商店菜单开着**（那一刻齐钻就是钱，不是余额）。
+    ⚠️ 砍掉的是 2026-10-04 那版的第 ① 个口子「**每天第一发完整版状态条就报**」：
+       恒这次的原话是"不在核桃房不用显示"，早上那发也一样 —— 钱包余额不是每早要看的东西。
+    """
+    if delta:
+        return True
+    return (loc_name == "QiNutRoom"
+            and str(menu_type or "").lower().startswith("shop"))
+
+
 def _calendar_line(data: dict) -> str:
     """📅 日历常驻一行：节日/生日/商店休业。没有则返回空串。"""
     try:
@@ -2748,17 +2765,17 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
     #      —— 柜台名走的是同族的 `_peer_at_counter()`（见 `_peer_econ_observe` 里 `_at = _at_now`）。
     #      别把两者混成一条链，自验里也钉了"状态条不许再出现它返回的东西"。）
 
-    # 💎🌰 step2 变才报：齐钻 + 金核桃（2026-09-02 恒）。齐钻=矿/齐先生单变化才报、核桃房(QiNutRoom)全程常显；
-    #    金核桃只在姜岛变化才报。持久货币换天不重置基线 → 只在真变化时出现。（/state 尚无这两字段时 p.get=Null，自动静默）
+    # 💎🌰 齐钻 + 金核桃（2026-09-02 恒）。金核桃只在姜岛变化才报。
+    #    持久货币换天不重置基线 → 只在真变化时出现。（/state 尚无这两字段时 p.get=Null，自动静默）
     try:
         _qi = p.get("qiGems"); _wal = p.get("walnuts")
-        # 💎 2026-10-04 恒：「**齐钻也是。只报每天的详细版状态条第一下、获取时候报、
-        #    进核桃房打开商店菜单时报**，平时不用报」⇒ 三个口子（原来"在核桃房就每发都报"太吵）：
-        #      ① `full` = 每天那第一发完整版状态条；② `_delta_show` = 数量变了（刚拿到/刚花掉）；
-        #      ③ 核桃房**且商店菜单开着**（那一刻齐钻是钱，平时它既不是动作面也不是余额）。
-        if _qi is not None and (full or _delta_show("qi", _qi)
-                                or (loc_name == "QiNutRoom"
-                                    and str(((data.get("activeMenu") or {}).get("type") or "")).lower().startswith("shop"))):
+        # 💎 2026-11-01 恒：「**齐钻不在核桃房的话不用显示哦**，只有核桃房买东西需要，
+        #    或者在矿井爆齐钻就数量变化才报」⇒ 判据收进 `_qi_gem_show`（**只有那一处**）。
+        #    跟 2026-10-04 那版比，砍掉的是"**每天第一发完整版就报**"那个口子。
+        if _qi is not None and _qi_gem_show(
+                loc_name,
+                str(((data.get("activeMenu") or {}).get("type") or "")),
+                _delta_show("qi", _qi)):
             lines.append(f"💎 齐钻 {_qi}")
         if _wal is not None and _delta_show("walnut", _wal) and loc_name.startswith("Island"):
             lines.append(f"🌰 金核桃 {_wal}")
