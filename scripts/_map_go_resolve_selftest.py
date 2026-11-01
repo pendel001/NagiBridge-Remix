@@ -311,6 +311,26 @@ try:
         ck("⑭ …判据本身：精确名 ⇒ 闸/声明都不动它（`_variant_name_error`/`_variant_shortname_note` 皆空）",
            N._variant_name_error(_q) == "" and N._variant_shortname_note(_q) == "", "")
 
+    print("\n⑮ 英文显示名（2026-11-01 恒真机：「博物馆/图书馆的名字都识别不出来」）")
+    # 现场：09:02~09:03 连撞三发 —— `map go Museum` / `map go Library` / `map go Pierre`
+    #   全回「知识库没有」，AI 只好瞎试到 `ArchaeologyHouse` 才走通。
+    #   根因：别名表只有中文 + 内部键；AI 的地名知识是**英文 SDV**（见 `navigation._EN_SCENE_ALIAS`）。
+    for _q, _want in (("Museum", "ArchaeologyHouse"), ("Library", "ArchaeologyHouse"),
+                      ("museum", "ArchaeologyHouse"), ("library", "ArchaeologyHouse"),
+                      ("Archaeology House", "ArchaeologyHouse"),
+                      ("Pierre", "SeedShop"), ("Carpenter", "ScienceHouse"),
+                      ("Gus", "Saloon"), ("Skull Cavern", "SkullCave"),
+                      ("Ginger Island", "IslandSouth"), ("The Mines", "Mine")):
+        _got = N._resolve_scene_name(_q)
+        ck(f"⑮ `{_q}` ⇒ {_want}", _got == _want, _got)
+    ck("⑮ 认不出的**照旧不猜**（原样返回 ⇒ 门口报「知识库没有」）",
+       N._resolve_scene_name("Hollow Knight") == "Hollow Knight",
+       N._resolve_scene_name("Hollow Knight"))
+    ck("⑮ 英文表**只指向真键**（`_EN_SCENE_ALIAS` 非空，且每个值都在 MAP_LINKS）",
+       bool(N._EN_SCENE_ALIAS)
+       and all(_v in N.locations.MAP_LINKS for _v in N._EN_SCENE_ALIAS.values()),
+       sorted({_v for _v in N._EN_SCENE_ALIAS.values() if _v not in N.locations.MAP_LINKS}))
+
 finally:
     for k, v in _real.items():
         setattr(N, k, v)

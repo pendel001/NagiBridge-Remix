@@ -74,6 +74,22 @@ ck("…`farm` **不该**整域放行（菜单开着不能收菜/翻门）",
    "farm" not in M._MENU_GATE_DOMAINS_FULL_OK
    and not (M._MENU_GATE_OPS_OK.get("farm") or set()))
 
+print("④ 原生屏「别点这屏，走我们那条」的提示（2026-11-01 恒真机：捐赠/砸晶球走了原生菜单却零提示）")
+# 恒原话：「我们的捐赠和砸晶球都不走原生菜单，但是**没有任何对应提示、拦截或者路由**」
+# ⇒ 这两屏必须**两路都有话说**：状态条（`_menu_advice`，每次回包都带）与单子/闸门（`_close_hint`）。
+#   ⚠️ 这条钉的是**文案存在且点名真路**，不是真机行为（真机看 11-01 那两条 session 记录）。
+for _mt, _route in (("MuseumMenu", "menu donate"), ("GeodeMenu", "menu geodes")):
+    _adv = M._menu_advice(_mt, {"type": _mt})
+    ck(f"…`{_mt}`：状态条那一路（`_menu_advice`）有话说", bool(_adv), repr(_adv))
+    ck(f"…`{_mt}`：话里点名真路 `{_route}`", _route in _adv, repr(_adv))
+    _ch = M._close_hint(_mt)
+    ck(f"…`{_mt}`：单子/闸门那一路（`_close_hint`）也有话说", bool(_ch), repr(_ch))
+    # 🎯 恒 2026-11-01：「**AI 都没用我们的 intent 行为表**」⇒ 原生屏这句话里要顺手点名单子，
+    #   否则它只会记得"别点这屏"，不知道该走哪条（11-01 真机：57 次调用 intent 0 次）。
+    ck(f"…`{_mt}`：话里点名 `intent show`（单子上也有这行）", "intent show" in _adv, repr(_adv))
+    ck(f"…`{_mt}`：两路都不许叫它点右上角关闭键（这屏没有那个按钮）",
+       "upperRightCloseButton" not in _adv and "upperRightCloseButton" not in _ch, repr(_adv))
+
 print("")
 if fails:
     print(f"❌ {len(fails)} 条没过：")

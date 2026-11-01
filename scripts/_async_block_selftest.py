@@ -169,6 +169,18 @@ try:
     ck("`_im_run` 里那条保守判据在（已后台启动/还在跑/唤醒点 ⇒ maybe）",
        "已后台启动" in _insp.getsource(M._im_run), "")
 
+    print("\n⑤ 单片上限必须**压在前端 60s 超时之下**（恒 2026-11-01：「前端限制了 mcp 60s 内必须响应」）")
+    # 🔴 现场：0.9.2 把这数放到 90 ⇒ 每次"挂到唤醒"都被前端掐成「❌ 无响应」
+    #   （脚本还在跑、AI 只看到报错）—— 比"唤醒太频繁"更糟的形态。
+    #   ⚠️ 余量不是拍脑袋：唤醒文案里 `_host_name()` 一次 HTTP 实测最多 ~4s，之后还要拼状态条。
+    ck("…`_BG_PARK_SLICE` ≤ 50（60s 前端硬限 − 唤醒文案/状态条余量）",
+       M._BG_PARK_SLICE <= 50, f"现在是 {M._BG_PARK_SLICE}")
+    ck("…`_BG_PARK_SLICE` ≥ 30（再短就等于退回「每 30 秒醒一次」那个假门）",
+       M._BG_PARK_SLICE >= 30, f"现在是 {M._BG_PARK_SLICE}")
+    _shown = str(M.async_config(show=True))
+    ck("…`async show` 印的**实际挂住**与常量一致（文案不许和代码漂开）",
+       f"{M._BG_PARK_SLICE}s" in _shown, _shown[:220])
+
     print("\n" + ("=" * 46))
     print("❌ 失败 " + str(len(FAIL)) + " 项: " + ", ".join(FAIL) if FAIL else "✅ 全过（0 失败）")
 finally:

@@ -1538,6 +1538,47 @@ SCENE_NAME_ALIAS = {
 }
 
 
+# 🌐 英文地名别名（2026-11-01 恒真机）：「博物馆/图书馆的名字识别不出来」——
+#   真机 09:02~09:03 连撞三发：`map go Museum` / `map go Library` / `map go Pierre`
+#   全回「知识库没有」，AI 只好瞎试到 `ArchaeologyHouse` 才走通。
+#   根因：AI 的地名知识是**英文 SDV**（英文 wiki/英文 UI），而 `SCENE_NAME_ALIAS` 只有中文
+#   + 内部键（CamelCase）⇒ 英文显示名一个都不认。
+#   ⚠️ **只做"归一后精确命中"**（`_norm_key`：小写+去空格），不做编辑距离 ——
+#     认不出就照旧报错（宁报错别兜底，同 `_norm_key` 那条规矩）。
+#   ⚠️ 只收**不会错**的：建筑/店名 + 店主名（中文表本来就有"皮埃尔→SeedShop"这种先例）。
+#     移动中的 NPC（Gunther 之类）**不收** —— 他不在那座建筑里时就是假路。
+_EN_SCENE_ALIAS = {
+    # 🏛️ 镇上的建筑（显示名 ≠ 内部键的那种最坑）
+    "museum": "ArchaeologyHouse", "library": "ArchaeologyHouse", "archaeology": "ArchaeologyHouse",
+    "pierre": "SeedShop", "pierres": "SeedShop",
+    "carpenter": "ScienceHouse", "carpenters": "ScienceHouse", "robin": "ScienceHouse", "robins": "ScienceHouse",
+    "marnie": "AnimalShop", "marnies": "AnimalShop", "ranch": "AnimalShop",
+    "willy": "FishShop", "willys": "FishShop", "fishstore": "FishShop",
+    "clint": "Blacksmith", "clints": "Blacksmith",
+    "harvey": "Hospital", "harveys": "Hospital", "clinic": "Hospital", "doctor": "Hospital",
+    "gus": "Saloon", "bar": "Saloon", "pub": "Saloon",
+    "guild": "AdventureGuild", "adventurersguild": "AdventureGuild", "marlon": "AdventureGuild",
+    "casino": "Club", "gambling": "Club",
+    "sandy": "SandyHouse", "sandys": "SandyHouse", "oasis": "SandyHouse",
+    "krobus": "Sewer", "sewer": "Sewer", "sewers": "Sewer",
+    "wizard": "WizardHouse", "wizardtower": "WizardHouse", "magictower": "WizardHouse",
+    "spa": "BathHouse_Entry", "bathhouse": "BathHouse_Entry", "pool": "BathHouse_Pool",
+    "theater": "MovieTheater", "theatre": "MovieTheater", "movie": "MovieTheater", "cinema": "MovieTheater",
+    # 野外/矿
+    "mines": "Mine", "themines": "Mine", "cavern": "SkullCave", "skullcavern": "SkullCave",
+    "mountains": "Mountain", "communitycenter": "CommunityCenter", "cc": "CommunityCenter",
+    # 姜岛
+    "island": "IslandSouth", "gingerisland": "IslandSouth", "ginger": "IslandSouth",
+    "volcano": "VolcanoDungeon0",
+}
+# ⚠️ 指向的键必须真在 `MAP_LINKS` 里（否则 `map go` 会拿着一个"看起来像真键"的假键去报
+#   「知识库没有「X」」—— 比不认还难查）。写错就 import 期当场炸。
+for _en_a, _en_k in _EN_SCENE_ALIAS.items():
+    if _en_k not in locations.MAP_LINKS:
+        raise RuntimeError(f"_EN_SCENE_ALIAS 指向了不存在的 MAP_LINKS 键：{_en_a} -> {_en_k}")
+del _en_a, _en_k
+
+
 def _norm_key(s):
     """🔤 英文地名归一：小写 + 去空格（"farm"→"farm"、"Skull Cave"→"skullcave"）。
 
@@ -1816,6 +1857,9 @@ def _resolve_scene_name(name):
         _vh = _MAP_KEYS_CI.get(_norm_key(_v))
         if _vh:
             return _vh
+        _evh = _EN_SCENE_ALIAS.get(_norm_key(_v))
+        if _evh:
+            return _evh
         if _v in SCENE_NAME_ALIAS:
             return SCENE_NAME_ALIAS[_v]
         if _v in locations.POI:
@@ -1828,6 +1872,10 @@ def _resolve_scene_name(name):
     _hit = _MAP_KEYS_CI.get(_norm_key(s))
     if _hit:
         return _hit
+    # 1.6 🌐 英文显示名（museum/library/carpenter…，见 `_EN_SCENE_ALIAS` 顶上那段）
+    _enh = _EN_SCENE_ALIAS.get(_norm_key(s))
+    if _enh:
+        return _enh
     # 2. 精确命中别名
     if s in SCENE_NAME_ALIAS:
         return SCENE_NAME_ALIAS[s]
@@ -3872,8 +3920,10 @@ def _map_go_body(destination: str = "", npc: str = "") -> str:
                              if _mb.get("location") == loc else "")
                     return _with_state(f"🗺️ 已到邮箱旁 ({loc} {x},{y}){_pre}{_next}")
                 return _with_state(f"🗺️ 已到「{destination}」门口 ({loc} {x},{y}){_pre}（建筑门，进屋用 interact）")
-            return _with_state(f"🗺️ 知识库没有「{dest}」的地点链接（试试 SeedShop/Town/Mine…）"
-                               f"{_near_map_hint(dest)}")
+            return _with_state(
+                f"🗺️ 知识库没有「{dest}」的地点链接 —— 换个名字再敲：中文名（博物馆/图书馆/铁匠铺/"
+                f"皮埃尔…）或内部键（ArchaeologyHouse/SeedShop/Town/Mine）；查名字用 `map lookup`"
+                f"{_near_map_hint(dest)}")
         # ⚠️ 未解锁地点拦截（2026-08-14 #13）
         _lock = _map_go_unlock_check(dest)
         if _lock:

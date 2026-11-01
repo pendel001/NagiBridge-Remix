@@ -499,6 +499,11 @@ def _close_hint(menu: str, content_on_sheet: bool = False) -> str:
         return ("🏛️ 博物馆捐赠屏：正事是**把可捐的矿物/古物捐掉** → `menu donate`"
                 "（它自己走到柜台、把可捐的一件件放好）；收掉走上面那行「关掉界面」"
                 "（这屏**没有**右上角关闭键）")
+    if "geodemenu" in m:
+        # 🪨 2026-11-01（同 `_menu_advice` 那批）：GeodeMenu 原来在这张表里**根本没有分支**，
+        #    ⇒ 单子里那句、以及菜单闸门拦下动作时的话（`_close_hint(menu)`）对它都是空的。
+        return ("🪨 砸晶球屏：正事是**砸** → `menu geodes count=N`（这屏我们不点）；"
+                "收掉 `menu cancel`（这屏没有右上角关闭键）")
     if "numberselectionmenu" in m:
         return ("🔢 数量框：填数 → `menu number value=N`（要按确认就 `confirm=true`）；"
                 "收掉走上面那行「关掉界面」（这屏**没有**右上角关闭键）")
@@ -716,7 +721,7 @@ def _gated_tool(*dargs, **dkwargs):
         # 🔴 为什么（反编译实据，别删）：`mcp 1.28.1` 的 FastMCP 对**同步**工具是**在事件循环里直接调**的
         #    —— `mcp/server/fastmcp/utilities/func_metadata.py:93-96`：`else: return fn(**kw)`，**没有 threadpool**。
         #    我们 16 个工具原来全是 `def` ⇒ 工具体里一处长时间 `time.sleep`（最典型 = `_bg_block_until_wake`
-        #    的"挂到唤醒"，默认 180s；`_BG_PARK_SLICE` 封顶 30s）就把**整个 :8000 卡住不接请求**
+        #    的"挂到唤醒"，默认 180s；`_BG_PARK_SLICE` 现在封顶 45s）就把**整个 :8000 卡住不接请求**
         #    ⇒ 从外面发 `script stop` **递不进来**（真机 2026-10-06：同会话 26.0s / 独立会话 22.2s 都回「❌ 无响应」；
         #      而 git 实据显示 2026-09-24 改"真阻塞"**之前**异步分支是立刻 return ⇒ 那时 stop 一直可用）。
         # ⇒ 现在**事件循环只收发**，活干在工作线程里 ⇒ 长脚本照旧挂住 AI 那一回合（语义不变），
@@ -1762,6 +1767,23 @@ def _menu_advice(menu_type: str, active_menu: dict, active_event: dict = None) -
         return (f"🎓 精通**{mt.get('title') or mt.get('skill')}**碑，奖励是 {rw_txt}，"
                 f"但**现在领不了**（没有没花掉的精通等级）—— 先攒精通经验再来。"
                 f"`menu click(button=upperRightCloseButton)` 收掉")
+    # 🏛️🪨 2026-11-01（恒真机报警）：「**捐赠和砸晶球都不走原生菜单**，但是没有任何对应
+    #   提示、拦截或者路由」——这两屏我们**故意一个格子都不点**（走自己的 `/museum_donate`、
+    #   `/process_geode*`），而 `_menu_advice` 当时**两支都没有** ⇒ 状态条只印
+    #   「📋 菜单打开: MuseumMenu」，AI 只好在原生屏里瞎点（真机 09:50 / 11:00 各点空两次）。
+    #   ⚠️ 判据用**游戏报的菜单类型**（`/menu.type`），不认屏幕文字 —— 文字是本地化的
+    #      （同 `:3661` 那条规矩）。
+    #   ⚠️ 别写"点上面那行关掉界面"：那行只在单子里（`_menu_exit_of`），状态条上没有。
+    if m == "museummenu":
+        return ("🏛️ 博物馆捐赠屏（游戏原生摆放界面）——**这屏我们不点**："
+                "捐赠走 `menu donate`（一次把包里能捐的都捐上，可捐判据在游戏自己手里；"
+                "单子上那行 = `intent show` →「去博物馆捐赠」）；"
+                "收掉就 `menu cancel`（这屏没有右上角关闭键）")
+    if m == "geodemenu":
+        return ("🪨 砸晶球屏（游戏原生付费界面）——**这屏我们不点**："
+                "砸走 `menu geodes count=N`（它自己走到克林特柜台、按游戏顺序砸，每颗 25g；"
+                "单子上那行 = `intent show` →「砸 晶球」）；"
+                "收掉就 `menu cancel`（这屏没有右上角关闭键）")
     return ""
 
 
@@ -2960,6 +2982,16 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
                 _how = "menu click(option=N)"
             lines.append(f"🗳️ 选项: {' | '.join(opts)}")
             lines.append(f"→ **敲单子上的号最省事**（`intent show`）；要走裸 menu 就 {_how}")
+            # 🏛️🪨 2026-11-01（恒真机）：**在哪个柜台**就说哪句 —— 这两家的对话选项里
+            #   有一项会开"我们故意不点"的原生屏（博物馆摆放屏 / 晶球付费屏），
+            #   而 AI 看到选项时正是最容易点错的那一刻（它当时就是点了捐赠那一项）。
+            #   ⚠️ 判据按**地点**，不按选项文字 —— 文字是本地化的。
+            if loc_name == "ArchaeologyHouse":
+                lines.append("🏛️ 博物馆柜台：**捐赠那一项别点**（它开的是游戏原生摆放屏，我们不点）"
+                             "→ 走 `menu donate`；收藏奖励照旧点选项")
+            elif loc_name == "Blacksmith":
+                lines.append("🏪 克林特柜台：**砸晶球别点开原生那屏** → 走 `menu geodes count=N`"
+                             "（升级工具/买矿照旧点选项）")
             # 📌 沿革（`ask` ⇒ real=true / `npc` ⇒ 也要 real=true / 旧 DLL ⇒ 普通点 + 补救）
             #    已收进 `_question_needs_real`（**判据只有那一处**），原文留在 `_menu_advice`。
 
@@ -5339,11 +5371,12 @@ _ASYNC_SCRIPTS = {"mine_run", "fish_run", "bomb_mine", "bomb_volcano",
                   #    「摸动物」把那条 MCP 会话**整条搞死**了。机理（现在写清楚，别再踩）：
                   #    · FastMCP 对**同步**工具是**在事件循环里直接调**的（见 `_bg_block_until_wake` 那段）
                   #      ⇒ 同步跑多久，:8000 就多久不接请求；`pet_walk` 那次是 `timeout=300`。
-                  #    · 前端默认超时 **150s** ⇒ 300s 的同步调用**必然**被客户端放弃 ⇒
+                  #    · 前端工具超时 **60s**（2026-11-01 恒原话：「前端限制了 mcp 60s 内必须响应，
+                  #      不然超时」；**以前这里写的 150s 是错的**）⇒ 300s 的同步调用**必然**被客户端放弃 ⇒
                   #      客户端取消 + 我们的 handler 还在跑 ⇒ mcp 库 `AssertionError: Request already
                   #      responded to` ⇒ **TaskGroup 崩 ⇒ 会话被清**（前端拿着死 session id 一路 404）。
                   #    ⇒ 治疗办法就是进白名单：异步 = `_bg_start` + `_bg_block_until_wake`，
-                  #      **单片封顶 `_BG_PARK_SLICE`（30s）** ⇒ 工具一定在客户端超时之前返回。
+                  #      **单片封顶 `_BG_PARK_SLICE`（现在 45s）** ⇒ 工具一定在客户端超时之前返回。
                   #    ⚠️ 只加**能整条当"一个 op"跑完**的（走路型长活）；像 `feed_hay`/`trash_run`
                   #      这样**被多个内部流程复用**的先只进名单、**不改调用点**（内部流程要同步结果，
                   #      嵌套异步会变成"两拨东西同时指挥角色"——那正是这次事故的另一半）。
@@ -5358,8 +5391,9 @@ def async_config(show: bool = False, add: str = "", remove: str = "", enable: st
     global _ASYNC_SCRIPTS
     # ⏰ wake=N：**每次"挂住等唤醒"最多挂多久**（恒 2026-09-24）。
     # ⚠️ 2026-10-31 更正：它**不再等于**"单次工具调用的时长" —— 真实挂住 = `min(wake, _BG_PARK_SLICE)`，
-    #    单片上限（现在 60s）是为了**让 `script stop` 进得来**（同步工具会挂住事件循环）。
-    #    ⇒ 调到超过 60 **不会更省回合**，只是写着好看；要更省回合得改架构，不是调这个数。
+    #    单片上限（现在 45s）是为了**让 `script stop` 进得来**（同步工具会挂住事件循环）。
+    #    🔴 2026-11-01 恒：「前端限制了 mcp 60s 内必须响应」⇒ 上限从 90 收到 45
+    #    ⇒ 调到超过 45 **不会更省回合**，只是写着好看；要更省回合得改架构，不是调这个数。
     if wake:
         try:
             _w = int(wake)
@@ -5403,8 +5437,9 @@ def async_config(show: bool = False, add: str = "", remove: str = "", enable: st
     lines.append("  白名单脚本便利工具（go_fishing/mine_run/bomb_mine 等）自动后台跑，AI 不用手动后台")
     lines.append(f"  唤醒间隔: {_bg_cfg.get('wake_interval', 60)}s（wake=N 改；"
                  f"**实际挂住 = min(它, {_BG_PARK_SLICE}s)**）")
-    lines.append("    ⚠️ 那个 {0}s 上限的真正约束是**客户端工具超时**（默认 150s），"
-                 "不是 `script stop` —— stop 早就不受它影响了（工具已丢工作线程，补43）".format(_BG_PARK_SLICE))
+    lines.append("    ⚠️ 那个 {0}s 上限的真正约束是**前端工具超时 60s**（恒 2026-11-01 实测；"
+                 "以前这里写的 150s 是错的），不是 `script stop` —— stop 早就不受它影响了"
+                 "（工具已丢工作线程，补43）".format(_BG_PARK_SLICE))
     lines.append("  add=脚本名 加入 / remove=脚本名 移出")
     return _with_state("\n".join(lines))
 
@@ -12330,7 +12365,8 @@ def _in_thread(fn):
        最典型就是 `_bg_block_until_wake` 的"挂到唤醒"（实际挂住时长 = `min(wake_interval, _BG_PARK_SLICE)`，
        单片上限现在是 **120s**）—— ⚠️ **但这条理由已经过期了**：工具的注册版已经丢进工作线程
        （见 `:713-741` 那段，补43），事件循环空着 ⇒ 挂住期间 `script stop` 照样进得来。
-       现在限制挂住时长的**只剩客户端工具超时**（默认 150s）。这段留着是因为它记录了**当时**的病。
+       现在限制挂住时长的**只剩客户端工具超时**（**前端实测 60s**，恒 2026-11-01；老注释写的 150s 是错的）。
+这段留着是因为它记录了**当时**的病。
        真机：2026-10-06 钓着鱼想停，stop 那一发根本没被服务（最后是满包菜单把脚本停下的）；
        再往前 `map go` 跨图几十秒同族（恒早知道，代价一直记着）。
 
@@ -21724,6 +21760,14 @@ def read_menu() -> str:
                              "⛔ **别点 ok**（那等于把它扔地上，扔在水边还有**放生**的风险）。")
         if m.get("letterTitle"):
             lines.append(f"  📧 {m['letterTitle']}: {m.get('letterBody')}")
+        # 🏛️🪨 2026-11-01（恒真机）：「捐赠和砸晶球都不走原生菜单，但没有任何提示/拦截/路由」。
+        #   这两屏的正文本来是**一片空白**（`/menu` 对它们只报类型+按钮名）⇒ AI 只能瞎点
+        #   （真机 09:50 在 MuseumMenu、11:00 在 GeodeMenu 各点空一次，还都以为点到了）。
+        #   ⚠️ 话**只从 `_menu_advice` 取**（判据/措辞只有那一处），别在这另写一套。
+        if t in ("MuseumMenu", "GeodeMenu"):
+            _adv_native = _menu_advice(t, m)
+            if _adv_native:
+                lines.append(f"  {_adv_native}")
         return _with_state("\n".join(lines))
     except Exception as e:
         return _with_state(f"❌ 读取菜单失败: {e}")
@@ -22273,7 +22317,13 @@ def menu_click(option: int = -1, button: str = "", x: int = -1, y: int = -1, ite
                     f"⚠️ **还开着（{_last}）** —— 「{button}」连敲 3 次都没关上"
                     f"（不是「点了就好」的那种界面）。这一刻该怎么走：\n   {_close_hint(_last)}")
             return _with_state(f"🖱️ 已点击（{r.get('clicked')}{extra}）")
-        return _with_state(f"⚠️ {r.get('error', '点击失败')}")
+        # 🎯 2026-11-01 恒：「**AI 都没用我们的 intent 行为表**，不然可能还好办一点。但也不知道在
+        #   什么地方插引导」。真机统计：11-01 那场 **57 次调用、`intent` 0 次**。
+        #   ⇒ 引导插在**它已经点空的那一刻**：这时候它正缺"这一刻能做什么"，而单子就是那张表。
+        #   ⚠️ 别往每条回包上都加一句（那是噪声，喊久了它就不看了）——只在**失败当场**说一次。
+        return _with_state(f"⚠️ {r.get('error', '点击失败')}\n"
+                           f"🎯 别在这屏接着试：`intent show` 是「**这一刻能做什么**」的清单"
+                           f"（每条都写着该敲哪个工具，敲号即可）")
     except Exception as e:
         return _with_state(f"❌ 点击失败: {e}")
 
@@ -23241,15 +23291,17 @@ _bg_lock = _threading.Lock()
 #        事件循环空出来了，**挂住期间 `script stop` 照样进得来**（真机判据：独立会话 3.8s 返回且脚本真停）。
 #      ⇒ **封顶的原始理由已经消失**，它现在是纯遗留。剩下唯一真正的约束是：
 #        **这一次工具调用要一直不返回，直到唤醒** ⇒ 客户端那边的**工具超时**必须比它长。
-#        代码里记的客户端超时默认 **150s** ⇒ 取 **120**（留 30s 余量）。
-#    🔧 2026-10-31 恒「**异步太频繁了，改一下间隔吧**」，我先把 30→60，挖出补43 已线程化后改成 120，
-#       恒最后定 **90**（原话「90s吧好不好」）：比原来 30 少 2/3 的回合数，又给客户端超时（默认 150s）
-#       和将来想再调长留了余量。
-#       想上更久（他 settings 里写的是 180）：**必须先确认客户端工具超时 > 180s**，
-#       否则每次调用都会被客户端掐成「❌ 无响应」（脚本还在跑，AI 那边却只看到报错）——那是更糟的形态。
-#       ⚠️ 别再靠"调大这个数"去顶"停不下来"那件事：那件事补43 已经用**线程化**解决了，
-#          跟这个数现在没关系。
-_BG_PARK_SLICE = 90
+#    🔧 2026-10-31 恒「**异步太频繁了，改一下间隔吧**」：我先把 30→60，挖出补43 已线程化后改成 120，
+#       恒最后定 **90**（原话「90s吧好不好」）。
+#    🔴 2026-11-01 恒：「**前端限制了 mcp 60s 内必须响应，不然超时**。我们又得改回一分钟之内了」
+#       ⇒ 90 **必然**被前端掐掉（脚本还在跑，AI 那边只看到「❌ 无响应」—— 比"太频繁"更糟的形态）。
+#       ⇒ 定 **45**：60 − (唤醒文案里 `_host_name()` 一次 HTTP，实测最多 ~4s) − (状态条那一轮读数)
+#         ≈ 留 10s 余量。**同文件 `_CRAB_OP_BUDGET = 45`（`:13188`）取的就是同一个道理**
+#         （"刻意压在 MCP 客户端 60s 超时之下"），两处口径现在一致。
+#       ⚠️ 以前注释里写的"客户端超时默认 **150s**"是**错的**，已按恒原话改正（别再拿 150 去算余量）。
+#       ⚠️ 别再靠"调大这个数"去顶"停不下来"：那件事补43 已经用**线程化**解决，跟这个数没关系。
+#       ⚠️ 将来任何人想调大它，先问一句"**前端那 60s 松了吗**"——松了才有得谈。
+_BG_PARK_SLICE = 45
 
 
 class _BgJob:
@@ -23485,7 +23537,7 @@ def _bg_block_until_wake(job: "_BgJob") -> str:
     #      工具调用当场结束、服务空闲 ⇒ **stop 一直可用**（恒记的"钓鱼一直是异步可停"没错）。
     #      恒 2026-09-24 要的是"别让 AI 看到『已后台启动』就结束这一回合"，不是"停不下来"。
     #    ⇒ 所以把**单片**封顶到 `_BG_PARK_SLICE` 秒：AI 那侧照旧"阻塞到唤醒点"（一个字不变），
-    #      只是**每片之间服务是活的** ⇒ stop 最迟 30 秒进得来（客户端超时默认 150s，绰绰有余）。
+    #      只是**每片之间服务是活的** ⇒ stop 最迟 45 秒进得来（**前端硬限 60s**，恒 2026-11-01）。
     interval = min(interval, _BG_PARK_SLICE)
     t0 = time.time()
     while time.time() - t0 < interval:
@@ -29533,7 +29585,8 @@ navigation.bind(
 #      （`menu` → `read_menu()`）、自验也直接 `M.daily(...)` —— 名字若变成 async，那些直调会拿到
 #      coroutine（**自验里当场炸过**）⇒ 模块名**必须**留同步版。
 #    ⚠️ 闸门深度 `_MENU_GATE_DEPTH` **必须是线程局部**（`:697`）：并发调用否则互相算错闸门深度。
-#    🧱 第二层保险：`_BG_PARK_SLICE = 30`（补41）仍然在，把"挂到唤醒"的每片封顶 30 秒。
+#    🧱 第二层保险：`_BG_PARK_SLICE`（补41 立的那道"单片封顶"，现在 **45s**，见 `:23268`）仍然在，
+#       把"挂到唤醒"的每片封顶（前端 60s 超时之下，恒 2026-11-01）。
 # 🪦 **历史路标：补41 `91d5eee` 那版"丢线程"是失败的尝试，别再照它改回去** ——
 #    当时挂在两处：① 直接把工具函数换成 async ⇒ 模块名变 coroutine，自验当场炸；
 #    ② 只换注册表里的函数对象 ⇒ 不生效，因为那时 `_gated_tool` 包出来的 `_inner` 还是**同步**的，
