@@ -1563,6 +1563,48 @@ def _luck_flavor(luck) -> str:
     return "精灵非常不满"
 
 
+# 🔇 **机制类警报：只给人看（SMAPI 日志/`/alerts`），不进 AI 的状态条**
+#
+# 恒 2026-11-01：「（`现在这个门：到（54,3）的唯一的路…`）这是什么，**机制方面不必和 ai 说吧**」
+#   ⇒ `walk_cross_warp` 那句话讲的是**我们自己的实现选择**：
+#     "BFS 把门/传送格挡住 ⇒ 改按原路走 ⇒ 踩上那格让游戏原生 warp 换图（不是我们自己算的兜底 warp）"。
+#     对 AI 的下一步**一点用都没有**，而且它被标成 `warning` ⇒ 每条状态条顶上挂一个 ⚠️，**像出了事**。
+#   ⇒ 这一种直接不渲染：**换图这件事本来就写在 `walk_to` 的回执里**（到了哪张图、哪个格）。
+# ⚠️ 别把这里当"消音垃圾桶"：只有**纯机制**的才进这张表。
+#    `walk_teleport`（真·穿墙瞬移）**必须留着** —— 那条是"你这次没走到"，AI 得知道。
+_ALERT_MECHANISM_ONLY = {"walk_cross_warp"}
+
+# 🗣️ **机制类警报的人话改写**：类型还在（AI 该知道"发生了什么"），但**不留开发话术**。
+#    · `walk_teleport`：C# 原话是 `BFS failed, teleporting to (x,y)` —— 英文 + 纯实现细节，
+#      而 AI 真正要知道的是**语义**："这一段不算走到"。所以改写成结果层那句。
+#    （`walk_failed` 原话本来就是中文人话："走不到 X (x,y)，附近也没有可站格——原地不动" ⇒ 不用改。）
+_ALERT_AI_WORDING = {
+    "walk_teleport": ("⚠️ 这一段**没走过去**：游戏直接把你挪过去了（**不是走位**）——"
+                      "位置变了，但这次**不算走到**。要真走就重新 `walk_to`，或者换条路。"),
+}
+
+
+def _ai_visible_alerts(alerts, severities=("warning", "error")) -> list:
+    """状态条上该出现的警报（机制类不进 / 机制话术改写成结果层）。
+
+    判据只有这一处：状态条那行 `warnings = _ai_visible_alerts(alerts)`。
+    """
+    out = []
+    for a in (alerts or []):
+        if not isinstance(a, dict):
+            continue
+        _t = str(a.get("type") or "")
+        if _t in _ALERT_MECHANISM_ONLY:
+            continue
+        if a.get("severity") not in severities:
+            continue
+        _w = _ALERT_AI_WORDING.get(_t)
+        if _w:
+            a = dict(a, message=_w)     # 别改原对象（`/alerts` 那份还要给日志/别人看）
+        out.append(a)
+    return out
+
+
 def _qi_gem_show(loc_name: str, menu_type: str, delta: bool) -> bool:
     """💎 状态条上**齐钻那一行**要不要出现（判据只有这一处）。
 
@@ -3157,7 +3199,7 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
 
     # ── 系统警报（必选） ──
 
-    warnings = [a for a in alerts if a.get("severity") in ("warning", "error")]
+    warnings = _ai_visible_alerts(alerts)
     # 🔧 2026-09-04 恒：/alerts 用 peek=True 不消费 → 旧"inventory_full:36/36"会一直重播（背包已腾出空位还报满）。
     #    按 type 去重留最新 + inventory 用即时格数覆写，纠正"实际格子数"。
     latest = {}
