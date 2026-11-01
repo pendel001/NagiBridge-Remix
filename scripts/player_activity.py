@@ -806,9 +806,30 @@ def describe_activity(state_data: dict) -> str:
             return f"💬 **{name}** 和 {names} 在一起"
 
     # 节日
-    for keyword, display in FESTIVAL_LOCATIONS.items():
-        if keyword in loc_lower:
-            return f"🎉 **{name}** 正在{display}参加节日活动"
+    #
+    # 🔴 2026-11-01 恒：「还有这个"**恒在森林里参加节日**"hhh ai 吓了一跳"**今天哪儿有节日**"」。
+    #    病根：这一段原来**只拿地图名**去撞 `FESTIVAL_LOCATIONS`（town/beach/forest）
+    #    ⇒ **平时**站在镇上/海滩/森林 也会被播成"正在参加节日活动"——天天都可能误报，
+    #      而且它对 AI 是"事实陈述"（不是猜测），会让它去查一个根本不存在的事件。
+    #    ⇒ 现在要求两条**同时**成立：
+    #      ① **今天真有节日**（问 `calendar_data.FESTIVAL_LOCATIONS[(季,日)]`，不猜、不编）；
+    #      ② 而且**人就在这场节日的场地**（节日表里那张图）——或者就在节日临时图（`Temp`）。
+    #    ⚠️ 两条缺一：宁可不报（下面的兜底会老老实实说"发呆/歇脚"），也**不许**把平常日子播成节日。
+    _fmap = ""
+    try:
+        import calendar_data as _cal                     # 局部 import：本模块顶层不依赖日历
+        _t_now = (state_data.get("raw") or {}).get("time") or t or {}
+        _fmap = (_cal.FESTIVAL_LOCATIONS.get(
+            (str(_t_now.get("season") or "").lower(), int(_t_now.get("dayOfMonth") or 0))) or "")
+    except Exception:
+        _fmap = ""
+    if _fmap:
+        if loc_lower.startswith("temp") or "festival" in loc_lower:
+            _disp = FESTIVAL_LOCATIONS.get(str(_fmap).lower(), "节日场地")
+            return f"🎉 **{name}** 正在{_disp}参加节日活动"
+        for keyword, display in FESTIVAL_LOCATIONS.items():
+            if keyword in loc_lower and keyword in str(_fmap).lower():
+                return f"🎉 **{name}** 正在{display}参加节日活动"
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     #  第 7 级：兜底（发呆需静止 N 秒；刚停下不算发呆）
