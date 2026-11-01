@@ -77,6 +77,19 @@ def main():
         for nm, val in _saved.items():
             setattr(M, nm, val)
 
+    print("\n⑥ `map query` 的英文名兜底（2026-11-01 重启后真机冒烟逮到的）")
+    # 现场：`map query function="Museum"` 回「没找到」——它只在**中文** POI 说明里找 `museum`；
+    #      而 `map go Museum` 是认的 ⇒ 同一个名字两条路一个认一个不认。
+    # 修法：`map_query` 在放弃前先用 `navigation._resolve_scene_name()` 翻成场景键，
+    #      再把**那张图上的 POI** 摊出来。这里钉"那段代码真的在"（行为要真机/联网才跑得到）。
+    import inspect as _insp
+    _qsrc = _insp.getsource(M.map_query)
+    ck("…`map_query` 里有英文别名兜底（调 `_resolve_scene_name`）",
+       "_resolve_scene_name(function)" in _qsrc, "")
+    ck("…兜底要给**那张图上的点**（不是只回一个图名）", "这图上的点" in _qsrc, "")
+    ck("…翻不出照旧报「没找到」（宁报错别兜底）",
+       "没找到「{function}」" in _qsrc, "")
+
     print()
     if FAIL:
         print(f"❌ {len(FAIL)} 项没过: {FAIL}")

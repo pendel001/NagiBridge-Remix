@@ -67,3 +67,6 @@ scripts/_copy_review_packets.json
 #   它是我们自己的开发账（含大量原话/坐标/过程），公开版不带它；
 #   代码与文档里写「见 CHANGELOG」的地方，对外读者请以代码/README 为准。
 CHANGELOG.md
+
+# 🧠 异地同步用的记忆库快照（不是仓库内容；拷完对方机器就该删）
+_memory_transfer_*.zip

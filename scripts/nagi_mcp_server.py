@@ -6167,6 +6167,24 @@ def map_query(function: str) -> str:
                 if any(k.lower() in hay.lower() for k in kws):
                     hits.append((1, f"🌰 {u['name']}", f"{u['desc']}｜{u['where']}｜{u['cost']}核桃"))
         if not hits:
+            # 🌐 2026-11-01（重启后真机冒烟逮到的）：`map query Museum` 回「没找到」——
+            #   因为它在**中文** POI 说明里找 `museum` 这几个字母，当然找不到；
+            #   而 `map go Museum` 是认的（`navigation._EN_SCENE_ALIAS`）。
+            #   ⇒ 同一个名字，两条路不该一个认一个不认：这里用**同一张别名表**翻成场景键，
+            #     再把**那张图上的兴趣点**摊出来 —— 那正是"博物馆在哪"的答案。
+            #   ⚠️ 翻不出就照旧报"没找到"（宁报错别兜底，同 `_resolve_scene_name` 的规矩）。
+            _scene = ""
+            try:
+                _scene = navigation._resolve_scene_name(function) or ""
+            except Exception:
+                _scene = ""
+            if _scene and _scene in locations.MAP_LINKS:
+                _pois = [n for n, p in (locations.POI or {}).items()
+                         if (p or {}).get("map") == _scene]
+                if _pois:
+                    hits.append((2, _scene, "这图上的点：" + "、".join(_pois[:8])
+                                 + (f" 等 {len(_pois)} 处" if len(_pois) > 8 else "")))
+        if not hits:
             return _with_state(f"🗺️ 没找到「{function}」相关地点——换个说法（买种子/钓鱼/挖矿/商店…）")
         lines = [f"🗺️ 「{function}」相关（含同义词）:"]
         for _score, loc_name, f in hits[:10]:
