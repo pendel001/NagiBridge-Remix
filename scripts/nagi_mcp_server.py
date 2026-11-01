@@ -7052,6 +7052,53 @@ def check_worn() -> str:
         return _with_state(f"❌ {e}")
 
 
+# 🏷️ 品质前缀（`/state` 的展示名可能带 `[金]` 这种；AI 抄过来时也带着）
+_QUALITY_PREFIXES = ("[铜]", "[铁]", "[银]", "[金]", "[铱]")
+
+
+def _norm_item_name(s) -> str:
+    """物品名归一：去品质前缀 + 去空白 + 小写（`[金]小嘴鲈鱼` ≡ `小嘴鲈鱼`）。"""
+    s = str(s or "").strip()
+    for _p in _QUALITY_PREFIXES:
+        if s.startswith(_p):
+            s = s[len(_p):].strip()
+    return "".join(s.lower().split())
+
+
+def _internal_item_name(name: str, inv: list = None) -> str:
+    """把 AI 说的物品名（**中文显示名** / 英文内部名 / 带品质前缀）翻成 C# 认的**内部名**。
+
+    ## 为什么必须有这一层
+    游戏那些端点全是 `item.Name.Equals(name)` —— **只认英文内部名**（`Straw Hat`），
+    而 AI 在状态条/背包里看到的是**中文显示名**（`草帽`）⇒ 它照抄中文就永远匹配不上。
+
+    ## 来历（两次真机，同一个形状）
+      · **2026-09-27 卖东西**：`sell_all` 报一串"没卖动的" —— `/state` 实测
+        `name='Driftwood' / displayName='浮木'`（那次的修法写在 `sell_to_shop` 里）。
+      · **2026-11-01 戴帽子**：恒「**戴不上帽子（不认中文）**，后来换英文试好了」——
+        `wear()` 没享受到 09-27 那次的修法 ⇒ `背包没有 '草帽'`。
+
+    ⚠️ **翻不出来就原样返回**（让 C# 如实报"背包没有"，我不在这编一个名字）。
+    ⚠️ 判据只有这一处：谁要往 C# 端点送 AI 给的物品名，都先过这儿，别再各写一份。
+    """
+    want = _norm_item_name(name)
+    if not want:
+        return name
+    try:
+        if inv is None:
+            inv = (api.state() or {}).get("inventory") or []
+    except Exception:
+        inv = []
+    for it in (inv or []):
+        if not isinstance(it, dict):
+            continue
+        for _k in ("displayName", "name"):
+            _v = it.get(_k)
+            if _v and _norm_item_name(_v) == want:
+                return it.get("name") or name
+    return name
+
+
 @mcp.tool()
 def wear(name: Optional[str] = None, slot: Optional[str] = None, hand: Optional[str] = None) -> str:
     """🧥 穿/脱穿戴物（一个工具搞定，脚本自动判槽位）
@@ -7069,12 +7116,18 @@ def wear(name: Optional[str] = None, slot: Optional[str] = None, hand: Optional[
         if not name and not slot:
             return _with_state("🎯 daily(ops=\"wear\", name=物品名) 穿上 或 daily(ops=\"wear\", slot=boots) 脱下（boots/leftRing/rightRing/trinket/hat）；戒指可加 hand=1/2 指定手")
         body = {}
-        if name: body["name"] = name
+        if name:
+            # 🏷️ 中文显示名 → 内部英文名（恒 2026-11-01：「戴不上帽子（**不认中文**）」）
+            body["name"] = _internal_item_name(name)
         else: body["slot"] = slot
         if hand: body["hand"] = hand
         r = api._ai_post("/equip", body)
         if not r.get("ok"):
-            return _with_state(f"❌ {r.get('error')}")
+            _err = str(r.get("error") or "")
+            if "背包没有" in _err:
+                _err += ("　（`name` 中文显示名/英文内部名都行；真没有的话先 `check backpack` "
+                         "看准确名字，别瞎试）")
+            return _with_state(f"❌ {_err}")
         if r.get("action") == "off":
             return _with_state(f"🧥 已脱下 {r.get('slot')}: {r.get('removed')}")
         replaced = r.get("replaced")
@@ -10604,6 +10657,22 @@ def cancel() -> str:
                            "⚠️ 还站在床格上的话，`isInBed` 会被**下一 tick 重设回 true**"
                            "—— 想真下来就 `walk_to` 走离床格")
     # 其它菜单：通用取消键 + menu_close
+    # 🔴 2026-11-01 恒：「**菜单已经执行了关掉了，但是提醒说菜单还在。再关一次，又说已经没有菜单了**」
+    #   ⇒ 老代码这里**三处都不诚实**：
+    #     ① 无条件回「已按取消键/关掉弹窗」—— 关没关掉**根本没看**；
+    #     ② 关完立刻 `_with_state` 拼状态条，而菜单可能还没真消失 ⇒ **同一屏**上既写"关掉了"
+    #        又挂着一行「📋 菜单打开: X」（就是恒看到的那种自相矛盾）；
+    #     ③ 压根没菜单时也照按 cancel —— 而 `key cancel` **在没有菜单时 = 挥工具**
+    #        （本项目栽过：`clear_area.py:431`、`intent_menu.py:1716`）。
+    #   ⇒ 现在三条都按"回读/别乱按"改：先看有没有；按完**轮询回读**；只说读得到的结果。
+    _was = ""
+    try:
+        _was = _menu_gate_now(fresh=True) or ""      # 关之前是什么（绕过 TTL 缓存）
+    except Exception:
+        _was = ""
+    if not _was:
+        # ⚠️ 别按！没菜单时按 cancel = 挥一下手里的工具（会砍/挖到面前的东西）。
+        return _with_state("🚶 现在没有菜单开着（不用关）")
     try:
         api.key("cancel", 1)
     except Exception:
@@ -10613,7 +10682,24 @@ def cancel() -> str:
         _menu_close()
     except Exception:
         pass
-    return _with_state("🚶 已按取消键/关掉弹窗")
+    # ✅ **回读**：菜单是不是真没了（最多再等 ~0.75s；`_MENU_GATE_CACHE` 每次作废读真值）
+    _left = ""
+    for _try in range(3):
+        _MENU_GATE_CACHE.update(ts=0.0, menu=None)
+        try:
+            _left = _menu_gate_now(fresh=True) or ""
+        except Exception:
+            _left = ""
+        if not _left:
+            break
+        time.sleep(0.25)
+    _MENU_GATE_CACHE.update(ts=0.0, menu=None)       # 收工：让下一个调用方读真值
+    if _left:
+        return _with_state(
+            f"⚠️ **还开着（{_left}）** —— 取消键 + `/menu_close` 都没关掉（连试 3 次）。"
+            f"**没关成就是没关成**，别当它关了。\n"
+            f"   这一刻该怎么走：{_close_hint(_left)}")
+    return _with_state(f"🚶 已关掉「{_was}」（回读确认过：现在没有菜单开着）")
 
 
 # ═══════════════════════════════════════════
@@ -20104,7 +20190,7 @@ def storage_tag(tag: str = "", target: str = "", color: str = "") -> str:
 def _drop_one(name: str, count: int = 1):
     """丢**一种**物品，返回 (成功?, 回话, 剩余格数)。"""
     _n0 = _inv_slots()
-    r = api._post("/drop", {"name": name, "count": count})
+    r = api._post("/drop", {"name": _internal_item_name(name), "count": count})
     if not r.get("ok"):
         return False, f"❌ {name}: 丢弃失败（{r.get('error', r)}）", r.get("inventoryLeft")
     # ⚠️ 2026-09-11：`removed=0` 以前也照报「已丢弃 … x0」⇒ 名字对不上时 AI 以为丢掉了。
@@ -20258,7 +20344,7 @@ def gift_npc(npc_name: str, item_name: str) -> str:
                 _internal = _fr3["npcs"][0].get("name") or npc_name
         except Exception:
             pass
-        r = api._post("/gift", {"target": _internal, "item": item_name})
+        r = api._post("/gift", {"target": _internal, "item": _internal_item_name(item_name)})
         if not r.get("ok"):
             return f"送礼失败: {r.get('error', r)}"
         d = r.get("delta", 0)
@@ -20316,7 +20402,7 @@ def give_item(player_name: str, item_name: str) -> str:
             _had = 0
         # ⏱️ 拟人节拍（恒 2026-09-19：「**第一次询和送礼请求发送成功之间隔五秒**（等接受礼物要时间）」）
         _gift_pace(_t0)
-        r = api._post("/gift", {"target": player_name, "item": item_name})
+        r = api._post("/gift", {"target": player_name, "item": _internal_item_name(item_name)})
         if not r.get("ok"):
             return _with_state(f"赠送失败: {r.get('error', r)}")
         # ⚠️ 2026-09-19 恒真机测出：玩家之间送礼走的是 **SendProposal**。
@@ -28025,10 +28111,10 @@ def _im_tank_swap(x, y, add_item="", add_item_id="", take_item="", take_item_id=
 def _im_close_menu() -> str:
     """🚪 关掉当前界面 —— 走现成的 `cancel()`，**然后回读核实**。→ 一句话。
 
-    ⚠️ 为什么要回读：`cancel()` 自己那句「已按取消键/关掉弹窗」是**发射后不管**的
-       （它打完键就返回，不看结果），对 `ShippingMenu` 那类"要点 ok 才算完"的界面
-       可能压根没关上 —— 而单子第一条规矩是「**出现的那条，按了就成**」。
-       不回读 = 又造一处"嘴上说成功"（今晚已经抓过两处了）。
+    ⚠️ 为什么这里还要再回读一次：`cancel()` 从 2026-11-01 起**自己就会回读**
+       （恒：「菜单已经关掉了，但提醒说菜单还在」⇒ 老 `cancel()` 是发射后不管 + 立刻拼状态条）。
+       这一层**多出来的是"重敲一次"**那步（见下面 10-04 那条：商店碎屑动画 ~0.7s 内取消键会被吞），
+       `cancel()` 内部只做"最多 3 次 × 0.25s"的轮询、**不会隔 0.8s 重敲** ⇒ 两条不冲突，别删任一条。
     ⚠️ 关不掉时**不编原因**，照搬 `_close_hint` 的原话 —— 那张表是"这个菜单怎么处理"的
        唯一出处，这儿再写一句就是第二份会漂的文案。
     ⚠️ 复用 `cancel()` 而不是在单子层另写一套：`ReadyCheckDialog` 那条特殊分支
