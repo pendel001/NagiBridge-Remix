@@ -22092,6 +22092,72 @@ def _maybe_egg_run_auto(data) -> str:
         return ""
 
 
+def _donate_option_here(option: int) -> bool:
+    """🏛️ 这一下点的是不是**博物馆柜台的「捐赠」**那一项。
+
+    ⚠️ 判据 = **游戏自己的 `responseKey`**（`/menu` 的 `responses[].key`，C# `ModEntry.cs:14141`
+       报的就是 `Response.responseKey`），**绝不认显示文本** —— 文本是本地化的
+       （同 `_im_menu_data` 那条规矩，恒 2026-11-01 现场就是中文屏）。
+    ⚠️ 还要求人**就在 `ArchaeologyHouse`**：C# 那个 `/museum_donate` 端点写死的正是这一座馆；
+       姜岛田野办公室（`IslandFieldOffice`）用同一批 key，但**不归它管** ⇒ 不接（宁可少接，别捐错馆）。
+    ⚠️ 老 DLL 不报 `key` ⇒ 一律 `False`（退回"照旧点"，行为与改动前一致 —— 不猜）。"""
+    try:
+        mj = api.menu() or {}
+    except Exception:
+        return False
+    if not isinstance(mj, dict) or not mj.get("open"):
+        return False
+    rs = mj.get("responses") or []
+    if not (0 <= option < len(rs)) or not isinstance(rs[option], dict):
+        return False
+    if str(rs[option].get("key") or "").strip().lower() != "donate":
+        return False
+    try:
+        loc = ((api.state() or {}).get("location") or {}).get("name") or ""
+    except Exception:
+        return False
+    return loc == "ArchaeologyHouse"
+
+
+def _reroute_museum_donate() -> str:
+    """🏛️ 「向博物馆捐赠」那一项的**改道**（恒 2026-11-01：「**3.支持做路由**」）。
+
+    ## 为什么要有它
+    这一项点下去开的是游戏**原生摆放屏** `MuseumMenu`——那屏我们**从来不点**（捐/摆全走自己的
+    `/museum_donate`，可捐判据在游戏 `IsItemSuitableForDonation` 手里）。真机 11-01 09:50：
+    AI 点了它 ⇒ 屏开了 ⇒ 在屏里连点空两下（`option=0` 没目标、`okButton` 白点）⇒ 一无所获，
+    而它当时手里**有可捐的东西**。
+
+    ## 做法（**明说改道，绝不静默** —— 它点的是 A，我们做的是 B，必须写在第一行）
+      ① 先把柜台那个对话框收掉：`museum_donate()` 里要 `walk_to` 柜台，**菜单开着会被闸门拦住**
+         （`_menu_gate`），不收就是必失败；
+      ② 收掉之后再读一次——**真的关了吗**（不收就如实说没改道，别硬跑）；
+      ③ 走**现成的** `museum_donate()`（不另写一套捐法，判据/走位都在它里面）；
+      ④ 回执第一行写清"改道"，后面原样带我们的自动捐结果。
+    """
+    _closed = ""
+    try:
+        _closed = str(cancel()).split(_STATE_SEP)[0].strip()
+    except Exception as e:                                    # noqa: BLE001
+        _closed = f"（收对话框时出错: {e}）"
+    _left = ""
+    try:
+        _left = ((((api.state() or {}).get("activeMenu") or {}).get("type")) or "")
+    except Exception:
+        _left = ""
+    if _left:
+        return _with_state(
+            f"🚧 **没能改道**：柜台那个对话框还开着（`{_left}`）——"
+            f"`menu donate` 要先走到柜台站好，**菜单开着会被闸门拦下**。\n"
+            f"→ 先 `menu cancel`，再 `menu donate`（那才是捐的正路）。\n{_closed}")
+    _res = str(museum_donate())
+    _body = _res.split(_STATE_SEP)[0] if _STATE_SEP in _res else _res
+    return _with_state(
+        "🏛️ **改道**（不是你以为的那一下）：你点的这项 = 游戏的「向博物馆捐赠」，"
+        "它开的是**原生摆放屏**（那屏我们从来不在里面点，捐/摆都走我们自己的自动捐）。\n"
+        f"→ 已替你走 `menu donate`：\n{_body}")
+
+
 def menu_click(option: int = -1, button: str = "", x: int = -1, y: int = -1, item: str = "", right: bool = False, quantity: int = 1, action: str = "", real: bool = False, slot: int = -1, category: int = -1, move_mouse: int = 0, animal: str = "", animal_name: str = "") -> str:
     """🖱️ 自适应点击当前菜单（商店/背包/奖励）
     按菜单类型自动适配：
@@ -22120,6 +22186,12 @@ def menu_click(option: int = -1, button: str = "", x: int = -1, y: int = -1, ite
     global _look_verified   # 🔒 捏人确认门禁：本函数会读+重置它（2026-08-22 恒）
     try:
         _ensure_background()
+        # 🏛️ 2026-11-01 恒「**3.支持做路由**」：点博物馆柜台的「捐赠」那一项 ⇒ **不点它**，
+        #   改成走我们自己的自动捐（`menu donate` → `/museum_donate`）。
+        #   判据/为什么不认文本/为什么只认 `ArchaeologyHouse` ⇒ 全在 `_donate_option_here` 那段。
+        #   ⚠️ 成本：只有**点对话选项**时多打一发 `/menu` 拿 key；别的 op（买/卖/领取/按钮）一个字都不多花。
+        if option >= 0 and _donate_option_here(option):
+            return _reroute_museum_donate()
         # 🛒 **在商店菜单里点物品 = 买** ⇒ 和 `sell_to_shop`/`shop_visit` 一样暂停"解读恒的钱包"
         #    （恒 2026-09-25：「AI 做相关买卖操作时跳过对我的检测吧」；
         #     理由见 `_peer_econ_mute`：钱包是共享的，我买卖 + 他同时在挖矿/采集 ⇒ 两条流水会串台）。
@@ -22321,7 +22393,20 @@ def menu_click(option: int = -1, button: str = "", x: int = -1, y: int = -1, ite
         #   什么地方插引导」。真机统计：11-01 那场 **57 次调用、`intent` 0 次**。
         #   ⇒ 引导插在**它已经点空的那一刻**：这时候它正缺"这一刻能做什么"，而单子就是那张表。
         #   ⚠️ 别往每条回包上都加一句（那是噪声，喊久了它就不看了）——只在**失败当场**说一次。
-        return _with_state(f"⚠️ {r.get('error', '点击失败')}\n"
+        # 🏛️🪨 2026-11-01：点空了 ⇒ **顺手把这屏该走哪条说出来**（判据只有 `_menu_advice` 一处）。
+        #   ⚠️ 只在**失败当场**多打一发 `/state`：成功路径一个字都不多花，烂文案也不会天天出现。
+        _adv_miss = ""
+        try:
+            _am_miss = ((api.state() or {}).get("activeMenu") or {})
+            _adv_miss = _menu_advice(_am_miss.get("type") or "", _am_miss)
+        except Exception:
+            _adv_miss = ""
+        _adv_line = f"\n{_adv_miss}" if _adv_miss else ""
+        # 🎯 2026-11-01 恒：「**AI 都没用我们的 intent 行为表**，不然可能还好办一点。但也不知道在
+        #   什么地方插引导」。真机统计：11-01 那场 **57 次调用、`intent` 0 次**。
+        #   ⇒ 引导插在**它已经点空的那一刻**：这时候它正缺"这一刻能做什么"，而单子就是那张表。
+        #   ⚠️ 别往每条回包上都加一句（那是噪声，喊久了它就不看了）——只在**失败当场**说一次。
+        return _with_state(f"⚠️ {r.get('error', '点击失败')}{_adv_line}\n"
                            f"🎯 别在这屏接着试：`intent show` 是「**这一刻能做什么**」的清单"
                            f"（每条都写着该敲哪个工具，敲号即可）")
     except Exception as e:
