@@ -3942,6 +3942,29 @@ def _shipbin_hint(loc_name: str = "") -> str:
         return _SHIPBIN_SEEN["line"]        # 同图不重扫
     _SHIPBIN_SEEN["loc"] = loc_name
     line = ""
+    # 🧺 **农场那只主出货箱**（2026-11-01 恒：「AI **似乎没找到出货箱**，难怪老是把东西存箱子」）。
+    #   🔴 为什么它从来没出现过：`.locations.POI` 刻意**不收**农场设施（建筑/温室/图腾柱/出货箱，
+    #     见 `locations.py:535` 的注释），而状态条 `🗺️ 可:` 那行对 **Farm 整行都不印**
+    #     （`:2525` 的排除名单里有 Farm）⇒ **在自家农场，AI 从任何一处都读不到"箱子在哪、怎么投"**。
+    #     真机 11-01 10:48：它先 `map query "出货箱 shipping bin"` 查不到（多词命不中，见
+    #     `_map_query_keywords`），再 `storage store all` **把鱼全存进纸箱**，最后跟恒说
+    #     「鱼全存箱子了，**出货箱我不太会操作**」。
+    #   ⚠️ 坐标问**游戏**（`/map` 的 buildings，跟 `sell_to_bin` 同一条路），**不写死 (71,14)**。
+    #   ⚠️ 只报**事实 + 一句怎么用**：说清"过夜才结算"（不是立刻到账），别替它决定投什么。
+    if loc_name == "Farm":
+        try:
+            mi = api.map_data() or {}
+            _bins = [b for b in (mi.get("buildings") or [])
+                     if (b.get("type") or "") == "Shipping Bin"]
+            if _bins:
+                _b = _bins[0]
+                _bx = _b.get("doorX", _b.get("x"))
+                _by = _b.get("doorY", _b.get("y"))
+                line = (f"🧺 出货箱 ({_bx},{_by})｜**投进去过夜才结算**（不是立刻拿钱）→ "
+                        f"`menu(ops=\"bin\", sell_all=True)` 全投 / "
+                        f"`menu(ops=\"bin\", name=\"物品名\")` 投一样（**不是**存箱子）")
+        except Exception:
+            line = ""                       # 读不到就不报（不瞎猜坐标）
     try:
         r = api.surroundings(30)
         bins = [t for t in (r.get("tiles") or []) if (t.get("object") or "") == "Mini-Shipping Bin"]
@@ -3950,10 +3973,11 @@ def _shipbin_hint(loc_name: str = "") -> str:
             cx, cy = c.get("x", 0), c.get("y", 0)
             bins.sort(key=lambda t: abs(t.get("x", 0) - cx) + abs(t.get("y", 0) - cy))
             b = bins[0]
-            line = (f"📦 本图迷你出货箱 ({b['x']},{b['y']})｜9 格·**当夜出货卖掉**，别当仓库"
-                    f"（要存货用普通箱子）→ storage(ops=\"store\", target=\"{b['x']},{b['y']}\", all=True)")
+            _mini = (f"📦 本图迷你出货箱 ({b['x']},{b['y']})｜9 格·**当夜出货卖掉**，别当仓库"
+                     f"（要存货用普通箱子）→ storage(ops=\"store\", target=\"{b['x']},{b['y']}\", all=True)")
+            line = f"{line}\n{_mini}" if line else _mini
     except Exception:
-        line = ""                           # 读不到就不报（不瞎猜坐标）
+        pass                                # 读不到就不报（不瞎猜坐标）
     _SHIPBIN_SEEN["line"] = line
     return line
 
@@ -6076,10 +6100,22 @@ MAP_QUERY_SYNONYMS = {
 
 
 def _map_query_keywords(q: str):
-    """把用户查询扩展成关键词集合（含同义词），做模糊匹配。"""
+    """把用户查询扩展成关键词集合（含同义词），做模糊匹配。
+
+    🔴 2026-11-01 恒真机：AI 敲 `map query function="出货箱 shipping bin"` ⇒「没找到」。
+       病根：原来 `kws = {q}` 把**整句**当一个关键词，而匹配是 `k in haystack` 的子串判断
+       ⇒ **带空格/多词就永远命不中**（"出货箱 shipping bin" 不是任何地名/说明的子串）。
+       ⇒ 再按空白/标点**切开**，每个词各算一个关键词（原句照旧留着，单短语行为不变）。
+       真机后果很实：它查不到出货箱 ⇒ `storage store all` 把鱼全存进纸箱 ⇒ 跟恒说
+       「鱼全存箱子了，出货箱我不太会操作」。
+    """
     kws = {q}
+    for _tok in re.split(r"[\s/、,，;；·|]+", str(q or "")):
+        _tok = _tok.strip()
+        if _tok:
+            kws.add(_tok)
     for k, v in MAP_QUERY_SYNONYMS.items():
-        if k in q:
+        if k in q or any(k in t for t in kws):
             kws |= v
     return kws
 
