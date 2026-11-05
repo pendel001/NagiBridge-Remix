@@ -53,24 +53,60 @@ NagiBridge 是一个 **[星露谷](https://www.stardewvalley.net/)（Stardew Val
 
 ## 2. 安装（玩家）
 
-> ### 📥 [**Download the latest release →**](https://github.com/pendel001/NagiBridge-Remix/releases/latest)
+> ### 📥 [**下载最新 Release →**](https://github.com/pendel001/NagiBridge-Remix/releases/latest)
 >
-> Grab the latest zip (currently `NagiBridge 0.9.0.zip`) from the link above — it already contains the compiled `NagiBridge.dll`. **You do not need to build anything.**
+> Releases 页只有**一个包**（`NagiBridge-<版本>-full.zip`，约 3 MB），**一个包就够**：
+> 里面已经有游戏 mod（`Mods\NagiBridge\`）+ 一键启动器（`启动NagiBridge.bat`）+ `scripts\` + 说明。
+> **不需要自己编译。**
+>
+> ⚠️ **解压出来没有 `启动NagiBridge.bat`？** 那是**旧版本的非 full 包**（只含 mod 那种）——
+> 回 Releases 下最新的那个，别用旧包。
 
-1. Install [SMAPI](https://smapi.io/)
-2. Download the latest zip from [**Releases**](https://github.com/pendel001/NagiBridge-Remix/releases/latest) and unzip it
-3. Move the unzipped `NagiBridge` folder into your `Stardew Valley/Mods/` folder
-   (so you end up with `Stardew Valley/Mods/NagiBridge/NagiBridge.dll` + `manifest.json`)
-4. Launch the game through SMAPI
+### 第 1 步：装 SMAPI
 
-First launch auto-generates `config.json`. The mod is built for **Stardew Valley 1.6+ / SMAPI 4.0+** and the same `.dll` works on **Windows, macOS and Linux**.
+1. 打开 <https://smapi.io/> → **Download** → 下 Windows 安装器
+2. **双击运行**，它问你游戏在哪 → 选**有 `Stardew Valley.exe` 的那个文件夹**
+3. 装完会得到 `StardewModdingAPI.exe` —— **以后从它启动游戏**
+
+> 💡 照样能从 Steam 启动：在 Steam 里把启动目标指到 `StardewModdingAPI.exe`（或"添加非 Steam 游戏"）即可。
+> ⚠️ 安装器**窗口一闪就没 / 直接报错**？右键 → **以管理员身份运行** 再来一次（它需要真实控制台，拿不到就会闪退）。
+
+### 第 2 步：放 mod
+
+解压后里面有个 `Mods\` 文件夹，**把里面的 `NagiBridge` 整个**拷到游戏目录的 `Mods\` 下（没有 `Mods` 就自己建一个）。最终长这样：
+
+```
+<游戏目录>\Mods\NagiBridge\NagiBridge.dll
+<游戏目录>\Mods\NagiBridge\manifest.json
+```
+
+> 找不到游戏目录？Steam 库里右键游戏 → **管理 → 浏览本地文件**。
+
+### 第 3 步：验证（30 秒）
+
+用 `StardewModdingAPI.exe` 启动游戏，**那个黑窗口里应该有一行**：
+
+```
+NagiBridge <版本号> by pendel001
+```
+
+**有这一行 = 装对了。** 没有 = 位置放错、或者没用 SMAPI 启动（直接点 Steam 原版进是看不到 mod 的）。
+版本号跟 Releases 页对得上就行，不用管具体数字。
+
+> 🎭 **谁当房主？（双人必读）**
+> 游戏里**先开的那个窗口是房主（`7842`）**，后开的那个是 farmhand（`7843`）；MCP 默认操纵 **7843**。
+> - **人当房主（默认，零配置）**：用 Steam 起你自己的窗口（人 = 7842）→ 再**单独双击** `StardewModdingAPI.exe` 起 AI 那个窗口（= 7843）。
+>   ⚠️ Steam 同时只能起一个游戏窗口，所以**第二个窗口必须绕开 Steam** 单开。
+> - **AI 当房主**：先双击 `StardewModdingAPI.exe` 起 AI 的窗口（= 7842），你再从 Steam 进（= 7843）；启动 MCP 时设 `NAGI_URL=http://localhost:7842`（见 [4.2](#42-启动-mcp-服务器)）。
+
+第一次启动会自动生成 `config.json`。本 mod 面向 **Stardew Valley 1.6+ / SMAPI 4.0+**，同一个 `.dll` **Windows / macOS / Linux 通用**。
 
 > 🪟 **窗口尺寸**：`config.json` 的 `WindowWidth` / `WindowHeight` **默认 `0` = 不干预**（窗口大小完全交给游戏自己决定，不动你的设置）。
 > 想固定成某个尺寸就**两个都**填正数，例如 `"WindowWidth": 1600, "WindowHeight": 900`（**只填一个不生效**）。
 > ⚠️ 0.9.0 及更早版本默认写的是 `1280`×`720`，会把这套尺寸**硬设到别人机器上**（大屏偏小、小屏可能顶边）；
 > 老 `config.json` 里那对值就是旧默认写进去的 —— 想恢复"不干预"就把它们改成 `0`。
 
-> **Cloning the source repo?** There is **no `.dll` in the source tree** — it ships only in [Releases](https://github.com/pendel001/NagiBridge-Remix/releases/latest). If you cloned/downloaded the code and SMAPI says it can't find `NagiBridge.dll`, download the release zip above, or build it yourself (see [6. 开发者](#6-开发者)).
+> **从源码 clone 的？** 源码树里**没有 `.dll`** —— DLL 只随 [Releases](https://github.com/pendel001/NagiBridge-Remix/releases/latest) 发。如果你 clone/下载的是源码，SMAPI 报找不到 `NagiBridge.dll`，下上面的 release 包就行，或者自己编（见 [6. 开发者](#6-开发者)）。
 >
 > 🙏 原作者的 [NagiBridge](https://github.com/anqinou-art/NagiBridge)（**本版不是它**，见页首说明）。
 
@@ -113,17 +149,21 @@ First launch auto-generates `config.json`. The mod is built for **Stardew Valley
 | 游戏**已启动**且进档 | MCP 服务器要读游戏状态，游戏没开会显示「游戏进程未就绪」 |
 | （手机连的话）同一 Wi-Fi | 手机和电脑要在**同一个局域网**，手机不能在外面用流量连 |
 
+> 💡 **国内网络**：`pip` 卡住或报 `403`（多半是走了系统代理）→ 先 `set no_proxy=*` 再装；或者换源：
+> `pip install -i https://pypi.tuna.tsinghua.edu.cn/simple "mcp<2" requests`
+> 💡 **Python 装完 `python` 找不到？** 装的时候要勾上 **“Add python.exe to PATH”**；忘了勾就重装一遍（选 Modify / 重新安装时补勾）。
+
 ### 4.2 启动 MCP 服务器
 
-**最省事：双击仓库根目录的 `启动NagiBridge.bat`** —— 它先自检（Python / 依赖库 / SMAPI / mod 部署 / 局域网IP，
+**最省事：双击你解压出来的那个文件夹里的 `启动NagiBridge.bat`** —— 它先自检（Python / 依赖库 / SMAPI / mod 部署 / 局域网IP，
 缺的尽量自动装，并会打印探测到的「游戏目录」供你核对），全绿了再起服务器。
 
-> ⚠️ 这个 `.bat` **必须待在仓库里**（跟 `scripts\` 文件夹同级）：它靠**自己的位置**去找 `scripts\`，
+> ⚠️ 这个 `.bat` **必须留在解压出来的那个文件夹里**（跟 `scripts\` 文件夹同级）：它靠**自己的位置**去找 `scripts\`，
 > 单独拷到桌面会报 `scripts\launcher_check.py NOT FOUND`。想在桌面点，请用**快捷方式**
 > （右键 → 发送到 → 桌面快捷方式）——快捷方式可以随便摆。
 > 游戏装在别的盘？启动器会自动探测；探测不到就设 `NAGI_GAME_DIRS` 环境变量指路（多个用 `;` 分隔）。
 
-不想用它、或者想自己控制，就在仓库根目录开一个终端：
+不想用它、或者想自己控制，就在那个文件夹里开一个终端：
 
 ```bash
 # Windows（重要：必须有 PYTHONIOENCODING=utf-8，否则 emoji/中文刷屏）
@@ -159,7 +199,7 @@ NagiBridge MCP Server | HTTP: http://0.0.0.0:8000
 网址就填启动日志里那行「📱 手机/Claude Code 连」给的全称，**别自己凭 IP 拼**。
 
 **② 传输方式选「Streamable HTTP」，不是 SSE**
-很多手机 App 默认是老式 **SSE**（会去请求 `/sse`，而 NagiBridge 的 `/sse` 已删除、返回 404）。看到 `404` 或 `java...` 报错先检查这个。**NagiBridge 只认 Streamable HTTP。**
+很多手机 App 默认是老式 **SSE**（它会去请求 `/sse`，而 NagiBridge **没有** `/sse`，一律 404）。看到 `404` 或 `java...` 报错先检查这个。**NagiBridge 只认 Streamable HTTP。**
 
 **③ 手机和电脑同一局域网 + 电脑防火墙放行 8000**
 - 手机连着和电脑**同一个路由器**的 Wi-Fi。
@@ -185,18 +225,18 @@ New-NetFirewallRule -DisplayName "NagiBridge MCP 8000" -Direction Inbound -Proto
 
 ### 4.5 本机 Claude Code（桌面端）连法
 
-仓库自带 `.mcp.json`，Claude Code 开机就能连：
+解压出来的文件夹里自带 `.mcp.json`，Claude Code 开机就能连：
 ```json
 { "url": "http://localhost:8000/mcp" }
 ```
 本机用 `localhost` 就行；**手机/别机**才用 `<你的局域网IP>`。
 
-> 🤖 **agent 端（Claude Code / dsh 这类带 shell 的客户端）**：仓库自带 [`skills/stardew/SKILL.md`](skills/stardew/SKILL.md)。
+> 🤖 **agent 端（Claude Code / dsh 这类带 shell 的客户端）**：解压出来的文件夹里自带 [`skills/stardew/SKILL.md`](skills/stardew/SKILL.md)。
 > 装上它，AI 就知道"先看 `intent` 单子、只用这 16 个工具、别 curl 端点"。不装也能玩，但容易乱来。
 
 ### 4.6 你们的故事存在哪（AI 的记忆，可带到别的前端）
 
-一起玩的对话、剧情、小新闻会**全程落盘**在仓库 `scripts/sessions/` 目录，文件名带**每次启动的时间戳**：
+一起玩的对话、剧情、小新闻会**全程落盘**在解压出来的文件夹里 `scripts/sessions/` 目录，文件名带**每次启动的时间戳**：
 
 | 文件 | 是什么 | 何时有 |
 |---|---|---|
@@ -205,15 +245,10 @@ New-NetFirewallRule -DisplayName "NagiBridge MCP 8000" -Direction Inbound -Proto
 
 **想把记忆带到别的 AI 前端 / 新会话接着聊**：找到这次启动时间戳的 `session_*.jsonl`，把内容喂给那个前端（贴进它的上下文），AI 就能接着记住你们一起经历的日子。想要一份给人看的版本，就按上表那两步导一份 `.md`。
 
-> ⚠️ **2026-10-01 澄清（恒问「会话导出有必要吗，服务器应该是实时生成日志的吧」——问得对）**：
-> `session_*.jsonl` **本来就是全量、每写一条就落盘**，所以「导全量」这件事**不需要导出**；
-> 那份 `.md` 是**内存里最近 `max_turns`（默认 50）条**的子集，唯一增量是 markdown 排版。
-> 默认 `export_format=jsonl` 时导出**一个字节都不写**（旧版还会回一句「已导出 N 条」—— **假回执，已修**）。
-> 另：`auto_export` / `include_npc` 两个旋钮**从来没接上**（代码里没有读取点），已删。
-
-> ⚠️ 别跟同一个目录里的 `session_log.jsonl` 搞混——那是**工具调用日志**（记每次调用返回多少字节，给开发/回归分析用的），不是聊天记录。
->
-> 📁 **2026-09-12 起，这两类都从 `scripts/` 根目录挪进了 `scripts/sessions/`** —— 因为攒了两百多个带时间戳的档案，根目录被堆脏了。
+> 📌 **三点容易混的**：
+> - **想留住记忆，不用手动导出** —— `session_*.jsonl` 是全量实时落盘的，玩完它就在那儿。
+> - **`.md` 是「最近 `max_turns` 条（默认 50）」的可读版，不是全量**。要它：先把 `export_format` 设成 `markdown`，再 `session_export`；**保持默认 `jsonl` 时导出不会产生任何文件**（全量本来就在 jsonl 里）。
+> - 同目录的 `session_log.jsonl` 是**工具调用日志**（记录每次调用返回多少字节，给开发/回归分析用），**不是聊天记录**，别拿它去喂 AI。
 
 ---
 
