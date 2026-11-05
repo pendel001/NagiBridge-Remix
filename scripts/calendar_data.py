@@ -651,7 +651,7 @@ SHOPS = {
         "note": "盖建筑、家具、农具升级",
     },
     "铁匠铺 (Clint)": {
-        "hours": "9:00-16:00（周五休息）",
+        "hours": "9:00-16:00（社区中心重建后周五休息；重建前天天开）",
         "closed_days": [5],
         "note": "矿石冶炼、工具升级",
     },
@@ -771,20 +771,30 @@ def get_closed_shops_today(day_of_week: int) -> list:
     return closed
 
 
-def get_closed_shops_today_v2(day_index: int) -> list:
-    """返回今天休息的商店。day_index: 0=周一 1=周二 2=周三 3=周四 4=周五 5=周六 6=周日"""
-    closed = []
+def get_closed_shops_today_v2(day_index: int, cc_done=None) -> list:
+    """返回今天休息的商店。day_index: 0=周一 1=周二 2=周三 3=周四 4=周五 5=周六 6=周日
+
+    `cc_done`：**社区中心是否已重建完成**（True/False；`None` = 读不到）。
+    ⚠️ 2026-11-05 恒真机：「铁匠铺**天天都显示休息**……克林特明明在店里」——**确实误判**。
+       中文维基[铁匠铺]「非营业时间：**社区中心重建后的每个星期五**」⇒ 周五休息是**有前置**的。
+       这里原来把周五硬算成休息 ⇒ **年1（社区中心没修）的每个周五都在冤枉它**，
+       AI 于是周五永远不去铁匠铺（砸晶球那行也一起被掐掉，`_im_clint_open` 读的就是这张表）。
+       现在：**只有 `cc_done is True` 才报**；`None`（读不到）**不报** —— 不编一句话让它白躲。
+    """
     day_to_closed = {
         # 星露谷商店休息日规则按星期几
         0: ["木匠店 (Robin)"],      # 周一
         1: ["玛妮牧场"],             # 周二
         2: ["皮埃尔杂货店"],         # 周三
         3: [],                       # 周四（皮埃尔到21点）
-        4: ["铁匠铺 (Clint)"],       # 周五
+        4: ["铁匠铺 (Clint)"],       # 周五 —— ⚠️ **仅社区中心重建后**（见 docstring）
         5: ["鱼店 (Willy)"],         # 周六
         6: [],                       # 周日（皮埃尔周三已记）
     }
-    return day_to_closed.get(day_index, [])
+    closed = list(day_to_closed.get(day_index, []))
+    if cc_done is not True:
+        closed = [c for c in closed if "铁匠铺" not in c]
+    return closed
 
 
 def get_unlock_status(season: str, day: int, year: int) -> list:
@@ -797,8 +807,13 @@ def get_unlock_status(season: str, day: int, year: int) -> list:
     return hints
 
 
-def build_calendar_line(season: str, day: int, day_index: int, year: int = 1) -> str:
-    """构建一行日历信息，给状态注入用。"""
+def build_calendar_line(season: str, day: int, day_index: int, year: int = 1,
+                        cc_done=None) -> str:
+    """构建一行日历信息，给状态注入用。
+
+    `cc_done`：社区中心重建完成了没（`None`=读不到）。只影响**铁匠铺周五**那一条，
+    判据理由见 `get_closed_shops_today_v2` 的 docstring。
+    """
     parts = []
 
     # 节日
@@ -814,7 +829,7 @@ def build_calendar_line(season: str, day: int, day_index: int, year: int = 1) ->
         parts.append(f"🎂{birthday}")
 
     # 商店休息
-    closed = get_closed_shops_today_v2(day_index)
+    closed = get_closed_shops_today_v2(day_index, cc_done=cc_done)
     if closed:
         parts.append(f"🏪休: {', '.join(closed)}")
 

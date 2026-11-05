@@ -120,17 +120,24 @@ def main():
     print("③ 🗺️ 可 门禁（春2日年1：矿井未开 / 公会推不开）")
     _stub_module()
     M._last_full_date = ("spring", 2, 1)        # 装成"今天已经报过"，走精简版
-    M.map_feature_hidden = lambda loc: {"矿井", "探险家公会"} if loc == "Mountain" else set()
+    # 🔴 2026-11-05：那行改成**只印合法 token**（`locations.legal_tokens_here`）⇒ 门禁挪到了
+    #    `navigation.blocked_link_targets`（**同一张** `MAP_FEATURE_GATES`）；
+    #    `map_feature_hidden` 只管"人话那串"，已经不参与渲染了 —— 所以这里的桩要换到新闸上，
+    #    否则等于在桩一条没人走的代码路径（原来就是这么假过/假红的）。
+    _blk_save = navigation.blocked_link_targets
+    navigation.blocked_link_targets = (
+        lambda loc: {"Mine", "AdventureGuild"} if loc == "Mountain" else set())
     strip = M._build_state_strip(dict(FAKE_DATA), full=False)
     check("藏掉「矿井」", "矿井" not in strip)
     check("藏掉「探险家公会」", "探险家公会" not in strip)
-    check("**没藏**别的（罗宾木匠店还在）", "罗宾木匠店" in strip, strip[-160:])
+    check("**没藏**别的（去处 8 → 6，只摘这两条）", "等6个去处" in strip, strip[-160:])
 
     print("④ 判据读不到 → 一律不藏")
-    M.map_feature_hidden = lambda loc: set()
+    navigation.blocked_link_targets = lambda loc: set()
     strip2 = M._build_state_strip(dict(FAKE_DATA), full=False)
-    check("矿井还在", "矿井" in strip2)
-    check("探险家公会还在", "探险家公会" in strip2)
+    check("矿井那类照印（去处回到 8）", "等8个去处" in strip2, strip2[-160:])
+    check("…公会同理（没有第二条被误藏）", "等8个去处" in strip2)
+    navigation.blocked_link_targets = _blk_save
 
     print("⑤ navigation.map_feature_hidden 本身")
     navigation.api.day_key = lambda: "spring|2|1"

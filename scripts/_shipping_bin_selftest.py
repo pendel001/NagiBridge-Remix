@@ -83,7 +83,16 @@ try:
     ck("…有那一行", "出货箱" in _farm, _farm)
     ck("…坐标取**游戏的 doorX/doorY**（(72,15)），不是写死的 (71,14)", "(72,15)" in _farm, _farm)
     ck("…写明「**过夜才结算**」（别让它以为立刻到账）", "过夜" in _farm and "结算" in _farm, _farm)
-    ck("…点名怎么投：`menu(ops=\"bin\", sell_all=True)`", 'menu(ops="bin", sell_all=True)' in _farm, _farm)
+    # 🔴 2026-11-05 改口：这一行原来教 `menu(ops="bin", sell_all=True)` 全投 ——
+    #    真机上 AI **照念了**，一把把整包全投了，而**取不回来**。
+    #    ⇒ 现在只许指单子（一件一件挑），并且必须说清「取不回来」。
+    #    ⚠️ 判据写成"**不许出现** sell_all"是一条**反向**断言：它专门防"顺手把这句加回去"。
+    ck("…**不再**教 `sell_all`（那正是 AI 全投的来路）", "sell_all" not in _farm, _farm)
+    ck("…改成指单子：`intent(ops=\"show\")` → 「投出货箱…」",
+       "intent" in _farm and "投出货箱" in _farm, _farm)
+    ck("…并写明「**取不回来**」（这是不可逆操作的前提）", "取不回来" in _farm, _farm)
+    ck("…单件仍可点名 `menu(ops=\"bin\", name=\"物品名\")`",
+       'menu(ops="bin", name="物品名")' in _farm, _farm)
     ck("…点明「**不是**存箱子」（真机就是存箱子了）", "不是" in _farm and "存箱子" in _farm, _farm)
     ck("…必须写「**不是立刻拿钱**」（不许让人以为当晚到账）", "不是立刻拿钱" in _farm, _farm)
 

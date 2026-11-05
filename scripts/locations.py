@@ -109,8 +109,8 @@ POI = {
     #    (8,8) = 7 种农场的站位（标准/河畔/森林/山地/荒野/四角/海滩）；**草地是 (14,10)**（差 6 格）。
     #    ⚠️ 旧注释写"农场西南角"是错的——(8,8) 是**西北角**（2026-09-11 实测纠正）。
     "爷爷的神龛":        {"map": "Farm",      "pos": (8, 8),  "note": "爷爷神龛（农场西北角；放钻石评估/拿铱猫）。坐标随农场类型变，导航时动态定位"},
-    "农场上口(→深山)":  {"map": "Farm",      "pos": (41, 0), "note": "Farm上口(warp瓦片固定)，warp到Backwoods"},
-    "农场下口(→森林)":  {"map": "Farm",      "pos": (40, 64),"note": "Farm下口(warp瓦片固定)，warp到Forest(68,1)"},
+    "农场上口(→深山)":  {"map": "Farm",      "pos": (41, 0), "note": "Farm上口(warp瓦片固定)，warp到Backwoods", "nav_only": True},
+    "农场下口(→森林)":  {"map": "Farm",      "pos": (40, 64),"note": "Farm下口(warp瓦片固定)，warp到Forest(68,1)", "nav_only": True},
     "农场洞穴(外)":      {"map": "Farm",      "pos": (34, 7), "note": "农场洞穴门口(地图固定)，蘑菇/果蝠洞"},
     "农场洞穴(内)":      {"map": "FarmCave",  "pos": (8, 11), "note": "蘑菇/果蝠洞内部"},
     "出货箱":            {"map": "Farm",      "pos": (71, 14),"note": "出货箱(**固定不可移**，2026-08-30 恒确认)——田外金属箱，隔夜到账；menu bin 投放。宠物水碗(可移/multiple)不走这"},
@@ -195,7 +195,7 @@ POI = {
      # 🏝️ 姜岛两处钓鱼点（**恒 2026-10-06 亲站给坐标**）。⚠️ 只记"这儿能钓"、**不记鱼种** ——
      #    恒的规矩：鱼种不上代码/单子（AI 要查走 `fish ops=info`）。
      "姜岛农场湖钓点":     {"map": "IslandWest",  "pos": (50, 52),"note": "姜岛农场旁那个湖（姜岛专属鱼）✅ 2026-10-06 恒亲站，**面左**"},
-     "姜岛南岸海钓点":     {"map": "IslandSouth", "pos": (26, 34),"note": "姜岛南岸海洋（姜岛专属鱼）✅ 2026-10-06 轮回亲站，**面下**"},
+     "姜岛南岸海钓点":     {"map": "IslandSouth", "pos": (26, 34),"note": "姜岛南岸海洋（姜岛专属鱼）✅ 2026-10-06 实测亲站，**面下**"},
      # 🏴‍☠️ 恒 2026-10-06 亲站：**东南岛→海盗湾的 warp 瓦片**（走上去触发，不在 `/warps` 表里）。
      #    ⚠️ `IslandSouthEast (0,29)` 那块以**度假村修复**为门禁（恒当天指出）。
      "海盗湾(入口)":       {"map": "IslandSouthEast", "pos": (31, 18),"note": "🏴‍☠️ 东南岛→海盗湾的 **warp 瓦片**（**总表口径 (31,18)**；恒亲站的 (29,18) 是边走格）（Action 触发，走上去就进湾；`/warps` 查不到）✅ 2026-10-06 恒亲站"},
@@ -250,13 +250,13 @@ POI = {
     "电影院(门内)":      {"map": "MovieTheater","pos": (12, 12), "joja_form": "theater","note": "电影院内部（待校准）"},
 
     # ── 传送中转点 ──
-    "中转(Town左下)":     {"map": "Town",       "pos": (1, 55), "note": "Town左下入口，到BusStop/森林/瀑布"},
-    "中转(Town右下)":     {"map": "Town",       "pos": (55, 87),"note": "Town右下铁匠铺/博物馆/海滩隧道"},
-    "中转(Town广场)":     {"map": "Town",       "pos": (43, 57),"note": "Town中心皮埃尔/社区中心/餐吧"},
-    "中转(Forest入口)":   {"map": "Forest",     "pos": (118, 25),"note": "Forest左上入口到Town/玛妮/秘密森林"},
-    "中转(Forest下)":     {"map": "Forest",     "pos": (5, 27), "note": "Forest下方巫师塔/下水道出口"},
-    "中转(Mountain上)":   {"map": "Mountain",   "pos": (15, 40),"note": "Mountain底部入口到Town"},
-    "中转(Mountain中)":   {"map": "Mountain",   "pos": (54, 10),"note": "Mountain中部矿洞/罗宾/湖"},
+    "中转(Town左下)":     {"map": "Town",       "pos": (1, 55), "note": "Town左下入口，到BusStop/森林/瀑布", "nav_only": True},
+    "中转(Town右下)":     {"map": "Town",       "pos": (55, 87),"note": "Town右下铁匠铺/博物馆/海滩隧道", "nav_only": True},
+    "中转(Town广场)":     {"map": "Town",       "pos": (43, 57),"note": "Town中心皮埃尔/社区中心/餐吧", "nav_only": True},
+    "中转(Forest入口)":   {"map": "Forest",     "pos": (118, 25),"note": "Forest左上入口到Town/玛妮/秘密森林", "nav_only": True},
+    "中转(Forest下)":     {"map": "Forest",     "pos": (5, 27), "note": "Forest下方巫师塔/下水道出口", "nav_only": True},
+    "中转(Mountain上)":   {"map": "Mountain",   "pos": (15, 40),"note": "Mountain底部入口到Town", "nav_only": True},
+    "中转(Mountain中)":   {"map": "Mountain",   "pos": (54, 10),"note": "Mountain中部矿洞/罗宾/湖", "nav_only": True},
 
     # ── 海滩 ──
     "海滩(入口)":        {"map": "Beach",      "pos": (38, 1), "note": "从Town进海滩的入口"},
@@ -282,6 +282,13 @@ POI = {
     "鱼店(姜岛船门)":    {"map": "FishShop",   "pos": (4, 4),  "note": "鱼店后门→BoatTunnel→姜岛"},
     "姜岛船坞(入口)":    {"map": "BoatTunnel", "pos": (6, 12), "note": "🚢 船坞隧道**真实落点**(6,12)（反编译 FishShop.cs:74；2026-10-05 补28c 由 (4,10) 改正），买票上船去姜岛"},
     "姜岛船坞(售票)":    {"map": "BoatTunnel", "pos": (4, 9), "note": "售票机(触发4,9站位4,10)：交互选'是'花1000g去姜岛码头；等动画~10s（2026-08-15实测）。⚠️码头返程=传送岛(17,44)→鱼店(4,4)"},
+
+    # ── 农场／家（家具本身就是 POI；2026-11-05 真机：`FarmHouse` 原来**一条都没有**，
+    #    而它是每天都回的那张图 ⇒ 老状态条在这里印「床、电视、壁炉」全是假名字）──
+    "农舍(床)":          {"map": "FarmHouse",   "pos": (5, 8),  "note": "睡觉/重生点（`/furniture` 实测 2026-11-05）"},
+    "农舍(电视)":        {"map": "FarmHouse",   "pos": (3, 7),  "note": "看天气/运势/食谱（`/furniture` 实测）"},
+    "农舍(壁炉)":        {"map": "FarmHouse",   "pos": (8, 4),  "note": "壁炉（`/furniture` 实测）"},
+    "小屋(床)":          {"map": "Cabin",       "pos": (5, 8),  "note": "⚠️ 多间小屋坐标可能不同：认床先 `check what=look`"},
 
     # ── 矿洞 ──
     "矿洞入口(外)":      {"map": "Mountain",    "pos": (54, 5), "note": "Mountain侧矿洞门口"},
@@ -333,8 +340,8 @@ POI = {
     "莱纳斯帐篷(内)":    {"map": "Tent",        "pos": (2, 5),  "note": "帐篷内部"},
     "山湖钓鱼点(左)":    {"map": "Mountain",    "pos": (68, 24),"note": "山湖左岸，春季鱼王点位 ✅"},
     "山湖钓鱼点(右)":    {"map": "Mountain",    "pos": (79, 30),"note": "山湖右岸钓点 ✅"},
-    "Mountain上口(去铁路)": {"map": "Mountain", "pos": (9, 0),  "note": "Mountain顶部，warp到Railroad"},
-    "深山小路(→Mountain)": {"map": "Backwoods", "pos": (49, 14),"note": "Backwoods右出口warp到Mountain(0,13)"},
+    "Mountain上口(去铁路)": {"map": "Mountain", "pos": (9, 0),  "note": "Mountain顶部，warp到Railroad", "nav_only": True},
+    "深山小路(→Mountain)": {"map": "Backwoods", "pos": (49, 14),"note": "Backwoods右出口warp到Mountain(0,13)", "nav_only": True},
     "深山隧道(入口)":    {"map": "Backwoods", "pos": (22, 31),"note": "Backwoods隧道口→Tunnel"},
     "深山隧道(内部)":    {"map": "Tunnel",    "pos": (34, 9), "note": "隧道入口处"},
     "齐先生电池箱":      {"map": "Tunnel",    "pos": (17, 7), "note": "🧾 **齐先生「神秘的齐」任务开头**(TunnelSafe 隧道锁盒)：**手持电池组(787)朝箱交互**→消耗放电池入箱→开「神秘的齐」纸条；TunnelSafe=Tunnel(17,5)/(17,6)，**人站(17,7)朝0交互(17,6)**；机制=手持物(ActiveObject)+mail标记(TH_Tunnel)，**不是**DropBox/容器菜单（2026-08-29 /scan 实测坐标已定）"},
@@ -380,7 +387,7 @@ POI = {
     # ⚠️ Caldera 几乎全是岩浆，只有边缘一圈可走 + 锻造台平台 + 出口。
     # 落点必须用已验证的走格：user实测站 (22,22)（锻造台正南）、AI 交互从 (22,23)。
     "火山锻造台":        {"map": "Caldera",     "pos": (22, 21),"note": "🔥 锻造台（2026-08-11 实测）：武器附魔/合成戒指/龙牙附魔。人站(22,22)朝北交互，AI从(22,23)对角scene at(22,21)"},
-    "火山顶出口":        {"map": "Caldera",     "pos": (11, 36), "note": "🌋 Caldera→入口层捷径的**站格**(11,36)（2026-09-12 按 /warps 落盘；旧值 (5,5) 是占位、已废弃）。⚠️ 真传送瓦片在 (11,37)，**站不上人** —— 走到 (11,36) 后换图靠 /warp（见 MAP_LINKS['Caldera']）"},
+    "火山顶出口":        {"map": "Caldera",     "pos": (11, 36), "note": "🌋 Caldera→入口层捷径的**站格**(11,36)（2026-09-12 按 /warps 落盘；旧值 (5,5) 是占位、已废弃）。⚠️ 真传送瓦片在 (11,37)，**站不上人** —— 走到 (11,36) 后换图靠 /warp（见 MAP_LINKS['Caldera']）", "nav_only": True},
 
     # ── 火山第5层（VolcanoDungeon5）──
     # 反编译依据：`VolcanoDungeon.cs` 的 `GenerateContents` 尾部有 `if (level.Value != 5) return;`
@@ -389,7 +396,7 @@ POI = {
     #   · 一条南北竖井走廊在 **x=32**（y26 直到 y37）—— 上下层就靠它
     #   · 井(水格) `(27~30,29~32)` ／ 矮人商店柜台 `(36,30)`（**不可走**，站旁边 interact）
     #   · 撤退出口 `(29,34)`（**不可走**，恒：站不上人）；站格 = 正西的 `(28,34)`
-    "火山矮人商店":      {"map": "VolcanoDungeon5", "pos": (36, 30), "note": "🧔 火山矮人商店（`checkAction` case 77 @(36,30) → `OpenShopMenu(VolcanoShop)`）。✅ **2026-09-12 真机验过**：站 (36,31) 面朝北 `/interact {x:36,y:30}` → 开出 `ShopMenu`。顺带证实**轮回懂矮人语** —— 反编译里 `canUnderstandDwarves` 为假只会 `doEmote(8)` 冒个表情、**不开菜单**，它开了。(36,30) 本身**不可走**（柜台格），站旁边那排 interact 即可"},
+    "火山矮人商店":      {"map": "VolcanoDungeon5", "pos": (36, 30), "note": "🧔 火山矮人商店（`checkAction` case 77 @(36,30) → `OpenShopMenu(VolcanoShop)`）。✅ **2026-09-12 真机验过**：站 (36,31) 面朝北 `/interact {x:36,y:30}` → 开出 `ShopMenu`。顺带证实**这角色懂矮人语** —— 反编译里 `canUnderstandDwarves` 为假只会 `doEmote(8)` 冒个表情、**不开菜单**，它开了。(36,30) 本身**不可走**（柜台格），站旁边那排 interact 即可"},
     "火山第五层出口":    {"map": "VolcanoDungeon5", "pos": (29, 34), "note": "🦜 第5层撤退出口 ✅ **2026-09-12 真机全通**：**站 (28,34)、面朝东(facingDirection=1)、`/interact {x:29,y:34}`** → 弹「**要走捷径离开火山吗？**」是/否 → `menu click(option=0)` 答「是」→ **落 IslandNorth (56,17)**（与反编译 `warpFarmer(IslandNorth,56,17,1)` 一字不差）。⚠️ **不是踩上去就传的 warp，是一格要 interact 再答对话的瓦片**（现有 warp/door/portal 三种 kind 都盖不住，所以**没进 MAP_LINKS**；恒拍板「像竖井一样自己撤」）。(29,34) 本身**不可走**。前置=mail flag `Island_VolcanoShortcutOut`（恒档已有，用 `map ops=unlocks` 查）"},
 
     # ── 森林 ──
@@ -1071,6 +1078,11 @@ INDOOR_MAPS = {
     "BathHouse_Entry", "BathHouse_MensLocker", "BathHouse_WomensLocker", "BathHouse_Pool",
     # 农场动物建筑室内（名字 = `/state` 报的室内名）
     "Barn", "Big Barn", "Deluxe Barn", "Coop", "Big Coop", "Deluxe Coop",
+    # 🏠 2026-11-05 恒：「你把建筑放室内的话，人名那几个居民建筑应该也是室内吧」
+    #    ⇒ 补进来。不补的后果很具体：`map names` 会把「海莉 / 乔迪 / 树屋 / 女巫小屋 / 精通山洞」
+    #      全归到「室外」那一行（它们确实是走进去的室内图）。
+    "HaleyHouse", "SamHouse", "JoshHouse", "ElliottHouse", "LeahHouse",
+    "LeoTreeHouse", "HarveyRoom", "SebastianRoom", "WitchHut", "MasteryCave",
 }
 
 
@@ -1454,6 +1466,165 @@ def plan_route(from_map, to_poi):
                 visited.add(nxt)
                 queue.append((nxt, path + [nxt]))
     return None
+
+# 🌋 有出口指向它、但**自己不是 `MAP_LINKS` 的键**的目标（= 进了没回程边）。
+#    这些**不是** `map go` 的合法名字（`map_go` 在 `dest not in MAP_LINKS` 处会另走兜底并失败），
+#    ⇒ `legal_tokens_here()` 把它们放进 `dead`、**不放进 `links`**，由 `map here` 单独警告。
+#    ⚠️ 别为了让钉子变绿去硬编坐标：没有回程数据就是没有。
+LEAF_TARGETS = {
+    "VolcanoDungeon9": "火山第 9 层：只能从 Caldera 进去，出来用 `map warp_safe`（没有回程边数据）",
+}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 🗓️ 只在特定日子才存在的落点（2026-11-05 恒：「**候选前也检查一下 poi 的限制**，
+#    因为春12不是夜市啦，猪车就只可能是常规的猪车」）
+# ══════════════════════════════════════════════════════════════════════════
+# 🩸 病根（别改回去）：`map go 猪车` 会**同时**命中 `猪车(旅行货车)`(Forest) 和
+#    `夜市猪车(旅行货车)`(BeachNightMarket) ⇒ 明明只有森林那辆存在，却摊两个候选逼人挑
+#    （2026-11-05 真机，春12=周五）。夜市的图**整年大部分时候都不存在**，出现在候选里就是噪音。
+# 📌 键 = POI 名；值是**全部**满足才算「今天有」：
+#    · season   季节（"winter"，或 [\"fall\",\"winter\"] 这种列表）
+#    · days     月内日（1-28）
+#    · weekdays 星期，**0=周一 … 6=周日**（跟 `(day - 1) % 7` 同一条算法，别再立第二套）
+#    · hours    出现时段（600~2000）；⚠️ **不传 `tod` 就不查这一项**（"存不存在" ≠ "开没开档"）
+# ⚠️ 加新条目时先问一句：这名字**天天空着**吗？只有"某些日子才存在"的才往这儿写。
+POI_WHEN = {
+    # 🐷 夜市猪车：只在冬 15-17 的夜市（BeachNightMarket）那三晚存在
+    "夜市猪车(旅行货车)": {"season": "winter", "days": (15, 16, 17)},
+    # 🐷 森林猪车：周五 / 周日 6:00-20:00 开档
+    "猪车(旅行货车)":     {"weekdays": (4, 6), "hours": (600, 2000)},
+}
+
+
+def calendar_ctx(time_dict):
+    """[`/state` 的 `time` 段] → `poi_available()` 要的上下文（season / day / weekday / tod）。
+
+    ⚠️ 拿不到的字段**一律不塞**（宁缺勿猜）：`poi_available` 见到缺项就跳过那一条判据，
+       绝不会因为"读不到日期"把能走的点判成不合法。
+    """
+    t = time_dict or {}
+    ctx = {}
+    season = str(t.get("season") or "").strip().lower()
+    if season:
+        ctx["season"] = season
+    for src, dst, lo, hi in (("dayOfMonth", "day", 1, 28), ("timeOfDay", "tod", 0, 2600)):
+        try:
+            v = int(t.get(src))
+        except (TypeError, ValueError):
+            continue
+        if lo <= v <= hi:
+            ctx[dst] = v
+    if "day" in ctx:
+        # 0=周一 … 6=周日（星露谷 day1=周一）。和 `_calendar_line` / `_traveling_cart_hint` 同一条。
+        ctx["weekday"] = (ctx["day"] - 1) % 7
+    return ctx
+
+
+def poi_available(name, season="", day=None, weekday=None, tod=None):
+    """这条 POI **今天此刻**在不在。返回 `(ok, 原因)`；`ok=False` 时原因是一句人话。
+
+    · 没登记在 `POI_WHEN` 里 ⇒ 一直都在 ⇒ `(True, "")`（不误伤 280 条里那 278 条）
+    · 某个判据的输入**没传**（如不知道季/日/时刻）⇒ 跳过那一条，**不当成"不合法"**
+    · 不合法 ⇒ 调用方自己决定：过滤掉（候选/清单）还是拦住并解释（点名要去）
+    """
+    w = POI_WHEN.get(name)
+    if not w:
+        return True, ""
+    seasons = w.get("season")
+    if seasons and season:
+        _ss = (seasons,) if isinstance(seasons, str) else tuple(seasons)
+        if season not in _ss:
+            _cn = {"spring": "春", "summer": "夏", "fall": "秋", "winter": "冬"}
+            return False, ("只有" + "、".join(f"{_cn.get(s, s)}季" for s in _ss) + "才有")
+    days = w.get("days")
+    if days and isinstance(day, int) and day not in days:
+        return False, f"只有 {days[0]}~{days[-1]} 日那几天才有"
+    wds = w.get("weekdays")
+    if wds and isinstance(weekday, int) and weekday not in wds:
+        _cn = "一二三四五六日"
+        return False, ("只有周" + "、周".join(_cn[i] for i in wds) + "才有")
+    hours = w.get("hours")
+    if hours and isinstance(tod, int) and not (hours[0] <= tod <= hours[1]):
+        return False, f"只在 {hours[0] // 100}:00~{hours[1] // 100}:00 开档"
+    return True, ""
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 🔑 本图「能直接回填」的合法 token（2026-11-05 恒：「字眼要求是直接能穿回 map go
+#    能被认出来的」「不合法就不要」）
+# ══════════════════════════════════════════════════════════════════════════
+# 🩸 病根（别改回去）：`MAP_FEATURES` 是**给人读的描述**（"罗宾木匠店(买建筑/家具/升级房子)"）。
+#    状态条原来把它 `split("(")[0]` 印成「罗宾木匠店」—— **那不是地名**（那张图叫 ScienceHouse），
+#    AI 照着敲 = 当场死在对不准上。⇒ 状态条 / `map here` 一律只吐本函数的结果。
+def legal_tokens_here(loc_name, joja_form=None, when=None):
+    """本图能**直接回填**的名字。返回 {"poi": [(名,x,y)], "links": [(目标图,kind,出口格)], "dead": [...]}
+
+    · `poi`   ← `POI` 的键（`map walk poi_name=` 认的就是它）
+    · `links` ← `MAP_LINKS[图]` 的 `target`，**且 target 自己得是 MAP_LINKS 的键**（`map go place=` 认的）
+    · `dead`  ← 出口存在、但目标不是合法地名（见 `LEAF_TARGETS`）——**只用来警告，别当 token 发出去**
+
+    `joja_form`：那栋楼的**当前形态**（`"jojamart"` / `"abandoned"` / `"theater"`）。
+    ⚠️ 2026-11-05：Town(95,51) 是**同一扇门三种形态**（互斥），POI 里三条并存。
+       不传形态的话"同格去重"会固定只挑一条（按最长优先挑到 `Joja超市(门口)`）——
+       **那就是新造的假路牌**。⇒ 传入形态后，**只留与当前形态一致的那条**，其余直接不列。
+
+    `when`：`calendar_ctx(api.state()["time"])` 那种日历上下文（season/day/weekday/tod）。
+       ⚠️ 2026-11-05 恒：「候选前也检查一下 poi 的限制」——只有部分日子才存在的点
+          （森林猪车周五/周日、夜市猪车冬15-17）**今天没有就不列**，
+          否则状态条会印一个敲过去只剩空地的名字。不传 `when` = 不按日历过滤。
+
+    判据：`scripts/_place_token_selftest.py`。
+    """
+    poi = []
+    for name, v in (POI or {}).items():
+        v = v or {}
+        if v.get("map") != loc_name:
+            continue
+        # 🚫 2026-11-05 恒：「出口瓦片的坐标只是前期标注给导航系统用。就算 ai 知道也走过去触发不了任何事」
+        #    ⇒ 标了 `nav_only` 的条目**只给导航用、不进 AI 清单**。
+        #    ⚠️ 注意是"摘**展示**、不删数据"：`plan_route` / `walk_to` 还要靠这些坐标。
+        if v.get("nav_only"):
+            continue
+        # 🎭 同一栋楼的互斥形态：只留当前形态那条（拿不到形态就**全不列**，宁缺勿错）
+        _f = v.get("joja_form")
+        if _f and _f != joja_form:
+            continue
+        # 🗓️ 只在部分日子才存在的点（森林猪车 / 夜市猪车…）——今天没有就不列
+        if when and not poi_available(name, **when)[0]:
+            continue
+        pos = v.get("pos") or ()
+        if len(pos) == 2:
+            try:
+                poi.append((name, int(pos[0]), int(pos[1])))
+            except (TypeError, ValueError):
+                continue
+    # 🧹 2026-11-05 恒：「之前我们做过一些笨拙的修补…看看有没有重复注入些什么」
+    #    ⇒ 同一格多名要去重（把 `nav_only` 摘掉之后还剩 4 处：`皮埃尔商店` / `书摊` / `艾芙琳家` / 电影院那组）。
+    #    规则**跟状态条那条完全一致**（别另立一套）：带括号的（信息量大）优先 → 再比长度取长 → 最后按名定序；
+    #    这样同一个格子只会出现**一个**名字，而且每次跑顺序稳定（不会今天列 A、明天列 B）。
+    _by_tile = {}
+    for name, x, y in poi:
+        _by_tile.setdefault((x, y), []).append(name)
+    poi = [(sorted(_names, key=lambda n: (0 if "(" in n else 1, -len(n), n))[0], x, y)
+           for (x, y), _names in _by_tile.items()]
+    poi.sort(key=lambda t: (t[1], t[2], t[0]))
+    links, dead, seen = [], [], set()
+    for link in (MAP_LINKS.get(loc_name) or []):
+        link = link or {}
+        tgt = link.get("target")
+        if not tgt or tgt in seen:
+            continue
+        seen.add(tgt)
+        tile = link.get("tile")
+        ok = isinstance(tile, (list, tuple)) and len(tile) == 2
+        row = (tgt, link.get("kind") or "warp", tuple(tile) if ok else None)
+        if tgt in MAP_LINKS:
+            links.append(row)
+        else:
+            dead.append(row)
+    return {"poi": poi, "links": links, "dead": dead}
+
 
 if __name__ == "__main__":
     print("=== 地图路线表 ===")

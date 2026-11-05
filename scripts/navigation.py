@@ -707,10 +707,11 @@ def walk_to(poi_name: str = "", x: int = None, y: int = None) -> str:
         #     `哈维医院(门口)`…），AI 照抄它必然撞墙）。
         if poi_name not in locations.POI and poi_name not in locations.MAP_LINKS:
             try:
-                _st = api.state()
+                _st = api.state() or {}
                 _cur = (_st.get("location") or {}).get("name", "") or ""
                 _px, _py = (_st.get("player") or {}).get("x"), (_st.get("player") or {}).get("y")
             except Exception:
+                _st = {}
                 _cur, _px, _py = "", None, None
             # 🔎 **先模糊对一次**（恒 2026-09-25：「猪车也犯了一样的毛病，poi_name 搜猪车搜不出来，
             #    可却告诉他"可：猪车"」）—— 状态条那行是**自由文本**、渲染时还 `split("(")[0]`
@@ -719,6 +720,16 @@ def walk_to(poi_name: str = "", x: int = None, y: int = None) -> str:
             #    **唯一命中**就直接走（回执里写的也是完整名字，AI 顺带学到正确叫法）；
             #    **多个命中不猜**（宁报错别兜底）—— 摊开让它挑。
             _cand = sorted(k for k in locations.POI if poi_name and (poi_name in k or k in poi_name))
+            # 🗓️ 2026-11-05 恒：「候选前也检查一下 poi 的限制」——**今天不存在的不算候选**
+            #    （春12 不是夜市 ⇒ `夜市猪车(旅行货车)` 那条别列出来凑数）。
+            _wctx = locations.calendar_ctx(_st.get("time")) if isinstance(_st, dict) else {}
+            _dropped = [k for k in _cand if not locations.poi_available(k, **_wctx)[0]]
+            _cand = [k for k in _cand if k not in _dropped]
+            if not _cand and _dropped:
+                _why = "；".join(f"{k}（{locations.poi_available(k, **_wctx)[1]}）" for k in _dropped[:4])
+                return _with_state(
+                    f"❌ 今天没有「{poi_name}」：{_why}\n"
+                    f"   👉 看这张图能走的地方 → `map here`；看全部地名 → `map names`")
             # 「猪车」会同时命中 `猪车(旅行货车)`(Forest) 和 `夜市猪车(旅行货车)`(夜市)——
             # **同名的两地**。先按**当前所在图**收窄：人就在那种图里时它就是那一个。
             _cand_here = [k for k in _cand if locations.POI[k].get("map") == _cur]
@@ -748,10 +759,17 @@ def walk_to(poi_name: str = "", x: int = None, y: int = None) -> str:
             return _with_state(
                 f"❌ 认不出「{poi_name}」——POI 表里没有这个名字，也不是地图名。\n"
                 f"   「{_cur}」**能走的落点**（就近排）：{_fallback}\n"
-                f"   👉 照上面挑一个再 `map walk`；⚠️ **别照状态条 `🗺️ 可:` 那行抄名字**"
-                f"（那是「这地方能干嘛」的说明，不是落点名）。\n"
+                f"   👉 照上面挑一个再 `map walk`。\n"
+                f"   👉 **要看这张图全部合法名字（交互点 + 连通图）→ `map here`**"
+                f"  —— 那里印的每个词都能直接回填，不用猜。\n"
+                f"   ✅ 状态条 `🗺️ 可:` 那行**现在印的就是能回填的落点名/图名**（2026-11-05 起），可以照抄。\n"
                 f"   👉 想走具体格子：`map walk x=.. y=..`；找 **NPC** 用 `map npc` 那一路"
                 f"（人不是落点，走不到）。")
+        # 🗓️ 2026-11-05：名字写全了、但**今天不存在**（周三的森林猪车 / 春天的夜市）⇒ 拦住说清哪天有。
+        #    跟 `_map_go_body` 那条**同一个判据**（`_not_today`），别各写一份。
+        _nt = _not_today(poi_name)
+        if _nt:
+            return _with_state(_nt)
         # 同图 → go_to.py 走过去
         # ⚠️⚠️ 2026-09-12 真机抓到两个**会打到恒身上**的坑，都在这一段：
         #  ① **没传 --port**：go_to.py 的 `--port` 默认 `NAGI_PORT`、再默认 **7842=房主**，
@@ -869,6 +887,45 @@ def _stand_beside(location: str, x: int, y: int):
     return None
 
 
+# 🏗️ 建筑关键字 → 建筑类型（**唯一一份**；2026-11-05 从 `_resolve_place` 里的局部变量提出来的）
+#    为什么要提到模块级：`map here` 也要把"建筑名直接 walk 就认"**列成清单**给它看
+#    （恒：「列出提示和列表不一样嘛」）。如果那边另抄一份 → 就是本项目的老病"第二份会漂"。
+#    ⇒ `_resolve_place` 和 `map here` 共用 **同一个 dict 对象**，改一处两边同步，
+#      钉子 `_place_token_selftest.py` ⑩ 会咬住"只许这一份"。
+BUILDING_KEYWORDS = {
+    # ⚠️ 2026-09-19（恒）：**这里必须走"最长匹配"**（见 `_resolve_place` 里的 sorted），否则单字键会抢走长键。
+    #    真机实录（只读探出来的一族同病）：`农舍`→**鸡舍的门**、`工棚`→**畜棚的门**——
+    #    都是 `"舍": "coop"` / `"棚": "barn"` 排在 `"鸡舍"` / `"工棚"` 前面，字典顺序先撞谁算谁。
+    #    恒原话：「农舍两个字就精确指 farmhouse 吧，鸡舍就指 coop。毕竟人类或 AI 都不会单传
+    #    一个"舍"字来着」⇒ 顺手**删掉裸 `"舍"`**（没人会这么喊，留着只会抢匹配）。
+    "畜棚": "barn", "谷仓": "barn", "棚": "barn",
+    "鸡舍": "coop",
+    "温室": "greenhouse",
+    "小屋": "cabin",
+    # 🏠 主屋（恒的 Farmhouse）：**1.6 里主屋本身就是一栋 Building**（`type == "Farmhouse"`），
+    #    所以它跟畜棚鸡舍一样能动态定位。原先这里没有对应键 ⇒ `_resolve_place` 返回 None
+    #    ⇒ `_enter_building_door` 查不到门 ⇒ 掉进 `ARRIVE['FarmHouse']=(10,6)` **warp 硬进**
+    #    （恒最烦的"飞"）⇒ 现在补上，走门。
+    "农舍": "farmhouse", "主屋": "farmhouse", "大屋": "farmhouse",
+    "出货": "shipping",
+    "筒仓": "silo", "粮仓": "silo",
+    "鱼塘": "fish pond", "池塘": "fish pond",
+    "马厩": "stable",
+    "工棚": "shed", "仓库": "shed",
+    "地窖": "cellar",
+    "传送": "obelisk",
+    "金钟": "gold clock",
+    # 🇬🇧 英文键（2026-09-16 补）：**AI 与 `/map` 用的就是英文地点名**（"Greenhouse"/"Big Shed"），
+    #    原来只有中文键 ⇒ `map go Greenhouse` 这里解析成 None ⇒ 推门路断 ⇒ 走兜底 warp 硬进
+    #    ⇒ 恒真机看到"进温室飞到墙外"。⚠️ 键必须配 `p.lower()` 才有用。
+    "barn": "barn", "coop": "coop", "greenhouse": "greenhouse",
+    "cabin": "cabin", "shipping": "shipping", "silo": "silo",
+    "fish pond": "fish pond", "stable": "stable", "shed": "shed",
+    "cellar": "cellar", "obelisk": "obelisk", "gold clock": "gold clock",
+    "farmhouse": "farmhouse",
+}
+
+
 def _resolve_place(place: str):
     """把目的地解析成 (location, x, y)；解析不出返回 None（走 POI 兜底）。
 
@@ -913,39 +970,7 @@ def _resolve_place(place: str):
         return (mb["location"], stand[0], stand[1]) if stand else None
 
     # 3. 建筑关键字 → 实时定位门
-    KEYWORDS = {
-        # ⚠️ 2026-09-19（恒）：**这里必须走"最长匹配"**（见下面 sorted），否则单字键会抢走长键。
-        #    真机实录（只读探出来的一族同病）：`农舍`→**鸡舍的门**、`工棚`→**畜棚的门**——
-        #    都是 `"舍": "coop"` / `"棚": "barn"` 排在 `"鸡舍"` / `"工棚"` 前面，字典顺序先撞谁算谁。
-        #    跟当初 `_loc_label` 把 FarmHouse 叫成"农场"是同一个病、同一个药（改最长匹配）。
-        #    恒原话：「农舍两个字就精确指 farmhouse 吧，鸡舍就指 coop。毕竟人类或 AI 都不会单传
-        #    一个"舍"字来着」⇒ 顺手**删掉裸 `"舍"`**（没人会这么喊，留着只会抢匹配）。
-        "畜棚": "barn", "谷仓": "barn", "棚": "barn",
-        "鸡舍": "coop",
-        "温室": "greenhouse",
-        "小屋": "cabin",
-        # 🏠 主屋（恒的 Farmhouse）：**1.6 里主屋本身就是一栋 Building**（`type == "Farmhouse"`），
-        #    所以它跟畜棚鸡舍一样能动态定位。原先这里没有对应键 ⇒ `_resolve_place` 返回 None
-        #    ⇒ `_enter_building_door` 查不到门 ⇒ 掉进 `ARRIVE['FarmHouse']=(10,6)` **warp 硬进**
-        #    （恒最烦的"飞"）⇒ 现在补上，走门。
-        "农舍": "farmhouse", "主屋": "farmhouse", "大屋": "farmhouse",
-        "出货": "shipping",
-        "筒仓": "silo", "粮仓": "silo",
-        "鱼塘": "fish pond", "池塘": "fish pond",
-        "马厩": "stable",
-        "工棚": "shed", "仓库": "shed",
-        "地窖": "cellar",
-        "传送": "obelisk",
-        "金钟": "gold clock",
-        # 🇬🇧 英文键（2026-09-16 补）：**AI 与 `/map` 用的就是英文地点名**（"Greenhouse"/"Big Shed"），
-        #    原来只有中文键 ⇒ `map go Greenhouse` 这里解析成 None ⇒ 推门路断 ⇒ 走兜底 warp 硬进
-        #    ⇒ 恒真机看到"进温室飞到墙外"。⚠️ 键必须配下面那句 `p.lower()` 才有用。
-        "barn": "barn", "coop": "coop", "greenhouse": "greenhouse",
-        "cabin": "cabin", "shipping": "shipping", "silo": "silo",
-        "fish pond": "fish pond", "stable": "stable", "shed": "shed",
-        "cellar": "cellar", "obelisk": "obelisk", "gold clock": "gold clock",
-        "farmhouse": "farmhouse",
-    }
+    KEYWORDS = BUILDING_KEYWORDS
     pl = p.lower()   # ⚠️ 英文键要小写比对；中文无大小写，写在这里对中文键是 no-op
     # 🔑 **最长匹配优先**：先把命中的键按长度从长到短排，长的先试。
     #    这样 `农舍`/`鸡舍`/`工棚` 一定压过 `棚` —— 不再依赖字典书写顺序（那种"顺序对就对、
@@ -1624,7 +1649,68 @@ def _is_home_word(s) -> bool:
     return t in _HOME_WORDS
 
 
-def _poi_ambiguous(q):
+def _today_ctx():
+    """游戏内"今天此刻"的日历上下文（season/day/weekday/tod），给 `locations.poi_available` 用。
+
+    ⚠️ 读不到就回 `{}` ⇒ `poi_available` 跳过日历判据（**宁可多列一个真路牌，
+       也别因为一次 /state 抖动把能走的点判成不存在**）。
+    ⚠️ 不缓存：`tod` 一天之内会变（猪车 20:00 收摊），缓存了就必然印错一次。
+    """
+    try:
+        return locations.calendar_ctx((api.state() or {}).get("time"))
+    except Exception:
+        return {}
+
+
+def _not_today(name, ctx=None):
+    """点名要去的 POI **今天不存在** ⇒ 返回一句人话；存在/没登记 ⇒ ""。
+
+    2026-11-05 恒：「候选前也检查一下 poi 的限制」——候选那边是**过滤**，
+    这里是"名字写全了"的情况：**拦住并说清哪天有**，因为走过去只会站空地、什么都触发不了。
+    """
+    try:
+        ok, why = locations.poi_available(name, **(ctx if ctx is not None else _today_ctx()))
+    except Exception:
+        return ""
+    if ok:
+        return ""
+    _m = (locations.POI.get(name) or {}).get("map") or "?"
+    return (f"❌ 「{name}」今天不在：{why}。\n"
+            f"   （走过去只会站在空地上，什么都触发不了）👉 想去那张图逛别的：`map go {_m}`；"
+            f"想看全部地名：`map names`")
+
+
+def _poi_single(q, when=None):
+    """半截名 `q` 在 **今天存在的** POI 里**恰好只命中一个** ⇒ 返回它的全名（否则 ""）。
+
+    ⚠️ 2026-11-05：候选过掉日历之后，`map go 猪车`（春12 周五）**只剩森林那辆**
+       —— 这时歧义闸不报了，可 `map_go` 下游只认**全名**（`destination in POI`）
+       ⇒ 不加这一步就会从「列 2 个候选」掉成「认不出 猪车」，比原来更差。
+    🔒 护栏（跟 `_poi_ambiguous` 同一套，别放宽）：
+       · 精确名 / 地图名 / 别名 / 归一后命中键 ⇒ 一律返回 ""（**精确名优先**，不许被子串搅）
+       · 候选必须**恰好 1 个**；0 个或 ≥2 个（哪怕同一张图）⇒ 返回 ""，交给下游老路径
+    """
+    s = str(q or "").strip()
+    if not s:
+        return ""
+    if s in locations.POI or s in locations.MAP_LINKS or s in SCENE_NAME_ALIAS:
+        return ""
+    if _norm_key(s) in _MAP_KEYS_CI:
+        return ""
+    # 🏗️ 建筑/家什词（畜棚/鸡舍/温室/邮箱…）归 `_resolve_place` 管 —— **不许**被 POI 半截名劫走。
+    #    反例（2026-11-05 钉子 `_map_go_arrive_selftest` ⑧-2 当场逮到，是我加这条时造出来的）：
+    #    `map go 畜棚` 被认成 POI `高级畜棚(门内)`，回执从「已到「畜棚」门口」变成
+    #    「已到「高级畜棚(门内)」门口」—— **那就是静默改写目的地**，正是本文件最忌讳的那条。
+    for _kw in (BUILDING_KEYWORDS or {}):
+        if _kw and _kw in s:
+            return ""
+    cand = [n for n in locations.POI if s in n]
+    if when:
+        cand = [n for n in cand if locations.poi_available(n, **when)[0]]
+    return cand[0] if len(cand) == 1 else ""
+
+
+def _poi_ambiguous(q, when=None):
     """半截名 `q` 在 POI 表里**多候选、且落点不止一张图** ⇒ 返回候选全名（否则 `[]`）。
 
     判据（**别再放宽**）：
@@ -1633,6 +1719,10 @@ def _poi_ambiguous(q):
       ② 否则取**名字里含 `q`** 的 POI 当候选；
       ③ 候选 ≥2 **且 `map` 不止一个** ⇒ 报歧义。⚠️ 命中**同一张图**的多个 POI **不算**歧义
          （导航目的地本来就是那张图，交给下游既有的建筑/场景兜底）——这里**不替谁挑任何一个 POI**。
+    ④ 🗓️ 2026-11-05：**先摘掉今天不存在的**再数（`when` = `calendar_ctx(time)`）。
+       真机：春12（周五）`map go 猪车` 摊出 `夜市猪车`(夜市，春天根本没有) + `猪车`(森林，今天开)
+       ⇒ 两个候选逼人挑，其实只有一辆真的在。摘掉后只剩一个 ⇒ 不再算歧义，直接走。
+       ⚠️ 不传 `when` ⇒ 不过滤（老行为一字不动，离线钉子照旧只验纯判据）。
     ⚠️ 只在 `map_go` 门口调（它是跨场景入口）；`walk_to` / `go_to` 的既有行为一个字不动。
     """
     s = str(q or "").strip()
@@ -1643,6 +1733,8 @@ def _poi_ambiguous(q):
     if _norm_key(s) in _MAP_KEYS_CI:
         return []
     cand = [n for n in locations.POI if s in n]
+    if when:
+        cand = [n for n in cand if locations.poi_available(n, **when)[0]]
     if len(cand) < 2:
         return []
     if len({(locations.POI[n].get("map") or "") for n in cand}) < 2:
@@ -2207,6 +2299,39 @@ def map_feature_hidden(loc: str) -> set:
             elif kind == "door" and target in blocked:
                 hidden.add(token)
     return hidden
+
+
+def blocked_link_targets(loc: str) -> set:
+    """**现在真的去不了**的目标图（返回 `MAP_LINKS` 的 target 名，给 `🗺️ 可:` 印 legal token 时过滤）。
+
+    2026-11-05：状态条那行改成"只印合法 token"之后，它印的是 `MAP_LINKS[loc]` 的 target ——
+    这条路**绕过了** `map_feature_hidden()` 那道门禁 ⇒ 年1春2 会在 Mountain 上印「矿井」，
+    可矿井春5 才开（`map go Mine` 会被 🔒 拦下）。**门口印一个进去就被拦的名字 = 假路牌**，
+    跟这轮修的是同一个病。⇒ 判据**复用同一张表** `locations.MAP_FEATURE_GATES`：
+      `map:X` 且 X 在 `_locked_maps()` 里 ⇒ 藏 X
+      `door:X` 且 X 今天被门挡回来过 ⇒ 藏 X
+    ⚠️ 读不到一律**不藏**（渲染出错不该把能去的地方藏掉 —— 跟 `map_feature_hidden` 同一条规矩）。
+    """
+    gates = getattr(locations, "MAP_FEATURE_GATES", {}).get(loc) or {}
+    if not gates:
+        return set()
+    try:
+        locked = _locked_maps()
+    except Exception:
+        locked = set()
+    try:
+        blocked = door_blocked(loc)
+    except Exception:
+        blocked = set()
+    out = set()
+    for _token, dep in gates.items():
+        for one in (dep if isinstance(dep, (list, tuple, set)) else [dep]):
+            kind, _, target = str(one).partition(":")
+            if kind == "map" and target in locked:
+                out.add(target)
+            elif kind == "door" and target in blocked:
+                out.add(target)
+    return out
 
 
 def _step_into_building(arrive_map: str, arrive_pos) -> str:
@@ -3767,7 +3892,7 @@ def _map_go_body(destination: str = "", npc: str = "") -> str:
     # 🎯 2026-10-05（真机 A）：**精确名优先 + 半截名不猜**（判据与反例见 `_poi_ambiguous`）。
     #    真机现场：`map go 姜岛小屋`（半截）会被子串/别名悄悄挑一个落点 ⇒ 宁报错别兜底：
     #    把候选**全列出来**让人/AI 说全名，**绝不**自己挑一个再报"到了"。
-    _amb = _poi_ambiguous(destination)
+    _amb = _poi_ambiguous(destination, when=_today_ctx())
     if _amb:
         _lst = "\n".join(f"     · 「{n}」（{locations.POI[n].get('map')} {locations.POI[n].get('pos')}）"
                          for n in _amb)
@@ -3775,6 +3900,18 @@ def _map_go_body(destination: str = "", npc: str = "") -> str:
             f"❌ 「{destination}」有 {len(_amb)} 个候选、落点**不在同一张图**，我不替你挑：\n{_lst}\n"
             f"  👉 把**全名**（连括号里那截）写全再敲一次，例如 `map ops=go {_amb[0]}`；"
             f"或直接写要去的**图**（如 `map ops=go {locations.POI[_amb[0]].get('map')}`）")
+    # 🎯 唯一命中就照它的全名走（`map go 猪车` → `猪车(旅行货车)`）。
+    #    ⚠️ 必须放在歧义闸**后面**：≥2 个的那一半归上面管；这里只管"今天只剩一个"。
+    _one = _poi_single(destination, when=_today_ctx())
+    if _one:
+        destination = _one
+
+    # 🗓️ 2026-11-05 恒：「候选前也检查一下 poi 的限制」——名字写全了也一样：
+    #    `map go 猪车(旅行货车)` 在周三、`map go 夜市猪车(旅行货车)` 在春天，
+    #    走过去只会站空地（连商店都不开）⇒ **拦住并说清哪天有**，别让它白走一趟还报"到达"。
+    _nt = _not_today(str(destination or "").strip())
+    if _nt:
+        return _with_state(_nt)
 
     # 🚫 2026-10-05（真机 B）：**变体名不许静默改写目的地**（判据/真机现场/候选来源见 `_variant_name_error`）。
     #    病样本：`map go 姜岛小屋(门内六房)`（POI 真名带"人"字）被别名「姜岛」当子串命中 ⇒

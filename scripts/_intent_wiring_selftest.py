@@ -3159,9 +3159,22 @@ def main():
                   M._im_clint_open() is True))
     _stub(time_dict={"timeOfDay": 1700, "season": "summer", "dayOfMonth": 6, "weather": 0})
     res.append(ok("🏪 周六 17:00（过了 16:00 打烊）⇒ **不营业**", M._im_clint_open() is False))
-    _stub(time_dict={"timeOfDay": 1000, "season": "summer", "dayOfMonth": 5, "weather": 0})
-    res.append(ok("🏪 周五（休息日表里就是「铁匠铺 (Clint)」，状态条那句「休:」同源）⇒ **不营业**",
+    # 🏛️ 2026-11-05（恒真机：「铁匠铺天天都显示休息……克林特明明在店里」）：周五那条**有前置**——
+    #    维基[铁匠铺]「非营业时间：**社区中心重建后的每个星期五**」⇒ 三种情况都要验。
+    _cc_save = M._cc_done
+    M._cc_done = lambda *a, **k: False          # 社区中心还没修完（年1 的常态）
+    _stub(time_dict={"timeOfDay": 1000, "season": "spring", "dayOfMonth": 12, "weather": 0})
+    res.append(ok("🏪 周五 10:00 + **社区中心没重建** ⇒ 营业中（原来这里误判成休息）",
+                  M._im_clint_open() is True))
+    M._cc_done = lambda *a, **k: True           # 社区中心已重建
+    _stub(time_dict={"timeOfDay": 1000, "season": "winter", "dayOfMonth": 5, "weather": 0})
+    res.append(ok("🏪 周五 10:00 + **社区中心已重建** ⇒ 休息（就是维基那条前置）",
                   M._im_clint_open() is False))
+    M._cc_done = lambda *a, **k: None           # 读不到
+    _stub(time_dict={"timeOfDay": 1000, "season": "winter", "dayOfMonth": 5, "weather": 0})
+    res.append(ok("🏪 周五 + 读不到 CC 状态 ⇒ **不报休息**（宁可少一行，也不凭空喊关门）",
+                  M._im_clint_open() is True))
+    M._cc_done = _cc_save
     _stub(time_dict={"timeOfDay": 800, "season": "summer", "dayOfMonth": 6, "weather": 0})
     res.append(ok("🏪 周六 08:00（还没开门）⇒ 不营业", M._im_clint_open() is False))
 
@@ -3185,9 +3198,14 @@ def main():
     _ok_g3, _ = _has_geode(loc="Town", time_dict={"timeOfDay": 1700, "season": "summer",
                                                  "dayOfMonth": 6, "weather": 0})
     res.append(ok("🪨 打烊后（非铁匠铺）⇒ **不给**", not _ok_g3))
+    # 🏛️ 周五要"真的是休息日"得先有社区中心重建这个前置（2026-11-05）——
+    #    所以这里显式把 cc_done 钉成 True，验的还是原来那句话：**休息日不给**。
+    _cc_save2 = M._cc_done
+    M._cc_done = lambda *a, **k: True
     _ok_g4, _ = _has_geode(loc="Town", time_dict={"timeOfDay": 1000, "season": "summer",
                                                  "dayOfMonth": 5, "weather": 0})
-    res.append(ok("🪨 休息日（非铁匠铺）⇒ **不给**", not _ok_g4))
+    res.append(ok("🪨 休息日（社区中心已重建的周五，非铁匠铺）⇒ **不给**", not _ok_g4))
+    M._cc_done = _cc_save2
     _ok_g5, _ = _has_geode(loc="Farm", time_dict={"timeOfDay": 1000, "season": "summer",
                                                  "dayOfMonth": 6, "weather": 0})
     res.append(ok("🪨 **农场不给**（恒：「不建议放农场」）", not _ok_g5))

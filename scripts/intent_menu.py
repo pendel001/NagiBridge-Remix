@@ -3533,8 +3533,18 @@ def _exec_settle(ctx, targets, run):
 #
 # ⚠️ **为什么不给一行"全部投放"**：`sell_to_bin(sell_all=True)` 是把背包里**能卖的全投**，
 #    那是一把大锤（"我这批是要留着的"它也照投）。单子第一条规矩是"出现的那条按了就成"，
-#    所以摆上来的必须是**具体投哪件**，而不是"投一切"。要"全投"走 `menu ops=bin sell_all=True`
-#    ——那条路是 AI **自己带着意图**去调的（同「睡觉」撤出单子的道理）。
+#    所以摆上来的必须是**具体投哪件**，而不是"投一切"。
+#
+# 🔴 2026-11-05 恒真机：**它还是走了那条"全投"**（AI 是照农场状态条那句
+#    `menu(ops="bin", sell_all=True)` 学的），一把把整包全投了。
+#    而这一把**撤不回来**：出货箱不是仓库 —— 投进去当晚结算就卖了、**取不出来**
+#    （`ShippingBin.cs:267` 开的是"只收不给"的那个 `ItemGrabMenu`）。
+#    ⇒ 那天起 **"全投"这条路整个封掉**（不是"少提一句"，是**端点都不打**）：
+#      · `sell_to_bin` 见到 `sell_all` 或空名字就**拒**（`nagi_mcp_server.sell_to_bin`），
+#      · 农场状态条也不再教"全投"（只指单子），
+#      · 这一层改成 **`pick` + `exec_on_pick`**：跟「卖」同一套手感（`1,3` 多选，敲了当场投）。
+#    ⚠️ 层形态这么定是**游戏定的**：`/sell` 一次只认一个名字、投的是整摞，
+#       "投几个"这回事压根不存在 ⇒ 给一屏"能填数量"的假界面 = 填了不生效还不报错。
 #
 # ⚠️ **门禁 = 站在农场**：箱子在农场（`sell_to_bin` 自己会从 `map_data` 的
 #    `buildings[type=="Shipping Bin"]` 找出来 + 走过去）。在矿洞里摆一行"投出货箱"
@@ -3576,14 +3586,19 @@ def _bin_count(ctx, targets):
 def _bin_subs(ctx, targets):
     # 🗑 2026-10-04 恒：「**投一件不实用。一般这格的堆叠全投。然后报一下这些物品的数量**」
     #    ⇒ 两处都按他的话改：① 行上**直接印数量**（`×N`）——`/sell` 本来就是**整摞走**
-    #    （C# `HandleSell` 把 `item.Stack` 整个塞进出货箱，`ModEntry.cs:12531`），
+    #    （C# `HandleSell` 把 `item.Stack` 整个塞进出货箱，`ModEntry.cs:13270`），
     #    旧文案「敲一件投一件」既不准确、也让人以为只投 1 个；② 标题写明**整摞**。
     rows = [Row(BIN_V, [t], f"投 {_name_with_q(t)}",
                 f"×{int(t.get('stack') or 1)} 可卖", 0)
             for t in _bin_items(ctx)]
     if not rows:
         return None
-    return Level(rows, title="🗑 投哪几件进出货箱？（**每样整摞全投** · 要全投走 `menu ops=bin`）")
+    return Level(rows,
+                 title="🗑 投哪几件进出货箱？（`1,3` 多选 · **每样整摞全投** · "
+                       "**投进去就拿不回来了**）",
+                 mode="pick", verb=BIN_V, exec_on_pick=True,
+                 hint="> 敲编号，可以多选（`1,3`）—— 敲了就投，"
+                      "**这一摞整个进箱子、今晚结算卖掉，取不回来**")
 
 
 def _exec_bin(ctx, targets, run):
@@ -3594,9 +3609,35 @@ def _exec_bin(ctx, targets, run):
     return _receipt_from_helper("投出货箱", t.get("name") or "", r)
 
 
+def _exec_bin_multi(ctx, pairs, run):
+    """🗑 投：**逐条报**（哪一摞进了箱子），并在末尾**再说一遍不能取回**。
+
+    ⚠️ 逐条调 `bin`（端点一次只认一个名字），**不拼一个大请求**：
+       拼了就变成"一条回包说 N 件成了"，而其中**哪件没进去**回包不会告诉我们。
+    ⚠️ 每条都**照抄它自己的话**（`text`，`/sell` 的 sold/价格都在里面）——
+       不在这儿重拼金额，同「卖」那条规矩（重拼 = 把它的复核丢掉）。
+    """
+    lines, ok_n = [], 0
+    for row, _cnt in pairs:
+        s = row.targets[0]
+        cn = s.get("name") or ""
+        nm = (s.get("raw") or {}).get("name") or cn
+        r = run("bin", {"name": nm}) or {}
+        txt = " · ".join(x.strip() for x in str(r.get("text") or "").splitlines() if x.strip())
+        if r.get("ok") and r.get("st") != "maybe":
+            ok_n += 1
+            lines.append(f"  · {cn} —— {txt or '进箱子了'}")
+        else:
+            lines.append(f"  · {cn} —— **没投进去**（{txt or r.get('error') or '游戏没回话'}）")
+    out = render_receipt("投出货箱", f"{len(pairs)} 件", ok_n > 0, note="\n".join(lines))
+    if ok_n:
+        out += "\n   🔒 **进箱子的取不回来**（今晚结算就卖掉）—— 还想留的就别再投"
+    return out
+
+
 BIN_V = Verb("bin_one", "投出货箱", 0, lambda c, t: CAN_YES,
              lambda c, t: "可卖", lambda c, t: f"投 {_name_with_q(t)}",
-             "inv", exec=_exec_bin)
+             "inv", exec=_exec_bin, exec_multi=_exec_bin_multi)
 
 
 # 🪨 「砸 晶球…」（2026-10-01 · 恒「**锻造晶球先吧**」）—— 铁匠铺柜台前的**批量**动作。
@@ -5602,6 +5643,16 @@ def _render_level(ctx: Ctx, lv: Level, n: int = 5) -> str:
         lines.append("> 敲编号" if shown else "> 先照上面那句把界面处理掉")
     else:
         lines.append(_LEVEL_HINT.get(lv.mode, _LEVEL_HINT["act"]))
+    # 🧭 2026-11-05 恒：「想去的地方不在单子上 → 查看所有可以导航到的地图名」
+    #    ⚠️ **故意做成一枚提示行、而不是一个候选号**：候选要进 `Level/_candidates` 那套
+    #       can/show/reason/exec 四件套，插一个假动作会把"敲编号"的语义搞脏
+    #       （而且它没有 targets、没有 exec，`do 1` 会打到空气）。
+    #       ⇒ 只印一行"去哪查"，AI 真要用就去调 `map names`（那是现成的只读 op）。
+    #    只在**顶层 + 非菜单态**印：深层是"刚点开的那一摞"，菜单态有其他出口，
+    #    那两处插这句纯属干扰。
+    if len(_STACK) == 1 and not ctx.menu:
+        lines.append("  🧭 想去的地方不在这单子上？`map names` = 全部能去的地名"
+                     "（每个都能直接 `go place=`，多段路线它自己走）")
     return "\n".join(lines)
 
 

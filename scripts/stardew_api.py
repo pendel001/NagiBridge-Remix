@@ -17,6 +17,50 @@ except Exception:
     pass          # 闸坏了不许连累正主（自验自己会红，见 `_net_guard_selftest.py`）
 
 import os
+
+# ══════════════════════════════════════════════════════════════════════════
+# 🚨 2026-11-05 真机逮到（比任何导航 bug 都致命，而且**跟我们的改动无关**）
+# ══════════════════════════════════════════════════════════════════════════
+# 症状：MCP 起来后 `check role` 报「探测不完整（0 个响应）」、状态条报「状态读取失败」、
+#       `map here` 报「游戏没开」—— **全像游戏没启动**，其实游戏好好地跑着。
+# 病根：`requests` **默认信任系统代理**（Windows 下它会读注册表里的 ProxyServer）。
+#       用户开着 Clash / v2ray 这类工具时，`http://localhost:7843/state` 会被丢给
+#       `127.0.0.1:12450`（代理端口），代理又连不上 localhost ⇒ ConnectionReset
+#       ⇒ `ProxyError`。真机原始报错：
+#         ProxyError: HTTPConnectionPool(host='127.0.0.1', port=12450): Max retries exceeded
+#         with url: http://localhost:7843/state
+# 判据：**我们只打 localhost 和局域网**，走代理永远是错的（代理不该、也做不到转发回本机）。
+# ⇒ 两道保险：
+#   ① 本模块所有请求走 `trust_env=False` 的 Session（不吃 env/注册表代理）；
+#   ② 环境里钉 `no_proxy`（子进程脚本 `import requests` 时也能跟着走）。
+# ⚠️ 别改回裸 `requests.get` —— 那就把"有代理的玩家一律打不开"这个坑放回去了。
+_NO_PROXY = "localhost,127.0.0.1,::1"
+for _k in ("no_proxy", "NO_PROXY"):
+    _v = os.environ.get(_k, "")
+    if "localhost" not in _v:
+        os.environ[_k] = (_v + "," + _NO_PROXY).lstrip(",")
+
+import requests as _requests_real
+
+_S = _requests_real.Session()
+_S.trust_env = False          # ← 关键：无视环境变量 + Windows 注册表里的代理
+
+
+class _NoProxyRequests:
+    """把 `requests` 包一层：`get/post` 永远不走代理，其余属性照旧透传。"""
+
+    def get(self, *a, **k):
+        return _S.get(*a, **k)
+
+    def post(self, *a, **k):
+        return _S.post(*a, **k)
+
+    def __getattr__(self, name):
+        return getattr(_requests_real, name)
+
+
+requests = _NoProxyRequests()
+
 # ⚠️⚠️ 2026-09-23 血的教训：**这个默认值是 7842 = 房主(恒)**，不是 AI。
 #     走 MCP 永远没事 —— `nagi_mcp_server.py` 在 `import stardew_api` **之前**就
 #     `os.environ.setdefault("NAGI_URL", "...:7843")`，所以服务进程里 BASE_URL 恒是 AI。

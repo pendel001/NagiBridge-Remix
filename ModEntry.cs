@@ -12734,7 +12734,7 @@ public class ModEntry : Mod
             var farmer = Game1.player;
             if (!farmer.friendshipData.TryGetValue(npcName, out var f))
             {
-                tcs.SetResult(new { ok = true, npc = npcName, points = 0, hearts = 0, giftsThisWeek = 0, giftsToday = 0, known = false });
+                tcs.SetResult(new { ok = true, npc = npcName, points = 0, hearts = 0, giftsThisWeek = 0, giftsToday = 0, talkedToToday = false, known = false });
                 return;
             }
             tcs.SetResult(new
@@ -12745,6 +12745,10 @@ public class ModEntry : Mod
                 hearts = f.Points / 250,
                 giftsThisWeek = f.GiftsThisWeek,
                 giftsToday = f.GiftsToday,
+                // 🗣️ 2026-11-05 恒：「最多说**今天聊过天没有，送过礼没有**，报个位置就完了」
+                //    ⇒ `find_npc` 只要这两位。`Friendship.TalkedToToday` 是游戏自己的记录，
+                //    比"我们记没记过"可靠（跨客户端也对，因为它在房主的 friendshipData 里）。
+                talkedToToday = f.TalkedToToday,
                 known = true
             });
         });
@@ -13240,6 +13244,18 @@ public class ModEntry : Mod
             if (bin == null)
             {
                 tcs.SetResult(new { ok = false, error = "No shipping bin found (must be on Farm)" });
+                return;
+            }
+
+            // 🔴 2026-11-05 恒：「出货箱物品不能取回」⇒ 不给 AI 一把"全投"的大锤。
+            //    老实现里**空名字 = 全投**（下面那道名字过滤只在 `name` 非空时才生效），
+            //    于是"投进去"这件事既不可逆、又只要一个空参数就能触发 —— AI 照着
+            //    「全投」两个字就能把整包投光（真机就是这么干的）。
+            //    ⇒ 空名字直接拒：投哪件必须点名（Python 那侧更前面也挡了一道，
+            //      但端点自己也得守住：**不可逆的批量不许有默认值**）。
+            if (!sellAll && string.IsNullOrWhiteSpace(name))
+            {
+                tcs.SetResult(new { ok = false, error = "name required: 出货箱一次投一样（空名字 = 全投，已封）" });
                 return;
             }
 
@@ -16597,6 +16613,14 @@ var tcs = new TaskCompletionSource<object>();
                     //    所以：**先记下"失物件数 + 钱"两个数**，点完按游戏自己的字段判成交。
                     int lostBefore = Game1.player.itemsLostLastDeath.Count;   // Farmer.cs:304
                     int moneyBeforeShop = Game1.player.Money;
+                    // 🔧 2026-11-05 恒真机：**升级工具被误判成「没买成但钱掉了」**。
+                    //    铁匠铺升级**不往包里放任何东西**（扣钱 + 扣铜锭 + 把工具从他手里收走）
+                    //    ⇒ 下面 `shop.heldItem` 恒为 null ⇒ `bought` 停在 0 ⇒ 掉进"一件都没成交"分支，
+                    //      回「没买成」—— 可同一屏的状态条已经印着「铁匠铺有『铜喷壶』待取」了。
+                    //    判据 = 游戏自己的 `player.toolBeingUpgraded`（领取前一直非空；
+                    //    `/state.player.toolUpgrading` 就是它，见 `:6469`）。
+                    //    ⚠️ 要记**点之前**的值：本来就在升级时再点别的工具，名字会变。
+                    string toolUpgBefore = Game1.player.toolBeingUpgraded?.Value?.DisplayName;
                     for (int q = 0; q < qty; q++)
                     {
                         var match = shop.forSale.FirstOrDefault(it =>
@@ -16654,6 +16678,21 @@ var tcs = new TaskCompletionSource<object>();
                     }
                     if (bought <= 0)
                     {
+                        // 🔧 2026-11-05 恒真机（「刚刚升级工具被误报了『没买成但钱掉了』，实际上是升级了的」）：
+                        //    升级工具**就是**"钱掉了、东西不进包、手里的工具被他收走" ——
+                        //    跟上面马龙那一支形状一样：**成交了但背包不会多东西**。
+                        //    判据只认游戏字段：`player.toolBeingUpgraded` 从空变成有值（或换了个工具）。
+                        string toolUpgAfter = Game1.player.toolBeingUpgraded?.Value?.DisplayName;
+                        if (!string.IsNullOrEmpty(toolUpgAfter) && toolUpgAfter != toolUpgBefore)
+                        {
+                            int spentTool = moneyBeforeShop - moneyAfterShop;
+                            tcs.SetResult(new { ok = true, clicked = "shop_item", item = item,
+                                upgraded = true, upgrading = toolUpgAfter,
+                                cost = spentTool, money = moneyAfterShop,
+                                note = $"**升级受理**：{toolUpgAfter} 已被克林特收走（扣 {spentTool}g），"
+                                     + "2 天后回来取；没进包是**正常**的，别当没买到" });
+                            return;
+                        }
                         int spentShop = moneyBeforeShop - moneyAfterShop;
                         // 💬 只有钱**真的没动**才许说「钱没动」——
                         //    钱真掉了就必须把实数报出来（恒 2026-10-06：不许再出现"钱没动"却扣了钱的假话）。

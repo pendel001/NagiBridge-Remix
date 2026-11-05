@@ -1622,6 +1622,33 @@ def _qi_gem_show(loc_name: str, menu_type: str, delta: bool) -> bool:
             and str(menu_type or "").lower().startswith("shop"))
 
 
+_CC_DONE_CACHE = {"ts": 0.0, "v": None}
+
+
+def _cc_done(ttl: float = 30.0):
+    """🏛️ 社区中心**重建完成**没有？→ True / False / **None（读不到）**。
+
+    ⚠️ 2026-11-05 恒真机：「铁匠铺天天都显示休息……克林特明明在店里」——**真的误判了**。
+       中文维基[铁匠铺]：非营业时间 = **社区中心重建后的每个星期五** ⇒ 周五休息**有前置**。
+    🔒 判据 = 房主 `mailReceived` 里的 **`ccIsComplete`** flag（`/progress` 给的就是原表），
+       不手抄第二张表；**不许**用 `/unlocks.communityCenter` —— 那个是"开锁"
+       （`ccIsComplete || ccDoorUnlock || Lewis_cc_Begin`），开局没多久就 True，拿它判必然永远误判。
+    ⚠️ 30 秒缓存：状态条**每次工具返回**都要问一次，不缓存就是每调一次多打一发 /progress。
+    ⚠️ 读不到回 `None`，调用侧按"没重建"处理 ⇒ **不报休息**（宁可少一句提示，也不凭空喊关门）。
+    """
+    now = time.time()
+    if _CC_DONE_CACHE["v"] is not None and now - _CC_DONE_CACHE["ts"] < ttl:
+        return _CC_DONE_CACHE["v"]
+    try:
+        r = api._get("/progress") or {}
+        mail = r.get("mail") or []
+        v = "ccIsComplete" in mail
+    except Exception:
+        return None
+    _CC_DONE_CACHE.update({"ts": now, "v": v})
+    return v
+
+
 def _calendar_line(data: dict) -> str:
     """📅 日历常驻一行：节日/生日/商店休业。没有则返回空串。"""
     try:
@@ -1633,6 +1660,8 @@ def _calendar_line(data: dict) -> str:
         cal_line = calendar_data.build_calendar_line(
             season, day if isinstance(day, int) else 1, day_index,
             year if isinstance(year, int) else 1,
+            # 🏪 铁匠铺周五休息的前置（社区中心重建）——读不到就不报（见 `_cc_done`）
+            cc_done=_cc_done(),
         )
         return cal_line or ""
     except Exception:
@@ -2482,11 +2511,13 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
     # ⚠️ 2026-08-16：单条长提示（节日 Temp 图）不截断到第一个括号——保留 map_go 误报等关键指引
     try:
         _map_enum = locations.MAP_FEATURES.get(loc_name)
+        # 🗓️ 今天此刻的日历上下文（`locations.POI_WHEN` 那几条判据要用：森林猪车 / 夜市猪车）
+        _when = locations.calendar_ctx(data.get("time"))
         if _map_enum and loc_name == "Forest":
             # 🐷 猪车周五/周日才开档——非出现日/收摊不显示（2026-08-20 恒：跟节日商店一样非出现时间不显示）
-            _dow = (day - 1) % 7 if isinstance(day, int) else -1
-            _cart_open = _dow in (4, 6) and isinstance(tod, int) and 600 <= tod <= 2000
-            if not _cart_open:
+            # ⚠️ 2026-11-05：判据**搬进** `locations.POI_WHEN`（候选表 / 状态条 / 提醒**三处共用一份**），
+            #    这里只负责"把人话那行里的猪车摘掉"，不再自己算 `(day-1)%7` 和 600~2000。
+            if not locations.poi_available("猪车(旅行货车)", **_when)[0]:
                 _map_enum = [f for f in _map_enum if "猪车" not in f]
         # 🚧 门禁（2026-09-23 恒：春2日 AI 一到 Mountain 就被告知"能去探险家公会和矿井"，
         #    可矿井第 5 天才开、公会也没开门）：拿不准能不能去的一律摘掉。
@@ -2522,22 +2553,39 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
             _hidden = map_feature_hidden(loc_name)
             if _hidden:
                 _map_enum = [f for f in _map_enum if f.split("(")[0].strip() not in _hidden]
-        if _map_enum and not _sitting_now and loc_name not in ("Farm", "FarmHouse", "Cabin", "Backwoods", "Tunnel", "Mine", "SkullCave"):
+        _legal = locations.legal_tokens_here(loc_name, when=_when)
+        # 🏠 2026-11-05 恒真机：「在家里印的就只有**家具**和对外的**连通域(Farm)**」
+        #    ⇒ 原来把 FarmHouse/Cabin 整个排除在外（那几个字印不出合法名），
+        #      现在 POI 表里有家具了 ⇒ 从排除名单里拿掉，让家也印得出东西。
+        if (_map_enum or _legal["links"] or _legal["poi"]) and not _sitting_now and loc_name not in ("Farm", "Backwoods", "Tunnel", "Mine", "SkullCave"):
             if _all_poi:
-                # 坐标已经在条目里了 ⇒ **不能再 `split("(")`**（那会把 `(4,19)` 砍掉）
+                # 室内：POI 真名 + 坐标（坐标已经在条目里了 ⇒ **不能再 `split("(")`**，那会把 `(4,19)` 砍掉）
                 _hint = "、".join(_map_enum[:4])
                 if len(_map_enum) > 4:
                     _hint += f" 等{len(_map_enum)}项"
-                # ⚠️ 2026-10-04 恒：「**「以交互」字眼不要了**」——我本意只是想把"站哪格、怎么用"
-                #    告知清楚，而 POI 名 + 坐标本身就把"站哪"说完了（怎么用各域 op 自己会教）。
-                #    ⇒ 尾缀删掉；**别再加回来**。
-            elif len(_map_enum) == 1:
-                # 单条=完整显示（节日图等一条长指引，砍掉括号就丢了关键信息）
+                # ⚠️ 2026-10-04 恒：「**「以交互」字眼不要了**」——POI 名 + 坐标已把"站哪"说完，**别再加回来**。
+            elif not _legal["links"] and not _legal["poi"] and len(_map_enum) == 1:
+                # 单条长指引（节日 Temp 图那种）：没有合法 token 可印，**保留原文别砍括号**（砍了就丢关键信息）
                 _hint = _map_enum[0]
             else:
-                _hint = "、".join(f.split("(")[0] for f in _map_enum[:3])
-                if len(_map_enum) > 3:
-                    _hint += f" 等{len(_map_enum)}项"
+                # 🔑 室外：**只印能直接回填的 token**（2026-11-05 恒：「那些不太合法的名字」换掉）。
+                #    原来印的是 `MAP_FEATURES` 描述砍括号后的残名 —— 例「罗宾木匠店」，
+                #    而那张图的真名是 `ScienceHouse` ⇒ AI 照着敲 = 当场死在对不准上。
+                _bits = []
+                # 🔒 门禁同源：`map_feature_hidden` 那张表也管"出口能不能走"——
+                #    不然春2 的 Mountain 上会印「矿井」（春5 才开，走过去被 🔒 拦）。
+                try:
+                    _blk = navigation.blocked_link_targets(loc_name)
+                except Exception:
+                    _blk = set()
+                _links = [l for l in _legal["links"] if l[0] not in _blk]
+                if _links:
+                    _nl = len(_links)
+                    _bits.append("、".join(_tok_label(t) for t, _k, _tl in _links[:3])
+                                 + (f" 等{_nl}个去处" if _nl > 3 else ""))
+                if _legal["poi"]:
+                    _bits.append(f"本图 POI {len(_legal['poi'])} 处")
+                _hint = (" · ".join(_bits) if _bits else "本图没有登记的出口/POI") + "（详细 map here）"
             lines.append(f"  🗺️ 可: {_hint}")
     except Exception:
         pass
@@ -3960,9 +4008,9 @@ def _shipbin_hint(loc_name: str = "") -> str:
                 _b = _bins[0]
                 _bx = _b.get("doorX", _b.get("x"))
                 _by = _b.get("doorY", _b.get("y"))
-                line = (f"🧺 出货箱 ({_bx},{_by})｜**投进去过夜才结算**（不是立刻拿钱）→ "
-                        f"`menu(ops=\"bin\", sell_all=True)` 全投 / "
-                        f"`menu(ops=\"bin\", name=\"物品名\")` 投一样（**不是**存箱子）")
+                line = (f"🧺 出货箱 ({_bx},{_by})｜**投进去过夜才结算**（不是立刻拿钱）"
+                        f"· **取不回来** → 投哪件走单子：`intent(ops=\"show\")` → 「投出货箱…」"
+                        f"（`1,3` 多选）；单件也可 `menu(ops=\"bin\", name=\"物品名\")`（**不是**存箱子）")
         except Exception:
             line = ""                       # 读不到就不报（不瞎猜坐标）
     try:
@@ -7155,43 +7203,102 @@ def wear(name: Optional[str] = None, slot: Optional[str] = None, hand: Optional[
         return _with_state(f"❌ {e}")
 
 
+def _npc_today_marks(npc_key: str) -> list:
+    """今天跟这个 NPC **说过话没有 / 送过礼没有** —— 只问游戏（`/friendship`）。
+
+    ⚠️ 读不到就**什么都不说**（列表空）——不猜、不编"没聊过"。
+    ⚠️ 老 DLL 没有 `talkedToToday` 这一位 ⇒ 那一段自动消失（只少一句，不报假话）。
+    """
+    try:
+        f = api._get("/friendship", {"npc": npc_key}) or {}
+    except Exception:
+        return []
+    if not f.get("ok"):
+        return []
+    if not f.get("known"):
+        return ["还没认识"]
+    out = []
+    _t = f.get("talkedToToday")
+    if _t is True:
+        out.append("今天聊过")
+    elif _t is False:
+        out.append("今天没聊")
+    _g = f.get("giftsToday")
+    if isinstance(_g, int):
+        out.append("今天送过礼" if _g > 0 else "今天没送礼")
+    return out
+
+
 @mcp.tool()
 def find_npc(name: str) -> str:
-    """🔍 找到某个 NPC 现在在哪（社交用）
-    扫全地图，返回位置+当前对话。找到后可用 go_to / walk_to 走过去搭话或送礼。
-    （位置**以房主那端为准**；万一房主这端和轮回自己记的不一样，会另起一行把差异摊开给你看。）
+    """🔍 某个 NPC 现在在哪 + **今天聊过/送过礼没有**（一行一个人，不给台词、不给解释）。
+    找到后用 go_to / walk_to 走过去；要说话用 social(ops="chat")。
 
     Args:
         name: NPC 名字（中文名如"莉亚"，或英文名"Leah"，支持子串）
     """
     try:
-        # ⚠️ 走 `api.find_npc`（**以 host 为准**），不是 `api._get`：后者打的是轮回**自己**那个进程，
-        #    而 farmhand 那端的 NPC 会滞留"各人的家"（2026-09-19 真机：Alex 明明站在沙滩上，
-        #    自己这端报 JoshHouse）。
+        # ⚠️ 走 `api.find_npc`（**以 host 为准**），不是 `api._get`：后者打的是**自己**那个进程，
+        #    而 farmhand 那个进程里的 NPC 会滞留"各人的家"（2026-09-19 真机：Alex 明明站在沙滩上，
+        #    自己那边却报 JoshHouse）。
         r = api.find_npc(name)
         if not r.get("ok"):
             return _with_state(f"❌ {r.get('error', r)}")
         nps = r.get("npcs", [])
-        stale = r.get("stale", [])
         if not nps:
             return _with_state(f"🔍 没找到「{name}」——可能出门在外或名字不对")
+        # 🔇 2026-11-05 恒：「**什么都不用说，最多说今天聊过天没有，送过礼没有，报个位置就完了**，
+        #    不需要把台词数据、解释全都翻出来一大串给 AI 看，比较占 token」
+        #    ⇒ 每行只留：名 @ 图 (x,y) ｜ 在睡 ｜ 今天聊没聊 ｜ 今天送没送。台词/两端差异那套全撤。
         lines = []
         for n in nps[:8]:
-            d = n.get("dialogue")
-            extra = f" 💬「{d}」" if d else ""
-            sleep = " 💤在睡" if n.get("isSleeping") else ""
-            lines.append(f"  {n.get('displayName') or n.get('name')} @ {n.get('location')} ({n['x']},{n['y']}){sleep}{extra}")
-        # ⚠️ 两端不一致**摊开说**（宁报错别兜底）：只列 host 没有的那几条，不静默丢
-        tail = ""
-        if r.get("src") == "self":
-            tail = "\n⚠️ 这只有**轮回自己这端**的记录（房主那端没答上来）——远处的人可能是滞留的旧位置"
-        elif stale:
-            _s = "、".join(f"{n.get('displayName') or n.get('name')}@{n.get('location')}({n['x']},{n['y']})"
-                           for n in stale[:3])
-            tail = f"\n⚠️ 轮回自己这端另记着 {_s} —— **已忽略**（它那边远处的地图会滞留旧位置）"
-        return _with_state(f"🔍 「{name}」找到 {len(nps)} 处：\n" + "\n".join(lines) + tail)
+            _bits = [f"{n.get('displayName') or n.get('name')} @ {n.get('location')} ({n['x']},{n['y']})"]
+            if n.get("isSleeping"):
+                _bits.append("💤在睡")
+            _bits.extend(_npc_today_marks(n.get("name") or name))
+            lines.append("  " + " ｜ ".join(_bits))
+        # ⚠️ 位置只来自 farmhand 自己那份记录时（房主没答上来），远处的人可能是旧坐标 ——
+        #    三个字标一下：不当铁一样的事实，但也不把两头差异全摊开（那是 token）。
+        _tail = "\n⚠️ 旧" if r.get("src") == "self" else ""
+        return _with_state(f"🔍 「{name}」{len(nps)} 处：\n" + "\n".join(lines) + _tail)
     except Exception as e:
         return _with_state(f"❌ {e}")
+
+
+# 👥 NPC 周围 8 个站格 —— **正交的排前面**（`/interact` 打的是"面前那一格"，
+#    所以只有正对着他时才聊得上；对角贴着是**聊不了**的，只能当中转）
+_NPC_STAND8 = ((0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1))
+
+
+def _npc_stand_order(ax, ay, tx, ty):
+    """围着 NPC `(tx,ty)` 的 8 个相邻格：**先正交、再按离玩家 `(ax,ay)` 近**。
+
+    ⚠️ 2026-11-05 恒真机（Robin 在木匠店柜台后）：只试 `(tx, ty+1)` 那一格 ⇒ 那格是柜台、走不进
+       ⇒ 人没动 ⇒ 距离还是 8 ⇒ 老代码 `>4` 直接放弃。
+    🔑 恒接着点破的那句是对的：「之前也能穿过两三个室内门的长距离找人」——**距离从来不是门槛**，
+       长距离能成才说明 `walk_natural` 自己会绕门；柜台那次是**落脚点本身走不进去**。
+    ⚠️ 正交优先：`/interact` 只打**面前那一格**（`ModEntry.cs:3791 GetFacingTile`），
+       对角贴着聊不上 ⇒ 排序把正交放前面，距离只用来在同类里挑近的。
+    """
+    def _key(d):
+        diag = 1 if (d[0] != 0 and d[1] != 0) else 0
+        return (diag, abs(tx + d[0] - ax) + abs(ty + d[1] - ay))
+    return sorted(_NPC_STAND8, key=_key)
+
+
+def _npc_face_dir(ax, ay, tx, ty) -> int:
+    """站在 `(ax,ay)` 要朝哪才正对 `(tx,ty)`（0=上 1=右 2=下 3=左）。
+
+    ⚠️ 原来 `chat_npc` 写死 `api.face(0)`（朝上）⇒ NPC 在东/西/南时，`/interact` 打的是空气，
+       却照样回「💬 和 X 搭话」+「（没有台词）」= **假成功**（真机 22:19:02 就是这个样子）。
+    ⚠️ 对角（|dx|==|dy|）：先按横向定（至少朝向包含他），再靠调用方贴到正交格。
+    """
+    dx, dy = tx - ax, ty - ay
+    if dx == 0 and dy == 0:
+        return 0
+    if abs(dx) >= abs(dy):
+        return 1 if dx > 0 else 3
+    return 2 if dy > 0 else 0
 
 
 @mcp.tool()
@@ -7251,16 +7358,43 @@ def chat_npc(name: str = "") -> str:
                     return _with_state(f"❌ 到不了「{tname}」所在的 {tloc}：\n{go[:300]}")
                 nav_log = f"（已到 {tloc}）"
             # 同图或已到 → 走过去（walk_natural 自带 position 兜底，不会卡死）
-            api.walk_natural(tx, ty + 1)
+            # 2026-11-05：先走**离自己最近的那个相邻格**，别死磕 `(tx, ty+1)`——
+            #   Robin 在木匠店柜台后时，那格正好是柜台，走不进 ⇒ 人原地不动 ⇒ 老代码判"够不着"。
+            try:
+                _ax0, _ay0 = api.player_tile()
+            except Exception:
+                _ax0, _ay0 = tx, ty + 2
+            _dx0, _dy0 = _npc_stand_order(_ax0, _ay0, tx, ty)[0]
+            api.walk_natural(tx + _dx0, ty + _dy0)
 
-        # 走完复查：还是离 NPC 太远（>4格）→ 够不着（节日特殊位/墙后/兜底落错格），优雅跳过
+        # 走完复查：贴没贴到身边（只有贴到 ≤1 格，`/interact` 才真的打得到人）。
+        # 🔴 2026-11-05 恒真机（Robin 站在木匠店柜台**后**）：
+        #    原来只走**一次** `(tx, ty+1)`，贴不到就以「>4 格」直接放弃 ⇒ 回「💤 在够不着的位置（离我 8 格）」；
+        #    可那一局其实**绕过去就行**（人后来手敲 `map walk 7,20` 一步就聊上了）。
+        #    恒：「原来也太短了吧，这样室内好多大场景岂不是都走不到吗。**半径 8 格还差不多**。」
+        #    ⇒ 现在：① 贴不到就围着 NPC **再试几个站格**（按离你近的顺序，最多 4 个）；
+        #            ② "放弃"的门槛 4 → **8 格**（大房间里落在 5~8 格很常见，先走过去试，别提前认输）。
+        def _npc_d() -> int:
+            _a = api.player_tile()
+            return abs(_a[0] - tx) + abs(_a[1] - ty)
+
         ax, ay = api.player_tile()
-        if abs(ax - tx) + abs(ay - ty) > 4:
+        _d = _npc_d()
+        if _d > 1:
+            for _dx, _dy in _npc_stand_order(ax, ay, tx, ty)[:4]:
+                if _d <= 1:
+                    break
+                api.walk_natural(tx + _dx, ty + _dy)
+                _d = _npc_d()
+        if _d > 1:
             return _with_state(
-                f"💤 {tname} 在够不着的位置（离我 {abs(ax-tx)+abs(ay-ty)} 格，可能节日特殊位/墙后），"
-                f"就不硬凑了。附近还有人可用 chat_npc() 列一下")
-        # 面向 NPC + 开口（checkAction 打面前 NPC）
-        api.face(0)
+                f"💤 走不到 {tname} 身边（最近 {_d} 格）—— 大半是柜台/墙挡住，或他站的那格旁边没有可站格。\n"
+                f"   他此刻报在 ({tx},{ty})：可以 `map walk x={tx} y={ty - 1}`（或换 ±1 几格）自己贴过去，"
+                f"再 `scene interact`；附近还有人就 `chat_npc()` 列一下")
+        # 面向 NPC —— **别写死朝上**：朝错方向 `/interact` 打的是空气，还会回一句假的「搭话成功」
+        ax, ay = api.player_tile()
+        api.face(_npc_face_dir(ax, ay, tx, ty))
+        time.sleep(0.25)
         r = api._post("/interact")
         if not r.get("ok"):
             return _with_state(f"❌ 搭话失败: {r.get('error', r)}")
@@ -11610,7 +11744,7 @@ def _farm_require_xy(x: int, y: int):
     here = ""
     try:
         p = api.state().get("player") or {}
-        here = f"你(轮回)现在在 ({p.get('x')},{p.get('y')})，"
+        here = f"你现在在 ({p.get('x')},{p.get('y')})，"
     except Exception:
         pass
     # ⚠️ 文案只写"要什么 + 下一步敲哪个 op"（恒 2026-09-23：「AI 是用户，不需要知道我们是怎么迭代的」——
@@ -14047,12 +14181,147 @@ def map_unlocks() -> str:
         return _with_state(f"❌ 查解锁失败: {e}")
 
 
+def map_names(group: str = "") -> str:
+    """🗺️ **全部可导航的地名目录**（不是邻接表）——想去的地方不在本图时用这个。
+
+    2026-11-05 恒：
+      「只列连通好像也没有办法彻底解决 ai 出门问题，因为想去的很多地方都是**跨段**而不是相邻地图
+        → 查看所有可以导航到的地图名 → 列出常用地名/建筑，**每个一个名字即可**」
+    ⇒ 本 op **只吐名字、不吐说明**（一个名字就是一次合法的 `go place=`）；
+      `go` 自己会做多段 BFS，不用 AI 拼路线。
+
+    Args:
+        group: 留空=室内+室外都列；也可传 "室内" / "室外" 只看一半。
+    """
+    places = sorted(locations.MAP_LINKS.keys())
+    indoor_set = getattr(locations, "INDOOR_MAPS", set())
+
+    def _named(rows):
+        # 只列**有中文别名**的图（= 常用地名）。像 `Trailer_Big` / `IslandShrine` 这种
+        # 没有别名的技术图名不进目录（恒：「列出**常用**地名/建筑」）；
+        # 真要去的英文图名它自己会拼，`go` 照样认。
+        return [p for p in rows if _tok_label(p) != p]
+
+    groups = []
+    if group in ("", "室内", "indoor", "家"):
+        rows = _named([p for p in places if p in indoor_set])
+        if rows:
+            groups.append("🏠 室内: " + " ".join(_tok_label(p) for p in rows))
+    if group in ("", "室外", "outdoor", "外"):
+        rows = _named([p for p in places if p not in indoor_set])
+        if rows:
+            groups.append("🌳 室外: " + " ".join(_tok_label(p) for p in rows))
+    groups.append("（每个名字都能直接 `go place=`，多段路线它自己会走；只想看**本图** → `map here`）")
+    return "\n".join(groups)
+
+
+def _tok_label(tgt: str) -> str:
+    """给出口目标挑一个**又短又合法**的显示名。
+
+    2026-11-05 恒：「中文还是英文 token 少？印少的那个就可以了。」
+      `AdventureGuild`(14) / `ScienceHouse`(12) / `Backwoods`(9)   ← 英文键又长又难读
+      `探险家公会`(5)     / `木匠店`(3)        / `深山`(2)          ← 中文别名短一半
+    ⇒ **优先中文别名，挑最短的那个**；没有别名才退回英文键。
+
+    ⚠️ 别名**只从 `navigation.SCENE_NAME_ALIAS` 取**（那就是 `map go` 认的表），
+       绝不自己编 —— 编出来的中文一样是假路牌。
+    """
+    try:
+        cands = [k for k, v in navigation.SCENE_NAME_ALIAS.items() if v == tgt]
+    except Exception:
+        cands = []
+    if cands:
+        return sorted(cands, key=lambda s: (len(s), s))[0]
+    return tgt
+
+
+def map_here(full: bool = False) -> str:
+    """🗺️ 我现在这张图有什么：**交互点 + 连通地点**，名字都能直接回填。
+
+    名字对不准时先看这张单子，别再猜：
+      · `📍` 每行 → 直接 `map walk poi_name=名字`
+      · `🚪` 每行 → 直接 `map go place=图名`
+
+    数据**只**来自 `locations.legal_tokens_here()`（`POI` 键 + `MAP_LINKS` 的 target）。
+    ⛔ 不掺 `MAP_FEATURES` 的人话描述——那不是地名（「罗宾木匠店」真名是 `ScienceHouse`），
+       掺进来就等于给 AI 一张粘不回去的路牌（2026-11-05 恒拍板）。
+
+    Args:
+        full: 默认只列前 10 个交互点省 token；要全量传 `True`。
+    """
+    try:
+        cur = api.current_location()
+    except Exception as e:
+        return f"❌ 读不到当前位置（{type(e).__name__}: {e}）——游戏没开，或 Mod DLL 太旧。"
+    # 🎭 同一栋楼三种形态（Joja超市/废弃超市/电影院）互斥 ⇒ 必须把**当前形态**传进去，
+    #    否则同格去重会固定挑错那一条（= 新造的假路牌）。
+    try:
+        _jf = _joja_form()
+    except Exception:
+        _jf = None
+    # 🗓️ 只在部分日子才存在的点（森林猪车/夜市猪车）——今天没有就别印（跟状态条同一个闸）
+    try:
+        _when = locations.calendar_ctx((api.state() or {}).get("time"))
+    except Exception:
+        _when = {}
+    tok = locations.legal_tokens_here(cur, joja_form=_jf, when=_when)
+    poi, links = tok["poi"], tok["links"]
+    out = [f"🗺️ {cur}（你在这张图）"]
+    if poi:
+        out.append("  📍 交互点（想过去就填 walk poi_name=）:")
+        show = poi if full else poi[:10]
+        for n, px, py in show:
+            out.append(f"    · {n}  ({px},{py})")
+        if len(poi) > len(show):
+            out.append(f"    … 共 {len(poi)} 处（`full=True` 看全）")
+    else:
+        # 🏗️ 2026-11-05 恒：「只列入当前图 poi 和建筑」——冷门图没有 POI 表时，
+        #    建筑/家什仍**走动态定位**（`_resolve_place` 认 畜棚/鸡舍/温室/小屋/邮箱 这类词），
+        #    所以这里**不抄一张表**（抄了就是第二份会漂的判据），只告诉它"可以直接敲"。
+        out.append("  📍 交互点: 本图没维护 POI 表（≠「什么都没有」）")
+        out.append("     🏗️ 但建筑/家什**直接 walk 就认**（畜棚 鸡舍 温室 小屋 农舍 邮箱…），"
+                   "不用查表；想看周围有哪些东西用 `check what=look`")
+    if cur in ("Farm", "IslandWest"):
+        # 🏗️ 2026-11-05 恒：「列出提示和列表不一样嘛」——对，提示=一句"能直接敲"，
+        #    列表=**把名字摊开**。建筑门在农场上，所以只在农场类图列。
+        #    ⚠️ 名字**唯一来源** = `navigation.BUILDING_KEYWORDS`（和 `_resolve_place` 同一个 dict 对象），
+        #       不另抄一份表；同义键（畜棚/谷仓/棚）每个建筑类型只留**最长**那个（跟最长匹配同一条规矩）。
+        _bk = getattr(navigation, "BUILDING_KEYWORDS", {}) or {}
+        _by_type = {}
+        for _k, _t in _bk.items():
+            if _k.isascii():
+                continue                     # 英文键跟中文重复，列表里只印中文
+            if _t not in _by_type or len(_k) > len(_by_type[_t]):
+                _by_type[_t] = _k
+        if _by_type:
+            out.append("  🏗️ 建筑（名字也能直接填 walk）: "
+                       + " ".join(sorted(_by_type.values(), key=lambda s: (len(s), s))))
+    if links:
+        # 🚪 2026-11-05 恒：「还列相邻图嘛？只列入当前图 poi 和建筑算了」
+        #    ⇒ **不列相邻图**。理由：`map names` 已经给出全部可去地名（含跨段），
+        #      而"相邻"几乎从不是 AI 真想去的地方（它要的多半是两三段之外），
+        #      列在这儿只会让 AI 以为"只能去这几张"。
+        out.append("  🚪 想去别的图 → `map names`（全部地名，多段路线它自己走）")
+    if tok.get("dead"):
+        # ⚠️ 出口物理上存在、但目标**不是 `map go` 认的地名** ⇒ 只作警告（否则变假路牌）
+        for tgt, kind, _tile in tok["dead"]:
+            _why = getattr(locations, "LEAF_TARGETS", {}).get(tgt, "没有登记回程边")
+            out.append(f"  ⚠️ 本图有个出口通向 {tgt} [{kind}]：{_why}（**别当 go 目的地**）")
+    return "\n".join(out)
+
+
 @mcp.tool()
 def map(ops: str = "", kw: dict | None = None) -> str:
-    """🗺️ 导航域（跨图唯一入口）。go 走到目标 / walk 走到地点(POI)**或坐标(x,y)** / lookup 查地点功能 / query 功能反查("哪能买X") / npc 找NPC / warp_safe 紧急逃脱 / unlocks 查存档解锁(**走捷径前先查**)。⚠️参数放 kw 对象。全 ops → help(map)。"""
+    """🗺️ 导航域（跨图唯一入口）。go 走到目标 / walk 走到地点(POI)**或坐标(x,y)** / here **我现在这张图有什么(交互点+连通，名字可直接回填)** / lookup 查地点功能 / query 功能反查("哪能买X") / npc 找NPC / warp_safe 紧急逃脱 / unlocks 查存档解锁(**走捷径前先查**)。⚠️参数放 kw 对象。全 ops → help(map)。"""
     dispatch = {
         "lookup": map_lookup, "查": map_lookup,
         "query": map_query, "反查": map_query,
+        # 🔑 2026-11-05 恒：「总该给人家一个入口」——名字对不准时的**唯一自证入口**。
+        #    只吐合法 token（POI 键 + MAP_LINKS 的 target），见 map_here 的注释。
+        "here": map_here, "这里": map_here, "这有什么": map_here,
+        # 🧭 全局地名目录（恒 2026-11-05：「想去的很多地方是**跨段**而不是相邻地图」
+        #    ⇒ 只列连通治不了出门，得有一份"全部能导航到的名字"，每行只放名字）
+        "names": map_names, "地名": map_names, "所有地名": map_names,
         "go": map_go, "走": map_go,
         # ⚠️ 2026-09-11 恒拍板：`movetile` **退役** —— 坐标走位并入 `walk`（walk=poi_name 或 x/y）。
         #    理由：老 movetile 走 `/move`+BFS，而 CLAUDE.md 关键坑#1 就是「别用 /move+BFS」，
@@ -15345,20 +15614,24 @@ _TRAVEL_CART_KEY = {"last": None}  # 🐷 旅行猪车提醒去重（2026-08-20 
 
 def _traveling_cart_hint(season: str, day, tod) -> str:
     """🐷 旅行猪车提醒（2026-08-20 恒）：周五/周日 6:00-20:00 森林开档。
-    非出现日不显示；开店当天注入一次，让 AI 去猪车逛逛看稀有商品（walk_to 猪车(旅行货车) → interact 开商店）。"""
+    非出现日不显示；开店当天注入一次，让 AI 去猪车逛逛看稀有商品（walk_to 猪车(旅行货车) → interact 开商店）。
+
+    ⚠️ 2026-11-05：判据**改读** `locations.POI_WHEN`（原先这里自己算 `(day-1)%7` + `600<=tod<=2000`，
+       和状态条那份是**两份会漂的副本**）。这里只剩"哪天/几点"之外的那点文案活。
+    """
     try:
         if not isinstance(day, int):
             return ""
-        dow = (day - 1) % 7          # 周几：0=一 … 4=五 6=日
-        if dow not in (4, 6):
-            return ""
-        if isinstance(tod, int) and not (600 <= tod <= 2000):
-            return ""                 # 营业 6:00-20:00（维基），收摊了不推
+        if not locations.poi_available("猪车(旅行货车)",
+                                       **locations.calendar_ctx({"season": season,
+                                                                 "dayOfMonth": day,
+                                                                 "timeOfDay": tod}))[0]:
+            return ""                 # 非出现日 / 收摊 / 季节不对 —— 一律不推
         key = (season, day)
         if _TRAVEL_CART_KEY["last"] == key:
             return ""
         _TRAVEL_CART_KEY["last"] = key
-        wd = "五" if dow == 4 else "日"
+        wd = "五" if ((day - 1) % 7) == 4 else "日"
         return (f"🐷 今天是周{wd}，旅行猪车在森林开档（6:00-20:00）！去逛逛看稀有商品——"
                 "map walk 猪车(旅行货车) 到点朝上，scene interact 开商店")
     except Exception:
@@ -18449,7 +18722,7 @@ _DOMAIN_GUIDES = {
 #       一个 AI 够不着的域名。逐 op 的替代路由 `domain_selftest._SUBSUMED_DOMAINS` 审。
 "social": "社交域：chat(搭话,name=NPC名) gift(送礼,npc_name/item_name) give(送玩家物品,手持右键正式赠予,一次要等同意) hand(递给玩家,走过去丢他脚边,磁吸自动收,可整叠) send(发消息,message,**恒窗口必见——回恒就用它,别只在自己的前端回**) emote(表情,name) friendship(查好感,npc_name) movie(影院,npc)。📐参数键名: chat=name / gift=npc_name+item_name / give=player_name+item_name / hand=player_name+item_name+count(0=整叠) / send=message / emote=name(默认爱心) / friendship=name / movie=npc。⚠️**give vs hand**：give=面对面正式赠予(手持右键,一次一个)——**它发的是「赠送提议」,对方点同意东西才过去**(没点会退回;回报会明说「等他点同意」,看到这句别当成已经送到)；hand=走过去丢他脚边(磁吸自动收,**可整叠**,不用对方操作)——想整叠给/对方不在手边就用 hand。kw={'参数名':值}。",
 "scene": "场景交互域(点东西/工具/转身/捡/坐)：at(tile_x,tile_y)(点指定格/柜台) interact(点面前) use(挥工具) face(转向0上1右2下3左) select(拿手上) sit(x,y[,face])(**坐椅子**:自动走到座位旁再坐,上不了会明确报错;状态条「🪑 可交互：sit(x,y)」给坐标;可选 face=坐下朝向0上1右2下3左,**只对「朝向来自坐下那刻面朝方向」的座位生效**(反编译:stool 类/opposite 长椅/名字带Stool的家具),其它写死——吃不吃由端点回的 face 字段说了算,不生效会在回报里点名) stand(**起身**:坐着时用,没坐着明确报错,带动画+轮询确认) seats(radius=12)(扫附近能坐的椅子/长凳/沙发,✋=可改朝向) pickup(拿起家具) pickup_scene(捡当前场景物,**只扫你周围方形±30格**) berry(摇/摘 灌木与果树：浆果·茶叶·果子——果树摇完果子**掉地上**要再走上去捡) spot(挖蚯蚓点) moss(绿雨搜苔藓) rock(室外镐击:敲当前图可破物,采石场/挖掘场/蚌矿场跳普通石,dig/dry,battle-free) garbage(翻垃圾桶) forge_help(锻造攻略) drop(丢物:一种 name+count / 多种 items=逗号分隔) decor(🪵地板/墙纸真值表:这间屋哪些格能铺+现在铺的什么,**铺前先查这**) furniture(扫家具) place(放置/播种:name=物品名,x/y=目标格→箱子/树种/蟹笼落地或种下,只放可放置物;🪵**地板/墙纸是特例**——只能点在**地板格**(地板)/**靠墙那圈墙格**(墙纸)上,点错游戏**静默不理**;点错时回报会直接告诉你「这格其实是墙不是地板」并给出能铺的格) break(拆/敲:x,y=目标格,steps=挥击次,radius=方圆→镐子敲石头/翻已耕地,跳过箱子/容器格) maze(迷宫视图r半径,gx/gy目标格→ASCII棋盘#墙.可走P自己G目标) maze_seg(走法链gx,gy目标→拆直走廊列表+拼「左/右上/下走到(x,y)」多段链,AI按段walk_to) maze_walk(走迷宫 waypoints=「x,y x,y…」依次walk_to;⚠️**它其实是通用多段走位,主门牌已挪到 `map walk_multi/闲逛`**(闲逛遛弯/绕人转圈/泳池绕圈游),此处保留旧名为兼容) pan(淘金/淘盘:本图水下闪光点→岸边走位面水→铜锅淘金收掉落) front/rummage(分别是interact/garbage的别名)。📌**坐着想起来：scene stand**（别拿 at 猜一个够得着的格子——那条路会静静失败）。📐带参速查(键名必须=下面这些,**写错会被静默丢掉、不报错**): at(tile_x,tile_y) **⚠️是 tile_x/tile_y 不是 x/y** / pickup(tile_x,tile_y **同 at 用 tile_**) / use(name) / face(direction 0上1右2下3左) / select(name) / sit(x,y,face) / seats(radius=12) / pickup_scene(max_items=30) / moss(radius,target_max,rounds,dry_run) / rock(dig,radius,max_break,break_stone) / garbage(loc,pos,wait,dry_run) / pan(dry_run,radius,timeout) / drop(name,count,items=多种一起丢) / place(name,x,y) / decor(无参) / break(x,y,steps,radius) / maze(radius,gx,gy) / maze_seg(gx,gy,radius) / maze_walk(waypoints,location,max_wait,max_seg)。kw={'参数名':值}。",
-"menu": "菜单/界面域(开→看→点)：read(看菜单) advance(推进剧情/对话,一句句) **skip(整段跳过剧情/事件,事件 skippable=true 才跳得动)** click(option/item/button/xy 点;action=claim领/action=discard丢桶腾格;slot=序号领指定格) key(ok/esc/数字按键) cancel(关弹窗/撤就绪) shop(逛店) sell(卖商店) bin(投出货箱) craft(合成) recipes(菜谱) craftables(配方) forge(锻造) **tailor(🧵缝纫机:放料/开缝/取产物)** geode/geodes(砸晶球) customize(捏人) bundle(献祭缺口·**只读存档不走路**) bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读消耗品:书/秘密纸条/日记残页,统一走右键读 name=物品名) levelup_choose(技能升级职业选择 5/10级:不带参读左右选项,side=left/right 或 profession=职业id 定分支;普通升级自会确认OK) number(数量输入:展览会兑换台/转盘押注 NumberSelectionMenu) minigame(赌场小游戏点按钮 action=hit/stand/bet10/…) minigame_state(读牌面/转盘) display_fill(农展台放满 items='钻石,山羊奶酪') display_takeback(收好) journal(开任务日志→menu read 读卡,翻页=click(button=forward/back),领奖励=click(button=rewardBox)) know(查特别订单详情/知识库SPECIAL_ORDERS,如menu know 岛屿食材)。📐参数键名: click=option,button,x,y,item,right,quantity,action,real,slot,category(**action=claim领 / discard丢桶腾格**;button 用按钮名 ok/upperRightCloseButton/forward/back/rewardBox/mainButton) / key=key,count,hold / number=value,confirm / shop=place,want / sell=name(**多选隔逗号/分号,中英文都行;别用空格**),count(-1=全卖;**sell_all=True 一次卖完这家店收的,不收的一根不动**) / bin=name,sell_all / craft=item_name,count / forge=item1,item2,mode,target / geodes=count / customize=name,farmname,favorite / bundle=area / bundle_kb=query / read_book=name / **tailor=place,slot,action**（🧵 缝纫机：place=放进槽的那件、slot=left/right、action=start开缝|take取产物|clear退料；只认已经开着的缝纫机，槽里有什么/能放哪一槽看 `menu read` 的 `tailor` 栏） / levelup_choose=side,profession(**不带参=只读当前左右选项**,供配 check(what=profile) 分析后再决定) / minigame=action,x,y / display_fill=items。⚠️cook(做饭)**不在 menu，在 `daily` 域**（`daily ops=cook`；`cabin` 2026-10-01 已撤出顶层、够不着了）。🚫满包接鱼/领箱:**click action=discard 丢桶腾格(回收返金)+action=claim 领取(或用 slot 领指定格;不想要直接 button=ok 关掉)**。🧾关闭菜单一律 click(button=upperRightCloseButton)（ItemGrabMenu/交付容器用 button=ok 确认才关）；订单交付容器(QuestContainerMenu)=点背包对应物品格(见slots的坐标)→放进→点 button=ok 结算；任务日志领钱=点击已完成的有钱任务卡后 click(button=rewardBox)；兑奖机兑换=click(button=mainButton)；特别订单领奖链=日志领钱(上面)→社区板旁领奖箱(60,93)拿兑奖券→刘易斯家兑奖机(mainButton)兑换。",
+"menu": "菜单/界面域(开→看→点)：read(看菜单) advance(推进剧情/对话,一句句) **skip(整段跳过剧情/事件,事件 skippable=true 才跳得动)** click(option/item/button/xy 点;action=claim领/action=discard丢桶腾格;slot=序号领指定格) key(ok/esc/数字按键) cancel(关弹窗/撤就绪) shop(逛店) sell(卖商店) bin(投出货箱) craft(合成) recipes(菜谱) craftables(配方) forge(锻造) **tailor(🧵缝纫机:放料/开缝/取产物)** geode/geodes(砸晶球) customize(捏人) bundle(献祭缺口·**只读存档不走路**) bundle_kb(献祭知识库) donate(捐赠博物馆) read_book(读消耗品:书/秘密纸条/日记残页,统一走右键读 name=物品名) levelup_choose(技能升级职业选择 5/10级:不带参读左右选项,side=left/right 或 profession=职业id 定分支;普通升级自会确认OK) number(数量输入:展览会兑换台/转盘押注 NumberSelectionMenu) minigame(赌场小游戏点按钮 action=hit/stand/bet10/…) minigame_state(读牌面/转盘) display_fill(农展台放满 items='钻石,山羊奶酪') display_takeback(收好) journal(开任务日志→menu read 读卡,翻页=click(button=forward/back),领奖励=click(button=rewardBox)) know(查特别订单详情/知识库SPECIAL_ORDERS,如menu know 岛屿食材)。📐参数键名: click=option,button,x,y,item,right,quantity,action,real,slot,category(**action=claim领 / discard丢桶腾格**;button 用按钮名 ok/upperRightCloseButton/forward/back/rewardBox/mainButton) / key=key,count,hold / number=value,confirm / shop=place,want / sell=name(**多选隔逗号/分号,中英文都行;别用空格**),count(-1=全卖;**sell_all=True 一次卖完这家店收的,不收的一根不动**) / bin=name(**必填,一次一件;出货箱取不回来⇒没有「全投」**) / craft=item_name,count / forge=item1,item2,mode,target / geodes=count / customize=name,farmname,favorite / bundle=area / bundle_kb=query / read_book=name / **tailor=place,slot,action**（🧵 缝纫机：place=放进槽的那件、slot=left/right、action=start开缝|take取产物|clear退料；只认已经开着的缝纫机，槽里有什么/能放哪一槽看 `menu read` 的 `tailor` 栏） / levelup_choose=side,profession(**不带参=只读当前左右选项**,供配 check(what=profile) 分析后再决定) / minigame=action,x,y / display_fill=items。⚠️cook(做饭)**不在 menu，在 `daily` 域**（`daily ops=cook`；`cabin` 2026-10-01 已撤出顶层、够不着了）。🚫满包接鱼/领箱:**click action=discard 丢桶腾格(回收返金)+action=claim 领取(或用 slot 领指定格;不想要直接 button=ok 关掉)**。🧾关闭菜单一律 click(button=upperRightCloseButton)（ItemGrabMenu/交付容器用 button=ok 确认才关）；订单交付容器(QuestContainerMenu)=点背包对应物品格(见slots的坐标)→放进→点 button=ok 结算；任务日志领钱=点击已完成的有钱任务卡后 click(button=rewardBox)；兑奖机兑换=click(button=mainButton)；特别订单领奖链=日志领钱(上面)→社区板旁领奖箱(60,93)拿兑奖券→刘易斯家兑奖机(mainButton)兑换。",
 "storage": "箱子域：view(看箱,box=N看单箱全清单) store(存:what/items限定存哪些,名可带xN数量只存那N份,留空=归位只存已有同类堆,target指定箱/**全存腾空间=all=True——`all` 是参数不是物品名,别写 items=\"all\"**/**工具(镐斧锄壶镰竿)不能丢不能卖,但点名就能存进箱子借人: items=\"十字镐\"**) take(取:x,y+name单箱 或 items批量) find(模糊查哪箱有某物) default(设/清默认箱 clear=清) tag(改名,可带color改色)。📐参数键名(view=box / store=what,items,target,keepTools默认True,all / take=items 或 x+y+name+count默认999 / find=name / default=x,y,clear / tag=tag,target**必填**,color)。🤖存取统一走位：store/take都会先走到相关箱旁(批量只走到第一个),不区分拟人/原子,别靠编号逐箱翻。⭐每个箱子前自动带【类目标签】(内容过半归类):矿/古物/鱼/种子/作物/农产/建材/料理/装备——AI按标签定位箱,找东西用find。⚠️改色别染纯#000000(=默认木纹,识别成未染色);要黑箱用暗灰#303030。",
 "daily": "过日子域：sleep(睡觉) eat(吃食物回血体力,name/item_name) **cook(做饭 — 2026-10-01 从 cabin 收编进来；会先走到厨房，走不过去就明确报错)** wear(穿/脱衣物,name/slot/hand) lie_bed(躺床不过夜) settle(确认过夜结算) heartbeat(心跳间隔,minutes) peek(看恒干嘛) whiteboard(写白板,content) wb_read/wb_pin/wb_clear。📐参数键名: sleep/lie_bed=who eat=name,item_name **cook=recipe_name(必填;食谱用英文原名),count(默认1)** wear=name,slot,hand(**hand 仅戒指**:1/left 或 2/right,或传「要换掉的那枚戒指名」自动找手) heartbeat=minutes whiteboard/wb_pin=content appearance=hair,hair_color,skin,shirt,pants,hat,acc,eye_color,pants_color；settle/peek/wb_read/wb_clear 无参。kw={'参数名':值}。📌sleep/lie_bed 的 who **必填**（名字随存档变，现读现传）：传自己名字=睡自己床；传别人名字=睡那个人的床(一起睡+🌹彩蛋)。⚠️名字写错会报错并列出可选名(不会默默睡成别人的床)。**传对名字就不用先回家**——不在那栋屋会自动走过去(map_go跨图→门口→推门→床边，全程走)。lie_bed 只躺不睡，想离开随时 walk_to 走离床格即可。🏝️**在姜岛是另一套**：岛上共用一间小屋(大通铺)，没有「谁的床」——who 传**正躺在床上的别人**=挤他那张(姜岛版爬床彩蛋)；否则(传自己/那人还没躺)=随便挑一张空床安静睡。⚠️睡别人床/协作前先 check(what=\"role\") 确认端口↔角色（端口按启动顺序分配，重启可能翻转，认错角色=挪了恒的人）。",
 "map": "导航域(🗺️跨图唯一入口)：lookup(查地点功能+出口) query(功能反查) go(走到目标/多段寻路+交通) walk(走到POI **或给x,y走同图坐标**) walk_multi(多段走位:喂一串坐标依次走) npc(找NPC) warp_safe(紧急逃脱) unlocks(查存档解锁:矿洞/巴士/下水道/姜岛/精通/**火山近路**——走捷径前先查)。⚠️出口走出口前一格；交通图腾柱>矿车>走路。📐参数全放kw对象(**别拼进ops串**,键名: go=destination地点名/POI 或 npc=NPC名(二选一)、walk=poi_name 或 x+y(二选一,坐标=只走同图;跨图用go)、walk_multi=waypoints(\"x,y x,y …\"空格/分号分隔),location,max_wait,max_seg、npc=name、lookup=location、query=function、warp_safe 无参、unlocks 无参)。⚠️walk 到 POI 会**自动应用结构化站位+朝向**(水池朝右/柜台朝上),但交互仍要 AI 自己 scene at/interact 触发。🫧walk_multi 别名 **闲逛/多段走**（旧名 festival/scene 的 maze_walk/走迷宫 仍可用）：正事=万灵节迷宫按段走；**活人感**=闲逛遛弯·绕着人转圈示好·浴场泳池绕圈游。",
@@ -18546,7 +18819,7 @@ _INTENT_INDEX = [
     ("卖东西,卖给商店,清货,一次清光背包", "menu", "sell",
      "kw={'name':物} 卖光那一类（**多选隔逗号/分号,中英文都行**）；**kw={'sell_all':True} 一次卖完这家店收的**"
      "（不收的一根不动；先 menu read 看「这店收」哪些）"),
-    ("投出货箱,出货,卖箱子", "menu", "bin", "kw={'name':物} 或 sell_all=True"),
+    ("投出货箱,出货,卖箱子", "menu", "bin", "**只认 kw={'name':物}（一次一件，取不回来⇒没有全投）**"),
     ("做东西,制作,合成,造物", "menu", "craft", "做饭不在这儿**在 daily cook**（2026-10-01 从 cabin 收编）"),
     ("特别订单,订单详情,这个订单要什么", "menu", "know", "查特别订单知识库"),
     ("升级选职业,技能分支,5级10级选什么", "menu", "levelup_choose", "不带参=只读当前左右选项"),
@@ -18599,7 +18872,8 @@ _INTENT_INDEX = [
      "bomb=点名时包里没有会按 黑>超级>樱桃 自动换；**黑/超级会炸伤自己**"),
     ("火山,火山炸矿", "mine", "bomb_volcano", "**要求 host 已在矿/火山里**才放行"),
     ("矿进度,到几层了", "mine", "progress", ""),
-    ("整理背包,背包乱,收拾包", "mine", "organize", "打 7843=轮回，别整理恒的包"),
+    ("整理背包,背包乱,收拾包", "mine", "organize",
+     "只动**你自己那个角色**的背包（端口按 `check role` 认，别去翻房主的包）"),
 
     # 🗺️ 导航
     ("怎么去,带我去,走过去,去哪儿", "map", "go",
@@ -20658,8 +20932,9 @@ def check_friendship(name: str) -> str:
             return f"查询失败: {r.get('error', r)}"
         if not r.get("known"):
             return f"还没认识 {name}（好感 0）"
+        _talk = {True: "，今天聊过", False: "，今天还没聊"}.get(r.get("talkedToToday"), "")
         return (f"与 {name} 好感 {r.get('points')} 分（{r.get('hearts')}❤️），"
-                f"本周已送 {r.get('giftsThisWeek')}/2 次，今天已送 {r.get('giftsToday')} 次")
+                f"本周已送 {r.get('giftsThisWeek')}/2 次，今天已送 {r.get('giftsToday')} 次{_talk}")
     except Exception as e:
         return f"查询失败: {e}"
 
@@ -21022,8 +21297,10 @@ def _marlon_shop_flow(which: str, want: str) -> str:
         _st0 = api.state()
         _money0 = (_st0.get("player") or {}).get("money")
         _inv0 = [i.get("name") for i in (_st0.get("inventory") or [])]
+        # 🔧 2026-11-05：升级工具会**把工具从他手里收走**（包里只会少、不会多）⇒ 要记点之前的升级状态
+        _tu0 = (_st0.get("player") or {}).get("toolUpgrading")
     except Exception:
-        _money0, _inv0 = None, []
+        _money0, _inv0, _tu0 = None, [], None
     want_items = _parse_want(want)
     bought = []
     for name, qty in want_items:
@@ -21042,9 +21319,17 @@ def _marlon_shop_flow(which: str, want: str) -> str:
         _inv1 = [i.get("name") for i in (_st1.get("inventory") or [])]
         _spent = (_money0 - _money1) if (_money0 is not None and _money1 is not None) else None
         _gained = [n for n in _inv1 if n not in _inv0]
+        _tu1 = (_st1.get("player") or {}).get("toolUpgrading")
         _check = (f"\n   💰 实际扣 {_spent}g｜🎒 真进包：{'、'.join(_gained) if _gained else '**什么都没有**'}")
         if _gained == [] and (_spent or 0) > 0:
-            _check += "  ⚠️ **花了钱但没进包** —— 别当成买到了，先 check ops=backpack 数一遍"
+            # 🔧 2026-11-05 恒真机（「升级工具被误报了『没买成但钱掉了』，实际上是升级了的」）：
+            #    升级工具 = 扣钱 + 扣锭 + **工具被收走** ⇒ 包里只会少、永远不会多。
+            #    ⇒ 判据认游戏字段 `player.toolUpgrading`（点之前是空的、现在有值 = 这一单就是升级）。
+            if _tu1 and _tu1 != _tu0:
+                _check += (f"  ✅ 这是**升级受理**（「{_tu1}」已被克林特收走，2 天后回来取）"
+                           f"——升级本来就不进包，**不是没买到**")
+            else:
+                _check += "  ⚠️ **花了钱但没进包** —— 别当成买到了，先 check ops=backpack 数一遍"
     except Exception:
         _check = "\n   ⚠️ 回读失败（读不到钱/背包）——**以背包实物为准**，别信上面那行"
     return f"✅ 已从{label}购买/找回: {', '.join(bought)}{_check}"
@@ -22594,6 +22879,25 @@ def menu_click(option: int = -1, button: str = "", x: int = -1, y: int = -1, ite
         #   ⚠️ 别往每条回包上都加一句（那是噪声，喊久了它就不看了）——只在**失败当场**说一次。
         # 🏛️🪨 2026-11-01：点空了 ⇒ **顺手把这屏该走哪条说出来**（判据只有 `_menu_advice` 一处）。
         #   ⚠️ 只在**失败当场**多打一发 `/state`：成功路径一个字都不多花，烂文案也不会天天出现。
+        # 🔧 2026-11-05 恒真机：「**刚刚升级工具被误报了『没买成但钱掉了』，实际上是升级了的**」。
+        #    病根在 C# 那边只认"背包有没有多东西"（`ModEntry.cs` 的 `bought` 计数）——可**升级工具**
+        #    本来就是"扣钱 + 扣锭 + 把工具从他手里收走"，包里**永远不会多东西**。
+        #    已同步修 C#（判据改用 `player.toolBeingUpgraded`），但**老 DLL 仍在跑** ⇒ 这一层补一道
+        #    兼容闸：失败回包 + **钱真掉了** + 这一刻确实有工具在升级 ⇒ 改口成"升级受理"。
+        #    ⚠️ 判据只认游戏字段（`player.toolUpgrading`，就是 C# 的 `toolBeingUpgraded`），不认文案。
+        if item:
+            _err_s = str(r.get("error") or "")
+            if "钱掉了" in _err_s:
+                try:
+                    _tu_now = ((api.state() or {}).get("player") or {}).get("toolUpgrading")
+                except Exception:
+                    _tu_now = None
+                if _tu_now:
+                    return _with_state(
+                        f"✅ **升级受理**：{_tu_now} 已被克林特收走"
+                        f"（游戏里 `toolUpgrading` 有值；钱扣了、**包里没新东西是正常的** —— 升级就是这样，"
+                        f"不是没买成）\n"
+                        f"   2 天后回来取：`map walk 铁匠铺(柜台)` 再 `scene interact`")
         _adv_miss = ""
         try:
             _am_miss = ((api.state() or {}).get("activeMenu") or {})
@@ -23193,16 +23497,40 @@ def sell_to_shop(name: str = "", count: int = -1, sell_all: bool = False) -> str
 
 @mcp.tool()
 def sell_to_bin(name: str = "", sell_all: bool = False) -> str:
-    """📦 投放到出货箱
-    自动走到出货箱旁边，然后投放物品（明天拿钱）。
-    不指定名称则卖所有非工具/种子类物品。
-    必须站在农场地图。
+    """📦 投放到出货箱（**一次一件，必须点名**）
+
+    走到农场的出货箱旁边，把**点名的这一样**（整摞）投进去。
+    ⚠️ **过夜结算**：投进去**不当场拿钱**，当晚睡觉后按当日价结。
+
+    ⛔ **没有「全投」**：出货箱跟箱子不是一回事 —— 投进去的**取不回来**（当晚就卖掉）。
+    所以必须点名 `name`，一次一样。要连着投几件走**单子**：
+    `intent(ops="show")` → 「投出货箱…」→ 一件一行，`1,3` 可多选。
 
     Args:
-        name: 物品名（不指定则卖所有可卖物品）
-        sell_all: 是否全部卖出（默认 False，只卖指定物品）
+        name: 物品名（**必填**；内部名/显示名都认）
+        sell_all: ⛔ 已封（传 True 会被拒，什么都不投）—— 留着只为如实回一句话
     """
     try:
+        # 🔴 2026-11-05 恒真机：AI 用 `menu(ops="bin", sell_all=True)` 一把把**整包全投**了，
+        #    然后才想起"这批是留着的"。根子在这儿：
+        #      · 出货箱**取不回来** —— 游戏开的那个 `ItemGrabMenu` 是 `showReceivingMenu: false`
+        #        （`ShippingBin.cs:267`），投进去当晚 `ShippingMenu` 结算就卖掉；
+        #      · 而"全投"是**一条指令**、**不可逆** ⇒ 给它一把大锤 = 迟早投错。
+        #    ⇒ 从这条起 **"全投"整个封掉**：见 `sell_all` / 空名字就**直接拒**，
+        #      **连 `/sell` 都不打**（不留半秒"已经动手了"的机会）。
+        #    ⚠️ 别把这段挪到 `api._post` 之后 —— 那就是"先投了再说"，等于没封。
+        if sell_all:
+            return _with_state(
+                "⛔ **不投「全部」**：出货箱**拿不回来**（投进去当晚就卖掉、箱子取不出来）。\n"
+                "   要投哪件就点名 —— `menu(ops=\"bin\", name=\"物品名\")`，一次一样；\n"
+                "   要连着投几件走单子：`intent(ops=\"show\")` → 「投出货箱…」→ 敲 `1,3`（可多选）。"
+            )
+        if not (name or "").strip():
+            return _with_state(
+                "⚠️ **得点名投哪一件**：出货箱**拿不回来**，我不替你猜「全投」。\n"
+                "   投哪件：`menu(ops=\"bin\", name=\"物品名\")`；\n"
+                "   要好几件：`intent(ops=\"show\")` → 「投出货箱…」→ 一件一行（`1,3` 可多选）。"
+            )
         # 动态找出货箱位置
         s = api.state()
         loc = s.get("location", {}).get("name", "")
@@ -23218,17 +23546,17 @@ def sell_to_bin(name: str = "", sell_all: bool = False) -> str:
             api.walk_natural(bin_door_x, bin_door_y)
             time.sleep(0.3)
 
-        r = api._post("/sell", {"name": name, "all": sell_all})
-        if r.get("ok"):
-            sold = r.get("sold", [])
-            if not sold:
-                return _with_state("📦 出货箱: 没有可卖的东西")
-            detail = ", ".join(f"{s['item']}×{s['count']} ({s['price']}g)" for s in sold[:8])
-            if len(sold) > 8:
-                detail += f" 等共 {r['totalItems']} 种"
-            return _with_state(f"📦 已投放 {r['totalItems']} 种物品到出货箱\n   {detail}")
-        else:
+        r = api._post("/sell", {"name": name})   # ⚠️ **不传 `all`**（那条已经封了，见上）
+        if not r.get("ok"):
             return _with_state(f"❌ 出货失败: {r.get('error', '未知错误')}")
+        sold = r.get("sold") or []
+        if not sold:
+            return _with_state(f"📦 背包里没有「{name}」能投（或者这样东西投不进出货箱）")
+        detail = ", ".join(f"{s['item']}×{s['count']} ({s['price']}g)" for s in sold[:8])
+        if len(sold) > 8:
+            detail += f" 等共 {r['totalItems']} 种"
+        return _with_state(f"📦 已投进出货箱 {r['totalItems']} 种：{detail}\n"
+                           f"   🔒 **取不回来**（今晚结算才到账）")
     except Exception as e:
         return _with_state(f"❌ 出货出错: {e}")
 
@@ -25113,7 +25441,9 @@ def _im_clint_open() -> bool:
         return False
     try:
         day_index = (day - 1) % 7            # 0=周一 … 6=周日（同 `_calendar_line` 那份算法）
-        if _CLINT_SHOP_KEY in (calendar_data.get_closed_shops_today_v2(day_index) or []):
+        # 🏛️ 铁匠铺"周五休息"**只在社区中心重建后**成立（2026-11-05 恒逮到的误判）——
+        #    这张表自己会按 `cc_done` 摘掉铁匠铺那条，这里只管照着答。
+        if _CLINT_SHOP_KEY in (calendar_data.get_closed_shops_today_v2(day_index, cc_done=_cc_done()) or []):
             return False
     except Exception:
         return False

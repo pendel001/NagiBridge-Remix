@@ -109,6 +109,13 @@ def main():
         NEW._last_full_date = ("spring", 1, 1)
         a = OLD._with_state(body, force) if force else OLD._with_state(body)
         b = NEW._with_state(body, force) if force else NEW._with_state(body)
+        # 🔴 2026-11-05：`🗺️ 可:` 那行**内容本来就要变**（改成只印"能直接回填的合法 token"，
+        #    那是这一轮要验的改动本身，不是回归）。这条 A/B 钉的是"抽 `_state_suffix` 前后
+        #    **注入机制**逐字一致"，不负责那行印什么 ⇒ 两边先摘掉它再比。
+        #    ⚠️ 别人别顺手把"摘掉的行"扩成更多行 —— 摘到哪儿，这条钉子就只管到哪儿。
+        _drop = "🗺️ 可:"
+        a = "\n".join(l for l in a.splitlines() if _drop not in l)
+        b = "\n".join(l for l in b.splitlines() if _drop not in l)
         ok = a == b
         print(("  ✅ " if ok else "  ❌ ") + label + (f"  ({len(a)} vs {len(b)} 字节)" if ok else ""))
         if not ok:

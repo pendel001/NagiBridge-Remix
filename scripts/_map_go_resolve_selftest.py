@@ -128,7 +128,9 @@ try:
     _code = "\n".join(l for l in _body.splitlines() if not l.strip().startswith("#"))
     ck("⑦ `map_go` 身板走的是整串判据 `_is_home_word(...)`", "_is_home_word(destination)" in _code, "")
     ck('⑦ …且**没有**裸子串 `"小屋" in`（真机 A 的病根）', '"小屋" in' not in _code, "")
-    ck("⑦ …且歧义闸在（`_poi_ambiguous`）", "_poi_ambiguous(destination)" in _code, "")
+    # ⚠️ 2026-11-05：调用点现在带日历上下（`_poi_ambiguous(destination, when=_today_ctx())`）
+    #    ⇒ 只认**函数名 + 第一个实参**，别再钉整串（钉整串 = 一改签名就假红）。
+    ck("⑦ …且歧义闸在（`_poi_ambiguous`）", "_poi_ambiguous(destination" in _code, "")
     ck("⑦ …且**变体名闸**在（`_variant_name_error`）", "_variant_name_error(destination)" in _code, "")
     # 薄壳本身的钉子：贴声明 + 歧义闸那种不贴（`_poi_ambiguous` 守卫）
     _wa = _src.index("def map_go(")
