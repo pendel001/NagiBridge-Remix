@@ -1,0 +1,24 @@
+NagiBridge v0.9.4 —— 怎么用（两步）
+====================================
+
+一、装 mod（游戏侧）
+  把本文件夹里的  Mods\NagiBridge\  整个文件夹，拷到你游戏目录的 Mods\ 下面，变成：
+      <游戏目录>\Mods\NagiBridge\NagiBridge.dll
+      <游戏目录>\Mods\NagiBridge\manifest.json
+  （游戏目录 = 有 Stardew Valley.exe 的那个文件夹，一般是
+     C:\Program Files (x86)\Steam\steamapps\common\Stardew Valley ）
+
+二、启动 AI 侧（MCP 服务器）
+  需要 Python 3.10+（python.org/downloads，安装时记得勾 "Add python.exe to PATH"）。
+  然后双击本文件夹里的  启动NagiBridge.bat —— 它会自检并自动补依赖。
+
+  ⚠️ 依赖里的 mcp 库必须是 1.x（本项目用的是 v1 接口）。启动器会自动钉 "mcp<2"，
+     你不用操心；但如果要手动装，请写：
+         pip install "mcp<2" requests
+     ❌ 不要用 pip install -U mcp —— 那会装成 2.x，服务器会启动失败。
+
+  连手机：启动器会打印一行「📱 手机/Claude Code 连」，照着填，别漏 /mcp。
+
+三、其他
+  详细说明见 README.md，依赖与常见坑见 启动服务器说明.txt。
+  协议：PolyForm Noncommercial License 1.0.0（要带协议/链接 + 署名，仅限非商业）。
