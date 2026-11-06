@@ -713,6 +713,22 @@ def walk_to(poi_name: str = "", x: int = None, y: int = None) -> str:
             except Exception:
                 _st = {}
                 _cur, _px, _py = "", None, None
+            # 🧭 2026-11-06 真机：**图名不是落点** —— `map walk 农场` 原来掉进"找相近的"
+            #    兜底，摊出 12 个候选（头两个是 农场上口/农场下口），AI 挑了"农场下口"，
+            #    被一路送到 (40,64)；恒当场喊「不要去下口！下口太远了」。
+            #    ⇒ 图名（含中文别名/小写/英文显示名）直接交给 `map go` 走真实路线。
+            #    ⚠️ 只在**精确**命中时转（`_exact_map_name` 一个字都不猜），
+            #      半截名/错字照旧走下面的候选清单，不许被这条改道。
+            _mk = _exact_map_name(poi_name)
+            if _mk:
+                _go = map_go(_mk)
+                _note = (f"🗺️「{poi_name}」是**图名**（= {_mk}）—— `map walk` 只认**图里的落点**"
+                         f"（`map here` 那串名字），换图要走 `map go`（已经替你走了）。\n"
+                         f"   💡 去哪道口**不用点名**：从镇上/巴士站回来走**右口**，从森林回来走**南口**"
+                         f"（按你从哪来自己落），别专门跑一趟出入口。\n")
+                # map_go 自己带的正文取出来，状态条让 `_with_state` 重建一次（同跨图 POI 那条口径）
+                _body = _go.split(_STATE_SEP)[0] if _STATE_SEP in _go else _go
+                return _with_state(_note + _body)
             # 🔎 **先模糊对一次**（恒 2026-09-25：「猪车也犯了一样的毛病，poi_name 搜猪车搜不出来，
             #    可却告诉他"可：猪车"」）—— 状态条那行是**自由文本**、渲染时还 `split("(")[0]`
             #    **把括号砍掉**（`猪车(周五周日)` → 打出「猪车」；真键是 `猪车(旅行货车)`）
@@ -720,6 +736,19 @@ def walk_to(poi_name: str = "", x: int = None, y: int = None) -> str:
             #    **唯一命中**就直接走（回执里写的也是完整名字，AI 顺带学到正确叫法）；
             #    **多个命中不猜**（宁报错别兜底）—— 摊开让它挑。
             _cand = sorted(k for k in locations.POI if poi_name and (poi_name in k or k in poi_name))
+            # 🚪 出入口 / 中转站（`nav_only`）**不是落脚点** —— 2026-11-05 已经从 `map here` 摘掉，
+            #    候选清单这里也一并摘：走过去只会**触发换图**，站那儿什么也做不了。
+            #    真机就是这么把 AI 送去农场下口的（`map walk 农场` 的候选头两个就是上口/下口）。
+            #    ⚠️ 只是**不推荐**：把全名写全（`map walk 农场下口(→森林)`）照旧能走 —— 那是明确意图。
+            _navonly = [k for k in _cand if (locations.POI.get(k) or {}).get("nav_only")]
+            _cand = [k for k in _cand if k not in _navonly]
+            if not _cand and _navonly:
+                return _with_state(
+                    f"🚪 「{poi_name}」只对上了**换图站格**：{'、'.join(_navonly[:4])}"
+                    f"（{len(_navonly)} 条）\n"
+                    f"   那些格是**走过场**用的（踩上去就换图），不是目的地、也不是落脚点。\n"
+                    f"   👉 想去那张图 → `map go <图名>`（落点按你从哪个口进来，不用点名）；\n"
+                    f"   👉 想走这张图里的某处 → `map here`（印出来的名字都能直接回填）。")
             # 🗓️ 2026-11-05 恒：「候选前也检查一下 poi 的限制」——**今天不存在的不算候选**
             #    （春12 不是夜市 ⇒ `夜市猪车(旅行货车)` 那条别列出来凑数）。
             _wctx = locations.calendar_ctx(_st.get("time")) if isinstance(_st, dict) else {}
@@ -743,7 +772,9 @@ def walk_to(poi_name: str = "", x: int = None, y: int = None) -> str:
                 return _with_state(
                     f"❓ 「{poi_name}」不是落点名，但**有 {len(_cand)} 个相近的** —— 我不替你猜：\n"
                     f"{_lines}\n"
-                    f"   👉 挑一个**完整的名字**再 `map walk`。")
+                    f"   👉 挑一个**完整的名字**再 `map walk`。"
+                    + (f"\n   （另有 {len(_navonly)} 个**换图站格**同名：{'、'.join(_navonly[:3])}"
+                       f"—— 踩上去就换图，不是落脚点，所以没列。）" if _navonly else ""))
         if poi_name not in locations.POI and poi_name not in locations.MAP_LINKS:
             try:
                 _st = api.state()
@@ -751,7 +782,9 @@ def walk_to(poi_name: str = "", x: int = None, y: int = None) -> str:
                 _px, _py = (_st.get("player") or {}).get("x"), (_st.get("player") or {}).get("y")
             except Exception:
                 _cur, _px, _py = "", None, None
-            _here = [k for k, v in locations.POI.items() if v.get("map") == _cur]
+            # 🚪 同候选清单那条：出入口/中转站（`nav_only`）不是落脚点，**别推荐**（写全名才走）。
+            _here = [k for k, v in locations.POI.items()
+                     if v.get("map") == _cur and not v.get("nav_only")]
             if _px is not None and _py is not None:
                 _here.sort(key=lambda k: abs(locations.POI[k]["pos"][0] - _px)
                            + abs(locations.POI[k]["pos"][1] - _py))
@@ -1920,6 +1953,32 @@ def _near_map_hint(dest):
         return ""
     key = _MAP_KEYS_CI[hit[0]]
     return f"；你是想去「{key}」吗？那就 `map go {key}`"
+
+
+def _exact_map_name(s):
+    """**图名** → `MAP_LINKS` 场景键；**只认精确**（键 / 归一键 / 中英别名），认不出回 ""。
+
+    为什么要单独一份：`map walk` 的"认不出 → 列相近的"兜底**从来不认图名**，只认 POI 键。
+    2026-11-06 真机（session_log 12:36:41）：AI 在农舍里照状态条 `🗺️ 可: 农场` 敲
+    `map walk 农场` ⇒ 我们回了「有 12 个相近的」**头两个就是 农场上口 / 农场下口**
+    ⇒ AI 挑了「农场下口(→森林)」⇒ 从 (64,15) 一路走到 (40,64)；恒当场喊「不要去下口！下口太远了」。
+    图名 ≠ 落点：**落点在图里**（`map here` 那串），图名要换图、走 `map go`（落点按你从哪个口进来）。
+
+    ⚠️ 与 `_resolve_scene_name` 分工：那个做"短名/变体名"的**模糊**解析（会贴标签改写），
+      这里**一个字都不猜** —— 只查三张精确表；认不出就回 ""，交给下面的老兜底。
+    ⚠️ 返回值必须**真在 `MAP_LINKS` 里**：别名表里有指向室内/子场景的条目，别拿半截值往下走。
+    """
+    s = str(s or "").strip()
+    if not s:
+        return ""
+    if s in locations.MAP_LINKS:
+        return s
+    _k = (_MAP_KEYS_CI.get(_norm_key(s))
+          or _EN_SCENE_ALIAS.get(_norm_key(s))
+          or SCENE_NAME_ALIAS.get(s))
+    if _k and _k in locations.MAP_LINKS:
+        return _k
+    return ""
 
 
 def _resolve_scene_name(name):

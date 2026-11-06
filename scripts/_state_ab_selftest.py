@@ -18,6 +18,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
+# 🖨 2026-11-06：stdout 被**管道**接走时（`_quick.py` / 全量跑），Python 用 locale 编码
+#   （中文 Windows = gbk）⇒ 第一行 `⏭` 就 `UnicodeEncodeError`，整条钉子**变成红的**。
+#   本文件原来漏了这一行（别的钉子都有），2026-11-06 跑 `_quick --changed` 才暴露。
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 FAKE_DATA = {
     "time": {"season": "spring", "dayOfMonth": 2, "year": 1,
              "timeOfDay": 1210, "weather": 0},

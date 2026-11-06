@@ -158,11 +158,18 @@ def main():
         return
 
     fails, t0 = [], time.time()
+    # 🖨 2026-11-06：子进程的 stdout 是**管道** ⇒ Python 默认按 locale 编码（中文 Windows = gbk），
+    #    钉子里的 ✅/❌ 直接 UnicodeEncodeError ⇒ **明明全绿也报红**（`_state_ab`/`_seed_season`/
+    #    `_tool_inventory_sync` 这些"还没 import 服务器就先 print"的钉子全中）。
+    #    以前是控制台里跑（控制台走 UTF-8 的 console API）所以看不出来 —— 一进 `_quick` 就变红。
+    #    ⇒ 统一给子进程加 `-X utf8`（+ PYTHONIOENCODING 兜底）：**红只有一种含义 = 真红**。
+    _env = dict(os.environ)
+    _env["PYTHONIOENCODING"] = "utf-8"
     for n in names:
         t = time.time()
         try:
-            r = subprocess.run([sys.executable, os.path.join(HERE, n)],
-                               cwd=HERE, capture_output=True, timeout=args.timeout)
+            r = subprocess.run([sys.executable, "-X", "utf8", os.path.join(HERE, n)],
+                               cwd=HERE, capture_output=True, timeout=args.timeout, env=_env)
             code = r.returncode
             tail = (r.stdout or b"").decode("utf-8", "replace")
         except subprocess.TimeoutExpired:
