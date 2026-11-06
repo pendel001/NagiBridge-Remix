@@ -19,6 +19,12 @@
 
 ⚠️ **清场建议用圆形、且比田块外扩 2~3 格**（恒 2026-09-19）：只清方正一块的话，
    四角还是草窝，**田边的杂草很快会长进田里、把作物顶掉**。
+
+🌳 **树不在清理范围**（2026-11-06 恒真机：「明明是干净空地了，为什么逐个格子挥斧」）：
+   `Tree:` 只带树种、不带生长阶段 ⇒ **幼苗和成树分不出来**，而幼苗画面上就两片小叶、
+   看着就是空地。旧代码把每棵都当"18 下的树"排进待办 ⇒ 一格一格挥斧、白烧体力，
+   还顺手把要留的小树砍了。⇒ 现在**一棵都不动**，收工时报个数 + 指路 `farm chop`
+   （那边是显式意图，按树种放行、还会收树桩）。
 """
 
 import argparse
@@ -66,7 +72,10 @@ TOOL_MAP = {
     "Grass": ("Scythe", 1),
     "Stone": ("Pickaxe", 2),
     "Twig": ("Axe", 1),
-    "Tree": ("Axe", 18),
+    # ⛔ **故意没有 `Tree` 这一条**（2026-11-06）：树（含幼苗）不由 `clear` 处理 ——
+    #    树是 `farm chop` 的事，见 `tile_target_name` 里那段长注释。
+    #    ⚠️ 别为了"顺手把树也清了"把它加回来：`Tree:` 报不出生长阶段，
+    #       加回来 = 幼苗也按"18 下的树"砍（"逐个格子挥斧"那个 bug）。
     "LargeStump": ("Axe", 15),
     "LargeLog": ("Axe", 15),
     "LargeBoulder": ("Pickaxe", 10),
@@ -130,6 +139,11 @@ TOOL_ORDER = ["Scythe", "Pickaxe", "Axe"]
 _SKIPPED_PASS = {}
 _SKIPPED_SEEN = {}
 
+# 🌳 树（`Tree:x`）—— **`clear` 一个都不动，只记账**（2026-11-06，见 `tile_target_name` 那段）。
+#    `_TREES_PASS` = 本轮扫描数到的，`_TREES_SEEN` = 合并（同 `_SKIPPED_*`，取最大值防灌水）。
+_TREES_PASS = {}
+_TREES_SEEN = {}
+
 
 # 🌲 当前地图名（`_scan()` 每扫一次钉一次）—— `is_choppable` 的"**农场外不保护苔雨树**"
 #    （恒 2026-10-02）判据要用它。判据本身在 `tree_types.is_choppable`，这里只负责**告诉它我在哪**。
@@ -154,14 +168,26 @@ def tile_target_name(tile):
     if resource in TOOL_MAP:
         return resource
     if terrain and terrain.startswith("Tree:"):
-        # 🪓 2026-09-12 恒拍板：特殊树种（蘑菇树/桃花心木/苔雨树/神秘树…）默认不动
-        # 🌲 2026-10-02 恒：「不要保护**农场之外**的绿雨树，免得绿雨天收集不了苔藓了」
-        #    ⇒ 传 `_LOC`（`is_choppable` 认农场外苔雨树=可砍）
+        # 🔴 2026-11-06 恒真机：「为什么出现了**逐个格子挥斧**的情况……？明明是干净空地了」
+        #
+        # 🩸 病根：`/surroundings` 对树只报 `Tree:<树种>`（`ModEntry.cs:7722`
+        #    `tree.treeType.Value`），**从来不报生长阶段**（全仓没有一处读 `growthStage`）。
+        #    而农场被砍过一轮之后遍地是**幼苗**（`Tree:1/2/3` 的 0~1 阶段，画面上就两片小叶
+        #    —— 肉眼就是"干净空地"）。旧代码认 `Tree:` 就当"树"、按 `TOOL_MAP["Tree"]=18 下`
+        #    排进待办 ⇒ 一格一格走过去挥斧、每格烧 2 点体力，**还顺手把恒要留的小树砍了**。
+        #    真机证据（12:45 那次 clear）：`Tree at (18,21) cleared after 2/18 hits`、
+        #    `(17,27) cleared 1/18` —— 成树要十来下，1~2 下就倒的只可能是幼苗。
+        #
+        # ⇒ 判据改成：**`clear` 一律不动树（幼苗也算树）**，只**报个数**。
+        #    理由不是"偷懒"，是 `clear` 自己承诺的范围本来就只有「杂草/石头/树枝/树桩」
+        #    （见 `_farm_clear` 的 docstring），树是 `farm chop` 的事（那边是**显式意图**、
+        #    带树种放行和树桩收尾）。要区分"成树/幼苗"得先在 C# 里把 `growthStage` 报出来
+        #    ——那是下一次动 DLL 的活（记在 CHANGELOG）。
+        # ⚠️ 特殊树种（蘑菇树/桃花心木…）的 `_ALLOW` 放行在这里**不再有意义**（一个都不动），
+        #    那套放行照旧只管 `chop_trees`。
         ttype = tt.tree_type_of(terrain)
-        if not tt.is_choppable(ttype, _ALLOW, _LOC):
-            _SKIPPED_PASS[ttype] = _SKIPPED_PASS.get(ttype, 0) + 1
-            return None
-        return "Tree"
+        _TREES_PASS[ttype or "?"] = _TREES_PASS.get(ttype or "?", 0) + 1
+        return None
     if terrain == "Grass":
         return "Grass"
     return None
@@ -208,6 +234,7 @@ def scan_area():
 
     targets = []
     _SKIPPED_PASS.clear()
+    _TREES_PASS.clear()
     _TOO_WEAK.clear()
     _TOOL_LV.clear()
     _TOOL_LV.update(detect_tool_levels())
@@ -235,6 +262,8 @@ def scan_area():
 
     for k, v in _SKIPPED_PASS.items():        # 本轮看见的受保护树，合并进总账（取最大值防灌水）
         _SKIPPED_SEEN[k] = max(_SKIPPED_SEEN.get(k, 0), v)
+    for k, v in _TREES_PASS.items():          # 🌳 看见的树（含幼苗）：只记账，不动手
+        _TREES_SEEN[k] = max(_TREES_SEEN.get(k, 0), v)
 
     if _TOO_WEAK:
         for nm, items in _TOO_WEAK.items():
@@ -308,6 +337,8 @@ def _sweep_alive(radius=_SWEEP_R):
             out[(t["x"], t["y"])] = nm
     for k, v in _SKIPPED_PASS.items():      # 重扫也会撞见受保护树种，合并进总账（同 scan_area 的"取最大值防灌水"）
         _SKIPPED_SEEN[k] = max(_SKIPPED_SEEN.get(k, 0), v)
+    for k, v in _TREES_PASS.items():        # 🌳 同理：重扫也会再看见树
+        _TREES_SEEN[k] = max(_TREES_SEEN.get(k, 0), v)
     return out
 
 
@@ -474,10 +505,12 @@ def run():
         elif _SKIPPED_SEEN:
             # ⚠️ 别报 "All clear!" —— 地是被保护树种占着的，说"清干净了"是谎报
             api.log(f"🛡️ 能清的都清了；剩 {tt.skipped_summary(_SKIPPED_SEEN)} 是受保护树种，没动")
-        else:
+        elif not _TREES_SEEN:
+            # 🌳 有树没动时**也不许说 All clear**（树占着地格 ⇒ 那块地锄不出、也种不了）
             api.log("All clear!")
     else:
-        api.log("All clear after pass 1!")
+        if not _TREES_SEEN:
+            api.log("All clear after pass 1!")
 
     # 智能捡拾：只去有掉落物的格子捡，不散步
     _pickup_drops()
@@ -485,6 +518,17 @@ def run():
     if _SKIPPED_SEEN:
         api.log(f"🛡️ 受保护跳过：{tt.skipped_summary(_SKIPPED_SEEN)}"
                 f"　要清：settings chop <树种名>")
+    # 🌳 树（含**幼苗**）：**一个都没动** —— 必须报出来，否则 AI 会以为这块地"清干净了、
+    #    可以随便锄/种"，而树占的地格是锄不出来的（`farm till` 会报「被什么挡着」）。
+    #    ⚠️ 措辞要说清"分不出成树/幼苗"，别让 AI 以为我们省了活。
+    if _TREES_SEEN:
+        _n = sum(_TREES_SEEN.values())
+        _kinds = tt.skipped_summary(_TREES_SEEN)
+        api.log(f"🌳 这块地里还有 **{_n} 棵树**没动（{_kinds}）—— **清地不清树**"
+                f"（`Tree:` 只报树种、不报生长阶段，幼苗和成树分不出来；"
+                f"幼苗在画面上就两片小叶，看着像空地）")
+        api.log("   ⇒ 要砍它们走 `farm chop`（那边按树种放行、还会收树桩）；"
+                "不挡耕种就先留着 —— 树占的格锄不出地来。")
 
 
 if __name__ == "__main__":

@@ -126,16 +126,30 @@ def case_c():
 
 
 def case_d():
-    print("D) clear_area.tile_target_name：同款过滤（清地块不会顺手铲蘑菇树）")
+    print("D) clear_area.tile_target_name：**清地不清树**（2026-11-06 起一棵都不动）")
+    # 🩸 改口原委（恒 2026-11-06）：「明明是干净空地了，为什么逐个格子挥斧」
+    #    `Tree:` 只报树种、**不报生长阶段** ⇒ 幼苗和成树分不出来，而幼苗在画面上就是
+    #    "干净空地"。旧实现把每棵都排进待办（`TOOL_MAP["Tree"]=18 下`）⇒ 一格一格挥斧、
+    #    白烧体力、还砍掉要留的小树。⇒ `clear` 一律不动树，只报个数，要砍走 `farm chop`。
     ca = _load("clear_area", "")
-    _check("橡树 → 'Tree'（可清）", ca.tile_target_name({"terrain": "Tree:1"}) == "Tree")
-    _check("蘑菇树 → None（挡住）", ca.tile_target_name({"terrain": "Tree:7"}) is None)
-    _check("桃花心木 → None（挡住）", ca.tile_target_name({"terrain": "Tree:8"}) is None)
+    ca._TREES_PASS.clear()
+    _check("橡树 → None（**不再**进清理名单）",
+           ca.tile_target_name({"terrain": "Tree:1"}) is None)
+    _check("…但记了一笔（收工要报「还有 N 棵树没动」）",
+           ca._TREES_PASS.get("1") == 1, str(ca._TREES_PASS))
+    _check("蘑菇树 → None", ca.tile_target_name({"terrain": "Tree:7"}) is None)
+    _check("桃花心木 → None", ca.tile_target_name({"terrain": "Tree:8"}) is None)
     _check("杂草不受影响", ca.tile_target_name({"object": "Weeds"}) == "Weeds")
+    _check("石头/树枝照旧", ca.tile_target_name({"object": "Stone"}) == "Stone"
+           and ca.tile_target_name({"object": "Twig"}) == "Twig")
+    _check("树桩（ResourceClump）照旧清", ca.tile_target_name({"resource": "LargeStump"}) == "LargeStump")
+    _check("草地照旧（镰刀)", ca.tile_target_name({"terrain": "Grass"}) == "Grass")
 
+    # ⚠️ 放行名单**对 clear 不再起作用**（一个树都不动）——这条是防"哪天有人把树加回来"。
     ca2 = _load("clear_area", "蘑菇树")
-    _check("放行后蘑菇树 → 'Tree'", ca2.tile_target_name({"terrain": "Tree:7"}) == "Tree")
-    _check("桃花心木仍挡住", ca2.tile_target_name({"terrain": "Tree:8"}) is None)
+    _check("放行蘑菇树后**仍然**不动树（放行只管 chop_trees）",
+           ca2.tile_target_name({"terrain": "Tree:7"}) is None)
+    _check("…而且照样记账", ca2._TREES_PASS.get("7") == 1, str(ca2._TREES_PASS))
 
 
 if __name__ == "__main__":
