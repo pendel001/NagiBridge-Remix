@@ -7486,10 +7486,18 @@ def clear_area(x1: int, y1: int, x2: int, y2: int) -> str:
 
 
 def _clear_area_run(args_list, desc: str) -> str:
-    """跑 `clear_area.py` 并包一层（区域描述由调用方给——矩形/圆形的说法不一样）。"""
-    warp_log = _warp_home_if_needed("Farm")
+    """跑 `clear_area.py` 并包一层（区域描述由调用方给——矩形/圆形的说法不一样）。
+
+    🔴 2026-11-06 **真机当场逮到**：这里原来有一行 `_warp_home_if_needed("Farm")` ——
+       人在**森林**喊 `farm clear (60,3)-(70,12)`，它先把人**瞬移回农场**，
+       然后在**农场的同名坐标**上清场（回执开头那句 `🚀 warp到 Farm →` 就是证据）。
+       这跟 2026-09-20 定的「**在哪就在哪清**」正好相反，也正是当时那条注释说已经修掉的病
+       —— 脚本那侧改了（`scan_area` 不再静默搬回农场），**调用这侧漏了一行**。
+       真危险的地方：在矿洞/姜岛/森林喊清一块，被清的是农场同名坐标那片（作物可能就没了）。
+    ⇒ **不许 warp**：`clear_area.py` 自己按"角色当前所在图"就地清（见它的文件头注释）。
+    """
     out = _run_script("clear_area", args_list + ["--allow", _chop_allow_arg()], timeout=120)
-    return _with_state(f"{warp_log}🧹 清理 {desc}:\n{out[:600]}")
+    return _with_state(f"🧹 清理 {desc}:\n{out[:600]}")
 
 
 # ── 化肥知识 ──
@@ -12614,8 +12622,8 @@ def _farm_plant(seed_name: str = "", seed: str = "", x: int = -1, y: int = -1, r
                      f"/2（高级）/3（铱）—— 田里**已经摆好的**洒水器会自动绕开、只种它四邻")
     lines.append(f"  ✅ {len(real)}/{len(do_tiles)} 确认种上（判据=这格真长出 crop）")
     if _out_of_seed:
-        # 🌱 放最前面（跟"体力停手"同一档）：这是**手里空**，不是地的问题，别让它再去试
-        lines.insert(1 if warp_log else 0, "  " + _out_of_seed)
+        # 🌱 紧跟抬头（第 2 行）：这是**手里空**，不是地的问题，别让它再去试
+        lines.insert(1, "  " + _out_of_seed)
     if stopped:
         lines.append(f"  {stopped}")
     if refused:
@@ -12624,9 +12632,15 @@ def _farm_plant(seed_name: str = "", seed: str = "", x: int = -1, y: int = -1, r
                      + " ".join(f"({x},{y})" for x, y, _ in refused[:8]))
         lines.append("     💡 最常见是**不是当季作物**（露天农场才看季节；**温室/姜岛全年可种**，"
                      "那两个地方种得下去），也可能是那格不能种（水/未锄/被占）")
-    if len(real) < len(do_tiles) - len(no_stand) - len(refused):
-        lines.append(f"  ❓ {len(do_tiles) - len(no_stand) - len(refused) - len(real)} 格没验到作物"
+    # ❓"没验到作物"只算**真试过**的格：种子用完/体力停手**没轮到**的那些不算
+    #    （2026-11-06 真机逮到：4 颗种子种完 4 格后，剩下 5 格没轮到，却被报成
+    #     "游戏没说拒，但也没长出 crop——用 dump_tile 看那一格"，等于让人去查五格空气）。
+    _untried = max(0, len(do_tiles) - _done_n)
+    if len(real) < len(do_tiles) - len(no_stand) - len(refused) - _untried:
+        lines.append(f"  ❓ {len(do_tiles) - len(no_stand) - len(refused) - _untried - len(real)} 格没验到作物"
                      f"（游戏没说拒，但也没长出 crop——用 dump_tile 看那一格）")
+    if _untried and not _out_of_seed and not stopped:
+        lines.append(f"  ⏭ {_untried} 格**没轮到**（这一趟提前结束）—— 不是种不上")
     if planted_crop:
         lines.append(f"  ⏭ 跳过 {len(planted_crop)} 格（已有作物）")
     lines.extend(_obstacle_lines(_blocked, verb="种"))

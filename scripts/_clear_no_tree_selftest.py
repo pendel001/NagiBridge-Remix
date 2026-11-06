@@ -145,6 +145,27 @@ def main():
             and isinstance(n.value.value, str)]
     ck("`tile_target_name` 里没有 `return \"Tree\"`", "Tree" not in rets, str(rets))
 
+    # ── ⑤ 服务端包装层：**不许悄悄 warp 回农场** ────────────────────
+    # 🔴 2026-11-06 真机当场逮到（这条就是防它回来）：在**森林**喊 `farm clear (60,3)-(70,12)`，
+    #    回执开头是 `🚀 warp到 Farm → 🧹 清理 矩形 …` —— 人被瞬移回农场，然后在**农场的同名
+    #    坐标**上清场。危险：在矿洞/姜岛/森林清一块，被清的是农场同名那片（作物可能就没了）。
+    #    病根是 `_clear_area_run` 里漏了一行 `_warp_home_if_needed("Farm")`（脚本那侧 09-20 改过了，
+    #    调用这侧没跟上）。
+    print("\n⑤ 服务端包装层：`farm clear` **不许**先 warp 回农场（在哪就在哪清）")
+    srv = io.open(os.path.join(HERE, "nagi_mcp_server.py"),
+                  encoding="utf-8", errors="replace").read()
+    _tree2 = ast.parse(srv)
+    _fn = None
+    for n in ast.walk(_tree2):
+        if isinstance(n, ast.FunctionDef) and n.name == "_clear_area_run":
+            _fn = n
+            break
+    ck("找到 `_clear_area_run`", _fn is not None)
+    if _fn is not None:
+        _calls = [n.func.id for n in ast.walk(_fn)
+                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
+        ck("…里面**没有** `_warp_home_if_needed`", "_warp_home_if_needed" not in _calls, str(_calls))
+
     print()
     if FAIL:
         print(f"❌ {len(FAIL)} 条没过：" + " / ".join(FAIL))
