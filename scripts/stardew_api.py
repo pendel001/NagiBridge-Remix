@@ -2159,6 +2159,64 @@ def stand_tile(tx, ty, walk_ok):
     return None
 
 
+def park_at(x, y, settle=1.2):
+    """🦶 **站到"正好"这一格再回来**（挥工具前的最后一道保险）。返回 True=到位且停稳。
+
+    🔴 2026-11-06 恒真机：「**边砍边飘**导致一直在砍空气」。病根就在"以为到了"：
+      · `move_to()`（老 `/move`）只等 `isMoving` 变 False 就 `return True` —— 而 `/move`
+        刚把路径交给游戏那一瞬间 `isMoving` **还是 False**，于是它在**人还没起步**时就返回了；
+        调用方接着 `face()` + `use_tool()` ⇒ **人一边被路径带走、一边挥**（= 边砍边飘），
+        挥的那一下打的是"路过的那格"，目标永远不掉 ⇒ 一路砍空气。
+      · `walk_natural()` 会核对格，但它只核 `x==tx and y==ty`；**没等"停稳"**
+        （同一格上还带着残余移动时，`GetToolLocation()` 算出来的落点会偏）。
+    ⇒ 这里两件都做：**先确保在格上**（walk_natural 自带 /position 兜底），
+      再**等 `isMoving` 落下来**（最多 `settle` 秒），最后**再核一遍坐标**；
+      还不成就 `/position` 硬落（宁可瞬移一下，也别在"差一格"的状态下开挥）。
+    ⚠️ 这是 `clear_area`（清地挥斧/镐/镰）和 `chop_trees`（砍树）**共用**的那一步，别各写一套。
+    """
+    try:
+        walk_natural(x, y)                  # 内部会核到格，差一点就 /position 兜底
+    except Exception:
+        pass
+    deadline = time.time() + max(float(settle), 0.5)
+    while time.time() < deadline:
+        p = (state() or {}).get("player") or {}
+        if not p.get("isMoving", False) and p.get("x") == x and p.get("y") == y:
+            return True
+        time.sleep(0.1)
+    try:
+        position(x, y)
+    except Exception:
+        return False
+    time.sleep(0.2)
+    p = (state() or {}).get("player") or {}
+    return (not p.get("isMoving", False)) and p.get("x") == x and p.get("y") == y
+
+
+def aim_at(tx, ty):
+    """🎯 朝目标格转向，并**如实回报"这一发打不打得到它"** → `(ok, 细节)`。
+
+    `ok=True` 的条件只有两条（跟游戏判据一致）：**正交相邻**（曼哈顿距离 1）+ **朝向对**。
+    ⚠️ 对角贴着打不到（工具落点 = `GetToolLocation()` = 面朝那格），隔一格更打不到 ——
+       这两件事以前全靠"站位格算对了"默认成立，一旦人飘了就成了**默默砍空气**。
+    ⚠️ 每一次挥之前都该调它：`clear_area` 的 18 下、`chop_trees` 的整棵都在这条线上。
+    """
+    p = (state() or {}).get("player") or {}
+    px, py = p.get("x"), p.get("y")
+    if px is None or py is None:
+        return False, {"why": "读不到玩家位置"}
+    dx, dy = tx - px, ty - py
+    if abs(dx) + abs(dy) != 1:
+        return False, {"why": f"人不在目标旁边（人在 {px},{py}，目标 {tx},{ty}）"}
+    fd = 1 if dx == 1 else 3 if dx == -1 else 2 if dy == 1 else 0
+    face(fd)
+    time.sleep(0.05)
+    p2 = (state() or {}).get("player") or {}
+    if p2.get("facingDirection") == fd:
+        return True, {"facing": fd}
+    return False, {"why": f"朝向没转过去（要 {fd}，现在是 {p2.get('facingDirection')}）"}
+
+
 def walk_natural(target_x, target_y, timeout_scale=2, min_timeout=5):
     """⚠️ 已弃用（2026-08-13 恒拍板）：走路统一用 walk_to_coord（/walk_to）。
     这个走 /move（mod FindPath，效果几乎一样），行为保留给旧脚本（耕种/下矿等），勿改。

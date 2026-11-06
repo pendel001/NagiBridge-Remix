@@ -299,18 +299,59 @@ def target_still_present(x, y, expected_name):
     return False
 
 
+def _stand_for(x, y):
+    """挑一个**真能站**的正交邻格 → `(sx, sy, facing)` / `None`（四邻都站不进去）。
+
+    ⚠️ 拿不到可走信息（`/passable_rect` 失败）时**退回"目标正上方"**（老行为），
+       但调用方会因为 `aim_at` 打不到而如实报出来 —— 不静默。
+    """
+    try:
+        _ok = api.walk_ok_tiles(x - 1, y - 1, x + 1, y + 1)
+    except Exception:
+        _ok = None
+    if _ok is None:
+        return (x, y - 1, 2)
+    return api.stand_tile(x, y, _ok)
+
+
 def stand_for_target(x, y, use_position):
-    stand_x, stand_y = x, y - 1
+    """🦶 站到目标旁**并核对"这一发打得到它"** → `(ok, 没成的理由)`。
+
+    🔴 2026-11-06 恒真机：「**边砍边飘**导致一直在砍空气」。病根全在"以为站到了"：
+      · 老实现走 **`api.move_to()`**（已弃用的 `/move`）。它只等 `isMoving` 变 False 就
+        `return True`，而 `/move` 刚把路径交给游戏那一瞬间 `isMoving` **还是 False**
+        ⇒ 它在**人还没起步**时就返回了；接着 `face()` + `use_tool()` ⇒
+        **人一边被路径带走、一边挥**（屏幕上就是"边砍边飘"），打的是"路过的那格"，
+        目标永远不掉 ⇒ 18 下全砍空气，最后还报成"敲满上限仍没清掉"。
+      · 站位还写死 `(x, y-1)` + `face(2)` —— 那格是柜台/石头/水的时候照样往那儿怼，
+        人站不上去（或站上去被挤开），**朝向也不按实际相对位置算**。
+    ⇒ 现在：`stand_tile` 挑**能站**的正交邻格 → `park_at` **核对到格 + 等停稳** →
+      `aim_at` **确认正交相邻且朝向对**。三步任何一步不成立就**别挥**，如实报。
+    """
+    stand = _stand_for(x, y)
+    if stand is None:
+        return False, "四邻都站不进去（水/柜台/设施围着）"
+    sx, sy, _fd = stand
     if use_position:
-        # 🧹 同 `scan_area`：**就地**挪（当前地图），不再静默搬回农场（恒 2026-09-20）。
-        api._post("/position", {"x": stand_x, "y": stand_y})
+        # 🧹 Pass 2 是"精确兜底"那一趟：直接落到站位格（同 `scan_area` 的"就地"口径）
+        api._post("/position", {"x": sx, "y": sy})
         time.sleep(0.3)
-        api.face(2)
-    else:
-        api.move_to(stand_x, stand_y, timeout=8)
-        d = api.face_toward(x, y)
-        api.face(d)
-    time.sleep(0.1)
+    elif not api.park_at(sx, sy):
+        return False, f"走不到站位格 ({sx},{sy})"
+    ok, why = api.aim_at(x, y)
+    return ok, ("" if ok else why.get("why", "朝向/距离不对"))
+
+
+def _reaim_or_restand(x, y, use_position):
+    """挥之前再确认一次"打得到"；人飘了/被挤开就**重站一次**。返回 `(ok, 理由)`。"""
+    ok, why = api.aim_at(x, y)
+    if ok:
+        return True, ""
+    ok2, why2 = stand_for_target(x, y, use_position)
+    if not ok2:
+        return False, why2 or why.get("why", "")
+    ok3, why3 = api.aim_at(x, y)
+    return ok3, ("" if ok3 else why3.get("why", ""))
 
 
 # 🔁 挥完一下之后的重扫半径。**镰刀/镐/斧都是"范围动作"**：一挥能顺手清掉身边一片
@@ -349,6 +390,7 @@ def clear_pass(targets, use_warp=False):
 
     cleared = 0
     stuck = []      # 敲了上限仍没掉的（不能混进 cleared，见下面循环里的注释）
+    no_stand = []   # 站位/朝向没对上、**一下都没挥**的（跟"敲不碎"分开报，见 2026-11-06 那条）
     for tool in TOOL_ORDER:
         items = by_tool.get(tool, [])
         if not items:
@@ -367,13 +409,24 @@ def clear_pass(targets, use_warp=False):
             if not stamina_ok():
                 return cleared
 
-            stand_for_target(x, y, use_warp)
+            _ok_stand, _why_stand = stand_for_target(x, y, use_warp)
+            if not _ok_stand:
+                # 🦶 站不过去/站到了也打不到 ⇒ **一下都不挥**（老实现会在原地对着空气敲满 18 下）
+                no_stand.append((x, y, name, _why_stand))
+                i += 1
+                continue
 
             actual_hits = 0
+            _aim_lost = ""
             for h in range(hits):
                 if not stamina_ok():
                     return cleared
                 if h > 0 and not target_still_present(x, y, name):
+                    break
+                # 🎯 每一发之前再核一次"人还在旁边、还朝着它"——人被挤走/还在飘时**先别挥**
+                _ok_aim, _why_aim = _reaim_or_restand(x, y, use_warp)
+                if not _ok_aim:
+                    _aim_lost = _why_aim or "人不在目标旁边"
                     break
                 api.use_tool(tool)
                 time.sleep(TOOL_DELAY)
@@ -389,6 +442,8 @@ def clear_pass(targets, use_warp=False):
                 if actual_hits < hits:
                     api.log(f"  {name} at ({x},{y}) cleared after {actual_hits}/{hits} hits")
                 cleared += 1
+            elif _aim_lost:
+                no_stand.append((x, y, name, _aim_lost))
             else:
                 stuck.append((x, y, name, actual_hits, hits))
 
@@ -432,6 +487,17 @@ def clear_pass(targets, use_warp=False):
             api.log(f"     · …还有 {len(stuck) - 6} 件")
         api.log("     ⇒ scan 阶段会先拦掉「工具等级不够」那一类，所以剩下的多半是**站位/朝向没对上**"
                 "（人在砍空气）。把这几条发我，我按坐标查 `stand_for_target` 的落点。")
+
+    # 🦶 站位/朝向没对上的 —— 跟"敲不碎"分开报：这些是**一下都没挥**（2026-11-06 加的护栏）。
+    #    ⚠️ 必须说清"没挥"而不是"砍了没砍动"，否则 AI 会以为工具不够、跑去升级工具。
+    if no_stand:
+        api.log(f"  🦶 {len(no_stand)} 件**压根没挥**（站不到目标旁边 / 站到了朝向不对）：")
+        for sx, sy, sname, why in no_stand[:6]:
+            api.log(f"     · {sname} ({sx},{sy}) —— {why}")
+        if len(no_stand) > 6:
+            api.log(f"     · …还有 {len(no_stand) - 6} 件")
+        api.log("     ⇒ 这几格多半**四邻站不进去**（水/柜台/设施围着）或人老被挤开。"
+                "别当成工具不够：要么走过去从另一侧试 `map walk <x> <y>`，要么先 `farm clear` 旁边那一圈。")
 
     return cleared
 

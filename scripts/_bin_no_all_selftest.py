@@ -170,15 +170,20 @@ def sec_intent():
 def sec_texts():
     print("\n⑥ 文案面：不再有一条路教「全投」")
     M._SHIPBIN_SEEN.clear()
-    M._SHIPBIN_SEEN["loc"] = ""
+    M._SHIPBIN_SEEN.update({"loc": None, "farm_bin": None, "mini": None})
     M.api.map_data = lambda *a, **k: {"buildings": [
         {"type": "Shipping Bin", "x": 71, "y": 14, "doorX": 71, "doorY": 15}]}
     M.api.surroundings = lambda *a, **k: {"tiles": [], "center": {"x": 71, "y": 15}}
-    line = M._shipbin_hint("Farm")
+    # 🔴 2026-11-06 恒：说明只注入在**箱子周围一两圈**、常驻只留坐标 ⇒ 这里必须**站在旁边**问，
+    #    否则拿到的是"只有坐标"那一档，下面四条会假红（不是坏，是问错了档）。
+    line = M._shipbin_hint("Farm", 71, 16)
     ck("农场状态条那行还在（AI 得知道箱子在哪）", "出货箱" in line and "(71,15)" in line, line)
     ck("…**不再写** `sell_all`", "sell_all" not in line, line)
     ck("…改成指单子", "intent" in line, line)
     ck("…并且说了「取不回来」", "取不回来" in line, line)
+    ck("…离得远就**只留坐标**（说明不常驻）",
+       M._shipbin_hint("Farm", 20, 20) == "🧺 出货箱 (71,15)",
+       repr(M._shipbin_hint("Farm", 20, 20)))
 
     _src = io.open(os.path.join(HERE, "nagi_mcp_server.py"),
                    encoding="utf-8", errors="replace").read()

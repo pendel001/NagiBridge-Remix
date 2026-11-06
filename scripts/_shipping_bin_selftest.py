@@ -74,13 +74,20 @@ try:
            for n, p in M.locations.POI.items() for k in _kws),
        "no hit")
 
-    print("\n② 农场要报主出货箱（坐标问游戏，说明「过夜才结算」）")
-    M._SHIPBIN_SEEN.update({"loc": None, "line": ""})
+    print("\n② 农场要报主出货箱（坐标问游戏）+ **站在箱子周围**才给说明")
+    M._SHIPBIN_SEEN.update({"loc": None, "farm_bin": None, "mini": None})
     M.api.map_data = _fake_map([{"type": "Shipping Bin", "x": 71, "y": 14,
                                  "doorX": 72, "doorY": 15}])
     M.api.surroundings = _fake_surr([])
-    _farm = M._shipbin_hint("Farm")
-    ck("…有那一行", "出货箱" in _farm, _farm)
+    # 🔴 2026-11-06 恒：「说明注入在**箱子周围一两圈**，**常驻的只要坐标**」⇒ 两档分开验：
+    #    · 离得远（人在 (30,30)）：一行只有坐标，**一个字说明都不许有**（省 token 的全部意义）
+    #    · 走到跟前（(72,16)，箱子在 (72,15) ⇒ 相邻 1 格）：才把说明补齐
+    _far = M._shipbin_hint("Farm", 30, 30)
+    ck("…**离得远 ⇒ 只有坐标**", _far == "🧺 出货箱 (72,15)", repr(_far))
+    ck("…远处**不许**带「过夜/结算/取不回来」这些说明",
+       not any(w in _far for w in ("过夜", "结算", "取不回来", "intent", "存箱子")), _far)
+    _farm = M._shipbin_hint("Farm", 72, 16)
+    ck("…走到旁边（相邻 1 格）⇒ 有那一行", "出货箱" in _farm, _farm)
     ck("…坐标取**游戏的 doorX/doorY**（(72,15)），不是写死的 (71,14)", "(72,15)" in _farm, _farm)
     ck("…写明「**过夜才结算**」（别让它以为立刻到账）", "过夜" in _farm and "结算" in _farm, _farm)
     # 🔴 2026-11-05 改口：这一行原来教 `menu(ops="bin", sell_all=True)` 全投 ——
@@ -95,32 +102,46 @@ try:
        'menu(ops="bin", name="物品名")' in _farm, _farm)
     ck("…点明「**不是**存箱子」（真机就是存箱子了）", "不是" in _farm and "存箱子" in _farm, _farm)
     ck("…必须写「**不是立刻拿钱**」（不许让人以为当晚到账）", "不是立刻拿钱" in _farm, _farm)
+    # 周围"一两圈"的边界：隔 2 格还算旁边；隔 3 格就只剩坐标（太远给说明=白付 token）
+    ck("…离 2 格（箱子 (72,15) / 人在 (74,17)）仍给说明",
+       "取不回来" in M._shipbin_hint("Farm", 74, 17))
+    ck("…离 4 格就只给坐标",
+       M._shipbin_hint("Farm", 76, 19) == "🧺 出货箱 (72,15)",
+       repr(M._shipbin_hint("Farm", 76, 19)))
 
     print("\n③ 别的图**不报**主出货箱（它不在那儿）")
-    M._SHIPBIN_SEEN.update({"loc": None, "line": ""})
+    M._SHIPBIN_SEEN.update({"loc": None, "farm_bin": None, "mini": None})
     M.api.map_data = _fake_map([{"type": "Shipping Bin", "x": 71, "y": 14}])
     M.api.surroundings = _fake_surr([])
     _beach = M._shipbin_hint("Beach")
     ck("…`Beach` ⇒ 空（没有迷你箱时）", _beach == "", _beach)
 
-    print("\n④ 迷你出货箱照旧（恒海滩那只）")
-    M._SHIPBIN_SEEN.update({"loc": None, "line": ""})
+    print("\n④ 迷你出货箱同款两档（恒海滩那只）")
+    M._SHIPBIN_SEEN.update({"loc": None, "farm_bin": None, "mini": None})
     M.api.surroundings = _fake_surr([{"x": 12, "y": 7, "object": "Mini-Shipping Bin"}])
-    _mini = M._shipbin_hint("Beach")
+    _mini_far = M._shipbin_hint("Beach", 30, 30)
+    ck("…离得远 ⇒ 只有坐标", _mini_far == "📦 迷你出货箱 (12,7)", repr(_mini_far))
+    _mini = M._shipbin_hint("Beach", 12, 8)
     ck("…报出迷你箱坐标", "(12,7)" in _mini, _mini)
-    ck("…写着「当夜出货卖掉」「别当仓库」", "当夜出货卖掉" in _mini and "别当仓库" in _mini, _mini)
+    ck("…走近才写「当夜出货卖掉」「别当仓库」",
+       "当夜出货卖掉" in _mini and "别当仓库" in _mini, _mini)
 
     print("\n⑤ 同图不重扫（缓存还在 —— 别每调都刷 `/map`）")
     _c0 = CALLS["map"], CALLS["surr"]
-    M._shipbin_hint("Beach")
+    M._shipbin_hint("Beach", 12, 8)
     ck("…第二次调 `/surroundings` 没再打", CALLS["surr"] == _c0[1], str(CALLS))
-    M._SHIPBIN_SEEN.update({"loc": None, "line": ""})
+    # ⚠️ 这一条正是 2026-11-06 那个改动的**关键**：缓存的是**坐标**、文案按距离现拼 ——
+    #    老实现把整行缓存起来原样返回，走远走近平铺同一句，"周围一两圈才注入"根本做不到。
+    M._SHIPBIN_SEEN.update({"loc": None, "farm_bin": None, "mini": None})
     _c1 = CALLS["map"]
     M.api.map_data = _fake_map([{"type": "Shipping Bin", "x": 71, "y": 14, "doorX": 72, "doorY": 15}])
     M.api.surroundings = _fake_surr([])
-    M._shipbin_hint("Farm")
-    M._shipbin_hint("Farm")
+    M._shipbin_hint("Farm", 72, 16)
+    M._shipbin_hint("Farm", 30, 30)
     ck("…在农场连调两次只打一发 `/map`", CALLS["map"] - _c1 == 1, str(CALLS))
+    ck("…**同一张图里换位置 ⇒ 文案跟着变**（缓存的是坐标不是整行）",
+       "取不回来" in M._shipbin_hint("Farm", 72, 16)
+       and M._shipbin_hint("Farm", 30, 30) == "🧺 出货箱 (72,15)")
 
 finally:
     M.api.map_data = _real["map_data"]

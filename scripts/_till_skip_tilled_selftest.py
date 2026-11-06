@@ -39,7 +39,10 @@ def _fake_scan(pts, margin=1):
     out = {}
     for x in range(x1, x2 + 1):
         for y in range(y1, y2 + 1):
-            out[(x, y)] = {"terrain": None}
+            # ⚠️ 生土要带 `diggable: True`（2026-11-06）—— `_farm_till` 现在会**先按游戏说的筛一遍**：
+            #    不带这个字段 = 游戏说"这格不可耕" ⇒ 直接不排进待办（真机 `/surroundings` 对农场
+            #    生土报的就是 `{"diggable": true, "passable": true}`，夹具漏了它就假红）。
+            out[(x, y)] = {"terrain": None, "diggable": True}
     for k, v in ROWS.items():
         if k in out:
             out[k] = dict(v)
@@ -65,6 +68,14 @@ class FakeApi:
         return (tx, ty - 1, 2)
 
     def walk_natural(self, *_a):
+        return True
+
+    # 🎯🦶 2026-11-06：锄地循环里加了"挥之前确认正交相邻 + 朝向对"（`aim_at`）和
+    #     "站到格上并停稳"（`park_at`）。夹具里恒真 —— 这两件要验的是别处（`_aisle_aim` 那类钉子）。
+    def aim_at(self, *_a):
+        return True, {}
+
+    def park_at(self, *_a):
         return True
 
     def face(self, *_a):
@@ -119,7 +130,7 @@ try:
 
     print("\n③ 混着来：1 格翻好了 + 1 格生土 → 只锄生土那格")
     _reset_case()
-    ROWS.update({(40, 40): {"terrain": "HoeDirt"}, (41, 40): {"terrain": None}})
+    ROWS.update({(40, 40): {"terrain": "HoeDirt"}, (41, 40): {"terrain": None, "diggable": True}})
     out = M._farm_till(x1=40, y1=40, x2=41, y2=40)
     ck("验收扫只问生土那格（说明翻好的那格真没进名单）",
        _fake_scan.tilled == [(41, 40)], str(_fake_scan.tilled))
@@ -135,7 +146,7 @@ try:
 
     print("\n⑤ 真正的生土不受影响（别把跳过头了）")
     _reset_case()
-    ROWS.update({(40, 40): {"terrain": None}})
+    ROWS.update({(40, 40): {"terrain": None, "diggable": True}})
     out = M._farm_till(x1=40, y1=40, x2=40, y2=40)
     ck("生土照样锄（1/1）", "1/1" in out, out)
     ck("…且没有跳过的行", "⏭ 跳过" not in out, out)

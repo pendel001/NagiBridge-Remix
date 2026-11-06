@@ -135,7 +135,18 @@ def _ensure_at(tx, ty):
 
 
 def chop_at(tx, ty, target_type):
-    """走到目标旁挥斧头。固定类型按次数表敲完；树类逐下检查，倒了就停。"""
+    """走到目标旁挥斧头。固定类型按次数表敲完；树类逐下检查，倒了就停。
+
+    🔴 2026-11-06 恒真机：「**边砍边飘**导致一直在砍空气」。老实现两个洞：
+      ① `_ensure_at(tx, ty-1)` 只核"差不超过 1 格"就算到了，而且它走的是 `walk_natural`
+         —— 那条路**不等停稳**；`move_to`（老 `/move`）更糟：`isMoving` 一瞬为 False 就返回，
+         人还没起步就开挥 ⇒ 屏幕上"边砍边飘"、每一斧都落在路过的那格 ⇒ 目标永远不掉。
+      ② 站位写死"目标正上方"、朝向写死 `face(2)`：正上方是石头/水/柜台时人站不上去，
+         或者站上去了却不在正上方 ⇒ 朝下那一下本来就打不到。
+    ⇒ 现在：`stand_tile` 挑**能站**的正交邻格 → `park_at` 核对到格+停稳 → 每一下之前
+      `aim_at` 确认"正交相邻且朝向对"；不对就**重站一次**，还不对就**停手如实报**，
+      绝不闷头砍满 max_hits 下空气。
+    """
     axe_name = "Axe"
     # 找一下背包里的斧头真名
     for item in api.state().get("inventory", []):
@@ -150,9 +161,17 @@ def chop_at(tx, ty, target_type):
         max_hits = axe_fell_hits(axe_name)
     api.log(f"  [{target_type}] max {max_hits}h ({axe_name})")
 
-    _ensure_at(tx, ty - 1)
-    api.face(2)
-    time.sleep(0.15)
+    try:
+        _ok = api.walk_ok_tiles(tx - 1, ty - 1, tx + 1, ty + 1)
+    except Exception:
+        _ok = None
+    stand = api.stand_tile(tx, ty, _ok) if _ok is not None else None
+    if stand is None:
+        stand = (tx, ty - 1, 2)          # 拿不到可走信息：退回老站位，但下面 aim 会兜住
+    sx, sy, _fd = stand
+    if not api.park_at(sx, sy):
+        api.log(f"  ⚠️ 站不到 ({sx},{sy}) —— **一下都没挥**（免得砍空气）")
+        return "nostand"
     api.select(axe_name)
     time.sleep(0.15)
 
@@ -162,6 +181,16 @@ def chop_at(tx, ty, target_type):
         if cur < STAMINA_RESERVE:
             api.log(f"  Stamina low ({cur:.0f})")
             return "stamina"
+        # 🎯 每一斧之前核一次：人还在旁边吗？还朝着它吗？不成立就**重站**，再不行就停手。
+        _aimed, _why = api.aim_at(tx, ty)
+        if not _aimed:
+            if not api.park_at(sx, sy):
+                api.log(f"  ⚠️ 人飘走了、也站不回去（{_why.get('why')}）—— 停手")
+                return "nostand"
+            _aimed, _why = api.aim_at(tx, ty)
+            if not _aimed:
+                api.log(f"  ⚠️ 站回去了还是打不到（{_why.get('why')}）—— 停手")
+                return "nostand"
         api.use_tool(axe_name)
         time.sleep(HIT_DELAY)
         if is_tree and not tree_still_there(tx, ty):
@@ -177,8 +206,8 @@ def chop_target(tx, ty, target_type):
     is_tree = target_type.startswith("Tree:")
 
     result = chop_at(tx, ty, target_type)
-    if result == "stamina":
-        return "stamina"
+    if result in ("stamina", "nostand"):
+        return result
 
     # 树倒了可能留树桩
     if is_tree:
@@ -187,8 +216,8 @@ def chop_target(tx, ty, target_type):
         if tile_has(tx, ty, "stump"):
             api.log(f"  Stump remaining...")
             result = chop_at(tx, ty, "stump")
-            if result == "stamina":
-                return "stamina"
+            if result in ("stamina", "nostand"):
+                return result
             time.sleep(0.4)
             _ensure_at(tx, ty)
         # 转圈吸掉落：绕四个邻格一圈再回到树格，把掉在地上的木头/树液吸附进包。
@@ -264,6 +293,7 @@ def run():
         _goto_area()
 
     _skipped_seen = {}
+    _nostand = 0
     chopped = 0
     for attempt in range(args.count):
         trees, skipped = find_trees(_search_radius())
@@ -288,6 +318,13 @@ def run():
             chopped += 1
         elif result == "stamina":
             break
+        elif result == "nostand":
+            # 🦶 站不过去/站到了打不到 ⇒ 这棵**一下都没砍**。计数之后继续下一棵，
+            #    但不能让它悄悄变成"砍完了"（2026-11-06 恒："边砍边飘、一直在砍空气"）。
+            _nostand += 1
+            if _nostand >= 3:
+                api.log("🦶 连着 3 棵都站不到旁边 —— 停手（多半是被水/石头/建筑围着）")
+                break
 
     s = api.state()
     inv = s.get("inventory", [])
