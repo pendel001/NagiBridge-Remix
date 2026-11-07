@@ -45,6 +45,7 @@ CORE = [
     "_call_budget_selftest.py",        # 60s 客户端超时闸 + 日常↔节日对话改道
     "_harvest_radius_selftest.py",     # 收获矩形扫描 / 挂住扣时 / 异步判据
     "_water_stamina_selftest.py",      # 浇水低体力闸（大簇切小）
+    "_pet_flavor_selftest.py",         # 摸宠物彩蛋文案（猫/狗/龟）
 ]
 
 # 慢钉子（单个 15~60s，合计占全套一半）：默认**不跑**，`--slow` 或 `--all` 才带上。

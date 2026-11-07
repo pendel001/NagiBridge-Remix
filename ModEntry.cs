@@ -7916,7 +7916,11 @@ public class ModEntry : Mod
                 x = n.TilePoint.X,
                 y = n.TilePoint.Y,
                 // ⚠️ 2026-08-16：kind=pet/horse/npc——pet_pet 自然走摸猫狗用（/surroundings 报 NPC 类型）
-                kind = n is Pet ? "pet" : n is Horse ? "horse" : "npc"
+                kind = n is Pet ? "pet" : n is Horse ? "horse" : "npc",
+                // 🐱 2026-11-07 恒（摸宠物的彩蛋文案）：**猫/狗/龟**要分得出来，才写得出不同的反馈。
+                //    反编译实据（`StardewValley.Characters.Pet`）：字段 `NetString petType`
+                //    （= `Data/Pets` 的键，1.6 才有；老 DLL 没有这个字段时这里给 null，消费侧退回通用文案）。
+                petType = n is Pet _pp ? (_pp.petType?.Value ?? "") : null
             })
             .ToList();
 
@@ -23441,7 +23445,9 @@ var tcs = new TaskCompletionSource<object>();
                         bowls = allBowls,
                         bowlsTotal = allBowls.Count,
                         method,
-                        pet = pet != null ? new { name = pet.Name, x = (int)pet.TilePoint.X, y = (int)pet.TilePoint.Y } : null
+                        pet = pet != null ? new { name = pet.Name, x = (int)pet.TilePoint.X, y = (int)pet.TilePoint.Y,
+                                                  // 🐱 2026-11-07：猫/狗/龟（`Data/Pets` 的键；老 DLL 没这字段 ⇒ null）
+                                                  type = (pet as Pet)?.petType?.Value } : null
                     });
                 }
                 else

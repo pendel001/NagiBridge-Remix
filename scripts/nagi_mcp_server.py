@@ -8133,6 +8133,39 @@ def pet_water() -> str:
     return _with_state("\n".join(parts))
 
 
+# 🐾 摸宠物的彩蛋文案（2026-11-07 恒：「我们的 pet 现在能够区分猫狗龟吗？可以的话我想加点小彩蛋文案…
+#    让摸宠物更有反馈」）—— 每种动物 **3 句里随机一句**（1 句通用 + 2 句本种）。
+#    `petType` 是游戏 `Pet.petType`（= `Data/Pets` 的键，C# `/surroundings` 现在会报）。
+_PET_GENERIC = "看起来非常开心"
+_PET_FLAVOR = {
+    #  名字 + 这句话 直接连起来读（所以狗的"尾巴"那句带个「的」）
+    "cat": ("叫了你一声", "被摸成了一滩猫饼，直打呼噜"),
+    "turtle": ("扭了扭身子和尾巴", "正在陆游"),
+    "dog": ("围着你跑来跑去", "的尾巴兴奋地拍打地板"),
+}
+
+
+def _pet_kind(raw) -> str:
+    """把游戏报的 `petType` 归一成 `cat` / `dog` / `turtle`；认不出 ⇒ `""`（退回通用句）。"""
+    t = str(raw or "").strip().lower()
+    if not t:
+        return ""
+    if "cat" in t or "猫" in t:
+        return "cat"
+    if "dog" in t or "狗" in t:
+        return "dog"
+    if "turtle" in t or "龟" in t:
+        return "turtle"
+    return ""
+
+
+def _pet_flavor(name: str, kind: str) -> str:
+    """「名字 + 随机一句」。`kind` 认不出时只给通用句（**不瞎猜**是猫还是狗）。"""
+    lines = [_PET_GENERIC]
+    lines.extend(_PET_FLAVOR.get(kind or "", ()))
+    return f"{name}{random.choice(lines)}"
+
+
 def _pet_pets_natural() -> str:
     """🐱 自然走摸猫狗（当前场景）：/surroundings 找 kind=pet 的 NPC →
     自然走（walk_to）过去，够不着 position 兜底，面朝 + interact 摸。
@@ -8158,10 +8191,16 @@ def _pet_pets_natural() -> str:
                 time.sleep(0.2)
                 r = api._post("/interact")      # 右键摸
                 time.sleep(0.3)
-                got.append(p.get("name"))
+                got.append((p.get("name") or "宠物", _pet_kind(p.get("petType"))))
             except Exception:
                 continue
-        return f"🐱 自然走摸了 {len(got)}/{len(pets)} 只宠物（{'、'.join(got) if got else '无'}）"
+        if not got:
+            return f"🐾 一只都没摸到（{len(pets)} 只在场）——可能被人挡住/够不着"
+        _lines = [f"🐾 摸了 {len(got)}/{len(pets)} 只宠物："]
+        _lines += [f"  · {_pet_flavor(nm, kd)}" for nm, kd in got]
+        if any(not kd for _nm, kd in got):
+            _lines.append("  （⚠️ 这版 DLL 没报宠物种类 ⇒ 只有通用句；重开游戏上新 DLL 才有猫/狗/龟各自的文案）")
+        return "\n".join(_lines)
     except Exception as e:
         return f"摸宠物出错: {e}"
 
