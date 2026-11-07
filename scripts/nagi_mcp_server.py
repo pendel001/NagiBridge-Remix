@@ -291,6 +291,22 @@ _MENU_GATE_OPS_OK = {
     #    小游戏是**脚本自己开的**、不是 AI 忘了关的菜单，闸门这层"提醒"方向就是反的（见 `_close_hint`）。
     "script": {"stop", "停", "continue", "继续"},
     "map": {"warp_safe", "逃脱"},
+    # 🥚 2026-11-07 真机（恒很沮丧：「ai 根本就不看我的指引，**两次重新参加节日都不会写 egg_note**」）：
+    #    —— 它**听了**。session_log 10:45:26 那发 `festival ops=egg_note`（"开赛前赶紧记捡蛋路线"）
+    #    被这道闸门顶回来：「现在开着「DialogueBox」菜单，`festival` 先别做 —— 菜单态下走位/干活/跑脚本
+    #    都不会按预期生效」。可 **egg_note 只往内存写一张纸条**：不挪人、不开菜单、不碰世界。
+    #    `eggs`/`info`/`help`/`prep`/`maze`/`poi`/`today`/`next` 更是**纯读**。
+    #    ⇒ 只放行这些"不碰世界"的；`go / interact / answer / shop / egg_run(捡蛋/捡) /
+    #      dance(跳舞/邀请/舞) / maze_walk(走迷宫) / strength(力量) / ice_fish(冰钓) / display_*` 照旧拦。
+    #    ⚠️ 别把 `捡`/`收` 抄进来 —— 它们是**会走会动**的那两个（egg_run / display_takeback）。
+    "festival": {"eggs", "找蛋", "蛋",
+                 "egg_note", "纸条", "记",
+                 "today", "今天", "next", "下一个",
+                 "info", "实况",
+                 "help", "引导", "玩法",
+                 "prep", "准备", "备战",
+                 "maze", "迷宫",
+                 "poi", "限定", "厨师"},
     # 🧠 2026-10-01：原来这儿有条 `"session": {"status", "看"}` —— **删了**：
     #    session 整体收编进 settings，而 `settings` 是**整域放行**（`_MENU_GATE_DOMAINS_FULL_OK`）
     #    ⇒ 会话那三条 op 天然可用。给一个不在顶层的工具留闸门配置 = 死配置
@@ -2754,11 +2770,13 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
     except Exception:
         pass
 
-    # 🥚 蛋蛋节寻宝提示（2026-08-17 恒：节日场景 Temp 内一直注入——看坐标→自己规划→egg_note 记→egg_run 捡）
+    # 🥚 蛋蛋节寻宝提示（2026-08-17 恒：节日场景 Temp 内一直注入）
+    #    ⚠️ 2026-11-07 恒（「放在更显眼的位置」）：**插到状态条最前面** —— 它原来排在
+    #    📍/🗺️ 可/🎪 可 后面第三四行，真机两次都没照做（`egg_note` 还挨了菜单闸门一刀）。
     try:
         _eh = _egg_festival_hint(loc_name)
         if _eh:
-            lines.append(_eh)
+            lines.insert(0, _eh)
     except Exception:
         pass
 
@@ -15610,6 +15628,39 @@ def _egg_route_str(route) -> str:
     return "[" + ",".join(f"({x},{y})" for x, y in route) + "]"
 
 
+def _egg_auto_route(from_here: bool = True) -> list:
+    """🥚 **兜底路线**：没写 egg_note 时，按**当年那张蛋表**自己排一条（近邻贪心，从我现在的位置出发）。
+
+    恒 2026-11-07：「**加上没有路线时兜底一条呢**」。
+    为什么要它：`egg_note` 那条路**指望 AI 记得写**（它被菜单闸门挡过一次、也可能会忘），
+    而这一局是**过了就没了**（一年一天·50 秒）。纸条没写就白玩，代价太大 ——
+    所以这里直接拿 `calendar_data.FESTIVAL_EGGS`（就是 `festival eggs` 印给它的同一份数据）
+    自己排一条，跟 AI 手写的那条质量一样。
+
+    返回坐标列表（蛋表读不到 / 不是蛋蛋节 ⇒ `[]`，调用方如实报"没路线"）。
+    """
+    try:
+        d = _festival_now_data()
+        if not d.get("ok") or (d.get("season"), d.get("day")) != ("spring", 13):
+            return []
+        key = (d["season"], d["day"])
+        parity = "even" if d.get("year", 1) % 2 == 0 else "odd"
+        eggs = list((calendar_data.FESTIVAL_EGGS.get(key) or {}).get(parity) or [])
+        if not eggs:
+            return []
+        start = (calendar_data.FESTIVAL_EGG_START.get(key) or {}).get(parity, (27, 69))
+        if from_here:
+            try:
+                pl = api._ai_get("/state").get("player") or {}
+                if pl.get("x") is not None and pl.get("y") is not None:
+                    start = (int(pl["x"]), int(pl["y"]))
+            except Exception:
+                pass
+        return _egg_win_route(eggs, start, target=len(eggs))
+    except Exception:
+        return []
+
+
 def _egg_festival_guard() -> str:
     """🥚 festival_game 门禁：蛋蛋节找蛋工具只在 spring13 蛋蛋节可用（恒 2026-08-17：其他时候不暴露）。
     返回空串=放行；否则=拒绝原因。"""
@@ -15644,7 +15695,8 @@ def _festival_eggs() -> str:
         lines.append("  📋 蛋坐标:")
         for i in range(0, len(eggs), 6):
             lines.append("  " + "  ".join(f"({x},{y})" for x, y in eggs[i:i + 6]))
-        lines.append("  → egg_note route=\"[...]\" 记 → 开赛 egg_run 照着跑")
+        lines.append("  → egg_note route=\"[...]\" 记 → 开赛 egg_run 照着跑"
+                     "（**不记也行**：开赛我按这张表自己排路线跑）")
         return "\n".join(lines)
     except Exception as e:
         return f"❌ {e}"
@@ -15767,7 +15819,8 @@ def _festival_egg_note(route: str = "") -> str:
 def _festival_egg_run(route: str = "") -> str:
     """🥚 蛋蛋节循环捡蛋（第一个节日特殊小游戏工具，2026-08-17 恒）：
     沿 route 坐标逐个 walk_to（自然走）→ interact（捡），每步查 festivalScore。
-    - route 省略 = 用 egg_note 偷偷记下的路线（AI 开赛前规划好、egg_run 直接执行）
+    - route 省略 = 用 egg_note 偷偷记下的路线（AI 开赛前规划好、egg_run 直接执行）；
+      **纸条没写就按当年蛋表自己排一条**（`_egg_auto_route`，2026-11-07 恒要的兜底）
     - **被恒捡走的点自动跳过**（交互后分数没涨=没蛋，跳下一个）
     - **尽量多捡**：不设上限（联机比对手多才赢；单机 9 颗赢阿比盖尔 8 颗）
     - **游戏本身限时**：不做超时/连续没捡到逻辑；出现对话（刘易斯宣布结果）自动停，
@@ -15781,13 +15834,21 @@ def _festival_egg_run(route: str = "") -> str:
     try:
         if route:
             points = _parse_route(route)
+            _how = ""
         else:
             points = list(_EGG_NOTE.get("route") or [])
+            _how = ""
+            if not points:
+                # 🥚 2026-11-07 恒（「没有路线时兜底一条」）：纸条没写也**不许空手** ——
+                #    按当年蛋表自己排一条（跟 AI 手写那条同一份数据、同样近邻贪心）。
+                points = _egg_auto_route()
+                _how = "｜⚠️ 没写 egg_note ⇒ **按当年蛋表自己排的路线**"
         if not points:
-            return "❌ 没路线：festival eggs 看坐标→自己规划→egg_note route=... 记下；或直接 egg_run route=\"[(16,66),...]\""
+            return ("❌ 没路线，而且当年蛋表也读不到（`festival eggs` 看看）："
+                    "`egg_run route=\"[(16,66),...]\"` 直接给一条也行")
         # 🥚 2026-09-05：手动/自动跑到这都记一笔——防 _maybe_egg_run_auto 在同一工具调用里又自动启动一次(重复捡)
         _EGG_RUN_AUTO["fired"] = True
-        lines = [f"🥚 捡蛋开始（路线 {len(points)} 点，尽量多捡）："]
+        lines = [f"🥚 捡蛋开始（路线 {len(points)} 点，尽量多捡）{_how}："]
         collected = 0
         # 开跑先查：寻宝已结束（festivalTimer 归零）→ 立刻收手不白跑（恒：时机很重要；-1=读取失败不误停）
         if _festival_timer() == 0:
@@ -15915,8 +15976,16 @@ def _traveling_cart_hint(season: str, day, tod) -> str:
 
 
 def _egg_festival_hint(loc_name: str) -> str:
-    """🥚 蛋蛋节提示（节日场景 Temp 内一直注入，简短省 token——恒 2026-08-17 拍板）：
-    进场地→festival eggs 看当年蛋坐标→赛前 egg_note 偷偷记→逛；开赛 egg_run 照着跑。"""
+    """🥚 蛋蛋节提示（节日场景 Temp 内一直注入，简短省 token——恒 2026-08-17 拍板）。
+
+    ⚠️ 2026-11-07 恒（很沮丧）：「ai 根本就不看我的指引，**两次重新参加节日都不会写 egg_note**。
+       那除了开发者会提醒之外普通玩家的 ai 也百分百不看。有没有办法放在更显眼的位置，
+       加上没有路线时兜底一条呢？」
+       · **更显眼**：这行现在由调用方 `lines.insert(0, …)` 排到**状态条最前面**，
+         并且把"要做什么"写在最前、把"纸条记了没"当场报出来（AI 看得到自己漏了没）。
+       · **兜底**：纸条没写也**不再空手** —— 开赛 `_maybe_egg_run_auto` 会按当年蛋表自己排路线
+         （`_egg_auto_route`）。所以这行现在敢直说"没记也行"，不再是"必做但没人做"的空话。
+    """
     try:
         d = _festival_now_data()
         if not d.get("ok") or (d["season"], d["day"]) != ("spring", 13):
@@ -15924,8 +15993,12 @@ def _egg_festival_hint(loc_name: str) -> str:
         if loc_name != "Temp":
             return ""
         if _festival_timer() > 0:
-            return "🥚 寻宝中！egg_run 按 egg_note 记的路线捡"
-        return "🥚 蛋蛋节！festival eggs 看当年蛋坐标，赛前 egg_note 偷偷记路线（写了开赛自动捡）；开赛 egg_run 照着跑"
+            return "🥚 寻宝中！egg_run 按纸条捡（没纸条 = 按当年蛋表自动捡）"
+        _n = len(_EGG_NOTE.get("route") or [])
+        _tag = f"✅ 纸条已记 {_n} 点" if _n else "⬜ 纸条**还没记**"
+        return (f"🥚 **开赛前这一件事**：`festival eggs` 拿当年蛋坐标 → "
+                f"`festival egg_note route=[…]` 记下｜{_tag}\n"
+                f"   （**没记也不会空手**：开赛我按当年蛋表自己排路线跑；记了就用你的顺序）")
     except Exception:
         return ""
 
@@ -22827,7 +22900,9 @@ def _maybe_egg_run_auto(data) -> str:
     ⚠️ 复用 _with_state 已抓好的 data（season/day/loc）判前置——**非蛋蛋节零额外 HTTP**（不添负担）；
        只在 spring13+节日地图 才补读一次 festivalTimer（一年就这一天，可忽略）。只在真要捡蛋时阻塞。
     - 有 egg_note 小纸条 → 阻塞跑 _festival_egg_run()（AI 干等、不能调别的工具干扰；_festival_egg_run 循环捡到底）。
-    - 没写纸条 → 只提醒游戏开始（fired 记一次，不再重复；让 AI 自己 festival eggs→egg_note→egg_run）。
+    - 没写纸条 → **照样跑**（2026-11-07 恒：「没有路线时兜底一条」）：`_festival_egg_run` 会用
+      `_egg_auto_route()` 按当年蛋表自己排一条。真机教训：纸条那条路**指望 AI 记得写**，
+      而它上次是被菜单闸门挡回来的 —— 一年就这一次，不能因为一张纸条白玩。
     ⚠️ 阻塞用现有 _festival_egg_run（同步就地捡，不新起子进程）——一场寻宝只发生一次，可接受。"""
     try:
         t = (data or {}).get("time") or {}
@@ -22846,8 +22921,10 @@ def _maybe_egg_run_auto(data) -> str:
         _EGG_RUN_AUTO["fired"] = True          # 只开一次，别每个工具调用都重跑
         if _EGG_NOTE.get("route"):
             return "🥚 自动捡蛋：\n" + _festival_egg_run()
-        return ("🥚 蛋蛋节寻宝开始了（倒计时跑起来了）！没写 egg_note 小纸条——AI 自己上："
-                "festival eggs 看当年蛋坐标 → egg_note route=... 记路线 → egg_run 捡")
+        if not _egg_auto_route():
+            return ("🥚 蛋蛋节寻宝开始了（倒计时跑起来了）！没写 egg_note 小纸条、当年蛋表也读不到——"
+                    "AI 自己上：festival eggs 看当年蛋坐标 → egg_note route=... 记路线 → egg_run 捡")
+        return "🥚 自动捡蛋（⚠️ 没写 egg_note ⇒ 按当年蛋表自己排的路线）：\n" + _festival_egg_run()
     except Exception:
         return ""
 
