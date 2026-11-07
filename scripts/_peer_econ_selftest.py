@@ -59,7 +59,8 @@ def hs(money, inv, day=4, season="spring", loc="SeedShop", x=4, y=18):
 
 
 def reset():
-    M._PEER_ECON.update(day=None, money=None, inv={}, line="", mute_until=0.0, counter=None)
+    M._PEER_ECON.update(day=None, money=None, inv={}, line="", mute_until=0.0, counter=None,
+                        ai_base=None, ai_until=0.0)
 
 
 def seq(*states):
@@ -122,22 +123,68 @@ ck("跨天那一跳不报", seq(hs(1000, [("Smallmouth Bass", 9)], day=4),
 ck("…但新的一天里真进账照报",
    "+320g" in seq(hs(9800, [("Sunfish", 2)]), hs(10120, [("Sunfish", 1)])))
 
-print("\n⑧ ⏸️ AI 自己买卖期间暂停观察（恒：「会串吗？可能会的」）")
-reset()
-M._peer_econ_observe(hs(1000, [("Smallmouth Bass", 3), ("Bomb", 5)]))
-M._peer_econ_mute(60)
-M._peer_econ_observe(hs(2200, [("Bomb", 5)]))     # 我卖鱼钱涨 + 他那边少了鱼 —— 真机上就是这一对会串
-ck("静默期间不出声（哪怕钱和背包都对得上）", M._peer_econ_take() == "")
-ck("…但**基准已更新**（是静默不是冻结）", M._PEER_ECON["money"] == 2200)
-M._peer_econ_observe(hs(2500, [("Bomb", 5), ("Iron Ore", 3)]))
-ck("…静默里继续变 → 依然不出声（积压不会攒着炸一次）", M._peer_econ_take() == "")
-M._PEER_ECON["mute_until"] = 0                     # 解禁
-ck("…解禁后恢复观察（钱没动仍然不说）", seq(hs(2500, [("Bomb", 5)])) == "")
-ck("…解禁后真进账照报（钱涨 + 背包少了）", "+500g" in seq(hs(3000, [("Bomb", 3)])))
+print("\n⑧ 🛒 AI 自己买卖**不再闭眼**：改成「把 AI 那部分扣掉」，房主的账照报")
+print("   （2026-11-08 恒：「刚刚好像没有触发动账，ai 不知道我花钱去哪儿了」——")
+print("     老版静音 120s 且顺手重打基准 ⇒ 窗口里的房主成交被永久吞掉）")
+# `_peer_econ_mute()` 现在会读一次钱包当基准 ⇒ 钉子里喂一个假的（**不碰真游戏**）
+_AI = {"money": 1000}
+
+
+class _FakeApi:
+    @staticmethod
+    def state():
+        return {"player": {"money": _AI["money"]}, "inventory": []}
+
+
+_bak_api = M.api
+M.api = _FakeApi
+try:
+    print("  ⑧a AI 自己买（房主背包没动）⇒ 一个字都不说（归因扣干净）")
+    reset()
+    M._peer_econ_observe(hs(1000, [("Bomb", 5)]))      # 基准
+    _AI["money"] = 1000
+    M._peer_econ_mute(60)                              # AI 动手：ai_base=1000
+    _AI["money"] = 400                                 # AI 买了 600g
+    ck("⑧a 不出声", seq(hs(400, [("Bomb", 5)])) == "")
+
+    print("  ⑧b 🔴 **恒这次那笔**：他先在柜台买完，AI 随后才开商店")
+    # 真机顺序（session_log 19:23~19:24）：钱包 17,393 →(房主买沙拉 −1,100)→ 16,293
+    #            →(AI 开克林特商店读基准)→ (AI 买铜 −375) → 15,918 第一次被读到
+    reset()
+    M._peer_econ_observe(hs(17393, [("Bomb", 5)]))     # 基准（他在柜台前）
+    _AI["money"] = 16293
+    M._peer_econ_mute(60)                              # AI 开商店：ai_base = 16,293
+    _AI["money"] = 15918                               # AI 买铜 −375
+    _l8 = seq(hs(15918, [("Bomb", 5), ("Salad", 5)]))
+    ck("⑧b 报出来了（不再被吞）", "成交了" in _l8, _l8 or "（空）")
+    ck("⑧b 金额是**房主**那笔 −1,100g，不是总差额 −1,475g", "-1,100g" in _l8, _l8)
+    ck("⑧b 背包那半也是房主的（Salad）", "Salad" in _l8, _l8)
+    ck("⑧b AI 买的矿**不算**到房主头上", "Copper" not in _l8 and "Ore" not in _l8 and "矿" not in _l8, _l8)
+
+    print("  ⑧c 老的假新闻场景（AI 卖鱼 + 房主吃沙拉）⇒ 差额扣干净 = 0 ⇒ 闭嘴")
+    reset()
+    M._peer_econ_observe(hs(1000, [("Bomb", 5), ("Salad", 3)]))
+    _AI["money"] = 1000
+    M._peer_econ_mute(60)                              # ai_base = 1000
+    _AI["money"] = 2200                                # AI 卖鱼 +1200
+    ck("⑧c 不出声", seq(hs(2200, [("Bomb", 5), ("Salad", 2)])) == "")
+
+    print("  ⑧d 窗口**用一次就关**（不会拿旧基准乱扣后面的账）")
+    ck("⑧d ai_base 已清空", M._PEER_ECON.get("ai_base") is None, repr(M._PEER_ECON.get("ai_base")))
+    ck("⑧d 之后房主真进账照报", "+500g" in seq(hs(2700, [("Bomb", 5), ("Salad", 1)])))
+finally:
+    M.api = _bak_api
+
 import inspect
+_ob = inspect.getsource(M._peer_econ_observe)
+ck("⑧e 源码里**没有**「静音就整段 return」了（那是吞账的根）",
+   "or muted" not in _ob and "muted =" not in _ob, "老静音分支还在")
+ck("⑧e 源码里按 `ai_base` 归因扣减", "_ai_net" in _ob and "ai_base" in _ob)
+ck("⑧e `_peer_econ_mute` 记的是**钱包基准**（不只是压个计时器）",
+   "ai_base" in inspect.getsource(M._peer_econ_mute))
 _srcs = (inspect.getsource(M.sell_to_shop) + inspect.getsource(M.shop_visit)
          + inspect.getsource(M.menu_click))
-ck("…卖家那几个 op 真挂了 mute（卖 / 逛店 / 商店里点物品买）",
+ck("⑧f 卖家那几个 op 真挂了 mute（卖 / 逛店 / 商店里点物品买）",
    _srcs.count("_peer_econ_mute(") >= 3, str(_srcs.count("_peer_econ_mute(")))
 
 print("\n⑧b 🧑 他正站在哪个柜台前（恒：「站在那里…这个应该是包准的了」）")

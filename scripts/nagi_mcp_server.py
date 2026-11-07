@@ -947,7 +947,8 @@ _PEER_POS_TTL = 5.0
 #    AI 的两次调用之间现在是检测钱的变化，顺手抓别的玩家卖了什么」）。
 #    他卖东西时 AI 是看不见的 —— 钱包会涨，可 AI 只知道"钱多了"、不知道**为什么多**
 #    （它可能正为买不起某样东西发愁）。这份状态就是"上一次读到他的钱包/背包长什么样"。
-_PEER_ECON = {"day": None, "money": None, "inv": {}, "line": "", "mute_until": 0.0}
+_PEER_ECON = {"day": None, "money": None, "inv": {}, "line": "", "mute_until": 0.0,
+              "ai_base": None, "ai_until": 0.0}
 
 # ⏸️ AI 自己买卖时，这段秒数内**不解读**房主的钱包/背包变化（每次买卖 op 都刷新计时）。
 #    恒 2026-09-25：「如果我在下矿…一边得到物品，AI 一边卖了钱涨，会串吗？可能会的。
@@ -964,18 +965,39 @@ _PEER_ECON_COUNTER_TTL = 300.0
 
 
 def _peer_econ_mute(seconds: float = _PEER_ECON_MUTE_S) -> None:
-    """⏸️ **AI 自己要买卖了** —— 这段时间别去解读房主的钱包/背包变化。
+    """🛒 **AI 自己要动钱了** —— 开一个「AI 侧记账窗口」，把这段里自己花/赚的那部分**扣掉**。
 
-    理由（恒 2026-09-25 自己点出来的）：钱包是**共享**的，AI 每卖一条鱼都会让它涨，
-    而恒那边**同时**可能正在下矿（背包多了矿、少了炸弹/食物）—— 两条流水混在一起，
-    就会报出一句"他卖了 Bomb×3"这种**根本不存在**的事。
+    🔴 **2026-11-08 恒：「刚刚好像没有触发动账，ai 不知道我花钱去哪儿了」** —— 老版这里叫"静音"：
+       窗口期内 `_peer_econ` 直接 `return`，而且**顺手把基准更新成"现在"**（`money`/`inv` 一起）。
+       于是在窗口里发生的**房主真实成交被永久吞掉**：下次读到的是"买完之后"的样子，
+       差额早被当成基准了，再也补不回来。
+       当天现场：AI 19:24:19 开克林特商店（静音到 19:26:19+），恒的钱包 17,393→16,293
+       （−1,100g = 5×沙拉 220g）**正好落在这一格里**，一个字都没报。
 
-    ⚠️ 静默 ≠ 冻结：静默期间**照常更新基准**，解除后从"现在的样子"重新比。
-       冻结的话，积压的差额会在解除那一刻一次性炸出来 —— 那正是我们要躲的假新闻。
+    ⇒ 改成**归因**，不再"闭眼 + 重打基准"：
+       · 这里只记下"AI 动手之前的钱包"（`ai_base`）+ 窗口到期时间（`ai_until`）；
+       · `_peer_econ` 每次采样时把 `现在 − ai_base` 当作 **AI 自己那部分**，从总差额里**减掉**，
+         剩下的才是房主那边的流水（柜台 + 差额 + 背包方向三道门照旧）。
+       · 窗口一过 `ai_base` 清空，不再拿旧基准乱扣。
+
+    ⚠️ 做不到的部分（如实说）：AI 和房主**同一秒**成交时，分不清谁是谁 —— 会被算到 AI 头上。
+       但污染窗口从"120 秒"缩到"这一次商店操作"（几秒），而且房主**先进店买完再让 AI 逛**这种
+       最常见的顺序现在是**完全准确**的（`ai_base` 是在他买完之后才读的）。
     ⚠️ 只影响这条**观测**，不改游戏里任何东西。
     """
     try:
-        _PEER_ECON["mute_until"] = time.time() + max(0.0, seconds)
+        _m = ((api.state() or {}).get("player") or {}).get("money")
+    except Exception:
+        _m = None
+    try:
+        # 窗口**已经在开着**（同一个 op 里连点几件、或上一次还没被采样消费）就沿用最早的基准 ——
+        # 逐次覆盖会把前几笔的差额漏到房主那头去；过期（>120s 没人消费）才重开。
+        _open = (isinstance(_PEER_ECON.get("ai_base"), int)
+                 and time.time() <= (_PEER_ECON.get("ai_until") or 0.0))
+        if not _open:
+            _PEER_ECON["ai_base"] = _m if isinstance(_m, int) else None
+        _PEER_ECON["ai_until"] = time.time() + max(0.0, seconds)
+        _PEER_ECON["mute_until"] = _PEER_ECON["ai_until"]   # 老字段：还留着给自验/兼容读
     except Exception:
         pass
 
@@ -1038,7 +1060,6 @@ def _peer_econ_observe(s: dict) -> None:
             _PEER_ECON["counter"] = (_at_now, time.time())
         day = _day_key_safe(s)
         prev_day, prev_money, prev_inv = _PEER_ECON["day"], _PEER_ECON["money"], _PEER_ECON["inv"]
-        muted = time.time() < (_PEER_ECON.get("mute_until") or 0.0)
         # 🔄 **读档 / 重开这一天**：钱和背包会**整体倒退**，看着就像"他刚卖了一批东西" ——
         #    2026-09-25 真机：恒没睡就重开当天，钱包 +580、背包里那三样"没了"
         #    ⇒ 我们当场播了一句「进账 +580g｜背包里少了：Grass Starter… —— 多半是卖了」，
@@ -1049,13 +1070,24 @@ def _peer_econ_observe(s: dict) -> None:
         _ptod = _PEER_ECON.get("tod")
         _rewound = (prev_day == day and isinstance(_tod, int) and isinstance(_ptod, int)
                     and _tod < _ptod - 10)
-        if prev_day != day or muted or _rewound:
-            # 换天（出货箱过夜结算那一跳）/ 我自己正在买卖 / 读档倒退 → **只重新打基准，不出声**。
-            # ⚠️ 静默期间**不清 `line`**：那可能是一条还没送到 AI 眼前的正经新闻。
+        if prev_day != day or _rewound:
+            # 换天（出货箱过夜结算那一跳）/ 读档倒退 → **只重新打基准，不出声**。
+            # ⚠️ 2026-11-08 起 **不再因为"AI 自己买卖"整段闭嘴**（那会把房主真成交吞掉，
+            #    见 `_peer_econ_mute` 的注释）—— 改成下面按 `ai_base` 归因扣减。
             _PEER_ECON.update(day=day, money=money, inv=inv, tod=_tod,
                               line=("" if (prev_day != day or _rewound) else _PEER_ECON["line"]))
             return
-        delta = (money - prev_money) if isinstance(prev_money, int) else 0
+        delta_total = (money - prev_money) if isinstance(prev_money, int) else 0
+        # 🛒 **把 AI 自己那部分扣掉**（一次性窗口：`_peer_econ_mute` 开的，这里用掉就关）。
+        #    详见 `_peer_econ_mute` 的注释：恒那笔被静音吞掉的 −1,100g 就是死在这儿。
+        _ai_net = 0
+        _ab = _PEER_ECON.get("ai_base")
+        if isinstance(_ab, int) and isinstance(money, int):
+            _ai_net = money - _ab
+        if _ab is not None:
+            _PEER_ECON["ai_base"] = None
+            _PEER_ECON["ai_until"] = 0.0
+        delta = delta_total - _ai_net
         # 🛒 **他正站在柜台前吗**（恒 2026-09-25：「站在那里+钱变化+背包变化，**包是买卖了**」）——
         #    三个一起出现就不用再"多半"了；这也顺带挡掉门店之外的那些：
         #    出货箱(**隔夜**才结算，柜台是**实时**结算)、献祭/捐赠、送礼（都不动钱）。
