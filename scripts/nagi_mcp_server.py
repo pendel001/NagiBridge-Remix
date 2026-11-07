@@ -5603,7 +5603,12 @@ _ASYNC_SCRIPTS = {"mine_run", "fish_run", "bomb_mine", "bomb_volcano",
                   #    自动异步白名单最初那 8 个之一（恒拍板那天）。副作用早记过一条（09-12）：
                   #    异步下 AI 只看到「🚀 已后台启动」，**「没有要浇的」/失败原因都不回流**，它以为自己浇过。
                   #    这次浇水要"浇到一半没水就跑水边打水再回来接着浇"，过程里得看得到结果，干脆同步。
-                  #    ⚠️ 想改回异步：`async_config add=water_crops` 即可（本行留此注记，别再翻旧账）。
+                  # 🔁 2026-11-07 **加回来**（恒：「前端的 mcp 60s 限制实在是太烦了，狂超时」）：
+                  #    现在的异步**不是"启动了就把 AI 放走"**了 —— `_bg_block_until_wake` 会挂到
+                  #    "脚本收工 或 45s 到点"，**收工当场就把 `_bg_finish_report`（含脚本最后几行原文）
+                  #    交给 AI**（09-24 恒那次的修法）。所以 09-23 那条"看不到结果"的理由已经不成立了，
+                  #    而"大田浇水 >60s 必被掐"是真会丢结果 ⇒ 异步反而更稳。
+                  "water_crops",
                   # 🌾 2026-09-16 恒：收获改回**拟人**（逐个走位+动手）后一株要 2~4 秒，
                   #    一片地几十株就是好几分钟 ⇒ 必须进白名单转后台（同 harvest 的老问题）。
                   "scythe_crops",
@@ -7449,6 +7454,53 @@ def _npc_face_dir(ax, ay, tx, ty) -> int:
     return 2 if dy > 0 else 0
 
 
+# 🎪 日常搭话 ↔ 节日互动 **自动改道**（2026-11-07 恒：「节日的 npc 对话和日常的可以路由一下嘛，
+#    如果 ai 用错成日常的去搭讪节日的，自动执行节日的这样子」）
+#    真机凭据（session_log 2026-11-06 12:53:39）：`social ops=chat name=阿比盖尔`
+#    ⇒ 「❌ 到不了「阿比盖尔」所在的 SeedShop：🎪 节日进行中，你已在节日场地（Temp）——地图走不了这里」
+#    ⇒ AI 只能干瞪眼（它已经在节日场地上，那个 NPC 就在旁边 3 格）。
+#    ⚠️ 判据 = **游戏自己报的节日实况**（`/festival_status` 的 `actors`），**不看地图名** ——
+#       花舞节/蛋蛋节/秋收节…各有各的 Temp 图名，硬编码必然漏一张。
+#    ⚠️ `_ROUTE_GUARD` 防来回弹：两条路互相调用时，被调的那条不再改道。
+_ROUTE_GUARD = {"n": 0}
+
+
+def _festival_live():
+    """现在是不是**活的节日场地** ⇒ (实况 dict, 在场 actors)；不是 ⇒ ({}, [])。"""
+    try:
+        live = api.festival_status()
+    except Exception:
+        return {}, []
+    if not isinstance(live, dict) or not live.get("ok"):
+        return {}, []
+    return live, (live.get("actors") or [])
+
+
+def _festival_route_from_daily(name):
+    """日常搭话时**人就在节日场地** ⇒ 返回"已改走 festival interact"的回执；否则 ""。
+
+    只在**点名的那个 NPC 真在场**时才改道（不在场 = 真的找不到，保持原样报错）。
+    """
+    _n = str(name or "").strip()
+    if not _n or _ROUTE_GUARD["n"]:
+        return ""
+    live, actors = _festival_live()
+    if not actors:
+        return ""
+    hit = next((a for a in actors
+                if _n in (a.get("name") or "") or _n in (a.get("displayName") or "")), None)
+    if not hit:
+        return ""
+    _who = hit.get("displayName") or hit.get("name") or _n
+    _ROUTE_GUARD["n"] += 1
+    try:
+        _out = _festival_interact(name=_who)
+    finally:
+        _ROUTE_GUARD["n"] -= 1
+    return (f"🎪 现在是**节日现场**（{len(actors)} 人在场）—— 日常搭话要靠地图走位，"
+            f"节日场地走不了，**已自动改走 `festival interact`**（就地聊，不导航、不送礼）：\n{_out}")
+
+
 @mcp.tool()
 def chat_npc(name: str = "") -> str:
     """💬 跟 NPC 搭话（社交）——自动推进对话，一次性返回台词+选项
@@ -7459,7 +7511,13 @@ def chat_npc(name: str = "") -> str:
       关对话 = menu_click button=close。剧情推进别用 key confirm / interact（会点面前格/设备）。
 
     社交对象由 AI 自己决策（好感度/节日/心情）。节日时全场 NPC 挨个聊。
+
+    🎪 2026-11-07：**人在节日场地时自动改道** —— 点名的人真在场 ⇒ 直接走 `festival interact`
+    （就地聊），不再报"❌ 到不了…节日场地走不了这里"（那是 AI 已经在人旁边时的假失败）。
     """
+    _rt = _festival_route_from_daily(name)
+    if _rt:
+        return _with_state(_rt)
     try:
         s = api.surroundings(25)
         # ⚠️ 2026-09-11 恒：这里原来裸用 `npcs`，里面混着自家猫狗/马（kind=pet/horse）——
@@ -7931,18 +7989,32 @@ def _till_rect(x1: int, y1: int, x2: int, y2: int) -> str:
 
 # ⛔ 2026-09-19：`plantlayout` 已并入 `_farm_plant`（`layout` 改传参）——见上面那条退役说明。
 
+def _async_park_reply(r) -> bool:
+    """`_run_script(async_ok=True)` 这一发**是不是走了异步**（回的是"挂住/收工播报"而不是脚本正文）。
+
+    🩸 2026-11-07 查出来的老账：`_bg_block_until_wake` 只会回两种开头 ——
+      · **"⏰ 异步唤醒时间——…"**（还在跑，AI 该去干点轻活）
+      · **"✅ 脚本「x」收工…" / "🛑 …被停…"**（跑完了 / 被停）
+      **从来不是 "🚀"**（那是 `_bg_start` 自己的文案，这里根本收不到）。
+      可 `water_crops` 判的是 `startswith("🚀")`、`_pet_animals_in_building` 判的是 `("🚀","⏳")`
+      ⇒ **永不命中** ⇒ "还在跑"会被包进「💧 浇水完成」/「🐄 摸牲畜：」里 = **假完成**
+      （这正是恒 09-12 记的那笔"它以为自己浇过"的同一个病，只是换了个入口）。
+    """
+    return str(r or "").lstrip().startswith(("⏰", "🚀", "✅ 脚本", "🛑"))
+
+
 @mcp.tool()
 def water_crops() -> str:
-    """💧 给作物浇水（同步等结果；一簇几十格，可能要走近一分钟）
+    """💧 给作物浇水（**长活 → 自动后台异步**：挂到收工或 45s，收工当场把脚本原文交回来）
     只浇**有作物且没浇过**的格（空地和没翻的地不碰）；
     壶浇空了会**走去水边真打水**（拟人，不再是原地把壶灌满），打满回来接着浇。
     ⏰ 晚10点后别浇（明天再说）。浇完回包里带"还剩几格没浇上 + 下一步"。
+    ⚠️ 2026-11-07：大田一浇就是几分钟、前端 60s 必掐（恒："狂超时"）⇒ 加回异步白名单。
     """
     # ⚠️ 2026-08-15：tool_area 蓄力走位可能很久（基础壶逐格/大田），60s 会掐断浇水脚本
-    # 💧 2026-09-23 恒：移出 `_ASYNC_SCRIPTS` ⇒ 现在**同步等**（async_ok 留着不影响：不在白名单就不转后台）。
     result = _run_script("water_crops", timeout=600, async_ok=True)
-    if result.startswith("🚀"):
-        return _with_state(result)   # 若哪天被加回白名单，仍是这条异步回包
+    if _async_park_reply(result):
+        return _with_state(result)   # 还在跑（⏰）或收工播报（✅/🛑）——**原样交出去**，别包成"完成"
     return _with_state(f"💧 浇水完成\n{result[:600]}")
 
 
@@ -8163,7 +8235,7 @@ def _pet_animals_in_building(async_ok: bool = False):
         if not all_a:
             return "没有动物（可能跑 Farm 放牧了——farm animals 会去 Farm 处理室外放牧动物）"
         out = _run_script("pet_walk", [], timeout=300, async_ok=async_ok)
-        if async_ok and str(out).lstrip().startswith(("🚀", "⏳")):
+        if async_ok and _async_park_reply(out):
             # 后台已起/还在跑 ⇒ **照原样交出去**，但档位必须落 ⚠️（`_im_run` 只看开头判档；
             # 不给 ⚠️ 的话单子头一行会印 ✅ = "嘴上说成功"，同 water_crops 那条老账）。
             return {"ok": False, "st": "maybe", "text": str(out)}
@@ -12170,6 +12242,24 @@ def _existing_sprinkler_crosses(x1: int, y1: int, x2: int, y2: int):
     return out
 
 
+# ⏱ **单次工具调用的干活预算（秒）** —— 2026-11-07 恒：「浇地/播种/锄地/摸动物…要不要也加入默认异步？
+#    前端的 mcp 60s 限制实在是太烦了，狂超时」。
+#    前端（MCP 客户端）**60s 必掐**（恒 2026-11-01 原话；`_BG_PARK_SLICE` 那段有完整推导）。
+#    这些活是 **in-process 逐格循环**（锄/种/浇/摸/节日巡礼），不是子进程脚本 ⇒ 走不了 `_ASYNC_SCRIPTS`
+#    那套；能给的最稳的东西就是**自我限时**：到点主动停手、把"还剩 N 格"说清楚、让 AI 再调一次。
+#    ✅ 之所以敢限时：这些活**全都可续**（锄过的不再挥、种过/浇过/摸过的自动跳过，节日巡礼还有断点），
+#       同一条命令重发就是接着干（真机已经这么跑过：09:54「继续锄完剩下的十字布局」）。
+#    ⚠️ 与 `_BG_PARK_SLICE`(45s) 是**两件事**：那个管"后台脚本挂住多久"，这个管"in-process 循环干多久"。
+#      两者都压在 60s 之下，余量留给状态条那一轮读数（实测最坏 ~8s）。
+_CALL_BUDGET_S = 40.0
+
+
+def _budget_left(t0: float, budget_s: float = 0.0) -> bool:
+    """干活预算用完了吗（`budget_s<=0` ⇒ 取 `_CALL_BUDGET_S`；设 0 那一档由调用方自己判）。"""
+    b = budget_s if budget_s > 0 else _CALL_BUDGET_S
+    return b > 0 and (time.time() - t0) >= b
+
+
 def _farm_till(x: int = -1, y: int = -1, rows: int = 1, length: int = 1,
                direction: str = "horizontal",
                x1: int = -1, y1: int = -1, x2: int = -1, y2: int = -1,
@@ -12359,7 +12449,17 @@ def _farm_till(x: int = -1, y: int = -1, rows: int = 1, length: int = 1,
             return "❌ 拿不到田块的可走信息（/passable_rect 失败）——本次没锄任何格（不盲走）"
         no_stand, teleported = [], 0
         _stopped, _left = "", 0
+        _t0 = time.time()
         for _i, (tx, ty) in enumerate(_snake_tiles(tile_list)):
+            # ⏱ 单次预算（2026-11-07 恒：「前端的 mcp 60s 限制实在是太烦了，狂超时」）：
+            #    大田一块 15×15 逐格锄要两三分钟，前端早就把这次调用掐了、AI 只看到"无响应"。
+            #    到点就停手（已锄的算数），把"还剩 N 格 + 同一条命令再调一次"说清。
+            if _budget_left(_t0):
+                _left = len(tile_list) - _i
+                _stopped = (f"⏱ 单次限时 {_CALL_BUDGET_S:.0f}s 到了（客户端 60s 会掐断）："
+                            f"已锄 {_i} 格，**剩 {_left} 格** —— 同一条命令再调一次就接着锄"
+                            f"（锄过的会自动跳过）")
+                break
             # ⚡ 低体力保护（恒 2026-09-24：「锄/浇…**也是低过 20 都停**」）：
             #    逐格挥锄**每格 2 点体力**，几十格的大田能一次把人烧空（09-03 那次烧空就是这么来的）。
             #    ⇒ **每格动手之前**先看一眼，低于线就停在这儿：已锄的算数，剩下的如实报 + 给下一步。
@@ -12649,7 +12749,15 @@ def _farm_plant(seed_name: str = "", seed: str = "", x: int = -1, y: int = -1, r
     failed, no_stand, teleported, stopped, refused = [], [], 0, "", []
     _out_of_seed = ""
     _done_n = 0
+    _t0 = time.time()
     for tx, ty in _snake_tiles(do_tiles):
+        # ⏱ 单次预算（2026-11-07）：大田播种几十格要一两分钟，前端 60s 必掐 ⇒ 到点停手、
+        #    把"还剩 N 格 + 再调一次"说清（种过的自动跳过，重发同一条就是接着种）。
+        if _budget_left(_t0):
+            stopped = (f"⏱ 单次限时 {_CALL_BUDGET_S:.0f}s 到了（客户端 60s 会掐断）："
+                       f"已种 {_done_n} 格，**剩 {len(do_tiles) - _done_n} 格** —— "
+                       f"同一条命令再调一次就接着种（种过的会自动跳过）")
+            break
         # 🌱 **种子种完了就停**（2026-11-06 恒：「现在还有种子明明已经种完了，仍然逐格尝试空地的状况」）。
         #    老实现只在**进循环前**查一次背包（第 3 段），种到没种子之后仍然一格一格
         #    `select → face → use_item` 走完剩下所有格：每格白走位、白开一次"没有种子"的拒绝，
@@ -15477,15 +15585,15 @@ def _festival_social_chat(a) -> str:
 _fest_social_state = {"key": None, "targets": [], "done": 0}
 
 
-def _festival_interact(name: str = "", budget_s: float = 120.0) -> str:
+def _festival_interact(name: str = "", budget_s: float = _CALL_BUDGET_S) -> str:
     """🎪 节日互动（2026-08-18 恒：自然走路，不瞬移）
     - 传 name：自然走到指定节日 NPC 前搭话，自动推进对话收台词（遇选项停下让 AI 选）
     - 空参：自动循环和节日现场【除刘易斯外】所有 NPC 挨个聊（纯对话自动点掉收台词；
       遇选项停下——处理完选项再调 festival interact 继续下一个；断点自动续传）
-      ⏱️ **本批限时 `budget_s` 秒（默认 120，恒 2026-09-13 拍板）**：花舞节全场 33 人实测
-         ≈108 秒 ⇒ 一次装得下；万一超时就**停手报"还剩 N 个"**，再调一次接着聊。
-         **绝不硬撑到客户端读超时**（前一版就是这么把汇总丢掉的：`mcp_cli` 读超时 60s < 108s，
-         工具在服务端明明跑完了，结果没人收得到）。
+      ⏱️ **本批限时 `budget_s` 秒（2026-09-13 恒拍板"限时"，2026-11-07 从 120 收到 `_CALL_BUDGET_S`=40）**：
+        花舞节全场 33 人实测 ≈108 秒 —— 那就是**必然被前端 60s 掐掉**（恒 11-01：「前端限制了 mcp
+        60s 内必须响应」；这正是"汇总丢在服务端、人没收到"那次的形态）。⇒ 现在按 40s 分批，
+        超时就**停手报"还剩 N 个"，再调一次接着聊**（断点续传本来就支持）。
     ⚠️ 排除刘易斯：他是节日主持，很多节日跟他对话会开启节日小游戏/活动。
     """
     try:
@@ -15498,7 +15606,15 @@ def _festival_interact(name: str = "", budget_s: float = 120.0) -> str:
         #    C# 的原生 error 串（"No active event"）也别往回漏，那是英文的开发措辞。
         err = (live.get("error") or "").strip()
         if err.lower().startswith("no active event"):
-            return "⚪ 现在没有正在进行中的节日活动。用 festival today 看今天、festival next 看下一个。"
+            # 🎪 2026-11-07 反方向路由（恒：「节日的 npc 对话和日常的**可以路由一下**」）：
+            #    这里**不替它硬跳**（日常搭话要跨图真实走位，节日这条路上悄悄改道会变成"飞"），
+            #    只把**该敲哪一条**给到手上，并且点明这不是"工具坏了"。
+            _tip = (f"\n   👉 想跟「{name}」说话 → `social(ops=\"chat\", kw={{\"name\": \"{name}\"}})`"
+                    if name else
+                    "\n   👉 日常搭话 → `social(ops=\"chat\", kw={\"name\": \"名字\"})`")
+            return ("⚪ 现在没有正在进行中的节日活动 —— 这是**节日专用**的互动，"
+                    "没在节日场地时它什么都不会做。" + _tip +
+                    "\n   （看今天/下一个节日：`festival today` / `festival next`）")
         return f"⚠️ 查不到节日实况（{err}）。用 festival today/next 看节日安排。"
     actors = live.get("actors") or []
     if not actors:
