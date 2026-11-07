@@ -5354,6 +5354,59 @@ def _menu_close(base_url: str = "") -> dict:
         return {}
 
 
+# 🖥️ AI 窗口缩放（恒 2026-11-07：「能不能给 ai 也**固定缩放 50**，我这里看 ai 的窗口视角缩放
+#    应该是 75，蛮大的，都看到像素了。而我自己的好像固定了 50，算舒适」）
+#   `zoomLevel` 是**本机**设置（两开各存一份）：恒那份 50，AI 那份 75。
+#   `/zoom?level=50` 会把 Options 里的持久字段一起写（base/singlePlayer/localCoop + desired，
+#   见 `ModEntry.HandleZoom`）⇒ 换图不回退；但**重开游戏**未必保住 ⇒ 这里隔一阵对一次表。
+#   ⚠️ **只对 7843（farmhand=AI）生效**：房主（7842=恒）的缩放绝不归我们管。
+#   `NAGI_AI_ZOOM`：目标百分比（默认 50）；设 0 = 完全不碰游戏设置。
+_AI_ZOOM = {"last": 0.0, "interval": 120.0, "armed": False}
+
+
+def _ensure_ai_zoom() -> str:
+    """把 **AI 窗口**（7843）的缩放钉在 `NAGI_AI_ZOOM`%（默认 50）。
+
+    返回一句话（**只在真的改了/没改成**的时候）或 ""（没动 / 对得上 / 不归我管）。
+    ⚠️ 节流 120s（一次 GET 而已，但别每个工具调用都打一发）；读不到就当没这回事，
+       **绝不因为缩放读失败去拦任何工具**。
+    ⚠️ `armed` 只在**真的跑服务**时置真（`__main__` 那一段）：钉子/别的模块 import 进来时
+       它一律不动手 —— 否则每条 stubbed `_with_state` 都会多一行"缩放 0% → 0%"的噪音
+       （2026-11-07 当场被 `_npc_where_selftest` / `_state_ab_selftest` 抓到）。
+    """
+    if not _AI_ZOOM["armed"]:
+        return ""
+    try:
+        want = int(os.environ.get("NAGI_AI_ZOOM", "50"))
+    except (TypeError, ValueError):
+        return ""
+    if want <= 0:
+        return ""                                   # 关掉
+    _port = (getattr(api, "BASE_URL", "") or "").rsplit(":", 1)[-1].strip("/")
+    if _port != "7843":
+        return ""                                   # 只认 AI 那条口
+    _now = time.time()
+    if _now - _AI_ZOOM["last"] < _AI_ZOOM["interval"]:
+        return ""
+    _AI_ZOOM["last"] = _now
+    try:
+        _cur = api._get("/zoom") or {}
+        if not isinstance(_cur, dict) or not _cur.get("ok"):
+            return ""
+        _pct = int(_cur.get("percent") or 0)
+        if _pct == want:
+            return ""
+        _r = api._get("/zoom", params={"level": want}) or {}
+        _new = int(_r.get("percent") or 0) if isinstance(_r, dict) else 0
+        if not _r.get("ok"):
+            return f"🖥️ AI 窗口缩放到 {want}% 没成：{_r.get('error') or '游戏没回话'}\n"
+        print(f"[zoom] AI 窗口 {_pct}% -> {_new}%（NAGI_AI_ZOOM={want}）", flush=True)
+        return (f"🖥️ AI 窗口缩放 {_pct}% → {_new}%（恒嫌 75% 太大、像素都看得见；"
+                f"要改设 `NAGI_AI_ZOOM`，设 0 = 不碰）\n")
+    except Exception:
+        return ""
+
+
 def _with_state(result: str, force_full: bool = False) -> str:
     """工具结果末尾附加状态速报 + 玩家动态（按心跳频率）。
     自动点掉挡路的对话框（用刚拉的状态判断，无对话框则零额外 HTTP）。
@@ -5384,7 +5437,7 @@ def _with_state(result: str, force_full: bool = False) -> str:
     if _OPS_INNER["n"] > 0:
         return result
 
-    return _take_welcome() + result + _state_suffix(result, force_full)
+    return _take_welcome() + _ensure_ai_zoom() + result + _state_suffix(result, force_full)
 
 
 def _take_welcome() -> str:
@@ -6647,14 +6700,23 @@ def _basic_sprinkler_plan(x1: int, y1: int, w: int, h: int, slant: int = 1):
     规则（实测2026-08-02）：行隔2、列隔3、每行斜移1。
     slant=1 往右下斜，slant=-1 往左下斜（都对）。
 
+    ⚠️ 2026-11-07 恒真机（「为什么会少一块儿三角」）：斜移**只取 mod 3**，不是每行 +1 一路加。
+       斜移的作用是"让下一行的洒水器补上一行留的缝" —— 列距是 3，所以偏移只在这 3 个相位里转，
+       第 4 行又回到相位 0。老写法 `offset = row_idx` 会让整片网格**一路往右滑**，
+       方形左下的格子永远轮不到 ⇒ 屏幕上就是"少一块三角"。
+       同一个 15×15（(25,18)-(39,32)）实测：
+         一路滑   → 洒水器 33、方形内种位 121、空 71（左下大三角）
+         相位循环 → 洒水器 40、方形内种位 145、空 40（均匀锯齿）
+       代价是多 7 台初级洒水器，换 24 格地（≈3.4 格/台，跟"1 台管 4 格"的上限一致）。
+
     返回 (sprinklers蛇形顺序, till_order=每洒水器4格作物组, plant_tiles去重)
     锄地按 till_order 逐洒水器锄（上右下左），连接下一洒水器。
     """
-    # 洒水器网格
+    _SPAN = 3                                  # 列距 = 斜移的周期（mod 这个数才不会漂）
     raw = []
     row_idx = 0
     for ry in range(y1, y1 + h, 2):
-        offset = slant * row_idx
+        offset = (slant * row_idx) % _SPAN
         for rx in range(x1 + offset, x1 + w, 3):
             raw.append((rx, ry))
         row_idx += 1
@@ -30418,6 +30480,10 @@ navigation.bind(
 
 if __name__ == "__main__":
     import sys
+
+    # 🖥️ 真的在跑服务 ⇒ 才允许"顺手对一下 AI 窗口缩放"（见 `_ensure_ai_zoom`：
+    #    钉子 import 进来时 armed=False，一个请求都不发）。
+    _AI_ZOOM["armed"] = True
 
     use_stdio = "--stdio" in sys.argv
 

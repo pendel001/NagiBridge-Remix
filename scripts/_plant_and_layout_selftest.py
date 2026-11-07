@@ -212,6 +212,34 @@ def main():
         ck("②b …并明说空隙**不是漏锄**（别拿 layout=0 去补成整块）",
            "不是漏锄" in _o, _o[:400])
 
+        # ②c 斜移**只取 mod 3**（2026-11-07 恒：「想去掉滑动」）
+        #    老写法 `offset = row_idx` 让整片网格一路往右滑 ⇒ 方形左下永远盖不到 = 那块三角。
+        #    列距是 3，所以斜移只该在这 3 个相位里转（第 4 行回到相位 0）。
+        print("\n②c 斜移只取 mod 3（不再一路往右滑 ⇒ 左下不再空一块三角）")
+        _p = M.plan_farm_layout(25, 18, 39, 32, 1)
+        _pts = [(int(a), int(b)) for a, b in _p["plant_tiles"]]
+        _mins = {}
+        for _x, _y in _pts:
+            _mins[_y] = min(_x, _mins.get(_y, 99))
+        ck("②c 每行最左的作物格都在左边界 2 格内（滑版会一路滑到 +6）",
+           all(v - 25 <= 2 for v in _mins.values()), str(sorted(_mins.items())))
+        _rows = {}
+        for _x, _y in _pts:
+            _rows.setdefault(_y - 18, set()).add(_x)
+        ck("②c 图案按 6 行一循环（= 3 行洒水器）",
+           _rows.get(0) == _rows.get(6) == _rows.get(12),
+           f"{sorted(_rows.get(0) or [])} vs {sorted(_rows.get(6) or [])}")
+        ck("②c 15×15 覆盖 145 格（滑版只有 121）", len(_pts) == 145, str(len(_pts)))
+        _spr_b = M._basic_sprinkler_plan(25, 18, 15, 15, slant=-1)
+        _minb = {}
+        for _a, _b in _spr_b[2]:
+            _minb[_b] = min(_a, _minb.get(_b, 99))
+        ck("②c 反向斜移（slant=-1）也全在框内、也不滑",
+           all(25 <= a <= 39 and 18 <= b <= 32 for a, b in _spr_b[2])
+           and all(v - 25 <= 2 for v in _minb.values())
+           and len(_spr_b[2]) >= 140,
+           f"{len(_spr_b[2])} 格")
+
         # ── ③ 没带 layout 的大块 ⇒ 回执里教怎么加 ───────────────────
         print("\n③ `layout=0` 锄了一大块 ⇒ **回执里直接教** `layout=1`")
         _reset()
