@@ -238,6 +238,14 @@ mcp = FastMCP(
 """,
     host=MCP_HOST,
     port=MCP_PORT,
+    # 🔌 **无状态**（2026-11-08 恒：客户端一直报 `Session not found`）：
+    #    streamable-http 默认是**有状态**的 —— 每次连接发一个 `Mcp-Session-Id`，服务端把 session 存内存里。
+    #    我们改代码就要重启服务 ⇒ 内存清空 ⇒ **旧 session id 作废**，而客户端往往把这个 id 缓存着
+    #    （连"重启客户端"有时都还拿旧的）⇒ 之后每次请求都被回 `-32600 Session not found`，看着像"服务挂了"。
+    #    stateless 之后**每次请求独立、服务端不认 session** ⇒ 我随便重启，客户端再也不会因为这个报错。
+    #    ⚠️ 工具语义一点没变：客户端照常 initialize 一次、然后照常调工具（无状态 ≠ 每次重调什么）。
+    #    ⚠️ 留个逃生阀：真遇到客户端挑剔，启动时设 `NAGI_MCP_STATELESS=0` 就退回老行为。
+    stateless_http=(os.environ.get("NAGI_MCP_STATELESS", "1") != "0"),
 )
 
 
