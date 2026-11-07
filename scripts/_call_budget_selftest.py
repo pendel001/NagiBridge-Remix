@@ -10,9 +10,10 @@
     `festival interact` 122s —— 前端 60s 一到就掐，AI 只看到"无响应"，活其实还在服务端跑（白烧一遍）。
 
 判据：
-  ① `_CALL_BUDGET_S` 压在 60s 之下（留状态条那轮读数的余量），`_budget_left` 语义清楚；
-  ② 锄地/播种这类 **in-process 逐格循环** 到点**主动停手**，把"还剩 N 格 + 同一条命令再调一次"说清；
-  ③ 节日巡礼的默认预算也收到这条线上（它原来 120s ⇒ 必然被掐）；
+  ① **开关默认关**（恒：不超时的客户端不该被砍），`settings(ops="timeout_guard")` 能 on/off/秒数；
+  ② 开着时，锄地/播种这类 **in-process 逐格循环** 到点**主动停手**，
+     把"还剩 N 格 + 同一条命令再调一次"说清；关着时老行为一字不动；
+  ③ 节日巡礼也跟着开关走（0 = 不限时）；
   ④ 浇水是**子进程脚本** ⇒ 走异步白名单（异步会挂到收工或 45s，收工当场把脚本原文交回来）；
   ⑤ 人在节日场地时，`social ops=chat` **自动改走** `festival interact`（不导航、不报假失败）；
   ⑥ 反过来：没节日时 `festival interact` 把"该敲哪条"指准（不硬跳）。
@@ -97,55 +98,77 @@ try:
     M._scan_tiles = _scan
     M._select_best_hoe = lambda: None
     M._with_state = lambda s: s
-    _BUDGET_BAK = M._CALL_BUDGET_S
+    _BUDGET_BAK = M._bg_cfg.get("call_budget_s", 0)
 
-    # ── ① 预算常数与判据 ──────────────────────────────────────────
-    print("\n① 单次预算压在客户端 60s 之下")
-    ck("①`_CALL_BUDGET_S` 在 (0, 55] 之间（60 减状态条那轮读数）",
-       0 < M._CALL_BUDGET_S <= 55, str(M._CALL_BUDGET_S))
-    ck("①刚到点 ⇒ 还没用完", M._budget_left(__import__("time").time()) is False)
-    ck("①很久以前起的头 ⇒ 用完", M._budget_left(__import__("time").time() - 999) is True)
-    ck("①显式 budget_s 优先于默认",
-       M._budget_left(__import__("time").time() - 5, budget_s=1) is True
-       and M._budget_left(__import__("time").time(), budget_s=99) is False)
+    # ── ① 开关：默认关 = 不限时 ──────────────────────────────────
+    print("\n① 前端超时保护：**默认关**（不超时的客户端不该被砍）")
+    _GUARD_BAK = dict(M._bg_cfg)
+    M._bg_cfg["call_budget_s"] = 0
+    ck("①默认关 ⇒ 生效秒数 = 0", M._call_budget_s() == 0, str(M._call_budget_s()))
+    ck("①关着 ⇒ 就算干了一万年也不拦", M._budget_left(__import__("time").time() - 99999) is False)
+    ck("①开启后的默认秒数是 50（恒定的数）", M._CALL_BUDGET_DEFAULT_S == 50.0,
+       str(M._CALL_BUDGET_DEFAULT_S))
+    ck("①开着且没给秒数 ⇒ 用开关里的值",
+       (M._bg_cfg.__setitem__("call_budget_s", 7) or M._budget_left(__import__("time").time() - 999))
+       is True)
+    ck("①显式 budget_s 优先于开关",
+       M._budget_left(__import__("time").time(), budget_s=1) is False)
+
+    # ── ①b settings 域那个开关 ────────────────────────────────────
+    print("\n①b `settings(ops=\"timeout_guard\")`：on / off / 秒数 / 越界")
+    _with_bak = M._with_state
+    M._with_state = lambda s: s
+    M._settings_save = lambda: None          # 别真写盘
+    _o = M.settings(ops="timeout_guard", kw={"value": "on"})
+    ck("①b on ⇒ 50s", M._call_budget_s() == 50.0 and "已**开**" in _o, _o[:120])
+    M.settings(ops="timeout_guard", kw={"value": "45"})
+    ck("①b 秒数 ⇒ 45s", M._call_budget_s() == 45.0, str(M._call_budget_s()))
+    M.settings(ops="timeout_guard", kw={"value": "off"})
+    ck("①b off ⇒ 0（关）", M._call_budget_s() == 0, str(M._call_budget_s()))
+    _bad = M.settings(ops="timeout_guard", kw={"value": "99"})
+    ck("①b 越界（>55）⇒ 拒，且不改现值", "5~55" in _bad and M._call_budget_s() == 0, _bad[:120])
+    M._with_state = _with_bak
 
     # ── ② 锄地到点停手 ────────────────────────────────────────────
-    print("\n② 锄地：预算一到就**停手**，说清还剩几格、让 AI 再调一次")
+    print("\n② 锄地：开关**开着**时到点就停手，说清还剩几格、让 AI 再调一次")
     ROWS.clear()
     CALLS["use_tool"] = 0
-    M._CALL_BUDGET_S = 1e-9          # 等于"第一格之前就到点"
+    M._bg_cfg["call_budget_s"] = 1e-9     # 等于"第一格之前就到点"
     _out = M._farm_till(x1=0, y1=0, x2=2, y2=2)
-    ck("②回执点明「单次限时」", "单次限时" in _out, _out[:400])
+    ck("②回执点明「前端超时保护」", "前端超时保护" in _out, _out[:400])
     ck("②…说清还剩几格", "剩 9 格" in _out, _out[:400])
     ck("②…并给下一步「同一条命令再调一次」", "再调一次" in _out, _out[:400])
     ck("②**一格都没挥**（到点就停，不是干完再说）", CALLS["use_tool"] == 0, str(CALLS["use_tool"]))
-    M._CALL_BUDGET_S = _BUDGET_BAK
+    M._bg_cfg["call_budget_s"] = 0
 
-    print("\n②b 预算够用时照常锄完（别把正常路径也拦了）")
+    print("\n②b 开关**关着**时（默认）照常锄完、一个字都不提限时")
     CALLS["use_tool"] = 0
     _out2 = M._farm_till(x1=0, y1=0, x2=1, y2=0)
     ck("②b 两格都挥了", CALLS["use_tool"] == 2, str(CALLS["use_tool"]))
-    ck("②b 没有「限时」字样", "单次限时" not in _out2, _out2[:200])
+    ck("②b 没有「超时保护」字样", "前端超时保护" not in _out2, _out2[:200])
 
     # ── ③ 播种到点停手 ────────────────────────────────────────────
-    print("\n③ 播种：同样到点停手（种子/地都没问题，是时间到了）")
+    print("\n③ 播种：开着时同样到点停手（种子/地都没问题，是时间到了）")
     ROWS.clear()
     ROWS.update({(0, 0): {"terrain": "HoeDirt", "diggable": True},
                  (1, 0): {"terrain": "HoeDirt", "diggable": True}})
     CALLS["use_item"] = 0
-    M._CALL_BUDGET_S = 1e-9
+    M._bg_cfg["call_budget_s"] = 1e-9
     _out3 = M._farm_plant(seed_name=SEED, x1=0, y1=0, x2=1, y2=0)
-    ck("③回执点明「单次限时」", "单次限时" in _out3, _out3[:400])
+    ck("③回执点明「前端超时保护」", "前端超时保护" in _out3, _out3[:400])
     ck("③…说清还剩几格", "剩 2 格" in _out3, _out3[:400])
     ck("③…并给下一步「再调一次」", "再调一次" in _out3, _out3[:400])
     ck("③**一颗都没种**", CALLS["use_item"] == 0, str(CALLS["use_item"]))
-    M._CALL_BUDGET_S = _BUDGET_BAK
+    M._bg_cfg["call_budget_s"] = 0
 
-    # ── ④ 节日巡礼的默认预算 ──────────────────────────────────────
-    print("\n④ 节日巡礼的默认预算也收到这条线上（原来 120s ⇒ 必然被掐）")
+    # ── ④ 节日巡礼跟着开关走 ──────────────────────────────────────
+    print("\n④ 节日巡礼：默认**不设限**（跟着开关），开关一开就用同一个数")
     _dflt = inspect.signature(M._festival_interact).parameters["budget_s"].default
-    ck("④默认预算 == `_CALL_BUDGET_S`", _dflt == M._CALL_BUDGET_S, str(_dflt))
-    ck("④…且 < 55（60s 客户端超时之下）", _dflt < 55, str(_dflt))
+    ck("④默认参数是 0（= 跟着开关走）", _dflt == 0, str(_dflt))
+    ck("④开关关着 ⇒ 生效 0（不限时，老行为）", M._call_budget_s() == 0, str(M._call_budget_s()))
+    M._bg_cfg["call_budget_s"] = 50
+    ck("④开关开着 ⇒ 生效 50", M._call_budget_s() == 50.0, str(M._call_budget_s()))
+    M._bg_cfg["call_budget_s"] = 0
 
     # ── ⑤ 浇水走异步白名单 ────────────────────────────────────────
     print("\n⑤ 浇水是子进程脚本 ⇒ 进异步白名单（挂到收工或 45s，收工把原文交回来）")
@@ -207,7 +230,7 @@ try:
     ck("⑦…并给出 social chat 这条正路", 'social(ops="chat"' in _o7, _o7[:300])
     ck("⑦…且带上人名字", "阿比盖尔" in _o7, _o7[:300])
 finally:
-    M._CALL_BUDGET_S = _BUDGET_BAK if _BUDGET_BAK is not None else 40.0
+    M._bg_cfg["call_budget_s"] = _BUDGET_BAK if _BUDGET_BAK is not None else 0
     for k, v in _real.items():
         setattr(M, k, v)
 

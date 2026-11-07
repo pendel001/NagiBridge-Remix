@@ -11277,7 +11277,9 @@ _look_verified = False   # 🔒 捏人窗确认门禁：调 confirm_look 后置 
 # 🚀 异步脚本配置（B1）：enabled=开关；wake_interval=AI 醒来间隔（秒），
 # 异步脚本运行期间状态条多久提醒一次"脚本还在跑"（0=每次工具返回都提醒）。
 # 必须定义在 _settings_load() 调用之前（模块加载顺序）。
-_BG_CFG_DEFAULTS = {"enabled": True, "wake_interval": 60, "auto_async": True}
+_BG_CFG_DEFAULTS = {"enabled": True, "wake_interval": 60, "auto_async": True,
+                    # ⏱ 前端超时保护（详见 `_call_budget_s`）：0 = **关**（默认，不限时）。
+                    "call_budget_s": 0}
 _bg_cfg = dict(_BG_CFG_DEFAULTS)
 _bg_last_wake = 0.0
 _bg_last_ai_activity = 0.0   # 上次 AI 工具调用（状态条构建）时间——异步唤醒不打断连续操作
@@ -11390,7 +11392,9 @@ def settings_status() -> str:
     lines.append(f"  ⏱️ 心跳间隔: {player_activity.get_interval()} 分钟（0=每次工具返回都显示）")
     lines.append(f"  ⏰ 异步唤醒: {'开' if _bg_cfg.get('enabled', True) else '关'} / 间隔 {_bg_cfg.get('wake_interval', 60)}s"
                  f"（实际挂住 = min(它, {_BG_PARK_SLICE}s)；真正的约束是**客户端工具超时**）"
-                 f" / 长脚本自动异步 {'开' if _bg_cfg.get('auto_async', True) else '关'}(settings async_tools)")
+                 f" / 长脚本自动异步 {'开' if _bg_cfg.get('auto_async', True) else '关'}(settings async_tools)"
+                 f" / 前端超时保护 {('%g' % _call_budget_s()) + 's' if _call_budget_s() > 0 else '关'}"
+                 f"(settings timeout_guard)")
     lines.append(f"  🧠 会话 max_turns: {SESSION_CFG['max_turns']}")
     lines.append(f"  📤 会话导出(md): {SESSION_CFG['export_format']}"
                  f"（jsonl = 只写实时全量档案、不另存 md）")
@@ -11444,6 +11448,38 @@ def settings_reactivate(tool_name: str) -> str:
 
 
 @mcp.tool()
+def _settings_timeout_guard(value: str = "") -> str:
+    """⏱ 前端超时保护开关（`_bg_cfg["call_budget_s"]`；**0 = 关 = 默认**）。
+
+    恒 2026-11-07：「用 agent 端玩的和部分前端其实**并不会超时**，就 OperitAI 最麻烦。
+    加个前端超时保护开关在 setting 域嘛？**默认关**，开启后脚本超过 50s 被拦一下保护，
+    然后按你说的指引 AI 再调用一次以继续。」
+    """
+    v = (value or "").strip().lower()
+    if v in ("off", "0", "false", "no", "关", ""):
+        _bg_cfg["call_budget_s"] = 0
+        _settings_save()
+        return ("🛑 前端超时保护已**关**（默认）——干活不限时，一次干完；"
+                "不超时的客户端就该这么用")
+    if v in ("on", "1", "true", "yes", "开"):
+        _bg_cfg["call_budget_s"] = _CALL_BUDGET_DEFAULT_S
+        _settings_save()
+        return (f"⏱ 前端超时保护已**开**：锄/种/节日巡礼这类逐格长活干到 "
+                f"**{_CALL_BUDGET_DEFAULT_S:.0f}s 就停手**，回执会写「还剩 N 格」——"
+                f"**同一条命令再调一次就接着干**（干过的自动跳过）。"
+                f"要改秒数：`settings(ops=\"timeout_guard\", kw={{\"value\": \"45\"}})`")
+    try:
+        sec = float(v)
+    except ValueError:
+        return f"❌ timeout_guard 要 on/off 或秒数（如 50），收到「{value}」"
+    if not (5 <= sec <= 55):
+        return (f"❌ 保护秒数要在 5~55 之间（客户端 60s 超时，留读数余量），"
+                f"收到「{value}」")
+    _bg_cfg["call_budget_s"] = sec
+    _settings_save()
+    return f"⏱ 前端超时保护 = **{sec:.0f}s**（到点停手、让 AI 再调一次接着干）"
+
+
 def settings(setting: str = "", value: str = "", ops: str = "", kw: dict | None = None) -> Any:
     """⚙️ 系统/设置域（含捏脸）。全 ops + 关键坑（捏脸ok后不可逆）→ help(settings)。
 
@@ -11493,6 +11529,9 @@ def settings(setting: str = "", value: str = "", ops: str = "", kw: dict | None 
             _settings_save()
             return _with_state("🛑 长脚本自动异步已关闭（便利工具退回同步等结果）")
         return _with_state(f"❌ async_tools 要 on/off，收到「{value}」")
+    elif setting in ("timeout_guard", "前端超时保护", "timeout", "call_budget"):
+        # ⏱ 旧路径（`settings(setting=…, value=…)`）→ 与 ops 那条**同一个函数**（一处真相）
+        return _with_state(_settings_timeout_guard(value))
     elif setting == "state_interval":
         try:
             v = int(value)
@@ -12242,21 +12281,30 @@ def _existing_sprinkler_crosses(x1: int, y1: int, x2: int, y2: int):
     return out
 
 
-# ⏱ **单次工具调用的干活预算（秒）** —— 2026-11-07 恒：「浇地/播种/锄地/摸动物…要不要也加入默认异步？
-#    前端的 mcp 60s 限制实在是太烦了，狂超时」。
-#    前端（MCP 客户端）**60s 必掐**（恒 2026-11-01 原话；`_BG_PARK_SLICE` 那段有完整推导）。
-#    这些活是 **in-process 逐格循环**（锄/种/浇/摸/节日巡礼），不是子进程脚本 ⇒ 走不了 `_ASYNC_SCRIPTS`
-#    那套；能给的最稳的东西就是**自我限时**：到点主动停手、把"还剩 N 格"说清楚、让 AI 再调一次。
-#    ✅ 之所以敢限时：这些活**全都可续**（锄过的不再挥、种过/浇过/摸过的自动跳过，节日巡礼还有断点），
-#       同一条命令重发就是接着干（真机已经这么跑过：09:54「继续锄完剩下的十字布局」）。
+# ⏱ **前端超时保护**（恒 2026-11-07）—— **开关，默认关**。
+#    恒原话：「用 agent 端玩的和部分前端其实**并不会超时**，就 OperitAI 最麻烦。
+#    我们要加个前端超时保护开关在 setting 域嘛？默认关，开启后脚本超过 50s 被拦一下保护，
+#    然后按你说的指引 ai 再调用一次以继续。」
+#    · **关（默认）** = 不限时，老行为一字不动（不超时的客户端白等一会儿，但活一次干完）。
+#    · **开** = in-process 的逐格循环（锄/种/节日巡礼…）干到 N 秒就**主动停手**，回执写清
+#      「还剩 M 格 —— 同一条命令再调一次就接着干（干过的自动跳过）」。
+#    为什么敢停：这些活**全都可续**（锄过的不再挥、种过的会跳、节日巡礼自带断点续传）。
 #    ⚠️ 与 `_BG_PARK_SLICE`(45s) 是**两件事**：那个管"后台脚本挂住多久"，这个管"in-process 循环干多久"。
-#      两者都压在 60s 之下，余量留给状态条那一轮读数（实测最坏 ~8s）。
-_CALL_BUDGET_S = 40.0
+#    ⚠️ 开的时候建议 50s（恒定的数）：60s 客户端超时 − 状态条那轮读数（实测最坏 ~8s）。
+_CALL_BUDGET_DEFAULT_S = 50.0
+
+
+def _call_budget_s() -> float:
+    """当前生效的"前端超时保护"秒数；**0 = 关**（默认 → 老行为，不限时）。"""
+    try:
+        return float(_bg_cfg.get("call_budget_s") or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _budget_left(t0: float, budget_s: float = 0.0) -> bool:
-    """干活预算用完了吗（`budget_s<=0` ⇒ 取 `_CALL_BUDGET_S`；设 0 那一档由调用方自己判）。"""
-    b = budget_s if budget_s > 0 else _CALL_BUDGET_S
+    """干活预算用完了吗（`budget_s<=0` ⇒ 取**开关**里的值；开关关着 = 永远 False）。"""
+    b = budget_s if budget_s > 0 else _call_budget_s()
     return b > 0 and (time.time() - t0) >= b
 
 
@@ -12456,9 +12504,9 @@ def _farm_till(x: int = -1, y: int = -1, rows: int = 1, length: int = 1,
             #    到点就停手（已锄的算数），把"还剩 N 格 + 同一条命令再调一次"说清。
             if _budget_left(_t0):
                 _left = len(tile_list) - _i
-                _stopped = (f"⏱ 单次限时 {_CALL_BUDGET_S:.0f}s 到了（客户端 60s 会掐断）："
-                            f"已锄 {_i} 格，**剩 {_left} 格** —— 同一条命令再调一次就接着锄"
-                            f"（锄过的会自动跳过）")
+                _stopped = (f"⏱ 前端超时保护 {_call_budget_s():.0f}s 到了（开着的；"
+                            f"客户端 60s 会掐断）：已锄 {_i} 格，**剩 {_left} 格** —— "
+                            f"同一条命令再调一次就接着锄（锄过的会自动跳过）")
                 break
             # ⚡ 低体力保护（恒 2026-09-24：「锄/浇…**也是低过 20 都停**」）：
             #    逐格挥锄**每格 2 点体力**，几十格的大田能一次把人烧空（09-03 那次烧空就是这么来的）。
@@ -12754,8 +12802,8 @@ def _farm_plant(seed_name: str = "", seed: str = "", x: int = -1, y: int = -1, r
         # ⏱ 单次预算（2026-11-07）：大田播种几十格要一两分钟，前端 60s 必掐 ⇒ 到点停手、
         #    把"还剩 N 格 + 再调一次"说清（种过的自动跳过，重发同一条就是接着种）。
         if _budget_left(_t0):
-            stopped = (f"⏱ 单次限时 {_CALL_BUDGET_S:.0f}s 到了（客户端 60s 会掐断）："
-                       f"已种 {_done_n} 格，**剩 {len(do_tiles) - _done_n} 格** —— "
+            stopped = (f"⏱ 前端超时保护 {_call_budget_s():.0f}s 到了（开着的；"
+                       f"客户端 60s 会掐断）：已种 {_done_n} 格，**剩 {len(do_tiles) - _done_n} 格** —— "
                        f"同一条命令再调一次就接着种（种过的会自动跳过）")
             break
         # 🌱 **种子种完了就停**（2026-11-06 恒：「现在还有种子明明已经种完了，仍然逐格尝试空地的状况」）。
@@ -15585,15 +15633,15 @@ def _festival_social_chat(a) -> str:
 _fest_social_state = {"key": None, "targets": [], "done": 0}
 
 
-def _festival_interact(name: str = "", budget_s: float = _CALL_BUDGET_S) -> str:
+def _festival_interact(name: str = "", budget_s: float = 0.0) -> str:
     """🎪 节日互动（2026-08-18 恒：自然走路，不瞬移）
     - 传 name：自然走到指定节日 NPC 前搭话，自动推进对话收台词（遇选项停下让 AI 选）
     - 空参：自动循环和节日现场【除刘易斯外】所有 NPC 挨个聊（纯对话自动点掉收台词；
       遇选项停下——处理完选项再调 festival interact 继续下一个；断点自动续传）
-      ⏱️ **本批限时 `budget_s` 秒（2026-09-13 恒拍板"限时"，2026-11-07 从 120 收到 `_CALL_BUDGET_S`=40）**：
-        花舞节全场 33 人实测 ≈108 秒 —— 那就是**必然被前端 60s 掐掉**（恒 11-01：「前端限制了 mcp
-        60s 内必须响应」；这正是"汇总丢在服务端、人没收到"那次的形态）。⇒ 现在按 40s 分批，
-        超时就**停手报"还剩 N 个"，再调一次接着聊**（断点续传本来就支持）。
+      ⏱️ **本批限时 `budget_s` 秒**（2026-09-13 恒拍板"限时"；2026-11-07 改成**跟着开关走**）：
+        默认取 `settings(ops="timeout_guard")` 的值（**默认关 = 不限时**，老行为）；
+        开着（建议 50s）时到点就**停手报"还剩 N 个"，再调一次接着聊**（断点续传本来就支持）——
+        花舞节全场 33 人 ≈108 秒，不开保护时必然被 60s 的客户端掐掉（那是"汇总丢在服务端"的形态）。
     ⚠️ 排除刘易斯：他是节日主持，很多节日跟他对话会开启节日小游戏/活动。
     """
     try:
@@ -15645,12 +15693,13 @@ def _festival_interact(name: str = "", budget_s: float = _CALL_BUDGET_S) -> str:
         return "🎪 节日现场除刘易斯外没有其他 NPC 可聊（刘易斯是节日主持，对话会开小游戏）"
     results = []
     t0 = time.time()
+    budget_s = budget_s if budget_s > 0 else _call_budget_s()   # 0 = 开关关着 = 不限时（老行为）
     hit_option = False
     total = st["done"] + len(st["targets"])
     while st["targets"]:
         # ⏱️ 限时到点收工（恒 2026-09-13：设 120s，一场 33 人 ≈108s 装得下）。
         #    判据放**循环头**、且**至少聊一个**（results 非空才判），免得预算一进来就为 0 个。
-        if results and (time.time() - t0) >= budget_s:
+        if results and budget_s > 0 and (time.time() - t0) >= budget_s:
             break
         # 🧭 **就近搭话**（恒 2026-09-13："每次这头跑那头又跑回来的"）——每轮挑**离当前位置最近**的
         #   那个，而不是按 actors 数组顺序挨个跑 ⇒ 一趟扫过去、不再来回横穿地图。
@@ -19170,6 +19219,13 @@ _SETTINGS_DISPATCH = {
     "heartbeat": lambda minutes=5: set_heartbeat_interval(minutes),
     "心跳": lambda minutes=5: set_heartbeat_interval(minutes),
     "心跳间隔": lambda minutes=5: set_heartbeat_interval(minutes),
+    # ⏱ 2026-11-07 恒：「用 agent 端玩的和部分前端其实**并不会超时**，就 OperitAI 最麻烦。
+    #    加个前端超时保护开关在 setting 域嘛？默认关…」——它改的是 `_bg_cfg["call_budget_s"]`，
+    #    0 = 关（默认）。取值 on/off/秒数，越界（>55）当场拒（客户端 60s 硬线）。
+    "timeout_guard": lambda value="": _settings_timeout_guard(value),
+    "前端超时保护": lambda value="": _settings_timeout_guard(value),
+    "超时保护": lambda value="": _settings_timeout_guard(value),
+    "call_budget": lambda value="": _settings_timeout_guard(value),
 }
 
 
