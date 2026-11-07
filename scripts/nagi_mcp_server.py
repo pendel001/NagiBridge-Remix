@@ -30,6 +30,7 @@ import functools
 import threading as _threading   # ⚠️ 闸门深度要线程局部（`:657`）+ 后台脚本那些锁（`:22663`）都要它
 import re
 import random
+import contextvars   # ⏱ 这次工具调用是几点开始的（见 `_CALL_T0`）
 import textwrap
 from typing import Any, Optional
 
@@ -9309,7 +9310,7 @@ def harvest_crops(radius: int = 15) -> str:
     if _mastery_claimed("farming"):
         args_list.append("--scythe")     # 已领耕种精通 → 优先挥镰刀（脚本仍会确认铱镰刀在背包）
     result = _run_script("scythe_crops", args_list, timeout=1800, async_ok=True)
-    if result.startswith("🚀"):
+    if _async_park_reply(result):
         return _with_state(result)       # 长脚本自动异步：立即返回 job_id
     return _with_state(f"🌾 收菜完成\n{result[:600]}")
 # ⛔ **`collect_machines()`（一键瞬收）2026-10-03 删除** —— 恒口径：「**要么删掉收放兼容之外的
@@ -9363,7 +9364,7 @@ def load_machines(item: str, machine_type: str = "", location: str = "", count: 
     if here:
         args_list += ["--here"]
     out = _run_script("machine_loader", [item] + args_list, timeout=600, async_ok=True)
-    if out.startswith("🚀"):
+    if _async_park_reply(out):
         return _with_state(out)   # 长脚本自动异步：立即返回 job_id
     _what = f"放 {item}" if item else "只收"
     return _with_state(f"⚙️ {location or '脚下这间'} 收放（{_what}）：\n{out[:600]}")
@@ -9397,7 +9398,7 @@ def work_building(location: str, item: str = "", machine_type: str = "") -> str:
     if machine_type:
         args_list += ["--machine", machine_type]
     out = _run_script("fruit_round", args_list, timeout=1500, async_ok=True)
-    if out.startswith("🚀"):
+    if _async_park_reply(out):
         return _with_state(out)   # 长脚本自动异步：立即返回 job_id
     return _with_state(f"🏠 {location} 收放：\n{out[:600]}")
 
@@ -9675,7 +9676,7 @@ def go_mining(
     _rem = _mine_entry_reminder(_cur)   # 若这是今天第一次到该矿井入口层，叮咛（进矿随手带）
     progress_out = _run_script("mine_run", ["--check-progress"], timeout=10)
     out = _run_script("mine_run", args_list, timeout=600, async_ok=True)
-    if out.startswith("🚀"):
+    if _async_park_reply(out):
         return _with_state(_rem + "\n" + out)   # 长脚本自动异步：立即返回 job_id
     return _with_state(_rem + f"⛏️ 挖矿报告：\n{progress_out}\n{out[:700]}")
 
@@ -9904,7 +9905,7 @@ def go_fishing(
     head = (nav + "\n\n") if nav else ""
     if _facew:                      # 👤 就地钓：把"已朝水"这一句带上（不然 AI 不知道转没转）
         head = (head + _facew + "\n") if head else (_facew + "\n")
-    if out.startswith("🚀"):
+    if _async_park_reply(out):
         return _with_state(head + out)   # 长脚本自动异步：立即返回 job_id，进度/收工自动播报
     return _with_state(head + f"🎣 钓鱼报告：\n{out[:800]}")
 
@@ -10247,7 +10248,7 @@ def bomb_mine(target: int = 0, bomb: str = "Bomb", min_covered: int = 3,
     progress_out = _run_script("bomb_mine", ["--check-progress"], timeout=10)
     # 逐层模式(one_floor)是快速单层摘要，保持同步看结果；冲层是长任务→自动异步
     out = _run_script("bomb_mine", args_list, timeout=600, tail=3000, async_ok=not one_floor)
-    if out.startswith("🚀"):
+    if _async_park_reply(out):
         return _with_state(_rem + "\n" + out)   # 长脚本自动异步：立即返回 job_id
     if one_floor:
         import re as _re
@@ -10315,7 +10316,7 @@ def bomb_volcano(bomb: str = "Bomb", min_covered: int = 3, hp_threshold: int = 3
         if poll != 2.5:
             args_list.extend(["--poll", str(poll)])
         out = _run_script("bomb_volcano", args_list, timeout=1200, async_ok=True)
-        if out.startswith("🚀"):
+        if _async_park_reply(out):
             return _with_state(_rem + "\n" + out)   # 长脚本自动异步：立即返回 job_id
         return _with_state(_rem + f"🌋 火山炸矿报告：\n{out[:800]}")
     except Exception as e:
@@ -13165,6 +13166,9 @@ def _in_thread(fn):
 
     @functools.wraps(fn)
     async def _wrapped(*a, **k):
+        # ⏱ 打点：这一发工具调用从**现在**开始算（见 `_CALL_T0`）。
+        #    anyio 会把当前 context 复制进工作线程 ⇒ 里面 `_bg_block_until_wake` 读得到。
+        _CALL_T0.set(time.time())
         return await anyio.to_thread.run_sync(lambda: fn(*a, **k))
 
     return _wrapped
@@ -24440,6 +24444,14 @@ _bg_lock = _threading.Lock()
 #       ⚠️ 将来任何人想调大它，先问一句"**前端那 60s 松了吗**"——松了才有得谈。
 _BG_PARK_SLICE = 45
 
+# ⏱ **这次工具调用是几点开始的** —— 2026-11-07 恒真机：「钓鱼怎么还会超时呀，不是异步嘛」。
+#    病根：异步只包住**脚本那段**；`fish go` 前面还要**同步导航**（Farm→Town 走 60+ 格 ≈ 24s），
+#    于是「导航 24s + 挂 45s」= **68.6s** ⇒ 前端 60s 照样掐（session_log 12:34:55 实测就是这个数）。
+#    ⇒ 把"这一次调用已经花掉多久"记在 contextvar 里（`_in_thread` 进工作线程前打点，
+#      anyio 会把 context 复制过去），`_bg_block_until_wake` 按**剩余额度**挂 ——
+#      总时长压在 `_BG_PARK_SLICE` 以内，导航再久也不会把这次调用顶过 60s。
+_CALL_T0 = contextvars.ContextVar("nagi_call_t0", default=0.0)
+
 
 class _BgJob:
     """一个后台脚本任务：Popen 子进程 + 读线程 + 滚动输出缓冲。"""
@@ -24676,6 +24688,16 @@ def _bg_block_until_wake(job: "_BgJob") -> str:
     #    ⇒ 所以把**单片**封顶到 `_BG_PARK_SLICE` 秒：AI 那侧照旧"阻塞到唤醒点"（一个字不变），
     #      只是**每片之间服务是活的** ⇒ stop 最迟 45 秒进得来（**前端硬限 60s**，恒 2026-11-01）。
     interval = min(interval, _BG_PARK_SLICE)
+    # ⏱ 2026-11-07（恒「钓鱼怎么还会超时呀」）：**扣掉这次调用已经花掉的时间**再挂。
+    #    病根：`fish go` = 同步导航（几十秒）+ 异步脚本挂 45s ⇒ 68.6s 照样被前端 60s 掐。
+    #    ⇒ 导航/扫描吃掉的额度要从这一片里减掉，总时长压在 `_BG_PARK_SLICE` 以内。
+    #    ⚠️ 留 3s 下限：真到点了也别"零等待"直接弹唤醒文案（AI 会以为脚本秒退）。
+    _spent = 0.0
+    _t_call = _CALL_T0.get() or 0.0
+    if _t_call:
+        _spent = max(0.0, time.time() - _t_call)
+    if _spent:
+        interval = max(3.0, interval - _spent)
     t0 = time.time()
     while time.time() - t0 < interval:
         time.sleep(0.5)
@@ -28210,7 +28232,7 @@ def _im_fish_go(args: dict) -> str:
         head = walk.strip() + "\n" + head
     if face_line:
         head += "\n" + face_line
-    if str(out).startswith("🚀"):
+    if _async_park_reply(out):
         return head + "\n" + str(out)            # 长脚本异步：回 job 号，**别说成"钓到了"**
     return head + "\n🎣 钓鱼报告：\n" + str(out)[:800]
 

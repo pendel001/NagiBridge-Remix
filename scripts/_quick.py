@@ -43,6 +43,8 @@ CORE = [
     "_ai_zoom_selftest.py",            # AI 窗口缩放（只对 7843）
     "_egg_fallback_selftest.py",       # 蛋蛋节：纸条没写也照捡（兜底路线 + 闸门放行）
     "_call_budget_selftest.py",        # 60s 客户端超时闸 + 日常↔节日对话改道
+    "_harvest_radius_selftest.py",     # 收获矩形扫描 / 挂住扣时 / 异步判据
+    "_water_stamina_selftest.py",      # 浇水低体力闸（大簇切小）
 ]
 
 # 慢钉子（单个 15~60s，合计占全套一半）：默认**不跑**，`--slow` 或 `--all` 才带上。

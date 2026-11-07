@@ -56,6 +56,7 @@ if hasattr(sys.stdout, 'reconfigure'):
 
 os.environ.setdefault("NAGI_URL", f"http://localhost:{args.port or 7843}")
 import requests
+import stardew_api as _sapi     # 🔎 `scan_rects_for`（矩形扫描切块）在那边，**唯一一份**
 
 NAGI = os.environ["NAGI_URL"]
 
@@ -95,6 +96,21 @@ def find_scythe():
     return scythes[0] if scythes else None
 
 
+def _scan_rects(px: int, py: int, r: int, cap: int = 4096):
+    """把「以 (px,py) 为中心、半径 r 的方形」切成若干 **≤cap 格**的矩形（`/surroundings` 的硬上限）。
+
+    🩸 2026-11-07 恒真机（「ai 自己用 harvest 的时候怎么会漏这么多」）：原来这里发的是
+       `get("/surroundings", {"radius": args.radius + 5})` —— 而 C# 的半径解析是
+       `r > 0 && r <= 30`，**传 >30 不是截到 30、而是静默退回 10**！
+       ⇒ `harvest radius=30` 实际只看 ±10 格（12:25 只找到 1 株）、`radius=40` 看到 0 株
+       （09:54「成熟 0 株」——可田里明明有几十株熟的，后来被 `intent` 收掉了）。
+       而且回执里**一个字都没提**"半径被截了"，AI 只能读成"没有可收的"。
+    ⇒ 改**矩形扫描**（跟 `_scan_tiles` 同一个理由：不受半径 30 限制、覆盖多少一目了然）。
+    ⚠️ 算法在 `stardew_api.scan_rects_for`（**唯一一份**，服务端/自验共用），这里只是别名。
+    """
+    return _sapi.scan_rects_for(px, py, r, cap)
+
+
 def scan_mature():
     """扫当前地图作物，返回 (loc, mature, growing_by_name)
 
@@ -104,12 +120,36 @@ def scan_mature():
     mature: [{'x','y','crop','name','scythe'}] 成熟株
     growing_by_name: {作物名: 数量} 生长中统计
     """
-    data = get("/surroundings", {"radius": args.radius + 5})
-    loc = data.get("location", "?")
+    r = max(1, int(args.radius))
+    if r > 48:
+        log(f"⚠️ 半径 {r} 太大，按 **48** 扫（再大要切几十块矩形，没必要）")
+        r = 48
+    st = get("/state") or {}
+    px = (st.get("player") or {}).get("x")
+    py = (st.get("player") or {}).get("y")
+    tiles = []
+    loc = (st.get("location") or {}).get("name", "?")
+    if px is None or py is None:
+        # 读不到坐标才退回半径模式；**必须 ≤25**（这里还会 +5，别越 30 那条线）
+        rr = min(r, 25)
+        log(f"⚠️ 读不到玩家坐标 ⇒ 退回半径模式 ±{rr} 格")
+        data = get("/surroundings", {"radius": rr + 5}) or {}
+        tiles = data.get("tiles", [])
+        loc = data.get("location", loc)
+    else:
+        rects = _scan_rects(int(px), int(py), r)
+        for (a, b, c, d) in rects:
+            rr = get("/surroundings", {"x1": a, "y1": b, "x2": c, "y2": d}) or {}
+            if not rr.get("ok") and rr.get("error"):
+                log(f"⚠️ 扫 ({a},{b})-({c},{d}) 失败：{rr.get('error')}")
+                continue
+            tiles.extend(rr.get("tiles", []))
+        log(f"🔎 扫描以 ({px},{py}) 为中心 ±{r} 格"
+            f"（{len(rects)} 块矩形，共 {(2 * r + 1) ** 2} 格范围）")
     mature = []
     growing = {}
     unnamed = 0
-    for t in data.get("tiles", []):
+    for t in tiles:
         if not t.get("crop"):
             continue
         # ⚠️ 旧 DLL 不报 cropName（本改造是 2026-09-16 才加的）→ **如实说"这格名字游戏没报"**，

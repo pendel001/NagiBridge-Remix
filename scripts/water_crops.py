@@ -47,9 +47,15 @@ def find_unwatered(radius=30):
             and not t.get("harvestable")]  # 跳过已成熟
 
 
-def cluster(pts, gap=10):
+def cluster(pts, gap=10, max_tiles=24, max_span=9):
     """按距离聚类（gap=曼哈顿距离上限），散点聚成几簇。
-    tool_area 的蓄力锚点会覆盖整个 bbox，分簇避免跨空地"挪两格浇一格"。"""
+    tool_area 的蓄力锚点会覆盖整个 bbox，分簇避免跨空地"挪两格浇一格"。
+
+    🩸 2026-11-07 恒（「浇水是不是没有低体力保护哇！居然**晕倒了还一直在浇水**……我笑死了」）：
+       低体力那条闸是**每簇动手前**看一眼的 —— 而 `gap=10` 在 220 格的大田里会把**整片并成一簇**
+       ⇒ 那条闸**整场只判一次**（判完就一口气把一片浇到 0 体力，晕倒也停不下来）。
+       ⇒ 大簇按"行带 + 格数"再切小（默认每块 ≤24 格、高 ≤9 行），闸才真的每块都问一次。
+    """
     groups = []
     for pt in sorted(pts):
         placed = False
@@ -60,7 +66,34 @@ def cluster(pts, gap=10):
                 break
         if not placed:
             groups.append([pt])
-    return groups
+    # 🍰 大簇切小（只切"真的大"的，小簇原样 —— 别把正常的几簇拆碎、多跑几次蓄力）
+    out = []
+    for g in groups:
+        if len(g) <= max_tiles and (max(p[1] for p in g) - min(p[1] for p in g)) <= max_span:
+            out.append(g)
+        else:
+            out.extend(_split_big(g, max_tiles, max_span))
+    return out
+
+
+def _split_big(g, max_tiles=24, max_span=9):
+    """把一簇按**行带**切开（每带高 ≤max_span），再按格数切（每块 ≤max_tiles）。"""
+    ys = sorted({p[1] for p in g})
+    bands, cur, lo = [], [], ys[0] if ys else 0
+    for y in ys:
+        if y - lo > max_span:
+            bands.append(cur)
+            cur, lo = [], y
+        cur.append(y)
+    if cur:
+        bands.append(cur)
+    out = []
+    for band in bands:
+        _set = set(band)
+        sub = sorted(p for p in g if p[1] in _set)
+        for i in range(0, len(sub), max_tiles):
+            out.append(sub[i:i + max_tiles])
+    return out
 
 
 def equip_watering_can():
@@ -133,8 +166,15 @@ def _water_rect(x1, y1, x2, y2):
 
 def _water_cluster(x1, y1, x2, y2, tries=4):
     """浇一块矩形：**壶空了就跑水边拟人打水、回来拿同一块矩形接着浇**（恒 2026-09-23：
-    只在水真的空了才去，不提前补）。返回 True=这块浇完了/尽力了，False=打不到水被迫半途停下。"""
+    只在水真的空了才去，不提前补）。返回 True=这块浇完了/尽力了，False=打不到水被迫半途停下，
+    **"low"=体力低，一下都没挥就停了**（调用方要如实报"还剩 N 格"）。
+    ⚡ 2026-11-07：体力闸**每次进场都问一遍**（原来只在簇外问一次，大簇一进来就烧空）。
+    """
     for _ in range(tries):
+        _c, _m = _stam()
+        if _sta_low(_c):
+            api.log("  " + _sta_note(_c, _m, f"({x1},{y1})-({x2},{y2}) 还没挥就停了"))
+            return "low"
         r = _water_rect(x1, y1, x2, y2)
         api.log(r["text"])
         if not r["out_of_water"]:
@@ -183,7 +223,12 @@ def run():
     api.log(f"  → {len(groups)} 簇")
     no_water = []
     stopped = ""
-    for i, g in enumerate(groups, 1):
+    # ⚡ 进门先看一眼：**已经累了就别开始**（2026-11-07 恒：晕倒了还在浇）。
+    _c0, _m0 = _stam()
+    if _sta_low(_c0):
+        stopped = _sta_note(_c0, _m0, f"一格都没浇（{len(unwatered)} 格等着）")
+        api.log("  " + stopped)
+    for i, g in enumerate(groups, 1) if not stopped else []:
         x1 = min(p[0] for p in g); x2 = max(p[0] for p in g)
         y1 = min(p[1] for p in g); y2 = max(p[1] for p in g)
         api.log(f"  [{i}/{len(groups)}] 簇 ({x1},{y1})-({x2},{y2}) {len(g)}格")
@@ -196,7 +241,14 @@ def run():
             api.log("  " + stopped)
             break
         try:
-            if not _water_cluster(x1, y1, x2, y2):
+            _rc = _water_cluster(x1, y1, x2, y2)
+            if _rc == "low":
+                # 体力在**这块里面**掉到线下了（C# 那边不会替我们停）
+                _left = sum(len(x) for x in groups[i - 1:])
+                stopped = _sta_note(*_stam(), f"剩 {_left} 格没浇（第 {i}/{len(groups)} 簇中途停的）")
+                api.log("  " + stopped)
+                break
+            if not _rc:
                 no_water.append(f"({x1},{y1})-({x2},{y2})")
         except Exception as e:
             api.log(f"  ⚠️ 簇 ({x1},{y1})-({x2},{y2}) 失败: {e}")
@@ -210,8 +262,19 @@ def run():
         for g in cluster(missed, gap=10):
             x1 = min(p[0] for p in g); x2 = max(p[0] for p in g)
             y1 = min(p[1] for p in g); y2 = max(p[1] for p in g)
+            # ⚡ 补浇也过同一把闸（2026-11-07：别在主循环停了、补浇这轮又把人浇晕）
+            _c2, _m2 = _stam()
+            if _sta_low(_c2):
+                stopped = _sta_note(_c2, _m2, "补浇那一轮也停了（体力低）")
+                api.log("  " + stopped)
+                break
             try:
-                if not _water_cluster(x1, y1, x2, y2):
+                _rc2 = _water_cluster(x1, y1, x2, y2)
+                if _rc2 == "low":
+                    stopped = _sta_note(*_stam(), "补浇那一轮中途停了（体力低）")
+                    api.log("  " + stopped)
+                    break
+                if not _rc2:
                     no_water.append(f"({x1},{y1})-({x2},{y2})")
             except Exception:
                 api.log(f"    ⚠️ 补浇 ({x1},{y1})-({x2},{y2}) 失败")

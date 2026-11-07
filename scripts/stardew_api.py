@@ -382,6 +382,26 @@ def surroundings_rect(x1, y1, x2, y2):
     return _get("/surroundings", {"x1": int(x1), "y1": int(y1), "x2": int(x2), "y2": int(y2)})
 
 
+def scan_rects_for(px, py, r, cap=4096):
+    """把「以 (px,py) 为中心、半径 r 的方形」切成若干 **≤cap 格**的矩形，供 `surroundings_rect` 逐块扫。
+
+    ⚠️ 存在的理由（2026-11-07 恒真机「ai 用 harvest 怎么会漏这么多」）：
+       `/surroundings` 的**半径模式**在 C# 里是 `r > 0 && r <= 30`，**传 >30 不是截到 30、
+       而是静默退回 10**。`scythe_crops.py` 当年发的是 `radius + 5` ⇒ `harvest radius=30`
+       实际只看 ±10 格（只找到 1 株）、`radius=40` 看到 0 株（报"成熟 0 株"）。
+       矩形模式没有这个坑（上限 4096 格，超了**明确报错**），所以大范围一律走矩形。
+    返回 `[(x1,y1,x2,y2), …]`，并集**正好覆盖**以 (px,py) 为中心的那个方形。
+    """
+    side = max(8, int(int(cap) ** 0.5))       # 64 → 64×64 = 4096
+    r = max(0, int(r))
+    x1, y1, x2, y2 = int(px) - r, int(py) - r, int(px) + r, int(py) + r
+    out = []
+    for bx in range(x1, x2 + 1, side):
+        for by in range(y1, y2 + 1, side):
+            out.append((bx, by, min(bx + side - 1, x2), min(by + side - 1, y2)))
+    return out
+
+
 def alerts(peek=False):
     """Return queued game/system alerts. By default this drains the queue."""
     return _get("/alerts", {"peek": str(bool(peek)).lower()})
