@@ -361,6 +361,40 @@ def cast_settled(bot):
     return in_water, menu
 
 
+# 🎣 空等看门狗的两条线（**一拍** = 循环里的一次 `time.sleep(2)`）。
+#    2026-10-07 恒：「好像背包菜单弹出来，于是脚本关掉了但**没能继续抛竿**。脚本却还一直在空 continue
+#    （不检查状态）。」——**根因**：真正抛竿的是游戏里的 fishbot，菜单一弹它自己就暂停；我们只
+#    `/menu_close` 把菜单关掉，**没有把它重新支起来** ⇒ `isFishing` 永远 false ⇒ 循环空转
+#    （体力 21 又卡在 `MIN_STAMINA=20` 上面，体力闸也不响 ⇒ 看着像"什么都不检查"）；
+#    而菜单/体力那些检查是每 `CHECK_INTERVAL×2s=10s` 才跑一次，所以连"在等"都看不出来。
+#    ⇒ 两层兜底：重支两次还不动就**如实收工**，绝不假装还在钓。
+IDLE_REARM_AT = (5, 10)     # 连着 5 / 10 拍（≈10s / 20s）没抛竿也没收线 → 重新 `fishbot("on")`
+IDLE_GIVE_UP = 20           # 连着 20 拍（≈40s）还不动 → 收工（≈2~3 个完整竿周期，够宽了）
+IDLE_SILENT_GAP = 2         # ≤2 拍（≤4s）的空隙是**正常换竿**，连日志都不打（别每竿刷一行）
+
+
+def idle_step(active, idle_rounds, rearm_at=IDLE_REARM_AT, give_up=IDLE_GIVE_UP,
+              silent_gap=IDLE_SILENT_GAP):
+    """🎣 空等看门狗**一拍**：返回 `(新的 _idle_rounds, 动作)`。
+
+    动作：`"reset"`=空了有一会儿又抛起来了（值得喊一句）/ `""`=正在钓、或只是正常换竿间隙 /
+          `"rearm"`=空太久 → 重新支起自动抛竿 / `"give_up"`=支不起来 → 收工。
+
+    ⚠️ 判据要传 `isFishing | isCasting | isReeling` 的**并集**（调用方先并好再传进来）：
+       钓鱼小游戏（`BobberBar`）开着也是"在钓"，⛔ 不能算空。
+    ⚠️ 给"空"设线而不设"在钓多久"：正常换竿之间的间隔也就 1~3 拍，5 拍（10s）必是卡住了。
+    ⚠️ `silent_gap`：正常换竿也有 1~2 拍空档，那两拍**不算事件**（否则每竿都喊一句"又抛起来了"）。
+    """
+    if active:
+        return 0, ("reset" if idle_rounds > silent_gap else "")
+    n = idle_rounds + 1
+    if n in tuple(rearm_at):
+        return n, "rearm"
+    if n >= give_up:
+        return n, "give_up"
+    return n, ""
+
+
 def let_cast_finish(bot, timeout_s=45.0):
     """🎣 **让手里这一竿钓完**，别半路把线拽回来。返回 True=这一竿收束了 / False=等超时了。
 
@@ -734,6 +768,7 @@ def run(port, location, max_casts=0, no_sleep=False):
     prev_fishing = False
     prev_reeling = False
     _rod_gone_logged = False   # "竿不在手上也不在包里"只喊一次（别每 2 秒刷一行）
+    _idle_rounds = 0           # 🎣 连着几拍"既没抛竿也没收线"（看门狗，见 `idle_step`）
 
     while True:
         time.sleep(2)
@@ -771,6 +806,25 @@ def run(port, location, max_casts=0, no_sleep=False):
         prev_fishing = is_fishing
         prev_reeling = is_reeling
 
+        # 🎣 空等看门狗（判据/为什么这么做见 `idle_step`）：菜单关掉后 fishbot 不自己续上 ⇒ 重支；
+        #    连着 ≈40s 都支不起来 ⇒ **如实收工**（老版会在这儿一直空 continue，恒看到的"没在钓也不停"）。
+        _was_idle = _idle_rounds
+        _idle_rounds, _idle_act = idle_step(bool(is_fishing or is_reeling), _idle_rounds)
+        if _idle_act == "reset":
+            log(f"  🎣 又抛起来了（刚才空等 {_was_idle * 2}s）")
+        elif _idle_act == "rearm":
+            try:
+                bot.fishbot("on")
+                log(f"  🎣 连着 {_idle_rounds * 2}s 没抛竿也没收线 → **重新支起自动抛竿**"
+                    f"（菜单关掉后它没自己续上）")
+            except Exception as _e:
+                log(f"  ⚠️ 重支自动抛竿失败: {_e}")
+        elif _idle_act == "give_up":
+            # ⛔ 这里**不** `let_cast_finish`：压根没竿在水里，没东西可等（等着只是再空耗 45s）
+            stop_after_cast(bot, f"连续 {_idle_rounds * 2}s 既没抛竿也没收线 —— 自动抛竿支不起来"
+                                 f"（没鱼饵 / 竿被换下 / 菜单反复弹）")
+            break
+
         if max_casts > 0 and cast_count >= max_casts:
             # 🎣 2026-09-24 恒：数到第 N 竿时**这一竿还在水里**（`cast_count` 是"进入钓鱼态"的边沿）
             #    ⇒ 先让它钓完，再收工。老版直接 finish_cast = 把刚甩出去的线拽回来（"抛了却不钓完鱼"）。
@@ -805,7 +859,14 @@ def run(port, location, max_casts=0, no_sleep=False):
                     except Exception:
                         pass
                     if bot.close_menu():
-                        log(f"  已关掉挡路菜单 {mtype}，继续钓")
+                        # 🎣 **关掉菜单 ≠ 续上抛竿**：菜单一弹 fishbot 自己就暂停，端点关菜单只是把
+                        #    挡路的东西清掉，**不会**让它接着抛（恒 2026-10-07 真机踩的正是这个：
+                        #    菜单关了、人就杵在那儿，脚本空转）。所以关完立刻重新支起来。
+                        log(f"  已关掉挡路菜单 {mtype} → 重新支起自动抛竿（菜单一弹它自己就暂停了）")
+                        try:
+                            bot.fishbot("on")
+                        except Exception as _e:
+                            log(f"  ⚠️ 重支自动抛竿失败: {_e}")
                     else:
                         log(f"  ⚠️ 菜单关不掉: {mtype}，停止钓鱼"
                             f"（可手动 POST /menu_close；别再用 /key esc——后台窗口不生效）")
