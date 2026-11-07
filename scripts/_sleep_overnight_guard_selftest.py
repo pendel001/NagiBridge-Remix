@@ -1,28 +1,29 @@
 # -*- coding: utf-8 -*-
-"""🌙 **只有「AI 自己已经睡上了还再按一次 sleep」才拦** —— 纯 Python 自验。
+"""🌙 **只在「任一方还开着 结算/存盘/技能升级 菜单」时拦** —— 纯 Python 自验。
 
-历史两拍（都是恒的真机原话）：
+历史三拍（都是恒的真机原话）：
   · 2026-11-07「**ai 反复过夜 sleep 导致我这边结算卡死了。不把他踢出去今天的存档就存不了了。
-    我很无语**」⇒ 第一版闸写成「**任一端**开着结算/存盘/就绪屏就禁止 sleep」。
+    我很无语**」⇒ 第一版闸：「**任一端**开着结算/存盘/就绪屏就禁止 sleep」。
   · 2026-11-08「**你这个睡觉门禁把 ai 后睡、user 先睡的情况给拦截了**（……）结算界面、技能升级
     界面等等睡后界面能抓到吗？能的话在那里拦反复睡觉比较好。**上次就是 ai 在技能升级菜单
-    强行反复睡觉搞卡的**」⇒ 第一版**误伤**：房主先睡（他那端结算屏开着）时，AI 连正常去睡都被拦。
+    强行反复睡觉搞卡的**」⇒ 第二版收窄成「**只拦 AI 自己那一端**」。
+  · 最新一拍「**只在「任一方还开着 结算/技能升级 菜单」时拦**」+ 点名第二版漏掉的那刀：
+    「**房主**那端是 `ReadyCheckDialog` 时**必须放行** —— 那是「房主已就绪、在等你」的屏
+    （真机 `readyCheck.request{numberReady:1, numberRequired:2, isReady:false}`）」，
+    上一版就是因为拦了它，把「user 先睡、ai 后睡」堵死的。
+    同一拍还点了：「**点了 ok 之后 ai 倒是没有太大概率认为『自己还没睡，再试一次吧』**」
+    ⇒ 判据里那条「`sleepReady.ready=True` ⇒ 拦」**整条删掉**（它只会误拦到换天那一刻）。
 
-⇒ 现在钉的语义（恒 2026-11-08 拍板）：
-  ① **AI 自己那一端**已经是「睡中/睡后」⇒ 拦，且**一个写请求都不发**。睡后状态集合（真机实测，
-     字段全部来自 `/state`，见 `stardew_api._OVERNIGHT_MENUS` 上方那段账）：
-       · `activeMenu.type` = `LevelUpMenu`（技能升级，**上次卡死就是它**）/ `ShippingMenu`（出货结算）
-         / `SaveGameMenu`（存盘）/ `ReadyCheckDialog`（就绪屏；`readyCheck.isSleep=false` 的
-         **节日入场**就绪不算）；
-       · `player.sleepReady.ready=True`（就绪已登记 ⇒ 过夜在等，再按就是「反复按」）；
-       · `player.isInBed=True` **且** `time.timeOfDay<800`（清早刚在新一天里从床上醒来）。
-     真机逮到的时钟证据：`dayOfMonth 16→17` 且 `timeOfDay 2450→600`（过夜真的过去了）。
-  ② **房主先睡 ⇒ 放行**（本次修的回归点，单独钉死）：他那端开着结算/存盘/就绪屏**都不拦**，
-     最多在回执末尾附一句「玩家正在结算，你睡下去要等他」。
-  ③ 量不到（端口不通 / 老 DLL 没这个字段 / `/state` 形状不对）⇒ **不许把人锁死**。
-  ④ 文案：说清「谁那一端 + 什么界面 + 现在该干什么」，中性词「玩家」、不写人名、不夹历史账、
-     **不谎报「已上床/已就绪」**、一句话读完（≤60 字）。
-  ⑤ 拦在**走位之前**（`_aim_sleep_home` / `_resolve_target_bed` 都是副作用），拦时**零副作用**。
+⇒ 现在钉的语义：
+  ① **拦**：任一端 `activeMenu.type` ∈ {`ShippingMenu`, `SaveGameMenu`, `LevelUpMenu`}
+     （真机上这三个都是"这一夜正在过、在等玩家点"的屏）；
+  ② **拦**：**AI 自己**那端是 `ReadyCheckDialog`（自己已经在就绪屏上等了，别再按）；
+  ③ **放行**：**房主**那端是 `ReadyCheckDialog` ——「玩家已就绪、在等你」（**本次专钉**）；
+  ④ **删掉** `player.sleepReady.ready` 那条拦截判据（只保留成房主的 `note`）；
+  ⑤ 量不到（端口不通 / 老 DLL / `/state` 形状不对）⇒ **那一端的判据跳过**，不许把人锁死；
+  ⑥ 文案：说清「谁那一端 + 什么界面 + 现在该干什么」，中性词「玩家」、不写人名、不夹 2026、
+     **不谎报「已上床/已就绪」**、一句话读完（≤60 字）；
+  ⑦ 拦在**走位之前**（`_aim_sleep_home` / `_resolve_target_bed` 都是副作用），拦时**零副作用**。
 """
 import ast
 import contextlib
@@ -73,7 +74,7 @@ def fast_clock():
 
 
 def _st(name, menu="", in_bed=False, ready=False, tod=2200, ready_check=None, levelup=None):
-    """造一份 `/state`（只放我们真正读的那几个键，形状跟真机 2026-11-08 读到的一致）。"""
+    """造一份 `/state`（只放我们真正读的那几个键，形状跟真机读到的一致）。"""
     am = None
     if menu or (ready_check is not None) or (levelup is not None):
         am = {"type": menu, "readyCheck": ready_check, "levelUp": levelup}
@@ -168,7 +169,7 @@ _WRITES = ("/walk_to", "/position", "/crawl_bed", "/sleep", "/warp", "/cancel_sl
 
 try:
     # ═══════════════════════════════════════════════════════════════
-    print("\n① AI 自己那一端已经是睡中/睡后 ⇒ 拦（判据表）")
+    print("\n① AI 自己那一端：睡后屏 / 就绪屏 ⇒ 拦（判据表）")
     # ═══════════════════════════════════════════════════════════════
     for _label, _kw, _exp_busy, _exp_why in (
             ("干净（无菜单/没就绪/半夜没躺）", dict(), False, ""),
@@ -194,70 +195,114 @@ try:
            _r["busy"] is _exp_busy and _r["why"] == _exp_why,
            f"实际 busy={_r['busy']} why={_r['why']!r} msg={_r['msg']!r}")
         if _exp_busy:
-            ck(f"①{_label} ⇒ who 只认自己那端（ai）", _r["who"] == "ai", _r["who"])
+            ck(f"①{_label} ⇒ who 说自己是哪端（ai）", _r["who"] == "ai", _r["who"])
             ck(f"①{_label} ⇒ 有能直接甩给 AI 的一句话", bool(_r["msg"]), _r["msg"])
 
     print("\n①' 自己这端优先于房主那端（两边都脏 ⇒ 先说自己）")
     Fake(ai_menu="LevelUpMenu", host_menu="ShippingMenu").install()
     _r = api.overnight_busy()
     ck("①'两边都有睡后界面 ⇒ why 说自己的 LevelUpMenu（先说自己）",
-       _r["busy"] is True and _r["why"] == "LevelUpMenu", f"{_r['why']!r} {_r['msg']!r}")
+       _r["busy"] is True and _r["why"] == "LevelUpMenu" and _r["who"] == "ai",
+       f"{_r['why']!r} {_r['who']!r} {_r['msg']!r}")
 
     # ═══════════════════════════════════════════════════════════════
-    print("\n② **房主先睡 ⇒ 放行**（本次修的回归点：AI 后睡不许再被误伤）")
+    print("\n② **房主**那端开着 结算/存盘/技能升级 ⇒ 也拦（任一端都拦）")
     # ═══════════════════════════════════════════════════════════════
     for _hm, _label in (("ShippingMenu", "出货结算"),
                         ("SaveGameMenu", "存盘"),
-                        ("ReadyCheckDialog", "睡觉就绪屏"),
                         ("LevelUpMenu", "技能升级")):
-        Fake(host_menu=_hm, host_rc={"isSleep": True}).install()
+        Fake(host_menu=_hm).install()
         _r = api.overnight_busy()
-        ck(f"②房主开着{_label}（{_hm}）、AI 自己干净 ⇒ **放行**（busy=False）",
-           _r["busy"] is False and _r["who"] == "",
-           f"busy={_r['busy']} who={_r['who']!r} {_r['msg']!r}")
-        ck(f"②房主开着{_label} ⇒ 回执里有句「玩家…要等他」的提示",
-           bool(_r["note"]) and "玩家" in _r["note"] and "等" in _r["note"], _r["note"])
+        ck(f"②房主开着{_label}（{_hm}）、AI 自己干净 ⇒ **拦**（busy=True）",
+           _r["busy"] is True and _r["why"] == _hm and _r["who"] == "host",
+           f"busy={_r['busy']} who={_r['who']!r} why={_r['why']!r}")
+        ck(f"②房主开着{_label} ⇒ 文案点名是**玩家那一端**（不是「你这边」）",
+           "玩家那边" in _r["msg"] and "你这边" not in _r["msg"], _r["msg"])
+        ck(f"②房主开着{_label} ⇒ 文案说清该干什么（等）", "等" in _r["msg"], _r["msg"])
+
+    print("\n②' **房主**那端是 ReadyCheckDialog ⇒ 必须放行（本次专钉的回归点）")
+    Fake(host_menu="ReadyCheckDialog", host_rc={"isSleep": True}).install()
+    _r = api.overnight_busy()
+    ck("②'房主在睡觉就绪屏（isSleep=True）⇒ **放行**（busy=False）——「玩家已就绪、在等你」",
+       _r["busy"] is False and _r["who"] == "" and _r["why"] == "",
+       f"busy={_r['busy']} who={_r['who']!r} why={_r['why']!r} msg={_r['msg']!r}")
+    ck("②'…而且 `host_menu` 照样认得出来（不是靠「没看见」放行的）",
+       _r["host_menu"] == "ReadyCheckDialog", _r["host_menu"])
+    ck("②'…回执那句是「玩家已经就绪、在等你」",
+       _r["note"] == api._HOST_READY_NOTE and "就绪" in _r["note"], _r["note"])
+    Fake(host_menu="ReadyCheckDialog").install()
+    ck("②'房主就绪屏没报 isSleep ⇒ 同样放行（不因字段缺就拦）",
+       api.overnight_busy()["busy"] is False, api.overnight_busy()["msg"])
+    Fake(host_menu="ReadyCheckDialog", host_rc={"isSleep": True, "name": "sleep",
+                                                "numberReady": 1, "numberRequired": 2}).install()
+    _r = api.overnight_busy()
+    ck("②'真机那条 request{numberReady:1,numberRequired:2,isReady:false} ⇒ 放行",
+       _r["busy"] is False, f"busy={_r['busy']} {_r['msg']!r}")
+
+    Fake(host_menu="ReadyCheckDialog", host_rc={"isSleep": False}).install()
+    _r = api.overnight_busy()
+    ck("②''房主的**节日入场**就绪屏 ⇒ 不拦、也不乱出睡眠提示",
+       _r["busy"] is False and _r["note"] == "", f"{_r['busy']} {_r['note']!r}")
 
     Fake(host_menu="", host_ready=True, host_in_bed=True).install()
     _r = api.overnight_busy()
-    ck("②房主已登记就绪（在等你一起过夜）⇒ 也不拦，只出提示",
+    ck("②房主已登记就绪（没报菜单的老 DLL）⇒ 也不拦，只出提示",
        _r["busy"] is False and "玩家" in _r["note"] and "就绪" in _r["note"], _r["note"])
-    Fake(host_menu="ReadyCheckDialog", host_rc={"isSleep": False}).install()
-    ck("②房主的**节日入场**就绪屏 ⇒ 不拦、也不乱出睡眠提示",
-       api.overnight_busy()["note"] == "", api.overnight_busy()["note"])
 
-    print("\n②' 真流程：房主在结算，AI 照睡（不是「只改返回值」）")
-    with flow_env(Fake(host_menu="ShippingMenu", host_rc={"isSleep": True})) as _f:
+    print("\n②''' 真流程：房主在就绪屏，AI 照睡（不是「只改返回值」）")
+    with flow_env(Fake(host_menu="ReadyCheckDialog", host_rc={"isSleep": True})) as _f:
         _r = api.go_sleep_flow("恒")
         _eps = [e for (e, _d) in _f.posts]
-        ck("②'房主结算中 ⇒ 流程**真的走下去**（walk_to/crawl_bed/sleep 都有写请求）",
+        ck("②'''房主就绪屏 ⇒ 流程**真的走下去**（walk_to/crawl_bed/sleep 都有写请求）",
            ("/walk_to" in _eps) and ("/crawl_bed" in _eps) and ("/sleep" in _eps), str(_eps))
-        ck("②'没被 gate 挡（steps 里没有失败的那步 gate）",
+        ck("②'''没被 gate 挡（steps 里没有失败的那步 gate）",
            not any(s["step"] == "gate" and not s["ok"] for s in (_r.get("steps") or [])),
            str(_r.get("steps")))
-        ck("②'成功回执**末尾附了那句「玩家…等你」**",
+        ck("②'''成功回执**末尾附了「玩家已经就绪、在等你」**",
            (_r.get("ok") is True) and ("（玩家" in str(_r.get("summary"))), str(_r.get("summary")))
 
+    print("\n②'''' 真流程：房主在结算 ⇒ 拦，且**零副作用**")
+    with flow_env(Fake(host_menu="ShippingMenu")) as _f:
+        _r = api.go_sleep_flow("恒")
+        ck("②''''房主结算中 ⇒ ok=False（这一步不该按）", _r.get("ok") is False, str(_r.get("ok")))
+        ck("②''''一个写请求都没发", [e for (e, _d) in _f.posts if e in _WRITES] == [], str(_f.posts))
+        ck("②''''summary 点名「玩家那边是出货结算屏」",
+           "玩家那边" in str(_r.get("summary")) and "结算" in str(_r.get("summary")),
+           str(_r.get("summary")))
+        ck("②''''账上记了 gate 这一步（ok=False）",
+           any(s.get("step") == "gate" and s.get("ok") is False
+               for s in (_r.get("steps") or [])), str(_r.get("steps")))
+
     # ═══════════════════════════════════════════════════════════════
-    print("\n③ AI 今天已经睡过 / 正睡 ⇒ 拦")
+    print("\n③ `sleepReady.ready` 那条拦截判据**已删**（只在房主那端留成提示）")
     # ═══════════════════════════════════════════════════════════════
+    Fake(ai_ready=True, ai_tod=2450).install()
+    _r = api.overnight_busy()
+    ck("③自己就绪已登记（ready=True）、没开菜单 ⇒ **不拦**（恒：点了 ok 之后别再说『我还没睡』）",
+       _r["busy"] is False and _r["why"] == "", f"{_r['busy']} {_r['why']!r} {_r['msg']!r}")
     Fake(ai_ready=True, ai_in_bed=True, ai_tod=2450).install()
     _r = api.overnight_busy()
-    ck("③自己 sleepReady.ready=True（就绪已登记、过夜在等）⇒ 拦",
-       _r["busy"] is True and _r["why"] == "ready", f"{_r['why']!r} {_r['msg']!r}")
+    ck("③就绪已登记 + 半夜躺着 ⇒ 也不拦（换天那一刻不再误拦）",
+       _r["busy"] is False, _r["msg"])
+    Fake(ai_ready=True, ai_in_bed=True, ai_tod=600).install()
+    _r = api.overnight_busy()
+    ck("③就绪已登记 + 清早 06:00 在床上 ⇒ 仍然按「新的一天」拦（那条不是按 ready 判的）",
+       _r["busy"] is True and _r["why"] == "morning", f"{_r['why']!r}")
+
+    print("\n③' 清早刚睡醒那条照旧（判据是 isInBed + tod，不是 ready）")
     Fake(ai_in_bed=True, ai_tod=600).install()
     _r = api.overnight_busy()
-    ck("③自己 isInBed **且** 清早 06:00（刚在新一天醒来）⇒ 拦",
+    ck("③'自己 isInBed **且** 清早 06:00（刚在新一天醒来）⇒ 拦",
        _r["busy"] is True and _r["why"] == "morning", f"{_r['why']!r} {_r['msg']!r}")
-    ck("③那句里报的是真时间（06:00，不是编的）", "06:00" in _r["msg"], _r["msg"])
+    ck("③'那句里报的是真时间（06:00，不是编的）", "06:00" in _r["msg"], _r["msg"])
     Fake(ai_in_bed=True, ai_tod=2450).install()
-    ck("③半夜站在床格里、但没就绪 ⇒ **不拦**（isInBed 单用会误伤）",
+    ck("③'半夜站在床格里、但没就绪 ⇒ **不拦**（isInBed 单用会误伤）",
        api.overnight_busy()["busy"] is False, api.overnight_busy()["msg"])
     Fake(ai_in_bed=True, ai_tod=1400).install()
-    ck("③白天路过床格（isInBed 但 14:00）⇒ **不拦**", api.overnight_busy()["busy"] is False)
+    ck("③'白天路过床格（isInBed 但 14:00）⇒ **不拦**", api.overnight_busy()["busy"] is False)
     _f = Fake(ai_tod=None).install()
     _f.ai_st["time"].pop("timeOfDay", None)
-    ck("③时钟读不到（没有 timeOfDay）⇒ 这条判据跳过、不锁死",
+    ck("③'时钟读不到（没有 timeOfDay）⇒ 这条判据跳过、不锁死",
        api.overnight_busy()["busy"] is False)
 
     # ═══════════════════════════════════════════════════════════════
@@ -270,7 +315,11 @@ try:
     ck("④房主读不到、自己开着技能升级 ⇒ 照样拦（不因房主读不到而漏）",
        _r["busy"] is True and _r["why"] == "LevelUpMenu", str(_r))
     Fake(ai_dead=True, host_menu="ShippingMenu").install()
-    ck("④自己读不到、房主在结算 ⇒ 放行（读不到就不拦自己那头）",
+    _r = api.overnight_busy()
+    ck("④自己读不到、房主在结算 ⇒ 照样拦（任一端都管，说的是房主那端）",
+       _r["busy"] is True and _r["who"] == "host" and _r["why"] == "ShippingMenu", str(_r))
+    Fake(ai_dead=True, host_menu="ReadyCheckDialog", host_rc={"isSleep": True}).install()
+    ck("④自己读不到、房主在就绪屏 ⇒ 放行",
        api.overnight_busy()["busy"] is False)
     Fake(ai_dead=True, host_dead=True).install()
     ck("④两端都读不到 ⇒ 放行", api.overnight_busy()["busy"] is False)
@@ -286,25 +335,28 @@ try:
     _msgs, _notes = [], []
     for _kw in (dict(ai_menu="LevelUpMenu"), dict(ai_menu="ShippingMenu"),
                 dict(ai_menu="SaveGameMenu"), dict(ai_menu="ReadyCheckDialog"),
-                dict(ai_ready=True), dict(ai_in_bed=True, ai_tod=600)):
+                dict(ai_in_bed=True, ai_tod=600),
+                dict(host_menu="ShippingMenu"), dict(host_menu="SaveGameMenu"),
+                dict(host_menu="LevelUpMenu")):
         Fake(**_kw).install()
         _msgs.append((_kw, api.overnight_busy()["msg"]))
     for _kw in (dict(host_menu="ShippingMenu"), dict(host_menu="SaveGameMenu"),
-                dict(host_menu="ReadyCheckDialog", host_rc={"isSleep": True}),
-                dict(host_menu="LevelUpMenu"), dict(host_ready=True)):
+                dict(host_menu="LevelUpMenu"), dict(host_ready=True),
+                dict(host_menu="ReadyCheckDialog", host_rc={"isSleep": True})):
         Fake(**_kw).install()
         _notes.append((_kw, api.overnight_busy()["note"]))
 
     for _kw, _m in _msgs:
         _tag = ",".join(_kw) or "-"
-        ck(f"⑤[{_tag}] 用中性词「玩家」而不是人名", "玩家" in _m, _m)
+        ck(f"⑤[{_tag}] 用中性词「玩家」", "玩家" in _m, _m)
         ck(f"⑤[{_tag}] 不写死任何角色名（恒/Claude 都不许出现）",
            not any(n in _m for n in ("恒", "Claude")), _m)
         ck(f"⑤[{_tag}] 不夹历史账（不许出现 2026）", "2026" not in _m, _m)
         ck(f"⑤[{_tag}] **不谎报已上床/已就绪**",
            not any(w in _m for w in ("已上床", "已就绪")), _m)
         ck(f"⑤[{_tag}] 一句话读完（≤60 字）", len(_m) <= 60, f"{len(_m)} 字：{_m}")
-        ck(f"⑤[{_tag}] 说清**哪一端**（你这边/你）", ("你这边" in _m or "你" in _m), _m)
+        ck(f"⑤[{_tag}] 说清**哪一端**（你这边 / 玩家那边 / 你和玩家）",
+           ("你这边" in _m or "玩家那边" in _m or "你和玩家" in _m), _m)
         ck(f"⑤[{_tag}] 说清**现在干什么**（含动作词）",
            any(w in _m for w in ("先", "等", "别再", "别急")), _m)
 
@@ -337,7 +389,7 @@ try:
            _r.get("ok") is False and "新的一天" in str(_r.get("summary")), str(_r.get("summary")))
 
     # ⚠️ 这条**不给 `_resolve_target_bed` 打桩**：真那家伙一跑就会发 `/crawl_bed locate`。
-    #    闸只要被挪到"找床之后"，这里立刻见红（刀 3 就是靠它）。
+    #    闸只要被挪到"找床之后"，这里立刻见红。
     _f = Fake(ai_menu="LevelUpMenu").install()
     _bak_bed = api._resolve_target_bed
     try:
@@ -377,34 +429,47 @@ try:
         _out = M.go_sleep("恒")
         ck("⑦自己开着结算 ⇒ 同样拦在走位之前", _aimed == [] and "结算" in str(_out), str(_out))
 
-        print("\n⑦' 房主在结算时 MCP **不拦**（回归点第二处）")
+        print("\n⑦' 房主在**结算**时 MCP 也拦（任一端），且是「玩家那边」那句")
         Fake(host_menu="ShippingMenu").install()
         _aimed.clear()
         _out = M.go_sleep("恒")
-        ck("⑦'房主结算中 ⇒ 走位被调用了", _aimed == ["恒"], str(_aimed))
-        ck("⑦'流程也进去了", _flowed != [], str(_flowed))
-        ck("⑦'回执里带一句「玩家…等你」（不吞掉 note）",
-           "玩家" in str(_out) and "等" in str(_out), str(_out))
+        ck("⑦'房主结算中 ⇒ 没走位", _aimed == [], str(_aimed))
+        ck("⑦'也没进流程", _flowed == [], str(_flowed))
+        ck("⑦'回执点名「玩家那边是出货结算屏」", "玩家那边" in str(_out), str(_out))
 
-        print("\n⑦'' 自己干净时 MCP 照常走位（闸不是「永远拦」）")
+        print("\n⑦'' 房主在**就绪屏**时 MCP **不拦**（回归点第二处）")
+        Fake(host_menu="ReadyCheckDialog", host_rc={"isSleep": True}).install()
+        _aimed.clear()
+        _out = M.go_sleep("恒")
+        ck("⑦''房主就绪屏 ⇒ 走位被调用了", _aimed == ["恒"], str(_aimed))
+        ck("⑦''流程也进去了", _flowed != [], str(_flowed))
+        ck("⑦''回执里带一句「玩家…已经就绪」（不吞掉 note）",
+           "玩家" in str(_out) and "就绪" in str(_out), str(_out))
+
+        print("\n⑦''' 自己干净时 MCP 照常走位（闸不是「永远拦」）")
         Fake().install()
         _aimed.clear()
         M.go_sleep("恒")
-        ck("⑦''走位被调用了", _aimed == ["恒"], str(_aimed))
+        ck("⑦'''走位被调用了", _aimed == ["恒"], str(_aimed))
     finally:
         M.api, M._with_state, M._aim_sleep_home = _bak
 
     # ═══════════════════════════════════════════════════════════════
-    print("\n⑧ 源码钉（判据集合 / 位置顺序 / 零写请求 / 房主不再拦）")
+    print("\n⑧ 源码钉（拦截表 / 位置顺序 / 零写请求 / 房主就绪屏不进拦截表）")
     # ═══════════════════════════════════════════════════════════════
     # ⚠️ 顺序钉**必须走 AST**：docstring/注释里也写着 `overnight_busy()`、`_aim_sleep_home`
-    #    ⇒ 按纯文本 `find()` 会被注释骗过（第一版就这么漏了，刀 3 当场没红）。
+    #    ⇒ 按纯文本 `find()` 会被注释骗过。
     _here = os.path.dirname(os.path.abspath(__file__))
     _src = open(os.path.join(_here, "stardew_api.py"), encoding="utf-8").read()
     _msrc = open(os.path.join(_here, "nagi_mcp_server.py"), encoding="utf-8").read()
-    _oms = _src.split("_OVERNIGHT_MENUS = ")[1][:120]
-    for _n in ("LevelUpMenu", "ShippingMenu", "SaveGameMenu", "ReadyCheckDialog"):
-        ck(f"⑧`_OVERNIGHT_MENUS` 里有 {_n}", _n in _oms, _oms)
+    _sbm = _src.split("_SLEEP_BLOCK_MENUS = ")[1][:120]
+    for _n in ("LevelUpMenu", "ShippingMenu", "SaveGameMenu"):
+        ck(f"⑧`_SLEEP_BLOCK_MENUS`（任一端拦）里有 {_n}", _n in _sbm, _sbm)
+    ck("⑧`_SLEEP_BLOCK_MENUS` 里**没有** `ReadyCheckDialog`（房主那端靠这条才放行）",
+       "ReadyCheckDialog" not in _sbm, _sbm)
+    _ovm = _src.split("_OVERNIGHT_MENUS = ")[1][:120]
+    ck("⑧`_OVERNIGHT_MENUS` 仍含 `ReadyCheckDialog`（AI 自己那端靠它拦）",
+       "ReadyCheckDialog" in _ovm, _ovm)
 
     def _funcs(src):
         return {n.name: n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.FunctionDef)}
@@ -454,10 +519,35 @@ try:
                 if kw.arg == "who" and isinstance(kw.value, ast.Constant)]
 
     _whos = _who_kwargs(_ob)
-    ck("⑧`overnight_busy` 只认**自己**那端脏（源码里不再有 who=\"host\" 的拦截）",
-       _whos == ["ai"], str(_whos))
-    ck("⑧房主那端只出 `note`（源码里走的是 `_host_sleep_note(host_st)`）",
+    ck("⑧`overnight_busy` 两端都会拦（源码里 who 既有 ai 也有 host）",
+       sorted(set(_whos)) == ["ai", "host"], str(_whos))
+    ck("⑧房主那端拦的是 `_host_block(...)`（不是随便一句判断）",
+       _line(_ob, _by_name("_host_block")) > 0, "没看到 `_host_block`")
+    ck("⑧房主那端的 `note` 仍走 `_host_sleep_note(host_st)`",
        _line(_ob, _by_name("_host_sleep_note")) > 0, "没看到 `_host_sleep_note`")
+
+    # 🔑 房主就绪屏放行 = `_host_block` 里**根本不认** ReadyCheckDialog（它只查 `_SLEEP_BLOCK_MENUS`）
+    def _code_of(fn):
+        """函数**正文**的源码（跳过 docstring + 剥掉 `#` 注释）——注释/说明里提到什么都不算数。"""
+        body = list(fn.body)
+        if (body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)):
+            body = body[1:]
+        _txt = "\n".join(ast.get_source_segment(_src, n) or "" for n in body)
+        return "\n".join(ln.split("#", 1)[0] for ln in _txt.splitlines())
+
+    _hb_src = _code_of(_fa["_host_block"])
+    ck("⑧`_host_block` 的代码里**没有** `ReadyCheckDialog`（房主就绪屏不可能被它拦）",
+       "ReadyCheckDialog" not in _hb_src, _hb_src[-200:])
+    ck("⑧`_host_block` 用的是 `_SLEEP_BLOCK_MENUS`",
+       "_SLEEP_BLOCK_MENUS" in _hb_src, _hb_src[:160])
+
+    # 🔑 `sleepReady.ready` 那条拦截判据必须真的不在了（`_ai_sleep_after` 的代码里不许出现 sleepReady）
+    _asa_body = _code_of(_fa["_ai_sleep_after"])
+    ck("⑧`_ai_sleep_after` 的代码里**没有** `sleepReady`（那条判据已删，不是只改了注释）",
+       "sleepReady" not in _asa_body, _asa_body[-200:])
+    ck("⑧`_ai_sleep_after` 里也没有 `\"ready\"` 这个 why",
+       '"ready"' not in _asa_body, _asa_body[-200:])
 finally:
     pass
 
@@ -467,4 +557,4 @@ if FAIL:
     for f in FAIL:
         print("   ·", f)
     sys.exit(1)
-print("✅ 只拦「AI 自己已经睡上了还再按 sleep」；房主先睡照放行；量不到不锁死；文案说清谁那一端。")
+print("✅ 任一端开着 结算/存盘/技能升级 ⇒ 拦；房主的就绪屏放行；ready 判据已删；量不到不锁死；文案说清谁那一端。")
