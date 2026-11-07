@@ -1751,21 +1751,57 @@ def _resolve_target_bed(who: str = "") -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  🌙 「这一夜/这次存档正在过」——这种时候**一次 sleep 都不许再按**
+#  🌙 「**AI 自己**已经睡完、还赖着反复按 sleep」——只拦这一种
 # ═══════════════════════════════════════════════════════════════════
 # 🚨 2026-11-07 真机（恒）：「**ai 反复过夜 sleep 导致我这边结算卡死了。不把他踢出去今天的存档
 #   就存不了了。我很无语**」。
-#   同一时刻两端 `/state` 的现场：host(7842) `activeMenu=ShippingMenu`（人已上床）；
-#   AI(7843) `menu=none`、还赖在床格里 ⇒ 模型看到"夜还没过"就**再喊一次 sleep**，
-#   而每次 sleep 都会往房主**正开着的结算屏**上再压一次 sleep/ready 请求。
-#   过夜结算→存盘那一段是**一天只跑一次、单线程**的，被反复打断就卡死在那儿。
-# ⇒ 判据：**谁的过夜菜单开着，谁那一夜就还在结算里** —— 这时 `go_sleep` 直接拦，**一步都不走**。
-#   三张屏各一句话（`ShippingMenu` 结算 / `SaveGameMenu` 存盘 / `ReadyCheckDialog` 等确认）。
-#   ⚠️ 2026-11-07 恒：「换一下字眼吧，**恒→host/玩家/user**，**已经**在过夜结算，**禁止反复调用**，
-#      2026……后面的内容去掉」——所以这几句：
-#        · **不写死任何角色名**（项目老规矩：名字现读现用；这里干脆用中性的「玩家」）；
-#        · 只说"现在是什么状态 + 别做这个动作"，**不夹历史账、不解释为什么**（AI 不需要读日志）。
-_OVERNIGHT_MENUS = ("ShippingMenu", "SaveGameMenu", "ReadyCheckDialog")
+#   第一版把闸写成"**任一端**开着结算/存盘/就绪屏就禁止 sleep" ⇒ 2026-11-08 当场误伤：
+#   恒原话「**你这个睡觉门禁把 ai 后睡、user 先睡的情况给拦截了**（……）结算界面、技能升级界面
+#   等等睡后界面能抓到吗？能的话在那里拦反复睡觉比较好。**上次就是 ai 在技能升级菜单强行
+#   反复睡觉搞卡的**」。
+#   ⇒ 判据从「**谁**开着屏」改成「**AI 自己那一端**是不是已经进入睡中/睡后状态」：
+#     · **房主先睡**（他那端开着结算/存盘/就绪屏）= 完全正常，**绝不因为房主而拦 AI 睡**；
+#       最多在回执里提一句"玩家在结算，你睡下去要等他"（`note`：只提示、不拦）。
+#     · 拦的只有「AI 自己已经睡上了，还再按一次 sleep」。
+#   真机实测（2026-11-08，两端 7842/7843 同一时刻各读一发 `/state`）能拿到的"睡后"判据：
+#     · `activeMenu.type`：`LevelUpMenu`(技能升级，**上次卡死就是它**) / `ShippingMenu`(出货结算) /
+#       `SaveGameMenu`(存盘) / `ReadyCheckDialog`(就绪屏)；类型名就是
+#       `Game1.activeClickableMenu.GetType().Name`（ModEntry.cs:6200）。
+#       就绪屏还得看 `activeMenu.readyCheck.isSleep`：`false` = **节日入场**就绪（不是睡后，别拦）。
+#       `activeMenu.levelUp` 非空是 `LevelUpMenu` 的第二证据（`BuildLevelUpInfo`，ModEntry.cs:6324）。
+#     · `player.sleepReady.ready`：**本机已登记睡觉就绪**（`state != NotReady`）。
+#       真机：过夜前 host=`Ready`(1/2)、AI=`NotReady`；过夜后两端都回 `NotReady`（新的一天 Reset）。
+#     · `player.isInBed`：脚踩床格。⚠️ 单用不可靠（清早刚醒/白天路过床格都 true），
+#       只在「**清早** `timeOfDay < 800`」时当"刚在床上醒来"的判据。
+#     · `time.timeOfDay` / `time.dayOfMonth`：真机逮到 `dayOfMonth 16→17` 且 `timeOfDay 2450→600`
+#       —— 这是"这一夜真的过去了"的时钟证据（配合 isInBed = 你刚睡醒，别再睡）。
+#     · `worldReady`：正常时恒 true（false 只见于 `{ok:true, worldReady:false}` 那个早退分支）
+#       ⇒ **不拿它当判据**。
+#   ❌ **查不到就别编**：`stayedUpLate` / `hasSlept` / `sleptToday` / `timeWentToBed` 在本仓库
+#      C# 里**一个都没有**序列化进 `/state`（`grep stayedUpLate` = 0 处）⇒ "今天已经睡过"
+#      只能由上面几项**组合**判，不许写这些不存在的字段名。
+_OVERNIGHT_MENUS = ("LevelUpMenu", "ShippingMenu", "SaveGameMenu", "ReadyCheckDialog")
+
+# 房主那一端的**提示语**（只进回执，**永不拦**）——恒 2026-11-08：「房主在结算不再拦，
+# 最多在回执里提一句『玩家正在结算，你睡下去要等他』」。一律中性词「玩家」，不写死人名。
+_HOST_SLEEP_NOTES = {
+    "ShippingMenu": "玩家正在看出货结算，你睡下去要等他点完",
+    "SaveGameMenu": "玩家正在存盘，你睡下去要等他存完",
+    "ReadyCheckDialog": "玩家在睡觉就绪屏上，你睡下去要等他放行",
+    "LevelUpMenu": "玩家正在选技能升级，你睡下去要等他选完",
+}
+_HOST_READY_NOTE = "玩家已经就绪、在等你一起过夜"
+
+# AI 自己那一端的拦截文案（≤60 字；说清「**哪一端** + **什么界面** + 现在该干什么」；
+# 不谎报"已上床/已就绪"——我们**什么都没做**，只是拒绝再按一次）。
+_AI_SLEEP_AFTER_MSGS = {
+    "LevelUpMenu": "⛔ 你这边开着技能升级界面——先选完升级，玩家在等你过夜",
+    "ShippingMenu": "⛔ 你这边是出货结算屏——先点完结算，玩家在等你过夜",
+    "SaveGameMenu": "⛔ 你这边正在存盘——等它存完，玩家在等你过夜",
+    "ReadyCheckDialog": "⏳ 你这边是睡觉就绪屏——等玩家放行，别再按 sleep",
+    "ready": "⏳ 你已经登记就绪、在等过夜——别再按 sleep，等玩家一起",
+    "morning": "⏳ 昨夜已经过完、是新的一天了（{t}）——你和玩家都到下一天了，别再睡",
+}
 
 
 def _menu_type_of(st) -> str:
@@ -1776,15 +1812,90 @@ def _menu_type_of(st) -> str:
     return str(am.get("type") or "")
 
 
+def _state_player(st) -> dict:
+    """`/state.player`（形状不对 ⇒ `{}`）。"""
+    p = (st or {}).get("player") if isinstance(st, dict) else None
+    return p if isinstance(p, dict) else {}
+
+
+def _state_tod(st):
+    """`/state.time.timeOfDay`（`int`）；读不到 ⇒ **None**（别拿 0 冒充 06:00）。"""
+    t = (st or {}).get("time") if isinstance(st, dict) else None
+    v = t.get("timeOfDay") if isinstance(t, dict) else None
+    return v if isinstance(v, int) else None
+
+
+def _hhmm(tod: int) -> str:
+    """`2450` → `24:50`（游戏自己的时钟格式，不是我们编的）。"""
+    return f"{int(tod) // 100:02d}:{int(tod) % 100:02d}"
+
+
+def _ai_sleep_after(st) -> tuple:
+    """**AI 自己那一端**是不是已经在"睡中/睡后"了？返回 `(why, menu, msg)`；干净 ⇒ `("", "", "")`。
+
+    `why` ∈ `LevelUpMenu`/`ShippingMenu`/`SaveGameMenu`/`ReadyCheckDialog`/`ready`/`morning`。
+    判据顺序 = 「先看自己这端的睡后界面 → 再看今天是不是已经睡上/睡过」（恒 2026-11-08 拍板）：
+      ① 自己开着 `LevelUpMenu`（技能升级——**上次卡死就是它**）/`ShippingMenu`/`SaveGameMenu`；
+      ② 自己开着 `ReadyCheckDialog` **且** `readyCheck.isSleep` 不是 false（false=节日入场就绪，不算）；
+      ③ 自己 `sleepReady.ready=True`（就绪已登记，过夜在等）⇒ 再按就是"反复按"；
+      ④ 自己 `isInBed` **且** 清早（`timeOfDay<800`）⇒ 刚在新的一天里从床上醒来（这一夜已经过完）。
+    ⚠️ **量不到就不拦**：字段缺/形状怪/整份 `/state` 读不到 ⇒ 这一条判据直接跳过（宁可放行）。
+    """
+    am = (st or {}).get("activeMenu") if isinstance(st, dict) else None
+    am = am if isinstance(am, dict) else {}
+    mt = str(am.get("type") or "")
+    if mt in _OVERNIGHT_MENUS:
+        # `ReadyCheckDialog` 是**一个类管两件事**：只有"睡觉"那张算睡后状态
+        # （`isSleep=false` = 节日入场就绪 ⇒ 不算，往下继续看别的判据）。
+        if mt == "ReadyCheckDialog":
+            rc = am.get("readyCheck")
+            if isinstance(rc, dict) and rc.get("isSleep") is False:
+                mt = ""
+        if mt:
+            return mt, mt, _AI_SLEEP_AFTER_MSGS[mt]
+    elif not mt and isinstance(am.get("levelUp"), dict):
+        # 类型名没报出来（老 DLL / 万一换了名字），但 `activeMenu.levelUp` 有货 ⇒ 就是技能升级菜单
+        return "LevelUpMenu", "LevelUpMenu", _AI_SLEEP_AFTER_MSGS["LevelUpMenu"]
+    p = _state_player(st)
+    sr = p.get("sleepReady")
+    if isinstance(sr, dict) and sr.get("ready") is True:
+        return "ready", "", _AI_SLEEP_AFTER_MSGS["ready"]
+    tod = _state_tod(st)
+    if p.get("isInBed") is True and tod is not None and tod < 800:
+        return "morning", "", _AI_SLEEP_AFTER_MSGS["morning"].format(t=_hhmm(tod))
+    return "", "", ""
+
+
+def _host_sleep_note(st) -> str:
+    """**房主那一端**的提示（`overnight_busy()["note"]`）——**只提示、永不拦**。
+
+    恒 2026-11-08 拍板："房主在结算 → 不再拦，最多提一句『玩家正在结算，你睡下去要等他』"。
+    读不到房主（单机 / 老 DLL / 端口不通）⇒ `""`（没话说，但**也不影响放行**）。
+    """
+    if not isinstance(st, dict) or not st:
+        return ""
+    p = _state_player(st)
+    sr = p.get("sleepReady")
+    if isinstance(sr, dict) and sr.get("ready") is True:
+        return _HOST_READY_NOTE          # 玩家已登记就绪、正等你 ⇒ 这句最该让 AI 看到
+    mt = _menu_type_of(st)
+    if mt == "ReadyCheckDialog":
+        rc = ((st.get("activeMenu") or {}) if isinstance(st.get("activeMenu"), dict) else {}
+              ).get("readyCheck")
+        if isinstance(rc, dict) and rc.get("isSleep") is False:
+            return ""                    # 节日入场就绪：跟睡没关系，别乱说
+    return _HOST_SLEEP_NOTES.get(mt, "")
+
+
 def overnight_busy() -> dict:
-    """🌙 这一夜是不是**正在过**（哪一端开着结算 / 存盘 / 就绪屏）？
+    """🌙 **AI 自己**是不是已经睡上了（睡中/睡后）？是 ⇒ `go_sleep` 一步都别走。
 
-    返回 `{busy, who, menu, msg, ai_menu, host_menu, me, host}`——`busy=True` 时 `msg` 就是
-    **能直接甩给 AI 的一句话**（一句话说清**状态 + 禁止的动作**，不夹历史账）。
-
-    ⚠️ 只读两端 `/state`（各一发 GET），**不动任何状态** —— 拦 sleep 的判据必须"还没走一步"就拿到。
-    ⚠️ 读不到 host（单机 / 老 DLL / 端口不通）⇒ 只要自己这端没事就 `busy=False`：
-       **不能因为量不到就把人锁死**（睡眠是刚需，宁可放行也不许误拦）。
+    返回 `{busy, who, menu, msg, why, note, ai_menu, host_menu, me, host}`：
+      · `busy=True` ⇒ **AI 自己那一端**已经是睡后/睡中状态，`who` 恒 `"ai"`，`msg` 能直接甩给 AI；
+      · `note` ⇒ **房主那一端**的提示（"玩家正在结算，你睡下去要等他"），**只提示、绝不拦**：
+        **房主先睡是正常的**，AI 该照睡（恒 2026-11-08 修的就是这条误伤）。
+    ⚠️ 只读两端 `/state`（各一发 GET），**不动任何状态**（拦 sleep 的判据必须"一步都还没走"就拿到）。
+    ⚠️ 读不到任一端 ⇒ 那几项判据**跳过**，`busy=False`：**不能因为量不到就把人锁死**（睡眠是刚需）。
     """
     ai_st, host_st = {}, {}
     try:
@@ -1796,32 +1907,19 @@ def overnight_busy() -> dict:
     except Exception:
         host_st = {}
     ai_m, host_m = _menu_type_of(ai_st), _menu_type_of(host_st)
-    me = str(((ai_st.get("player") or {}).get("name")) or "")
-    hn = str(((host_st.get("player") or {}).get("name")) or "")
+    me = str((_state_player(ai_st).get("name")) or "")
+    hn = str((_state_player(host_st).get("name")) or "")
 
-    out = {"busy": False, "who": "", "menu": "", "msg": "",
+    out = {"busy": False, "who": "", "menu": "", "msg": "", "why": "", "note": "",
            "ai_menu": ai_m, "host_menu": host_m, "me": me, "host": hn}
 
-    # ① 自己这端先看（自己的结算屏/存盘/就绪屏也都不许重按）
-    if ai_m in _OVERNIGHT_MENUS:
-        out.update(busy=True, who="ai", menu=ai_m)
-        if ai_m == "ShippingMenu":
-            out["msg"] = "⛔ 你这边已经在过夜结算（ShippingMenu）——禁止反复调用 sleep（先 settlement_confirm）"
-        elif ai_m == "SaveGameMenu":
-            out["msg"] = "⛔ 你这边正在存盘（SaveGameMenu）——禁止反复调用 sleep"
-        else:
-            out["msg"] = "⏳ 你这边已经在睡觉就绪确认（ReadyCheckDialog）——禁止反复调用 sleep"
-        return out
+    # ① **自己这一端先看**（自己的睡后屏/已登记就绪/刚睡醒 ⇒ 拦，一步不走）
+    _why, _menu, _msg = _ai_sleep_after(ai_st)
+    if _why:
+        out.update(busy=True, who="ai", menu=_menu, msg=_msg, why=_why)
 
-    # ② 玩家那一端：结算/存盘/等确认，都不许我们再去压一次
-    if host_m in _OVERNIGHT_MENUS:
-        out.update(busy=True, who="host", menu=host_m)
-        if host_m == "ShippingMenu":
-            out["msg"] = "⛔ 玩家已经在过夜结算（ShippingMenu）——禁止反复调用 sleep"
-        elif host_m == "SaveGameMenu":
-            out["msg"] = "⛔ 玩家正在存盘（SaveGameMenu）——禁止反复调用 sleep"
-        else:
-            out["msg"] = "⏳ 玩家已经在睡觉就绪确认（ReadyCheckDialog）——禁止反复调用 sleep"
+    # ② 房主那一端**只看不拦**（先睡是他的自由；AI 睡下去要等他，那也只是回执里的一句话）
+    out["note"] = _host_sleep_note(host_st)
     return out
 
 
@@ -1859,11 +1957,15 @@ def go_sleep_flow(who="", log=None, humanize=True) -> dict:
     返回 {ok, summary, steps:[{step,ok,detail}], woke_in_expected_bed, wake, co_sleep, slept_in}。
     co_sleep=True 表示睡的是别人的床（爬床彩蛋）；配合 woke_in_expected_bed=True = 一起睡彩蛋成功。
     log(step, ok, detail) 供回归脚本打印/落盘。
-    🌙 **过夜菜单开着就一步都不走**：`overnight_busy()` 见 `ShippingMenu`/`SaveGameMenu`/`ReadyCheckDialog`
-    （任一端）⇒ 立刻返回 `ok=False` + 一句「玩家已经在过夜结算（ShippingMenu）——禁止反复调用 sleep」
-    （恒 2026-11-07：反复 sleep 把房主结算卡死）。
+    🌙 **只有"AI 自己已经睡上了还再按一次"才拦**：`overnight_busy()` 的 `busy` 只看**自己那一端**
+    （技能升级 `LevelUpMenu` / 出货结算 / 存盘 / 就绪屏 / 已登记就绪 / 清早刚睡醒）⇒ 立刻返回
+    `ok=False` + 一句「⛔ 你这边开着技能升级界面——先选完升级，玩家在等你过夜」（恒 2026-11-08：
+    上次就是 AI 在技能升级菜单强行反复睡觉把房主结算搞卡的）。
+    ⚠️ **房主先睡（他那端开着结算/存盘/就绪屏）不再拦**——那是正常玩法；`note` 只是回执末尾的
+    一句"玩家正在结算，你睡下去要等他"（恒 2026-11-08 修的误伤）。
     """
     steps = []
+    _host_note = [""]   # 房主那端的提示（只提示、不拦）：过闸时顺手记下，成功回执末尾附一句
 
     def rec(step, ok, detail):
         steps.append({"step": step, "ok": bool(ok), "detail": str(detail)})
@@ -1874,18 +1976,21 @@ def go_sleep_flow(who="", log=None, humanize=True) -> dict:
                 pass
 
     def finish(ok, summary, co_sleep=False, slept_in=""):
+        if ok and _host_note[0]:
+            summary = f"{summary}（{_host_note[0]}）"
         return {"ok": ok, "summary": summary, "steps": steps,
                 "woke_in_expected_bed": None, "wake": None,
                 "co_sleep": co_sleep, "slept_in": slept_in}
 
     detect_roles()  # 尽力修正端口↔角色（失败则保持现状，不打断）
     try:
-        # 🌙 **过夜/存盘/就绪屏开着 ⇒ 一步都不走**（恒 2026-11-07：反复 sleep 把房主结算卡死）。
+        # 🌙 **自己已经睡上了 ⇒ 一步都不走**（恒 2026-11-08：只拦"AI 反复按 sleep"，不拦"房主先睡"）。
         #    必须在"找床/走位/warp/crawl/ready"**全都没发生之前**判——这些副作用一个都不许落地。
         _ob = overnight_busy()
+        _host_note[0] = _ob.get("note") or ""
         if _ob.get("busy"):
             rec("gate", False, _ob.get("msg", ""))
-            return finish(False, _ob.get("msg", "⛔ 过夜进行中，先别睡"))
+            return finish(False, _ob.get("msg", "⛔ 你已经睡上了，别再按 sleep"))
 
         # 1. 定"睡哪张床"——大陆=locate 谁的床；🏝️ 姜岛=大通铺（`_resolve_target_bed` 里分流）
         _tb = _resolve_target_bed(who)

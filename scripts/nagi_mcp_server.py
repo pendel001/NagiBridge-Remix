@@ -11135,16 +11135,20 @@ def go_sleep(who: str = "") -> str:
     🏝️ **在姜岛时是另一套（共用姜岛小屋的大通铺，没有"谁的床"）**：who 传**正躺在那儿的别人**
     → 挤他这张床（姜岛版爬床彩蛋）；否则（who 是自己 / 那人还没躺）→ 大通铺随便挑一张空床
     （安静睡，不播报）。不在小屋里会自动走过去（`map go 姜岛小屋`）。
-    🚫 **过夜/存盘/就绪屏开着的时候一步都不走**（2026-11-07 恒：「ai 反复过夜 sleep 导致我这边
-       结算卡死了」）：任一端开着 `ShippingMenu`/`SaveGameMenu`/`ReadyCheckDialog` ⇒ 直接回一句
-       「玩家已经在过夜结算（ShippingMenu）——禁止反复调用 sleep」。**这不是失败，是这一夜正在过**；
-       等结算关掉（直接进新一天）再睡。
+    🚫 **只有"你自己已经睡上了还再按一次"才拦**（2026-11-08 恒：上次就是 AI 在**技能升级菜单**
+       强行反复睡觉，把房主结算搞卡的）：自己那端开着 `LevelUpMenu`/`ShippingMenu`/`SaveGameMenu`/
+       `ReadyCheckDialog`，或自己 `sleepReady.ready` 已登记、或清早刚睡醒 ⇒ 直接回一句「⛔ 你这边
+       开着技能升级界面——先选完升级，玩家在等你过夜」。**这不是失败，是这一步不该按**。
+    ✅ **房主先睡（他那端在结算/存盘/就绪屏）不拦你**——你照睡，回执末尾会附一句
+       "玩家正在结算，你睡下去要等他"（恒 2026-11-08 修的就是这条误伤）。
     """
     api.ensure_roles()  # 端口↔角色可能翻转，先对齐
-    # 🌙 拦在**走位之前**：`_aim_sleep_home` 会真的把人走过去/warp，过夜中一下都不该落地。
+    # 🌙 拦在**走位之前**：`_aim_sleep_home` 会真的把人走过去/warp，"自己已经睡上了"时一下都不该落地。
+    #    ⚠️ 判据只看**自己那一端**（房主先睡不再拦，他那端最多出个 `note`）。
     _ob = api.overnight_busy()
     if _ob.get("busy"):
-        return _with_state(_ob.get("msg", "⛔ 过夜进行中，先别睡"))
+        return _with_state(_ob.get("msg", "⛔ 你已经睡上了，别再按 sleep"))
+    _note = (_ob.get("note") or "").strip()   # 房主那端的**提示**（只提示、不拦）
     if not (who or "").strip():
         return _with_state(_who_required("sleep/睡觉"))
     err = _aim_sleep_home(who)   # 不在那栋屋 → 自动走过去（2026-09-19 起对任何人都生效）
@@ -11155,6 +11159,10 @@ def go_sleep(who: str = "") -> str:
     # 睡别人家 + 醒来位置核实 = 一起睡彩蛋成功
     if r.get("co_sleep") and r.get("woke_in_expected_bed") is True:
         msg = "🌹 一起睡彩蛋成功！" + msg
+    # 🌙 房主先睡不再拦我们 —— 只在**回执末尾**提一句"玩家在结算，你睡下去要等他"。
+    #    ⚠️ 下层 `go_sleep_flow` 已经附过就别重复（`_note in msg` 即已附）。
+    if _note and r.get("ok") and _note not in msg:
+        msg = f"{msg}（{_note}）"
     return _with_state(msg)
 
 
