@@ -3279,8 +3279,10 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
         pass
 
     # 🎪 节日限时小游戏提示（2026-08-16）：ReadyCheckDialog/BobberBar 时注入今天节日引导
+    #    ⚠️ 必须把**当前场景名**一起传下去：`BobberBar` 在任何图钓鱼都会开，不看地点就会把
+    #       "在鹈鹕镇钓个鱼"说成"沙漠节钓鱼游戏进行中"（恒真机逮到的那次）。
     try:
-        _fh = _festival_activity_hint(active_menu.get("type") if active_menu else "")
+        _fh = _festival_activity_hint(active_menu.get("type") if active_menu else "", loc_name)
         if _fh:
             lines.append(_fh)
     except Exception:
@@ -16459,10 +16461,55 @@ def _minigame_guide_hint() -> str:
         return ""
 
 
-def _festival_activity_hint(menu_type: str = "") -> str:
+def _fest_venue_names(fest_map: str) -> tuple:
+    """节日**场地**在 `/state.location.name` 里可能叫什么（三种都算"人就在节日场地"）。
+
+    日历 `calendar_data.FESTIVAL_LOCATIONS` 给的是**导航用的大图名**（沙漠节 = `Desert`），
+    可 `festival go` 之后人其实站在**节日专用内部图**（沙漠节 = `DesertFestival`；
+    其它节日 = `Temp`）。⇒ 判"在不在节日场地"得按这三种叫法，别只比一个名字。
+    """
+    m = str(fest_map or "")
+    if not m:
+        return ()
+    return (m, m + "Festival", "Temp")
+
+
+def _fest_venue_ok(loc_name: str, fest_map: str) -> bool:
+    """人是不是**在今天的节日场地**里？读不到当前位置（空串）⇒ False（宁可不说，也别乱说）。"""
+    loc = str(loc_name or "")
+    if not loc:
+        return False
+    return loc in _fest_venue_names(fest_map)
+
+
+def _fest_unlocked(fest_map: str) -> bool:
+    """这个节日的场地**解锁了没有** —— 跟 `map go` 用**同一把尺子**
+    （`navigation._map_go_unlock_check`，别另编一张解锁表）。
+
+    ⚠️ 没解锁 ⇒ 一律不注入该节日的玩法引导（沙漠节要**修好巴士**才去得了）。
+    ⚠️ 读不到解锁状态 ⇒ `_map_go_unlock_check` 自己回空串（放行）⇒ 这里也跟着放行：
+       量不到不误拦，宁可多给一句真话。
+    """
+    m = str(fest_map or "")
+    if not m:
+        return True
+    try:
+        return not navigation._map_go_unlock_check(m)
+    except Exception:
+        return True
+
+
+def _festival_activity_hint(menu_type: str = "", loc_name: str = "") -> str:
     """🎪 节日限时小游戏提示（2026-08-16）：ReadyCheckDialog/BobberBar → 注入今天节日引导；
     农展台(StorageContainer)/数量框(NumberSelectionMenu) → 专用操作引导（2026-08-24 恒）。
-    让 AI 在节日小游戏/专用菜单打开时知道该干嘛（放展位/输数量/就绪/冰钓限时）。"""
+    让 AI 在节日小游戏/专用菜单打开时知道该干嘛（放展位/输数量/就绪/冰钓限时）。
+
+    🔴 补两条闸（恒真机：「**沙漠节没解锁**的时候也在播沙漠节；而且**在鹈鹕镇钓鱼**也被说成
+    「沙漠节钓鱼游戏进行中」」）：
+      ① **场地没解锁 ⇒ 一句都不注入**（日历里那行「今天沙漠节」是**事实**，照留；玩法引导不给）；
+      ② **「钓鱼小游戏进行中」只许在节日场地里说** —— `BobberBar` 在任何图钓鱼都会开，
+        不看地点就会把"镇里钓个鱼"说成沙漠节比赛。判据见 `_fest_venue_ok`。
+    """
     try:
         d = _festival_now_data()
         if not d.get("ok"):
@@ -16470,11 +16517,17 @@ def _festival_activity_hint(menu_type: str = "") -> str:
         f = calendar_data.get_festival_today(d["season"], d["day"])
         if not f:
             return ""
+        # ① 场地没解锁 ⇒ 不注入玩法引导（"今天有这个节"那行事实不归这里管）
+        if not _fest_unlocked(str(f.get("map") or "")):
+            return ""
         if menu_type == "StorageContainer":
             return "🏆 农展台(放9件评分)：festival display_fill items='名,名…' 一次放满 · display_takeback 全部收好(评完必收)"
         if menu_type == "NumberSelectionMenu":
             return "🔢 数量框(金币换星币/转盘押注)：menu number value=N 设数量 · confirm=True 点确定 · button=cancel 取消"
         if menu_type not in ("ReadyCheckDialog", "BobberBar"):
+            return ""
+        # ② 钓鱼小游戏：只在**今天的节日场地**里才算节日的钓鱼比赛
+        if menu_type == "BobberBar" and not _fest_venue_ok(loc_name, str(f.get("map") or "")):
             return ""
         guide = _fest_guide(calendar_data.FESTIVAL_GUIDE.get((d["season"], d["day"]), ""))
         if not guide:
@@ -16594,6 +16647,9 @@ def _festival_recommend_hint(loc_name: str = "") -> str:
             return ""
         d = _festival_now_data()
         if not d.get("ok"):
+            return ""
+        # 🚌 没解锁沙漠 ⇒ 连"玩法推荐"都不给（跟 `_festival_activity_hint` 同一把尺子）
+        if not _fest_unlocked("Desert"):
             return ""
         key = (d["season"], d["day"])
         if _FEST_RECOMMEND_KEY["last"] == key:

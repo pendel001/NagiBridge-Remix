@@ -54,6 +54,7 @@ CORE = [
     "_farmhouse_door_selftest.py",     # 农舍/农场建筑进门：门格形状 (图,(x,y)) 别再 TypeError
     "_fish_stall_selftest.py",         # 钓鱼空等看门狗：菜单关掉要重支自动抛竿 / 卡住必收工
     "_goto_same_map_selftest.py",     # 同图导航不许先 warp 到"入口"再走（凭空瞬移）
+    "_desert_festival_guard_selftest.py",  # 沙漠节播报：没解锁 / 不在节日场地就不许瞎播
 ]
 
 # 慢钉子（单个 15~60s，合计占全套一半）：默认**不跑**，`--slow` 或 `--all` 才带上。
