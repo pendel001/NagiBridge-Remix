@@ -47,6 +47,7 @@ CORE = [
     "_water_stamina_selftest.py",      # 浇水低体力闸（大簇切小）
     "_pet_flavor_selftest.py",         # 摸宠物彩蛋文案（猫/狗/龟）
     "_load_machine_filter_selftest.py",  # 上料：箱子/稻草人别串进路线（canPlace 判据）
+    "_sleep_overnight_guard_selftest.py",  # 过夜结算/存盘时禁止 sleep（防把房主结算卡死）
 ]
 
 # 慢钉子（单个 15~60s，合计占全套一半）：默认**不跑**，`--slow` 或 `--all` 才带上。
