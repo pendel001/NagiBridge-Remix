@@ -9369,6 +9369,12 @@ def load_machines(item: str, machine_type: str = "", location: str = "", count: 
        不会像 `fruit_round` 那样提前收工。`item` 留空 ⇒ 只收不放。
     每台机器都真实走过去操作，100% 走游戏交互逻辑。
     ⚠️ 品质不影响：`/select` 每次都重新选，普通品质那栈用完了自然选到金/银星那栈。
+    ⚠️ **`machine_type` 可以省了**（2026-11-07 恒真机钉的）：脚本放料前会自己问游戏
+       （`/machine_reqs` 的 `canPlace` = `Object.PlaceInMachine(probe:true)`），**只走真收得下这件料**的机器。
+       起因：恒「load 收明明只需要三台熔炉，但遍历了箱子、稻草人等奇怪的点」——
+       旧版机器清单把箱子/稻草人也报成 `empty` 机器，而**箱子的 interact 是开箱 UI**，
+       菜单把走位卡死，那一趟在农场转了 32 秒。现在箱子/稻草人当场剔掉，
+       "缺煤炭"这种也直接说出来（`requirements` 是游戏给数），不会白走过去才发现。
 
     Args:
         item: 原料英文名（如 Starfruit；Cask 用成品如 Starfruit Wine）。

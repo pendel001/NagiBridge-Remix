@@ -79,8 +79,134 @@ def get_serviceable_machines(machine_type="", location="", with_items=None, here
             continue
         if not here and location and str(m.get("location", "")).lower() != location.lower():
             continue
+        if _not_machine_name(m.get("type")):
+            continue                              # 🚫 箱子/稻草人（见 `_NOT_MACHINE_NAMES`）
         out.append(m)
     return out, ""
+
+
+# ── 🚫 「这格压根不是机器」──────────────────────────────────────────────────────
+# 🚨 2026-11-07 真机（恒）：「**load 收明明只需要三台熔炉，但遍历了箱子、稻草人等奇怪的点**」。
+#   根因两层，**两层都得堵**：
+#     ① C# 的机器清单只问 `bigCraftable` ⇒ 箱子/稻草人也被报成 `status=empty` 的"机器"
+#        （已在 `ModEntry.IsNotAMachine` 修；**这版 DLL 还没上游戏**，见 CHANGELOG）；
+#     ② 本脚本的老门只看 `status == "empty"` ⇒ 谁空着就去摸 —— 而**箱子的 interact 是开箱 UI**，
+#        菜单一起吃进来，走位当场卡死（`session_log.jsonl` 13:15:13 那一趟在农场打转 32 秒）。
+#
+# ⇒ 正路判据**问游戏**：`/machine_reqs` 的 `canPlace`（= `Object.PlaceInMachine(probe:true)`），
+#   一次问一整张图。下面这份名单是**老 DLL / 料不在背包**问不到时的退路。
+#   ⚠️ 名单只放**确定的**：容器 / 稻草人 / 纯装饰 —— 宁可多报一个点，也别把蜜蜂房/采集器误删
+#      （删了就是"收 已好的机器"当场漏收蜂蜜）。
+_NOT_MACHINE_NAMES = (
+    # 容器（`/chests` 管它；interact 是**开箱 UI**，菜单一起吃进来，走位当场卡死）
+    "chest", "stone chest", "junimo chest", "mini-fridge", "fridge",
+    # 稻草人（interact 什么都不发生）
+    "scarecrow", "rarecrow", "deluxe scarecrow",
+    # 纯装饰：也是 `bigCraftable`，放什么都不进去（2026-11-07 只读体检当场撞见 `Campfire (29,9)`）
+    "campfire", "torch", "brazier", "wood sign", "stone sign", "dark sign",
+    "sign of the vessel",
+)
+
+
+def _not_machine_name(t):
+    """类型名像不像**不是机器**的东西（容器 / 稻草人 / 纯装饰）。空名 ⇒ False（不瞎判）。"""
+    n = str(t or "").strip().lower()
+    if not n:
+        return False
+    return n in _NOT_MACHINE_NAMES or "scarecrow" in n
+
+
+def _probe_place(item):
+    """问游戏：**脚下这张图**每台机器收不收 `item` ⇒ `{(x,y): 条目}` / `None`（问不到）。
+
+    条目里三档都要看：
+      `canPlace=True`  → 放得进去 —— **只有这种才走过去**；
+      `canPlace=False` → 是机器，但这件料它不吃（多半缺附加消耗，见 `requirements`）；
+      `canPlace=None`  → **压根不是机器**（没有 `MachineData`，箱子/稻草人就是这一档，已真机验过）。
+    ⚠️ 一次问一整张图（`/machine_reqs` 本来就按地点枚举），别一台一发。
+    ⚠️ 问不到（老 DLL 没这端点 / 料不在背包）必须回 `None`，**绝不能当成"没有机器收这件料"**——
+       那会把整组目标清空，AI 看到"没有可伺候的机器"却明明有。
+    """
+    try:
+        r = api._ai_post("/machine_reqs", {"item": item})
+    except Exception:
+        return None
+    if not isinstance(r, dict) or r.get("ok") is not True:
+        return None
+    out = {}
+    for m in (r.get("machines") or []):
+        try:
+            out[(int(m.get("x")), int(m.get("y")))] = m
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _by_type(ms):
+    """`[机器…]` → `小桶×3、Furnace×2`（报缺用，别一条一台刷屏）。"""
+    c = {}
+    for m in ms:
+        t = str(m.get("type") or "?")
+        c[t] = c.get(t, 0) + 1
+    return "、".join(f"{k}×{v}" for k, v in sorted(c.items()))
+
+
+def _missing_text(entry):
+    """探针条目里"还差什么"（`MachineData.AdditionalConsumedItems`，**游戏给数**，不编）。"""
+    miss = [f"{r.get('name')}×{r.get('need')}（手上 {r.get('have')}）"
+            for r in (entry.get("requirements") or []) if r.get("enough") is False]
+    return "、".join(miss)
+
+
+def _filter_loadable(ms, items, holding=""):
+    """把「这格根本不吃这件料」的点**放料之前**剔掉 —— 别走过去了才在屏幕上报"需求未登记"。
+
+    返回 (留下要伺候的, 一句话说明剔了谁)。
+    ⚠️ 好了的机器（`ready`）**一律留下**：能"好了"本身就证明它是机器，不用再问。
+    """
+    ready = [m for m in ms if m.get("status") == "ready"]
+    empties = [m for m in ms if m.get("status") != "ready"]
+    if not empties:
+        return ms, ""
+
+    probe = None
+    for it in ([holding] + list(items or [])):
+        it = str(it or "").strip()
+        if not it:
+            continue
+        probe = _probe_place(it)
+        if probe is not None:
+            break
+
+    if probe is None:                       # 问不到 ⇒ 只按名单剔，**绝不清空**
+        bad = [m for m in empties if _not_machine_name(m.get("type"))]
+        kept = [m for m in empties if not _not_machine_name(m.get("type"))]
+        note = f"🚫 剔掉 {len(bad)} 个不是机器的点（{_by_type(bad)}）" if bad else ""
+        return ready + kept, note
+
+    kept, reject, wrong = [], [], []
+    for m in empties:
+        e = probe.get((m["x"], m["y"]))
+        if e is None or e.get("canPlace") is True:
+            kept.append(m)                  # 探针没报这台 ⇒ 不敢乱剔（宁可走过去看）
+        elif e.get("canPlace") is False:
+            reject.append((m, e))
+        else:
+            wrong.append(m)                 # canPlace=None ⇒ 不是机器
+
+    parts = []
+    if wrong:
+        parts.append(f"🚫 剔掉 {len(wrong)} 个不是机器的点（{_by_type(wrong)}）")
+    if reject:
+        why = ""
+        for _m, e in reject:
+            why = _missing_text(e)
+            if why:
+                break
+        parts.append(f"⛔ {_by_type([m for m, _e in reject])} 不吃这件料"
+                     + (f"（还差 {why}）" if why
+                        else f"（{_machine_missing_reason(reject[0][0].get('type'))}）"))
+    return ready + kept, "；".join(parts)
 
 
 def _wait_arrival(tx, ty, timeout=18):
@@ -549,6 +675,17 @@ def run(items, machine_type="", location="", count=0, no_enter=False, here=False
                         continue
                     time.sleep(0.5)
 
+        # 🚫 放料之前先问游戏「这一组哪些点**真收得下这件料**」——箱子/稻草人/装错的当场剔掉。
+        #    🚨 恒 2026-11-07：「load 收明明只需要三台熔炉，但遍历了箱子、稻草人等奇怪的点」——
+        #    老门只看 `status == "empty"`，箱子一摸就是**开箱 UI**，菜单把走位卡死，白转 32 秒。
+        if feed:
+            ms, drop_note = _filter_loadable(ms, feed, holding)
+            if drop_note:
+                api.log("  " + drop_note)
+            if not ms:
+                api.log(f"  ⏹ {loc} 这组没有能放料的机器 —— 跳过（不走过去白转一圈）")
+                continue
+
         aisles = _aisle_map(ms)
         p = api.state().get("player", {})
         path = _order_tiles(list(aisles), (p.get("x", 0), p.get("y", 0)))
@@ -599,6 +736,7 @@ def run(items, machine_type="", location="", count=0, no_enter=False, here=False
         left_empty = sum(
             1 for m in src
             if m.get("status") == "empty"
+            and not _not_machine_name(m.get("type"))     # 🚫 箱子/稻草人不是"空着的机器"
             and (here or not location
                  or str(m.get("location", "")).lower() == location.lower())
             and (not machine_type
@@ -684,6 +822,11 @@ if __name__ == "__main__":
 
     import os
     os.environ["NAGI_URL"] = f"http://localhost:{args.port}"
+    # 🚨 2026-11-07：放料前的探针（`/machine_reqs` → `api._ai_post`）走的是 **`NAGI_AI_URL`**，
+    #    不跟 `--port` 走。不加这一行 ⇒ `--port 7842` 时**主连接问恒、探针却问 AI**：
+    #    探针会拿**另一个人**的背包和所在图去判"这台收不收这件料"，剔错机器（还可能整组清空）。
+    #    ⇒ 两个地址钉成同一台。
+    os.environ["NAGI_AI_URL"] = os.environ["NAGI_URL"]
     import importlib
     importlib.reload(api)
 

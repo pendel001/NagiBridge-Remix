@@ -22481,6 +22481,29 @@ var tcs = new TaskCompletionSource<object>();
     }
 
     /// <summary>
+    /// **这格 bigCraftable 压根不是机器**（箱子/稻草人）—— 机器清单里不该出现它。
+    ///
+    /// 🚨 2026-11-07 真机（恒）：「**load 收明明只需要三台熔炉，但遍历了箱子、稻草人等奇怪的点**」。
+    ///   根因就在这儿：机器清单原来只问 `bigCraftable`，**箱子/稻草人也是 bigCraftable**
+    ///   ⇒ `/machines`、`/farm_report` 把它们报成 `status=empty` 的"机器"
+    ///   ⇒ 任何"往空机器放料"的调用（没传类型档的那种）都会把它们串进路线，
+    ///     AI 走过去挨个 interact —— **箱子的 interact 是开箱 UI**，菜单一起吃进来，
+    ///     走位当场卡死，那一趟在农场里打转 32 秒（`sessions/session_log.jsonl` 13:15:13 有账）。
+    ///
+    /// ⚠️ 判据用游戏自己的身份，**不拿 `GetMachineData()==null` 当总闸**：
+    ///   蜜蜂房/采集器/雕像那几类到底在不在 `Data/Machines` 里，我没逐个验过；
+    ///   一刀切会把它们从 `/machines` 里删掉 ⇒ 「收 已好的机器」**当场漏收蜂蜜**。
+    ///   这里只剔**两个确定的**：`Chest`（容器，`/chests` 管它）+ `Object.IsScarecrow()`（反编译实有：
+    ///   `Boolean IsScarecrow()`）。别的照旧报，宁可多报也不漏报。
+    /// </summary>
+    private static bool IsNotAMachine(StardewValley.Object obj)
+    {
+        if (obj is Chest) return true;          // 宝箱/大箱子/石箱/小冰柜…（`Chest` 全覆盖）
+        try { if (obj.IsScarecrow()) return true; } catch { }
+        return false;
+    }
+
+    /// <summary>
     /// 扫描一个地点的所有 bigCraftable 机器（Keg/Furnace/Dehydrator…），带 location 归属。
     /// 供 /machines（当前地点）和 /farm_report（全农场）复用。
     /// </summary>
@@ -22491,6 +22514,7 @@ var tcs = new TaskCompletionSource<object>();
         {
             var obj = pair.Value;
             if (!obj.bigCraftable.Value) continue;
+            if (IsNotAMachine(obj)) continue;   // 🚫 箱子/稻草人不是机器（见 IsNotAMachine）
 
             string status;
             if (obj is IndoorPot pot)
@@ -23046,7 +23070,9 @@ var tcs = new TaskCompletionSource<object>();
         return Game1.getLocationFromName(name);
     }
 
-    /// <summary>枚举机器：bigCraftable + 可选类型过滤。供 collect/load 复用。</summary>
+    /// <summary>枚举机器：bigCraftable + 可选类型过滤。供 collect/load 复用。
+    /// ⚠️ 跟 `/machines` **同一把尺子**：箱子/稻草人在这儿也要剔（`IsNotAMachine`）——
+    ///    否则 `/machine_reqs` 的探针会把它们列进来（`canPlace=null`），调用方又得多判一次。</summary>
     private static IEnumerable<(GameLocation loc, Vector2 tile, StardewValley.Object obj)> EnumerateMachines(
         IEnumerable<GameLocation> locs, string? type)
     {
@@ -23056,6 +23082,7 @@ var tcs = new TaskCompletionSource<object>();
             {
                 var obj = pair.Value;
                 if (!obj.bigCraftable.Value) continue;
+                if (IsNotAMachine(obj)) continue;
                 if (!string.IsNullOrEmpty(type) && !obj.Name.Equals(type, StringComparison.OrdinalIgnoreCase))
                     continue;
                 yield return (loc, pair.Key, obj);
