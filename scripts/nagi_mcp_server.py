@@ -7409,11 +7409,14 @@ def _internal_item_name(name: str, inv: list = None) -> str:
     游戏那些端点全是 `item.Name.Equals(name)` —— **只认英文内部名**（`Straw Hat`），
     而 AI 在状态条/背包里看到的是**中文显示名**（`草帽`）⇒ 它照抄中文就永远匹配不上。
 
-    ## 来历（两次真机，同一个形状）
+    ## 来历（三次真机，同一个形状）
       · **2026-09-27 卖东西**：`sell_all` 报一串"没卖动的" —— `/state` 实测
         `name='Driftwood' / displayName='浮木'`（那次的修法写在 `sell_to_shop` 里）。
       · **2026-11-01 戴帽子**：恒「**戴不上帽子（不认中文）**，后来换英文试好了」——
         `wear()` 没享受到 09-27 那次的修法 ⇒ `背包没有 '草帽'`。
+      · **2026-11-08 出货箱**：恒「**同一个问题：出货箱不收中文名字**」——
+        `sell_to_bin()` 又自己发原始名 ⇒ 中文名一件都投不进去（「背包里没有「沙拉」能投」）。
+        这次连 C# 那边也把判据收成 `ItemNameMatches`（内部名 + 显示名双认），两头对齐。
 
     ⚠️ **翻不出来就原样返回**（让 C# 如实报"背包没有"，我不在这编一个名字）。
     ⚠️ 判据只有这一处：谁要往 C# 端点送 AI 给的物品名，都先过这儿，别再各写一份。
@@ -24311,12 +24314,29 @@ def sell_to_bin(name: str = "", sell_all: bool = False) -> str:
             api.walk_natural(bin_door_x, bin_door_y)
             time.sleep(0.3)
 
-        r = api._post("/sell", {"name": name})   # ⚠️ **不传 `all`**（那条已经封了，见上）
+        # 🔴 2026-11-08 恒「同一个问题：**出货箱不收中文名字**」——**立刻能生效**的那一半。
+        #    C# `/sell` 老实现只比 `item.Name`（英文内部名 `Salad`），`item.DisplayName`（`沙拉`）
+        #    压根没参与比较 ⇒ 中文名永远匹配不到（那一刀已改成 `ItemNameMatches` 双认，
+        #    但 DLL 得等游戏关掉才能部署）。这里先按**全仓同一个判据**换成内部名再发：
+        #    `_internal_item_name()` —— `/drop`、`/gift`、`wear` 早就是走它。
+        #    ⚠️ **不要再各写一份**（它自己的 doc 就写着"判据只有这一处"）：
+        #       "补一遍漏一处"正是这个 bug 从 09-27 卖货、11-01 戴帽一路报到现在的原因。
+        post_name = _internal_item_name(name, s.get("inventory") or [])
+        r = api._post("/sell", {"name": post_name})   # ⚠️ **不传 `all`**（那条已经封了，见上）
         if not r.get("ok"):
             return _with_state(f"❌ 出货失败: {r.get('error', '未知错误')}")
         sold = r.get("sold") or []
         if not sold:
-            return _with_state(f"📦 背包里没有「{name}」能投（或者这样东西投不进出货箱）")
+            msg = f"📦 背包里没有「{name}」能投（或者这样东西投不进出货箱）"
+            if post_name != name:
+                # 名字查到了、也真按内部名发出去了，游戏还是没投 ⇒ 那就不关名字的事，别让它背锅
+                msg += f"\n   🔎 已按背包里的内部名「{post_name}」去投，游戏仍没投出来"
+            elif not any(str((it or {}).get("displayName") or "").strip()
+                         for it in (s.get("inventory") or [])):
+                # `/state` 连显示名字段都没有 ⇒ 兜底无从下手，**说真话**（别硬编中英对照表）
+                msg += ("\n   ⚠️ 这个端点（当前 DLL）只认英文内部名；"
+                        "要中文名也能投需要重开游戏上新 DLL（已修）")
+            return _with_state(msg)
         detail = ", ".join(f"{s['item']}×{s['count']} ({s['price']}g)" for s in sold[:8])
         if len(sold) > 8:
             detail += f" 等共 {r['totalItems']} 种"

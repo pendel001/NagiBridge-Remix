@@ -35,6 +35,7 @@ CORE = [
     "_till_skip_tilled_selftest.py",   # 锄地跳过逻辑
     "_plant_and_layout_selftest.py",   # 播种/洒水器布局
     "_bin_no_all_selftest.py",         # 出货箱
+    "_bin_cn_name_selftest.py",        # 出货箱认不认中文名（DisplayName）
     "_shipping_bin_selftest.py",       # 出货箱提示/坐标
     "_state_ab_selftest.py",           # 状态条 A/B（改了提示就会碰）
     "_map_go_resolve_selftest.py",     # 跨图导航

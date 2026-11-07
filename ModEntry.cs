@@ -1881,6 +1881,25 @@ public class ModEntry : Mod
         try { return it?.DisplayName ?? it?.Name ?? "?"; } catch { return it?.Name ?? "?"; }
     }
 
+    /// <summary>
+    /// 🧾 背包件的**名字判据**：`Name`（英文内部名）**或** `DisplayName`（中文显示名）任一等就命中。
+    ///
+    /// 🔴 2026-11-08 恒：「同一个问题：**出货箱不收中文名字**」——`/sell` 原来只比 `item.Name`
+    /// （`Salad`），可 AI 和 `/state` 手里拿的全是显示名（`沙拉`）⇒ 中文名永远匹配不到，
+    /// 回执还硬说「背包里没有「沙拉」能投」（**东西就在包里**）。
+    /// 同族早踩过一次（`/drop`、`/chest_take`、`/select` 当初都是各补一遍 `DisplayName`）——
+    /// 补一遍就漏一处正是这个 bug 的来源 ⇒ 这里收成**一个判据**，别再各写一套。
+    /// `OrdinalIgnoreCase` 对中文没影响（没有大小写），英文照旧不分大小写。
+    /// ⚠️ 这里**不认 `QualifiedItemId`**：本函数只解决"中文名还是英文名"这一件事，
+    ///    按 id 精确挑另有专门的路（`/chest_take`、`/drop` 那条判据里就带着 id）。
+    /// </summary>
+    private static bool ItemNameMatches(Item? item, string? name)
+    {
+        if (item == null || string.IsNullOrWhiteSpace(name)) return false;
+        if (item.Name.Equals(name, StringComparison.OrdinalIgnoreCase)) return true;
+        return (item.DisplayName ?? "").Equals(name, StringComparison.OrdinalIgnoreCase);
+    }
+
     /// <summary>手动加食物 buff：SDV eatObject 程序化调用不加 buff（实测 Spicy Eel 吃后 buffs 空），
     /// 1.6 的 Buff 类编译引用不到，用反射从游戏程序集找 + 反射调 buffsDisplay 加。</summary>
     private static void TryAddFoodBuff(StardewValley.Object obj)
@@ -2835,7 +2854,8 @@ public class ModEntry : Mod
                         var idx = -1;
                         for (int i = 0; i < farmer.Items.Count; i++)
                         {
-                            if (farmer.Items[i] != null && farmer.Items[i].Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+                            // 🔴 2026-11-08：跟 `/sell` 同一口径 —— 选快捷栏也认中文显示名
+                            if (ItemNameMatches(farmer.Items[i], name))
                             { idx = i; break; }
                         }
                         if (idx >= 0)
@@ -6944,8 +6964,9 @@ public class ModEntry : Mod
                 for (int i = 0; i < farmer.Items.Count; i++)
                 {
                     var item = farmer.Items[i];
+                    // 🔴 2026-11-08：跟 `/sell` 同一口径 —— 饰品也认中文显示名
                     if (item is StardewValley.Objects.Trinkets.Trinket tr
-                        && tr.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+                        && ItemNameMatches(tr, name))
                     {
                         // 先脱旧饰品回背包（避免直接覆盖顶掉丢失），再穿新的
                         var oldTrinket = farmer.trinketItems.FirstOrDefault();
@@ -7002,8 +7023,9 @@ public class ModEntry : Mod
                 var farmer = Game1.player;
                 for (int i = 0; i < farmer.Items.Count; i++)
                 {
+                    // 🔴 2026-11-08：跟 `/sell` 同一口径 —— 戒指也认中文显示名
                     if (farmer.Items[i] is StardewValley.Objects.Ring ring
-                        && ring.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+                        && ItemNameMatches(ring, name))
                     {
                         // leftRing/rightRing 是 readonly NetRef<Ring>——SetValue 整个对象会被 readonly 忽略，
                         // 要 GetValue 拿现成 NetRef 再设 .Value（NetField 正确赋值，能触发网络同步）
@@ -7259,7 +7281,10 @@ public class ModEntry : Mod
                 {
                     var item = farmer.Items[i];
                     if (item == null) continue;
-                    if (!item.Name.Equals(name, StringComparison.OrdinalIgnoreCase)) continue;
+                    // 🔴 2026-11-08：同 `/sell` 那一刀 —— 只比 `Name` 时 AI 传中文显示名
+                    //    （`水手帽`/`沙拉`）永远穿不上，回执却说「背包没有 '水手帽'」。
+                    //    ⇒ 判据统一走 `ItemNameMatches`（内部名 + 显示名）。
+                    if (!ItemNameMatches(item, name)) continue;
 
                     var err = TryEquip(farmer, item, i, hand, out var slot, out var replaced);
                     tcs.SetResult(err == null
@@ -13273,8 +13298,13 @@ public class ModEntry : Mod
                 if (item is Tool) continue;
                 if (keepCategories.Contains(item.Category)) continue;
 
-                if (!sellAll && !string.IsNullOrEmpty(name)
-                    && !item.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+                // 🔴 2026-11-08 恒：「出货箱不收中文名字」。
+                //    原来这里只比 `item.Name`（英文内部名 `Salad`）—— `DisplayName`（`沙拉`）
+                //    **根本没参与比较** ⇒ `menu(ops="bin", name="沙拉")` 一件都匹配不到，
+                //    而回执反过来告诉 AI「背包里没有「沙拉」能投」（东西明明在包里）。
+                //    ⇒ 判据换成 `ItemNameMatches`：**内部名 + 显示名**都认（跟 `/drop`、
+                //      `/chest_take`、`/select` 同一个口径，别再各写一套）。
+                if (!sellAll && !string.IsNullOrEmpty(name) && !ItemNameMatches(item, name))
                     continue;
 
                 if (sellAll && item.Name.Contains("Seeds", StringComparison.OrdinalIgnoreCase))
@@ -13321,7 +13351,10 @@ public class ModEntry : Mod
                 {
                     var item = farmer.Items[i];
                     if (item == null) continue;
-                    if (!item.Name.Equals(name, StringComparison.OrdinalIgnoreCase)) continue;
+                    // 🔴 2026-11-08：同 `HandleSell` 那一刀 —— 原来只比 `item.Name`（英文内部名）
+                    //    ⇒ AI 传中文显示名（`沙拉`）永远匹配不到，回执却说「Item '沙拉' not found」。
+                    //    判据统一走 `ItemNameMatches`（内部名 + 显示名）。
+                    if (!ItemNameMatches(item, name)) continue;
 
                     // Get the inventory slot clickable component
                     var inventoryField = shop.GetType().GetField("inventory",
