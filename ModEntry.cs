@@ -22764,7 +22764,7 @@ var tcs = new TaskCompletionSource<object>();
 
     /// <summary>
     /// GET /farm_report — 全农场扫描（照抄游戏农场电脑的遍历范围）。
-    /// 覆盖：室外 Farm + 所有建筑室内（棚/舍/小屋/温室）+ 独立 location（地窖 Cellar）。
+    /// 覆盖：室外 Farm + 所有建筑室内（棚/舍/小屋/温室）+ 独立 location（**走得进去的**地窖 Cellar）。
     /// 返回作物聚合计数、动物逐只（带所属建筑）、机器逐台（带类型/位置/状态）。
     /// </summary>
     private object HandleFarmReport()
@@ -22777,7 +22777,7 @@ var tcs = new TaskCompletionSource<object>();
         {
             try
             {
-                // 遍历范围与 `/machines`、`/machine_load` 共用（farm + 建筑室内 + 地窖）
+                // 遍历范围与 `/machines`、`/machine_load` 共用（farm + 建筑室内 + 走得进去的地窖）
                 // （`/machine_collect` 2026-10-03 已删，见路由表那处墓碑）
                 var farmLocs = ResolveLocations("");
                 var buildingMap = BuildBuildingMap();
@@ -23037,7 +23037,11 @@ var tcs = new TaskCompletionSource<object>();
         return tcs.Task.GetAwaiter().GetResult();
     }
 
-    /// <summary>解析地点参数：指定名字 → 该地点；空 → 全农场（farm + 建筑室内 + 地窖）。</summary>
+    /// <summary>
+    /// 解析地点参数：指定名字 → 该地点；空 → 全农场（farm + 建筑室内 + **走得进去的**地窖）。
+    /// ⚠️ 地窖那一档 2026-11-07 已收窄（`IsReachableCellar`）：以前是"`Game1.locations` 里
+    /// 所有 Cellar 无条件收"，把 **264 个幽灵木桶**（8 间进不去的地窖 × 33 个 Cask）算成了农场的机器。
+    /// </summary>
     private static List<GameLocation> ResolveLocations(string location)
     {
         if (!string.IsNullOrEmpty(location))
@@ -23062,10 +23066,89 @@ var tcs = new TaskCompletionSource<object>();
         }
         foreach (var loc in Game1.locations)
         {
-            if (loc is Cellar && seen.Add(loc))
-                list.Add(loc);          // 地窖是独立 location，不在 farm.buildings
+            // 地窖是独立 location，不在 farm.buildings ⇒ 得单独挑；但**只挑走得进去的**。
+            // 老写法是无条件 `loc is Cellar` ⇒ 2026-11-07 真机 `/farm_report` 报 total=267，
+            // 其中 264 个是幽灵木桶（8 间进不去的地窖 × 33 个 Cask）。判据见 `IsReachableCellar`。
+            if (IsReachableCellar(loc) && seen.Add(loc))
+                list.Add(loc);
         }
         return list;
+    }
+
+    /// <summary>
+    /// 🏠 这间地窖**走得进去**吗？`ResolveLocations` 只收走得进去的地窖。
+    ///
+    /// 2026-11-07 恒真机：`/farm_report` 报 `total=267` = Farm 上 **3 台 Furnace** +
+    /// **Cellar / Cellar2 … Cellar8 各 33 个 Cask**（264 个木桶），可农场上一台都没有。
+    /// `/farm_buildings` 只有 Farmhouse + Greenhouse + Shipping Bin + Pet Bowl + **1 间 Cabin**
+    /// ⇒ 最多 2 个地窖；存档 XML 里 `xsi:type="Cellar"` 有 **8 个**且 `<upgradeLevel>0</upgradeLevel>`
+    /// （**房子从没升级过 ⇒ 一个地窖都进不去**）。根因：老写法把 `Game1.locations` 里所有 Cellar
+    /// 都当成"全农场"的一部分（地窖是独立 location，不在 `farm.buildings` 里）。
+    ///
+    /// 判据（任一即可，全问游戏自己的数据，不猜）：
+    ///   ① **能从现存住宅走到**：`FarmHouse`（`Game1.getLocationFromName("FarmHouse")`）或农场里
+    ///      每栋 `Building` 的 `indoors`，它们的 `warps` 里有 `TargetName` 指到**这间**地窖
+    ///      —— 真实地窖入口的 warp 目标就是地窖名（`FarmHouse.cs:1971`
+    ///      `cellarWarp.TargetName = cellarName`；`cellarName` 见 `GetCellarName()`：
+    ///      `Cellar` / `Cellar`+编号，`FarmHouse.cs:981-1004`）。
+    ///   ② **本机房子确实升级到有地窖**：`Game1.player.HouseUpgradeLevel >= 3` 且这间 `Name` 是
+    ///      `Cellar`（兜底：防 warp 表在某些版本/场景下不反映）。游戏里地窖只在 `upgradeLevel == 3`
+    ///      时铺楼梯（`FarmHouse.cs:947` / `:1825`）。
+    ///
+    /// ⚠️ **读不到/异常一律 `false`**：宁可少报一间地窖，也绝不能把 264 个幽灵木桶再报出来
+    ///    —— "报假数据"比"少报"糟。
+    /// </summary>
+    private static bool IsReachableCellar(GameLocation? loc)
+    {
+        if (loc is not Cellar) return false;
+        try
+        {
+            // ① 从"现存住宅的室内"往外找 warp：农舍 + 农场里每栋建筑的室内（棚/舍/小屋/温室）
+            var froms = new List<GameLocation>();
+            var house = Game1.getLocationFromName("FarmHouse");
+            if (house != null) froms.Add(house);
+            var farm = Game1.getFarm();
+            if (farm != null)
+            {
+                foreach (var b in farm.buildings)
+                {
+                    if (b.indoors?.Value is GameLocation indoor) froms.Add(indoor);
+                }
+            }
+            foreach (var from in froms)
+            {
+                if (from.warps == null) continue;
+                foreach (var w in from.warps)
+                {
+                    if (w == null) continue;
+                    if (WarpTargetsCellar(w.TargetName, loc)) return true;
+                }
+            }
+
+            // ② 兜底：本机房子升级到 3 级（地窖那档）才有地窖
+            if (Game1.player != null && Game1.player.HouseUpgradeLevel >= 3
+                && loc.Name == "Cellar")
+                return true;
+        }
+        catch
+        {
+            return false;   // 读不到/炸了 ⇒ 保守：当它进不去
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// 这条 warp 的 `TargetName` 是不是**这间**地窖？取值就是 `Cellar` / `Cellar2` … `Cellar8`
+    /// （`FarmHouse.GetCellarName()`，`FarmHouse.cs:981-1004`）。
+    /// ⚠️ 只认**相等**，别用 `StartsWith("Cellar")` 放宽 —— 一放宽 `Cellar` 就把 `Cellar2…Cellar8`
+    /// 全串进来，正是这次要堵的那个洞。
+    /// </summary>
+    private static bool WarpTargetsCellar(string? targetName, GameLocation cellar)
+    {
+        if (string.IsNullOrEmpty(targetName)) return false;
+        if (!targetName.StartsWith("Cellar", StringComparison.OrdinalIgnoreCase)) return false;
+        return cellar.Name.Equals(targetName, StringComparison.OrdinalIgnoreCase)
+            || cellar.NameOrUniqueName.Equals(targetName, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

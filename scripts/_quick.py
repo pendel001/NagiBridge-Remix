@@ -48,6 +48,7 @@ CORE = [
     "_water_stamina_selftest.py",      # 浇水低体力闸（大簇切小）
     "_pet_flavor_selftest.py",         # 摸宠物彩蛋文案（猫/狗/龟）
     "_load_machine_filter_selftest.py",  # 上料：箱子/稻草人别串进路线（canPlace 判据）
+    "_cellar_reachable_selftest.py",   # 地窖只算「走得进去的」（264 个幽灵木桶别再进 /farm_report）
     "_sleep_overnight_guard_selftest.py",  # 过夜结算/存盘时禁止 sleep（防把房主结算卡死）
     "_tv_hint_selftest.py",            # 电视那行是真路牌（POI 名字 + help 查得到）
     "_helpwanted_selftest.py",         # 求助栏接取按钮（acceptQuestButton）报得出、指得准
