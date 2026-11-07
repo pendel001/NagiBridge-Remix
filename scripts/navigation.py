@@ -2113,11 +2113,28 @@ def _enter_building_door(loc: str):
             try:
                 t = _resolve_place(loc)
                 if t and t[0] == cur:
-                    door = (t[1], t[2])
+                    # 🚨 2026-11-08 恒：「**为什么 ai 调 farmhouse 总是报进不来门**。我还以为是故意的
+                    #    要自己推门」—— 不是故意的，是**这一步写错了形状**：
+                    #    `_resolve_place` 回的是 **(图, x, y) 三元组**，而下面要的是 **(图, (x, y))**；
+                    #    旧行 `door = (t[1], t[2])` 给的是两个 int ⇒ `out_map, (dx, dy) = door`
+                    #    当场 `TypeError: cannot unpack non-iterable int object` ⇒ 门格 `None`、
+                    #    报成「走到门格 None 也推了门」——**一步都没走**。
+                    #    ⚠️ 农场里的**小屋/畜棚/鸡舍/工棚/农舍**都走这条路（`BUILDING_DOORS` 里没有它们，
+                    #       门是建筑动态给的）⇒ 整个"农场建筑族"都进不去，而且是 `map go` 的**唯一**路。
+                    door = (t[0], (t[1], t[2]))
             except Exception:
                 pass
         if door is None:
             return False, "no_door", None, ""
+        # 🛡️ 形状防御：门口表/动态解析都得是 `(图, (x, y))`。形状不对就**当场说清楚**，
+        #    别再让它变成一句 `TypeError: ...` 糊在"游戏没让进"后面（那正是这次的坑）。
+        try:
+            _ok_shape = (isinstance(door, (tuple, list)) and len(door) == 2
+                         and isinstance(door[1], (tuple, list)) and len(door[1]) == 2)
+        except Exception:
+            _ok_shape = False
+        if not _ok_shape:
+            return False, "no_door", None, f"门格表形状不对（要 (图,(x,y))）: {door!r}"
         out_map, (dx, dy) = door
         tile = (dx, dy)
         if out_map != cur:

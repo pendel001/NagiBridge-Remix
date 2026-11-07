@@ -50,6 +50,7 @@ CORE = [
     "_sleep_overnight_guard_selftest.py",  # 过夜结算/存盘时禁止 sleep（防把房主结算卡死）
     "_tv_hint_selftest.py",            # 电视那行是真路牌（POI 名字 + help 查得到）
     "_helpwanted_selftest.py",         # 求助栏接取按钮（acceptQuestButton）报得出、指得准
+    "_farmhouse_door_selftest.py",     # 农舍/农场建筑进门：门格形状 (图,(x,y)) 别再 TypeError
 ]
 
 # 慢钉子（单个 15~60s，合计占全套一半）：默认**不跑**，`--slow` 或 `--all` 才带上。
