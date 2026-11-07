@@ -746,6 +746,13 @@ def _gated_tool(*dargs, **dkwargs):
         # ⚠️ **模块名仍返回同步的 `_inner`**：域工具内部**直接调**别的工具（`menu` → `read_menu()`），
         #    名字若变成 async，那些直调会拿到 coroutine（自验里也当场炸过一次）⇒ 名字必须留同步版。
         async def _in_thread(*a, **kw):
+            # ⏱ 2026-11-08：**每个工具调用都要打点**（`_CALL_T0`）。
+            #    原来只有 `_in_thread(fn)` 那个装饰器打点，而**注册版**（这里）没有 ⇒
+            #    `fish go` 这种"同步导航几十秒 + 异步脚本挂 45s"的调用里，`_spent` 恒 0
+            #    ⇒ 导航 60s + 挂 45s = **105s**，照样被前端 60s 掐（恒：「fish 走路+抛竿会超时
+            #    好像修了还是没好」——就是这个：修了扣时，但**没打上点**）。
+            #    `anyio.to_thread.run_sync` 会把当前 context 复制进工作线程 ⇒ 里面读得到。
+            _CALL_T0.set(time.time())
             return await anyio.to_thread.run_sync(lambda: _inner(*a, **kw))
 
         # 名字/文档/签名照抄——但**不用 `functools.wraps`**（那会挂 `__wrapped__`，
@@ -2300,7 +2307,44 @@ _STATE_DELTA = {"day_key": None, "health": None, "stamina": None, "money": None,
 #    ✅ 2026-09-12 恒拍板**根治**：不逐处加闸，改成 `_with_state` **开头就 `if _OPS_INNER["n"] > 0: return result`**
 #      —— 内层压根不建状态条 ⇒ 上面那族注入（`_is_new_day`/`_statue_reminder`/📰小新闻…）再没有"被丢掉的那一层"。
 #      逐处加闸那条路已**两次踩漏**（09-11 🪑、09-12 🌿），靠人守不如靠结构。细节见 `_with_state` 开头的长注释。
-_OPS_INNER = {"n": 0}   # >0 = 正在执行域 op；`_with_state` 据此**整层不建状态条**（`_ops_run` 另有兜底再切一次）
+class _ThreadLocalNesting:
+    """`_OPS_INNER["n"]` 的**每线程**计数 —— 2026-11-08 恒：「ai 调用 status 时除了状态速报四个字
+    什么都不返回是什么情况」。
+
+    病根：`_OPS_INNER` 原来是**全局** dict，可工具是**并发**跑的（注册版走
+    `anyio.to_thread.run_sync`）⇒ A 请求正在域 op 里（`n=1`）时，B 请求（`check status`）
+    读到 `n>0`，`_with_state` 就**整层不建状态条** ⇒ 回执只剩正文「📊 状态速报」
+    （真机日志实据：172 条 status 里有 2 条只有 17 字节、16ms 返回，其余都带完整状态条）。
+    ⇒ 计数改成**线程局部**：同一个线程里内层闭嘴、不同请求互不串味。
+    ⚠️ 仍然支持 `["n"]` 的读写（`navigation` 拿的是**同一个对象引用**，见文件末尾的 bind）。
+    """
+
+    def __init__(self):
+        self._tls = None
+        self._lock = __import__("threading").Lock()
+
+    def _local(self):
+        if self._tls is None:
+            with self._lock:
+                if self._tls is None:
+                    import threading
+                    self._tls = threading.local()
+        return self._tls
+
+    def __getitem__(self, k):
+        return getattr(self._local(), k, 0)
+
+    def __setitem__(self, k, v):
+        setattr(self._local(), k, v)
+
+    def get(self, k, default=0):
+        return getattr(self._local(), k, default)
+
+    def __contains__(self, k):
+        return hasattr(self._local(), k)
+
+
+_OPS_INNER = _ThreadLocalNesting()   # >0 = **本线程**正在执行域 op；`_with_state` 据此整层不建状态条
 _MONSTER_WARN = {"ts": 0.0}   # ⚔️ 农场掉血=有怪提醒，30s 节流防刷屏
 
 # ♨️ 浴场场景引导（2026-09-10 恒："注入场景引导（每日进入一次性提醒）：上下水口坐标、
@@ -2728,7 +2772,19 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
     try:
         if morning:
             _ft = calendar_data.get_festival_today(season, day)
+            # 🚌 2026-11-08 恒：「**沙漠节没解锁沙漠不用注入引导！**」——
+            #    原来是"今天有这个节"就直接劝 `festival go`，可沙漠要**修好巴士**才去得了
+            #    （`LOCKED_MAPS["Desert"] = ("bus", …)`）⇒ 没解锁时那句是**假门**。
+            #    判据走**导航那套解锁检查**（跟 `map go` 同一把尺子，不另编一张表）；
+            #    没解锁就**不注入这句引导**（日历/运势里那个 🏜️ 沙漠节照旧印，那是事实）。
+            _fest_ok = True
             if _ft:
+                _fm = str(_ft.get("map") or "")
+                try:
+                    _fest_ok = not (_fm and navigation._map_go_unlock_check(_fm))
+                except Exception:
+                    _fest_ok = True          # 读不到 ⇒ 不误拦（宁可多给一句，别吞了真节日）
+            if _ft and _fest_ok:
                 lines.append(f"🎪 今天{_ft['name']}（{_festival_time(_ft['detail'])}）在{_ft['map'] or '?'}！用 festival go 去参加")
         elif isinstance(tod, int) and tod >= 1800:
             _tom = calendar_data.get_festival_tomorrow(season, day)
@@ -24846,6 +24902,10 @@ def _bg_block_until_wake(job: "_BgJob") -> str:
         _spent = max(0.0, time.time() - _t_call)
     if _spent:
         interval = max(3.0, interval - _spent)
+        # 🚨 2026-11-08：已经快撞上**前端 60s** 了就别再挂（扣到 3s 也只是"少超一点"）。
+        #    恒：「fish 走路+抛竿会超时好像修了还是没好」—— 导航真到 55s 时 55+3 还是 >60。
+        if _spent >= 50:
+            interval = 0.0
     t0 = time.time()
     while time.time() - t0 < interval:
         time.sleep(0.5)
