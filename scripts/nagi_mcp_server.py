@@ -30218,6 +30218,11 @@ def _im_run(op, args):
         # 🎁 2026-10-05 恒真机「然后有奖励可以领」：点献祭板那个**礼物按钮**开奖励单
         #    （判据 = 菜单真变成 ItemGrabMenu；ok:true 不算）。
         "cc_gift": lambda: _im_cc_reward(),
+        # 📋 2026-11-08 恒「需要帮助要顺便上 intent 单吗？1.接取任务 2.取消」：
+        #    单子那两行的执行侧 —— **调现成的 `menu_click`**（它自己 POST `/menu/click` + 回读），
+        #    不另写一套。接 = 游戏那块板的 `acceptQuestButton`；不接 = 关板（`upperRightCloseButton`）。
+        "hw_accept": lambda: menu_click(button="acceptQuestButton"),
+        "hw_close": lambda: menu_click(button="upperRightCloseButton"),
         # 🏛️ 2026-10-05 恒三条件定的**世界侧入口**：走到板前 + 交互开板子（就位判据走 `_tank_go`，
         #    成不成看 `/state.activeMenu.type` 真变成 JunimoNoteMenu）。
         "cc_go": lambda: _im_cc_go(args.get("x"), args.get("y")),

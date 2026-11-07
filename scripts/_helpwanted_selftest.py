@@ -142,6 +142,52 @@ try:
     ck("⑦它在 `buttons` 那张字段名清单里（挨着别的 accept*）",
        '"acceptLeftQuestButton", "acceptRightQuestButton"' in _cs
        and _cs.index('"acceptQuestButton",') > _cs.index('"acceptLeftQuestButton"'), "位置不对")
+    print("\n⑧ intent 单：板子开着就给「接 今日求助 / 不接（关板）」两行")
+    import intent_menu as IM
+
+    class _Ctx:
+        def __init__(self, md):
+            self.menu_data = md
+
+    _md = {"type": "Billboard", "title": "罗宾的木材",
+           "buttons": [{"name": "acceptQuestButton", "x": 640, "y": 520},
+                       {"name": "upperRightCloseButton", "x": 900, "y": 100}]}
+    _c = _Ctx(_md)
+    ck("⑧板子开着 ⇒ 「接」那行可做", IM._hw_accept_can(_c, None) is IM.CAN_YES)
+    ck("⑧板子开着 ⇒ 「不接」那行可做", IM._hw_close_can(_c, None) is IM.CAN_YES)
+    ck("⑧文案把求助标题念出来", "罗宾的木材" in IM._hw_show(_c, None), IM._hw_show(_c, None))
+    ck("⑧理由点明「点了才算接」", "点了才算接" in IM._hw_reason(_c, None), IM._hw_reason(_c, None))
+    ck("⑧「不接」说清不是放弃已接任务",
+       "放弃" in IM._hw_close_reason(_c, None), IM._hw_close_reason(_c, None))
+
+    _c2 = _Ctx({"type": "Billboard", "buttons": []})           # 老 DLL：没报按钮
+    ck("⑧没报按钮 ⇒ 两行都**不出现**（不给按不动的行）",
+       IM._hw_accept_can(_c2, None) is IM.CAN_NO and IM._hw_close_can(_c2, None) is IM.CAN_NO)
+    _c3 = _Ctx({"type": "ShopMenu", "buttons": [{"name": "upperRightCloseButton"}]})
+    ck("⑧别的菜单 ⇒ 两行都不出现",
+       IM._hw_accept_can(_c3, None) is IM.CAN_NO and IM._hw_close_can(_c3, None) is IM.CAN_NO)
+    _vs = {v.key: v for v in IM.VERBS}
+    ck("⑧两个动词都在 VERBS 里", "hw_accept" in _vs and "hw_close" in _vs, str(sorted(_vs)))
+    ck("⑧两行都 `menu_ok=True`（菜单态要能按）",
+       bool(_vs["hw_accept"].menu_ok) and bool(_vs["hw_close"].menu_ok))
+    ck("⑧两行都有 exec（所见即所得）",
+       bool(_vs["hw_accept"].exec) and bool(_vs["hw_close"].exec))
+
+    print("\n⑨ 执行侧：单子按下去点的是**对的那颗按钮**")
+    _clicked = []
+    _mc_bak = M.menu_click
+    M.menu_click = lambda **kw: (_clicked.append(kw) or {"ok": True})
+    try:
+        M._im_run("hw_accept", {})
+        M._im_run("hw_close", {})
+    finally:
+        M.menu_click = _mc_bak
+    ck("⑨「接」点 acceptQuestButton",
+       any(k.get("button") == "acceptQuestButton" for k in _clicked), str(_clicked))
+    ck("⑨「不接」点 upperRightCloseButton",
+       any(k.get("button") == "upperRightCloseButton" for k in _clicked), str(_clicked))
+    ck("⑨两下**没点错**（接不许点成关板）",
+       _clicked[0].get("button") == "acceptQuestButton" if len(_clicked) > 0 else False, str(_clicked))
 finally:
     M.api, M._with_state = _BAK
 
@@ -151,4 +197,4 @@ if FAIL:
     for f in FAIL:
         print("   ·", f)
     sys.exit(1)
-print("✅ 求助栏：按钮报得出来、`menu read` 给得出、老 DLL 不撒谎、两块板分得开。")
+print("✅ 求助栏：按钮报得出来、`menu read` 给得出、**单子两行按得动**、老 DLL 不撒谎、两块板分得开。")

@@ -1623,6 +1623,70 @@ CC_GIFT_V = Verb("cc_gift", "领 收集包奖励", 80, _cc_gift_can, _cc_gift_re
                  menu_ok=True)
 
 
+# 📋 「接 今日求助 / 不接（关板）」—— 恒 2026-11-08：「**需要帮助要顺便上 intent 单吗？1.接取任务 2.取消**」。
+#    背景（同一天的 ㉔）：那块板**有接取按钮**（`Billboard.acceptQuestButton`），
+#    但 AI 得先 `menu read`、再自己想到 `menu click(button=…)` —— 两步都在"猜"。
+#    ⇒ 板子开着就把这两下摊成一单两行（`menu_ok=True`：它们本来就活在菜单态里）。
+#    ⚠️ 判据**只认 `/menu` 真报出来的按钮**（`Ctx.menu_data["buttons"]`）：老 DLL 没报 ⇒ **两行都不出现**
+#       （宁可少两行，也不给按不动的行 —— 这条是这一层的老规矩）。
+#    ⚠️ 「取消」= **不接、把板子关掉**（`upperRightCloseButton`），**不是**放弃已接的任务
+#       （那个在任务日志里，是另一屏；`cancelQuestButton` 不可逆，不在这儿给）。
+def _hw_menu(ctx):
+    md = (ctx.menu_data or {})
+    return md if str(md.get("type") or "") == "Billboard" else {}
+
+
+def _hw_btn(ctx, name):
+    for b in ((_hw_menu(ctx) or {}).get("buttons") or []):
+        if str(b.get("name") or "") == name:
+            return b
+    return None
+
+
+def _hw_accept_can(ctx, t):
+    return CAN_YES if _hw_btn(ctx, "acceptQuestButton") else CAN_NO
+
+
+def _hw_show(ctx, t):
+    md = _hw_menu(ctx)
+    title = str(md.get("title") or md.get("questTitle") or "").strip()
+    return f"接 今日求助「{title}」" if title else "接 今日求助"
+
+
+def _hw_reason(ctx, t):
+    b = _hw_btn(ctx, "acceptQuestButton") or {}
+    return (f"板子开着 · 游戏自己的接取按钮在 ({b.get('x')},{b.get('y')}) · "
+            f"**点了才算接**（没接的话它不在任务簿里）")
+
+
+HW_ACCEPT_V = Verb("hw_accept", "接 今日求助", 78, _hw_accept_can, _hw_reason, _hw_show, "world",
+                   exec=lambda c, t, run: _receipt_from_helper("接 今日求助", "",
+                                                               run("hw_accept", {})),
+                   menu_ok=True, group="菜单")
+
+
+def _hw_close_can(ctx, t):
+    md = _hw_menu(ctx)
+    if not md:
+        return CAN_NO
+    return CAN_YES if _hw_btn(ctx, "upperRightCloseButton") else CAN_NO
+
+
+def _hw_close_show(ctx, t):
+    return "不接（关板）"
+
+
+def _hw_close_reason(ctx, t):
+    return "关掉这块板、不接今天的求助（**不是**放弃已接的任务——那在任务日志里）"
+
+
+HW_CLOSE_V = Verb("hw_close", "不接（关板）", 12, _hw_close_can, _hw_close_reason, _hw_close_show,
+                  "world",
+                  exec=lambda c, t, run: _receipt_from_helper("不接（关板）", "",
+                                                              run("hw_close", {})),
+                  menu_ok=True, group="菜单")
+
+
 # 🏛️ 「看 献祭板（走过去）」—— **世界侧**入口（恒 2026-10-05 定的三条件：地点 / 背包 / 板子在）。
 #    ⚠️ `menu_ok` **故意不设**：它只在**没开菜单**时才该出现（板子没开），给了这个位
 #       就会在别的菜单开着时也劝 AI 去走位（那是菜单闸门要挡的事）。
@@ -5145,6 +5209,10 @@ VERBS: list = [
     # 🎁 2026-10-05 恒真机「然后有奖励可以领」：**领本间已完成的收集包奖励**
     #    （列表页那个礼物按钮；判据 = 服务器从 `/menu.buttons` 认出了 `presentButton`）。
     CC_GIFT_V,
+    # 📋 2026-11-08 恒「需要帮助要顺便上 intent 单吗？1.接取任务 2.取消」：
+    #    皮埃尔店西墙那块**每日求助栏**开着时给两行（接 / 不接）；
+    #    判据只认 `/menu` 真报的按钮（老 DLL 没报 ⇒ 两行都不出现）。
+    HW_ACCEPT_V, HW_CLOSE_V,
     # 🏛️ 2026-10-05 恒三条件（地点/背包/板子在）定的**世界侧入口**：
     #    menu_ok=False（**故意**）—— 它只在没开菜单时才该出现，不然会劝 AI 开着菜单去走位。
     CC_GO_V,
