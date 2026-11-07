@@ -6591,8 +6591,12 @@ def _special_orders_inject(season: str, day, year, morning: bool) -> str:
 
 def _helpwanted_inject(loc_name: str) -> str:
     """📋 每天第一次进 Town：皮埃尔店西侧"需要帮助"求助栏（Billboard）有新求助就报，没有则不报（一天一次）。
-    求助内容=questOfTheDay（自动在任务簿里，Billboard 无 accept 按钮）；看=menu read 展板，
-    做=收集够任务物品→带到对应 NPC 交付领钱（交付能否复用 gift 待真机验证，2026-08-29 恒）。"""
+
+    🚨 2026-11-08 恒：「"需要帮助" billboard 好像压根没跟 ai 说要接取任务，**没有任何按钮引导**」。
+       旧文案写的是「自动在任务簿里，**Billboard 无 accept 按钮**」——**错的**：
+       `Billboard` 有 `acceptQuestButton`（反射实据）+ `UpdateDailyQuestButton()`，
+       **点了才算接**。现在这句直接告诉它按钮名。
+    交付=收集够任务物品→带到对应 NPC 交付领钱（对 NPC checkAction，未设 ActiveObject 也成，2026-08-29 恒实测）。"""
     try:
         if loc_name != "Town":
             return ""
@@ -6609,7 +6613,9 @@ def _helpwanted_inject(loc_name: str) -> str:
         desc = (q.get("description") or "").replace("\n", " ")[:80]
         npc = re.search(r"我是([一-龥A-Za-z·]+)", q.get("description") or "")
         npcname = npc.group(1) if npc else "对应NPC"
-        return (f"📋 皮埃尔店求助栏有今日求助「{title}」！{desc}…看：menu read 展板；"
+        return (f"📋 皮埃尔店求助栏有今日求助「{title}」！{desc}…"
+                f"接：`map walk poi_name=皮埃尔商店(求助布告栏)` → `scene at 42,56` 开板 → "
+                f"`menu read` 看 → **`menu click(button=acceptQuestButton)` 接取**；"
                 f"做：收集够任务物品带去找{npcname}，用 scene interact 交互交付（2026-08-29 恒实测"
                 f"交付=对NPC checkAction，未设ActiveObject也成）")
     except Exception:
@@ -19465,7 +19471,7 @@ _INTENT_INDEX = [
     ("失物招领,找回东西,死掉丢的东西,马龙找回", "menu", "read",
      "马龙的失物招领**是个商店形状的菜单**（`ShopId=AdventureGuildRecovery`）⇒ "
      "`menu read` 看货架，取回用 `menu click(item=名字)`（**花钱**，取回价=游戏算的卖店价）"),
-    ("接特别订单,特别任务板,社区布告栏,接单", "menu", "read",
+    ("接特别订单,特别任务板,社区布告栏,特别订单板", "menu", "read",
      "板子在镇上 (62,94) 站、(62,93) 交互，开出来 `menu read` 看两张卡 → "
      "`menu click(button=acceptLeftQuestButton/acceptRightQuestButton)` 接（**没接取时才有这两个按钮**）"),
     ("兑奖券,领券,奖券,special order ticket", "menu", "read",
@@ -19539,11 +19545,19 @@ _INTENT_INDEX = [
     ("淘金,淘盘,淘沙", "scene", "pan", "本图水下闪光点 → 自动走岸边面水"),
     ("铺地板,贴墙纸,换地板", "scene", "decor",
      "**铺之前先查这个**（真值表）；点错格游戏静默不理"),
+    # 📋 2026-11-08 恒：「"需要帮助" billboard 好像压根没跟 ai 说要接取任务，没有任何按钮引导」
+    #    —— 皮埃尔店西墙那块「每日求助栏」跟社区中心 (62,94) 那张**特别任务板**是**两块板**；
+    #    旧触发词「接单」会把它带到错的那一块 ⇒ 单列一条，并把接取按钮点名。
+    ("接求助,需要帮助,求助栏,每日求助,求助布告栏,帮我个忙,接个任务,接任务", "map", "walk",
+     "**皮埃尔店西墙**那块「需要帮助」每日求助栏（POI `皮埃尔商店(求助布告栏)`，**不是**社区中心 (62,94) 的特别任务板）："
+     "`map walk poi_name=皮埃尔商店(求助布告栏)` → `scene at 42,56` 开板 → `menu read` → "
+     "**`menu click(button=acceptQuestButton)` 接取**（没点这个按钮 = 还没接）"),
     ("点家具,拿家具,家具在哪", "scene", "furniture", "拿起用 pickup(同 scene)"),
     # 📺 2026-11-08 恒：「你确定家具的 poi 给了吗……**ai 查什么都查不到怎么看电视**」。
     #    POI **是给了**（`农舍(电视)(3,7)` 在 `legal_tokens_here("FarmHouse")` 里），但 AI 没有一层
     #    能"从'我想看电视'跳到敲哪个命令"——`help("看电视")` 当时直接回「没有这个指引」。
-    #    ⚠️ 电视是**农舍里的一件家具**（不是地名），也不在 AI 自己的 Cabin 里 ⇒ 必须点破"去哪张图"。
+    #    ⚠️ 电视在**每个家**里都有（恒 2026-11-08 纠我：小屋那套家具也有电视）⇒ 别写"去农舍"；
+    #       坐标问 `scene furniture`（=`/furniture`），`map here` 也带「屋里的家具」那一段。
     ("看电视,开电视,电视,天气,今天天气,明天天气,明日天气,今日天气,看天气,天气预报,看运势,运势,农务小贴士,离地而居,酱料女王,酱料女皇",
      "scene", "furniture",
      "电视在**每个家里**（自己小屋就有，不是只有农舍）：先 `scene furniture` 看它在 (x,y) → `scene at x,y` 直接点"
@@ -22500,7 +22514,14 @@ def read_menu() -> str:
             return _with_state("\n".join(lines))
         # 📋 每日求助栏（Billboard：皮埃尔店西侧"需要帮助"栏，2026-08-29 恒）：/menu 对 Billboard 不嵌内容，
         #    由 MCP 从 quest_progress 补 questOfTheDay，让 AI 打开展板时能"看"今日求助。
+        # 🚨 2026-11-08 恒：「"需要帮助" billboard 好像压根没跟 ai 说要接取任务，**没有任何按钮引导**」
+        #    —— 真相：这块板**有接取按钮**（C# 反射实据：`Billboard.acceptQuestButton` +
+        #    `UpdateDailyQuestButton()`），只是我们的按钮表里漏了它 ⇒ `/menu` 不报 ⇒ AI 以为没得点。
+        #    而且`quest_progress` 读的是**任务簿**：**没接之前它根本不在簿里**，所以这分支以前会印
+        #    「（今日没有求助任务）」—— 让人以为今天没事。两边都改了。
         if t == "Billboard":
+            _ab = next((b for b in (m.get("buttons") or [])
+                        if b.get("name") == "acceptQuestButton"), None)
             try:
                 qpr = api.quest_progress()
                 q = next((x for x in (qpr.get("quests") or []) if x.get("source") == "questOfTheDay"), None)
@@ -22512,9 +22533,19 @@ def read_menu() -> str:
                     lines.append(f"    ⏱ 剩 {q.get('daysLeft', '?')}天  💰 {rw}g")
                     lines.append("  💡 交付：收集够任务物品带到对应NPC交给它；进度开 menu journal + menu read 看(卡上含每子目标 current/max)")
                 else:
-                    lines.append("  （今日没有求助任务）")
+                    # ⚠️ 别再说"今天没有求助"——**没接的求助不在任务簿里**，这句会撒谎。
+                    lines.append("  📋 这块是**每日求助栏**（不是社区中心的特别任务板）。"
+                                 "任务还没接（没接就不会出现在任务簿 quest_progress 里）")
             except Exception:
-                lines.append("  （读不到今日求助）")
+                lines.append("  （读不到任务簿；这块是每日求助栏）")
+            if _ab:
+                lines.append("  🖱️ **接取：`menu click(button=acceptQuestButton)`**"
+                             "（点一下才算接；接完 menu journal 里就有它了）")
+            else:
+                # 老 DLL（`/menu` 还没报这个按钮）⇒ 如实说，别让 AI 以为"没有按钮可点"
+                lines.append("  🖱️ 接取按钮这版 DLL 还没报（重开游戏上新 DLL 后这里会出现 "
+                             "`button=acceptQuestButton`）")
+            lines.append("  💡 收起=button=upperRightCloseButton")
             return _with_state("\n".join(lines))
         # 📜 任务日志（QuestLog）：点 rewardBox 领已完成+有钱任务的钱（2026-08-29 恒，DLL 已暴露按钮）
         if t == "QuestLog":

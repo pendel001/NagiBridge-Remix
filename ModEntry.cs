@@ -15468,6 +15468,13 @@ public class ModEntry : Mod
                     "areaNextButton", "areaBackButton", "purchaseButton",
                     // 🆕 2026-08-18 任务板接取按钮（SpecialOrdersBoard）
                     "acceptLeftQuestButton", "acceptRightQuestButton",
+                    // 🆕 2026-11-08 恒：「**"需要帮助" billboard 好像压根没跟 ai 说要接取任务，没有任何按钮引导**」
+                    //    —— 皮埃尔店西墙那块**每日求助栏**（`Billboard`）**有自己的接取按钮**，
+                    //    反编译实据：`StardewValley.Menus.Billboard` 有字段
+                    //    `ClickableComponent acceptQuestButton` + 方法 `UpdateDailyQuestButton()`
+                    //    （用 `dotnet` 反射核过，不是猜的）。以前那张表里**没有它** ⇒ `/menu` 不报这个按钮
+                    //    ⇒ AI 眼里"展板开着，但没有任何按钮"（我们文档还写着"Billboard 无 accept 按钮"，错的）。
+                    "acceptQuestButton",
                     // 🆕 2026-08-29 领奖按钮：QuestLog.rewardBox(点它=领完成+有钱任务的钱) / PrizeTicketMenu.mainButton(点它=消费1张兑奖券换奖)
                     "rewardBox", "mainButton",
                     // 🆕 2026-10-05（恒真机：「**然后有奖励可以领**」）：献祭板列表页那个**礼物按钮**
