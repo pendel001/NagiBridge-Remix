@@ -6669,10 +6669,20 @@ def _basic_sprinkler_plan(x1: int, y1: int, w: int, h: int, slant: int = 1):
             row_spr = list(reversed(row_spr))
         ordered.extend(row_spr)
     # 每个洒水器的4格作物（上右下左），蛇形顺序
+    # 🧱 2026-11-07 恒真机（`15×15 @25,18` 锄出来**少一块三角**，还锄到了方形外）：
+    #    十字臂**天然会伸出方形边界** —— 最上一行的洒水器往上探一格（y1-1）、最下一行往下探
+    #    一格（y2+1）、最右一台往右探一格（x2+1）。真机那次的 132 格里就有 **11 格在方形外**：
+    #    (25,17)/(28,17)/(31,17)/(34,17)/(37,17)（上）、(32,33)/(35,33)/(38,33)（下）、
+    #    (40,22)/(40,28)（右）、(24,18)（左）。
+    #    「方形选地」的承诺就是**一格都不出这个框**（框外可能是路/别人的田）⇒ 臂一律裁进方形。
+    rx2, ry2 = x1 + w - 1, y1 + h - 1
     till_order = []
     plant_set = set()
     for sx, sy in ordered:
         group = [(sx, sy - 1), (sx + 1, sy), (sx, sy + 1), (sx - 1, sy)]
+        group = [(gx, gy) for gx, gy in group if x1 <= gx <= rx2 and y1 <= gy <= ry2]
+        if not group:
+            continue                 # 这台洒水器的 4 格全在框外（正常不会；防御，别让它变成空锄）
         till_order.append((sx, sy, group))
         plant_set.update(group)
     return ordered, till_order, sorted(plant_set)
@@ -6805,6 +6815,15 @@ def plan_farm_layout_tool(x1: int, y1: int, x2: int, y2: int, layout: int = 0, h
         + (" | 🧗 爬架走道" if trellis else ""),
         f"  播种 {len(p['plant_tiles'])} 格 | 洒水器 {len(p['sprinklers'])} 个 | 锄地站位 {len(p['till_stands'])} 处",
     ]
+    # 📐 2026-11-07 恒真机（「怎么会少一块三角」）：初级布局**不是把方形锄满** ——
+    #    只锄每台洒水器的 4 格十字。方形里剩下的格子是"这套网格盖不到的缝隙/边角"，
+    #    属于布局的形状，**不是漏锄**。把账当场算给它看，省得它拿 layout=0 去补成整块。
+    if p["sprinklers"]:
+        _n_gap = max(0, a["w"] * a["h"] - len(p["plant_tiles"]) - len(p["sprinklers"]))
+        if _n_gap:
+            lines.append(f"  📐 方形 {a['w']}×{a['h']}={a['w'] * a['h']} 格 → 种位 "
+                         f"{len(p['plant_tiles'])} + 洒水器 {len(p['sprinklers'])} + "
+                         f"**空隙 {_n_gap}**（这套网格盖不到的缝隙/边角，不是漏锄）")
     if trellis:
         if layout == 3:
             lines.append("  ⚠️ 铱洒水器不做爬架（种少量交给 7842），plant_tiles 为空")
@@ -12124,8 +12143,15 @@ def _farm_till(x: int = -1, y: int = -1, rows: int = 1, length: int = 1,
         if _ex_cross:
             tile_list = sorted(set(tile_list) | _ex_cross)
         head = f"🌾 初级洒水器布局锄地 ({rx1},{ry1})-({rx2},{ry2}) {w}x{h}"
-        note = (f"  🚿 {len(p['sprinklers'])} 个洒水器（按布局推算）| 十字 {len(p['plant_tiles'])} 格"
-                + (f" | 另有 {len(_ex_cross)} 格是围着**田里已摆好的**洒水器的" if _ex_cross else ""))
+        _n_spr = len(p["sprinklers"])
+        _n_gap = max(0, w * h - len(tile_list) - _n_spr)
+        note = (f"  🚿 {_n_spr} 个洒水器（按布局推算）| 十字 {len(p['plant_tiles'])} 格"
+                + (f" | 另有 {len(_ex_cross)} 格是围着**田里已摆好的**洒水器的" if _ex_cross else "")
+                # 📐 2026-11-07 恒真机（「怎么会少一块三角」）：初级布局**不是锄满方形** ——
+                #    只锄每台洒水器的 4 格十字，剩下的格子是这套网格**盖不到的缝隙/边角**。
+                #    当场把账算出来，别让它以为"还差几格没锄"、更别拿 layout=0 去补成整块。
+                + (f"\n  📐 方形 {w}×{h}={w * h} 格 → 种位 {len(tile_list)} + 洒水器 {_n_spr} + "
+                   f"**空隙 {_n_gap}**（网格盖不到的，不是漏锄）" if _n_gap else ""))
     else:
         tile_list = [(cx, cy) for cy in range(ry1, ry2 + 1) for cx in range(rx1, rx2 + 1)]
         _lay_cn = {0: "标准", 2: "高级", 3: "铱"}[layout]

@@ -185,6 +185,33 @@ def main():
         ck("田里有洒水器 ⇒ 报文点明「围着已摆好的」",
            "已摆好" in out2 or "已有" in out2, out2[:400])
 
+        # ── ②b 方形**不出框** + 空隙的账要说清（2026-11-07 恒真机）──────────
+        # 真机：`till (25,18)-(39,32) layout=1` 锄出 132 格，其中 **11 格在方形外**
+        #   （(25,17) 那一排 / (32,33) 那一排 / (40,22) 那两格）——十字臂天然会伸出去。
+        # 恒：「ai 不是**方形选地**的嘛」⇒ 框外一格都不许碰。
+        print("\n②b 洒水器十字**一律裁进方形**（不收框外的格）")
+        for (_x1, _y1, _x2, _y2) in ((25, 18, 39, 32), (0, 0, 12, 12), (10, 10, 21, 23), (5, 5, 5, 5)):
+            _p = M.plan_farm_layout(_x1, _y1, _x2, _y2, 1)
+            _pts = [(int(a), int(b)) for a, b in _p["plant_tiles"]]
+            _spr = [(int(a), int(b)) for a, b in _p["sprinklers"]]
+            _out = [t for t in _pts if not (_x1 <= t[0] <= _x2 and _y1 <= t[1] <= _y2)]
+            _sout = [t for t in _spr if not (_x1 <= t[0] <= _x2 and _y1 <= t[1] <= _y2)]
+            ck(f"②b {_x2 - _x1 + 1}×{_y2 - _y1 + 1} @({_x1},{_y1})：作物格全在框内",
+               not _out, f"跑出去 {_out[:6]}")
+            ck(f"②b …洒水器也全在框内", not _sout, f"跑出去 {_sout[:6]}")
+            ck(f"②b …洒水器不占作物格", not (set(_pts) & set(_spr)), str(sorted(set(_pts) & set(_spr))[:6]))
+
+        _reset()
+        TILES.update({(x, y): {"diggable": True}
+                      for x in range(0, 13) for y in range(0, 13)})
+        _p = M.plan_farm_layout(0, 0, 12, 12, 1)
+        _gap = 169 - len(_p["plant_tiles"]) - len(_p["sprinklers"])
+        _o = M._farm_till(x1=0, y1=0, x2=12, y2=12, layout=1)
+        ck("②b 回执把方形的账算出来（种位 + 洒水器 + 空隙）",
+           "空隙" in _o and str(_gap) in _o, _o[:400])
+        ck("②b …并明说空隙**不是漏锄**（别拿 layout=0 去补成整块）",
+           "不是漏锄" in _o, _o[:400])
+
         # ── ③ 没带 layout 的大块 ⇒ 回执里教怎么加 ───────────────────
         print("\n③ `layout=0` 锄了一大块 ⇒ **回执里直接教** `layout=1`")
         _reset()
