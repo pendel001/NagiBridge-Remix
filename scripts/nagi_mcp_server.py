@@ -2225,11 +2225,36 @@ def _backpack_upgrade_poi(mi=None) -> str:
 
 
 def _tv_show_today(day) -> str:
-    """📺 今天电视节目名（2026-08-22 恒：离地而居=周一/周四，酱料女皇=周日；无则 None=没新节目）。
+    """📺 今天电视节目名（2026-08-22 恒：离地而居=周一/周四，酱料女王=周日；无则 None=没新节目）。
     SDV day 1=周一 → (day-1)%7：0Mon 1Tue 2Wed 3Thu 4Fri 5Sat 6Sun。"""
     if not isinstance(day, int) or day < 1:
         return None
     return {0: "离地而居", 3: "离地而居", 6: "酱料女王"}.get((day - 1) % 7)
+
+
+# 🚨 2026-11-08 恒：「你确定家具的 poi 给了吗……**ai 查什么都查不到怎么看电视**」。
+#    两件事都查了：
+#      ① POI **给了**：`locations.POI` 里有 `农舍(床)(5,8)` / `农舍(电视)(3,7)` / `农舍(壁炉)(8,4)`，
+#         离线跑 `legal_tokens_here("FarmHouse")` ⇒ 三条都在，`map here` 会连坐标一起印出来；
+#      ② 但**AI 问不到**：状态条那句尾巴写的是 `（scene at 点电视）`——
+#         `scene at` 只吃 `tile_x/tile_y`（数字坐标），**「点电视」既不是坐标也不是地名**
+#         ⇒ 那是一块**假路牌**（项目自己的规矩：宁可不给名字，也别给敲不出去的名字）。
+#         而 `help("怎么看电视")` 当时也查不到（`_INTENT_INDEX` 没有电视这条）。
+#    ⇒ 这行改成**真路牌**：给的是能直接敲出去的两步（POI 名字是真 token + 单子那行），
+#      并把"电视在**农舍**、不在自己小屋"点破——AI 在自己的 Cabin 里找电视是找不到的。
+_TV_HOW = "`map walk poi_name=农舍(电视)` → `intent show` 敲「看 电视」"
+
+
+def _tv_hint_line(show) -> str:
+    """📺 电视那行状态条（**真路牌**：POI 真 token + 单子动作，别写 `scene at 中文`）。
+
+    判据 `_tv_hint_selftest.py`：这行里的 token 必须真在 `legal_tokens_here("FarmHouse")` 里。
+    """
+    if show == "离地而居":
+        return f"📺 今天「离地而居」播出（农务小贴士/明日天气）：{_TV_HOW}"
+    if show == "酱料女王":
+        return f"📺 今天「酱料女王」播出（新菜谱/明日天气）：{_TV_HOW}"
+    return f"📺 今日无新节目（明日天气）：{_TV_HOW}"
 
 
 def _festival_currency_str(data: dict) -> str:
@@ -2680,14 +2705,10 @@ def _build_state_strip(data: dict, full: bool = True, morning: str = "") -> str:
             (f"📅 {cal_text}" if cal_text else ""),
         ] if x)
         lines.append(tv)
-        # 📺 电视提示（2026-08-22 恒：按播出日显示节目名——离地而居=周一/周四、酱料女皇=周日；明天气象不动态拉，AI 想看自己点电视看今日/明日天气）
-        _show = _tv_show_today(day)
-        if _show == "离地而居":
-            lines.append("📺 今天「离地而居」播出：点电视看农务小贴士/明日天气（scene at 点电视）")
-        elif _show == "酱料女王":
-            lines.append("📺 今天「酱料女王」播出：点电视学新菜谱/明日天气（scene at 点电视）")
-        else:
-            lines.append("📺 今日无新节目：点电视看明日天气（scene at 点电视）")
+        # 📺 电视提示（2026-08-22 恒：按播出日显示节目名；明天气象不动态拉，AI 想看自己去开电视）
+        # 🚨 2026-11-08：整行交给 `_tv_hint_line()` —— 原来这里写死了 `（scene at 点电视）`，
+        #    那是**假路牌**（`scene at` 只吃坐标）⇒ 恒「ai 查什么都查不到怎么看电视」。
+        lines.append(_tv_hint_line(_tv_show_today(day)))
         lines.append(morning)
         # 🚪🐄 早晨那句门提醒（每天第一次；非雨天/非冬天/有畜牧建筑/12:00 前才给）
         try:
@@ -11534,6 +11555,12 @@ def _settings_timeout_guard(value: str = "") -> str:
     return f"⏱ 前端超时保护 = **{sec:.0f}s**（到点停手、让 AI 再调一次接着干）"
 
 
+# 🚨 2026-11-08：`settings` 原来**漏了 `@mcp.tool()`** ⇒ 它根本没注册成工具，
+#    可 `_KEEP_TOOLS` 白名单里写着它、`help(settings)`、`_INTENT_INDEX`、状态条文案全在
+#    让 AI「去 settings 改」⇒ **AI 够不着**（`domain_selftest` 第 2 条一直在报
+#    「`_KEEP_TOOLS` 里的「settings」不是已注册工具」）。恒这次问的正是这类：
+#    「ai 查什么都查不到」——查得到文案、够不着工具，是一回事。
+@mcp.tool()
 def settings(setting: str = "", value: str = "", ops: str = "", kw: dict | None = None) -> Any:
     """⚙️ 系统/设置域（含捏脸）。全 ops + 关键坑（捏脸ok后不可逆）→ help(settings)。
 
@@ -19430,8 +19457,8 @@ _INTENT_INDEX = [
     ("收机器,收小桶,收桶,收酿酒桶", "farm", "load", "**拟人走过去逐台**（`item` 留空=只收不放）；"
                                                     "单子上那行「收 已好的机器」也是它"),
     ("放原料,给机器加料,往桶里放", "farm", "load",
-     "kw={'item':物,'machine_type':机型,'here':True}——**要放哪类机器必须写 machine_type**"
-     "（不然一件料会撒进所有收得下它的机器；而且会去点缝纫机那些不收的）"),
+     "kw={'item':物,'machine_type':机型,'here':True}——**要分开「放哪类机器」才写 machine_type**"
+     "（不写=所有收得下这件料的机器都会放；箱子/稻草人那类非机器 2026-11-07 起已会被剔掉，不会白走）"),
     ("摸动物,摸猫,摸狗,喂水,宠物碗", "farm", "animals",
      "动物水用 `farm(ops='喂水')`（雨天自动跳过）；farm water=浇地，别混"),
     ("挤奶,剪羊毛,剃毛", "farm", "milk", "手上要拿对工具"),
@@ -19484,6 +19511,14 @@ _INTENT_INDEX = [
     ("铺地板,贴墙纸,换地板", "scene", "decor",
      "**铺之前先查这个**（真值表）；点错格游戏静默不理"),
     ("点家具,拿家具,家具在哪", "scene", "furniture", "拿起用 pickup(同 scene)"),
+    # 📺 2026-11-08 恒：「你确定家具的 poi 给了吗……**ai 查什么都查不到怎么看电视**」。
+    #    POI **是给了**（`农舍(电视)(3,7)` 在 `legal_tokens_here("FarmHouse")` 里），但 AI 没有一层
+    #    能"从'我想看电视'跳到敲哪个命令"——`help("看电视")` 当时直接回「没有这个指引」。
+    #    ⚠️ 电视是**农舍里的一件家具**（不是地名），也不在 AI 自己的 Cabin 里 ⇒ 必须点破"去哪张图"。
+    ("看电视,开电视,电视,天气,今天天气,明天天气,明日天气,今日天气,看天气,天气预报,看运势,运势,农务小贴士,离地而居,酱料女王,酱料女皇",
+     "map", "walk",
+     "电视在**农舍**（你自己小屋没有）：先 `map walk poi_name=农舍(电视)` 走过去 → 再 `intent show` 敲「看 电视」；"
+     "开出来是对话 ⇒ `menu read` 看今天播的、`menu advance` 推进"),
 
     # 🏠 家/日常
     ("睡觉,去睡觉,过夜", "daily", "sleep",
