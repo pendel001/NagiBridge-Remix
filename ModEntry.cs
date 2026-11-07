@@ -3488,6 +3488,11 @@ public class ModEntry : Mod
                 //       真机上「投出货箱」照 `sellable` 列了 14 件，其中 6 件根本进不去。
                 //    ⚠️ 这是**schema 陈述**（"会不会吐这个字段"），不是游戏规则陈述 ⇒ 符合上面那条规矩。
                 ["state_shippable"] = true,
+                // 🏷️ `/sell` **认 `quality`**（0 普通 / 1 银 / 2 金 / 4 铱）：传了就只投那一摞。
+                //    ⚠️ 消费侧（`sell_to_bin` 指定星级那条路）**必须先看这一位**：老 DLL 会
+                //       **忽略**这个参数、把同名的各星级**一起投光**，而出货箱**取不回来**
+                //       ⇒ 没有这一位就一个字都不许带 quality 发。
+                ["sell_quality"] = true,
                 // 🐟 /tank（鱼缸投放真值表）：`capacity`/`hatsAllowed`/`counts`/`inside`/`inventory`/`held`。
                 //    ⚠️ 消费侧（`_im_furn_interact` 鱼缸那半）**必须**先看这一位 —— 老 DLL 上该端点不存在，
                 //       没有这一位就会拿 404/空字典当"这口缸什么都放不进"报出去（静默假话）。
@@ -13259,6 +13264,10 @@ public class ModEntry : Mod
         var p = ReadJson(ctx);
         var name = GetParamOr(p, "name", "");
         var sellAll = GetParamOr(p, "all", false);
+        // 🏷️ 指定的星级（恒：「ai 刚刚想往箱子里放**指定品质的鲶鱼**，但是不认……**指定这么传的时候认**」）。
+        //    `quality` = 0 普通 / 1 银 / 2 金 / 4 铱（`Item.cs:308`，3 不存在）。
+        //    ⚠️ **可选参数**：不传 / 传 -1 ⇒ 老行为**一个字都不变**（`/sell` 的其它调用方都还在用它）。
+        var wantQuality = GetParamOr(p, "quality", -1);
 
         var tcs = new TaskCompletionSource<object>();
         EnqueueMainThread(() =>
@@ -13305,6 +13314,14 @@ public class ModEntry : Mod
                 //    ⇒ 判据换成 `ItemNameMatches`：**内部名 + 显示名**都认（跟 `/drop`、
                 //      `/chest_take`、`/select` 同一个口径，别再各写一套）。
                 if (!sellAll && !string.IsNullOrEmpty(name) && !ItemNameMatches(item, name))
+                    continue;
+
+                // 🏷️ 指定了星级 ⇒ **只投那一摞**（同名的普通/银/金/铱是不同摞，靠 `Object.Quality` 分）。
+                //    ⚠️ 不传 `quality`（-1）时这一句恒不成立 ⇒ 老行为一个字都不变。
+                //    ⚠️ 非 Object（工具/帽/衣…）取 -1 ⇒ 指定星级时**永远不会**误命中它们
+                //       （同 `/select`、`/chest_take` 那套：`(it as Object)?.Quality ?? -1`）。
+                if (wantQuality >= 0
+                    && ((item as StardewValley.Object)?.Quality ?? -1) != wantQuality)
                     continue;
 
                 if (sellAll && item.Name.Contains("Seeds", StringComparison.OrdinalIgnoreCase))

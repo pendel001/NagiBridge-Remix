@@ -7441,6 +7441,86 @@ def _internal_item_name(name: str, inv: list = None) -> str:
     return name
 
 
+# 🏷️ 品质词 → 游戏自己的星级（`Item.cs:308`：**0 普通 / 1 银 / 2 金 / 4 铱**，3 不存在）。
+#    ⚠️ 长的必须排前面：`铱星鲶鱼` 要先按 `铱星` 剥（否则 `铱` 会留下「星鲶鱼」）；`金色` 先于 `金`。
+_QUALITY_WORDS = (
+    ("铱星", 4), ("铱", 4), ("iridium", 4),
+    ("金星", 2), ("金色", 2), ("金", 2), ("gold", 2),
+    ("银星", 1), ("银色", 1), ("银", 1), ("silver", 1),
+    ("普通", 0), ("无星", 0), ("normal", 0),
+)
+# 反过来：星级 → 给 AI 看的中文词（回执说人话用；4 是铱、**没有 3**）。
+_QUALITY_WORD_CN = {0: "普通", 1: "银星", 2: "金星", 4: "铱星"}
+
+
+def _inv_names(inv: list) -> set:
+    """背包里出现过的**名字集合**（显示名 + 内部名，都已归一）。只读 `/state`，不编对照表。
+
+    ⚠️ 这不是第二份"名字判据"——换名字的判据仍然只有 `_internal_item_name` 一处；
+       这里只回答"这个东西在不在包里"（`_split_quality_prefix` 拆前缀时要用）。
+    """
+    out = set()
+    for it in (inv or []):
+        if not isinstance(it, dict):
+            continue
+        for _k in ("displayName", "name"):
+            _v = it.get(_k)
+            if _v:
+                out.add(_norm_item_name(_v))
+    return out
+
+
+def _inv_qualities(inv: list, name: str) -> list:
+    """背包里**这个物品**有哪几档星级（升序）。读不到 `quality` ⇒ 空表。
+
+    回执说人话用（「只有普通、银星的鲶鱼，没有铱星的」）——**只报游戏真报的**，不猜。
+    """
+    want = _norm_item_name(name)
+    out = []
+    for it in (inv or []):
+        if not isinstance(it, dict):
+            continue
+        if not any(_norm_item_name(it.get(k)) == want for k in ("displayName", "name")):
+            continue
+        q = it.get("quality")
+        if isinstance(q, int) and q not in out:
+            out.append(q)
+    return sorted(out)
+
+
+def _split_quality_prefix(name: str, inv: list = None) -> tuple:
+    """「<品质词> + 物品名」⇒ `(quality, 物品名)`；认不出来 ⇒ `(None, 原名)`。
+
+    ## 为什么有它
+    恒：「ai 刚刚想往箱子里放**指定品质的鲶鱼**，但是不认。建议**智能或者选项存取的时候无所谓**，
+    但**指定这么传的时候认**。金/银/铱 字眼 + 物品」
+    ⇒ `menu(ops="bin", name="铱星鲶鱼")` 要挑中**铱星那一摞**（`/sell` 带 `quality=4`）。
+
+    ## 三条「不瞎猜」的规矩
+      ① **原样就是背包里一件物品**（`金枪鱼` / `银锭` / `金锭`）⇒ 当物品名，**不拆**；
+      ② 拆出来的名字**得真在背包里**（`铱星鲶鱼` ⇒ `鲶鱼` 在包里才认）；
+      ③ 拆不出来 / 拆完不在包里 / 背包读不到 ⇒ 原样返回 + `quality=None`
+         （**没点名星级就绝不自作主张加一个**）。
+    """
+    raw = str(name or "").strip()
+    if not _norm_item_name(raw):
+        return None, name
+    names = _inv_names(inv)
+    if names and _norm_item_name(raw) in names:
+        return None, name                       # ① 原样命中 ⇒ 那个「金」是物品名的一部分
+    low = raw.lower()
+    for _w, _q in _QUALITY_WORDS:
+        if not low.startswith(_w):
+            continue
+        rest = raw[len(_w):].strip()
+        if not _norm_item_name(rest):
+            continue                            # 只剩品质词（`铱星`）⇒ 不是"品质+物品"
+        if names and _norm_item_name(rest) not in names:
+            continue                            # ② 拆出来的名字不在包里 ⇒ 宁可不认
+        return _q, rest
+    return None, name                           # ③ 认不出来 ⇒ 原名 + 不传 quality
+
+
 @mcp.tool()
 def wear(name: Optional[str] = None, slot: Optional[str] = None, hand: Optional[str] = None) -> str:
     """🧥 穿/脱穿戴物（一个工具搞定，脚本自动判槽位）
@@ -24341,7 +24421,9 @@ def sell_to_bin(name: str = "", sell_all: bool = False) -> str:
     `intent(ops="show")` → 「投出货箱…」→ 一件一行，`1,3` 可多选。
 
     Args:
-        name: 物品名（**必填**；内部名/显示名都认）
+        name: 物品名（**必填**；内部名/显示名都认；**可以带星级**，
+              「铱星鲶鱼」/「金鲶鱼」/「银星鲶鱼」/「普通鲶鱼」/「iridium catfish」= 只投**那一摞**；
+              不带星级就按老样子投「整摞同名的」——这时**不会**替你猜星级）
         sell_all: ⛔ 已封（传 True 会被拒，什么都不投）—— 留着只为如实回一句话
     """
     try:
@@ -24387,13 +24469,41 @@ def sell_to_bin(name: str = "", sell_all: bool = False) -> str:
         #    `_internal_item_name()` —— `/drop`、`/gift`、`wear` 早就是走它。
         #    ⚠️ **不要再各写一份**（它自己的 doc 就写着"判据只有这一处"）：
         #       "补一遍漏一处"正是这个 bug 从 09-27 卖货、11-01 戴帽一路报到现在的原因。
-        post_name = _internal_item_name(name, s.get("inventory") or [])
-        r = api._post("/sell", {"name": post_name})   # ⚠️ **不传 `all`**（那条已经封了，见上）
+        #
+        # 🏷️ 品质词（恒：「ai 刚刚想往箱子里放**指定品质的鲶鱼**，但是不认……**指定这么传的时候
+        #    认**」）：`铱星鲶鱼`/`金鲶鱼`/`银星鲶鱼`/`普通鲶鱼` 先拆成 (星级, 物品名)，再挑那一摞。
+        #    ⚠️ **没点名星级就不许加 quality**（"不传 quality 时 Python 不要瞎猜"）：
+        #       智能/选项存取那两条路照旧，一个字都不变。
+        _inv = s.get("inventory") or []
+        _want_q, _base = _split_quality_prefix(name, _inv)
+        if _want_q is not None:
+            # ⚠️ 出货箱**不可逆**：老 DLL 会**忽略** `quality`、按名字把同名的**各星级一起投光**
+            #    ⇒ 没有能力位就一个字都不许带 quality 发，宁可这一下不投。
+            if not (_im_caps() or {}).get("sell_quality"):
+                return _with_state(
+                    f"⛔ 这版 DLL 还认不出星级：指定「{name}」要**重开游戏上新 DLL** 才行。\n"
+                    f"   它会忽略 quality 把同名的各星级**一起投光**（出货箱取不回来）⇒ 这一下先不投。")
+            _have = _inv_qualities(_inv, _base)
+            if _inv and _want_q not in _have:
+                _w_have = "、".join(_QUALITY_WORD_CN.get(q, str(q)) for q in _have) or "（读不到星级）"
+                return _with_state(
+                    f"📦 背包里只有 {_w_have} 的{_base}，没有{_QUALITY_WORD_CN.get(_want_q, _want_q)}的"
+                    f"——**没投**（换个星级，或去掉星级投「{_base}」）")
+        post_name = _internal_item_name(_base, _inv)
+        if _want_q is None:
+            # ⚠️ 没点名星级 ⇒ **这一行一个字都不许变**（智能/选项/老调用方全靠它；
+            #    「不传 quality 时 Python 不要瞎猜」就落在这句上）
+            r = api._post("/sell", {"name": post_name})   # ⚠️ **不传 `all`**（那条已经封了，见上）
+        else:
+            # 点名了星级 ⇒ 多带一个 `quality`，让 C# 只挑那一摞（老 DLL 会忽略它 —— 上面那道闸挡着）
+            r = api._post("/sell", {"name": post_name, "quality": _want_q})
         if not r.get("ok"):
             return _with_state(f"❌ 出货失败: {r.get('error', '未知错误')}")
         sold = r.get("sold") or []
         if not sold:
-            msg = f"📦 背包里没有「{name}」能投（或者这样东西投不进出货箱）"
+            _label = (f"{_QUALITY_WORD_CN.get(_want_q, '')}{_base}"
+                      if _want_q is not None else name)
+            msg = f"📦 背包里没有「{_label}」能投（或者这样东西投不进出货箱）"
             if post_name != name:
                 # 名字查到了、也真按内部名发出去了，游戏还是没投 ⇒ 那就不关名字的事，别让它背锅
                 msg += f"\n   🔎 已按背包里的内部名「{post_name}」去投，游戏仍没投出来"
@@ -24406,8 +24516,33 @@ def sell_to_bin(name: str = "", sell_all: bool = False) -> str:
         detail = ", ".join(f"{s['item']}×{s['count']} ({s['price']}g)" for s in sold[:8])
         if len(sold) > 8:
             detail += f" 等共 {r['totalItems']} 种"
+        _tail = ""
+        if _want_q is not None:
+            # 🏷️ 指定了星级：按/state 自己算一遍"这一摞该有多少件"，投进去的**多出来**就是
+            #    这版 DLL 没认 quality（老 DLL 会按名字把同名各星级一起投）——如实说，别装没事。
+            _want_n, _all_n = 0, 0
+            _want_norm = _norm_item_name(_base)
+            for _it in _inv:
+                if not isinstance(_it, dict):
+                    continue
+                if not any(_norm_item_name(_it.get(k)) == _want_norm for k in ("displayName", "name")):
+                    continue
+                _st = _it.get("stack")
+                if not isinstance(_st, int):
+                    _st = 1
+                _all_n += _st
+                if _it.get("quality") == _want_q:
+                    _want_n += _st
+            try:
+                _got = sum(int(x.get("count") or 0) for x in sold
+                           if str(x.get("item") or "") == str(post_name))
+            except Exception:
+                _got = -1
+            if _want_n and _got > _want_n:
+                _tail = (f"\n   ⚠️ 投进去的共 {_got} 件，而{_QUALITY_WORD_CN.get(_want_q, '')}的那一摞"
+                         f"只有 {_want_n} 件——这版 DLL 还不认星级（同名的各星级可能一起进箱了）")
         return _with_state(f"📦 已投进出货箱 {r['totalItems']} 种：{detail}\n"
-                           f"   🔒 **取不回来**（今晚结算才到账）")
+                           f"   🔒 **取不回来**（今晚结算才到账）{_tail}")
     except Exception as e:
         return _with_state(f"❌ 出货出错: {e}")
 
