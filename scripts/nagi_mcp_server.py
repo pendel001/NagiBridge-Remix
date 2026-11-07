@@ -998,12 +998,14 @@ def _peer_econ_mute(seconds: float = _PEER_ECON_MUTE_S) -> None:
     except Exception:
         _m = None
     try:
-        # 窗口**已经在开着**（同一个 op 里连点几件、或上一次还没被采样消费）就沿用最早的基准 ——
-        # 逐次覆盖会把前几笔的差额漏到房主那头去；过期（>120s 没人消费）才重开。
-        _open = (isinstance(_PEER_ECON.get("ai_base"), int)
-                 and time.time() <= (_PEER_ECON.get("ai_until") or 0.0))
-        if not _open:
-            _PEER_ECON["ai_base"] = _m if isinstance(_m, int) else None
+        # 🔴 2026-11-08 真机复现（恒买 5 个煤炭 −750g，我同时买 1 个防风草种子 −20g）：
+        #    老版这里**沿用**上一次的基准（"开商店那一刻"），于是恒在我"开商店 → 点购买"之间的消费
+        #    全落进我的窗口里，被当成我花的 ⇒ 扣成 0 ⇒ 一个字都不报。
+        #    ⇒ **每个动钱动作都重新取基准**：`menu shop` 开商店记一次（那时还没花钱，安全），
+        #      真正 `menu click` 购买时再记一次（此刻的钱已经把"他在这之前花的"包含在内了），
+        #      差额里只剩**我这一单**。代价：真正"同一瞬间双方各花一笔"仍分不开（无从分离），
+        #      但那要求两边在同一秒内点下——比"开商店那一刻起都算我的"窄得多。
+        _PEER_ECON["ai_base"] = _m if isinstance(_m, int) else None
         _PEER_ECON["ai_until"] = time.time() + max(0.0, seconds)
         _PEER_ECON["mute_until"] = _PEER_ECON["ai_until"]   # 老字段：还留着给自验/兼容读
     except Exception:
