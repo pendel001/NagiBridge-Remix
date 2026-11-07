@@ -52,6 +52,7 @@ CORE = [
     "_helpwanted_selftest.py",         # 求助栏接取按钮（acceptQuestButton）报得出、指得准
     "_farmhouse_door_selftest.py",     # 农舍/农场建筑进门：门格形状 (图,(x,y)) 别再 TypeError
     "_fish_stall_selftest.py",         # 钓鱼空等看门狗：菜单关掉要重支自动抛竿 / 卡住必收工
+    "_goto_same_map_selftest.py",     # 同图导航不许先 warp 到"入口"再走（凭空瞬移）
 ]
 
 # 慢钉子（单个 15~60s，合计占全套一半）：默认**不跑**，`--slow` 或 `--all` 才带上。

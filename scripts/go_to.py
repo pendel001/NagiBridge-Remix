@@ -30,6 +30,33 @@ def api(method, path, data=None, retries=3):
 def state():
     return api("GET", "/state")
 
+
+# 「走到了」的判据：跟目标格差 ≤5 格（POI 常常是**不可走格** —— 门口、柜台、床，
+# 人会停在旁边 1~3 格；5 格是留余量，不是让人停半路就报到达）。
+NEAR_TOL = 5
+
+
+def near(location, x, y, tol=NEAR_TOL):
+    """现在是不是「已经在这张图、且离目标 ≤tol 格」。
+
+    ⚠️ 三态，别把「不知道」当成「没走到」：`True`=到了 / `False`=确证还差得远 / `None`=**读不到状态**。
+       只有 `False` 才允许走「回入口再走」那一档 —— 读不到就去 warp，等于**凭一次网络抖动瞬移**，
+       正是恒这次报的那种毛病。
+    """
+    try:
+        s = state()
+    except Exception:
+        return None
+    if not (s.get("location") or {}).get("name"):
+        return None
+    if s["location"]["name"] != location:
+        return False
+    p = s.get("player") or {}
+    try:
+        return abs(p.get("x", 0) - x) <= tol and abs(p.get("y", 0) - y) <= tol
+    except TypeError:
+        return None
+
 def wait_arrival(target_map, target_x=None, target_y=None, timeout=20):
     """轮询直到到达目标地图（和可选坐标），最多等 timeout 秒"""
     start = time.time()
@@ -44,13 +71,19 @@ def wait_arrival(target_map, target_x=None, target_y=None, timeout=20):
     return state()
 
 def warp_to(location, entry_x=None, entry_y=None):
-    """warp 并等待到达，可指定入口坐标"""
+    """warp 并等待到达，可指定入口坐标
+
+    ⚠️ 2026-11-08：`y` 原来写的是 `entry_y or 10` —— **`0` 是假值** ⇒ 所有 y=0 的入口
+       （`Beach` 就是 **(38,0)**）都被悄悄改成 10。差点又变成"瞬移到海滩别处"的另一半原因
+       （真机回执 `[warp] Beach... done at (38,10)`）。
+       ⇒ 判"有没有给"，不判"真假值"。
+    """
     cur = state()
     cur_map = cur.get("location", {}).get("name", "")
     data = {"location": location}
     if entry_x is not None:
         data["x"] = entry_x
-        data["y"] = entry_y or 10
+        data["y"] = entry_y if entry_y is not None else 10
     r = api("POST", "/warp", data)
     if r.get("ok"):
         print(f"  [warp] {location}...", end="", flush=True)
@@ -104,17 +137,37 @@ def go(poi_name, from_map=None):
         print(f"[FAIL] no route from {current_map} to {poi_name}")
         return False
 
-    # Already on target map: warp to entry first, then walk
+    # 同图：**直接走**（2026-11-08 恒：「转头去鱼店的时候出发点好像瞬移到了海滩的其他地方再过去的」）
+    #   ⚠️ 老版这里**无条件** `warp_to(current_map, entry)` —— 真机那一趟（`map walk poi_name=鱼店(门口)`）：
+    #      人已经在 Beach **(52,25)**（码头），目标 `鱼店(门口)` 也在 Beach **(30,34)**，
+    #      它却先 `/warp Beach (38,10)` 再走过去 ⇒ 凭空瞬移一段，路还变长了（回执里那行
+    #      `[warp] Beach... done at (38,10)` 就是恒看到的那一下）。
+    #   📌 为什么那是错的：`entry` 是**从别的图进来时游戏把人放在哪**，是跨图落客的副作用，
+    #      不是"这张图的起点"。同图**没有任何**理由先传入口 —— 游戏自己会放，我们不用代劳。
+    #   ⇒ 先走；真走不到（挡死 / 站在出不去的地方）才退回"回入口再走"，而且**明说**做了这件事。
     if len(route) == 1 and route[0][0] == current_map:
         map_entries = {}
         for src, direction, dst, entry in ROUTES:
             map_entries[dst] = entry
-        entry = map_entries.get(current_map)
-        if entry:
-            warp_to(current_map, entry[0], entry[1])
         if dest_pos:
             print(f"  [walk] to ({dest_pos[0]},{dest_pos[1]})")
             walk_to(dest_map, dest_pos[0], dest_pos[1])
+            # `near()` 三态：只有**确证**走不到（False）才兜底；读不到状态（None）就当走完了 ——
+            # 宁可停在原地让人看见，也不凭一次读失败去瞬移（恒报的正是"凭空瞬移"）。
+            if near(dest_map, dest_pos[0], dest_pos[1]) is not False:
+                return True
+            entry = map_entries.get(current_map)
+            if entry:
+                print(f"  [fallback] 走不到（挡死 / 站的地方出不去）→ 先回入口 {entry} 再走一次")
+                warp_to(current_map, entry[0], entry[1])
+                walk_to(dest_map, dest_pos[0], dest_pos[1])
+                if near(dest_map, dest_pos[0], dest_pos[1]) is False:
+                    # 🚫 `navigation` 认 `[FAIL]` 这个标记 —— 兜底也没到就如实报，别让它说成「已导航到」
+                    print(f"  [FAIL] 走不到「{poi_name}」：回入口再走一次也没到"
+                          f"（挡死 / 目标在够不着的地方）")
+            else:
+                print(f"  [fallback] 走不到，且 {current_map} 没登记入口 → 停在这儿（不再乱动）")
+                print(f"  [FAIL] 没走到「{poi_name}」：{current_map} 没登记入口，不敢乱 warp")
         return True
 
     print(f"[route] {' -> '.join(m for m,_,_ in route)}")
