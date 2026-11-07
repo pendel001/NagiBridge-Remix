@@ -5390,13 +5390,21 @@ def _ensure_ai_zoom() -> str:
         return ""
     _AI_ZOOM["last"] = _now
     try:
-        _cur = api._get("/zoom") or {}
+        # ⏱ **短超时**（2s）：这是"顺手做的小事"，游戏卡住时绝不能替它把工具调用拖住
+        #    （`api._get` 默认 10s，而它跑在 `_state_suffix` 的 8s 闸**之前**）。
+        def _zoom_call(params=None):
+            if hasattr(api, "requests"):        # 真 api：走同一个 no-proxy 会话，但换个超时
+                return api.requests.get(f"{api.BASE_URL}/zoom",
+                                        params=params or {}, timeout=2).json()
+            return api._get("/zoom", params=params)   # 夹具/老 api
+
+        _cur = _zoom_call() or {}
         if not isinstance(_cur, dict) or not _cur.get("ok"):
             return ""
         _pct = int(_cur.get("percent") or 0)
         if _pct == want:
             return ""
-        _r = api._get("/zoom", params={"level": want}) or {}
+        _r = _zoom_call({"level": want}) or {}
         _new = int(_r.get("percent") or 0) if isinstance(_r, dict) else 0
         if not _r.get("ok"):
             return f"🖥️ AI 窗口缩放到 {want}% 没成：{_r.get('error') or '游戏没回话'}\n"

@@ -131,6 +131,40 @@ try:
     note7 = M._ensure_ai_zoom()
     ck("⑦回执明说没成", "没成" in note7, note7)
 
+    print("\n⑨ 真 api 那条分支：走同一个 no-proxy 会话，但**超时必须短**（≤3s）")
+    class _Resp:
+        def __init__(self, payload):
+            self._p = payload
+
+        def json(self):
+            return self._p
+
+    class _Sess:
+        def __init__(self):
+            self.calls = []
+
+        def get(self, url, params=None, timeout=None):
+            self.calls.append((url, dict(params or {}), timeout))
+            if not params:
+                return _Resp({"ok": True, "percent": 75})
+            return _Resp({"ok": True, "percent": params.get("level", 50)})
+
+    class ApiWithSess(FakeApi):
+        def __init__(self):
+            super().__init__()
+            self.requests = _Sess()
+
+    a9 = ApiWithSess()
+    M.api = a9
+    M._AI_ZOOM["last"] = 0.0
+    os.environ["NAGI_AI_ZOOM"] = "50"
+    _n9 = M._ensure_ai_zoom()
+    ck("⑨走 `api.requests` 那条（不是 `_get`）", len(a9.requests.calls) == 2, str(a9.requests.calls))
+    ck("⑨URL 打到 /zoom", all(c[0].endswith("/zoom") for c in a9.requests.calls), str(a9.requests.calls))
+    ck("⑨超时都 ≤3s（别把工具调用拖住）",
+       all((c[2] or 99) <= 3 for c in a9.requests.calls), str(a9.requests.calls))
+    ck("⑨回执照旧", "75% → 50%" in _n9, _n9)
+
     print("\n⑧ 接线：`_with_state` 真的会调它（否则代码写了也不跑）")
     import inspect
     _src = inspect.getsource(M._with_state)
