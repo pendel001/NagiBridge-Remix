@@ -2240,15 +2240,17 @@ def _tv_show_today(day) -> str:
 #         `scene at` 只吃 `tile_x/tile_y`（数字坐标），**「点电视」既不是坐标也不是地名**
 #         ⇒ 那是一块**假路牌**（项目自己的规矩：宁可不给名字，也别给敲不出去的名字）。
 #         而 `help("怎么看电视")` 当时也查不到（`_INTENT_INDEX` 没有电视这条）。
-#    ⇒ 这行改成**真路牌**：给的是能直接敲出去的两步（POI 名字是真 token + 单子那行），
-#      并把"电视在**农舍**、不在自己小屋"点破——AI 在自己的 Cabin 里找电视是找不到的。
-_TV_HOW = "`map walk poi_name=农舍(电视)` → `intent show` 敲「看 电视」"
+#    ⇒ 这行改成**真路牌**：给的是能直接敲出去的两步（先拿坐标，或者走单子那行）。
+#    🚨 2026-11-08 恒又纠一刀：「**每个人的小屋里都有的**（壁炉电视地毯床桌椅盆栽）」——
+#       所以**不许**再写"电视只在农舍"（那是把 AI 往别人家赶）。**每个家都有**，就地看。
+_TV_HOW = "`intent show` 敲「看 电视」，或 `scene furniture` 看它在 (x,y) → `scene at x,y`"
 
 
 def _tv_hint_line(show) -> str:
-    """📺 电视那行状态条（**真路牌**：POI 真 token + 单子动作，别写 `scene at 中文`）。
+    """📺 电视那行状态条（**真路牌**：单子动作 或 真坐标那两步，别写 `scene at 中文`）。
 
-    判据 `_tv_hint_selftest.py`：这行里的 token 必须真在 `legal_tokens_here("FarmHouse")` 里。
+    ⚠️ 电视在**每个家**（自己小屋/农舍/姜岛小屋都有）⇒ 这行**不指路**，只说怎么开。
+    判据 `_tv_hint_selftest.py`。
     """
     if show == "离地而居":
         return f"📺 今天「离地而居」播出（农务小贴士/明日天气）：{_TV_HOW}"
@@ -14815,6 +14817,33 @@ def map_here(full: bool = False) -> str:
         out.append("  📍 交互点: 本图没维护 POI 表（≠「什么都没有」）")
         out.append("     🏗️ 但建筑/家什**直接 walk 就认**（畜棚 鸡舍 温室 小屋 农舍 邮箱…），"
                    "不用查表；想看周围有哪些东西用 `check what=look`")
+    # 🛋 屋里的家具 —— **动态问游戏**（`/furniture`），**不编坐标**。
+    #    🚨 2026-11-08 恒：「**每个人的小屋里都有的**。那就是漏做了。他的屋子里有基本的家具，
+    #       壁炉电视地毯床和一套桌椅和盆栽。但无论它怎么找，屋里都只给床的坐标」
+    #       —— POI 表当初只登记了农舍三件家具，**小屋(Cabin)只写了「小屋(床)」** ⇒ 在自己屋里
+    #       找电视永远查不到（`map here` 只印 POI 表，家具一件都不在里面）。
+    #    ⚠️ **不往 POI 表里补坐标**：小屋的家具是游戏按地图摆的（升级/不同小屋都可能不一样），
+    #       写死就是下一块假路牌（2026-11-05 恒定的规矩：宁可少给名字，别给敲不出去的）。
+    #       ⇒ 这一段跟 POI 表**完全解耦**，读得到就印，读不到就不印。
+    #    ⚠️ `scene at x,y` **不需要走过去**（SDV 1.6 家具交互绕过右键标志，远程就能点）。
+    try:
+        _fu = (api._ai_get("/furniture") or {}).get("furniture") or []
+    except Exception:
+        _fu = []
+    if _fu:
+        _items, _seen_nm = [], set()
+        for _f in _fu:
+            _x, _y = _f.get("x"), _f.get("y")
+            if not isinstance(_x, int) or not isinstance(_y, int):
+                continue
+            _nm = str(_f.get("name") or "?")
+            if (_nm, _x, _y) in _seen_nm:
+                continue
+            _seen_nm.add((_nm, _x, _y))
+            _items.append(("📺" if _f.get("isTV") else "") + f"{_nm}({_x},{_y})")
+        if _items:
+            out.append(f"  🛋 屋里的家具 {len(_items)} 件（`scene at x,y` 直接点，不用走过去）: "
+                       + " ".join(_items[:8]) + (" …" if len(_items) > 8 else ""))
     if cur in ("Farm", "IslandWest"):
         # 🏗️ 2026-11-05 恒：「列出提示和列表不一样嘛」——对，提示=一句"能直接敲"，
         #    列表=**把名字摊开**。建筑门在农场上，所以只在农场类图列。
@@ -19516,9 +19545,9 @@ _INTENT_INDEX = [
     #    能"从'我想看电视'跳到敲哪个命令"——`help("看电视")` 当时直接回「没有这个指引」。
     #    ⚠️ 电视是**农舍里的一件家具**（不是地名），也不在 AI 自己的 Cabin 里 ⇒ 必须点破"去哪张图"。
     ("看电视,开电视,电视,天气,今天天气,明天天气,明日天气,今日天气,看天气,天气预报,看运势,运势,农务小贴士,离地而居,酱料女王,酱料女皇",
-     "map", "walk",
-     "电视在**农舍**（你自己小屋没有）：先 `map walk poi_name=农舍(电视)` 走过去 → 再 `intent show` 敲「看 电视」；"
-     "开出来是对话 ⇒ `menu read` 看今天播的、`menu advance` 推进"),
+     "scene", "furniture",
+     "电视在**每个家里**（自己小屋就有，不是只有农舍）：先 `scene furniture` 看它在 (x,y) → `scene at x,y` 直接点"
+     "（远程就能点，不用走过去）；或者直接 `intent show` 敲「看 电视」。开出来是对话 ⇒ `menu read` 看节目、`menu advance` 推进"),
 
     # 🏠 家/日常
     ("睡觉,去睡觉,过夜", "daily", "sleep",
