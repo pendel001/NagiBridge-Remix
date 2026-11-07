@@ -959,6 +959,39 @@ BUILDING_KEYWORDS = {
 }
 
 
+def _building_kw_hit(place: str) -> str:
+    """这个名字**是不是建筑关键字**（`BUILDING_KEYWORDS` 的键）→ 命中的那个键 / `""`。
+
+    🚨 用途：`_resolve_place` 回 `None` 有**两种完全不同的原因**，报错必须分开 ——
+      ① 名字我们**根本不认识**（该说"换个名字"）；
+      ② 名字**认识**、但**场上没有这栋建筑**（该说"你还没建"）。
+    2026-11-08 恒：「这个是不是就是上次有个用户跟我说**找不着鸡舍**的问题」—— 真机复现就是 ②，
+    却被报成 ①「知识库没有「鸡舍」的地点链接」= **撒谎**（`BUILDING_KEYWORDS['鸡舍'] == 'coop'` 明明在表里）。
+    最长匹配优先（`工棚` 压过 `棚`）。
+    """
+    pl = (place or "").strip().lower()
+    if not pl:
+        return ""
+    hits = sorted((k for k in BUILDING_KEYWORDS if k and k.lower() in pl), key=len, reverse=True)
+    return hits[0] if hits else ""
+
+
+def _absent_building_msg(place: str) -> str:
+    """名字认得是建筑、可**场上没有这栋** → 一句能照做的话；不认得 / 解析得出 → `""`。
+
+    判据全问游戏：场上有哪些建筑 = `/farm_buildings`（`_buildings()`），**不编**。
+    """
+    if not _building_kw_hit(place):
+        return ""
+    try:
+        have = sorted({str(b.get("type") or "?") for b in _buildings()})
+    except Exception:
+        have = []
+    return (f"🏠 你农场上**没有**「{place}」这栋建筑（名字认得，场上没有它的门）——"
+            f"现在场上：{'、'.join(have) or '（读不到）'}。\n"
+            f"   还没建 → `map go 罗宾木匠店` 找罗宾；建好之后这名字就能直接 go")
+
+
 def _resolve_place(place: str):
     """把目的地解析成 (location, x, y)；解析不出返回 None（走 POI 兜底）。
 
@@ -4083,6 +4116,15 @@ def _map_go_body(destination: str = "", npc: str = "") -> str:
         if dest not in locations.MAP_LINKS:
             # 兜底：农场建筑（畜棚/鸡舍/温室/出货箱…）→ 动态定位门口（2026-08-15）
             t = _resolve_place(destination)
+            if not t:
+                # 🚨 2026-11-08 恒：「这个是不是就是上次有个用户跟我说**找不着鸡舍**的问题」
+                #    真机复现（这农场没有鸡舍）：`_resolve_place` 回 None ⇒ 掉到下面那句
+                #    「知识库没有「鸡舍」的地点链接」——**撒谎**：鸡舍这名字**在**知识库里
+                #    （`BUILDING_KEYWORDS['鸡舍']='coop'`），没有的是**建筑**。
+                #    ⇒ 名字认得出就明说"场上没这栋"+把现有建筑摊出来（判据问 `/farm_buildings`）。
+                _absent = _absent_building_msg(destination)
+                if _absent:
+                    return _with_state(_absent)
             if t:
                 loc, x, y = t
                 # 🚪 2026-09-19 恒真机（「这里又是直接从畜棚**飞**到农场再走到鸡舍了」）：

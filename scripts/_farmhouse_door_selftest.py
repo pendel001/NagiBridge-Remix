@@ -159,7 +159,56 @@ try:
     ck("⑤说清了形状不对", "形状" in (_n5 or ""), str(_n5))
     ck("⑤不是 TypeError", "TypeError" not in (_n5 or ""), str(_n5))
 
-    print("\n⑥ 源码钉")
+    print("\n⑦ 「这栋建筑场上没有」要**说真话**（别再报「知识库没有」）")
+    _msg = N._absent_building_msg("鸡舍")
+    ck("⑦名字认得（鸡舍在 BUILDING_KEYWORDS 里）", N._building_kw_hit("鸡舍") == "鸡舍",
+       N._building_kw_hit("鸡舍"))
+    ck("⑦英文也认（Coop）", N._building_kw_hit("Coop") == "coop", N._building_kw_hit("Coop"))
+    ck("⑦不认识的名字 ⇒ 空（仍走「换个名字」那条）",
+       N._building_kw_hit("月球基地") == "" and N._absent_building_msg("月球基地") == "",
+       repr(N._absent_building_msg("月球基地")))
+    ck("⑦说「没有这栋」（不是「知识库没有」）",
+       "没有" in _msg and "知识库没有" not in _msg, _msg)
+    ck("⑦点名是哪栋", "鸡舍" in _msg, _msg)
+    ck("⑦把**场上现有建筑**摊出来（判据问 /farm_buildings）",
+       all(x in _msg for x in ("Farmhouse", "Cabin", "Greenhouse")), _msg)
+    ck("⑦给了出路（找罗宾）", "罗宾" in _msg, _msg)
+    ck("⑦最长匹配优先（工棚压过棚）", N._building_kw_hit("工棚") == "工棚", N._building_kw_hit("工棚"))
+    _no_b = N._absent_building_msg("鸡舍")
+    N._buildings = lambda: []                     # 读不到建筑表
+    _msg2 = N._absent_building_msg("鸡舍")
+    ck("⑦读不到建筑表也不崩（如实说读不到）", "读不到" in _msg2, _msg2)
+    N._buildings = lambda: [dict(b) for b in LIVE_BUILDINGS]
+
+    print("\n⑧ 源码钉：这条真话挂在「知识库没有」**之前**")
+    _src2 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "navigation.py"), encoding="utf-8").read()
+    _body = _src2.split("if dest not in locations.MAP_LINKS:")[1].split("_map_go_unlock_check")[0]
+    ck("⑧`map_go` 里调了 `_absent_building_msg`", "_absent_building_msg(destination)" in _body)
+    ck("⑧它在「知识库没有」那句**之前**",
+       0 < _body.find("_absent_building_msg")
+       < _body.find('知识库没有「{dest}」'),   # ⚠️ 认 f-string 那一行（注释里也提过这句）
+       f"absent@{_body.find('_absent_building_msg')} lie@{_body.find('知识库没有「{dest}」')}")
+    ck("⑧判据只读 `/farm_buildings`（`_buildings()`），不抄名单",
+       "for b in _buildings()" in _src2.split("def _absent_building_msg")[1][:900])
+
+    print("\n⑨ 端到端：`map go 鸡舍`（场上没有这栋）回的是「没有」，不是「知识库没有」")
+    import nagi_mcp_server as M       # noqa: F401  —— 它末尾 `navigation.bind()` 注入宿主
+    _ws_bak = N._with_state
+    N._with_state = lambda s: s
+    try:
+        N.api = FakeApi(loc="Farm")
+        N._buildings = lambda: [dict(b) for b in LIVE_BUILDINGS]
+        _out9 = N.map_go("鸡舍")
+        ck("⑨说「没有这栋」、不撒谎", "没有" in _out9 and "知识库没有" not in _out9, _out9[:300])
+        ck("⑨把现有建筑摊出来", "Farmhouse" in _out9, _out9[:300])
+        ck("⑨给了出路（找罗宾）", "罗宾" in _out9, _out9[:300])
+        _out10 = N.map_go("月球基地")
+        ck("⑨**认不出**的名字仍走「知识库没有」（没被吞掉）", "知识库没有" in _out10, _out10[:200])
+    finally:
+        N._with_state = _ws_bak
+
+    print("\n⑥b 源码钉（门格）")
     _src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                              "navigation.py"), encoding="utf-8").read()
     ck("⑥动态兜底写的是 (t[0], (t[1], t[2]))", "door = (t[0], (t[1], t[2]))" in _src,
