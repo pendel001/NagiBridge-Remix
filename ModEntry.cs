@@ -23087,10 +23087,17 @@ var tcs = new TaskCompletionSource<object>();
     ///
     /// 判据（任一即可，全问游戏自己的数据，不猜）：
     ///   ① **能从现存住宅走到**：`FarmHouse`（`Game1.getLocationFromName("FarmHouse")`）或农场里
-    ///      每栋 `Building` 的 `indoors`，它们的 `warps` 里有 `TargetName` 指到**这间**地窖
-    ///      —— 真实地窖入口的 warp 目标就是地窖名（`FarmHouse.cs:1971`
-    ///      `cellarWarp.TargetName = cellarName`；`cellarName` 见 `GetCellarName()`：
-    ///      `Cellar` / `Cellar`+编号，`FarmHouse.cs:981-1004`）。
+    ///      每栋 `Building` 的 `indoors`，只要满足下面**任一**就算这间走得进去：
+    ///      ⓐ 它们的 `warps` 里有 `TargetName` 指到**这间**地窖
+    ///         —— 真实地窖入口的 warp 目标就是地窖名（`FarmHouse.cs:1971`
+    ///         `cellarWarp.TargetName = cellarName`；`cellarName` 见 `GetCellarName()`：
+    ///         `Cellar` / `Cellar`+编号，`FarmHouse.cs:981-1004`）；
+    ///      ⓑ 它们的**瓦片属性**里有 `TouchAction: Warp <这间地窖> <x> <y>`
+    ///         —— 1.6 的地窖入口其实就是这个（`FarmHouse.updateCellarWarps()` `:1941-1973`
+    ///         改的是 **Back 层瓦片**的 `TouchAction` `:1953-1957`），而 `cellarWarps` 字段
+    ///         原生**从不填充**（`:1961` `if (cellarWarps == null) return;` 直接返回）
+    ///         ⇒ 只看 `warps` 会**漏掉 Cabin 升级后的地窖**（主屋那间还有 ② 兜底，小屋的没有）。
+    ///         ⚠️ 瓦片里解析出的地点名**只认相等**（见 `TouchActionTargetsCellar`）。
     ///   ② **本机房子确实升级到有地窖**：`Game1.player.HouseUpgradeLevel >= 3` 且这间 `Name` 是
     ///      `Cellar`（兜底：防 warp 表在某些版本/场景下不反映）。游戏里地窖只在 `upgradeLevel == 3`
     ///      时铺楼梯（`FarmHouse.cs:947` / `:1825`）。
@@ -23117,12 +23124,19 @@ var tcs = new TaskCompletionSource<object>();
             }
             foreach (var from in froms)
             {
-                if (from.warps == null) continue;
-                foreach (var w in from.warps)
+                // ①ⓐ 地图自己的 warp 表（有些图的入口在这里）
+                if (from.warps != null)
                 {
-                    if (w == null) continue;
-                    if (WarpTargetsCellar(w.TargetName, loc)) return true;
+                    foreach (var w in from.warps)
+                    {
+                        if (w == null) continue;
+                        if (WarpTargetsCellar(w.TargetName, loc)) return true;
+                    }
                 }
+                // ①ⓑ **瓦片属性** `TouchAction: Warp <地窖> <x> <y>` —— 1.6 的地窖入口真正在这里
+                //      （`FarmHouse.updateCellarWarps()` 改的就是它；`cellarWarps` 原生从不填充）。
+                //      ⚠️ 必须放在 `warps == null` 之外：warp 表空不代表瓦片上没门。
+                if (TilesWarpToCellar(from, loc)) return true;
             }
 
             // ② 兜底：本机房子升级到 3 级（地窖那档）才有地窖
@@ -23147,6 +23161,70 @@ var tcs = new TaskCompletionSource<object>();
     {
         if (string.IsNullOrEmpty(targetName)) return false;
         if (!targetName.StartsWith("Cellar", StringComparison.OrdinalIgnoreCase)) return false;
+        return cellar.Name.Equals(targetName, StringComparison.OrdinalIgnoreCase)
+            || cellar.NameOrUniqueName.Equals(targetName, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// 🏠 **这栋住宅的瓦片属性**里，有没有一格能把玩家送进**这间**地窖？
+    ///
+    /// 2026-11-07 恒：1.6 的地窖入口**不在** `warps` 表里，而是 Back 层的
+    /// **`TouchAction: Warp Cellar…`** —— `FarmHouse.updateCellarWarps()`（`FarmHouse.cs:1941-1973`）
+    /// 改的就是它（`:1953-1957` `setTileProperty(i, j, "Back", "TouchAction", …)`）；而
+    /// `cellarWarps` 字段原生**从不填充**（`:1961` 那句 `if (cellarWarps == null) return;` 直接返回）
+    /// ⇒ 只看 `.warps` 会**漏掉 Cabin 升级后的地窖**（主屋那间还能靠 ② 兜底，小屋那几间就整间丢了）。
+    ///
+    /// 扫法：`Back` / `Buildings` 两层逐格看 `Tiles[x, y]?.Properties["TouchAction"]`（1.6 API）。
+    /// ⚠️ 字符串匹配走 `TouchActionTargetsCellar`：**只认相等**，⛔ 不许前缀
+    ///    （`Warp Cellar2 …` 绝不能被 `Cellar` 认走）。
+    /// ⚠️ 任何异常都当"没扫到"（外层 `IsReachableCellar` 还有 `catch ⇒ false` 兜着）。
+    /// </summary>
+    private static bool TilesWarpToCellar(GameLocation home, GameLocation cellar)
+    {
+        try
+        {
+            if (home.Map == null) return false;
+            foreach (var layerName in new[] { "Back", "Buildings" })
+            {
+                var layer = home.Map.GetLayer(layerName);
+                if (layer == null) continue;
+                for (int x = 0; x < layer.LayerWidth; x++)
+                {
+                    for (int y = 0; y < layer.LayerHeight; y++)
+                    {
+                        var props = layer.Tiles[x, y]?.Properties;
+                        if (props == null) continue;
+                        if (!props.TryGetValue("TouchAction", out var raw)) continue;
+                        if (TouchActionTargetsCellar(raw, cellar)) return true;
+                    }
+                }
+            }
+        }
+        catch
+        {
+            return false;   // 读不到/炸了 ⇒ 当这栋住宅没这扇门（宁可不报）
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// 🚪 这条 `TouchAction` 是不是把玩家送进**这间**地窖？
+    ///
+    /// 1.6 的写法是 `Warp <地点> <x> <y>` —— 地点名在**第 2 个 token**（`GameLocation.performTouchAction`
+    /// `case 4:` 的 `if (value == "Warp")` → `ArgUtility.TryGet(action, 1, out locationToWarp, …)`，
+    /// `GameLocation.cs:3696-3711`，随后 `Game1.warpFarmer(locationToWarp, x, y)`）；
+    /// `MagicWarp <地点> <x> <y>` 同序（9 参那条 `:3649-3691`）。
+    /// ⚠️ 只认**相等**（`Cellar` / `Cellar2` …）：⛔ 不许 `StartsWith("Cellar")` —— 一放宽
+    ///    `Warp Cellar2 …` 就会被 `Cellar` 认走，8 间幽灵地窖又全回来，正是这次要堵的那个洞。
+    /// </summary>
+    private static bool TouchActionTargetsCellar(string? touchAction, GameLocation cellar)
+    {
+        if (string.IsNullOrEmpty(touchAction)) return false;
+        var parts = touchAction.Split(' ');
+        if (parts.Length < 2) return false;
+        if (parts[0] != "Warp" && parts[0] != "MagicWarp") return false;
+        var targetName = parts[1];
+        if (string.IsNullOrEmpty(targetName)) return false;
         return cellar.Name.Equals(targetName, StringComparison.OrdinalIgnoreCase)
             || cellar.NameOrUniqueName.Equals(targetName, StringComparison.OrdinalIgnoreCase);
     }

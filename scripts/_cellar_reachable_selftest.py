@@ -10,16 +10,21 @@
     （地窖是独立 location，不在 `farm.buildings` 里，所以被单独扫了一遍）
 
 判据（`ModEntry.IsReachableCellar`，两条满足任一）：
-  ① **能从现存住宅走到**：`FarmHouse` 或农场里每栋 `Building` 的 `indoors`，它们的 `warps` 里有
-     `TargetName` 指到**这间**地窖（`Cellar` / `Cellar2` …，见 `FarmHouse.GetCellarName()`）；
+  ① **能从现存住宅走到**：`FarmHouse` 或农场里每栋 `Building` 的 `indoors`，只要满足任一：
+     ⓐ 它们的 `warps` 里有 `TargetName` 指到**这间**地窖（`Cellar` / `Cellar2` …，
+       见 `FarmHouse.GetCellarName()`）；
+     ⓑ 它们的**瓦片属性**里有 `TouchAction: Warp <这间地窖> <x> <y>`
+       —— 1.6 的地窖入口其实是这个（`FarmHouse.updateCellarWarps()` 改的是 Back 层 `TouchAction`），
+       而 `cellarWarps` 字段原生从不填充 ⇒ 只看 `.warps` 会**漏掉 Cabin 升级后的地窖**。
   ② **兜底**：`Game1.player.HouseUpgradeLevel >= 3` 且这间 `Name == "Cellar"`。
   读不到/异常 ⇒ **false**（宁可少报一间，也绝不把假数据再报出来）。
 
 这个钉子**离线**跑（不开游戏），钉三件事：
   Ⓐ C# 源码钉：`ResolveLocations` 不再是「无条件 `loc is Cellar`」，走的是新判据；
   Ⓑ 判据函数存在、两条分支（warp ① / `HouseUpgradeLevel` ②）都写在源码切片里；
-  Ⓒ **行为钉**：把 C# 判据逐行翻成 Python 小函数 + 三个假存档场景
-     （本存档现场 / 房子升级过 / 只有 Cabin 有门指 `Cellar2`）。
+  Ⓒ **行为钉**：把 C# 判据逐行翻成 Python 小函数 + 假存档场景
+     （本存档现场 / 房子升级过 / 只有 Cabin 有门指 `Cellar2` / **Cabin 升级后瓦片上有
+     `TouchAction: Warp Cellar2 5 3`**）。
      ⚠️ 复刻与 C# **一一对应**（`# C# ①` / `# C# ②` 就是对应标记，见 `is_reachable_cellar`）——
      这是「离线验不了的 C# 行为」的常用手法（同 `_load_machine_filter_selftest.py`）。
 """
@@ -101,16 +106,21 @@ def _raises(fn):
 # 假存档：只留判据真会用到的几样东西（地点名 / 是不是 Cellar / warps / 住宅的 indoor）
 # ─────────────────────────────────────────────────────────────────────────────
 class FakeLoc:
-    """假的 GameLocation。`kind` 对应存档里的 `xsi:type`；`casks`/`furnaces` 只拿来数机器。"""
+    """假的 GameLocation。`kind` 对应存档里的 `xsi:type`；`casks`/`furnaces` 只拿来数机器。
+
+    `touch_tiles` 是**瓦片表**：`{(层名, x, y): "Warp Cellar2 5 3"}`，只收 `TouchAction` 那一格属性
+    （C# 侧就是 `Back` / `Buildings` 两层的 `Tiles[x, y].Properties["TouchAction"]`）。
+    """
 
     def __init__(self, name, kind="GameLocation", warps=None, casks=0, furnaces=0,
-                 unique_name=None):
+                 unique_name=None, touch_tiles=None):
         self.name = name
         self.kind = kind
         self.warps = list(warps or [])
         self.casks = casks
         self.furnaces = furnaces
         self.unique_name = unique_name or name
+        self.touch_tiles = dict(touch_tiles or {})
 
     @property
     def is_cellar(self):
@@ -127,6 +137,7 @@ class BrokenLoc:
 
     def __init__(self, name="FarmHouse"):
         self.name = name
+        self.touch_tiles = {}
 
     @property
     def warps(self):
@@ -177,6 +188,49 @@ def warp_targets_cellar(target_name, cellar):
             or target_name.lower() == cellar.unique_name.lower())
 
 
+def touch_action_targets_cellar(touch_action, cellar):
+    """C# `TouchActionTargetsCellar(string? touchAction, GameLocation cellar)`。
+
+    `TouchAction: Warp <地点> <x> <y>`（`performTouchAction` 的 `case 4:` ⇒ 地点名 = 第 2 个 token）。
+    """
+    # C#：`if (string.IsNullOrEmpty(touchAction)) return false;`
+    if not touch_action:
+        return False
+    # C#：`var parts = touchAction.Split(' ');` —— 保留空 token（和 C# 的 Split(' ') 一模一样）
+    parts = touch_action.split(" ")
+    # C#：`if (parts.Length < 2) return false;`
+    if len(parts) < 2:
+        return False
+    # C#：`if (parts[0] != "Warp" && parts[0] != "MagicWarp") return false;`
+    if parts[0] not in ("Warp", "MagicWarp"):
+        return False
+    target_name = parts[1]
+    # C#：`if (string.IsNullOrEmpty(targetName)) return false;`
+    if not target_name:
+        return False
+    # C#：`cellar.Name.Equals(targetName, …) || cellar.NameOrUniqueName.Equals(...)`
+    #     —— 只认**相等**（`Warp Cellar2 5 3` 绝不能被 `Cellar` 认走）
+    return (target_name.lower() == cellar.name.lower()
+            or target_name.lower() == cellar.unique_name.lower())
+
+
+def tiles_warp_to_cellar(home, cellar):
+    """C# `TilesWarpToCellar(GameLocation home, GameLocation cellar)`。"""
+    # C#：`if (home.Map == null) return false;`
+    #   —— 复刻里没有 Map，`home is None` 就是「这栋住宅根本没有瓦片表」那一档
+    if home is None:
+        return False
+    # C#：`foreach (var layerName in new[] { "Back", "Buildings" })` —— 两层都扫
+    for layer in ("Back", "Buildings"):
+        for (lay, _x, _y), raw in home.touch_tiles.items():
+            if lay != layer:
+                continue
+            # C#：`layer.Tiles[x, y]?.Properties["TouchAction"]`（取不到就跳过）
+            if touch_action_targets_cellar(raw, cellar):
+                return True
+    return False
+
+
 def is_reachable_cellar(loc, save):
     """C# `IsReachableCellar(GameLocation? loc)`。"""
     # C#：`if (loc is not Cellar) return false;`
@@ -188,6 +242,10 @@ def is_reachable_cellar(loc, save):
             for target_name in src.warps:
                 if warp_targets_cellar(target_name, loc):
                     return True
+            # C# ①（瓦片）：`TouchAction: Warp <地窖> <x> <y>` 也算门
+            #   —— 必须放在 `warps` 之外：warp 表空不代表瓦片上没门（Cabin 升级后就是这样）
+            if tiles_warp_to_cellar(src, loc):
+                return True
         # C# ②：本机房子升级到 3 级（地窖那档）才有地窖，且这间得是 `Cellar`
         if save.has_player and save.house_upgrade_level >= 3 and loc.name == "Cellar":
             return True
@@ -211,7 +269,7 @@ def resolve_locations(save, is_reachable=is_reachable_cellar):
     return out
 
 
-# ── 黑化对照（证明下面这三个场景**真能咬到**坏判据）──────────────────────────
+# ── 黑化对照（证明下面这些场景**真能咬到**坏判据）──────────────────────────
 def _bad_unconditional(loc, _save):
     """黑化版：无条件收所有 Cellar（就是被打回的老写法）。"""
     return loc.is_cellar
@@ -228,7 +286,47 @@ def _bad_no_upgrade(loc, save):
     return False
 
 
-# ── 三个假存档场景 ───────────────────────────────────────────────────────────
+def _bad_no_touch(loc, save):
+    """黑化版：把 ① 里 **TouchAction（瓦片）那条分支删掉** —— 负向刀 B 的离线版。"""
+    if not loc.is_cellar:
+        return False
+    try:
+        for src in save.entrance_locations():
+            for target_name in src.warps:
+                if warp_targets_cellar(target_name, loc):
+                    return True
+        if save.has_player and save.house_upgrade_level >= 3 and loc.name == "Cellar":
+            return True
+    except Exception:
+        return False
+    return False
+
+
+def _bad_touch_prefix(loc, save):
+    """黑化版：瓦片里解析出的地点名改用**前缀**比
+    （`Warp Cellar2 5 3` 就会被 `Cellar` 认走 = 8 间幽灵地窖全回来的那种写法）。"""
+    if not loc.is_cellar:
+        return False
+    try:
+        for src in save.entrance_locations():
+            for target_name in src.warps:
+                if warp_targets_cellar(target_name, loc):
+                    return True
+            for (_lay, _x, _y), raw in src.touch_tiles.items():
+                parts = raw.split(" ")
+                if len(parts) < 2 or parts[0] not in ("Warp", "MagicWarp"):
+                    continue
+                low = parts[1].lower()
+                if low.startswith(loc.name.lower()):   # 黑化点：前缀
+                    return True
+        if save.has_player and save.house_upgrade_level >= 3 and loc.name == "Cellar":
+            return True
+    except Exception:
+        return False
+    return False
+
+
+# ── 假存档场景（本档现状 / 升级 / Cabin warp / Cabin 瓦片 …）────────────────
 def _scene_this_save():
     """**本存档现场**：Farm 3 台 Furnace；Cellar / Cellar2…Cellar8 各 33 个 Cask；
     房子 `<upgradeLevel>0</upgradeLevel>`、**一条 Cellar warp 都没有**。"""
@@ -252,6 +350,31 @@ def _scene_cabin_cellar2():
     """Cabin 的 indoors 有一条 warp 指到 `Cellar2`（别的门一条没有）。"""
     s = _scene_this_save()
     s.buildings = [FakeBuilding(FakeLoc("Cabin", "Cabin", warps=["Cellar2"]))]
+    return s
+
+
+def _scene_cabin_tile_cellar2():
+    """**Cabin 升级后**（1.6 真相）：瓦片上有 `TouchAction: Warp Cellar2 5 3`，`warps` 表空空
+    （`cellarWarps` 原生从不填充 ⇒ 出口只在瓦片属性里）。主屋没升级 ⇒ `Cellar` / `Cellar3~8` 仍是幽灵。"""
+    s = _scene_this_save()
+    s.buildings = [FakeBuilding(FakeLoc(
+        "Cabin", "Cabin", touch_tiles={("Back", 5, 3): "Warp Cellar2 5 3"}))]
+    return s
+
+
+def _scene_farmhouse_tile_cellar():
+    """主屋瓦片上有 `TouchAction: Warp Cellar 6 9`（房子没升级、warp 表空）⇒ 只认 `Cellar`。"""
+    s = _scene_this_save()
+    s.farmhouse = FakeLoc("FarmHouse", "FarmHouse",
+                          touch_tiles={("Back", 6, 9): "Warp Cellar 6 9"})
+    return s
+
+
+def _scene_cabin_tile_buildings_layer():
+    """Cabin 的门画在 `Buildings` 层 ⇒ 那一层也得扫（只扫 Back 会漏）。"""
+    s = _scene_this_save()
+    s.buildings = [FakeBuilding(FakeLoc(
+        "Cabin", "Cabin", touch_tiles={("Buildings", 1, 2): "Warp Cellar3 7 8"}))]
     return s
 
 
@@ -294,8 +417,36 @@ try:
     ck("Ⓑ② 兜底还要求 Name 是 Cellar", 'loc.Name == "Cellar"' in _reach)
     ck("Ⓑ读不到/异常 ⇒ false（catch 里 return false）",
        "catch" in _reach and _reach[_reach.find("catch"):].count("return false") >= 1)
-    ck("Ⓑ说「进得去」的路**只有两条**（多一条就是又放宽了）",
-       _reach.count("return true") == 2, f"{_reach.count('return true')} 条")
+    ck("Ⓑ说「进得去」的路**只有三条**（①warp / ①瓦片 / ②；多一条就是又放宽了）",
+       _reach.count("return true") == 3, f"{_reach.count('return true')} 条")
+
+    print("\nⒷc 1.6 瓦片入口：① 补上 TouchAction（`Warp <地点> <x> <y>`），且只认相等")
+    _touch = _cut_func(CS, "private static bool TouchActionTargetsCellar(")
+    _tiles = _cut_func(CS, "private static bool TilesWarpToCellar(")
+    ck("Ⓑc函数存在（TouchActionTargetsCellar）",
+       "private static bool TouchActionTargetsCellar(string? touchAction, GameLocation cellar)" in CS,
+       "签名对不上")
+    ck("Ⓑc函数存在（TilesWarpToCellar）",
+       "private static bool TilesWarpToCellar(GameLocation home, GameLocation cellar)" in CS,
+       "签名对不上")
+    ck("ⒷcIsReachableCellar 的 ① 里真的接了瓦片这条", "TilesWarpToCellar(from, loc)" in _reach)
+    ck("Ⓑc瓦片这条**不在** `warps == null` 后面（warp 表空也要扫瓦片）",
+       "if (from.warps != null)" in _reach and "if (from.warps == null) continue;" not in _reach)
+    ck("Ⓑc扫的是 Back / Buildings 两层瓦片",
+       'new[] { "Back", "Buildings" }' in _tiles and "GetLayer(layerName)" in _tiles)
+    ck('Ⓑc读的是瓦片自身的 Properties["TouchAction"]',
+       "Tiles[x, y]?.Properties" in _tiles and 'TryGetValue("TouchAction"' in _tiles)
+    ck("Ⓑc瓦片里的地点名取 `Warp <地点> <x> <y>` 的第 2 个 token",
+       "touchAction.Split(' ')" in _touch and "var targetName = parts[1];" in _touch)
+    ck("Ⓑc只认 Warp / MagicWarp 这两种 TouchAction",
+       'parts[0] != "Warp"' in _touch and '"MagicWarp"' in _touch)
+    ck("Ⓑc地点名只认**相等**（Name / NameOrUniqueName 两条 Equals）",
+       "cellar.Name.Equals(targetName" in _touch
+       and "cellar.NameOrUniqueName.Equals(targetName" in _touch)
+    ck("Ⓑc瓦片匹配**没有**用 StartsWith 比地点名（⛔ `Cellar` 会把 `Cellar2~8` 全认走）",
+       "StartsWith" not in _touch)
+    ck("Ⓑc扫瓦片炸了也要当「没扫到」（catch ⇒ return false）",
+       "catch" in _tiles and _tiles[_tiles.find("catch"):].count("return false") >= 1)
 
     print("\nⒷb warp 目标只认「相等」，不认前缀（一放宽就串 8 间）")
     _warp = _cut_func(CS, "private static bool WarpTargetsCellar(")
@@ -318,6 +469,9 @@ try:
     ck("ⒸFarm + Cabin 室内照样在遍历范围里（只砍了地窖）",
        [l.name for l in resolve_locations(_s1)] == ["Farm", "Cabin"],
        str([l.name for l in resolve_locations(_s1)]))
+    ck("Ⓒ现场住宅的**瓦片表也空**（1.6 没升级 ⇒ 一格 Warp TouchAction 都没有）",
+       not _s1.farmhouse.touch_tiles and not _s1.buildings[0].indoors.touch_tiles,
+       f"{_s1.farmhouse.touch_tiles} / {_s1.buildings[0].indoors.touch_tiles}")
 
     print("\nⒸb 行为钉（房子升到 3 级）：只收 Cellar，Cellar2~8 仍是幽灵")
     _s2 = _scene_upgraded()
@@ -334,6 +488,47 @@ try:
     ck("ⒸcCellar 本身也不收（门只指 Cellar2、房子也没升级）",
        "Cellar" not in _accepted(_s3), str(_accepted(_s3)))
     ck("Ⓒc木桶只算 33 个（就 Cellar2 那间）", _casks(_s3) == 33, f"{_casks(_s3)} 个")
+
+    print("\nⒸc2 行为钉（Cabin 升级后**瓦片**上有 `Warp Cellar2 5 3`）：只收 Cellar2")
+    _s3b = _scene_cabin_tile_cellar2()
+    _cabin3b = _s3b.buildings[0].indoors
+    ck("Ⓒc2夹具对得上 1.6：Cabin 的 warps 表**是空的**（门只在瓦片上）",
+       _cabin3b.warps == [] and _cabin3b.touch_tiles, str(_cabin3b.warps))
+    ck("Ⓒc2只收 Cellar2", _accepted(_s3b) == ["Cellar2"], str(_accepted(_s3b)))
+    ck("Ⓒc2Cellar3~8 一个都不收",
+       all(f"Cellar{i}" not in _accepted(_s3b) for i in range(3, 9)), str(_accepted(_s3b)))
+    ck("Ⓒc2Cellar 本身也不收（瓦片写的是 Cellar2，只认相等）",
+       "Cellar" not in _accepted(_s3b), str(_accepted(_s3b)))
+    ck("Ⓒc2木桶只算 33 个（就 Cellar2 那间）", _casks(_s3b) == 33, f"{_casks(_s3b)} 个")
+    ck("Ⓒc2机器 = Farm 3 台 + Cellar2 的 33 个（不是 267）",
+       _machines(_s3b) == 36, f"{_machines(_s3b)} 台")
+
+    print("\nⒸc3 只认相等（反例）：`Warp Cellar2 …` 不许被 `Cellar` 认走")
+    _cellar = FakeLoc("Cellar", "Cellar")
+    _cellar2 = FakeLoc("Cellar2", "Cellar")
+    ck("Ⓒc3`Warp Cellar2 5 3` 对 Cellar ⇒ False（前缀不算门）",
+       touch_action_targets_cellar("Warp Cellar2 5 3", _cellar) is False)
+    ck("Ⓒc3`Warp Cellar 5 3` 对 Cellar2 ⇒ False（反过来也不行）",
+       touch_action_targets_cellar("Warp Cellar 5 3", _cellar2) is False)
+    ck("Ⓒc3`Warp Cellar2 5 3` 对 Cellar2 ⇒ True",
+       touch_action_targets_cellar("Warp Cellar2 5 3", _cellar2) is True)
+    ck("Ⓒc3`MagicWarp Cellar2 1 1` 同序也认",
+       touch_action_targets_cellar("MagicWarp Cellar2 1 1", _cellar2) is True)
+    ck("Ⓒc3不是换图那两种 TouchAction ⇒ 不认（ChangeIntoSwimsuit）",
+       touch_action_targets_cellar("ChangeIntoSwimsuit", _cellar2) is False)
+    ck("Ⓒc3只有 `Warp` 一个 token（缺地点名/坐标）⇒ 不认",
+       touch_action_targets_cellar("Warp", _cellar2) is False)
+    ck("Ⓒc3空字符串 / None ⇒ 不认",
+       touch_action_targets_cellar("", _cellar2) is False
+       and touch_action_targets_cellar(None, _cellar2) is False)
+
+    print("\nⒸc4 主屋瓦片那条也认；`Buildings` 层同样要扫")
+    _s3c = _scene_farmhouse_tile_cellar()
+    ck("Ⓒc4主屋瓦片 `Warp Cellar 6 9` ⇒ 只收 Cellar",
+       _accepted(_s3c) == ["Cellar"], str(_accepted(_s3c)))
+    _s3d = _scene_cabin_tile_buildings_layer()
+    ck("Ⓒc4`Buildings` 层的 `Warp Cellar3 7 8` ⇒ 只收 Cellar3",
+       _accepted(_s3d) == ["Cellar3"], str(_accepted(_s3d)))
 
     print("\nⒸd 农舍自己那条 warp 也认（不只 Cabin）")
     _s4 = _scene_this_save()
@@ -375,7 +570,20 @@ try:
        and "cellar.name.lower()" in _repl_warp
        and "cellar.unique_name.lower()" in _repl_warp)
 
-    print("\nⒸh 黑化对照：这两把坏判据必须被上面的场景咬到")
+    _repl_touch = _cut_py_func(SELF, "def touch_action_targets_cellar(")
+    _repl_tiles = _cut_py_func(SELF, "def tiles_warp_to_cellar(")
+    ck("Ⓒg复刻里 ① 的**瓦片**那条也在（带 `# C# ①` 标记）",
+       "# C# ①（瓦片）" in _repl and "tiles_warp_to_cellar(src, loc)" in _repl)
+    ck("ⒸgC# 与复刻的瓦片扫描一一对应（两层 + TouchAction + 第 2 个 token）",
+       all(m in _tiles for m in ('"Back", "Buildings"', '"TouchAction"'))
+       and all(m in _repl_tiles for m in ('("Back", "Buildings")', "touch_tiles"))
+       and "parts[1]" in _touch and "parts[1]" in _repl_touch)
+    ck("Ⓒg瓦片匹配的「只认相等」两边一致（复刻里也不许 startswith）",
+       "cellar.Name.Equals(targetName" in _touch
+       and "target_name.lower() == cellar.name.lower()" in _repl_touch
+       and "startswith" not in _repl_touch)
+
+    print("\nⒸh 黑化对照：这几把坏判据必须被上面的场景咬到")
     _bad1 = _accepted(_s1, _bad_unconditional)
     ck("Ⓒh无条件收所有 Cellar ⇒ 场景一由 0 间变 8 间（咬到了）",
        len(_bad1) == 8 and _accepted(_s1) == [], str(_bad1))
@@ -384,6 +592,12 @@ try:
        _bad2 == [] and _accepted(_s2) == ["Cellar"], str(_bad2))
     ck("Ⓒh场景三咬的是 warp 那条（删 ② 不影响它）",
        _accepted(_s3, _bad_no_upgrade) == _accepted(_s3) == ["Cellar2"])
+    _bad3 = _accepted(_s3b, _bad_no_touch)
+    ck("Ⓒh删掉 TouchAction（瓦片）那条分支 ⇒ Cabin 瓦片场景由 1 间变 0 间（负向刀必红）",
+       _bad3 == [] and _accepted(_s3b) == ["Cellar2"], str(_bad3))
+    _bad4 = _accepted(_s3b, _bad_touch_prefix)
+    ck("Ⓒh瓦片匹配改用**前缀** ⇒ `Cellar` 也被认走（相等那条必须咬得住）",
+       "Cellar" in _bad4 and "Cellar" not in _accepted(_s3b), str(_bad4))
 
     print("\nⒹ 输出结构没动：每台 machine 仍带 location / location_unique")
     _scan = _cut_func(CS, "private static void ScanLocationMachines(")
