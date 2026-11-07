@@ -110,24 +110,29 @@ try:
     print("\n③ 文案：说清「谁 + 为什么 + 现在干什么」，且不谎报成功")
     _f = Fake(host_menu="ShippingMenu").install()
     _m = api.overnight_busy()["msg"]
-    ck("③点了房主的名", "恒" in _m, _m)
-    ck("③说了是「过夜结算」", "结算" in _m, _m)
-    ck("③明令「现在不许按」", ("不许按" in _m) or ("别按" in _m), _m)
-    ck("③给了出路（等着/进新一天）", "等" in _m, _m)
+    ck("③用中性词「玩家」（恒 2026-11-07 拍板：恒→host/玩家/user）", "玩家" in _m, _m)
+    ck("③**不写死任何角色名**（恒 / Claude 都不许出现）",
+       not any(n in _m for n in ("恒", "Claude")), _m)
+    ck("③说了「已经在过夜结算」", "已经在过夜结算" in _m, _m)
+    ck("③明令「禁止反复调用 sleep」", "禁止反复调用 sleep" in _m, _m)
+    ck("③**不夹历史账**（不许出现 2026 那串解释）", "2026" not in _m, _m)
     ck("③不许出现「已上床/已就绪」这种假成功", not any(w in _m for w in ("已上床", "已就绪")), _m)
+    ck("③短（一句话就能读完，别又长成一屏）", len(_m) <= 60, f"{len(_m)} 字：{_m}")
 
     _f = Fake(host_menu="SaveGameMenu").install()
     _m2 = api.overnight_busy()["msg"]
-    ck("③存盘那句说了「存盘」", "存盘" in _m2, _m2)
+    ck("③存盘那句说了「正在存盘」", "正在存盘" in _m2, _m2)
+    ck("③存盘那句同样禁止反复调用", "禁止反复调用 sleep" in _m2, _m2)
 
     _f = Fake(host_menu="ReadyCheckDialog").install()
     _m3 = api.overnight_busy()["msg"]
-    ck("③就绪屏那句点明「就差他按确认」", "确认" in _m3, _m3)
-    ck("③并说明「再按会破坏就绪同步」", "就绪同步" in _m3, _m3)
+    ck("③就绪屏那句说了「睡觉就绪确认」", "睡觉就绪确认" in _m3, _m3)
+    ck("③就绪屏那句同样禁止反复调用", "禁止反复调用 sleep" in _m3, _m3)
 
     _f = Fake(host_menu="ShippingMenu", ai_name="恒", host_name="恒").install()
     _m4 = api.overnight_busy()["msg"]
-    ck("③单人档（两边同名）⇒ 不说「恒那边」，直接说「房主」", "那边" not in _m4, _m4)
+    ck("③单人档（两边同名）⇒ 仍然只说「玩家」，不冒出人名",
+       "玩家" in _m4 and "恒" not in _m4, _m4)
 
     print("\n④ 真流程：过夜中调 go_sleep_flow ⇒ **零副作用**（一步不走、一次不摸）")
     _f = Fake(host_menu="ShippingMenu").install()

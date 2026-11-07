@@ -1760,10 +1760,11 @@ def _resolve_target_bed(who: str = "") -> dict:
 #   而每次 sleep 都会往房主**正开着的结算屏**上再压一次 sleep/ready 请求。
 #   过夜结算→存盘那一段是**一天只跑一次、单线程**的，被反复打断就卡死在那儿。
 # ⇒ 判据：**谁的过夜菜单开着，谁那一夜就还在结算里** —— 这时 `go_sleep` 直接拦，**一步都不走**。
-#   三张屏话不一样（因为"该干什么"完全不同）：
-#     · `ShippingMenu` 结算 / `SaveGameMenu` 存盘 ⇒ **等**（他会自己关掉、直接进新一天）
-#     · `ReadyCheckDialog` 就绪屏 ⇒ 这一夜**就差对面按确认**；再按一次 Sleep_Yes 会把 ready
-#       同步搞坏（老账：夜反而不过），所以也只许等
+#   三张屏各一句话（`ShippingMenu` 结算 / `SaveGameMenu` 存盘 / `ReadyCheckDialog` 等确认）。
+#   ⚠️ 2026-11-07 恒：「换一下字眼吧，**恒→host/玩家/user**，**已经**在过夜结算，**禁止反复调用**，
+#      2026……后面的内容去掉」——所以这几句：
+#        · **不写死任何角色名**（项目老规矩：名字现读现用；这里干脆用中性的「玩家」）；
+#        · 只说"现在是什么状态 + 别做这个动作"，**不夹历史账、不解释为什么**（AI 不需要读日志）。
 _OVERNIGHT_MENUS = ("ShippingMenu", "SaveGameMenu", "ReadyCheckDialog")
 
 
@@ -1779,7 +1780,7 @@ def overnight_busy() -> dict:
     """🌙 这一夜是不是**正在过**（哪一端开着结算 / 存盘 / 就绪屏）？
 
     返回 `{busy, who, menu, msg, ai_menu, host_menu, me, host}`——`busy=True` 时 `msg` 就是
-    **能直接甩给 AI 的一句话**（说清是谁那一端、为什么现在不能按、现在该干什么）。
+    **能直接甩给 AI 的一句话**（一句话说清**状态 + 禁止的动作**，不夹历史账）。
 
     ⚠️ 只读两端 `/state`（各一发 GET），**不动任何状态** —— 拦 sleep 的判据必须"还没走一步"就拿到。
     ⚠️ 读不到 host（单机 / 老 DLL / 端口不通）⇒ 只要自己这端没事就 `busy=False`：
@@ -1797,7 +1798,6 @@ def overnight_busy() -> dict:
     ai_m, host_m = _menu_type_of(ai_st), _menu_type_of(host_st)
     me = str(((ai_st.get("player") or {}).get("name")) or "")
     hn = str(((host_st.get("player") or {}).get("name")) or "")
-    solo = (not hn) or (hn == me)          # 单机档 / 同一进程 / 读不到房主名
 
     out = {"busy": False, "who": "", "menu": "", "msg": "",
            "ai_menu": ai_m, "host_menu": host_m, "me": me, "host": hn}
@@ -1806,29 +1806,22 @@ def overnight_busy() -> dict:
     if ai_m in _OVERNIGHT_MENUS:
         out.update(busy=True, who="ai", menu=ai_m)
         if ai_m == "ShippingMenu":
-            out["msg"] = ("⛔ 你自己那屏**过夜结算**还开着（ShippingMenu）——先把这一屏收掉"
-                          "（`settlement_confirm`），别按 sleep。")
+            out["msg"] = "⛔ 你这边已经在过夜结算（ShippingMenu）——禁止反复调用 sleep（先 settlement_confirm）"
         elif ai_m == "SaveGameMenu":
-            out["msg"] = "⛔ 你自己正在**存盘**（SaveGameMenu）——等它读完，别按 sleep。"
+            out["msg"] = "⛔ 你这边正在存盘（SaveGameMenu）——禁止反复调用 sleep"
         else:
-            out["msg"] = ("⏳ 你自己的**睡觉就绪屏**已经弹了（ReadyCheckDialog）——这一夜就差对面按确认，"
-                          "**别再 sleep**（第二次 Sleep_Yes 会把就绪同步弄坏，夜反而不过）。等着就行。")
+            out["msg"] = "⏳ 你这边已经在睡觉就绪确认（ReadyCheckDialog）——禁止反复调用 sleep"
         return out
 
-    # ② 房主（= 用户）那一端：他的结算/存盘被我们反复打断过，就是 2026-11-07 那次卡死
+    # ② 玩家那一端：结算/存盘/等确认，都不许我们再去压一次
     if host_m in _OVERNIGHT_MENUS:
         out.update(busy=True, who="host", menu=host_m)
-        who_txt = "房主" if solo else f"{hn}那边"
         if host_m == "ShippingMenu":
-            out["msg"] = (f"⛔ **{who_txt}正在过夜结算**（ShippingMenu）——**现在一次 sleep 都不许按**："
-                          f"2026-11-07 就是这么把结算卡死、连存档都存不下来的。"
-                          f"他会自己关掉这一屏、直接进新一天；**你这边什么都不用做，等着**。")
+            out["msg"] = "⛔ 玩家已经在过夜结算（ShippingMenu）——禁止反复调用 sleep"
         elif host_m == "SaveGameMenu":
-            out["msg"] = (f"⛔ {who_txt}正在**存盘**（SaveGameMenu）——别按 sleep，等它读完再动。")
+            out["msg"] = "⛔ 玩家正在存盘（SaveGameMenu）——禁止反复调用 sleep"
         else:
-            out["msg"] = (f"⏳ {who_txt}**已经弹出「要不要睡」的确认框**（ReadyCheckDialog）——"
-                          f"这一夜就差他按确认。**别再 sleep**（第二次 Sleep_Yes 会破坏就绪同步，"
-                          f"夜反而不过）。等着就行。")
+            out["msg"] = "⏳ 玩家已经在睡觉就绪确认（ReadyCheckDialog）——禁止反复调用 sleep"
     return out
 
 
@@ -1867,7 +1860,8 @@ def go_sleep_flow(who="", log=None, humanize=True) -> dict:
     co_sleep=True 表示睡的是别人的床（爬床彩蛋）；配合 woke_in_expected_bed=True = 一起睡彩蛋成功。
     log(step, ok, detail) 供回归脚本打印/落盘。
     🌙 **过夜菜单开着就一步都不走**：`overnight_busy()` 见 `ShippingMenu`/`SaveGameMenu`/`ReadyCheckDialog`
-    （任一端）⇒ 立刻返回 `ok=False` + 一句"现在别按、该等谁"（恒 2026-11-07：反复 sleep 把房主结算卡死）。
+    （任一端）⇒ 立刻返回 `ok=False` + 一句「玩家已经在过夜结算（ShippingMenu）——禁止反复调用 sleep」
+    （恒 2026-11-07：反复 sleep 把房主结算卡死）。
     """
     steps = []
 
